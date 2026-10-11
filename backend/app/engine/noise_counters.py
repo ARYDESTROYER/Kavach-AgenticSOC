@@ -273,12 +273,27 @@ def _reduction(numer: int, denom: int) -> Any:
     return round(max(0.0, 1.0 - (numer / denom)) * 100, 1)
 
 
+# How far before the counters' first covered hour a case may be opened and still count
+# as covered. A poll or ingest tick opens its cases (and runs up to the per-tick cap of
+# sequential investigations) BEFORE it records that tick's alert delta, and the delta's
+# write time is what stamps ``since``. When the very first tick crosses an hour
+# boundary its cases fall in the hour before ``since``'s hour, and since ``since`` never
+# moves, an hour-only tolerance would flag every later lifetime funnel as partial for
+# good. One full counter hour of grace covers any first tick shorter than an hour.
+_FIRST_TICK_GRACE_SECONDS = 3600
+
+
 def _cases_predate_counters(cases: list[Case], coverage_start: Any) -> bool:
     """True when a counted case was opened before the alert counters began covering.
 
     The counters are hourly buckets, and a poll tick records its alerts AFTER it opens
-    that tick's cases, so a case opened earlier in the counters' first covered hour is
-    still covered: the comparison is against the start of that hour. A case with no
+    that tick's cases (and after that tick's investigations), so the tick's cases can
+    sit earlier in the counters' first covered hour or, when the tick crossed an hour
+    boundary, in the hour before it. The comparison is therefore against the start of
+    the first covered hour minus one full counter hour
+    (:data:`_FIRST_TICK_GRACE_SECONDS`). A case opened before that is genuinely older
+    than the counters (a store older than its counters); the retention-pruned case is
+    flagged by the store itself (``read_window``'s ``incomplete``). A case with no
     usable timestamp cannot be shown to predate anything and is not counted here.
     Never raises."""
     if not isinstance(coverage_start, str) or not coverage_start:
@@ -289,13 +304,17 @@ def _cases_predate_counters(cases: list[Case], coverage_start: Any) -> bool:
         return False
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
-    first_hour = int(start.timestamp() // 3600) * 3600
+    try:
+        first_hour = int(start.timestamp() // 3600) * 3600
+    except (OverflowError, OSError, ValueError):
+        return False
+    cutoff = first_hour - _FIRST_TICK_GRACE_SECONDS
     for case in cases:
         try:
             created = _created_dt(case)
         except Exception:  # noqa: BLE001 — a malformed case never breaks the rollup
             continue
-        if created is not None and created.timestamp() < first_hour:
+        if created is not None and created.timestamp() < cutoff:
             return True
     return False
 

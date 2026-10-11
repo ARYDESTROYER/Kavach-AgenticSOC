@@ -93,7 +93,7 @@ export const EXPORT_FONT = "Inter, 'Inter Variable', system-ui, -apple-system, '
 const MONO_FONT = "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 const PAD = 24;
 /** Approximate advance of one 12px glyph (export text is 12px; `geometry.CHAR_W` is 11px). */
-const CHAR12 = 7.2;
+export const CHAR12 = 7.2;
 const IN_PROGRESS_OPACITY = 0.6;
 
 /**
@@ -442,14 +442,45 @@ function donut(block: ChartBlock, ctx: Ctx): { svg: string; height: number; lege
   return { svg: out.join(''), height: size + 16, legend };
 }
 
+/**
+ * The note written after each funnel bar (pure; exported for tests): the value, then
+ * "24% of the stage above" for a reduction or "+91%  ·  not a reduction" for a rise
+ * (the same short words as FunnelChart's step line; a rise is never "191% of" it).
+ * `null` for a stage with no value (the image draws a dash there).
+ */
+export function funnelNotes(block: ChartBlock): Array<string | null> {
+  const values = block.series[0]?.values ?? [];
+  return block.x.values.map((_, i) => {
+    const v = values[i];
+    if (!isNum(v)) return null;
+    let note = formatValue(v, block.unit);
+    const prev = i > 0 ? values[i - 1] : null;
+    if (isNum(prev) && prev > 0) {
+      const ratio = Math.round((v / prev) * 100);
+      note += ratio > 100 ? `  ·  +${ratio - 100}%  ·  not a reduction` : `  ·  ${ratio}% of the stage above`;
+    }
+    return note;
+  });
+}
+
+/** Gap between a funnel bar's tip and its note. */
+const FUNNEL_NOTE_GAP = 8;
+/** Bar room a narrow funnel image keeps by narrowing its stage-name column. */
+const FUNNEL_MIN_BAR = 80;
+
 function funnel(block: ChartBlock, ctx: Ctx, styles: SeriesStyle[]): { svg: string; height: number } {
   const values = block.series[0]?.values ?? [];
   const n = block.x.values.length;
   const rowH = 34;
   const max = Math.max(1, ...values.filter(isNum));
-  const labelW = Math.min(260, Math.round(ctx.W * 0.3));
+  const notes = funnelNotes(block);
+  // Room on the right for the longest note after the longest bar (as hbar sizes its
+  // value column), so the note is never cut off at the image edge. On a narrow image
+  // the stage-name column gives way first, down to a floor, to keep some bar room.
+  const noteW = Math.ceil(Math.max(DASH.length, ...notes.map((t) => (t ?? '').length)) * CHAR12) + FUNNEL_NOTE_GAP;
+  const labelW = Math.max(96, Math.min(260, Math.round(ctx.W * 0.3), ctx.W - 2 * PAD - 10 - FUNNEL_MIN_BAR - noteW));
   const x0 = PAD + labelW + 10;
-  const plotW = Math.max(1, ctx.W - PAD - x0 - 220);
+  const plotW = Math.max(1, ctx.W - PAD - x0 - noteW);
   const p = ctx.paint(styles[0]?.color ?? token('chart-1'));
   const out: string[] = [];
   for (let i = 0; i < n; i += 1) {
@@ -458,19 +489,12 @@ function funnel(block: ChartBlock, ctx: Ctx, styles: SeriesStyle[]): { svg: stri
     out.push(text(PAD + labelW, y + 11, clipText(block.x.values[i] ?? '', Math.floor(labelW / CHAR12)), ctx.fg, { anchor: 'end', baseline: 'middle', mono: block.untrusted }));
     if (!isNum(v)) {
       out.push(`<rect x="${r2(x0)}" y="${y + 2}" width="${r2(plotW)}" height="18" fill="url(#${ctx.hatch})"/>`);
-      out.push(text(x0 + plotW + 8, y + 11, DASH, ctx.muted, { baseline: 'middle' }));
+      out.push(text(x0 + plotW + FUNNEL_NOTE_GAP, y + 11, DASH, ctx.muted, { baseline: 'middle' }));
       continue;
     }
     const w = Math.max(2, (Math.max(0, v) / max) * plotW);
     out.push(`<path d="${roundedRightPath(r2(x0), y + 2, r2(w), 18)}"${fill(p)}/>`);
-    let note = formatValue(v, block.unit);
-    const prev = i > 0 ? values[i - 1] : null;
-    if (isNum(prev) && prev > 0) {
-      // A stage larger than the one above is not a reduction (FunnelChart says the same).
-      const ratio = Math.round((v / prev) * 100);
-      note += ratio > 100 ? `  ·  +${ratio - 100}% vs the stage above (not a reduction)` : `  ·  ${ratio}% of the stage above`;
-    }
-    out.push(text(x0 + w + 8, y + 11, note, ctx.fg, { baseline: 'middle', weight: 500 }));
+    out.push(text(x0 + w + FUNNEL_NOTE_GAP, y + 11, notes[i] ?? '', ctx.fg, { baseline: 'middle', weight: 500 }));
   }
   return { svg: out.join(''), height: 4 + n * rowH };
 }

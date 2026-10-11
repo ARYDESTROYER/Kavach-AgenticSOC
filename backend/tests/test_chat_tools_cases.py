@@ -271,7 +271,11 @@ async def test_shift_report_uses_the_snapshot_only() -> None:
     # as the needs-human VERDICT badges in the case list beside it.
     labels = [item.get("label") for item in out.artifacts[0].data.get("items", [])]
     assert "Status: Needs human" in labels and "Needs a human" not in labels
-    assert out.summary.startswith("Shift snapshot (last 12h)") and out.coverage is None
+    assert out.summary.startswith("Shift snapshot (last 12 hours)") and out.coverage is None
+    # The Round 12 window words, as every other caption states them (a saved report
+    # lists the shift's window once, never "last 12h; last 12 hours").
+    assert out.observation["window"] == "last 12 hours"
+    assert out.artifacts[0].window == "last 12 hours"
     assert_artifacts_render(out)
     # The snapshot always ends now: a past chip is refused (it would read outside the
     # selection), a 30-day chip is narrowed to the snapshot's week and says so.

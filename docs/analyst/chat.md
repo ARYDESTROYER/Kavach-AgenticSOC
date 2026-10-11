@@ -249,7 +249,9 @@ folds into the answer's meta row, where you can reopen it.
 You do not need to stay on the Chat page while an answer is being written. Leave for
 another page and the answer keeps going; come back and the run log and **Stop** pick up
 where they are, live. After a page reload, a running answer is rejoined the same way.
-Other open tabs of the console show the same working indicator.
+Other open tabs of the console show the same working indicator. When you are signed in,
+so does the console in your other browsers and on your other devices, and an answer you
+read in one of them is no longer marked as new in the others.
 
 While chat works away from the screen:
 

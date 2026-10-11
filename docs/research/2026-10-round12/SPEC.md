@@ -190,8 +190,9 @@ Additive only. Names are binding:
 - `POST /api/chat/feedback` → 204; per-user KV + audit row; never used for training.
 - Realtime: targeted `chat.turn` events `{turn_id, conversation_id, case_id, phase: started |
   progress | finished | failed | needs_input, label, lookups, tokens}` on the existing EventBus with
-  `audience = {owner}`. When auth is disabled the client polls `turns/active` every 5 s while a
-  turn is known to run.
+  `audience = {owner}`; `POST …/read` adds a targeted `chat.read` event `{conversation_id}` (§7.1
+  #17). When auth is disabled the client polls `turns/active` every 5 s while a turn is known to
+  run.
 - Remember me: `POST /api/auth/login` accepts `remember: bool = False` and returns
   `remembered: bool` plus `remember_reason` when refused (`role_excluded`, `insecure_transport`,
   `disabled`); the MFA pending token carries a signed `rm` claim. `GET /api/setup/status` adds
@@ -635,15 +636,23 @@ detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
 17. **`chat.turn` frames ride the shell's job stream** (§3.2, D13; final review). The
     console asks for topic `chat` on the job observer's existing stream
     (`GET /api/events?topics=chat,jobs`, `JobMonitor`), so no connection is added, and
-    relays every frame through the entry-safe store (`relayChatFrame`, +124 B entry) to
-    the lazy `ActivityEffects`. A frame is a nudge: a turn this tab does not know is
+    relays every frame through the entry-safe store (`relayChatFrame`; with the
+    `chat.read` channel, +142 B entry, measured) to the lazy `ActivityEffects`. A frame
+    is a nudge: a turn this tab does not know is
     looked up in `turns/active` and followed by the runner (nav glyph, brand ring, tab
     title, history rail and the open thread pick it up); a parked run takes a frame's
     step label and is woken by its end (`wakeParkedRun`) to read the outcome from the
     ring; a turn that ended before it could be followed sends the conversation list to be
-    read for its mark. While a Workspace question this browser sent has no turn id yet,
+    read for its mark, and an answer or question the list marks gets the same "Answer
+    ready" or "A question needs your input" toast as a followed turn (a failure is marked
+    only). While a Workspace question this browser sent has no turn id yet,
     no other Workspace turn is followed until it is named, so a tab never follows its own
-    question twice. Polling stays the fallback (on load, on becoming visible, after an
+    question twice. An answer read on one console is news on no other: `POST …/read` also
+    publishes an owner-only, unretained `chat.read` frame `{conversation_id}` on topic
+    `chat`, and the other consoles drop that conversation's mark and toast, plus any mark
+    for it already on its way (a followed run that ends, a list read before the read),
+    with no toast, until a new turn's frame arrives there (30 s at most; an `overflow`
+    ends every such hold). Polling stays the fallback (on load, on becoming visible, after an
     `overflow`, and the 5 s park poll); with authentication off no frame is sent.
 
 ### 7.3 Known limitations

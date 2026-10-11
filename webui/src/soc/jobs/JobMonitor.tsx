@@ -223,9 +223,10 @@ export function JobMonitor({ actor, onNavigate }: { actor?: string | null; onNav
 
   const onEvent = React.useCallback(
     (event: StreamEvent) => {
-      // The chat activity observer takes the `chat.turn` frames (and an `overflow`).
+      // The chat activity observer takes the `chat.turn` and `chat.read` frames (and an
+      // `overflow`); a chat frame is no reason to list jobs again.
       relayChatFrame(event);
-      if (event.type === 'chat.turn' || (typeof document !== 'undefined' && document.hidden)) return;
+      if (event.type.startsWith('chat.') || (typeof document !== 'undefined' && document.hidden)) return;
       void refresh();
     },
     [refresh],

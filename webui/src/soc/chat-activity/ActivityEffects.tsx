@@ -23,9 +23,15 @@
  *    this tab does not know (another device or browser) is looked up in
  *    `turns/active` and followed like one found on load; a parked run's frame updates
  *    its step label, and its end wakes the run to read the outcome now; a turn that
- *    ended before it was followed sends the list to be read for its mark. Polling stays
- *    the fallback: on load, when the tab becomes visible again (with authentication off
- *    no frame is sent), after an `overflow`, and the runner's park poll.
+ *    ended before it was followed sends the list to be read for its mark, which is
+ *    announced like a followed turn's (a failure is marked only). An answer the
+ *    analyst reads on another console (`chat.read`, sent when that console marks it
+ *    read) is no news here: its mark and its toast go, and a mark that lands for it a
+ *    moment later (the list, or a followed run that ends) goes too, with no toast, until
+ *    a new turn's frame in that conversation arrives (30 seconds at most). Polling
+ *    stays the fallback: on load, when the tab becomes visible again (with
+ *    authentication off no frame is sent), after an `overflow`, and the runner's park
+ *    poll.
  *  - Settled turns the analyst was not looking at: one deduplicated toast with Open
  *    (sonner's polite live region announces it; nothing else speaks it again).
  *  - The tab title: "●" while an answer is being written, "✓" for an unread one.
@@ -50,6 +56,7 @@ import {
   clearChatActivity,
   dropChatActivity,
   getChatActivity,
+  markChatActivitySeen,
   markViewedChatActivitySeen,
   onChatActivity,
   patchChatActivity,
@@ -78,13 +85,17 @@ const TOAST_SEEN_LIMIT = 100;
  *    moment make one request, and the other device's analyst may have read an answer by
  *    then);
  *  - `askAgainMs`: a turn's frames ask about it again only after this long (a failed
- *    lookup heals; a turn that cannot be followed costs one request per interval).
+ *    lookup heals; a turn that cannot be followed costs one request per interval);
+ *  - `readHoldMs`: how long an answer read on another console stays read here (a mark
+ *    for it that was already on its way is dropped); a new turn in it ends this sooner.
  */
-export const FRAME_TIMING = { settleMs: 750, askAgainMs: 10_000 };
+export const FRAME_TIMING = { settleMs: 750, askAgainMs: 10_000, readHoldMs: 30_000 };
 /** Turn ids remembered as this tab's (its own, other tabs', followed ones). */
 const KNOWN_LIMIT = 200;
 /** The SSE channel of the caller's chat turns (`STREAM_CHANNELS` in useEventStream). */
 const CHAT_TURN_EVENT = 'chat.turn';
+/** The caller read a conversation's answer on one of their consoles (`POST …/read`). */
+const CHAT_READ_EVENT = 'chat.read';
 
 /** Mounted shells (a development double mount must not clear a live store). */
 let mounted = 0;
@@ -147,6 +158,8 @@ function scopeOf(turn: ActiveTurn): { scope: string; kind: ChatActivity['kind'];
 /** One owner-only `chat.turn` frame, as this observer reads it (exported for tests). */
 export interface ChatTurnFrame {
   turnId: string;
+  /** The Workspace conversation the turn answers in, when it has one (by grammar). */
+  conversationId: string | null;
   phase: 'started' | 'progress' | 'finished' | 'failed' | 'needs_input';
   /** The engine's step label, cleaned like every server label (display text). */
   label: string;
@@ -162,7 +175,26 @@ export function chatTurnFrame(data: unknown): ChatTurnFrame | null {
   const turnId = safeId(raw.turn_id);
   const phase = typeof raw.phase === 'string' && FRAME_PHASES.has(raw.phase) ? (raw.phase as ChatTurnFrame['phase']) : null;
   if (!turnId || !phase) return null;
-  return { turnId, phase, label: plain(raw.label, 120), lookups: count(raw.lookups) };
+  return { turnId, conversationId: safeId(raw.conversation_id), phase, label: plain(raw.label, 120), lookups: count(raw.lookups) };
+}
+
+/** Read an untrusted `chat.read` payload (#9): the conversation id by grammar, else `null`. */
+export function chatReadFrame(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  return safeId((data as Record<string, unknown>).conversation_id);
+}
+
+/**
+ * Was this conversation's answer read on another console a moment ago (`chat.read`)?
+ * An expired hold is forgotten here.
+ */
+function heldAsRead(read: Map<string, number>, conversationId: string | null): boolean {
+  if (!conversationId) return false;
+  const at = read.get(conversationId);
+  if (at === undefined) return false;
+  if (Date.now() - at < FRAME_TIMING.readHoldMs) return true;
+  read.delete(conversationId);
+  return false;
 }
 
 /**
@@ -280,6 +312,16 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   const knownRef = React.useRef(new Set<string>());
   /** When a turn's frames last asked `turns/active` about it. */
   const askedRef = React.useRef(new Map<string, number>());
+  /**
+   * Conversations whose answer the analyst read on another console (`chat.read`), and
+   * when: a mark that lands for one meanwhile is no news (see `heldAsRead`).
+   */
+  const readRef = React.useRef(new Map<string, number>());
+  /**
+   * Turns that ended before this tab could follow them, by conversation, until the list
+   * read they sent for is in (see `scheduleList`).
+   */
+  const endedRef = React.useRef(new Map<string, { turnId: string; outcome: 'done' | 'needs_input' }>());
   /** A reported turn was left until this browser's unnamed question is named. */
   const waitingRef = React.useRef(false);
   const timersRef = React.useRef<{ adopt: ReturnType<typeof setTimeout> | null; list: ReturnType<typeof setTimeout> | null }>({
@@ -297,6 +339,9 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     storeUser = username;
     knownRef.current.clear();
     askedRef.current.clear();
+    readRef.current.clear();
+    endedRef.current.clear();
+    toastByConversationRef.current.clear();
     waitingRef.current = false;
   }, [username]);
   React.useEffect(
@@ -304,6 +349,9 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
       onChatActivity('clear', () => {
         knownRef.current.clear();
         askedRef.current.clear();
+        readRef.current.clear();
+        endedRef.current.clear();
+        toastByConversationRef.current.clear();
         waitingRef.current = false;
       }),
     [],
@@ -408,8 +456,8 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
 
   /* -------------------------------------------------------------- server -- */
 
-  /** Titles, unread answers and questions waiting on the analyst, from the list. */
-  const reconcileList = React.useCallback(async () => {
+  /** Titles, unread answers and questions waiting on the analyst, from the list (false: not read). */
+  const reconcileList = React.useCallback(async (): Promise<boolean> => {
     // Marks that change while the list loads are newer than it: they are left alone.
     const before = new Set(getChatActivity().entries);
     let rows: ListedRow[] = [];
@@ -417,7 +465,7 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
       const response = await api.get<{ conversations?: unknown }>('chat/conversations', { limit: LIST_LIMIT });
       rows = Array.isArray(response?.conversations) ? (response.conversations as ListedRow[]) : [];
     } catch {
-      return;
+      return false;
     }
     const byId = new Map<string, ListedRow>();
     for (const row of rows) {
@@ -434,6 +482,10 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
       }
       if (row.unread !== true && row.status !== 'needs_input') continue;
       const question = row.status === 'needs_input';
+      // Read on another console after this list was read: an answer is no news, and a
+      // question stays, but as one the analyst has seen.
+      const readElsewhere = heldAsRead(readRef.current, id);
+      if (readElsewhere && !question) continue;
       putChatActivity({
         scope,
         kind: 'workspace',
@@ -446,7 +498,7 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
         lookups: 0,
         status: question ? 'needs_input' : 'unread',
         // A question the analyst already opened (read) stays, but is not news.
-        ...(question ? { seen: row.unread !== true } : {}),
+        ...(question ? { seen: row.unread !== true || readElsewhere } : {}),
         startedAt: Date.parse(String(row.updated_at)) || Date.now(),
         source: 'server',
       });
@@ -458,6 +510,7 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
       const row = byId.get(entry.conversationId);
       if (!row || (entry.status === 'needs_input' && row.status !== 'needs_input')) dropChatActivity(entry.scope);
     }
+    return true;
   }, []);
 
   /** `GET /chat/turns/active`: running turns this tab does not know go to the runner. */
@@ -510,17 +563,77 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     [pollActive],
   );
 
+  /* ------------------------------------------------------------- toast -- */
+
+  const toastedRef = React.useRef<string[]>([]);
+  /** The toast showing for a conversation's answer: a read elsewhere dismisses it. */
+  const toastByConversationRef = React.useRef(new Map<string, string>());
+  /**
+   * One deduplicated toast for a turn that ended while its chat was not on screen: a
+   * followed or own turn (`settled`), or one that ended before it could be followed and
+   * that the list marked (`scheduleList`).
+   */
+  const announce = React.useCallback(
+    (event: ChatActivitySettled) => {
+      const copy = settledCopy(event);
+      if (!copy) return;
+      const { activity } = event;
+      // A peer tab's turn: only a tab someone is looking at speaks up.
+      if (activity.source !== 'local' && typeof document !== 'undefined' && document.hidden) return;
+      // The analyst already read it on another console.
+      if (activity.kind === 'workspace' && heldAsRead(readRef.current, activity.conversationId)) return;
+      const key = activity.turnId ?? activity.requestKey ?? `${activity.scope}@${activity.startedAt}`;
+      if (toastedRef.current.includes(key)) return;
+      toastedRef.current = [...toastedRef.current.slice(-TOAST_SEEN_LIMIT), key];
+      const open = () => {
+        if (event.unreachable) {
+          // Nothing to open: a new chat that asks the question again.
+          navigateRef.current('chat', askAgainOpts(event));
+        } else if (activity.kind === 'case' && activity.caseId) {
+          requestCaseChat(activity.caseId);
+          navigateRef.current('case_manager', { caseId: activity.caseId, tab: 'chat' });
+        } else if (activity.conversationId) navigateRef.current('chat', { conversationId: activity.conversationId });
+        else navigateRef.current('chat');
+      };
+      // The toaster's own polite live region announces it (once): no second voice.
+      const options = { id: `chat-${key}`, description: copy.title, duration: 9_000, action: { label: copy.action, onClick: open } };
+      if (activity.kind === 'workspace' && activity.conversationId && !event.unreachable) {
+        const shown = toastByConversationRef.current;
+        shown.delete(activity.conversationId);
+        shown.set(activity.conversationId, options.id);
+        if (shown.size > KNOWN_LIMIT) shown.delete(shown.keys().next().value as string);
+      }
+      if (event.outcome === 'done' && !event.unreachable) toast.success(copy.heading, options);
+      else if (event.outcome === 'needs_input' && !event.unreachable) toast.warning(copy.heading, options);
+      else toast.error(copy.heading, options);
+    },
+    [],
+  );
+
+  /* ------------------------------------------------- turns that ended -- */
+
   /** Read the list for marks (an answer or question that ended elsewhere), once. */
   const scheduleList = React.useCallback(() => {
     if (timersRef.current.list !== null) return;
     timersRef.current.list = setTimeout(() => {
       timersRef.current.list = null;
-      void reconcileList().then(() => {
+      const ended = new Map(endedRef.current);
+      endedRef.current.clear();
+      void reconcileList().then((listed) => {
         // An answer on screen is read, not news (unless the tab is hidden).
         if (typeof document === 'undefined' || document.visibilityState !== 'hidden') markViewedChatActivitySeen();
+        if (!listed) return;
+        // An answer or question the list still marks is announced like a followed one's
+        // (a read elsewhere, or one on screen here, left no mark to announce).
+        for (const [conversationId, { turnId, outcome }] of ended) {
+          const mark = find(`conv:${conversationId}`);
+          const status = outcome === 'done' ? 'unread' : 'needs_input';
+          if (!mark || mark.source === 'local' || mark.seen || mark.status !== status) continue;
+          announce({ activity: { ...mark, turnId }, outcome, viewed: false });
+        }
       });
     }, FRAME_TIMING.settleMs);
-  }, [reconcileList]);
+  }, [announce, reconcileList]);
 
   React.useEffect(
     () => () => {
@@ -533,13 +646,21 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     [],
   );
 
-  // Remember every turn id the store holds; once this browser's unnamed question is
-  // named, look up the turns that were left for it.
+  // Remember every turn id the store holds, drop a mark for an answer just read on
+  // another console, and once this browser's unnamed question is named, look up the
+  // turns that were left for it.
   React.useEffect(() => {
     const remember = () => {
       const { entries } = getChatActivity();
       const known = knownRef.current;
+      const read = readRef.current;
       for (const entry of entries) {
+        // A mark that landed after the analyst read the answer elsewhere (a followed run
+        // that ended, a list read before the read) is no news. A new turn there ends the
+        // hold through its frames (below), so its own answer is news again.
+        if (read.size && entry.kind === 'workspace' && entry.status !== 'running' && !entry.seen && heldAsRead(read, entry.conversationId)) {
+          markChatActivitySeen(entry.scope);
+        }
         if (!entry.turnId || known.has(entry.turnId)) continue;
         known.add(entry.turnId);
         if (known.size > KNOWN_LIMIT) known.delete(known.values().next().value as string);
@@ -559,14 +680,36 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     if (!canRead) return undefined;
     const onFrame = ({ type, data }: ChatFrame) => {
       if (type === 'overflow') {
-        // This tab missed frames: ask what runs now, and what the parked runs did.
+        // This tab missed frames: ask what runs now, and what the parked runs did. A new
+        // turn's frame may be among them, so no answer is held as read any more.
+        readRef.current.clear();
         scheduleAdopt(0);
         void loadRunner().then((runnerModule) => runnerModule?.pollParkedRuns());
+        return;
+      }
+      if (type === CHAT_READ_EVENT) {
+        // Read on another console (or this one): no news here, now or for a moment.
+        const conversationId = chatReadFrame(data);
+        if (!conversationId) return;
+        const read = readRef.current;
+        read.delete(conversationId);
+        read.set(conversationId, Date.now());
+        if (read.size > KNOWN_LIMIT) read.delete(read.keys().next().value as string);
+        markChatActivitySeen(`conv:${conversationId}`);
+        // Its "Answer ready" toast, if one still shows here, is old news too.
+        const toastId = toastByConversationRef.current.get(conversationId);
+        if (toastId) {
+          toastByConversationRef.current.delete(conversationId);
+          toast.dismiss(toastId);
+        }
         return;
       }
       if (type !== CHAT_TURN_EVENT) return;
       const frame = chatTurnFrame(data);
       if (!frame) return;
+      // A turn's frames come before the read of its answer, so a frame after a read is a
+      // new turn in that conversation: its answer is news again.
+      if (frame.conversationId) readRef.current.delete(frame.conversationId);
       const entry = getChatActivity().entries.find((item) => item.turnId === frame.turnId);
       // Only this tab's parked runs take a frame's news: a run with a read open hears
       // its own events, and another tab's run is that tab's.
@@ -590,8 +733,17 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
       }
       // It ended: a parked run reads how (its answer, question or failure) right away.
       if (parked) void loadRunner().then((runnerModule) => runnerModule?.wakeParkedRun(frame.turnId));
-      // Never followed here (it ended before it could be): the list holds its mark.
-      else if (!entry && !knownRef.current.has(frame.turnId)) scheduleList();
+      // Never followed here (it ended before it could be): the list holds its mark, which
+      // is announced like a followed turn's (a failure is marked, not announced).
+      else if (!entry && !knownRef.current.has(frame.turnId)) {
+        if (frame.conversationId && frame.phase !== 'failed') {
+          const ended = endedRef.current;
+          ended.delete(frame.conversationId);
+          ended.set(frame.conversationId, { turnId: frame.turnId, outcome: frame.phase === 'needs_input' ? 'needs_input' : 'done' });
+          if (ended.size > KNOWN_LIMIT) ended.delete(ended.keys().next().value as string);
+        }
+        scheduleList();
+      }
     };
     setChatFrameSink(onFrame);
     return () => setChatFrameSink(null);
@@ -604,38 +756,7 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     void pollActive().then(reconcileList);
   }, [canRead, pollActive, reconcileList, username]);
 
-  /* ------------------------------------------------------------- toast -- */
-
-  const toastedRef = React.useRef<string[]>([]);
-  React.useEffect(
-    () =>
-      onChatActivity('settled', (event) => {
-        const copy = settledCopy(event);
-        if (!copy) return;
-        const { activity } = event;
-        // A peer tab's turn: only a tab someone is looking at speaks up.
-        if (activity.source !== 'local' && typeof document !== 'undefined' && document.hidden) return;
-        const key = activity.turnId ?? activity.requestKey ?? `${activity.scope}@${activity.startedAt}`;
-        if (toastedRef.current.includes(key)) return;
-        toastedRef.current = [...toastedRef.current.slice(-TOAST_SEEN_LIMIT), key];
-        const open = () => {
-          if (event.unreachable) {
-            // Nothing to open: a new chat that asks the question again.
-            navigateRef.current('chat', askAgainOpts(event));
-          } else if (activity.kind === 'case' && activity.caseId) {
-            requestCaseChat(activity.caseId);
-            navigateRef.current('case_manager', { caseId: activity.caseId, tab: 'chat' });
-          } else if (activity.conversationId) navigateRef.current('chat', { conversationId: activity.conversationId });
-          else navigateRef.current('chat');
-        };
-        // The toaster's own polite live region announces it (once): no second voice.
-        const options = { id: `chat-${key}`, description: copy.title, duration: 9_000, action: { label: copy.action, onClick: open } };
-        if (event.outcome === 'done' && !event.unreachable) toast.success(copy.heading, options);
-        else if (event.outcome === 'needs_input' && !event.unreachable) toast.warning(copy.heading, options);
-        else toast.error(copy.heading, options);
-      }),
-    [],
-  );
+  React.useEffect(() => onChatActivity('settled', announce), [announce]);
 
   /* ----------------------------------------------------- title, visibility -- */
 

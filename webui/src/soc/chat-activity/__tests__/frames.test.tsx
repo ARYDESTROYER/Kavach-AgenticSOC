@@ -9,7 +9,9 @@
  *  - a question this browser sent that is not named yet is never mistaken for one;
  *  - a parked run takes a frame's step label (cleaned, #9) and wakes when its turn ends;
  *  - a turn that ended before it could be followed sends the list to be read for its
- *    mark (an answer on screen is not news);
+ *    mark, announced like a followed turn's (an answer on screen is not news);
+ *  - an answer read on another console (`chat.read`) is no news here, and neither is a
+ *    mark for it that was already on its way, until a new turn's frame arrives there;
  *  - polling stays the fallback: on load, on becoming visible, after an `overflow`.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +20,7 @@ import { act, render, waitFor } from '@testing-library/react';
 type Emit = (event: { type: string; data: unknown; lastEventId: string }) => void;
 
 const { getMock, listMock, toastMock, streamMock, authState, runnerMock } = vi.hoisted(() => {
-  const toast = Object.assign(vi.fn(), { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() });
+  const toast = Object.assign(vi.fn(), { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn(), dismiss: vi.fn() });
   return {
     getMock: vi.fn(),
     listMock: vi.fn(),
@@ -46,7 +48,7 @@ vi.mock('@/lib/useEventStream', () => ({ useEventStream: streamMock }));
 vi.mock('@/soc/chat/turn-runner', () => runnerMock);
 
 import { JobMonitor } from '@/soc/jobs/JobMonitor';
-import ActivityEffects, { FRAME_TIMING, chatTurnFrame } from '../ActivityEffects';
+import ActivityEffects, { FRAME_TIMING, chatReadFrame, chatTurnFrame } from '../ActivityEffects';
 import {
   clearChatActivity,
   dropChatActivity,
@@ -55,6 +57,7 @@ import {
   putChatActivity,
   relayChatFrame,
   rekeyChatActivity,
+  settleChatActivity,
   viewChatActivity,
   type ChatActivity,
 } from '../activity';
@@ -106,6 +109,7 @@ beforeEach(() => {
   authState.can = true;
   FRAME_TIMING.settleMs = 5;
   streamMock.mockClear();
+  for (const fn of [toastMock, toastMock.success, toastMock.warning, toastMock.error, toastMock.info, toastMock.dismiss]) fn.mockClear();
   listMock.mockReset().mockResolvedValue({ jobs: [], total: 0, limit: 100, offset: 0 });
   getMock.mockReset();
   getMock.mockImplementation(async (path: string) => {
@@ -166,6 +170,7 @@ describe('chatTurnFrame', () => {
   it('reads ids by grammar and cleans the label; anything else is not a frame (#9)', () => {
     expect(chatTurnFrame(frame('turn-1', 'progress', { label: 'Search‮ing\u{E0041} logs', lookups: 2.7 }))).toEqual({
       turnId: 'turn-1',
+      conversationId: null,
       phase: 'progress',
       label: 'Searching logs',
       lookups: 2,
@@ -178,6 +183,20 @@ describe('chatTurnFrame', () => {
     expect(chatTurnFrame(frame('turn-1', 'progress', { lookups: -3 }))?.lookups).toBe(0);
     expect(chatTurnFrame('turn-1')).toBeNull();
     expect(chatTurnFrame(null)).toBeNull();
+    expect(chatTurnFrame(frame('turn-1', 'started', { conversation_id: 'chat-7' }))?.conversationId).toBe('chat-7');
+    expect(chatTurnFrame(frame('turn-1', 'started', { conversation_id: '../chat' }))?.conversationId).toBeNull();
+  });
+});
+
+describe('chatReadFrame', () => {
+  it('reads the conversation id by grammar; anything else is not a frame (#9)', () => {
+    expect(chatReadFrame({ conversation_id: 'chat-1' })).toBe('chat-1');
+    expect(chatReadFrame({ conversation_id: 'chat 1' })).toBeNull();
+    expect(chatReadFrame({ conversation_id: '../chat' })).toBeNull();
+    expect(chatReadFrame({ conversation_id: 'c'.repeat(129) })).toBeNull();
+    expect(chatReadFrame({ conversation_id: 7 })).toBeNull();
+    expect(chatReadFrame('chat-1')).toBeNull();
+    expect(chatReadFrame(null)).toBeNull();
   });
 });
 
@@ -301,7 +320,38 @@ describe('live chat turn frames', () => {
     expect(calls('chat/conversations')).toBe(2);
     expect(find('conv:c-ask')).toMatchObject({ status: 'needs_input' });
     expect(find('conv:c-view')).toBeNull();
+    // Announced like a followed turn, once each: the answer, the question.
+    await waitFor(() => expect(toastMock.warning).toHaveBeenCalledTimes(1));
+    expect(toastMock.success).toHaveBeenCalledTimes(1);
+    expect(toastMock.success.mock.calls[0][0]).toBe('Answer ready');
+    expect(toastMock.success.mock.calls[0][1]).toMatchObject({ id: 'chat-turn-fast', description: 'Fast answer' });
+    expect(toastMock.warning.mock.calls[0][0]).toBe('A question needs your input');
+    expect(toastMock.warning.mock.calls[0][1]).toMatchObject({ id: 'chat-turn-ask' });
     release();
+  });
+
+  it('an answer on screen, a failure, or a list that cannot be read is not announced', async () => {
+    await mountShell();
+    const release = viewChatActivity('conv:c-on');
+    rows = [
+      { id: 'c-on', title: 'On screen', status: 'idle', unread: true, updated_at: '2026-10-11T10:00:00Z' },
+      { id: 'c-bad', title: 'Broke', status: 'failed', unread: true, updated_at: '2026-10-11T10:00:00Z' },
+    ];
+    emit('chat.turn', frame('turn-on', 'finished', { conversation_id: 'c-on' }));
+    emit('chat.turn', frame('turn-bad', 'failed', { conversation_id: 'c-bad' }));
+    await waitFor(() => expect(calls('chat/conversations')).toBe(2));
+    await settle();
+    expect(find('conv:c-on')).toBeNull();
+    expect(find('conv:c-bad')).not.toBeNull();
+    release();
+    getMock.mockImplementation(async (path: string) => {
+      if (path === 'chat/conversations') throw new Error('offline');
+      return [];
+    });
+    act(() => putChatActivity(entry({ scope: 'conv:c-old', conversationId: 'c-old', status: 'unread', source: 'server' })));
+    emit('chat.turn', frame('turn-old', 'finished', { conversation_id: 'c-old' }));
+    await settle();
+    for (const fn of [toastMock, toastMock.success, toastMock.warning, toastMock.error]) expect(fn).not.toHaveBeenCalled();
   });
 
   it('a turn this tab once held asks nothing when it ends or sends a late frame', async () => {
@@ -371,3 +421,119 @@ describe('live chat turn frames', () => {
   });
 });
 
+
+describe('an answer read on another console (chat.read)', () => {
+  const unreadMark = (id: string, patch: Partial<ChatActivity> = {}) =>
+    entry({ scope: `conv:${id}`, conversationId: id, status: 'unread', source: 'server', title: 'Hosts', ...patch });
+
+  const listed = (id: string, patch: Record<string, unknown> = {}) => ({
+    id,
+    title: 'Hosts',
+    status: 'idle',
+    unread: true,
+    updated_at: '2026-10-11T10:00:00Z',
+    ...patch,
+  });
+
+  it('is no news here: its mark goes, a waiting question stays as one already seen', async () => {
+    rows = [listed('c-read'), listed('c-ask', { status: 'needs_input' })];
+    await mountShell();
+    expect(find('conv:c-read')).toMatchObject({ status: 'unread' });
+    expect(find('conv:c-ask')).toMatchObject({ status: 'needs_input', seen: false });
+    expect(document.title).toBe('✓ Agentic SOC');
+    emit('chat.read', { conversation_id: 'c-read' });
+    emit('chat.read', { conversation_id: 'c-ask' });
+    expect(find('conv:c-read')).toBeNull();
+    expect(find('conv:c-ask')).toMatchObject({ status: 'needs_input', seen: true });
+    expect(document.title).toBe('Agentic SOC');
+    // A malformed frame changes nothing.
+    act(() => putChatActivity(unreadMark('c-other')));
+    emit('chat.read', { conversation_id: '../c-other' });
+    emit('chat.read', 'c-other');
+    expect(find('conv:c-other')).toMatchObject({ status: 'unread' });
+  });
+
+  it('a followed run that ends after the read leaves no mark and no toast', async () => {
+    await mountShell();
+    active = [
+      { turn_id: 'turn-r', conversation_id: 'cr', status: 'running' },
+      { turn_id: 'turn-s', conversation_id: 'cs', status: 'running' },
+    ];
+    emit('chat.turn', frame('turn-r', 'started', { conversation_id: 'cr' }));
+    emit('chat.turn', frame('turn-s', 'started', { conversation_id: 'cs' }));
+    await waitFor(() => expect(find('conv:cr')?.status).toBe('running'));
+    await waitFor(() => expect(find('conv:cs')?.status).toBe('running'));
+    emit('chat.turn', frame('turn-r', 'finished', { conversation_id: 'cr' }));
+    emit('chat.turn', frame('turn-s', 'finished', { conversation_id: 'cs' }));
+    // The analyst reads `cr` on the other device before this tab's run has read its end.
+    emit('chat.read', { conversation_id: 'cr' });
+    expect(find('conv:cr')?.status).toBe('running');
+    act(() => {
+      settleChatActivity('conv:cr', 'done');
+      settleChatActivity('conv:cs', 'done');
+    });
+    expect(find('conv:cr')).toBeNull();
+    expect(find('conv:cs')).toMatchObject({ status: 'unread' });
+    // Only the answer nobody has read is announced.
+    expect(toastMock.success).toHaveBeenCalledTimes(1);
+    expect(toastMock.success.mock.calls[0][1]).toMatchObject({ id: 'chat-turn-s' });
+    expect(toastMock.dismiss).not.toHaveBeenCalled();
+    // Read on the other device a moment later: the mark goes, and so does the toast.
+    emit('chat.read', { conversation_id: 'cs' });
+    expect(find('conv:cs')).toBeNull();
+    expect(toastMock.dismiss).toHaveBeenCalledWith('chat-turn-s');
+    expect(document.title).toBe('Agentic SOC');
+  });
+
+  it('a list read before the read does not bring the mark back', async () => {
+    await mountShell();
+    rows = [
+      { id: 'c-fast', title: 'Fast answer', status: 'idle', unread: true, updated_at: '2026-10-11T10:00:00Z' },
+      { id: 'c-q', title: 'Which host?', status: 'needs_input', unread: true, updated_at: '2026-10-11T10:00:00Z' },
+    ];
+    emit('chat.turn', frame('turn-fast', 'finished', { conversation_id: 'c-fast' }));
+    emit('chat.turn', frame('turn-q', 'needs_input', { conversation_id: 'c-q' }));
+    emit('chat.read', { conversation_id: 'c-fast' });
+    emit('chat.read', { conversation_id: 'c-q' });
+    await waitFor(() => expect(calls('chat/conversations')).toBe(2));
+    await settle();
+    expect(find('conv:c-fast')).toBeNull();
+    expect(find('conv:c-q')).toMatchObject({ status: 'needs_input', seen: true });
+    expect(document.title).toBe('Agentic SOC');
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(toastMock.warning).not.toHaveBeenCalled();
+  });
+
+  it('a new turn in that conversation is news again', async () => {
+    await mountShell();
+    emit('chat.read', { conversation_id: 'c-again' });
+    active = [{ turn_id: 'turn-2', conversation_id: 'c-again', status: 'running' }];
+    emit('chat.turn', frame('turn-2', 'started', { conversation_id: 'c-again' }));
+    await waitFor(() => expect(find('conv:c-again')?.status).toBe('running'));
+    act(() => settleChatActivity('conv:c-again', 'done'));
+    expect(find('conv:c-again')).toMatchObject({ status: 'unread' });
+    expect(toastMock.success).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds only for a moment, and not past an overflow (a new turn’s frame may be lost)', async () => {
+    await mountShell();
+    FRAME_TIMING.readHoldMs = 20;
+    emit('chat.read', { conversation_id: 'c-old' });
+    await settle(40);
+    act(() => putChatActivity(unreadMark('c-old')));
+    expect(find('conv:c-old')).toMatchObject({ status: 'unread' });
+    FRAME_TIMING.readHoldMs = 30_000;
+    emit('chat.read', { conversation_id: 'c-lost' });
+    emit('overflow', { dropped: 2 });
+    act(() => putChatActivity(unreadMark('c-lost')));
+    expect(find('conv:c-lost')).toMatchObject({ status: 'unread' });
+  });
+
+  it('without access to chat (cases:read) a read frame changes nothing', async () => {
+    authState.can = false;
+    await mountShell();
+    act(() => putChatActivity(unreadMark('c-keep')));
+    emit('chat.read', { conversation_id: 'c-keep' });
+    expect(find('conv:c-keep')).toMatchObject({ status: 'unread' });
+  });
+});

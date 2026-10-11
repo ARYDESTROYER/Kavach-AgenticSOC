@@ -94,6 +94,8 @@ export const STREAM_CHANNELS = [
   'job',
   // Round 12 (SPEC D13): the caller's own chat turns, owner-only, topic `chat`.
   'chat.turn',
+  // Round 12 (SPEC D13): the caller read a conversation's answer on another console.
+  'chat.read',
   // Round 12 (WP-CM): a case was saved (created or updated), topic `cases` — the live
   // Case Manager queue nudge. Ids, status and timestamps only; the queue refetches.
   'case.changed',

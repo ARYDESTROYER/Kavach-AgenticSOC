@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field
 
 from ..constants import ActionType
 from ..models import ChatConversationMessage, ChatFeedbackRequest
+from ..realtime import publish_chat_read
 from ..state import AppState
 from ..stores.chat_conversations import MAX_MESSAGE_PAGE, ChatHistoryUnavailable, ChatMessageMissing
 from ..stores.chat_feedback import FEEDBACK_REASONS, ChatFeedbackStore, feedback_store_for
@@ -322,12 +323,22 @@ async def mark_chat_conversation_read(
 ) -> Response:
     """The owner has seen the conversation's newest answer: clear ``unread``
     (SPEC D13). Idempotent; ``needs_input`` and ``failed`` stay until the next answer."""
+    # The owner's other consoles hear it at once: an owner-only ``chat.read`` frame
+    # (topic ``chat``) tells them to drop the "new answer" mark they may hold, so an
+    # answer read on one device is not news on another. Best effort: the read is saved
+    # whether or not the frame goes out. (A comment, not the docstring: the docstring is
+    # the published OpenAPI description.)
+    username = current_username(request)
     try:
-        found = await state.chat_conversations.mark_read(current_username(request), conversation_id)
+        found = await state.chat_conversations.mark_read(username, conversation_id)
     except ChatHistoryUnavailable as exc:
         raise _history_unavailable(exc) from exc
     if not found:
         raise HTTPException(status_code=404, detail="conversation not found")
+    try:
+        publish_chat_read(state.event_bus, username, conversation_id)
+    except Exception:  # noqa: BLE001 -- a nudge; the read itself is already saved
+        logger.debug("chat.read frame not published", exc_info=True)
     return Response(status_code=204)
 
 

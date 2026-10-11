@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { chartSvg, esc, viewNotes, wrapText, type Paint } from '../charts/export-svg';
+import { CHAR12, chartSvg, esc, funnelNotes, viewNotes, wrapText, type Paint } from '../charts/export-svg';
 import { chartFileName, chartSvgDocument, parseComputedColor, paintResolver } from '../charts/export-image';
 import { isoWeek, localParts, rebinChart, rebinChoices, zoneSupported } from '../charts/rebin';
 import { sliceChart } from '../charts/CartesianChart';
@@ -484,8 +484,49 @@ describe('export SVG', () => {
     });
     const { svg } = chartSvg(funnel, { title: 'Noise', paint: paintFrom(LIGHT), generatedAt: NOW });
     expect(svg).toContain('24% of the stage above');
-    expect(svg).toContain('+91% vs the stage above (not a reduction)');
+    expect(svg).toContain('82  ·  +91%  ·  not a reduction');
     expect(svg).not.toContain('191%');
+  });
+
+  it('keeps every funnel note inside the image, even a rise that is the largest stage', () => {
+    const funnelOf = (values: number[]) =>
+      rawChart({
+        kind: 'funnel',
+        artifact_kind: 'funnel',
+        allowed_views: ['funnel', 'hbar', 'table'],
+        x: { kind: 'category', values: values.map((_, i) => `Stage ${i + 1}`) },
+        series: [{ key: 'n', label: 'Alerts', values }],
+      });
+    const PAD = 24;
+    const cases: Array<{ values: number[]; width?: number }> = [
+      // The review's measured cases: a rise to about two thirds of the largest stage, and
+      // all-time cases against counters that started recently (a +22400% rise).
+      { values: [100, 50, 95] },
+      { values: [20, 4, 900, 900] },
+      { values: [10, 1, 1234567] },
+      // The narrowest image chartSvg draws: the stage-name column gives way first.
+      { values: [100, 50, 95], width: 480 },
+      { values: [20, 4, 900, 900], width: 480 },
+    ];
+    for (const { values, width } of cases) {
+      const block = funnelOf(values);
+      const { svg, width: W } = chartSvg(block, { title: 'Noise', paint: paintFrom(LIGHT), generatedAt: NOW, width });
+      const drawn = new Map<string, number>();
+      for (const m of svg.matchAll(/<text x="([\d.]+)"[^>]*>([^<]*)<\/text>/g)) drawn.set(m[2], Number(m[1]));
+      const notes = funnelNotes(block).filter((n): n is string => n !== null);
+      expect(notes).toHaveLength(values.length);
+      for (const note of notes) {
+        const x = drawn.get(note);
+        expect(x, `${note} is drawn`).toBeDefined();
+        expect((x as number) + note.length * CHAR12, `${note} at width ${W}`).toBeLessThanOrEqual(W - PAD);
+      }
+    }
+    // The rise reads like the on-screen step line, and the reduction keeps its referent.
+    expect(funnelNotes(funnelOf([100, 50, 95]))).toEqual(['100', '50  ·  50% of the stage above', '95  ·  +90%  ·  not a reduction']);
+    // A wide image keeps the full stage-name column (labels end at PAD + 260).
+    expect(chartSvg(funnelOf([100, 50, 95]), { title: 'Noise', paint: paintFrom(LIGHT), generatedAt: NOW }).svg).toContain(
+      '<text x="284" y="15" font-size="12" text-anchor="end"',
+    );
   });
 
   it('a re-binned chart image says "grouped by month" (and its file name too)', () => {

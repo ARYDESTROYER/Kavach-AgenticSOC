@@ -1122,6 +1122,20 @@ class SocMetricsTool(ChatTool):
                 if stage.get("source") == "cases":
                     stage["total"] = None
             n["reduction"] = {"overall_pct": None, "human_reduction_pct": None}
+        # A window that ends at or before the counters' coverage start (a past period
+        # before they began, or older than their 90-day retention) has no alert counted
+        # at all: the alert half is NOT MEASURED, never 0, as while the counters warm
+        # up and as a trend bucket before the coverage start (G3).
+        counted_now = n.get("counters") or {}
+        alert_cover = counters_coverage_start(counted_now) if counted_now.get("available") else None
+        alerts_unmeasured = not mw.all_time and alert_cover is not None and alert_cover >= mw.end
+        if alerts_unmeasured:
+            for key in ("ingested", "clustered"):
+                stage = stages.get(key)
+                if stage is not None:
+                    stage["total"] = None
+                    stage["by_severity"] = None
+            n["reduction"] = {**(n.get("reduction") or {}), "overall_pct": None}
 
         def total(key: str) -> float | None:
             stage = stages.get(key) or {}
@@ -1140,18 +1154,24 @@ class SocMetricsTool(ChatTool):
         # partial case tally each withhold it, with the reason named, never a figure
         # that mixes two spans presented as exact (D8).
         alerts_partial = bool(counted.get("available")) and bool(counted.get("incomplete"))
-        coverage = counters_coverage_start(counted) if alerts_partial else None
+        coverage = counters_coverage_start(counted) if (alerts_partial or alerts_unmeasured) else None
         alerts_from = _instant_text(coverage, mw.window.tz if mw.window else "UTC") if coverage else None
         overall = finite(reduction.get("overall_pct"))
         withheld: str | None = None
-        if alerts_partial:
+        if alerts_unmeasured:
+            withheld = "alerts not measured in this window"
+        elif alerts_partial:
             withheld = (f"alert counters start {alerts_from}" if alerts_from
                         else "alert counters cover part of the window")
         elif page_note:
             withheld = "case counts are partial"
         if withheld and overall is not None:
             overall = None
-        caption = f"{mw.label} · alerts counted from {alerts_from}" if alerts_from else None
+        if alerts_unmeasured:
+            caption = f"{mw.label} · alerts not measured" + (
+                f", alert counters start {alerts_from}" if alerts_from else "")
+        else:
+            caption = f"{mw.label} · alerts counted from {alerts_from}" if alerts_from else None
         artifacts = [
             Artifact(id="a1", kind="funnel", title="Noise reduction", title_trusted=True,
                      data={"stages": [label for _k, label in order],
@@ -1179,7 +1199,14 @@ class SocMetricsTool(ChatTool):
         }
         if withheld and load_ok:
             observation["overall_reduction_withheld"] = withheld
-        if alerts_partial:
+        if alerts_unmeasured:
+            observation["alert_stages_not_measured"] = True
+            observation["alert_stages_note"] = (
+                f"Alerts ingested and After clustering are not measured for {mw.label} (null, not zero): "
+                f"the alert counters start {alerts_from or 'after this window ends'}. Cases opened and "
+                f"Needs a human count every case in {mw.label}, so no reduction across them is given."
+            )
+        elif alerts_partial:
             observation["alert_stages_note"] = (
                 f"Alerts ingested and After clustering count only from {alerts_from or 'part of the window'}; "
                 f"Cases opened and Needs a human count every case in {mw.label}. The two halves cover "
@@ -1190,16 +1217,24 @@ class SocMetricsTool(ChatTool):
         if page_note:
             observation["case_stages_scope"] = page_note
         head = _headed("Noise funnel", mw.label)
+        alerts_text = ("alerts not measured in this window" if alerts_unmeasured
+                       else f"{fmt_int(total('ingested'))} alerts ingested")
         if load_ok:
-            summary = (f"{head}: {fmt_int(total('ingested'))} alerts ingested -> "
+            summary = (f"{head}: {alerts_text}{'; ' if alerts_unmeasured else ' -> '}"
                        f"{fmt_int(total('cases'))} cases -> {fmt_int(total('needs_human'))} needing a human")
             if page_note:
                 summary += f" (case stages {page_note})"
         else:
-            summary = (f"{head}: {fmt_int(total('ingested'))} alerts ingested; "
-                       "case stages not measured (the case store did not answer)")
+            summary = f"{head}: {alerts_text}; case stages not measured (the case store did not answer)"
         notes: list[str] = []
-        if alerts_partial:
+        if alerts_unmeasured:
+            note = "alerts not measured in this window" + (
+                f" (alert counters start {alerts_from})" if alerts_from else "")
+            if load_ok:
+                note += ", so the overall reduction is not given"
+            summary += f"; alert counters start {alerts_from}" if alerts_from else ""
+            notes.append(note)
+        elif alerts_partial:
             span = f"only from {alerts_from}" if alerts_from else "only part of the window"
             note = f"alert counters cover {span}"
             if load_ok:

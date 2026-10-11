@@ -42,9 +42,11 @@ Security properties held here:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import hashlib
 import inspect
+import json
 import logging
 import math
 import re
@@ -398,12 +400,23 @@ _ONE_PERIOD = rf"(?:{_PERIOD_NAME})(?: \(since [^()]+\))?{_ZONE_SUFFIX}?(?: \(\d
 _CAPTION_WINDOW_RE = re.compile(rf"^{_ONE_PERIOD}(?: vs {_ONE_PERIOD})*{_ZONE_SUFFIX}?$")
 
 
+# An earlier build's trailing window ("last 24h", "last 7d"): read in the Round 12
+# words ("last 24 hours", "last 7 days") so one window is never listed twice.
+_LEGACY_TRAILING_RE = re.compile(r"^last (\d+)([mhdwMy])$")
+
+
 def _caption_window(block: Any) -> str | None:
     caption = block.get("caption") if isinstance(block, dict) else None
     if not isinstance(caption, str):
         return None
     segments = [s.strip() for s in caption.split(" · ")]
-    return next((s for s in reversed(segments) if _CAPTION_WINDOW_RE.match(s)), None)
+    window = next((s for s in reversed(segments) if _CAPTION_WINDOW_RE.match(s)), None)
+    legacy = _LEGACY_TRAILING_RE.match(window) if window else None
+    if legacy and int(legacy.group(1)) > 0:
+        from ..models import humanise_relative_window
+
+        return humanise_relative_window(int(legacy.group(1)), legacy.group(2))
+    return window
 
 
 def _join_windows(windows: list[str]) -> str | None:
@@ -438,16 +451,51 @@ def _answered_at(answer: _Answer) -> datetime | None:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
 
 
+# A step input longer than this is not a window a tool ever stored (ranges are cut
+# to 120 characters for display): it is not parsed.
+_WINDOW_INPUT_CHARS = 400
+
+
+def _window_input(value: Any) -> str | dict[str, Any] | None:
+    """A step's ``window`` input as the window grammar reads it, else ``None``.
+
+    Steps keep a DISPLAY form of their input: a range is compact JSON
+    (``{"from":"2026-09-01"}``, case_stats) or a Python-repr dict (``{'from':
+    '2026-09-01'}``, soc_metrics and cost_usage). Both are read back into the range they
+    name; one that was cut short for display, or is not a mapping, is ``None``. Every
+    other spec ("now-90d", "2026-Q3", "2026-09-01..2026-10-01") is passed through."""
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if not text.startswith("{"):
+        return text
+    if len(text) > _WINDOW_INPUT_CHARS:
+        return None
+    try:
+        parsed: Any = json.loads(text)
+    except ValueError:
+        try:
+            # Literals only (never evaluated as code), on a bounded string.
+            parsed = ast.literal_eval(text)
+        except Exception:  # noqa: BLE001 -- not a readable range
+            return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _window_of(params: Mapping[str, Any], *, tz: str = "UTC", now: datetime | None = None) -> str | None:
     """The window a step's own input asked for, in the words its block caption would
-    use ("last 90 days", "September 2026", "all time"): resolved by the one window
-    grammar (``engine.time_windows``) as of when the answer was written, in the
-    operator zone. An input that grammar cannot read is shown as given."""
+    use ("last 90 days", "September 2026", "since 1 Sep 2026", "all time"): resolved by
+    the one window grammar (``engine.time_windows``) as of when the answer was
+    written, in the operator zone. An input that grammar cannot read is ``None`` (the
+    next fallback applies): a raw input is never shown as a window."""
     from ..engine.time_windows import resolve_window
 
     spec: Any = None
-    if isinstance(params.get("window"), str) and params["window"].strip():
-        spec = params["window"].strip()
+    raw = params.get("window")
+    if isinstance(raw, dict) or (isinstance(raw, str) and raw.strip()):
+        spec = _window_input(raw)
     else:
         start, end = params.get("time_from"), params.get("time_to")
         if isinstance(start, str) and start.strip():
@@ -460,11 +508,43 @@ def _window_of(params: Mapping[str, Any], *, tz: str = "UTC", now: datetime | No
         return None
     try:
         label = resolve_window(spec, tz=tz, now=now).label
-    except Exception:  # noqa: BLE001 -- an unreadable input is shown as given
-        label = None
-    if isinstance(label, str) and label:
-        return label
-    return spec if isinstance(spec, str) else f"{spec['from']} → {spec['to']}"
+    except Exception:  # noqa: BLE001 -- an unreadable input names no window
+        return None
+    return label if isinstance(label, str) and label else None
+
+
+def _block_windows(blocks: list[dict[str, Any]], steps: list[Any], *, tz: str,
+                   now: datetime | None) -> str | None:
+    """The distinct windows ``blocks`` cover, each once, joined: a block's window is
+    the one its caption states, else the one its own step asked for."""
+    by_index = {s.index: s for s in steps}
+    windows: list[str] = []
+    for block in blocks:
+        window = _caption_window(block)
+        origin = block.get("from_step")
+        step = by_index.get(origin) if window is None and isinstance(origin, int) else None
+        if step is not None:
+            window = _window_of(step.params, tz=tz, now=now)
+        if window:
+            windows.append(window)
+    return _join_windows(list(dict.fromkeys(windows)))
+
+
+def _step_windows(steps: list[Any], *, tz: str, now: datetime | None) -> str | None:
+    """The distinct windows ``steps`` asked for, each once, joined."""
+    return _join_windows(list(dict.fromkeys(
+        w for w in (_window_of(s.params, tz=tz, now=now) for s in steps) if w)))
+
+
+def _brief_window(blocks: list[Any]) -> str | None:
+    """The window a Brief recorded for its turn (the composer window then), if any."""
+    for block in blocks:
+        if isinstance(block, dict) and block.get("type") == "report":
+            scope = block.get("scope")
+            label = scope.get("window_label") if isinstance(scope, dict) else None
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+    return None
 
 
 # The chat tools that query the turn's log source (``effective_source_name``).
@@ -477,30 +557,37 @@ def _scope_for(answer: _Answer, conversation: Any, *, block: dict[str, Any] | No
     sources of the lookups behind the item, the model that wrote the answer, this
     build's version and whether it was Demo data.
 
-    The item covers ``block``, else ``blocks`` (a Brief section's own leaves), else
-    the whole answer; only the lookups behind what it covers count.
+    The item covers ``block`` (a whole Brief with every one of its section leaves),
+    else ``blocks`` (a Brief section's own leaves), else the whole answer; only the
+    lookups behind what it covers count. What came from no lookup at all (a "Next
+    steps" section the model wrote) speaks for the whole answer.
 
-    Window precedence: the effective window the tool stated in the block caption(s)
-    (a section with differently windowed blocks lists each once), then the window the
-    producing step asked for (in the same words, ``tz`` the operator zone), then the
-    conversation's composer window."""
+    Window: each covered block's own, which is the effective window the tool stated
+    in its caption, else the window its step asked for (in the same words, ``tz`` the
+    operator zone); blocks with different windows list each once. Without any, the
+    windows the item's lookups asked for, then the window the answer's Brief recorded
+    for the turn, then the conversation's composer window."""
     steps = [s for s in answer.response.steps if s.kind == "tool"]
+    whole_answer = _all_blocks(list(answer.response.blocks))
     if block is not None:
-        covered = [block]
+        covered = _all_blocks([block])
     elif blocks is not None:
         covered = [b for b in blocks if isinstance(b, dict)]
     else:
-        covered = _all_blocks(list(answer.response.blocks))
+        covered = whole_answer
+    relevant = steps
     if block is not None or blocks is not None:
         produced = {b.get("from_step") for b in covered if isinstance(b.get("from_step"), int)}
-        relevant = [s for s in steps if s.index in produced] or steps
-    else:
-        relevant = steps
-    windows = list(dict.fromkeys(w for w in (_caption_window(b) for b in covered) if w))
-    window = _join_windows(windows)
-    if window is None:
-        now = _answered_at(answer)
-        window = next((w for w in (_window_of(s.params, tz=tz, now=now) for s in relevant) if w), None)
+        relevant = [s for s in steps if s.index in produced]
+        if not relevant:
+            covered, relevant = whole_answer, steps
+    now = _answered_at(answer)
+    window = (
+        _block_windows(covered, steps, tz=tz, now=now)
+        or _step_windows(relevant, tz=tz, now=now)
+        or _brief_window([block] if block is not None else [])
+        or _brief_window(list(answer.response.blocks))
+    )
     if window is None:
         time_range = _field(conversation, "time_range")
         label = getattr(time_range, "label", None)

@@ -954,6 +954,10 @@ class _SourceStats:
     groups: dict[str, Counter] = field(default_factory=dict)
     other: dict[str, int] = field(default_factory=dict)
     distinct: dict[str, int] = field(default_factory=dict)
+    # True only when ``distinct`` counts every value of the population exactly (a
+    # sample that holds every match). A backend's distinct count is an approximation
+    # (``AggregateResult.distinct``), and a partial sample's is only its own.
+    distinct_exact: bool = False
     over_time: Counter = field(default_factory=Counter)
     matrix: dict[str, Counter] = field(default_factory=dict)
     query: str | None = None
@@ -1005,7 +1009,7 @@ def _stats_from_rows(
     # the population, so its counts are exact.
     complete = total is not None and total_exact and len(rows) >= total
     stats = _SourceStats(name=name, mode=mode, exact=complete, total=total, total_exact=total_exact,
-                         sampled=len(rows))
+                         sampled=len(rows), distinct_exact=complete)
     first = group_by[0] if group_by else None
     for fld in group_by:
         counter: Counter[str] = Counter(
@@ -1238,6 +1242,10 @@ class LogStatsTool(ChatTool):
         for f in group_by:
             if single and f in answered[0].distinct:
                 distinct[f] = answered[0].distinct[f]
+        # "Top N of M" counts values: M is how many distinct values the field has, and
+        # only when that is known exactly; otherwise the caption reads "Top N shown".
+        # The event count is never M (it stays in the window caption and the KPIs).
+        population = {f: distinct[f] for f in distinct if single and answered[0].distinct_exact}
         top: dict[str, list[tuple[str, int]]] = {}
         for f in group_by:
             ranked = sorted(groups[f].items(), key=lambda kv: (-kv[1], kv[0]))
@@ -1293,7 +1301,7 @@ class LogStatsTool(ChatTool):
                       "unit": "count", "dimension": f, "other": other[f]},
                 provenance="source", untrusted_labels=True,
                 basis="sample" if (all_exact and merged_remainder) else basis,
-                total=total if total_known else None, truncated=other[f] > 0 or merged_remainder,
+                total=population.get(f), truncated=other[f] > 0 or merged_remainder,
                 window=window.label,
             ))
         if len(axis) >= 2:
@@ -1303,16 +1311,19 @@ class LogStatsTool(ChatTool):
                 "last_in_progress": window.time_to == "now",
                 **_calendar_axis_data(axis, interval, window),
             }
-            if calendar_unit(interval, window.tz) is None and window.tz != "UTC":
+            if (calendar_unit(interval, window.tz) is None and window.tz != "UTC") or not all_exact:
                 # Fixed UTC hours do not nest in the operator timezone's days, weeks and
                 # months (which the server cuts in that zone), so a client re-bin could
-                # never equal a server query: none is offered (P0-8).
+                # never equal a server query: none is offered (P0-8). A sampled series
+                # is not re-binned either: it counts only the newest events.
                 series_data["rebin"] = False
+            # One line over every bucket is never a "Top N" cut: a sampled series says
+            # so through its basis ("Sampled from the newest events"), not as a top-N
+            # of the event count.
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="series", title="Events over time", title_trusted=True,
                 data=series_data,
-                provenance="source", basis=basis, total=total if total_known else None,
-                truncated=not all_exact, window=window.label,
+                provenance="source", basis=basis, window=window.label,
             ))
         # The match total is exact whenever every answering source reported one (a
         # sampled source still reports its exact match count); otherwise it is the

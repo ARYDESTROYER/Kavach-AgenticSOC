@@ -3848,11 +3848,13 @@ async def auth_refresh(
     new_refresh = new_refresh_token()
     new_sid = str((state.auth.claims_of(token) or {}).get("sid") or "")
     idle_for_row, _absolute_for_row = limits.for_row(row)
-    await state.sessions.rekey_and_rotate(
+    rotated = await state.sessions.rekey_and_rotate(
         sid, new_sid, hash_refresh(new_refresh),
         idle_timeout=idle_for_row,
         token_expires_at=_token_expires_iso(state, token),
     )
+    if rotated is not None:
+        _rebind_chat_turns(state, username, sid, new_sid, token)
     await _audit_session(state, "refresh_rotate", username, new_sid, f"rotated from {_short(sid)}")
     _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {"token": token, "refresh_token": new_refresh, "sid": new_sid}
@@ -3971,6 +3973,19 @@ async def _recheck_chat_turns(state: AppState, username: str) -> int:
     from .routes_chat import recheck_chat_turns_for
 
     return await recheck_chat_turns_for(state, username)
+
+
+def _rebind_chat_turns(state: AppState, username: str, old_sid: str, new_sid: str,
+                       token: str) -> int:
+    """A refresh re-keyed the session: its running chat answers follow the new sid
+    and the new access token's expiry (``routes_chat.rebind_chat_turns_for``)."""
+    from .routes_chat import rebind_chat_turns_for
+
+    try:
+        exp = float((state.auth.claims_of(token) or {}).get("exp") or 0) or None
+    except (TypeError, ValueError):
+        exp = None
+    return rebind_chat_turns_for(state, username, old_sid, new_sid, token_expires_at=exp)
 
 
 def _short(sid: str) -> str:

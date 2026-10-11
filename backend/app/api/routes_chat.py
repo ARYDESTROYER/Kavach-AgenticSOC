@@ -134,7 +134,8 @@ from ..stores.chat_conversations import (
     normalize_user_id,
 )
 from ..realtime import publish_chat_turn
-from ..utils import iso_now, new_id
+from ..stores.sessions import SessionStore
+from ..utils import iso_now, new_id, now_utc
 from .deps import (
     _bearer,
     access_view_for,
@@ -438,12 +439,15 @@ class ChatTurnHandle:
     # --- The authority the turn was admitted with (Round 12 final review, L1). ---
     # The principal as signed in (``owner`` is its normalised form), the session id
     # and token version its access token carried (``None`` for a token without them),
-    # and the grants the turn's tools were resolved with. ``stop_reason`` is set when
-    # that authority ended (``STOP_SESSION_ENDED`` / ``STOP_ACCESS_CHANGED``);
-    # ``forget`` keeps the stopped turn's event ring out of the re-attach cache.
+    # that token's ``exp`` (epoch seconds; the fallback end of the sign-in when the
+    # session row does not record it), and the grants the turn's tools were resolved
+    # with. ``stop_reason`` is set when that authority ended (``STOP_SESSION_ENDED`` /
+    # ``STOP_ACCESS_CHANGED``); ``forget`` keeps the stopped turn's event ring out of
+    # the re-attach cache.
     author: str = ""
     sid: str | None = None
     token_version: int | None = None
+    token_expires_at: float | None = None
     grants: frozenset = frozenset()
     stop_reason: str | None = None
     forget: bool = False
@@ -1199,8 +1203,9 @@ async def _generation_or_503(state: AppState, author: str | None) -> str:
 #   the owner's running turns at once (:func:`stop_chat_turns_for`,
 #   :func:`recheck_chat_turns_for`): sign-out, a session revoke (self or admin),
 #   sign out other devices, sign out everywhere, refresh-token reuse, disabling or
-#   deleting the account, and a role or custom-role change.
-# * PULL — defence in depth, for what no push covers (a session expiring, an RBAC
+#   deleting the account, and a role or custom-role change. A refresh re-keys the
+#   session, so its running turns move with it (:func:`rebind_chat_turns_for`).
+# * PULL — defence in depth, for what no push covers (a sign-in expiring, an RBAC
 #   matrix edit, another path added later): ``_drive`` re-checks
 #   (:func:`turn_authority_lost`) before every model step and lookup batch, which the
 #   engine announces with ``step.start`` before doing any work, and ends the turn
@@ -1234,22 +1239,28 @@ def _fail_authority(handle: "ChatTurnHandle", reason: str) -> None:
         handle.fail("internal", _SESSION_ENDED_MESSAGE, retryable=False, http=_session_ended_http())
 
 
-def _session_identity(request: Request, state: AppState) -> tuple[str | None, int | None]:
-    """The session id and token version the caller's access token carries
-    (``(None, None)`` with auth off or for a token without them)."""
+def _session_identity(
+    request: Request, state: AppState,
+) -> tuple[str | None, int | None, float | None]:
+    """The session id, token version and ``exp`` (epoch seconds) the caller's access
+    token carries (``None`` each with auth off or for a token without them)."""
     auth = getattr(state, "auth", None)
     if auth is None or not getattr(auth, "is_enabled", False):
-        return None, None
+        return None, None, None
     token = request.cookies.get("tlsoc_token") or _bearer(request)
     claims = auth.claims_of(token) if token else None
     if not isinstance(claims, dict):
-        return None, None
+        return None, None, None
     sid = claims.get("sid")
     try:
         tv = int(claims.get("tv", 0) or 0)
     except (TypeError, ValueError):
         tv = 0
-    return (sid if isinstance(sid, str) and sid else None), tv
+    try:
+        exp: float | None = float(claims.get("exp") or 0) or None
+    except (TypeError, ValueError):
+        exp = None
+    return (sid if isinstance(sid, str) and sid else None), tv, exp
 
 
 async def turn_authority_lost(state: AppState, handle: "ChatTurnHandle") -> str | None:
@@ -1259,8 +1270,13 @@ async def turn_authority_lost(state: AppState, handle: "ChatTurnHandle") -> str 
     account generation a turn is bound to:
 
     * the account is gone or disabled (the synced user view every request reads);
-    * the session that started the turn was revoked, its token version is behind
-      the owner's (sign out everywhere), or it is past its idle or absolute limit;
+    * the sign-in that started the turn ended: its access token expired (the
+      token's own ``exp``, which a new request meets as a 401; a refresh of the
+      session moves it, see :func:`rebind_chat_turns_for`), or its session was
+      revoked, its token version is behind the owner's (sign out everywhere), or it
+      is past its idle limit or its hard limit (the absolute lifetime, or the access
+      token's ``exp`` the row records, whichever is earlier: the rule ``/auth/me``
+      and the session list apply);
     * the account was replaced by a new account of the same name;
     * the owner no longer holds every grant the turn was admitted with.
 
@@ -1274,16 +1290,24 @@ async def turn_authority_lost(state: AppState, handle: "ChatTurnHandle") -> str 
         principal = auth.principal(handle.author)
         if principal is None:
             return STOP_SESSION_ENDED
+        now = now_utc().timestamp()
+        # The access token the turn was admitted with (no I/O, so a registry that
+        # cannot be read never extends a turn past it).
+        if handle.token_expires_at is not None and now > handle.token_expires_at:
+            return STOP_SESSION_ENDED
         sessions = getattr(state, "sessions", None)
         if handle.sid and sessions is not None:
             current_tv = await sessions.token_version_for(handle.author)
             if handle.token_version is not None and handle.token_version < int(current_tv or 0):
                 return STOP_SESSION_ENDED
             row = await sessions.get(handle.sid)
-            if row is not None and sessions.is_active(
-                row, **live_session_limits(state, principal).kwargs(),
-            ) is not None:
-                return STOP_SESSION_ENDED
+            if row is not None:
+                limits = live_session_limits(state, principal)
+                if sessions.is_active(row, **limits.kwargs()) is not None:
+                    return STOP_SESSION_ENDED
+                hard, _idle = SessionStore._expiry_epochs(row, **limits.kwargs())
+                if hard is not None and now > hard:
+                    return STOP_SESSION_ENDED
         try:
             generation = await account_generation_for(state, handle.author)
         except AccountRegistryUnavailable:
@@ -1374,6 +1398,33 @@ async def recheck_chat_turns_for(state: AppState, username: str | None) -> int:
         return count
     except Exception as exc:  # noqa: BLE001
         logger.warning("chat turns not re-checked (%s)", type(exc).__name__)
+        return 0
+
+
+def rebind_chat_turns_for(
+    state: AppState, username: str | None, old_sid: str | None, new_sid: str | None,
+    *, token_expires_at: float | None = None,
+) -> int:
+    """A refresh (``POST /auth/refresh``) re-keys ONE logical session from ``old_sid``
+    to ``new_sid`` and issues a new access token. The running turns the session
+    started follow it: ending the refreshed session stops them, and the new token's
+    ``exp`` (``token_expires_at``, epoch seconds) replaces the one they were admitted
+    with. Returns how many turns moved. Never raises."""
+    name = str(username or "").strip()
+    if not name or not old_sid or not new_sid:
+        return 0
+    try:
+        moved = 0
+        for handle in state.chat_turns.owner_turns(normalize_user_id(name)):
+            if handle.sid != old_sid:
+                continue
+            handle.sid = new_sid
+            if token_expires_at is not None:
+                handle.token_expires_at = token_expires_at
+            moved += 1
+        return moved
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("chat turns not rebound (%s)", type(exc).__name__)
         return 0
 
 
@@ -1575,7 +1626,7 @@ async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) ->
         )
         # The authority the turn was admitted with (re-checked while it runs).
         handle.author = author or ""
-        handle.sid, handle.token_version = _session_identity(request, state)
+        handle.sid, handle.token_version, handle.token_expires_at = _session_identity(request, state)
         handle.grants = frozenset(grants)
         handle.publisher = functools.partial(_publish_turn, state)
         registry.register(handle)

@@ -6,9 +6,14 @@ working indicator hears about a turn started on another device or browser withou
 second connection. These tests pin the server side of that contract: the route serves
 the combined topic set as asked, and on it the owner receives its own chat turn frames
 next to its job frames, while another user and an anonymous subscriber receive none.
+
+An answer read on one console is news on no other: ``POST …/read`` publishes an
+owner-only ``chat.read`` frame on the same topic, so the owner's other consoles drop the
+"new answer" mark they may hold for it.
 """
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 
 import pytest
@@ -19,15 +24,19 @@ from app.config import Secrets
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.realtime import (
+    CHAT_READ_EVENT,
     CHAT_TOPIC,
     CHAT_TURN_EVENT,
     JOB_EVENT,
     EventBus,
     _Subscriber,
     get_event_bus,
+    publish_chat_read,
     publish_chat_turn,
 )
 from app.state import AppState
+from tests.test_chat_round12_api import _auth_client, _login
+from tests.test_chat_routes_stream import FINAL
 
 # The console job observer's topics, as `useEventStream` sends them (sorted, joined).
 CONSOLE_STREAM_TOPICS = "chat,jobs"
@@ -96,3 +105,75 @@ def test_the_owner_gets_its_chat_turns_next_to_its_jobs_and_nobody_else_does() -
     delivered = [(event.topic, event.event_type) for event in alice._queue]  # noqa: SLF001
     assert delivered == [(CHAT_TOPIC, CHAT_TURN_EVENT), ("jobs", JOB_EVENT)]
     assert not bob._queue and not anonymous._queue  # noqa: SLF001
+
+
+def test_a_read_frame_goes_to_its_owner_only_and_is_never_replayed() -> None:
+    bus = EventBus()
+    topics = frozenset(CONSOLE_STREAM_TOPICS.split(","))
+    alice, bob = (_Subscriber(name, topics, 16) for name in ("alice", "bob"))
+    anonymous = _Subscriber(None, topics, 16)
+    for sub in (alice, bob, anonymous):
+        bus._register(sub)  # noqa: SLF001 -- the bus's own registry, as subscribe() does
+
+    assert publish_chat_read(bus, "Alice", "chat-1") is not None
+    # No owner (authentication off): nothing to address, nothing published.
+    assert publish_chat_read(bus, None, "chat-2") is None
+    assert publish_chat_read(bus, "  ", "chat-3") is None
+
+    delivered = [(e.topic, e.event_type, json.loads(e.payload)) for e in alice._queue]  # noqa: SLF001
+    # The conversation id only: never a title, a prompt or an answer.
+    assert delivered == [(CHAT_TOPIC, CHAT_READ_EVENT, {"conversation_id": "chat-1"})]
+    assert not bob._queue and not anonymous._queue  # noqa: SLF001
+    # Not retained: a username can be deleted and created again (the chat.turn rule).
+    assert CHAT_TOPIC not in bus._history  # noqa: SLF001
+
+
+def _read_frames(sub: _Subscriber) -> list[dict]:
+    return [json.loads(e.payload) for e in sub._queue if e.event_type == CHAT_READ_EVENT]  # noqa: SLF001
+
+
+def test_marking_a_conversation_read_tells_the_owner_s_other_consoles() -> None:
+    provider = MockProvider()
+    provider.push("chat", FINAL)
+    with _auth_client(provider) as client:
+        _login(client, "Admin", "Admin@123")
+        answer = client.post("/api/chat", json={
+            "message": "How many cases closed this week?", "persist_conversation": True,
+            "idempotency_key": "r12-read-frame-0001",
+        })
+        assert answer.status_code == 200, answer.text
+        cid = answer.json()["conversation_id"]
+        assert client.get("/api/chat/conversations").json()["conversations"][0]["unread"] is True
+
+        bus = client.app.state.tlsoc.event_bus
+        topics = frozenset(CONSOLE_STREAM_TOPICS.split(","))
+        owner, other = _Subscriber("admin", topics, 16), _Subscriber("analyst", topics, 16)
+        anonymous = _Subscriber(None, topics, 16)
+        for sub in (owner, other, anonymous):
+            bus._register(sub)  # noqa: SLF001
+
+        assert client.post(f"/api/chat/conversations/{cid}/read").status_code == 204
+        assert _read_frames(owner) == [{"conversation_id": cid}]
+        assert not other._queue and not anonymous._queue  # noqa: SLF001
+        # A conversation the caller does not own (or that does not exist) is not news.
+        assert client.post("/api/chat/conversations/chat-missing/read").status_code == 404
+        assert _read_frames(owner) == [{"conversation_id": cid}]
+
+
+def test_a_read_is_saved_even_when_its_frame_cannot_be_published(monkeypatch) -> None:
+    provider = MockProvider()
+    provider.push("chat", FINAL)
+    with _auth_client(provider) as client:
+        _login(client, "Admin", "Admin@123")
+        answer = client.post("/api/chat", json={
+            "message": "How many cases closed this week?", "persist_conversation": True,
+            "idempotency_key": "r12-read-frame-0002",
+        })
+        cid = answer.json()["conversation_id"]
+
+        def broken(*_args, **_kwargs):  # noqa: ANN002, ANN003
+            raise RuntimeError("bus unavailable")
+
+        monkeypatch.setattr(client.app.state.tlsoc.event_bus, "publish", broken)
+        assert client.post(f"/api/chat/conversations/{cid}/read").status_code == 204
+        assert client.get("/api/chat/conversations").json()["conversations"][0]["unread"] is False

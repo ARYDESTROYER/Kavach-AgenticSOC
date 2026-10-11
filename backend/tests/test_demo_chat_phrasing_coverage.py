@@ -44,6 +44,15 @@ from tests.test_demo_chat_round12 import _generic_obs, drive, ran
     # A period that names its own month or year is read by those rules.
     ("cases for the full year 2025", "2025"),
     ("cases in the whole month of september 2026", "2026-09"),
+    # The day, the hyphenated adjective, and a period that qualifies a report.
+    ("cases for the whole day", "today"),
+    ("the last full day", "yesterday"),
+    ("what happened the whole day yesterday", "yesterday"),
+    ("the whole week last week", "last_week"),
+    ("make a full-year report", "this_year"),
+    ("make a full year report", "this_year"),
+    ("give me a whole month summary", "this_month"),
+    ("a full quarter soc performance review", "this_quarter"),
 ])
 def test_whole_periods_map_to_the_calendar_period(text: str, spec: str) -> None:
     win = demo_chat._window_from(text)
@@ -53,6 +62,8 @@ def test_whole_periods_map_to_the_calendar_period(text: str, spec: str) -> None:
 @pytest.mark.parametrize("text", [
     "open for a whole week",          # a duration, not a period
     "an entire year of logs",         # a duration, not a period
+    "a whole day of logs",
+    "open for a full day",
 ])
 def test_a_whole_duration_is_not_a_period(text: str) -> None:
     assert demo_chat._window_from(text) is None
@@ -79,6 +90,7 @@ def test_a_whole_year_report_covers_this_year_and_never_says_no_period(question:
     ("make a report for the fiscal year", "for the fiscal year"),
     ("what happened over the weekend", "over the weekend"),
     ("cases during the holiday season", "during the holiday season"),
+    ("cases for the day", "for the day"),
 ])
 def test_an_unread_period_phrase_is_named(text: str, phrase: str) -> None:
     assert demo_chat._window_from(text) is None
@@ -117,6 +129,13 @@ def test_an_unreadable_report_period_says_so_instead_of_no_period_named() -> Non
     ("analyst-wise closed cases", "assignee", {"status_group": "terminal"}),
     ("cases source wise", "source", {}),
     ("cases tactic wise", "mitre_tactic", {}),
+    # "Segregate ... <connector> <field>" in the other ways analysts say it.
+    ("segregate open cases into severity", "severity", {"status_group": "active"}),
+    ("segregate the cases according to severity", "severity", {}),
+    ("segregate the closed cases as per verdict", "verdict", {"status_group": "terminal"}),
+    ("segregate open cases in terms of priority", "priority", {"status_group": "active"}),
+    ("segregate cases into statuses", "status", {}),
+    ("segregate the cases based on their assignee", "assignee", {}),
 ])
 def test_field_wise_breakdowns_group_the_cases(question: str, group: str, filters: dict[str, Any]) -> None:
     ask = classify(question)
@@ -174,6 +193,21 @@ def test_a_share_of_auto_closed_cases_states_the_automation_rate(question: str, 
     # 53 of 76 closed cases: the rate leads, with the counts it is computed from.
     assert body.startswith("**69.7%** of the closed cases"), body
     assert "53 of 76 closed cases" in body and "This is the automation rate." in body
+
+
+@pytest.mark.parametrize("question", [
+    "share the auto closed cases with me",
+    "Can you share the auto-closed cases from this week?",
+    "share auto closed cases",
+])
+def test_share_as_a_verb_still_lists_the_cases(question: str) -> None:
+    """"Share" asks for a rate only as the noun; the verb wants the cases themselves."""
+    assert classify(question).intent == "cases", (question, classify(question).intent)
+
+
+@pytest.mark.parametrize("question", ["What's the AI share of closed cases", "share of auto closed cases"])
+def test_share_as_a_noun_asks_for_the_rate(question: str) -> None:
+    assert classify(question).intent == "breakdown", (question, classify(question).intent)
 
 
 def test_a_count_of_auto_closed_cases_still_leads_with_the_count() -> None:

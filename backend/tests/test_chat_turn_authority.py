@@ -20,18 +20,24 @@ Two mechanisms, both tested here:
 from __future__ import annotations
 
 import asyncio
+import time
+from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request, Response
 
+import app.auth.tokens as tokens_mod
+import app.stores.sessions as sessions_mod
 from app.api import routes_chat
-from app.api.deps import require_auth
-from app.api.routes import auth_logout, delete_user, revoke_other_sessions, update_user
-from app.api.routes import RevokeOthersBody, UserUpdateBody
+from app.api.deps import live_session_limits, require_auth
+from app.api.routes import auth_logout, auth_refresh, delete_user, revoke_other_sessions, update_user
+from app.api.routes import RefreshBody, RevokeOthersBody, UserUpdateBody
 from app.api.routes_chat import (
     ChatTurnRegistry,
     _relay,
+    rebind_chat_turns_for,
     recheck_chat_turns_for,
     run_chat_blocking,
     run_chat_turn,
@@ -39,6 +45,8 @@ from app.api.routes_chat import (
     turn_authority_lost,
 )
 from app.auth.passwords import hash_password
+from app.stores.sessions import hash_refresh, new_refresh_token
+from app.utils import now_utc
 from app.config import Secrets
 from app.es.fake import InMemoryESClient
 from app.models import ChatRequest
@@ -48,10 +56,11 @@ from tests.test_chat_routes_stream import FINAL, TOOL_STEP, GatedProvider, _drai
 PASSWORD = "carol-pass-12345"
 
 
-def _secrets() -> Secrets:
+def _secrets(**overrides: Any) -> Secrets:
     return Secrets(
         _env_file=None, es_store_enabled=False, redis_url="", anthropic_api_key=None,
         openai_api_key=None, auth_enabled=True, auth_jwt_secret="x" * 40, auth_seed_admin=True,
+        **overrides,
     )
 
 
@@ -378,3 +387,196 @@ async def test_registry_stop_owner_selects_by_session_and_generation() -> None:
     assert await registry.stop_owner("carol") == 2
     assert b.forget and b.stop_reason == routes_chat.STOP_SESSION_ENDED
     assert c.stop_reason is None
+
+
+# --------------------------------------------------------------------------- #
+# PULL: the end of the sign-in itself (final review, L1). A standard sign-in ends
+# when its access token expires (``AUTH_TOKEN_HOURS``, 12 h by default), long before
+# the registry row's own idle (12 h) or absolute (30 d) limit. The check used to
+# judge only the row's limits, so a turn kept making lookups and model calls and
+# saved its answer, outside the AI budget, for up to the hour-long fuse after the
+# console had been signed out.
+# --------------------------------------------------------------------------- #
+_REAL_TIME = time.time
+
+
+@pytest.fixture
+async def short_auth_state():
+    """Auth on with one-hour access tokens."""
+    provider = GatedProvider()
+    overrides = {"anthropic": provider, "openai": provider, "mock": provider}
+    state = AppState.create(
+        secrets=_secrets(auth_token_hours=1), es=InMemoryESClient(), provider_overrides=overrides,
+    )
+    await state.startup(start_poller=False)
+    await state.update_prefs(state.prefs.model_copy(update={"setup_complete": True}))
+    try:
+        yield state, provider
+    finally:
+        provider.gate.set()
+        await state.shutdown()
+
+
+def _clock(monkeypatch: pytest.MonkeyPatch, minutes: float) -> None:
+    """Move every clock a sign-in is judged by ``minutes`` past real time: access
+    token minting and verification, the session registry, and the turn check."""
+    shift = minutes * 60
+
+    def later():
+        return now_utc() + timedelta(seconds=shift)
+
+    monkeypatch.setattr(tokens_mod, "time", SimpleNamespace(time=lambda: _REAL_TIME() + shift))
+    monkeypatch.setattr(sessions_mod, "now_utc", later)
+    monkeypatch.setattr(routes_chat, "now_utc", later)
+
+
+async def _row_alone_allows(state: AppState, sid: str) -> bool:
+    """Whether the registry row's own idle and absolute limits still allow ``sid``."""
+    row = await state.sessions.get(sid)
+    principal = state.auth.principal("carol")
+    return row is not None and state.sessions.is_active(
+        row, **live_session_limits(state, principal).kwargs(),
+    ) is None
+
+
+async def test_a_turn_stops_once_the_access_token_that_started_it_expires(
+    short_auth_state, monkeypatch,
+) -> None:
+    state, provider = short_auth_state
+    token = await _user(state)
+    provider.push("chat", TOOL_STEP)
+    provider.push("chat", FINAL)
+    handle = (await _start(state, token, "expiry-0001")).handle
+    assert handle.token_expires_at == state.auth.claims_of(token)["exp"]
+    reader = asyncio.ensure_future(_drain(_relay(handle)))
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    _clock(monkeypatch, 50)                     # inside the one-hour token: still running
+    assert await turn_authority_lost(state, handle) is None
+    _clock(monkeypatch, 70)                     # the token expired at 60 minutes
+    with pytest.raises(HTTPException) as denied:
+        await require_auth(_request(state, token, "/api/cases", "GET"))
+    assert denied.value.status_code == 401
+    assert await _row_alone_allows(state, handle.sid)   # what the check used to judge
+    assert await turn_authority_lost(state, handle) == routes_chat.STOP_SESSION_ENDED
+    provider.gated = False
+    provider.gate.set()                                  # the in-flight call returns
+    events = await asyncio.wait_for(reader, 10)
+    # The lookup it planned never ran, no further model call, nothing saved.
+    assert _tool_steps(events) == [] and _chat_calls(provider) == 1
+    final = events[-1]
+    assert final.type == "turn.error" and final.retryable is False
+    assert "session ended" in final.message.lower()
+    assert not [e for e in events if e.type == "turn.done"]
+    assert await _conversations(state, "carol") == []
+    assert state.chat_turns.active == 0
+
+
+async def test_the_session_row_records_the_end_of_the_sign_in(short_auth_state, monkeypatch) -> None:
+    """The row's hard limit (absolute lifetime, or the access token's ``exp`` it
+    records) ends the turn even when the turn has no token expiry of its own."""
+    state, provider = short_auth_state
+    token = await _user(state)
+    provider.push("chat", TOOL_STEP)
+    handle = (await _start(state, token, "expiry-0002")).handle
+    reader = asyncio.ensure_future(_drain(_relay(handle)))
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    handle.token_expires_at = None             # judged by the registry row alone
+    row = await state.sessions.get(handle.sid)
+    assert row and row["token_expires_at"]
+    _clock(monkeypatch, 50)
+    assert await turn_authority_lost(state, handle) is None
+    _clock(monkeypatch, 70)
+    assert await _row_alone_allows(state, handle.sid)
+    assert await turn_authority_lost(state, handle) == routes_chat.STOP_SESSION_ENDED
+    provider.gated = False
+    provider.gate.set()
+    events = await asyncio.wait_for(reader, 10)
+    assert _tool_steps(events) == [] and events[-1].type == "turn.error"
+
+
+async def test_a_row_without_the_token_expiry_falls_back_to_the_admission_token(
+    short_auth_state, monkeypatch,
+) -> None:
+    """A row that does not record the token's ``exp`` (registered by an older build)
+    leaves the admission token's own ``exp`` in charge, and that check needs no I/O:
+    a session registry that cannot be read never extends the turn past it."""
+    state, provider = short_auth_state
+    await state.users.create(
+        username="carol", password_hash=hash_password(PASSWORD), role="soc_manager", active=True,
+    )
+    await state.refresh_users()
+    token = state.auth.authenticate("carol", PASSWORD)
+    claims = state.auth.claims_of(token)
+    await state.sessions.create(
+        sid=claims["sid"], username="carol", token_version=int(claims.get("tv", 0) or 0),
+        idle_timeout=12 * 3600, absolute_lifetime=30 * 86400,
+    )
+    await require_auth(_request(state, token, "/api/cases", "GET"))
+    assert (await state.sessions.get(claims["sid"]))["token_expires_at"] == ""
+    provider.push("chat", TOOL_STEP)
+    handle = (await _start(state, token, "expiry-0003")).handle
+    reader = asyncio.ensure_future(_drain(_relay(handle)))
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    _clock(monkeypatch, 70)
+    assert await _row_alone_allows(state, handle.sid)
+
+    async def unreadable(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("registry down")
+
+    monkeypatch.setattr(state.sessions, "get", unreadable)
+    monkeypatch.setattr(state.sessions, "token_version_for", unreadable)
+    assert await turn_authority_lost(state, handle) == routes_chat.STOP_SESSION_ENDED
+    provider.gated = False
+    provider.gate.set()
+    events = await asyncio.wait_for(reader, 10)
+    assert _tool_steps(events) == [] and events[-1].type == "turn.error"
+
+
+async def test_a_refreshed_session_keeps_its_turn_until_the_refreshed_sign_in_ends(
+    short_auth_state, monkeypatch,
+) -> None:
+    """``/auth/refresh`` re-keys the session row to a new sid and issues a new token.
+    The turn follows: it outlives the token it was admitted with, and ending the
+    refreshed session stops it (the pull check and the push both find it)."""
+    state, provider = short_auth_state
+    token = await _user(state)
+    old_sid = state.auth.claims_of(token)["sid"]
+    refresh = new_refresh_token()
+    await state.sessions.rotate_refresh(old_sid, hash_refresh(refresh))
+    provider.push("chat", TOOL_STEP)
+    handle = (await _start(state, token, "refresh-0001")).handle
+    reader = asyncio.ensure_future(_drain(_relay(handle)))
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    admitted_exp = handle.token_expires_at
+    _clock(monkeypatch, 30)
+    out = await auth_refresh(
+        RefreshBody(refresh_token=refresh), _request(state, None, "/api/auth/refresh"),
+        Response(), state,
+    )
+    assert out["sid"] != old_sid and handle.sid == out["sid"]
+    assert handle.token_expires_at == state.auth.claims_of(out["token"])["exp"] > admitted_exp
+    _clock(monkeypatch, 70)                     # past the first token, inside the new one
+    assert await turn_authority_lost(state, handle) is None
+    _clock(monkeypatch, 95)                     # past the refreshed token too
+    assert await turn_authority_lost(state, handle) == routes_chat.STOP_SESSION_ENDED
+    _clock(monkeypatch, 70)
+    await state.sessions.revoke(out["sid"], by="carol", reason="logout")   # no push
+    assert await turn_authority_lost(state, handle) == routes_chat.STOP_SESSION_ENDED
+    assert await stop_chat_turns_for(state, "carol", sid=out["sid"]) == 1  # the push
+    events = await asyncio.wait_for(reader, 5)
+    assert events[-1].type == "turn.error" and _tool_steps(events) == []
+
+
+def test_rebind_moves_only_the_refreshed_sessions_turns() -> None:
+    state = SimpleNamespace(chat_turns=ChatTurnRegistry())
+    a = routes_chat.ChatTurnHandle(turn_id="t-a", owner="carol", sid="s1", token_expires_at=100.0)
+    b = routes_chat.ChatTurnHandle(turn_id="t-b", owner="carol", sid="s2", token_expires_at=100.0)
+    c = routes_chat.ChatTurnHandle(turn_id="t-c", owner="dave", sid="s1", token_expires_at=100.0)
+    for handle in (a, b, c):
+        state.chat_turns.register(handle)
+    assert rebind_chat_turns_for(state, "Carol", "s1", "s9", token_expires_at=200.0) == 1
+    assert (a.sid, a.token_expires_at) == ("s9", 200.0)
+    assert (b.sid, b.token_expires_at) == ("s2", 100.0)
+    assert (c.sid, c.token_expires_at) == ("s1", 100.0)
+    assert rebind_chat_turns_for(state, "carol", "", "s9") == 0
+    assert rebind_chat_turns_for(state, "", "s1", "s9") == 0

@@ -226,15 +226,19 @@ describe('JobMonitor carries the chat activity frames (SPEC D13)', () => {
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
     const turn = { turn_id: 'turn-1', conversation_id: 'c1', case_id: null, phase: 'progress', label: 'Searching logs', lookups: 1, tokens: 10 };
     act(() => lastOnEvent()({ type: 'chat.turn', data: turn, lastEventId: '7' }));
-    expect(frames).toEqual([expect.objectContaining({ type: 'chat.turn', data: turn })]);
-    // A chat step is no reason to list jobs again.
+    act(() => lastOnEvent()({ type: 'chat.read', data: { conversation_id: 'c1' }, lastEventId: '' }));
+    expect(frames).toEqual([
+      expect.objectContaining({ type: 'chat.turn', data: turn }),
+      expect.objectContaining({ type: 'chat.read', data: { conversation_id: 'c1' } }),
+    ]);
+    // A chat step or read is no reason to list jobs again.
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(listMock).toHaveBeenCalledTimes(1);
     act(() => lastOnEvent()({ type: 'job', data: { job_id: 'job-1' }, lastEventId: '8' }));
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
     act(() => lastOnEvent()({ type: 'overflow', data: { dropped: 3 }, lastEventId: '' }));
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(3));
-    expect(frames.map((frame) => frame.type)).toEqual(['chat.turn', 'job', 'overflow']);
+    expect(frames.map((frame) => frame.type)).toEqual(['chat.turn', 'chat.read', 'job', 'overflow']);
   });
 
   it('drops frames quietly while no chat observer has loaded', async () => {

@@ -887,13 +887,16 @@ Application jobs use topic `jobs` and event type `job`; the payload is the actor
 public job projection. Chat turns use topic `chat` and event type `chat.turn`
 (`{turn_id, conversation_id, case_id, phase, label, lookups, tokens}`, `phase` being
 `started`, `progress`, `finished`, `failed`, or `needs_input`), sent to the turn's owner
-only and never to an anonymous subscriber. The console reads them on its job stream
-(`topics=chat,jobs`) and checks `GET /api/chat/turns/active` before it follows a turn.
-With authentication disabled it polls that route instead: on load, when the tab becomes
-visible again, and every 5 seconds while it follows a turn. Case writes publish
-`case.changed` on topic `cases` with identifiers, status, and timestamps only, so the
-Case Manager queue can refresh. Ordinary progress is sampled, while submission/start/terminal
-transitions force publication. SSE is a nudge, not the durable registry or Inbox.
+only and never to an anonymous subscriber. Marking a conversation read
+(`POST /api/chat/conversations/{id}/read`) publishes event type `chat.read`
+(`{conversation_id}`) on the same topic, to the owner only, so the owner's other consoles
+drop that answer's "new answer" mark. Neither event is kept for replay. The console reads
+both on its job stream (`topics=chat,jobs`) and checks `GET /api/chat/turns/active` before
+it follows a turn. With authentication disabled it polls that route instead: on load,
+when the tab becomes visible again, and every 5 seconds while it follows a turn. Case
+writes publish `case.changed` on topic `cases` with identifiers, status, and timestamps
+only, so the Case Manager queue can refresh. Ordinary progress is sampled, while
+submission/start/terminal transitions force publication. SSE is a nudge, not the durable registry or Inbox.
 
 ## Upstream release observations
 

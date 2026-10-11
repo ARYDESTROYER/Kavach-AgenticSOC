@@ -1224,19 +1224,30 @@ _CALENDAR = {
     "ytd": ("this year to date", 8760, "year"), "this_year": ("this year", 8760, "year"),
     "last_year": ("last year", 8760, "year"),
 }
-# "The whole year", "this entire month", "the last full quarter": the calendar period
-# itself. Never "a whole week" (a duration: "open for a whole week"), never a period
-# that names its own month, quarter or year ("the whole month of May", "the full year
-# 2025" are read by the month and year rules), never "full year-over-year".
-_WHOLE = r"(?<!\ba )(?<!\ban )(?:whole|full|entire|complete)"
-_WHOLE_END = rf"(?![\w-]|\s+(?:of\s+)?(?:20\d\d|{_MONTH_WORD}|q[1-4])\b)"
+# "The whole year", "this entire month", "the last full quarter", "a full-year report",
+# "a whole month summary", "the whole day": the calendar period itself. Never "a whole
+# week" on its own (a duration: "open for a whole week", "an entire year of logs"),
+# never a period that names its own month, quarter, year or day ("the whole month of
+# May", "the full year 2025", "the whole day yesterday" are read by those rules), never
+# "full year-over-year".
+_WHOLE_WORD = r"(?:whole|full|entire|complete)"
+_WHOLE = rf"(?<!\ba )(?<!\ban ){_WHOLE_WORD}[- ]"
+_WHOLE_END = (rf"(?![\w-]|\s+(?:of\s+)?(?:20\d\d|{_MONTH_WORD}|q[1-4]|today|yesterday|"
+              r"(?:this|last|previous|prior)\s+(?:week|month|quarter|year))\b)")
+#: After "a"/"an" the period still counts when it is hyphenated ("a full-year report")
+#: or qualifies a report ("a whole month summary").
+_WHOLE_REPORT = (r"(?=\s+(?:\w+\s+){0,2}?(?:reports?|summar(?:y|ies)|reviews?|briefs?|briefings?|overviews?|"
+                 r"recaps?|roundups?|round-ups?|digests?)\b)")
+_WHOLE_UNITS = (("day", "today", "yesterday"), ("week", "this_week", "last_week"),
+                ("month", "this_month", "last_month"), ("quarter", "this_quarter", "last_quarter"),
+                ("year", "this_year", "last_year"))
 _CALENDAR_PHRASES: tuple[tuple[str, str], ...] = (
     (r"\b(?:ytd|year[- ]to[- ]date|so far this year|this year so far)\b", "ytd"),
     (r"\b(?:mtd|month[- ]to[- ]date|so far this month)\b", "this_month"),
     (r"\b(?:qtd|quarter[- ]to[- ]date|so far this quarter)\b", "this_quarter"),
-    *((rf"\b(?:last|previous|prior) {_WHOLE} {unit}{_WHOLE_END}", f"last_{unit}")
-      for unit in ("week", "month", "quarter", "year")),
-    *((rf"\b{_WHOLE} {unit}{_WHOLE_END}", f"this_{unit}") for unit in ("week", "month", "quarter", "year")),
+    *((rf"\b(?:last|previous|prior) {_WHOLE}{unit}{_WHOLE_END}", last) for unit, _this, last in _WHOLE_UNITS),
+    *((rf"\b{_WHOLE}{unit}{_WHOLE_END}|\b{_WHOLE_WORD}(?:-{unit}{_WHOLE_END}|\s{unit}{_WHOLE_REPORT})", this)
+      for unit, this, _last in _WHOLE_UNITS),
     (r"\btoday(?:'s)?\b|\bthis morning\b|\bso far today\b", "today"),
     (r"\byesterday(?:'s)?\b", "yesterday"),
     (r"\b(?:this|current) week(?:'s)?\b|\bweek to date\b", "this_week"),
@@ -1308,7 +1319,7 @@ _DATE_WORD_RE = re.compile(
 _PERIOD_PHRASE_RE = re.compile(
     r"\b(?:for|in|during|over|across|throughout|within)\s+(?:the|this|that|our)\s+"
     r"(?:(?!each\b|every\b|per\b)[a-z0-9'-]+\s+){0,2}"
-    r"(?:years?|quarters?|months?|weeks?|fortnight|weekends?|seasons?|holidays?|summer|winter|spring|autumn|"
+    r"(?:years?|quarters?|months?|weeks?|days?|fortnight|weekends?|seasons?|holidays?|summer|winter|spring|autumn|"
     r"mornings?|afternoons?|evenings?|nights?)\b")
 _CADENCE: tuple[tuple[str, str], ...] = (
     (r"\bdaily (?:report|summary|brief|digest|review)\b", "now-24h"),
@@ -1995,8 +2006,10 @@ _FIELD_WISE_WORDS: tuple[tuple[str, str], ...] = (
     (r"(?:att&ck |mitre )?tactic", "mitre_tactic"),
     (r"(?:att&ck |mitre )?technique", "mitre_technique"),
 )
+_SEGREGATE_ON = r"(?:on|into|in terms of|according to|as per|based on|by|per)"
 _CASE_GROUP_WORDS = _CASE_GROUP_WORDS + tuple(
-    (rf"\b(?:{words})[- ]?wise\b|\bsegregat\w* (?:\w+ ){{0,4}}?on (?:the |their )?(?:{words})s?\b", fld)
+    (rf"\b(?:{words})[- ]?wise\b|\bsegregat\w* (?:\w+ ){{0,4}}?{_SEGREGATE_ON} (?:the |their |its )?(?:{words})"
+     r"(?:s|es|ies)?\b", fld)
     for words, fld in _FIELD_WISE_WORDS)
 
 
@@ -2041,8 +2054,11 @@ _AUTO_CLOSE_RE = re.compile(
     r"\b(?:the )?(?:ai|agent|agents|model|llm)\b(?:\s+\w+){0,2}?\s+(?:close|closed|closes|resolve|resolved|"
     r"resolves)\b")
 #: A question for a share rather than a count ("what percentage", "what share",
-#: "what proportion", "how much of").
-_SHARE_CUE_RE = re.compile(r"\b(?:percent(?:age)?s?|share|proportion|fraction|ratio|how much of)\b|%")
+#: "what proportion", "how much of"). "Share" counts only as the noun ("what share of",
+#: "the share"), never the verb ("share the auto-closed cases with me" wants the cases).
+_SHARE_CUE_RE = re.compile(
+    r"\b(?:percent(?:age)?s?|proportion|fraction|ratio|how much of)\b|%|"
+    r"\b(?:what|which|the|a|their|its)\s+(?:\w+\s+)?share\b|\bshare\s+of\b")
 #: "Which users had the most cases?", "cases per host": cases counted by the entity
 #: each one is recorded against (never by log events).
 _ENTITY_CASES_RE = re.compile(
@@ -4702,11 +4718,14 @@ def _say_noise(r: Result) -> list[str]:
     # A withheld overall reduction (the tool's partial-coverage rule) leads with the
     # stages instead of a "not measured noise reduction" headline.
     head = f"**{_pct(overall)} noise reduction**" if _num(overall) is not None else "**Noise reduction**"
-    out = [
-        f"{head} {_in(_window(o))}: {_plural(stages.get('ingested'), 'alert')} "
-        f"ingested became {_plural(stages.get('clustered'), 'cluster')} and "
-        f"{_plural(stages.get('cases'), 'case')}, and **{_count(stages.get('needs_human'))} needed a human**."
-    ]
+    if "ingested" in stages:
+        flow = (f"{_plural(stages.get('ingested'), 'alert')} ingested became "
+                f"{_plural(stages.get('clustered'), 'cluster')} and {_plural(stages.get('cases'), 'case')},")
+    else:
+        # The alert stages were not measured (counters warming up, or a window the
+        # counters do not reach back to): never narrated as 0 alerts (G3).
+        flow = f"alerts were not measured; {_plural(stages.get('cases'), 'case')} opened,"
+    out = [f"{head} {_in(_window(o))}: {flow} and **{_count(stages.get('needs_human'))} needed a human**."]
     detail = []
     if "auto_cleared" in stages:
         detail.append(f"AI auto-cleared {_count(stages['auto_cleared'])}")
@@ -4721,7 +4740,10 @@ def _say_noise(r: Result) -> list[str]:
     if _num(before) is not None:
         out.append(f"Before any human looked, volume was already down {_pct(before)}.")
     withheld = _num(overall) is None and bool(o.get("overall_reduction_withheld"))
-    if _dig(o, "counters", "incomplete"):
+    if o.get("alert_stages_not_measured"):
+        out.append("The alert counters do not reach back to this window, so its alerts were not counted and "
+                   "no overall reduction is given.")
+    elif _dig(o, "counters", "incomplete"):
         out.append("The ingest counters do not span the whole window yet, so the alert count is a lower bound"
                    + (" and no overall reduction is given (alerts and cases cover different spans)." if withheld
                       else "."))

@@ -1455,7 +1455,11 @@ a billed one.
 `report_summary_timeout`, one `abandoned` UsageDoc).
 (g) The dry-run total is the prompt estimate plus `min(max_tokens, 400)` expected output tokens.
 (h) An item's `scope.window` prefers the block caption's effective window, then the step's window
-chip, then the conversation's `time_range`.
+chip, then the conversation's `time_range`. Round 12: each covered block contributes its own
+window (caption, else its step's input read back in caption words), each listed once; a whole
+Brief covers every section leaf; text no lookup produced (a "Next steps" section) covers the
+whole answer; then the window the Brief recorded for its turn. A step input the window grammar
+cannot read (a display-form range cut short, any other text) names no window and is never shown.
 (i) Reports are purged only by the factory reset tier, like chat history.
 (j) Content writes (adds and growing PATCHes) keep `SUMMARY_RESERVE_BYTES` (16 kB) free inside
 the 512 kB document, so they are refused (409 `report_full`, `reason: "size"`) at about 496 kB

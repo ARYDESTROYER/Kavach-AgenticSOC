@@ -23,7 +23,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import Field, field_validator
 
 from ...constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, CaseStatus, Verdict
-from ...models import Citation
+from ...models import Citation, humanise_relative_window
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
     PREVIOUS_WINDOW_LABEL,
@@ -930,8 +930,11 @@ class ShiftReportTool(ChatTool):
         workload = [w for w in (snap.get("workload") or []) if isinstance(w, dict)]
         actions = [a for a in (snap.get("action_items") or []) if isinstance(a, dict)]
         limit = args.attention_limit
+        # The Round 12 window words every other caption uses ("last 24 hours"), so a
+        # report lists the shift's window once, never "last 24h; last 24 hours".
+        window_words = humanise_relative_window(hours, "h")
         observation = {
-            "window": f"last {hours}h",
+            "window": window_words,
             "headline": {k: headline.get(k) for k in _HEADLINE_LABELS},
             "changes_vs_prior_window": {
                 k: {"current": (deltas.get(k) or {}).get("current"), "prior": (deltas.get(k) or {}).get("prior"),
@@ -974,7 +977,7 @@ class ShiftReportTool(ChatTool):
             ))
         artifacts = [Artifact(
             id="a1", kind="kpis", title="Shift headline", title_trusted=True,
-            data={"items": items}, provenance="code", window=f"last {hours}h",
+            data={"items": items}, provenance="code", window=window_words,
         )]
         artifacts.append(Artifact(
             id="a2", kind="case_list", title="Needs attention", title_trusted=True,
@@ -1002,7 +1005,7 @@ class ShiftReportTool(ChatTool):
                 provenance="code", untrusted_labels=True, total=len(actions), truncated=len(actions) > 25,
             ))
         summary = (
-            f"Shift snapshot (last {hours}h): {fmt_int(headline.get('open'))} open, {fmt_int(headline.get('escalated'))} escalated, "
+            f"Shift snapshot ({window_words}): {fmt_int(headline.get('open'))} open, {fmt_int(headline.get('escalated'))} escalated, "
             f"{fmt_int(headline.get('unassigned'))} unassigned, {fmt_int(headline.get('sla_breached'))} past SLA"
         )
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,

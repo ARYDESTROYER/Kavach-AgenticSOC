@@ -95,6 +95,7 @@ CASE_ACTIVITY_EVENT = "case.activity"  # case collaboration timeline, room cases
 INAPP_EVENT = "inapp"                # in-app notifications, topics notifications/inbox
 JOB_EVENT = "job"                    # durable background-job progress, topic jobs
 CHAT_TURN_EVENT = "chat.turn"        # the caller's own chat turn lifecycle, topic chat
+CHAT_READ_EVENT = "chat.read"        # the caller read a conversation's answer, topic chat
 CASE_CHANGED_EVENT = "case.changed"  # a case was saved (created or updated), topic cases
 OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
 
@@ -104,6 +105,7 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
     INAPP_EVENT,
     JOB_EVENT,
     CHAT_TURN_EVENT,
+    CHAT_READ_EVENT,
     CASE_CHANGED_EVENT,
     OVERFLOW_EVENT,
 })
@@ -479,6 +481,24 @@ def publish_chat_turn(
     if not name:
         return None
     return bus.publish(CHAT_TOPIC, CHAT_TURN_EVENT, payload, audience=[name], retain=retain)
+
+
+def publish_chat_read(bus: "EventBus", owner: str | None, conversation_id: str) -> str | None:
+    """Publish one ``chat.read`` frame (Round 12 SPEC D13, §3.2) to its OWNER only.
+
+    The owner has the conversation's newest answer on screen somewhere (another tab,
+    device or browser posted ``…/read``), so every other console of theirs drops the
+    "new answer" mark it may hold for it. Targeted like ``chat.turn`` (never broadcast,
+    never to an anonymous subscriber) and never retained, for the same reason. The
+    payload is the conversation id only. Returns the event id, or ``None`` when there is
+    no owner to address (nothing is published)."""
+    name = str(owner or "").strip().lower()
+    if not name:
+        return None
+    return bus.publish(
+        CHAT_TOPIC, CHAT_READ_EVENT, {"conversation_id": str(conversation_id)},
+        audience=[name], retain=False,
+    )
 
 
 def publish_case_changed(

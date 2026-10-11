@@ -173,10 +173,41 @@ def test_a_case_opened_earlier_in_the_counters_first_hour_is_covered() -> None:
     minutes before ``since`` in the same hour is not "older than the counters"."""
     coverage = datetime(2026, 10, 1, 10, 30, tzinfo=timezone.utc)
     same_hour = [_case(1, coverage - timedelta(minutes=20))]
-    earlier = [_case(2, coverage - timedelta(minutes=45))]
+    hour_before = [_case(2, coverage - timedelta(minutes=45))]
+    earlier = [_case(3, coverage - timedelta(minutes=95))]   # 08:55, before 09:00
     kwargs: dict[str, Any] = {"window_hours": 0, "generated_at": NOW.isoformat(), "now": NOW}
     assert build_noise_reduction(same_hour, _counters(coverage), **kwargs)["counters"]["incomplete"] is False
+    # The first tick may cross an hour boundary: one full counter hour of grace.
+    assert build_noise_reduction(hour_before, _counters(coverage), **kwargs)["counters"]["incomplete"] is False
     assert build_noise_reduction(earlier, _counters(coverage), **kwargs)["counters"]["incomplete"] is True
+
+
+async def test_a_first_tick_that_crosses_an_hour_boundary_keeps_lifetime_funnels_complete() -> None:
+    """Before: the first tick opened its cases at 21:57-21:59 (investigations run
+    before the alert delta is written) and recorded its alerts at 22:02, so every
+    case predated the 22:00 floor of ``since`` and every all-time funnel was flagged
+    incomplete for good, with the overall reduction withheld."""
+    written = (NOW - timedelta(days=2)).replace(minute=2, second=0, microsecond=0)
+    opened = [written - timedelta(minutes=5 - i) for i in range(3)]          # :57, :58, :59
+    population = [_case(i, at) for i, at in enumerate(opened)] + [_case(10, written + timedelta(minutes=1))]
+    cases = await _store(population)
+    noise = NoiseCounterStore(_MemKV())
+    await noise.record({"ingested": {"high": 40}, "clustered": {"high": 4}}, now=written)
+    await noise.record({"ingested": {"high": 60}, "clustered": {"high": 6}}, now=NOW - timedelta(hours=1))
+
+    counters = await noise.read_window(0, now=NOW)
+    assert counters["since"] == written.isoformat() and counters["incomplete"] is False
+    rollup = build_noise_reduction(population, counters, window_hours=0,
+                                   generated_at=NOW.isoformat(), now=NOW)
+    assert rollup["counters"]["incomplete"] is False
+    assert rollup["reduction"]["overall_pct"] == 96.0   # 1 - 4 needing a human / 100 alerts
+
+    out = await SocMetricsTool().run(make_ctx(cases=cases, noise=noise), kind="noise_funnel", window="all")
+    assert out.ok and out.observation["counters"]["incomplete"] is False
+    assert out.observation["reduction_pct"]["overall"] == 96.0
+    assert "overall_reduction_withheld" not in out.observation
+    assert "alert_stages_note" not in out.observation
+    assert "different spans" not in out.summary and out.coverage is None
 
 
 def test_a_reader_without_coverage_start_falls_back_to_since() -> None:
@@ -256,6 +287,98 @@ async def test_a_partial_case_tally_withholds_the_overall_reduction(monkeypatch:
     assert out.observation["reduction_pct"]["overall"] is None
     assert out.observation["overall_reduction_withheld"] == "case counts are partial"
     assert "newest 2 of 6" in (out.coverage or "")
+
+
+class _BrokenCases:
+    async def list(self, **kwargs: Any):
+        raise RuntimeError("store down")
+
+
+def _assert_alert_half_not_measured(out: Any) -> None:
+    """The alert stages of a funnel whose window the counters never reached: null,
+    never a measured 0, with the reason named everywhere a reader looks."""
+    assert out.ok
+    stages = {s["key"]: s["total"] for s in out.observation["stages"]}
+    assert stages["ingested"] is None and stages["clustered"] is None, stages
+    funnel = next(a for a in out.artifacts if a.kind == "funnel")
+    assert funnel.data["values"][:2] == [None, None], funnel.data
+    assert "alerts not measured" in (funnel.window or "")
+    assert out.observation["alert_stages_not_measured"] is True
+    assert "not measured" in out.observation["alert_stages_note"]
+    assert "count only from" not in out.observation["alert_stages_note"]
+    assert out.observation["reduction_pct"]["overall"] is None
+    assert "alerts not measured in this window" in out.summary
+    assert "0 alerts" not in out.summary and "alert counters cover only" not in out.summary
+    assert "alerts not measured in this window" in (out.coverage or "")
+    assert_artifacts_render(out)
+
+
+async def test_a_past_window_before_the_counters_began_reports_alerts_not_measured() -> None:
+    """Before: a calendar window wholly before ``coverage_start`` (here two years back,
+    the counters began an hour ago) read "0 alerts ingested" beside a non-zero case
+    count, as if measured."""
+    year = NOW.year - 2
+    opened = datetime(year, 6, 15, 12, tzinfo=timezone.utc)
+    cases = await _store([_case(i, opened + timedelta(hours=i)) for i in range(5)]
+                         + [_case(50, NOW - timedelta(minutes=30))])
+    noise = NoiseCounterStore(_MemKV())
+    await noise.record({"ingested": {"high": 70}, "clustered": {"high": 7}}, now=NOW - timedelta(hours=1))
+
+    out = await SocMetricsTool().run(make_ctx(cases=cases, noise=noise), kind="noise_funnel", window=str(year))
+    _assert_alert_half_not_measured(out)
+    stages = {s["key"]: s["total"] for s in out.observation["stages"]}
+    assert stages["cases"] == 5 and stages["needs_human"] == 5
+    assert out.observation["reduction_pct"]["before_human"] is not None   # the case-only figure stays
+    overall = _kpi(out, "overall_reduction")
+    assert overall["value"] is None and overall["context"] == "alerts not measured in this window"
+    assert out.observation["overall_reduction_withheld"] == "alerts not measured in this window"
+    assert out.summary.startswith(f"Noise funnel, {year}: alerts not measured in this window; 5 cases"), out.summary
+    assert "so the overall reduction is not given" in (out.coverage or "")
+
+    # The case store failing too: both halves say "not measured", neither reads 0.
+    down = await SocMetricsTool().run(make_ctx(cases=_BrokenCases(), noise=noise), kind="noise_funnel",
+                                      window=str(year))
+    assert down.ok and down.observation["case_store_unavailable"] is True
+    assert {s["key"]: s["total"] for s in down.observation["stages"]}["ingested"] is None
+    assert "alerts not measured in this window; case stages not measured" in down.summary
+
+    # A window the counters reach keeps its measured alert half.
+    live = await SocMetricsTool().run(make_ctx(cases=cases, noise=noise), kind="noise_funnel", window="now-24h")
+    assert {s["key"]: s["total"] for s in live.observation["stages"]}["ingested"] == 70
+    assert "alert_stages_not_measured" not in live.observation
+
+
+async def test_a_past_window_older_than_counter_retention_reports_alerts_not_measured() -> None:
+    """The 90-day retention: a month wholly before the retention floor is not
+    measured even though the counters' first observation (``since``) predates it."""
+    month_day = NOW - timedelta(days=200)
+    token = f"{month_day.year}-{month_day.month:02d}"
+    cases = await _store([_case(i, month_day.replace(day=10, hour=9) + timedelta(hours=i)) for i in range(3)])
+    noise = NoiseCounterStore(_MemKV())
+    await noise.record({"ingested": {"high": 9}}, now=NOW - timedelta(days=400))
+    await noise.record({"ingested": {"high": 30}, "clustered": {"high": 3}}, now=NOW)   # prunes the old hour
+
+    out = await SocMetricsTool().run(make_ctx(cases=cases, noise=noise), kind="noise_funnel", window=token)
+    _assert_alert_half_not_measured(out)
+    assert {s["key"]: s["total"] for s in out.observation["stages"]}["cases"] == 3
+
+
+def test_demo_noise_answer_never_narrates_unmeasured_alerts_as_zero() -> None:
+    from app.engine.demo_chat import plan_turn
+    from tests.test_demo_chat_planner import NOISE_ARTS, NOISE_OBS, call, final_of, prompt
+
+    stages = [{"key": "ingested", "total": None}, {"key": "clustered", "total": None},
+              {"key": "cases", "total": 5.0}, {"key": "needs_human", "total": 2.0}]
+    unmeasured = {**NOISE_OBS, "window": "2024", "stages": stages,
+                  "reduction_pct": {"overall": None, "before_human": 60.0},
+                  "counters": {"available": True, "incomplete": True},
+                  "alert_stages_not_measured": True,
+                  "overall_reduction_withheld": "alerts not measured in this window"}
+    _header, body = final_of(plan_turn(prompt("Show the noise funnel",
+                                              [call("soc_metrics", unmeasured, artifacts=NOISE_ARTS)])))
+    assert "alerts were not measured; 5 cases opened, and **2 needed a human**" in body, body
+    assert "0 alerts" not in body and "lower bound" not in body
+    assert "so its alerts were not counted and no overall reduction is given" in body
 
 
 # --------------------------------------------------------------------------- #
