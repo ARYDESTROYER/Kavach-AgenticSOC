@@ -15,7 +15,7 @@
  * Offline: the api and the posture fetch are mocked; no auth; nothing here can reach #3.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { fetchPostureMock } = vi.hoisted(() => ({ fetchPostureMock: vi.fn() }));
@@ -66,7 +66,7 @@ vi.mock('@/soc/components/StartDemoButton', () => ({
   StartDemoButton: () => <button type="button">Start demo</button>,
 }));
 
-import Overview, { PAGE_TITLE } from '../pages/Overview';
+import Overview, { PAGE_TITLE, latestFloorCss } from '../pages/Overview';
 import type { PostureResponse } from '../pages/Metrics.posture.api';
 import type { Case, Metrics, MetricsTrends, NoiseReduction, SourceCoverage } from '@/lib/types';
 
@@ -227,6 +227,9 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     // The dashbar is floating chrome on the Console material — never a card.
     expect(hero).not.toHaveClass('bg-card');
     expect(hero.className).toContain('material-surface');
+    // Pinned from `sm` up only: on a phone the stacked masthead scrolls away.
+    expect(hero.className).toContain('sticky');
+    expect(hero.className).toContain('max-sm:static');
   });
 
   it('KPI strip: six tiles, each with label, numeral, context, help, drill-down mark and dialog', async () => {
@@ -752,5 +755,125 @@ describe('Overview — Round 12 review: one population per instrument, honest bo
     const coverage = screen.getByTestId('coverage-tile');
     expect(within(coverage).queryAllByTestId('count-up')).toHaveLength(0);
     expect(coverage).toHaveTextContent('3/ 3');
+  });
+});
+
+describe('Overview — Round 12 review: layout and keyboard contracts', () => {
+  beforeEach(() => {
+    localStorage.removeItem('soc.overview.deeperOpen');
+    mountMocks();
+  });
+
+  it('Latest cases: the outcome sits under the status badge, never on the id line', async () => {
+    await mount();
+    const queue = screen.getByRole('region', { name: 'Latest cases' });
+    const fpRow = within(queue).getByRole('button', { name: /Open case Benign admin login \(CASE-1003\)/ });
+    const outcome = within(fpRow).getByTestId('latest-case-outcome');
+    const id = within(fpRow).getByText('CASE-1003');
+    expect(outcome.parentElement).toContainElement(within(fpRow).getByText('Resolved'));
+    expect(id.parentElement).not.toContainElement(outcome);
+  });
+
+  it('Latest cases: the in-flow floor is in rem, so larger text grows it with the rows', async () => {
+    expect(latestFloorCss(5)).toBe('18.5rem');
+    expect(latestFloorCss(6)).toBe('22.25rem');
+    expect(latestFloorCss(0)).toBe('0rem');
+    await mount();
+    // Three cases → a three-row floor.
+    expect(screen.getByTestId('latest-cases-box').style.minHeight).toBe('11rem');
+  });
+
+  it('Latest cases: from 1920px the queue never shows fewer rows than at 1440 (six)', async () => {
+    const many = Array.from({ length: 8 }, (_, i) => ({
+      ...CASES[0],
+      case_id: `c-${i}`,
+      case_number: `CASE-${2000 + i}`,
+      title: `Case ${i}`,
+    })) as Case[];
+    listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
+      Promise.resolve(
+        params?.to?.startsWith('now-')
+          ? { cases: PREV_CASES, total: PREV_CASES.length }
+          : { cases: many, total: many.length, window_total_exact: true },
+      ),
+    );
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query === '(min-width: 1920px)',
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      render(<Overview onNavigate={vi.fn()} />);
+      const queue = await screen.findByRole('region', { name: 'Latest cases' });
+      await waitFor(() =>
+        expect(within(queue).getAllByRole('button', { name: /^Open case / })).toHaveLength(6),
+      );
+      expect(screen.getByTestId('latest-cases-box').style.minHeight).toBe('22.25rem');
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it('KPI strip: the tile focus ring is inset, so the cell root cannot clip it', async () => {
+    await mount();
+    const tile = screen.getByTestId('kpi-total-cases');
+    const cell = tile.parentElement as HTMLElement;
+    expect(cell.className).toContain('[&>button:focus-visible]:ring-inset');
+  });
+
+  it('a late focus return after Escape does not pop the tile’s trend card back open', async () => {
+    await mount();
+    const tile = screen.getByTestId('kpi-total-cases');
+    await userEvent.click(tile);
+    await screen.findByTestId('kpi-drilldown');
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('kpi-drilldown')).toBeNull());
+    // In a browser Radix restores focus only after the dialog's exit animation — past the
+    // trend card's own grace period. Simulate that late arrival explicitly.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    fireEvent.focusIn(tile);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 450));
+    });
+    expect(screen.queryByTestId('metric-trend-card')).toBeNull();
+    // Once the operator moves on, focus brings the card again as usual.
+    // (After the card's own short grace for the hold being released.)
+    fireEvent.blur(tile);
+    fireEvent.focusOut(tile);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 400));
+    });
+    fireEvent.focusIn(tile);
+    expect(await screen.findByTestId('metric-trend-card')).toBeInTheDocument();
+  });
+
+  it('KPI drill-down: pairs the partition two per row and keeps phones to one scroller', async () => {
+    await mount();
+    await userEvent.click(screen.getByTestId('kpi-resolved-closed'));
+    const panel = await screen.findByTestId('kpi-drilldown');
+    const partition = await within(panel).findByTestId('kpi-drilldown-partition');
+    expect(partition.className).toContain('@[24rem]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]');
+    // <dt>/<dd> stay direct children (axe's definition-list rule).
+    expect(partition.querySelectorAll(':scope > dt').length).toBeGreaterThan(0);
+    // Phone: the actions drop under the title; the body (switcher, filters, evidence)
+    // scrolls as one, the evidence band taking its content height.
+    const identity = within(panel).getByTestId('kpi-drilldown-actions').parentElement as HTMLElement;
+    expect(identity.className).toContain('flex-col');
+    expect(identity.className).toContain('sm:flex-row');
+    const body = within(panel).getByTestId('kpi-drilldown-body');
+    expect(body.className).toContain('max-md:overflow-y-auto');
+    expect(body).toContainElement(within(panel).getByTestId('kpi-drilldown-metrics'));
+    expect(body).toContainElement(within(panel).getByTestId('kpi-drilldown-controls'));
+    const scroller = within(panel).getByTestId('kpi-drilldown-scroll');
+    expect(body).toContainElement(scroller);
+    expect(scroller.className).toContain('max-md:flex-none');
   });
 });

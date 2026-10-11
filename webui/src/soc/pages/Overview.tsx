@@ -3180,6 +3180,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
   const announce = useAnnouncer();
   const [openKpi, setOpenKpi] = React.useState<string | null>(null);
   /**
+   * The tile focus was just RETURNED to by a closing drill-down (Round 12 review). Its
+   * hover trend stays shut until the operator moves on — focus leaves the tile or the
+   * pointer leaves it — because Radix restores focus only after the dialog's exit
+   * animation, after `MetricHoverTrend`'s own grace period has run out, and the card then
+   * popped open over a strip the operator had just dismissed it from with Escape.
+   */
+  const [returnedKpi, setReturnedKpi] = React.useState<string | null>(null);
+  /**
    * Which tile's help popover is open, if any.
    *
    * The help trigger sits INSIDE the hover-card wrapper, so by the time the operator
@@ -3218,6 +3226,22 @@ export default function Overview({ onNavigate }: OverviewProps) {
     return fn;
   }, []);
 
+  // The post-dialog hold ends when the operator MOVES ON from the tile focus returned to:
+  // its blur (Tab away) or the pointer leaving it. Native listeners on the tile's own
+  // trigger (the strip renders no element of its own around a tile to hang them on).
+  React.useEffect(() => {
+    if (!returnedKpi) return undefined;
+    const el = tileEls.current.get(returnedKpi);
+    if (!el) return undefined;
+    const release = () => setReturnedKpi((k) => (k === returnedKpi ? null : k));
+    el.addEventListener('blur', release);
+    el.addEventListener('pointerleave', release);
+    return () => {
+      el.removeEventListener('blur', release);
+      el.removeEventListener('pointerleave', release);
+    };
+  }, [returnedKpi]);
+
   const kpiLabel = React.useCallback(
     (key: string) => kpis.find((k) => k.testId === key)?.label ?? key,
     [kpis],
@@ -3225,6 +3249,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
 
   const closeKpiPanel = React.useCallback(() => {
     if (openKpi === null) return;
+    setReturnedKpi(openKpi);
     setOpenKpi(null);
     announce(`${kpiLabel(openKpi)} details closed`);
     // Focus RETURN is NOT done here. It used to be, when the panel was a docked section
@@ -3254,6 +3279,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
           : null,
       );
+      setReturnedKpi(null);
       setOpenKpi(key);
       announce(`${kpiLabel(key)} details opened`);
     },
@@ -3476,7 +3502,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
         data-testid="page-hero"
         title={PAGE_TITLE}
         sticky
-        className="py-2 2xl:[&_h1]:text-4xl"
+        // Pinned from `sm` up only (Round 12 review): on a phone the title, three controls
+        // and the freshness stamp stack to ~108px, a fifth of a 390×844 screen held by
+        // chrome while every band scrolls. There it scrolls away with the page.
+        className="py-2 2xl:[&_h1]:text-4xl max-sm:static"
         meta={
           <div
             role="group"
@@ -3618,7 +3647,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     // sides between xl and 2xl instead of the density's 16px. At 1280 with
                     // the navigation pinned a tile is ~165px, and 16px cost the longest
                     // context ("96% of worked closes") its last word.
-                    className="press-scale xl:max-2xl:[&>button]:px-3"
+                    //
+                    // `ring-inset` (Round 12 review): the cell root is `overflow-hidden`, so
+                    // the trigger's outset focus ring was clipped away entirely — a keyboard
+                    // user saw no focus on the tile at all.
+                    className="press-scale xl:max-2xl:[&>button]:px-3 [&>button:focus-visible]:ring-inset [&>button:focus-visible]:ring-offset-0"
                   />
                 );
                 // Hover/focus reveals the metric's honest trend; the tile is itself the
@@ -3635,7 +3668,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       affordance: 'Select for the full population, filters and paging.',
                     }}
                     focusable={false}
-                    forceClosed={openKpi !== null || helpOpenKpi !== null}
+                    forceClosed={
+                      openKpi !== null || helpOpenKpi !== null || returnedKpi === kpi.testId
+                    }
                     side="bottom"
                   >
                     {tile}

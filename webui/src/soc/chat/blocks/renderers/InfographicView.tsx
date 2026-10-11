@@ -2,8 +2,11 @@
  * The Brief's `infographic` layout (Round 12 SPEC §3.4, SYNTHESIS-chat P0-8): the same
  * sections and leaves as the document layout, arranged to be read at a glance —
  *
- *   1. a HERO row: the Brief's first KPI group as large numerals, each with its trend
- *      columns when it carries one (and its change, when it compares periods);
+ *   1. a HERO row: the Brief's first KPI group that carries trends (else its first KPI
+ *      group) as large numerals, each with its trend columns when it carries one (and
+ *      its change, when it compares periods). The hero keeps every disclosure the same
+ *      group has as a card: its caption and "as of", "Showing N of M", "Downsampled for
+ *      saved history", the baseline of a comparison and its small-sample note (G4);
  *   2. HIGHLIGHTS: the Brief's callouts as a row of short, tone-marked notes;
  *   3. the sections, their charts and KPI groups two to a row, while tables, lists,
  *      timelines and prose take the whole width (an odd chart out also spans the row, so
@@ -14,7 +17,12 @@
  * width (a container query), so it is two-up in a wide lane and one column in a narrow
  * one. Print / static mode keeps the hero row and the highlights but stacks the charts
  * one per row: a printed chart is drawn at the fixed page width with its data table
- * under it, which two columns of an A4 page cannot hold.
+ * under it, which two columns of an A4 page cannot hold (so no leaf spans columns there
+ * either: a span would create the second column again).
+ *
+ * A section whose only remaining leaf is titled like the section does not say it twice:
+ * the leaf's card title stays and the section heading is kept for assistive tech and
+ * the section anchor only.
  */
 import * as React from 'react';
 
@@ -23,10 +31,10 @@ import { KpiTile, KpiTileGrid } from '@/soc/components/KpiTile';
 import { token } from '@/soc/components/palette';
 
 import { sectionAnchorId, useBlocks } from '../context';
-import { DASH, formatDelta, formatValue } from '../format';
+import { DASH, captionStatesCount, formatDelta, formatUtc, formatValue, truncationNote } from '../format';
 import type { KpiGroupBlock, KpiItem, LeafBlock, ReportBlock } from '../schema';
 import { TrendColumns, trendSentence } from '../charts/SparklineChart';
-import { comparisonFacts } from './ComparisonView';
+import { SmallSampleNote, comparisonFacts, comparisonSecondary, smallSamplePlan } from './ComparisonView';
 
 /** Leaves that take the whole row of the 2-up grid (reading width or many columns). */
 const WIDE_TYPES: ReadonlyArray<LeafBlock['type']> = [
@@ -60,7 +68,10 @@ export function isWideLeaf(leaf: LeafBlock): boolean {
 }
 
 export interface InfographicParts {
-  /** Section and leaf index of the hero KPI group, or null. */
+  /**
+   * Section and leaf index of the hero KPI group, or null: the first KPI group whose
+   * items carry trend points (the hero's sparklines), else the first KPI group.
+   */
   hero: { section: number; leaf: number; block: KpiGroupBlock } | null;
   /** Section and leaf indexes of the highlight callouts, in document order. */
   highlights: Array<{ section: number; leaf: number; block: LeafBlock }>;
@@ -68,15 +79,36 @@ export interface InfographicParts {
 
 /** Where the hero row and the highlights come from (pure; exported for tests). */
 export function infographicParts(block: ReportBlock): InfographicParts {
-  let hero: InfographicParts['hero'] = null;
+  const groups: Array<NonNullable<InfographicParts['hero']>> = [];
   const highlights: InfographicParts['highlights'] = [];
   block.sections.forEach((s, si) =>
     s.blocks.forEach((leaf, li) => {
-      if (!hero && leaf.type === 'kpi_group') hero = { section: si, leaf: li, block: leaf };
+      if (leaf.type === 'kpi_group') groups.push({ section: si, leaf: li, block: leaf });
       else if (leaf.type === 'callout' && !leaf.expired) highlights.push({ section: si, leaf: li, block: leaf });
     }),
   );
+  const hero = groups.find((g) => g.block.items.some((it) => (it.trend?.points.length ?? 0) >= 2)) ?? groups[0] ?? null;
   return { hero, highlights };
+}
+
+/** The section heading repeats the title of the section's only leaf (case and spacing aside). */
+export function headingRepeatsLeaf(heading: string, leaves: readonly LeafBlock[]): boolean {
+  if (leaves.length !== 1) return false;
+  const title = 'title' in leaves[0] ? leaves[0].title : undefined;
+  const norm = (v: string) => v.trim().replace(/\s+/g, ' ').toLowerCase();
+  return typeof title === 'string' && title.trim() !== '' && norm(title) === norm(heading);
+}
+
+/**
+ * The disclosures the hero's KPI group carries as a card (BlockCard): its caption and
+ * "as of" line, and its truncation / storage note. Pure; exported for tests.
+ */
+export function heroDisclosures(group: KpiGroupBlock): { caption: string | null; note: string | null } {
+  const caption = [group.caption, group.as_of ? `as of ${formatUtc(group.as_of)}` : null].filter(Boolean).join(' · ') || null;
+  const shown = group.items.length;
+  const trunc = group.truncated && !captionStatesCount(group.caption, shown, group.total) ? truncationNote(shown, group.total) : null;
+  const note = [trunc, group.downsampled_for_storage ? 'Downsampled for saved history' : null].filter(Boolean).join(' · ') || null;
+  return { caption, note };
 }
 
 /**
@@ -103,8 +135,9 @@ function heroDelta(group: KpiGroupBlock, item: KpiItem): { value: number; label:
   const d = item.delta;
   if (!d) return undefined;
   if (group.artifact_kind === 'comparison') {
+    // The baseline period and value read under the figure (comparisonSecondary), as on a tile.
     const f = comparisonFacts(item);
-    if (f.baseline !== null) return { value: d.value, label: `${f.abs} (${f.pct}) ${d.period_label}` };
+    if (f.measured) return { value: d.value, label: `${f.abs} (${f.pct})` };
   }
   if (d.value === 0) return { value: 0, label: `no change ${d.period_label}`.trim() };
   const sign = d.value > 0 ? '+' : '−';
@@ -112,9 +145,21 @@ function heroDelta(group: KpiGroupBlock, item: KpiItem): { value: number; label:
 }
 
 function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPrefix: string; staticMode: boolean }) {
+  const comparison = group.artifact_kind === 'comparison';
+  const plan = comparison ? smallSamplePlan(group.items) : null;
+  const { caption, note } = heroDisclosures(group);
   return (
     <div className="min-w-0" data-testid="infographic-hero">
-      {group.title ? <p className="mb-1.5 text-xs font-medium text-muted-foreground">{group.title}</p> : null}
+      {group.title || caption ? (
+        <div className="mb-1.5 min-w-0">
+          {group.title ? <p className="text-xs font-medium text-muted-foreground">{group.title}</p> : null}
+          {caption ? (
+            <p className="break-words text-xs text-muted-foreground" data-testid="infographic-hero-caption">
+              {caption}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       {group.provenance === 'ai' ? (
         <p className="mb-1.5 text-xs italic text-muted-foreground">Values stated by the model, not measured</p>
       ) : null}
@@ -128,7 +173,10 @@ function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPref
                 label={item.label}
                 value={
                   item.value === null ? (
-                    DASH
+                    <>
+                      <span aria-hidden>{DASH}</span>
+                      <span className="sr-only">not measured</span>
+                    </>
                   ) : item.bound === 'lower' ? (
                     // A scan-bounded floor says "at least" to assistive tech, like the KPI tiles (G4).
                     <>
@@ -145,9 +193,13 @@ function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPref
                 size="fluid"
                 roll={false}
                 secondary={
-                  item.value === null ? (
+                  comparison ? (
+                    // The baseline ("vs Sep 2026: 16.3%") and, on a flagged change, its
+                    // small-sample badge — exactly as the comparison tiles read.
+                    comparisonSecondary(item, !plan?.every) ?? (item.value === null ? <span className="font-sans font-normal">Not measured</span> : undefined)
+                  ) : item.value === null ? (
                     <span className="font-sans font-normal">Not measured</span>
-                  ) : item.context && !(group.artifact_kind === 'comparison' && delta) ? (
+                  ) : item.context ? (
                     <span className="font-sans font-normal">{item.context}</span>
                   ) : undefined
                 }
@@ -166,6 +218,12 @@ function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPref
           );
         })}
       </KpiTileGrid>
+      {note ? (
+        <p className="mt-1.5 text-xs text-muted-foreground" data-testid="infographic-hero-note">
+          {note}
+        </p>
+      ) : null}
+      {plan ? <SmallSampleNote plan={plan} className="mt-1.5" /> : null}
     </div>
   );
 }
@@ -203,9 +261,16 @@ export function InfographicView({ block, blockIndex, renderLeaf, staticMode = fa
         if (!leaves.length && !s.summary) return null;
         const spans = spanPlan(leaves.map((l) => l.leaf));
         const headingId = sectionAnchorId(domId, blockIndex, si);
+        // "Response times" over a card titled "Response times": the card's title says it.
+        const repeats = headingRepeatsLeaf(s.heading, leaves.map((l) => l.leaf));
         return (
           <div key={s.id} role="group" aria-labelledby={headingId} className="flex min-w-0 flex-col gap-2" data-testid="infographic-section">
-            <h5 id={headingId} tabIndex={staticMode ? undefined : -1} className="scroll-mt-16 text-sm font-semibold text-foreground outline-none">
+            <h5
+              id={headingId}
+              tabIndex={staticMode ? undefined : -1}
+              className={cn('scroll-mt-16 text-sm font-semibold text-foreground outline-none', repeats && 'sr-only')}
+              data-repeats-leaf={repeats || undefined}
+            >
               {s.heading}
             </h5>
             {s.summary ? <p className="whitespace-pre-line break-words text-sm text-muted-foreground">{s.summary}</p> : null}
@@ -215,7 +280,9 @@ export function InfographicView({ block, blockIndex, renderLeaf, staticMode = fa
                   {leaves.map(({ leaf, li }, k) => (
                     <div
                       key={`${leaf.id}-${li}`}
-                      className={cn('min-w-0', spans[k] && '@[44rem]:col-span-2')}
+                      // On paper the grid is one column: a span would add a second track
+                      // (an implicit column) and seat two fixed-width charts side by side.
+                      className={cn('min-w-0', !staticMode && spans[k] && '@[44rem]:col-span-2')}
                       data-span={spans[k] ? 'row' : 'half'}
                     >
                       {renderLeaf(leaf, `${si}-${li}`)}

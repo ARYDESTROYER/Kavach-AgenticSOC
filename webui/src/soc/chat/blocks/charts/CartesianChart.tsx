@@ -5,8 +5,9 @@
  * - `bar`: ⅔-slot columns capped at 22 px, square at the baseline with a 2 px top radius;
  *   grouped when ≥ 2 series. The whole x slot is the hit target.
  * - `grouped_bar` (Round 12, P0-6): the same grouped columns, one series per compared
- *   period side by side per category; the tooltip adds the change from the previous
- *   period to the latest ("new" for a zero baseline, never ∞).
+ *   period side by side per category; the tooltip, the keyboard announcement and the
+ *   sr-only table add the change from the previous period to the latest ("new" for a
+ *   zero baseline, never ∞).
  * - `stacked_bar`: the CloseAttributionChart stack — 1 px inset gap, 2 px minimum
  *   segment, top-segment radius — and a HATCHED slot when any visible part is `null`
  *   (a partial stack would read as a smaller total). Each segment carries its share of
@@ -25,7 +26,11 @@
  * period labels ("Mar 2026", "W14 2026") and name the axis's time zone; a plain time axis
  * keeps its UTC labels. Brush zoom (P0-8, line/area): drag across the plot, click a point
  * then Shift+click another, or Shift+←/→ then Enter, to zoom; "Reset zoom" restores the
- * whole series. Zoom is a client-side view of the same numbers (never a re-query).
+ * whole series. Zoom is a client-side view of the same numbers (never a re-query). The
+ * zoom row always exists on a zoomable chart (a hint until a zoom, then the zoomed range
+ * and Reset), so the plot never moves under the pointer that just made the selection; a
+ * zoom belongs to the data it was made on and is dropped when the view changes (Group
+ * by, Show as); the keyboard cursor stays on the same period through a zoom and a reset.
  */
 import * as React from 'react';
 
@@ -142,6 +147,9 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const zoomable = !staticMode && (full.kind === 'line' || full.kind === 'area') && full.x.values.length >= MIN_ZOOM_POINTS;
   const key = dataKey(full);
   const [zoom, setZoom] = React.useState<{ key: string; range: [number, number] } | null>(null);
+  // A zoom belongs to the data it was made on: a new grouping or kind drops it for good,
+  // so going back (Quarter → Month, bar → line) never silently restores an old zoom.
+  if (zoom && zoom.key !== key) setZoom(null);
   const range = zoomable && zoom && zoom.key === key ? zoom.range : null;
   const block = React.useMemo(() => (range ? (sliceChart(full, range) as typeof full) : full), [full, range]);
   const boxRef = React.useRef<HTMLDivElement>(null);
@@ -153,8 +161,16 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const styles = React.useMemo(() => seriesStyles(block), [block]);
   const catStyles = React.useMemo(() => (kind === 'bar' ? categoryStyles(block, false) : null), [block, kind]);
   const [hidden, toggle] = useSeriesVisibility(block.series.length);
-  // The card's image download draws what is shown: this zoom, these series.
-  usePublishChartView(block, hidden);
+  // The card's image download draws what is shown: this zoom, these series — and says so.
+  const zoomView = range
+    ? {
+        first: xPositionLabel(block.x, 0),
+        last: xPositionLabel(block.x, block.x.values.length - 1),
+        shown: block.x.values.length,
+        total: full.x.values.length,
+      }
+    : null;
+  usePublishChartView(block, hidden, zoomView);
   const visibleIdx = block.series.map((_, k) => k).filter((k) => !hidden[k]);
   const visibleSeries = visibleIdx.map((k) => block.series[k].values);
   const n = block.x.values.length;
@@ -205,25 +221,48 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const secondary = visibleIdx.length > 1 ? visibleIdx.length : 0;
   const fullX = (i: number) => xPositionLabel(block.x, i);
   const offset = range ? range[0] : 0;
-  const applyZoom = (sel: [number, number]) => {
-    const a = Math.min(sel[0], sel[1]);
-    const b = Math.max(sel[0], sel[1]);
-    if (!zoomable || b - a < 1 || (a === 0 && b === n - 1)) return;
-    setZoom({ key, range: [offset + a, offset + b] });
-    announce(`Zoomed to ${fullX(a)} – ${fullX(b)}, ${b - a + 1} of ${full.x.values.length} points.`);
-  };
   const valueAt = (k: number, i: number) => block.series[k].values[i] ?? null;
+  /** A comparison's change at slot i: the latest period against the one before it (P0-6). */
+  const compared = kind === 'grouped_bar' && block.series.length >= 2;
+  const changeAt = (i: number) => {
+    const base = block.series[block.series.length - 2];
+    const c = changeParts(block.series[block.series.length - 1].values[i], base.values[i], unit);
+    return { base: base.label, ...c };
+  };
   const summarize = React.useCallback(
     (c: ChartCursor) => {
       const head = `${fullX(c.i)}${block.last_in_progress && c.i === lastIdx ? ', in progress' : ''}`;
       const ks = c.j >= 0 ? [visibleIdx[c.j]] : visibleIdx;
       const parts = ks.map((k) => `${block.series[k].label} ${srValue(formatValue(valueAt(k, c.i), unit), valueAt(k, c.i))}`);
       if (stacked && c.j < 0 && totals) parts.unshift(`${totalWord} ${srValue(formatValue(totals[c.i], unit), totals[c.i])}`);
-      return `${head}: ${parts.join(', ')}.`;
+      // The whole slot of a comparison reads its change too: the tooltip's note is
+      // aria-hidden, so this is where assistive tech hears it.
+      const change = compared && c.j < 0 ? changeAt(c.i) : null;
+      const tail = change && change.delta !== null ? `; change vs ${change.base} ${change.abs} (${change.pct})` : '';
+      return `${head}: ${parts.join(', ')}${tail}.`;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [block, visibleIdx.join(','), stacked, totals?.join(','), unit, totalWord],
+    [block, visibleIdx.join(','), stacked, totals?.join(','), unit, totalWord, compared],
   );
+  /** The navigator, once it exists (the zoom handlers below run after it is created). */
+  const navRef = React.useRef<ReturnType<typeof useChartNavigator> | null>(null);
+  const applyZoom = (sel: [number, number]) => {
+    const a = Math.min(sel[0], sel[1]);
+    const b = Math.max(sel[0], sel[1]);
+    if (!zoomable || b - a < 1 || (a === 0 && b === n - 1)) return;
+    setZoom({ key, range: [offset + a, offset + b] });
+    // Keep the cursor on the same period, now numbered from the zoom's first point (a
+    // cursor outside the range moves to its nearest edge), and read it after the zoom.
+    const nav = navRef.current;
+    const cur = nav?.cursor ?? null;
+    let point = '';
+    if (nav && cur) {
+      const i = Math.max(a, Math.min(b, cur.i));
+      nav.moveTo({ i: i - a, j: cur.j });
+      if (nav.focusRing) point = ` ${summarize({ i, j: cur.j })}`;
+    }
+    announce(`Zoomed to ${fullX(a)} – ${fullX(b)}, ${b - a + 1} of ${full.x.values.length} points.${point}`);
+  };
   const drillAt = (i: number) => block.drill?.[i] ?? null;
   const nav = useChartNavigator({
     count: n,
@@ -238,6 +277,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     onRange: zoomable ? applyZoom : undefined,
     summarizeRange: ([a, b]) => `Selected ${fullX(a)} to ${fullX(b)}, ${b - a + 1} points. Press Enter to zoom, Escape to clear.`,
   });
+  navRef.current = nav;
   const active = nav.cursor;
 
   /* ---- brush zoom (pointer) ---- */
@@ -498,12 +538,10 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
       rows.unshift({ key: '__total', value: formatValue(totals[i], unit), label: isNum(totals[i]) ? totalWord : `${totalWord}, not measured` });
     }
     const notes: React.ReactNode[] = [];
-    if (kind === 'grouped_bar' && block.series.length >= 2) {
+    if (compared) {
       // The comparison's change, latest period against the one before it (P0-6).
-      const cur = block.series[block.series.length - 1];
-      const base = block.series[block.series.length - 2];
-      const c = changeParts(cur.values[i], base.values[i], unit);
-      if (c.delta !== null) notes.push(`Change vs ${base.label}: ${c.abs} (${c.pct})`);
+      const c = changeAt(i);
+      if (c.delta !== null) notes.push(`Change vs ${c.base}: ${c.abs} (${c.pct})`);
     }
     if (block.last_in_progress && i === lastIdx) notes.push('In progress: this period is still filling.');
     const ref = drillAt(i);
@@ -547,25 +585,40 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const plotRef = nav.plotRef;
   const resetZoom = () => {
     setZoom(null);
+    // Back to the whole series' numbering, on the same period.
+    if (active) nav.moveTo({ i: active.i + offset, j: active.j });
     announce(`Zoom reset: showing all ${full.x.values.length} points.`);
     plotRef.current?.focus({ preventScroll: true });
   };
+  const zoomText = range ? `Zoomed to ${fullX(0)} – ${fullX(n - 1)} (${n} of ${full.x.values.length} points)` : '';
 
   return (
     <div ref={boxRef} className="min-w-0">
-      {range ? (
-        <div className="mb-1 flex flex-wrap items-center justify-end gap-x-2 gap-y-0.5 text-2xs text-muted-foreground" data-print-hide data-testid="chart-zoom-bar">
-          <span className="tabular-nums">
-            Zoomed to {fullX(0)} – {fullX(n - 1)} ({n} of {full.x.values.length} points)
-          </span>
-          <button
-            type="button"
-            onClick={resetZoom}
-            className={cn('inline-flex min-h-6 items-center rounded-sm px-1.5 font-medium text-primary hover:bg-muted', focusRing)}
-            data-testid="chart-zoom-reset"
-          >
-            Reset zoom
-          </button>
+      {zoomable ? (
+        // ONE row that always exists on a zoomable chart, at a fixed height: a quiet hint
+        // until a zoom, then the zoomed range and Reset. A row that appeared on release
+        // would push the plot down under the pointer that just made the selection.
+        <div className="mb-1 flex h-6 min-w-0 items-center justify-end gap-x-2 text-2xs text-muted-foreground" data-print-hide data-testid="chart-zoom-row">
+          {range ? (
+            <>
+              <span className="min-w-0 truncate tabular-nums" title={zoomText} data-testid="chart-zoom-bar">
+                {zoomText}
+              </span>
+              <button
+                type="button"
+                onClick={resetZoom}
+                className={cn('inline-flex h-6 shrink-0 items-center rounded-sm px-1.5 font-medium text-primary hover:bg-muted', focusRing)}
+                data-testid="chart-zoom-reset"
+              >
+                Reset zoom
+              </button>
+            </>
+          ) : (
+            // The plot's sr-only instructions already say how to zoom from the keyboard.
+            <span className="min-w-0 truncate" aria-hidden data-testid="chart-zoom-hint">
+              Drag across the chart to zoom
+            </span>
+          )}
         </div>
       ) : null}
       {block.y_label || zoneNote ? (
@@ -604,10 +657,16 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
         fallback={{
           caption: `${title} (${unitLabel(unit)})${range ? `, zoomed to ${n} of ${full.x.values.length} points` : ''}`,
           rowHeader: xAxisHeader(block.x),
-          columns: [...(stacked ? ['Total'] : []), ...block.series.map((s) => s.label)],
+          columns: [
+            ...(stacked ? ['Total'] : []),
+            ...block.series.map((s) => s.label),
+            // A comparison's table carries its change, like the server's delta table.
+            ...(compared ? [`Change vs ${block.series[block.series.length - 2].label}`] : []),
+          ],
           rows: block.x.values.map((_, i) => {
             const t = allTotals ? allTotals[i] : null;
             const shares = allTotals && isNum(t) ? reconcilingShares(block.series.map((s) => s.values[i] ?? null), t) : null;
+            const change = compared ? changeAt(i) : null;
             return {
               key: String(i),
               header: `${fullX(i)}${block.last_in_progress && i === lastIdx ? IN_PROGRESS_SUFFIX : ''}`,
@@ -617,6 +676,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
                   const text = srValue(formatValue(s.values[i] ?? null, unit), s.values[i] ?? null);
                   return shares ? `${text} (${shares[k]}%)` : text;
                 }),
+                ...(change ? [change.delta === null ? 'not measured' : `${change.abs} (${change.pct})`] : []),
               ],
             };
           }),

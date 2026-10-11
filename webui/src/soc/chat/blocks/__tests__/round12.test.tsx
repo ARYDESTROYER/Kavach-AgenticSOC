@@ -98,6 +98,20 @@ describe('grouped columns (a period comparison)', () => {
     expect(announce).toHaveBeenLastCalledWith(expect.stringMatching(/^Escalated: Sep 2026 0\./));
   });
 
+  it('tells assistive tech the change too: in the slot announcement and the sr-only table', () => {
+    show([round12Block('compare-bars')]);
+    const plot = screen.getByTestId('chart-grouped_bar-plot');
+    act(() => plot.focus());
+    // The tooltip (and its change note) is aria-hidden: the announcement carries it.
+    expect(announce).toHaveBeenLastCalledWith('Closed by an analyst: Sep 2026 311, Oct 2026 298; change vs Sep 2026 −13 (−4.2%).');
+    fireEvent.keyDown(plot, { key: 'ArrowLeft' });
+    expect(announce).toHaveBeenLastCalledWith('Escalated: Sep 2026 0, Oct 2026 5; change vs Sep 2026 +5 (new).');
+    const table = screen.getByTestId('chart-data-table');
+    expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Metric', 'Sep 2026', 'Oct 2026', 'Change vs Sep 2026']);
+    const escalated = within(table).getAllByRole('row')[3];
+    expect(within(escalated).getAllByRole('cell').map((c) => c.textContent)).toEqual(['0', '5', '+5 (new)']);
+  });
+
   it('switches to horizontal bars and back through Show as', async () => {
     const user = userEvent.setup();
     show([round12Block('compare-bars')]);
@@ -127,20 +141,48 @@ describe('comparison tiles', () => {
     expect(tiles.textContent).not.toMatch(/Infinity|NaN|∞/);
   });
 
-  it('shows the server context line when a change could not be measured', () => {
+  it('shows the server baseline line, in the same "vs" words, when a change could not be measured', () => {
     const raw = ROUND12_RAW[3] as { items: Array<Record<string, unknown>> };
     const b = parseBlock({ ...raw, items: [{ key: 'x', label: 'Cases', value: 12, unit: 'count', context: 'Sep 2026: — · not measured' }] });
     show([b]);
-    expect(screen.getByTestId('comparison-chat-0-0')).toHaveTextContent('Sep 2026: — · not measured');
+    expect(screen.getByTestId('comparison-chat-0-0')).toHaveTextContent('vs Sep 2026: — · not measured');
   });
 
-  it('turns the small-sample flag into the badge on an unmeasured change too', () => {
+  it('flags small samples only on a change that is shown', () => {
     const raw = ROUND12_RAW[3] as { items: Array<Record<string, unknown>> };
-    const b = parseBlock({ ...raw, items: [{ key: 'x', label: 'FP rate', value: 60, unit: 'percent', context: 'Sep 2026: — · n < 20' }] });
+    const b = parseBlock({
+      ...raw,
+      items: [
+        { key: 'x', label: 'FP rate', value: 60, unit: 'percent', context: 'Sep 2026 to date: — · n < 20' },
+        { key: 'y', label: 'Cases', value: 1284, unit: 'count', delta: { value: 96, period_label: 'vs Sep 2026 to date', good_direction: 'none' }, context: 'Sep 2026 to date: 1,188 · +8.1%' },
+      ],
+    });
     show([b]);
-    const tile = screen.getByTestId('comparison-chat-0-0');
-    expect(within(tile).getByTestId('comparison-small-sample')).toHaveTextContent('n < 20');
-    expect(tile.textContent).toContain('Sep 2026: —n < 20');
+    const unmeasured = screen.getByTestId('comparison-chat-0-0');
+    // No change is drawn on it, so there is nothing to read with care: no badge, and the
+    // baseline reads like every other tile's.
+    expect(within(unmeasured).queryByTestId('comparison-small-sample')).toBeNull();
+    expect(within(unmeasured).getByTestId('comparison-baseline')).toHaveTextContent(/^vs Sep 2026 to date: —$/);
+    expect(screen.getByTestId('comparison-chat-0-1')).toHaveTextContent('vs Sep 2026 to date: 1,188');
+    expect(screen.queryByTestId('comparison-small-sample-note')).toBeNull();
+  });
+
+  it('says once, under the row, when every change shown rests on a small sample', () => {
+    const raw = ROUND12_RAW[3] as { items: Array<Record<string, unknown>> };
+    const delta = (value: number) => ({ value, period_label: 'vs Sep 2026 to date', good_direction: 'none' });
+    const b = parseBlock({
+      ...raw,
+      items: [
+        { key: 'a', label: 'Cases', value: 9, unit: 'count', delta: delta(2), context: 'Sep 2026 to date: 7 · +28.6% · n < 20' },
+        { key: 'b', label: 'Closed automatically', value: 4, unit: 'count', delta: delta(0), context: 'Sep 2026 to date: 4 · 0% · n < 20' },
+        { key: 'c', label: 'FP rate', value: 50, unit: 'percent', context: 'Sep 2026 to date: — · n < 20' },
+      ],
+    });
+    show([b]);
+    expect(screen.queryAllByTestId('comparison-small-sample')).toHaveLength(0);
+    expect(screen.getByTestId('comparison-small-sample-note')).toHaveTextContent(
+      'n < 20 for every change here: fewer than 20 in a compared period, so each change can swing widely.',
+    );
   });
 });
 
@@ -205,6 +247,62 @@ describe('brush zoom (line and area)', () => {
     fireEvent.click(screen.getByTestId('chart-zoom-reset'));
     expect(screen.queryByTestId('chart-zoom-bar')).toBeNull();
     expect(announce).toHaveBeenLastCalledWith('Zoom reset: showing all 12 points.');
+    expect(within(screen.getByTestId('chart-data-table')).getAllByRole('rowheader')).toHaveLength(12);
+  });
+
+  it('keeps one zoom row at a fixed height, so the plot never moves when a zoom starts or ends', () => {
+    show([round12Block('monthly-alerts')]);
+    const row = screen.getByTestId('chart-zoom-row');
+    expect(row).toHaveClass('h-6');
+    expect(row).toHaveAttribute('data-print-hide');
+    expect(within(row).getByTestId('chart-zoom-hint')).toHaveTextContent('Drag across the chart to zoom');
+    const plot = screen.getByTestId('chart-line-plot');
+    act(() => plot.focus());
+    fireEvent.keyDown(plot, { key: 'ArrowLeft', shiftKey: true });
+    fireEvent.keyDown(plot, { key: 'Enter' });
+    // The same row (not a new one above the plot) now holds the range and Reset.
+    expect(screen.getByTestId('chart-zoom-row')).toBe(row);
+    expect(within(row).getByTestId('chart-zoom-bar')).toHaveTextContent('Zoomed to Sep 2026 – Oct 2026 (2 of 12 points)');
+    expect(within(row).queryByTestId('chart-zoom-hint')).toBeNull();
+  });
+
+  it('keeps the keyboard cursor on the same period through a zoom and its reset', () => {
+    show([round12Block('monthly-alerts')]);
+    const plot = screen.getByTestId('chart-line-plot');
+    const tip = () => screen.getByTestId('chart-line-tooltip');
+    act(() => plot.focus());
+    // Cursor on Dec 2025 (index 1), select Dec 2025 – Feb 2026 to the RIGHT, then zoom.
+    fireEvent.keyDown(plot, { key: 'Home' });
+    fireEvent.keyDown(plot, { key: 'ArrowRight' });
+    fireEvent.keyDown(plot, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.keyDown(plot, { key: 'ArrowRight', shiftKey: true });
+    fireEvent.keyDown(plot, { key: 'Enter' });
+    expect(screen.getByTestId('chart-zoom-bar')).toHaveTextContent('Zoomed to Dec 2025 – Feb 2026 (3 of 12 points)');
+    // The cursor ended the selection on Feb 2026: it is still there, and still drawn.
+    expect(tip()).toHaveTextContent('Feb 2026');
+    expect(screen.getByTestId('chart-focus-ring')).toBeInTheDocument();
+    expect(announce).toHaveBeenLastCalledWith(expect.stringMatching(/^Zoomed to Dec 2025 – Feb 2026, 3 of 12 points\. Feb 2026: /));
+    fireEvent.keyDown(plot, { key: 'ArrowLeft' });
+    expect(tip()).toHaveTextContent('Jan 2026');
+    fireEvent.click(screen.getByTestId('chart-zoom-reset'));
+    // Back on the whole series, on the same month.
+    expect(tip()).toHaveTextContent('Jan 2026');
+    fireEvent.keyDown(plot, { key: 'ArrowLeft' });
+    expect(tip()).toHaveTextContent('Dec 2025');
+  });
+
+  it('drops a zoom when the grouping changes, and never brings it back', async () => {
+    const user = userEvent.setup();
+    show([round12Block('monthly-alerts')]);
+    const plot = screen.getByTestId('chart-line-plot');
+    act(() => plot.focus());
+    for (let i = 0; i < 3; i += 1) fireEvent.keyDown(plot, { key: 'ArrowLeft', shiftKey: true });
+    fireEvent.keyDown(plot, { key: 'Enter' });
+    expect(screen.getByTestId('chart-zoom-bar')).toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: 'Quarter' }));
+    expect(screen.queryByTestId('chart-zoom-bar')).toBeNull();
+    await user.click(screen.getByRole('radio', { name: 'Month' }));
+    expect(screen.queryByTestId('chart-zoom-bar')).toBeNull();
     expect(within(screen.getByTestId('chart-data-table')).getAllByRole('rowheader')).toHaveLength(12);
   });
 
@@ -279,11 +377,34 @@ describe('Download PNG and SVG', () => {
     expect(svg.startsWith('<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg"')).toBe(true);
     expect(svg).toContain('<title>Alerts by month</title>');
     expect(svg).toContain('Elastic');
-    expect(svg).not.toContain('Wazuh');
+    // The image says what the screen's legend and zoom bar said: a hidden series stays
+    // named as hidden, and the slice is a zoom of a longer series.
+    expect(svg).toContain('Wazuh (hidden)');
+    expect(svg).toContain('Zoomed to Jul 2026 – Oct 2026 (4 of 12 points) · Showing 1 of 2 series');
+    expect(svg).toContain('Last 12 months');
     expect(svg).toContain('Oct 2026');
     expect(svg).not.toContain('Nov 2025');
     expect(svg).not.toContain('var(');
     expect(announce).toHaveBeenCalledWith('SVG downloaded');
+  });
+
+  it('names a client-side grouping on the card, in the image and in the file names', async () => {
+    const user = userEvent.setup();
+    const { blobs, names } = captureDownloads();
+    show([round12Block('daily-cases')]);
+    await user.click(screen.getByRole('radio', { name: 'Month' }));
+    // The server's title still says "per day": the caption says what is shown.
+    expect(screen.getByTestId('block-caption')).toHaveTextContent('1 Aug – 9 Oct 2026 · Asia/Kolkata · grouped by month');
+    await user.click(within(await openMenu(user)).getByRole('menuitem', { name: 'Download CSV' }));
+    expect(names[0]).toMatch(/^agentic-soc-cases-opened-per-day-by-month-\d{8}-\d{4}Z\.csv$/);
+    await user.click(within(await openMenu(user)).getByRole('menuitem', { name: 'Download SVG' }));
+    expect(names[1]).toMatch(/^agentic-soc-chart-cases-opened-per-day-by-month-\d{8}-\d{4}Z\.svg$/);
+    const svg = await readBlob(blobs[1]);
+    expect(svg).toContain('1 Aug – 9 Oct 2026 · Asia/Kolkata · grouped by month');
+    expect(svg).toContain('Aug 2026');
+    // JSON is the server's block, ungrouped: its name does not claim a grouping.
+    await user.click(within(await openMenu(user)).getByRole('menuitem', { name: 'Download JSON' }));
+    expect(names[2]).toMatch(/^agentic-soc-cases-opened-per-day-\d{8}-\d{4}Z\.json$/);
   });
 
   it('rasterises the same image to a PNG at 2×', async () => {
@@ -398,9 +519,66 @@ describe('infographic Brief and the new templates', () => {
   it('prints the hero and highlights but stacks the charts one per row', () => {
     render(<BlockCard block={round12Block('posture-infographic')} index={0} staticMode />);
     expect(screen.getByTestId('infographic-hero')).toBeInTheDocument();
-    for (const g of screen.getAllByTestId('infographic-grid')) expect(g).not.toHaveClass('@[44rem]:grid-cols-2');
+    for (const g of screen.getAllByTestId('infographic-grid')) {
+      expect(g).not.toHaveClass('@[44rem]:grid-cols-2');
+      // No leaf spans columns on paper either: a span would create an implicit second
+      // track and seat two fixed-width charts side by side (jsdom has no container
+      // queries, so the class itself is what is checked).
+      for (const cell of Array.from(g.children)) expect(cell.className).not.toMatch(/col-span/);
+    }
     // Print shows the charts' data tables (WP-REP rule).
     expect(screen.getAllByTestId('chart-data-table').length).toBeGreaterThan(0);
+  });
+
+  it('keeps the hero group’s caption, "as of", truncation and storage notes', () => {
+    const base = JSON.parse(JSON.stringify(ROUND12_RAW[4])) as { sections: Array<{ blocks: Array<Record<string, unknown>> }> };
+    Object.assign(base.sections[0].blocks[1], {
+      caption: 'Sample · last 30 days',
+      truncated: true,
+      total: 7,
+      as_of: '2026-10-09T08:00:00Z',
+      downsampled_for_storage: true,
+    });
+    show([parseBlock(base)]);
+    const hero = screen.getByTestId('infographic-hero');
+    expect(within(hero).getByTestId('infographic-hero-caption')).toHaveTextContent('Sample · last 30 days · as of 2026-10-09 08:00 UTC');
+    expect(within(hero).getByTestId('infographic-hero-note')).toHaveTextContent('Showing top 4 of 7 · Downsampled for saved history');
+  });
+
+  it('does not repeat "Showing N of M" when the hero caption already states it', () => {
+    const base = JSON.parse(JSON.stringify(ROUND12_RAW[4])) as { sections: Array<{ blocks: Array<Record<string, unknown>> }> };
+    Object.assign(base.sections[0].blocks[1], { caption: 'Showing 4 of 7 · Sample', truncated: true, total: 7 });
+    show([parseBlock(base)]);
+    expect(screen.getByTestId('infographic-hero-caption')).toHaveTextContent('Showing 4 of 7 · Sample');
+    expect(screen.queryByTestId('infographic-hero-note')).toBeNull();
+  });
+
+  it('a comparison hero reads its baseline and flags a small-sample change, like the tiles', () => {
+    const base = JSON.parse(JSON.stringify(ROUND12_RAW[4])) as { sections: Array<{ blocks: unknown[] }> };
+    // The comparison group becomes the Brief's only KPI group (so it is the hero).
+    base.sections[0].blocks[1] = JSON.parse(JSON.stringify(ROUND12_RAW[3]));
+    show([parseBlock(base)]);
+    const hero = screen.getByTestId('infographic-hero');
+    const fp = within(hero).getAllByRole('listitem')[1];
+    expect(fp).toHaveTextContent('+2.1 pp (+12.9%)');
+    expect(fp).toHaveTextContent('vs Sep 2026: 16%');
+    expect(within(fp).getByTestId('comparison-small-sample')).toHaveTextContent('n < 20');
+    expect(within(hero).getByTestId('comparison-small-sample-note')).toHaveTextContent('fewer than 20 in a compared period');
+    expect(within(hero).getAllByRole('listitem')[2]).toHaveTextContent('+5 (new)');
+    expect(hero.textContent).not.toMatch(/Infinity|NaN|∞/);
+  });
+
+  it('does not say a section heading twice when its only card has the same title', () => {
+    const base = JSON.parse(JSON.stringify(ROUND12_RAW[4])) as { sections: Array<{ heading: string; blocks: Array<Record<string, unknown>> }> };
+    base.sections[2].heading = 'Rules that opened the MOST cases';
+    show([parseBlock(base)]);
+    const heading = screen.getByRole('heading', { level: 5, name: 'Rules that opened the MOST cases' });
+    expect(heading).toHaveClass('sr-only');
+    // The group keeps its name and the card keeps its visible title.
+    expect(screen.getByRole('group', { name: 'Rules that opened the MOST cases' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 6, name: 'Rules that opened the most cases' })).not.toHaveClass('sr-only');
+    // A heading over two charts stays visible.
+    expect(screen.getByRole('heading', { level: 5, name: 'Volume' })).not.toHaveClass('sr-only');
   });
 
   it('opens an executive or monthly Brief with its first summary as the lead', () => {

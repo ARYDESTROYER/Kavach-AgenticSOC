@@ -1717,10 +1717,34 @@ select:-webkit-autofill:focus {
   #socMain [data-testid='kpi-strip'] {
     break-inside: avoid;
   }
-  /* A chart that sizes itself by measuring its box on screen keeps those dimensions on
-     paper (scripts do not run between the print reflow and the printout), so its box
-     clips rather than letting bars run over the band below. */
+  /* The Human vs AI chart measures its box on screen and draws an SVG of exactly that
+     size; scripts do not run between the print reflow and the printout, so the SVG keeps
+     its on-screen size on paper. Three things keep it whole there (MEASURED in a real A4
+     PDF): the figure is laid out IN FLOW so the box takes the drawn chart's full height —
+     axis, baseline and ticks included — instead of clipping it to a shorter print box
+     (that printed a top gridline over a floating partial bar); `flex: none` stops the
+     box's on-screen `flex-1` basis from shrinking it back under the SVG; and the card is
+     kept on one page inside a plain block band (a monolithic SVG pushed across a page
+     inside the band's grid painted over the next band). Wider than the paper column, the
+     chart clips sideways only. */
   #socMain [data-testid='human-vs-ai-chart'] {
-    overflow: hidden !important;
+    flex: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow-x: clip !important;
+    overflow-y: visible !important;
+  }
+  #socMain [data-testid='human-vs-ai-figure'] {
+    position: relative !important;
+    inset: auto !important;
+  }
+  #socMain [data-testid='human-vs-ai'] {
+    break-inside: avoid;
+  }
+  #socMain [aria-labelledby='overview-band-flow'] > div {
+    display: block !important;
+  }
+  #socMain [aria-labelledby='overview-band-flow'] > div > * + * {
+    margin-top: 2rem;
   }
 }

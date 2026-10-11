@@ -245,8 +245,10 @@ function normaliseBounds(raw: unknown): ChatContextBounds {
     else if (key === 'allow_text_streaming') out.allow_text_streaming = value !== false;
     else if (typeof value === 'number' && Number.isInteger(value) && value > 0) out[key] = value;
   }
-  // Round 12 (SPEC D13): only an explicit `false` turns the brand ring off.
-  if (src.animated_brand === false) out.animated_brand = false;
+  // Round 12 (SPEC D13): the brand-ring switch, both ways (a browser that once saw it off
+  // keeps that in storage until the server says it is on again); absent on an older
+  // backend, which leaves the browser's last-known value alone.
+  if (typeof src.animated_brand === 'boolean') out.animated_brand = src.animated_brand;
   return out;
 }
 

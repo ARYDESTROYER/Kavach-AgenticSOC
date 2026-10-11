@@ -36,6 +36,11 @@ export interface ChatActivity {
   startedAt: number;
   /** `local`: this tab's runner; `peer`: another tab; `server`: the backend. */
   source: 'local' | 'peer' | 'server';
+  /**
+   * This tab's runner stopped reading the answer while nobody looks at it (it follows
+   * the turn through `GET /chat/turns/active` and reads the rest when it ends).
+   */
+  parked?: boolean;
 }
 
 /** One destination's state: the glyph's status and its text ('' when idle). */

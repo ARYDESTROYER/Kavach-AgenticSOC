@@ -36,3 +36,15 @@ def test_context_route_reports_the_switch() -> None:
         cfg = state.prefs.chat_agent.model_copy(update={"animated_brand": False})
         client.portal.call(state.update_prefs, state.prefs.model_copy(update={"chat_agent": cfg}))
         assert client.get("/api/chat/context").json()["bounds"]["animated_brand"] is False
+
+
+def test_switching_it_back_on_is_never_served_from_the_context_cache() -> None:
+    with _client() as client:
+        state = client.app.state.tlsoc
+        assert client.get("/api/chat/context").json()["bounds"]["animated_brand"] is True
+        off = state.prefs.chat_agent.model_copy(update={"animated_brand": False})
+        client.portal.call(state.update_prefs, state.prefs.model_copy(update={"chat_agent": off}))
+        assert client.get("/api/chat/context").json()["bounds"]["animated_brand"] is False
+        on = state.prefs.chat_agent.model_copy(update={"animated_brand": True})
+        client.portal.call(state.update_prefs, state.prefs.model_copy(update={"chat_agent": on}))
+        assert client.get("/api/chat/context").json()["bounds"]["animated_brand"] is True

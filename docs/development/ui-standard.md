@@ -652,7 +652,10 @@ embedded in a denser surface (a panel, a tab, a chat answer), and the default de
 strip that stands alone. Density changes padding and numeral scale only; it must never alter
 the cell count or the per-breakpoint divider rules above, which are tuned to an exact number
 of cells. Numerals roll (count up) on the first load and on a window change, never on a LIVE
-or manual refresh (`roll={false}`): data on an automatic refresh does not animate.
+or manual refresh (`roll={false}`): data on an automatic refresh does not animate. The rule
+covers every counting numeral on the page — donut centres and hero counts included — not
+only the strip. A strip tile's focus ring is drawn inset: the tile's cell clips anything
+drawn outside it, and an outset ring there is invisible to a keyboard user.
 
 A hero strip (`numeral="hero"`, the primary dashboard) reads top to bottom as a quiet
 sentence-case label, the numeral, and exactly one muted **context line** that answers
@@ -673,7 +676,12 @@ transparent — no card per instrument, no lattice hairlines between cells, no c
 the gutters do the separating. A band draws at most one rule. Instruments in one band row
 share one height (`items-stretch`, instruments `h-full flex flex-col`), and a list fills its
 share of that height (a queue shows as many rows as fit, within a floor and a cap) instead of
-driving the row taller. Above 1920px a dashboard widens by COLUMN COUNT, not by stretching:
+driving the row taller. The floor is set in rem, so a larger browser text size grows it with
+the rows, and a wider screen never shows fewer rows than a narrower one (the queue reserves
+six rows from 1920px, where side-by-side instruments make its band shorter). Instruments
+side by side that share a structure (two snapshots) share their rows (`grid-rows-subgrid`),
+so a caption that wraps in one moves both donuts and both footnotes together. The dashbar
+pins from `sm` up; on a phone it scrolls away with the page. Above 1920px a dashboard widens by COLUMN COUNT, not by stretching:
 `wide` width, rising to 2400px at `4xl` (≥2200px), where bands share one track template
 with a 460px rail. A secondary fold is ONE disclosure — flat inside, with no nested cards or
 collapsibles — whose open/closed choice is remembered and whose collapsed header states in
@@ -689,6 +697,17 @@ independently, so each band states its own. A figure that repeats on the page (a
 count beside a stock, a tile beside the instrument that partitions it) gets a distinct label
 and a quiet cross-reference line, never a second identical label.
 
+Every instrument describes ONE population: a donut's centre, its legend and any row beside
+it count the same cases over the same span, and a centre labelled "AI verdicts" counts only
+verdicted cases. Where a band mixes spans (a fold holding window figures, store-wide all-time
+counts and live coverage), each instrument's caption names its span ("last 24 hours", "all
+time", "right now"), and a row that drills through opens a list over that same span — an
+all-time count opens the list without a window. A tally over a bounded case page says so on
+the instrument ("Lower bound · counted from the newest 200 of 450"), and its change chip is
+withheld, since a change between two floors is not a change. A collapsed summary names a
+"top" item only when it genuinely leads (more than one case, ahead of the next) and states
+its count.
+
 Period-over-period chips on small counts state the absolute difference ("+8"), not a
 percentage of a tiny base; percentages are for bases of 20 or more and moves under 100%,
 and the chip's title names both counts. On a dashboard the chip is borderless tinted text.
@@ -701,7 +720,11 @@ of the pointed bucket; never a smoothed line over measured points only.
 1 × 4 set of unboxed stats about 40%) so the table keeps most of the height (about ten rows
 at 1440 × 900). What the rows ARE stays on screen — the rows-read sentence with its "lower
 bound", the completeness badge, any range narrowing — while the long explanation of how
-they were read sits behind one "About these rows" disclosure.
+they were read sits behind one "About these rows" disclosure. A whole-window partition beside
+the stats lays its label · value pairs out two per row, so it never makes the stats column
+taller than the trend (Resolved / Closed keeps ten rows at 1440 × 900). Below `sm` the
+dialog's actions sit under its title; below `md` the switcher, the filters and the evidence
+scroll as one body, so a phone never shows three fixed bands over a sliver of rows.
 
 Observed-outcome metrics embedded in another operational page use the integrated
 `ComparisonMetric` variant. Keep the shared reporting window, evidence state, and

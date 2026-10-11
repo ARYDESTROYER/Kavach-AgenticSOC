@@ -13,7 +13,12 @@
  * computed (`delta`, its `vs <period>` label, and the relative change and small-sample
  * flag it wrote into the tile's context). The baseline value is the subject minus the
  * change. A zero baseline reads "new" — never ∞ or NaN — and a change that could not be
- * measured shows the server's own context line instead. Tiles are display only.
+ * measured shows the server's own baseline line in the same "vs <period>: …" words.
+ *
+ * The small-sample flag qualifies a CHANGE ("fewer than 20 behind either compared
+ * value"), so it is drawn only on a tile that shows one; when every change shown is
+ * flagged, one note under the row says so instead of a badge on each tile. Tiles are
+ * display only.
  */
 import * as React from 'react';
 
@@ -55,6 +60,8 @@ export interface ComparisonFacts {
   isNew: boolean;
   /** The small-sample threshold the server flagged ("n < 20"), else null. */
   smallSample: number | null;
+  /** The tile shows a change (both compared values were measured). */
+  measured: boolean;
 }
 
 /** What a comparison tile shows, derived only from the item's own fields. */
@@ -67,12 +74,12 @@ export function comparisonFacts(item: KpiItem): ComparisonFacts {
   const d = item.delta;
   const period = d ? d.period_label.replace(/^vs\.?\s+/i, '').trim() || null : null;
   if (!d || item.value === null) {
-    return { period, baseline: null, abs: DASH, pct: DASH, isNew: false, smallSample };
+    return { period, baseline: null, abs: DASH, pct: DASH, isNew: false, smallSample, measured: false };
   }
   const baseline = Math.round((item.value - d.value) * 1e6) / 1e6;
   const change = changeParts(item.value, baseline, item.unit);
   const pct = serverPct ? (serverPct === 'new' ? 'new' : serverPct.replace(/^-/, MINUS)) : change.pct;
-  return { period, baseline, abs: change.abs, pct, isNew: pct === 'new', smallSample };
+  return { period, baseline, abs: change.abs, pct, isNew: pct === 'new', smallSample, measured: true };
 }
 
 function valueNode(item: KpiItem): React.ReactNode {
@@ -93,7 +100,7 @@ function valueNode(item: KpiItem): React.ReactNode {
   );
 }
 
-function SmallSampleBadge({ n }: { n: number }) {
+export function SmallSampleBadge({ n }: { n: number }) {
   return (
     <span
       className="ml-1.5 inline-flex items-center rounded-sm border border-warning/40 bg-warning/10 px-1 text-2xs font-medium text-warning-text"
@@ -105,7 +112,7 @@ function SmallSampleBadge({ n }: { n: number }) {
   );
 }
 
-/** The server's context line without its small-sample part (that one is a badge). */
+/** The server's context line without its small-sample part (that one is a badge or the row note). */
 function contextWithoutFlag(context: string): string {
   return context
     .split(' · ')
@@ -113,24 +120,69 @@ function contextWithoutFlag(context: string): string {
     .join(' · ');
 }
 
-function ComparisonTile({ item, testId, staticMode }: { item: KpiItem; testId: string; staticMode: boolean }) {
+/** "Sep 2026: 1,188", "Sep 2026 to date: —": the server's baseline line names its period first. */
+const PERIOD_FIRST = /^[^:·]+:\s/;
+
+/** How a row of comparison tiles discloses small samples (pure; exported for tests). */
+export interface SmallSamplePlan {
+  /** The threshold of the note under the row, or null for no note. */
+  n: number | null;
+  /** Every change shown is flagged: the note says so and no tile carries a badge. */
+  every: boolean;
+}
+
+export function smallSamplePlan(items: readonly KpiItem[]): SmallSamplePlan {
+  const facts = items.map(comparisonFacts).filter((f) => f.measured);
+  const flagged = facts.filter((f) => f.smallSample !== null);
+  if (!flagged.length) return { n: null, every: false };
+  return { n: flagged[0].smallSample, every: flagged.length === facts.length && facts.length >= 2 };
+}
+
+/**
+ * The line under a comparison tile's figure: the baseline period and its value
+ * ("vs Sep 2026: 1,188"), with the small-sample badge when the tile's change is flagged
+ * and `badge` allows it. A change that could not be measured reads the server's own
+ * baseline line in the same words ("vs Sep 2026 to date: —"), never a badge: there is no
+ * change on it to read with care. Shared by the tile row and the infographic hero.
+ */
+export function comparisonSecondary(item: KpiItem, badge = true): React.ReactNode {
+  const facts = comparisonFacts(item);
+  if (facts.measured) {
+    return (
+      <span className="font-sans font-normal" data-testid="comparison-baseline">
+        vs {facts.period ?? 'the previous period'}: {formatValue(facts.baseline, item.unit)}
+        {badge && facts.smallSample !== null ? <SmallSampleBadge n={facts.smallSample} /> : null}
+      </span>
+    );
+  }
+  const line = item.context ? contextWithoutFlag(item.context) : '';
+  if (!line) return undefined;
+  return (
+    <span className="font-sans font-normal" data-testid="comparison-baseline">
+      {PERIOD_FIRST.test(line) ? `vs ${line}` : line}
+    </span>
+  );
+}
+
+/** The note under a row of comparison figures that carries small-sample changes. */
+export function SmallSampleNote({ plan, className }: { plan: SmallSamplePlan; className?: string }) {
+  if (plan.n === null) return null;
+  return (
+    <p className={cn('text-xs text-muted-foreground', className)} data-testid="comparison-small-sample-note">
+      {plan.every
+        ? `n < ${plan.n} for every change here: fewer than ${plan.n} in a compared period, so each change can swing widely. Read them with care.`
+        : `n < ${plan.n}: fewer than ${plan.n} in a compared period, so the change can swing widely. Read it with care.`}
+    </p>
+  );
+}
+
+function ComparisonTile({ item, testId, staticMode, badge }: { item: KpiItem; testId: string; staticMode: boolean; badge: boolean }) {
   const facts = comparisonFacts(item);
   const accent = item.semantic ? ACCENT[item.semantic] ?? 'primary' : 'primary';
   const icon = item.semantic ? SEMANTIC_ICON[item.semantic] : undefined;
   const trend = item.trend && item.trend.points.length >= 3 ? item.trend : null;
-  const measured = item.delta && facts.baseline !== null;
+  const measured = facts.measured && item.delta;
   const change = measured ? `${facts.abs} (${facts.pct})` : '';
-  const secondary = measured ? (
-    <span className="font-sans font-normal" data-testid="comparison-baseline">
-      vs {facts.period ?? 'the previous period'}: {formatValue(facts.baseline, item.unit)}
-      {facts.smallSample !== null ? <SmallSampleBadge n={facts.smallSample} /> : null}
-    </span>
-  ) : item.context ? (
-    <span className="font-sans font-normal">
-      {contextWithoutFlag(item.context)}
-      {facts.smallSample !== null ? <SmallSampleBadge n={facts.smallSample} /> : null}
-    </span>
-  ) : undefined;
   return (
     <div role="listitem" className="flex min-w-0 flex-col" data-testid={`comparison-${testId}`}>
       <KpiTile
@@ -140,7 +192,7 @@ function ComparisonTile({ item, testId, staticMode }: { item: KpiItem; testId: s
         density="compact"
         accent={accent}
         icon={icon}
-        secondary={secondary}
+        secondary={comparisonSecondary(item, badge)}
         delta={measured && item.delta ? { value: item.delta.value, label: change } : undefined}
         goodDirection={item.delta?.good_direction ?? 'none'}
         testId={testId}
@@ -173,19 +225,15 @@ export interface ComparisonTilesProps {
 }
 
 export function ComparisonTiles({ items, idPrefix, staticMode = false, framed = false, className }: ComparisonTilesProps) {
-  const small = items.map((it) => comparisonFacts(it).smallSample).find((n): n is number => n !== null);
+  const plan = smallSamplePlan(items);
   return (
     <div className={cn('min-w-0', className)} data-testid="block-comparison">
       <KpiTileGrid count={items.length} framed={framed} containerClassName={framed ? undefined : KPI_HANG} role="list">
         {items.map((item, i) => (
-          <ComparisonTile key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} staticMode={staticMode} />
+          <ComparisonTile key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} staticMode={staticMode} badge={!plan.every} />
         ))}
       </KpiTileGrid>
-      {small !== undefined ? (
-        <p className="mt-1.5 text-xs text-muted-foreground" data-testid="comparison-small-sample-note">
-          n &lt; {small}: fewer than {small} in a compared period, so the change can swing widely. Read it with care.
-        </p>
-      ) : null}
+      <SmallSampleNote plan={plan} className="mt-1.5" />
     </div>
   );
 }

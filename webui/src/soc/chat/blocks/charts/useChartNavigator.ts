@@ -16,7 +16,9 @@
  *     must not grow one live region per chart;
  *   - with `onRange` (a zoomable line/area chart), Shift+←/→ (and Shift+Home/End) grow a
  *     range from the position where the selection started, Enter applies it and Esc
- *     drops it — the keyboard twin of the pointer brush (WCAG 2.1.1, 2.5.7).
+ *     drops it — the keyboard twin of the pointer brush (WCAG 2.1.1, 2.5.7);
+ *   - `moveTo` re-addresses the cursor when the chart's positions are renumbered (a zoom
+ *     or its reset), so it stays on the SAME period, without a second announcement.
  */
 import * as React from 'react';
 
@@ -63,6 +65,11 @@ export interface ChartNavigator {
   hover: (cursor: ChartCursor | null) => void;
   /** Keep the tooltip open while the pointer is over it. */
   cancelHide: () => void;
+  /**
+   * Put the cursor on `next` without announcing it or changing whether the tooltip is
+   * open (the caller renumbered the positions and announces the change itself).
+   */
+  moveTo: (next: ChartCursor) => void;
   scheduleHide: () => void;
   /** Spread onto the focusable plot element. */
   plotProps: {
@@ -310,6 +317,12 @@ export function useChartNavigator({
     };
   }, [shown, valid]);
 
+  const moveTo = React.useCallback((next: ChartCursor) => {
+    dismissedFor.current = null;
+    setAnchor(null);
+    setCursor(next);
+  }, []);
+
   return {
     cursor: valid,
     open: shown,
@@ -317,6 +330,7 @@ export function useChartNavigator({
     range,
     hover,
     cancelHide,
+    moveTo,
     scheduleHide,
     plotRef,
     tipRef,

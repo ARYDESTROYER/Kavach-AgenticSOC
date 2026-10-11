@@ -249,6 +249,21 @@ describe('GET /api/chat/context', () => {
     expect(empty.bounds).toEqual(DEFAULT_CHAT_BOUNDS);
     expect(empty.tools).toEqual([]);
   });
+
+  it('carries the brand-ring switch both ways, and leaves it out when absent or malformed', async () => {
+    // Round 12 (SPEC D13): `true` must come through too, so a browser that once stored
+    // "off" turns the ring back on when the administrator does.
+    for (const [sent, expected] of [
+      [true, true],
+      [false, false],
+      [undefined, undefined],
+      ['yes', undefined],
+    ] as const) {
+      stubFetch(() => json({ bounds: sent === undefined ? {} : { animated_brand: sent } }));
+      const context = await getChatContext({});
+      expect(context.bounds.animated_brand).toBe(expected);
+    }
+  });
 });
 
 describe('conversations', () => {

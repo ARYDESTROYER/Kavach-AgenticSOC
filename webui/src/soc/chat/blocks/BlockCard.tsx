@@ -28,7 +28,9 @@
  * Round 12 chart and block upgrades (WP-BLK, SYNTHESIS-chat P0-6/P0-8), all client-side
  * and read-only (never a re-query, never a model call):
  *   - "Group by" re-bins a calendar series into a coarser unit the server allowed; the
- *     table, Copy data and the downloads follow the grouping shown;
+ *     table, Copy data and the downloads follow the grouping shown, and the caption, the
+ *     image subtitle and the CSV / image file names say "grouped by month" (the server's
+ *     title still names its own bucket);
  *   - Download PNG / SVG draws the chart AS SHOWN (grouping, zoom, hidden series) in the
  *     card's theme (`charts/export-image.ts`);
  *   - Full width takes a card out of the conversation lane to the conversation's gutters
@@ -464,7 +466,10 @@ export function BlockCard({
   const stepQuery = block.from_step && queryForStep ? queryForStep(block.from_step) : null;
   const query = block.type === 'query' ? block.query : stepQuery || null;
   const openTarget = openTargetFor(block);
-  const stamp = () => `agentic-soc-${slug(title)}-${fileStamp()}Z`;
+  // A client-side grouping is named wherever the grouped numbers go: the caption, the
+  // image subtitle and the file names (the server's title still names its own bucket).
+  const groupedBy = block.type === 'chart' && rebin && rebin !== rebinOptions[0] && rebinOptions.includes(rebin) ? BUCKET_NAME[rebin] ?? null : null;
+  const stamp = (grouping: string | null = null) => `agentic-soc-${slug(title)}${grouping ? `-by-${slug(grouping)}` : ''}-${fileStamp()}Z`;
 
   // "Showing top 5 of 20" under the body, unless the caption above already says it.
   const shown = block.truncated ? shownCount(block) : 0;
@@ -475,6 +480,7 @@ export function BlockCard({
   if (block.type === 'report') captionParts.push(reportScopeLine(block));
   if (block.caption) captionParts.push(block.caption);
   if (block.as_of) captionParts.push(`as of ${formatUtc(block.as_of)}`);
+  const viewCaption = groupedBy ? [...captionParts, `grouped by ${groupedBy}`] : captionParts;
 
   const onCopyData = () => {
     if (!tabular) return;
@@ -491,6 +497,8 @@ export function BlockCard({
       hidden: shownView?.hidden,
       title,
       subtitle: captionParts.join(' · ') || undefined,
+      grouping: groupedBy ?? undefined,
+      zoom: shownView?.zoom ?? null,
       host: figureRef.current,
     };
     const ok = format === 'svg' ? downloadChartSvg(req) : await downloadChartPng(req);
@@ -575,7 +583,7 @@ export function BlockCard({
             <DropdownMenuItem
               onSelect={() => {
                 // The BOM makes Excel read the file as UTF-8 (Round 12 WP-REP R15).
-                if (downloadText(`${stamp()}.csv`, 'text/csv;charset=utf-8', `${UTF8_BOM}${toCSV(tabular)}`)) announce('CSV downloaded');
+                if (downloadText(`${stamp(groupedBy)}.csv`, 'text/csv;charset=utf-8', `${UTF8_BOM}${toCSV(tabular)}`)) announce('CSV downloaded');
               }}
             >
               <Download className="size-3.5" aria-hidden />
@@ -649,9 +657,9 @@ export function BlockCard({
           >
             {titleNode(block, title)}
           </Heading>
-          {captionParts.length ? (
+          {viewCaption.length ? (
             <p className="break-words text-xs text-muted-foreground" data-testid="block-caption">
-              {captionParts.join(' · ')}
+              {viewCaption.join(' · ')}
             </p>
           ) : null}
         </div>
@@ -710,7 +718,7 @@ export function BlockCard({
           <SheetContent side="right" size="full" className="max-w-[min(98vw,1400px)] overflow-y-auto">
             <SheetHeader>
               <SheetTitle>{title}</SheetTitle>
-              <SheetDescription>{captionParts.join(' · ') || 'Expanded view'}</SheetDescription>
+              <SheetDescription>{viewCaption.join(' · ') || 'Expanded view'}</SheetDescription>
             </SheetHeader>
             <div className="min-w-0 px-6 pb-6">
               <BlocksContext.Provider value={expandedCtx}>

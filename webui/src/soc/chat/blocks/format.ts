@@ -141,21 +141,45 @@ export interface ChangeParts {
 }
 
 /**
- * The change from `baseline` to `current` (the backend `compare_values` rule): a rate
- * changes by percentage POINTS, the relative change is one decimal of the baseline, and
- * a zero baseline with a non-zero current value is "new" — never infinity or NaN.
+ * Python's `round(x, digits)`, exactly: the EXACT binary value of `x` rounded to `digits`
+ * decimals, an exact tie going to the even digit (`round(1.25, 1)` is 1.2, where
+ * `toFixed` and "round half up" give 1.3). The server computes every comparison figure
+ * this way (`blocks.compare_values`), so the client's own figure for the same change
+ * reads the same as the server's tiles and delta table.
+ *
+ * A tie is only possible where the scaled value is exactly representable: `x` is an odd
+ * multiple of 2^-(digits+1). Every other value is correctly rounded by `toFixed`, which
+ * works on the exact binary value too.
+ */
+export function roundHalfEven(x: number, digits: number): number {
+  if (!Number.isFinite(x) || Math.abs(x) >= 1e21) return x;
+  const scaled = x * 2 ** (digits + 1);
+  if (Number.isInteger(scaled) && Math.abs(scaled) % 2 === 1) {
+    const p = 10 ** digits;
+    const k = Math.floor(Math.abs(x) * p);
+    return (Math.sign(x) * (k % 2 === 0 ? k : k + 1)) / p;
+  }
+  return Number(x.toFixed(digits));
+}
+
+/**
+ * The change from `baseline` to `current`, by the backend `compare_values` rule to the
+ * last digit (`round(cur − base, 6)`, then `round(delta / |base| × 100, 1)`, both
+ * half-even — {@link roundHalfEven}): a rate changes by percentage POINTS, the relative
+ * change is one decimal of the baseline, and a zero baseline with a non-zero current
+ * value is "new" — never infinity or NaN.
  */
 export function changeParts(current: number | null | undefined, baseline: number | null | undefined, unit: ValueUnit): ChangeParts {
   const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
   if (!ok(current) || !ok(baseline)) return { delta: null, abs: DASH, pct: DASH, isNew: false };
-  const delta = Math.round((current - baseline) * 1e6) / 1e6;
+  const delta = roundHalfEven(current - baseline, 6);
   const sign = delta > 0 ? '+' : delta < 0 ? MINUS : '';
   const abs = delta === 0 ? '0' : `${sign}${formatDelta(Math.abs(delta), unit)}`;
   if (baseline === 0) {
     return current === 0 ? { delta, abs, pct: '0%', isNew: false } : { delta, abs, pct: 'new', isNew: true };
   }
-  const pct = Math.round((Math.abs(delta) / Math.abs(baseline)) * 1000) / 10;
-  return { delta, abs, pct: pct === 0 ? '0%' : `${sign}${pct.toFixed(1)}%`, isNew: false };
+  const pct = roundHalfEven((delta / Math.abs(baseline)) * 100, 1);
+  return { delta, abs, pct: pct === 0 ? '0%' : `${pct > 0 ? '+' : MINUS}${Math.abs(pct).toFixed(1)}%`, isNew: false };
 }
 
 /** Compact axis-tick text (no unit noise on counts; "1.2k" past four digits). */

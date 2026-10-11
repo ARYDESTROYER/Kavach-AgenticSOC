@@ -12,6 +12,7 @@
 import { downloadBlob, exportFileName } from '@/lib/download';
 
 import type { ChartBlock } from '../schema';
+import type { ChartZoomView } from './export-context';
 import { chartSvg, type ChartSvgOptions, type Paint, type PaintResolver } from './export-svg';
 
 /** Light-theme stand-ins for an environment that cannot resolve a colour (no layout engine). */
@@ -96,6 +97,10 @@ export interface ChartImageRequest {
   subtitle?: string;
   /** Series hidden by a legend toggle (colours stay bound to their index). */
   hidden?: readonly boolean[];
+  /** The coarser unit a client-side Group by shows ("month"): the subtitle and file name say it. */
+  grouping?: string;
+  /** The brush zoom the block is cut to: the image says it is a slice. */
+  zoom?: ChartZoomView | null;
   /** The element whose theme the image takes (the block card). */
   host: Element | null;
 }
@@ -103,10 +108,23 @@ export interface ChartImageRequest {
 function render(req: ChartImageRequest, extra: Partial<ChartSvgOptions> = {}) {
   const paint = paintResolver(req.host);
   try {
-    return chartSvg(req.block, { title: req.title, subtitle: req.subtitle, hidden: req.hidden, paint, ...extra });
+    return chartSvg(req.block, {
+      title: req.title,
+      subtitle: req.subtitle,
+      hidden: req.hidden,
+      grouping: req.grouping,
+      zoom: req.zoom,
+      paint,
+      ...extra,
+    });
   } finally {
     paint.dispose();
   }
+}
+
+/** The file name of a chart image: the title, and the grouping when Group by changed it. */
+export function chartFileName(req: Pick<ChartImageRequest, 'title' | 'grouping'>, ext: 'png' | 'svg', now?: Date): string {
+  return exportFileName('chart', req.grouping ? `${req.title} by ${req.grouping}` : req.title, ext, now);
 }
 
 /** The chart as a standalone SVG document (exported for tests and the SVG download). */
@@ -116,7 +134,7 @@ export function chartSvgDocument(req: ChartImageRequest): string {
 
 /** Save the chart as an `.svg` file. Returns whether a download started. */
 export function downloadChartSvg(req: ChartImageRequest): boolean {
-  return downloadBlob(exportFileName('chart', req.title, 'svg'), new Blob([chartSvgDocument(req)], { type: 'image/svg+xml;charset=utf-8' }));
+  return downloadBlob(chartFileName(req, 'svg'), new Blob([chartSvgDocument(req)], { type: 'image/svg+xml;charset=utf-8' }));
 }
 
 /** How long a rasterisation may take before it is given up (ms). */
@@ -168,5 +186,5 @@ export async function downloadChartPng(req: ChartImageRequest): Promise<boolean>
   const { svg, width, height } = render(req);
   const blob = await rasterizeSvg(svg, width, height);
   if (!blob) return false;
-  return downloadBlob(exportFileName('chart', req.title, 'png'), blob);
+  return downloadBlob(chartFileName(req, 'png'), blob);
 }

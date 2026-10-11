@@ -12,9 +12,14 @@
  * line, never 0) and the same labels (`format.ts`), with every colour RESOLVED through
  * `paint` to a plain `#rrggbb` (+ opacity) so the file renders anywhere, in either theme.
  *
- * The caller passes the block AS SHOWN (re-binned, zoomed, hidden series removed), so
- * the image is what the analyst was looking at. Every string is XML-escaped; no block
- * string ever becomes an attribute other than escaped text content (G2).
+ * The caller passes the block AS SHOWN (re-binned, zoomed, hidden series flagged), so
+ * the image is what the analyst was looking at — and the image SAYS how it differs from
+ * the server's answer, because on a slide or a ticket the Group by control, the zoom bar
+ * and the struck-through legend entry are not there to say it: "grouped by month" joins
+ * the subtitle, a zoom reads "Zoomed to <first> – <last> (n of N points)", and a hidden
+ * series stays in the legend marked "(hidden)" with "Showing 1 of 2 series" (and, for a
+ * stack, that each stack totals the shown series only). Every string is XML-escaped; no
+ * block string ever becomes an attribute other than escaped text content (G2).
  */
 import { token } from '@/soc/components/palette';
 
@@ -32,6 +37,7 @@ import {
 } from '../format';
 import type { BlockProvenance, ChartBlock } from '../schema';
 import { honestChart } from '../views';
+import type { ChartZoomView } from './export-context';
 import {
   BAR_MAX,
   areaPath,
@@ -70,6 +76,10 @@ export interface ChartSvgOptions {
   provenance?: BlockProvenance;
   /** `hidden[k]`: series k was hidden by its legend toggle (colours stay bound to k). */
   hidden?: readonly boolean[];
+  /** The coarser unit a client-side Group by shows ("month"), else absent. */
+  grouping?: string;
+  /** The brush zoom the block is cut to (the block passed IS that slice), else absent. */
+  zoom?: ChartZoomView | null;
 }
 
 export interface ChartSvg {
@@ -165,7 +175,12 @@ interface LegendItem {
   label: string;
   value?: string;
   line?: boolean;
+  /** Hidden by its legend toggle: a faint swatch and "(hidden)" after the label. */
+  hidden?: boolean;
 }
+
+/** The suffix a hidden series' legend entry carries. */
+export const HIDDEN_SUFFIX = ' (hidden)';
 
 /** Lay legend items out in wrapping rows from (x, y) within `maxX`; returns the SVG and its height. */
 function legendRows(items: LegendItem[], x: number, y: number, maxX: number, fg: Paint, muted: Paint, mono: boolean): { svg: string; height: number } {
@@ -175,19 +190,20 @@ function legendRows(items: LegendItem[], x: number, y: number, maxX: number, fg:
   let cy = y;
   const rowH = 20;
   for (const it of items) {
-    const label = clipText(it.label, 36);
+    const label = `${clipText(it.label, 36)}${it.hidden ? HIDDEN_SUFFIX : ''}`;
     const valueW = it.value ? (it.value.length + 1) * CHAR12 : 0;
     const w = 16 + label.length * CHAR12 + valueW + 18;
     if (cx > x && cx + w > maxX) {
       cx = x;
       cy += rowH;
     }
+    const swatch = it.hidden ? 0.3 : 1;
     parts.push(
       it.line
-        ? `<rect x="${r2(cx)}" y="${r2(cy + 6)}" width="12" height="2" rx="1"${fill(it.color)}/>`
-        : `<rect x="${r2(cx)}" y="${r2(cy + 2)}" width="10" height="10" rx="2"${fill(it.color)}/>`,
+        ? `<rect x="${r2(cx)}" y="${r2(cy + 6)}" width="12" height="2" rx="1"${fill(it.color, swatch)}/>`
+        : `<rect x="${r2(cx)}" y="${r2(cy + 2)}" width="10" height="10" rx="2"${fill(it.color, swatch)}/>`,
     );
-    parts.push(text(cx + 16, cy + 11, label, fg, { mono }));
+    parts.push(text(cx + 16, cy + 11, label, it.hidden ? muted : fg, { mono }));
     if (it.value) parts.push(text(cx + 16 + label.length * CHAR12 + 6, cy + 11, it.value, muted));
     cx += w;
   }
@@ -450,8 +466,24 @@ function funnel(block: ChartBlock, ctx: Ctx, styles: SeriesStyle[]): { svg: stri
 }
 
 /**
- * The chart as an SVG document: title, subtitle (caption, unit and the time zone of a
- * time axis), legend, plot and a footer (provenance and when the image was made).
+ * What the image must say about the view it shows (pure; exported for tests): a zoom
+ * ("Zoomed to Jul 2026 – Oct 2026 (4 of 12 points)") and hidden series ("Showing 1 of 2
+ * series", and for a stack that each stack totals the shown series only).
+ */
+export function viewNotes(block: ChartBlock, visible: readonly number[], zoom: ChartZoomView | null): string[] {
+  const notes: string[] = [];
+  if (zoom) notes.push(`Zoomed to ${zoom.first} – ${zoom.last} (${zoom.shown} of ${zoom.total} points)`);
+  const total = block.series.length;
+  if (block.kind !== 'donut' && total >= 2 && visible.length < total) {
+    notes.push(`Showing ${visible.length} of ${total} series${block.kind === 'stacked_bar' ? ', so each stack totals the shown series only' : ''}`);
+  }
+  return notes;
+}
+
+/**
+ * The chart as an SVG document: title, subtitle (caption, grouping, unit and the time
+ * zone of a time axis), the view notes (zoom, hidden series), legend, plot and a footer
+ * (provenance and when the image was made).
  */
 export function chartSvg(raw: ChartBlock, options: ChartSvgOptions): ChartSvg {
   const block = honestChart(raw);
@@ -478,12 +510,19 @@ export function chartSvg(raw: ChartBlock, options: ChartSvgOptions): ChartSvg {
   }
   const sub: string[] = [];
   if (options.subtitle) sub.push(options.subtitle);
+  if (options.grouping) sub.push(`grouped by ${options.grouping}`);
   // The unit, unless it is a plain count (the title already says what is counted).
   if (block.unit !== 'count') sub.push(unitLabel(block.unit));
   if (block.x.kind === 'time') sub.push(`times in ${axisZone(block.x)}`);
   for (const line of wrapText(sub.join(' · '), Math.floor((W - 2 * PAD) / 7.4), 2)) {
     y += 19;
     body.push(text(PAD, y, line, ctx.muted, { size: 13 }));
+  }
+  // How this view differs from the whole answer, in the foreground ink: a reader of the
+  // image cannot see the zoom bar or the legend toggles that say it on screen.
+  for (const line of wrapText(viewNotes(block, ctx.visible, options.zoom ?? null).join(' · '), Math.floor((W - 2 * PAD) / 7.2), 2)) {
+    y += 18;
+    body.push(text(PAD, y, line, ctx.fg, { size: 12, weight: 500 }));
   }
   y += 14;
 
@@ -501,10 +540,10 @@ export function chartSvg(raw: ChartBlock, options: ChartSvgOptions): ChartSvg {
   } else {
     plot = cartesian(block, ctx, styles);
   }
-  // A multi-series chart names what it draws, even when a toggle left one series.
+  // A multi-series chart names every series: a hidden one stays, marked "(hidden)".
   if (block.kind !== 'donut' && block.series.length >= 2) {
     const line = block.kind === 'line' || block.kind === 'area';
-    legend = ctx.visible.map((k) => ({ color: paint(styles[k].color), label: styles[k].label, line }));
+    legend = block.series.map((_, k) => ({ color: paint(styles[k].color), label: styles[k].label, line, hidden: !ctx.visible.includes(k) }));
   }
 
   if (block.kind === 'donut') {

@@ -289,8 +289,11 @@ describe('HistoryRail', () => {
     expect(show().querySelector('[data-activity="running"]')).not.toBeNull();
     expect(show()).toHaveAttribute('aria-description', 'An answer is being written in another chat');
     expect(screen.getByRole('button', { name: 'New chat' })).toBeEnabled();
-    release();
-    clearChatActivity();
+    // The strip is still mounted: clearing the store re-renders it.
+    act(() => {
+      release();
+      clearChatActivity();
+    });
   });
 
   it('searches server-side and opens a hit with its snippet', () => {

@@ -2273,11 +2273,12 @@ async def chat_context(
     registry = state.chat_turns
     prefs = state.execution_prefs
     cfg = prefs.chat_agent
-    # The limits mode and the operator timezone are part of the answer: a change to
-    # either is never served from the 30-second cache.
+    # The limits mode, the operator timezone and the brand-ring switch are part of the
+    # answer: a change to any of them is never served from the 30-second cache.
     key = (
         owner, state.demo_active, conversation_id, (model or "").strip(), case_id, grants,
         getattr(cfg, "limits_mode", None), getattr(getattr(prefs, "sla", None), "timezone", None),
+        getattr(cfg, "animated_brand", None),
     )
     cached = registry.context_get(key)
     if cached is not None:
