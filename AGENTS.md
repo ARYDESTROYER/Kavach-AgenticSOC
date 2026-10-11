@@ -617,8 +617,9 @@ docs/                USAGE.md · TROUBLESHOOTING.md · ENVIRONMENT.md · VIGIL_S
     Round-10 risk gate is **routing-only** (reads `compute_risk()`, never changes
     scoring or `decide()`). Round 12 adds two chat defaults under the same rule: chat
     questions run without per-question caps (`chat_agent.limits_mode="unlimited"`,
-    correctness guards only), and chat sits outside the daily AI budget (metered, with an
-    optional chat-only daily cap); neither touches `decide()`.
+    correctness guards only), and chat sits outside the daily and monthly AI budget
+    (metered, with an optional chat-only daily cap and no monthly chat bound); neither
+    touches `decide()`.
 11. Spine first & tested (Gate 1); breadth degrades gracefully (Gate 2).
 12. Read-only consumer; upstream untouched; cold-deployable.
 
@@ -878,8 +879,13 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
 
 ## 10. Current status & roadmap
 
-**Round 10 is the newest feature round — a behavior change, not just a UI/UX
-pass.** It is committed on `Testing` (including `9010443`). On top of it, a **backend
+**Round 12 is the newest feature round** (chat without limits, the working indicator,
+Remember me, report downloads, the Overview and Case Manager redesigns). It is built on
+branch `claude/round12` and heads to `Testing` through a pull request; see the Round 12
+bullet in the round summary below and `docs/research/2026-10-round12/SPEC.md`.
+
+**History: Round 10 was a behavior change, not just a UI/UX pass.** It is committed on
+`Testing` (including `9010443`). On top of it, a **backend
 deep-audit hardening pass (2026-07-14/15)** fixed **47 verified findings** (0 crit / 10
 high / 24 med / 13 low) from a 24-auditor + adversarial-verify Workflow — one atomic
 commit per finding on `Testing` (`c5516e5`→`abd0385`), local only, not tagged or pushed.
@@ -1050,9 +1056,10 @@ a retelling — do not re-derive round detail from here.
   pipeline (investigations, standup, scans, report summaries). **Since Round 12, Workspace
   and Case Manager chat are deliberately outside it** (`llm/gateway.py`
   `BUDGET_EXEMPT_SURFACES`: a `role=chat` call on `surface="chat"` is never blocked and its
-  spend is excluded from what the gate measures); chat's only spending bound is the
-  optional `chat_agent.chat_daily_cap_usd` (off by default), and every chat call is still
-  ledgered through the one gateway (#6). **Autopilot smart
+  spend is excluded from what the gate measures, for both `budget.daily_usd` and
+  `budget.monthly_usd`); chat's only spending bound is the optional daily
+  `chat_agent.chat_daily_cap_usd` (off by default; there is no monthly chat bound), and
+  every chat call is still ledgered through the one gateway (#6). **Autopilot smart
   defaults** (default-ON, $0/#3-safe) — threshold tuning (shadow-eval forced on),
   campaigns, cross-source correlation, SLA policy, priority matrix, realtime SSE, the
   threshold-automation engine (empty rule set), baseline (producer + a new
@@ -1070,8 +1077,8 @@ a retelling — do not re-derive round detail from here.
   coverage banner/Overview tile/Noise-Reduction "awaiting" stage. **motion.dev** —
   ONE new lazy runtime dep (`motion` 12.42.2, replacing the Round-5-removed
   `framer-motion`) behind `LazyMotion`/`domAnimation`, landing in an ~83.85 kB lazy
-  chunk (entry was 281.44 kB at the time of Round 10; it is ~390 kB today, against
-  the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
+  chunk (entry was 281.44 kB at the time of Round 10; it is ~366 kB after the Round 12
+  trim, against the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
   line), animating route transitions, CaseDetail tabs, Cases
   bulk-bar/row reflow, the nav rail, and KPI count-ups — reduced-motion honored.
   Built research(vendor+standards) → code (5 batches) → adversarial verify (5 major +
@@ -1109,15 +1116,17 @@ a retelling — do not re-derive round detail from here.
   read-only multi-lookup analyst assistant with blocks, citations, reports and a live
   token meter; see `docs/research/2026-10-chat-revamp/SPEC.md` (A1–A38) and `BLOCKS.md`.
 - **Round 12** (2026-10-10→, branch `claude/round12`, PR to `Testing`) — 11 operator asks,
-  17 decisions, 15 work packages, each implement → two adversarial reviews → fix:
+  17 decisions, the round SPEC's 16 work packages (WP-FEAT ran as A and B, and WP-GEN
+  regenerated the generated artefacts), each implement → two adversarial reviews → fix:
   **chat without limits** (`chat_agent.limits_mode="unlimited"` by default with a one-time
   `chat_limits_version` migration; loop guards instead of caps; automatic continuation;
   a running conversation summary in a `CONVERSATION_SUMMARY` untrusted fence and
-  `recall_observation`; Stop abandons the in-flight call; chat OUTSIDE the daily AI
-  budget with an optional chat-only daily cap); **exact aggregates** for chat and
-  dashboards (`engine/case_aggregate.py`, `engine/time_windows.py`, `case_stats`, any
-  window incl. all time and calendar periods, comparisons; dashboards exact up to 20,000
-  cases per rollup scope); chat features (clarify, zero-result suggestions, reports saved
+  `recall_observation`; Stop abandons the in-flight call; chat OUTSIDE the daily and
+  monthly AI budget with an optional chat-only daily cap); **exact aggregates** for chat
+  and dashboards (`engine/case_aggregate.py`, `engine/time_windows.py`, `case_stats`, any
+  window incl. all time and calendar periods, comparisons; store-wide dashboard totals
+  exact at any size, window figures exact up to 20,000 cases per window and lower
+  bounds beyond it); `AUTH_TOKEN_HOURS` capped at 144 h; chat features (clarify, zero-result suggestions, reports saved
   from the answer header, step inspector, answer ratings, Add to case, prompt library +
   promptbooks, `/compact`, Ask AI entity chips, conversation width, chart Group by/zoom/
   image download); the **agent-working indicator** + live rejoin (process-local turn

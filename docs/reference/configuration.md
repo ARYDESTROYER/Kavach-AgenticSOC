@@ -259,8 +259,8 @@ widen what chat may do; the assistant is read-only by construction.
   streaming provider; a provider that answers in one blocking request (Azure OpenAI,
   Bedrock, Vertex) gets 4,000 output tokens per step, and a longer answer continues in
   further steps.
-- `bounded`: the pre-0.1.13 behaviour, with every knob below applied as a per-question
-  limit.
+- `bounded`: the behaviour before this build's chat changes (the earlier per-question
+  limits), with every knob below applied as a per-question limit.
 
 | Key | Default | Range | Applies in | Meaning |
 |---|---|---|---|---|
@@ -287,8 +287,10 @@ widen what chat may do; the assistant is read-only by construction.
 | `allow_email_lookup` | `false` | — | Both | Allow e-mail addresses to be sent to enrichment providers |
 | `chat_limits_version` | 1 | — | — | Internal marker of the one-time limits migration below |
 
-Chat is outside the daily AI budget (`budget`): a chat call is never blocked by it and its
-spend is not counted toward it. `chat_daily_cap_usd` is the only spending bound for chat.
+Chat is outside the AI budget (`budget`), both `budget.daily_usd` and
+`budget.monthly_usd`: a chat call is never blocked by either and its spend is not counted
+toward either. `chat_daily_cap_usd` is the only spending bound for chat; there is no
+monthly chat bound.
 
 **One-time migration.** A stored `chat_agent` block without `chat_limits_version` is
 migrated once when it is read. An explicit `limits_mode` is kept. Otherwise the block

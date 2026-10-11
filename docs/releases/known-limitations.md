@@ -409,14 +409,19 @@ Use the aggregate stage count, counter-coverage state, and truncation notices fo
 reporting. A complete drill-down requires server-side time/outcome filtering with
 cursor pagination rather than a larger hard client limit.
 
-### Dashboard rollups are exact up to 20,000 cases per scope
+### Dashboard figures are exact up to 20,000 cases per window
 
-Case counts on the dashboards and in chat are exact at any store size. The heavier
-dashboard rollups (timing, verdict mix, ATT&CK coverage, auto-close health, agent
-improvement, and similar) analyse every case in their scope up to 20,000 cases; a larger
-scope, typically all time on a large store, is analysed over its newest 20,000 cases and
-reported as truncated with the exact scope size. Chat's case counts and breakdowns have
-no such bound.
+The store-wide case totals are exact at any store size: the Open Cases stock and the
+case counts on **Analytics → Metrics** (Total cases (all time), and the counts by
+status, verdict, and disposition). Every other dashboard figure, including every
+Overview figure for the selected window (Total Cases, Total Critical, Resolved / Closed,
+Auto Closed, and the AI-verdict FP rate) and the heavier rollups (timing, verdict mix,
+ATT&CK coverage, auto-close health, agent improvement, and similar), analyses every case
+in its window up to 20,000 cases. A larger window, typically all time on a large store,
+is analysed over its newest 20,000 cases and reported as truncated with the exact window
+size: its counts show as lower bounds (`≥`) and its rates are withheld. Chat's case
+counts and breakdowns have no such bound, so for a window that large the chat figure and
+the dashboard figure differ, and the chat figure is the exact one.
 
 ### Chat conversation summaries are not shown
 
@@ -424,6 +429,42 @@ When a long conversation is summarised to fit the model's context window, the ru
 says so, but the summary text itself is not shown anywhere in the console or returned by
 an API route. It stays inside the conversation's stored data and is used only as
 untrusted context for later questions.
+
+### The chat scope chip has no All time option
+
+The scope chip offers Last hour, Last 24 hours, and Last 7, 30, and 90 days. The server
+and the API accept an all-time range (`{"from": "all"}`), but the console does not offer
+it yet. The default, Last 24 hours, sets no outer limit, so a question can still ask for
+all time (or any other window) while the chip shows Last 24 hours; the run log shows the
+window each lookup used.
+
+### The chat scope popover names the wrong default window
+
+With the default scope chip, which reads "24h", the chip's popover says "Last 24 hours,
+unless your question names another window." That is not the default for every lookup.
+When a question names no window, case counts and case searches cover all time; only log
+searches and statistics, metrics, cost, and the audit log cover the last 24 hours. A
+question such as "How many cases did we close as false positive?" therefore returns an
+all-time count, not a one-day figure. Name the window in the question when you mean a
+particular period, and check the run log, which shows the window each lookup used. The
+[chat page](../analyst/chat.md#time-windows) lists the defaults.
+
+### The context note overstates in Case Manager chat
+
+The composer's context card says "Long conversations are summarised automatically near
+the limit, so the chat keeps going. There is no hard cap." That holds for a saved
+Workspace conversation. Case Manager chat, and a Workspace conversation that is not
+saved, keep no running summary: when the conversation outgrows the model's context
+window, only the newest exchanges that fit are sent, and the oldest are left out without
+a notice. The card shows the same note there.
+
+### The chat transcript still shows an old retention notice
+
+Messages are no longer removed from a conversation, and every message stays readable
+through `GET /api/chat/conversations/{id}/messages`. The transcript, however, loads only
+the newest 100 messages, and above them it still says "Conversations keep their newest
+100 messages" (or "Older messages were removed to stay within the storage limit"). The
+older messages are stored, not removed; the transcript does not page them in yet.
 
 ### Baseline learning and anomaly promotion are separate
 
@@ -442,9 +483,10 @@ deterministic close/escalate policy.
 
 The default application budget is enabled at `$10/day`, warns at 80%, and blocks new
 provider calls over the ceiling; a blocked investigation persists/fails safe to
-`NEEDS_HUMAN`. Workspace and Case Manager chat are outside this budget: their calls are
-ledgered but neither blocked by nor counted toward it. Chat spend is bounded only by
-the optional daily chat spending limit, which is off by default and, like the budget,
+`NEEDS_HUMAN`. Workspace and Case Manager chat are outside this budget, daily and
+monthly: their calls are ledgered but neither blocked by nor counted toward it. Chat
+spend is bounded only by the optional daily chat spending limit (there is no monthly
+chat limit), which is off by default and, like the budget,
 is a preflight check: concurrent chat calls already in flight can finish above it. The check does not reserve spend atomically, so calls already in flight
 can finish above the boundary. It also cannot prevent costs created outside this
 backend. Keep concurrency conservative, configure provider-side budgets/rate limits,

@@ -149,6 +149,14 @@ When blocked, the case routes to human review. The check is not an atomic spend
 reservation, so already-running calls can finish above the configured amount.
 Provider-side budgets and rate limits remain the final billing boundary.
 
+The budget covers automatic investigations and scans, the Standup summary, and report
+summaries. Workspace and Case Manager chat are outside both its daily and its monthly
+ceilings: a chat call is never blocked by the budget and its spend is not counted toward
+it. Chat's only spending bound is the optional daily chat spending limit
+(`chat_agent.chat_daily_cap_usd`), which is off by default. Every chat call is still
+recorded in the usage ledger. See
+[Models and spend](../administration/models-spend.md#budget-gate).
+
 ## Secrets are not state
 
 Persisted configuration stores secret presence, not secret values. Environment

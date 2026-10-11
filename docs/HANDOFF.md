@@ -7,6 +7,11 @@
 > Everything in here is verified against the repo as of the date below — not from memory.
 
 - **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-08-13
+- **Round 12 (newest, 2026-10):** chat without limits, the chat working indicator,
+  Remember me, report downloads, and the Overview and Case Manager redesigns, built on
+  `claude/round12` and heading to `Testing` by pull request. What shipped, the decisions
+  taken during implementation, and the known limitations are in the **"As built"**
+  section (§7) of [`docs/research/2026-10-round12/SPEC.md`](research/2026-10-round12/SPEC.md).
 - **Status:** Round 10 and the additive Cyber Defence Center (the landing dashboard,
   renamed from Security Command Center) / Case Manager work are
   integrated on `Testing`. A **backend deep-audit hardening pass
@@ -160,8 +165,9 @@
   synchronous bypass.
 - **Dashboard integrity contract:** Overview posture values are keyed to the selected
   range/comparison, superseded requests abort, response windows are validated, and old
-  posture data is hidden during a range transition. False Positive Rate and
-  Auto-resolved therefore cannot repaint from an older request. Full Agent health now
+  posture data is hidden during a range transition. The AI-verdict FP rate (called
+  False Positive Rate before Round 12), Resolved / Closed and Auto Closed therefore
+  cannot repaint from an older request. Full Agent health now
   lives above **Analytics → Effectiveness** and follows its 24h/7d/30d range; Overview
   consumes the same reducer but renders only a degradation warning, with a stable
   `#/metrics?tab=effectiveness` drill-through. Healthy/unauthorized states cost no
@@ -251,9 +257,13 @@
   & retention now records a deletion-free 180-day Hot + 90-day Warm desired policy;
   explicit preview/apply can enforce only append-only Elasticsearch audit/usage ILM,
   while Glacier stays unconfigured pending an independent verified archive path. Workspace
-  Chat conversations are now bounded, per-user partitions in the selected StateStore:
-  newest-first list/detail/rename/delete are additive to the existing chat route, and a
-  draft becomes saved only after its first response is durably committed. Stable
+  Chat conversations are per-user partitions in the selected StateStore (at most 50
+  conversations per user plus 10 pinned): newest-first list/detail/rename/delete are
+  additive to the existing chat route, and a draft becomes saved only after its first
+  response is durably committed. Since Round 12 no message is removed from a
+  conversation: every answer is also stored in full in its own exchange document, very
+  long conversations move older messages to archive pages, and the detail returns the
+  newest 100 messages with older ones paged by `GET /api/chat/conversations/{id}/messages`. Stable
   `idempotency_key` retries return the one committed turn without a duplicate model bill;
   explicit source selection fails closed, and every saved assistant turn records its
   effective source/model. Legacy shared history is lazily migrated through a
@@ -428,8 +438,11 @@ backend/app/
   rbac/policy.py   the role->resource->action permission matrix + can()
   stores/          backend-agnostic KV-doc stores: users · sessions · user_prefs · memory
                    (strict-CAS; only approved active entries become trusted context) ·
-                   chat_conversations (bounded, idempotent, per-user-partitioned Workspace
-                   transcripts + lazy migration from the legacy shared document) ·
+                   chat_conversations (idempotent, per-user-partitioned Workspace
+                   transcripts + lazy migration from the legacy shared document; Round
+                   12: full-text per-exchange documents, archive pages, the running
+                   conversation summary, no message removal) · chat_feedback (Round 12:
+                   per-user answer ratings) ·
                    cases/usage/config/cursor · proposals · runbooks · playbooks
                    (strict-CAS durable operator catalogs) · sql/ (SQLite/Postgres) +
                    Round-3: case_thread/case_activity/case_tasks · inbox · notif_prefs ·

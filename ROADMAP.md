@@ -309,15 +309,34 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
 - ☐ **Multi-replica chat turn registry** — move the turn registry, the per-turn rejoin
   event ring, Stop and the questions-at-once bounds to a shared store with leases so
   more than one backend replica can serve chat (today process-local; single replica).
-- ☐ **Show the conversation summary** — a disclosure under the "Summarised earlier
-  messages" run-log row that shows the stored summary text (today no route returns it).
+- ☐ **Show the conversation summary** — a disclosure under the "Earlier messages were
+  summarised to keep going" run-log row that shows the stored summary text (today no
+  route returns it).
 - ☐ **Bounded mapping for the other id-keyed KV stores** — `case_activity`,
   `case_tasks`, `inbox`, `notif_prefs`, `user_prefs`, `shift_handoff`, `tuning`,
   `campaigns` and `baseline` can still grow the shared Elasticsearch config-index mapping
   per id; adopt the per-backend opaque storage form chat and case threads use.
 - ☐ **Older-message paging in the chat UI** — the API pages messages beyond the newest
   100 (`GET /api/chat/conversations/{id}/messages`), but the transcript does not load
-  them yet.
+  them yet. In the same change, replace the transcript's outdated retention notice
+  (`threadRetentionInfo` in `useChatConversations.ts` still says "Conversations keep
+  their newest 100 messages" or "Older messages were removed…", although nothing is
+  removed any more).
+- ☐ **"All time" on the chat scope chip** (SPEC D7) — the server and API accept
+  `{"from": "all"}`, but the composer's presets stop at Last 90 days. Open orchestrator
+  decision: add the preset, or record the default chip (which sets no outer limit) as
+  the way to ask about all time.
+- ☐ **Scope popover default hint** (with the item above) — with the default chip
+  ("24h") the popover says "Last 24 hours, unless your question names another window."
+  (`chat/composer/ScopeControls.tsx`), but case counts and case searches default to all
+  time. Reword it, for example "No outer limit: case questions cover all time, other
+  lookups the last 24 hours unless your question names a window."
+- ☐ **Context note only where a summary is stored** — the composer's context card says
+  long conversations are summarised automatically with no hard cap (`contextNote` in
+  `chat/composer/format.ts`) in Case Manager chat and in an unsaved conversation too,
+  where no summary is kept and only the newest exchanges that fit are sent. Show the
+  summary note only for a saved Workspace conversation in Unlimited mode and say what
+  happens elsewhere.
 - ☐ **Bulk case actions in Demo Mode** — bulk changes run as background jobs, which Demo
   Mode does not run; a demo-scoped job runner would let the demo show them.
 - **Deliberately not built** (product decisions, not backlog): response actions from
@@ -339,8 +358,9 @@ explicit authorization.
 - ◐ **Round 12 — chat without limits, working indicator, Remember me, reports, Overview,
   Case Manager** (branch `claude/round12`, PR to `Testing`). Chat questions run without
   per-question caps (loop guards, continuation, conversation summary), outside the daily
-  AI budget with an optional chat cap; exact aggregates over any window (`case_stats`,
-  comparisons) for chat and dashboards (exact up to 20,000 cases per rollup scope);
+  and monthly AI budget with an optional daily chat cap; exact aggregates over any window
+  (`case_stats`, comparisons) for chat, exact store-wide dashboard totals, and dashboard
+  window figures exact up to 20,000 cases per window (lower bounds beyond it);
   clarify, reports from chat, step inspector, ratings, Add to case, prompt library and
   promptbooks, `/compact`, Ask AI chips, width preference; the left-nav working
   indicator with live rejoin; Remember me; Word/Excel exports and reliable downloads;
@@ -385,7 +405,10 @@ explicit authorization.
     case). A per-source per-tick cap (`caps.max_auto_investigations_per_tick=25`)
     throttles volume — cap-deferred candidates **drain** to investigation on later
     ticks as headroom frees; investigations run **sequentially**; the push path is
-    symmetric with pull; **the daily budget is the global spend bound**.
+    symmetric with pull; **the daily budget is the global spend bound** for the
+    pipeline (since Round 12, Workspace and Case Manager chat are outside its daily and
+    monthly ceilings; their only bound is the optional daily
+    `chat_agent.chat_daily_cap_usd`, off by default).
   - **Smart defaults / autopilot** (default-ON, $0/#3-safe) — `ThresholdTuning`
     (`shadow_eval` forced on), Campaigns, CrossSourceCorrelation, SlaPolicy,
     PriorityMatrix, realtime SSE, the ThresholdAutomation engine (empty ruleset),

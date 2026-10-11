@@ -26,11 +26,12 @@ reports it is asked to create, and adds a step inspector, answer ratings, **Add 
 case**, a prompt library with promptbooks, `/compact`, **Ask AI** chips on entity values,
 and a conversation width preference. A turning ring on the Chat item (and, optionally,
 the logo) shows that an answer is being written while you work elsewhere, and returning
-or reloading rejoins it live. Chat is no longer paused by the daily AI budget; an
-optional daily chat spending limit replaces it. Sign-in gains **Remember me**, with a
-warning, browser-managed passwords and server-bounded remembered sessions. Report
-exports are reliable and add Word and Excel. Dashboards read exact counts instead of a
-fixed newest page, and the Case Manager's queue, header and close dialog are rebuilt
+or reloading rejoins it live. Chat is no longer covered by the AI budget (daily or
+monthly); an optional daily chat spending limit is its only spending bound. Sign-in
+gains **Remember me**, with a warning, browser-managed passwords and server-bounded
+remembered sessions. Report exports are reliable and add Word and Excel. Dashboards read
+exact store-wide totals and analyse up to 20,000 cases per window instead of a fixed
+newest page, and the Case Manager's queue, header and close dialog are rebuilt
 around one rule: once an analyst classifies a case, that classification is its headline.
 The Help Center chat, reports, sign-in, Overview, Case Manager, Cases, settings, KPI
 glossary, configuration and API pages are updated to match.
@@ -341,9 +342,16 @@ and, just as importantly, makes each of these conditions a state an operator can
   truncate or leave empty tracks.
 - **Data questions answered as "Product help" or refused**: questions such as "create a
   report of lifetime performance" or monthly breakdowns now run their lookups; a false
-  "last 24 hours" default and "lifetime" read as a short window are gone.
-- **Counts that were samples**: chat totals, "still open" counts and dashboard figures no
-  longer come from the newest 5,000 (or 2,000) cases.
+  "last 24 hours" default in the assistant's instructions and "lifetime" read as a short
+  window are gone (the scope chip's own popover still says "Last 24 hours" for the
+  default; see `docs/releases/known-limitations.md`).
+- **Counts that were samples**: chat totals and "still open" counts are now exact at any
+  store size, and dashboard figures no longer come from the newest 5,000 (or 2,000) cases
+  of the whole store: store-wide totals are exact, and window figures analyse up to
+  20,000 cases per window, shown as lower bounds beyond that.
+- **On-screen context longer than 600 characters was cut** before it reached the model:
+  a selection or query default on screen is now fenced whole as untrusted data instead
+  of being truncated (#9).
 - **Report downloads**: exports no longer fail or print blank pages, revoke their download
   links too early, or start twice; a failed export says why and offers Retry.
 - **`/api/auth/me` now honours the session registry**: a revoked or expired session is
@@ -1279,13 +1287,16 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Changed
 
-- **Chat is no longer paused by the daily AI budget.** Chat calls (`role=chat` on the
-  `chat` surface) are never blocked by the budget gate and their spend is excluded from
-  what it measures, so chat can neither be paused by investigations' spend nor push
-  investigations to Needs human. Every chat call is still metered through the one
-  gateway and written to the ledger; `GET /api/budget/status` reports chat's share as
-  `excluded_today`. Report summaries still count toward the budget. The composer's
-  budget alert now describes what happens to automatic investigations.
+- **Chat is no longer covered by the AI budget, daily or monthly.** Chat calls
+  (`role=chat` on the `chat` surface) are never blocked by the budget gate, and their
+  spend is excluded from both of its ceilings (`budget.daily_usd` and
+  `budget.monthly_usd`), so chat can neither be paused by investigations' spend nor
+  push investigations to Needs human. Chat's only spending bound is the optional daily
+  `chat_agent.chat_daily_cap_usd`; there is no monthly chat bound. Every chat call is
+  still metered through the one gateway and written to the ledger;
+  `GET /api/budget/status` reports chat's share as `excluded_today`. Report summaries
+  still count toward the budget. The composer's budget alert now describes what happens
+  to automatic investigations.
 - **Chat limits migrate once** (`chat_limits_version`): stored configurations become
   `unlimited` unless an operator had changed a per-question limit, which keeps `bounded`
   with those values. Concurrency defaults rise to 4 questions per user and 16 per
@@ -1294,7 +1305,20 @@ and, just as importantly, makes each of these conditions a state an operator can
   limited to `max_tool_calls` at run time only, so switching modes is lossless.
 - **Sign-in without Remember me now uses a browser-session cookie** instead of a
   persistent 12-hour cookie; `AUTH_TOKEN_HOURS` now sets the token lifetime of those
-  sign-ins only. Bearer-token clients are unaffected.
+  sign-ins only. Bearer-token clients are unaffected by the cookie change; their token
+  lifetime is `AUTH_TOKEN_HOURS`, now at most 144 hours.
+- **`AUTH_TOKEN_HOURS` above 144 is reduced to 144** with a startup warning, so a revoked
+  token cannot outlive its session-registry row. This also applies to bearer tokens:
+  automation that relied on longer-lived tokens (for example 720 hours) must
+  re-authenticate at least every 6 days.
+- **New chat error responses.** `409 chat_request_in_progress` now also carries the
+  running turn's `turn_id` and `conversation_id` when that turn runs on this backend
+  (beside `retry_after`), so a client can rejoin it;
+  a same-key retry of a billed turn that ended without a saved answer returns
+  `409 chat_request_failed` (send the question again with a new idempotency key); a
+  turn whose account record cannot be read is refused with
+  `503 chat_account_unavailable` and `retry_after`; and `429 chat_busy` gains `scope`
+  (`user` or `global`) and `limit`.
 - **Stop** abandons an in-flight model call at once in Unlimited mode (ledgered as
   abandoned) and keeps what was written; Bounded mode still lets the call finish.
 - **Chat answers and conversations are stored in full**: each answer also gets its own
@@ -1309,9 +1333,13 @@ and, just as importantly, makes each of these conditions a state an operator can
   refused visibly. A tool window wholly outside the selected time chip is refused
   (`OUTSIDE_SELECTED_RANGE`) instead of silently replaced, and chat time windows have no
   90-day ceiling.
-- **Dashboards are exact.** Headline counts are exact store-wide counts that agree with
-  chat; heavier rollups analyse up to 20,000 cases per scope and mark a larger scope as
-  truncated, instead of reading a fixed newest page. SLA attainment is `null` with a
+- **Dashboard counts.** The `/api/metrics` headline counts (total, open, needs human,
+  closed, and the counts by status, verdict and disposition) and the Open Cases stock are
+  exact store-wide counts at any size and agree with chat. Every Overview window figure
+  (Total Cases, Total Critical, Resolved / Closed, Auto Closed, the AI-verdict FP rate)
+  and the heavier rollups analyse up to 20,000 cases per window, instead of reading a
+  fixed newest page; a larger window is marked truncated, its counts shown as lower
+  bounds (`≥`) and its rates withheld. SLA attainment is `null` with a
   reason, not 0%, when nothing was scored, and SLA scores use the priority shown on the
   case.
 - **Overview**: two titled bands (Alert flow; Cases and response) instead of stacked
@@ -1465,10 +1493,15 @@ and, just as importantly, makes each of these conditions a state an operator can
 - **Chat limits migration.** Review **Settings → General → Chat assistant** after
   upgrading: a stored configuration becomes Unlimited unless an operator had changed a
   per-question limit. Set the daily chat spending limit if chat spend needs a bound,
-  since chat is no longer covered by the daily AI budget.
+  since chat is no longer covered by the AI budget's daily or monthly ceiling
+  (`budget.daily_usd`, `budget.monthly_usd`); there is no monthly chat bound.
 - **Sign-in cookie change.** Users who relied on staying signed in across browser
   restarts should use Remember me. Remember me needs `AUTH_COOKIE_SECURE=true` behind
-  TLS; a reverse proxy on the backend's own host must send `X-Forwarded-For`.
+  TLS (unless `session_policy.remember_me.allow_insecure_http` is on, which is not
+  recommended); a reverse proxy on the backend's own host must send `X-Forwarded-For`.
+- **Token lifetime cap.** `AUTH_TOKEN_HOURS` above 144 is reduced to 144 with a startup
+  warning, for browser sign-ins and bearer-token API clients alike; automation that used
+  longer-lived tokens must re-authenticate at least every 6 days.
 - **Chat storage and rollback.** New answers are stored in full in exchange documents in
   the existing chat namespace (plus summary, step-result, archive and live-state
   documents) and ratings in a new `chat_feedback` namespace; no migration, index or table

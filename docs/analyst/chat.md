@@ -62,7 +62,7 @@ The composer has one row of controls under the text box:
 | Control | What it does |
 |---|---|
 | **Read-only** | Opens **What the assistant can access**: every lookup, its data source, the permission it needs, and whether you have it. A lookup an administrator switched off reads "Turned off on this deployment". |
-| Scope | The log source and time range in one chip, for example "Wazuh · 24h". Lookups cover the last 24 hours unless your question names another window. A range you choose here is an outer limit: a question can narrow it but never widen it, and the run log shows the window each lookup used. **All time** removes the limit. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
+| Scope | The log source and time range in one chip, for example "Wazuh · 24h". Without a window in your question, case counts and case searches cover all time; log, metric, cost, and audit lookups cover the last 24 hours (see [Time windows](#time-windows)). The default, Last 24 hours, sets no outer limit, so a question can name any window. A range you choose here (Last hour, 7, 30, or 90 days) is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it, and the run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
 | `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |
 | `/` commands | Type `/` at the start for the commands below, your saved prompts, and the prompt library. |
 | `≈ 1.2k` and the ring | The token estimate for your next request, and a ring that shows how much of the model's context window that request uses (see [Tokens and cost](#tokens-and-cost)). |
@@ -83,6 +83,24 @@ A question can name any window, of any length, and the lookups use it exactly:
 - a named month, quarter, or year, such as "September 2026" or "Q3", and a date range
   such as "from 1 March to 15 April".
 
+When the question names no window and the scope chip is on Last 24 hours, each lookup
+uses its own default:
+
+| Lookup | Window without one in the question |
+|---|---|
+| Case counts and breakdowns, case searches | All time |
+| Log searches and log statistics | The last 24 hours |
+| Metrics, cost, and the audit log | The last 24 hours |
+| The shift brief | The last 24 hours (at most 7 days when asked) |
+
+So "How many cases have we closed as false positive?" counts every case in the store,
+while "How many failed logins were there?" covers the last 24 hours. Name the window
+when you mean a particular period. With another range chosen on the scope chip, every
+lookup without a window in the question uses that range instead. The chip's popover
+currently says "Last 24 hours, unless your question names another window." for the
+default; the table above is what each lookup actually uses, and the run log shows the
+window of every lookup.
+
 Calendar periods use your organization's time zone (the time zone of the SLA targets
 under **Settings → General → SLA, priority & suppression**, UTC by default), and labels
 name the zone. A breakdown by a
@@ -90,10 +108,10 @@ calendar unit covers whole periods: "by month for the last 6 months" covers six 
 months, the current one marked as in progress, and the caption says so, for example
 "last 6 months (since May 2026)". Weeks start on Monday.
 
-When the scope chip sets a range, a window the question asks for is kept inside it. A
-window that lies entirely outside the chip's range is refused instead of silently
-replaced: the run log says the period is outside the selected time range, and you can
-widen the chip (or choose **All time**) and ask again.
+When you choose a range on the scope chip, a window the question asks for is kept
+inside it. A window that lies entirely outside the chip's range is refused instead of
+silently replaced: the answer says the period is outside the selected time range, and you
+can set the chip back to Last 24 hours, which sets no outer limit, and ask again.
 
 ### Commands
 
@@ -120,16 +138,16 @@ text after `/compact` is not sent. See [Long conversations](#long-conversations)
 
 ### The prompt library
 
-Keep the questions you ask often, and share a common starting point with starter
-prompts. Open the library with **Prompt library** in the `/` menu, or with **Prompt
-library…** under Options, then Prompts. It lists your own prompts and the read-only **starter prompts**
-that ship with the product, filtered by category (Triage, Hunt, IOC, Posture,
+Keep the questions you ask often, and start from the starter prompts that ship with
+the product. Open the library with **Prompt library** in the `/` menu, or with **Prompt
+library…** in the Options menu's Prompts list. It lists your own prompts and the
+read-only **starter prompts**, filtered by category (Triage, Hunt, IOC, Posture,
 Reporting, and App help) or by **Favorites**, with a search box.
 
 - **Save a prompt** with **Save prompt** beside one of your earlier questions, with
-  **Save current prompt** in the Options menu's Prompts list, or with **Save a copy** on a starter
-  prompt. Give it a title and, optionally, a category, and star it to keep it at the top
-  of the `/` menu.
+  **Save current prompt** in the Options menu's Prompts list, or with **Save a copy** on
+  a starter prompt. Give it a title and, optionally, a category, and star it to keep it
+  at the top of the `/` menu.
 - **Placeholders.** Write `{name}` in a prompt, such as `Hunt for {indicator} in the
   last {period}`. When you use it, the composer asks for each value before sending; the
   values are your own words.
@@ -148,8 +166,11 @@ lookups need.
 
 **Ask AI** sits beside IP addresses, hosts, users, file hashes, domains, URLs, e-mail
 addresses, detection rules, and case IDs in **Cases**, **Logs**, and **Case Manager**.
-Selecting it opens a new Workspace chat that asks a fixed question about that value,
-worded by the server, for example what is known about the host across cases and logs.
+Selecting it opens a new Workspace chat and asks a fixed question about that value,
+worded by the server: for a host, it asks the assistant to investigate everything about
+that host, meaning its related cases, its log activity over the last 7 days, and the
+users and IP addresses seen with it. The question is sent at once, like a starter;
+nothing is typed into your composer.
 The value came from your data, not from you, so it is treated as untrusted and does
 not count as your own words for indicator lookups: chat sends it to an enrichment
 provider only when one of this question's lookups returned it. A value that is not a
@@ -202,10 +223,10 @@ what the assistant did to keep going:
 | Row | Meaning |
 |---|---|
 | Continued the answer (part 2) | The model reached its output length and the answer carried on in another model call; the text keeps streaming and is never cut |
-| Summarised earlier messages | Earlier messages of this conversation were folded into a summary to fit the model's context window |
+| Earlier messages were summarised to keep going | Earlier messages of this saved conversation were folded into a summary to fit the model's context window |
 | Already ran as t2 in this question | The same lookup with the same inputs was asked for again, so its earlier result was reused instead of running it twice |
 | Wrapped up after a very long investigation | The question ran for an exceptionally long time, so the assistant wrote its answer from what it had gathered |
-| Waiting for another answer to finish | You, or the backend, already have the maximum number of answers running; this question starts as soon as one finishes |
+| Waiting for another answer to finish | You, or the backend, already have the maximum number of answers running; this question starts as soon as one finishes (after five minutes it stops and offers Retry) |
 
 When the answer is done, the last model call stays as one **Wrote the answer** row, and
 a model call that failed or timed out keeps its row. When the answer starts, the run log
@@ -371,7 +392,7 @@ side panel:
 - its time, rows, and tokens.
 
 Everything in the panel came from logs or the model, so it is shown as plain text, and
-invisible or look-alike characters are written as visible escapes (such as `​`) so
+invisible or look-alike characters are written as visible escapes (such as `\u200b` for a zero-width space) so
 "admin" with a hidden character never looks like "admin". **Retry step** asks again in a
 new question, for a lookup that failed, timed out, was stopped, or was skipped. **Explain
 this step** asks the assistant what the lookup did and why. Results are kept for your
@@ -409,9 +430,15 @@ Chat shows token use and cost before, during, and after each question.
   estimate is calibrated against what the model actually counted. The ring beside it
   shows how much of the model's context window that request fills, for example "12%".
   Point at either, or select the estimate, for the breakdown, the projected cost, the
-  model's context window, and this conversation's totals. Long conversations are
-  summarised automatically near the limit, so the chat keeps going; there is no hard
-  cap. It is an estimate: lookups add their results to later model calls, so a question
+  model's context window, and this conversation's totals. When chat runs without
+  limits, a long saved Workspace conversation is summarised automatically near the
+  limit, so the chat keeps going; there is no hard cap. In Case Manager chat, in an
+  unsaved conversation, and when an administrator has set per-question limits, only
+  the newest exchanges that fit are sent instead (see
+  [Long conversations](#long-conversations)); the card's note about automatic
+  summaries currently appears in Case Manager chat and in an unsaved conversation too,
+  where it does not apply.
+  It is an estimate: lookups add their results to later model calls, so a question
   that runs lookups uses more than its first request.
 - **Daily AI budget:** the same card shows today's AI spend against the daily budget,
   when one is set and you may see it. Automatic investigations count against that
@@ -423,11 +450,12 @@ Chat shows token use and cost before, during, and after each question.
   estimated (`≈`).
 - **For the conversation:** the toolbar shows the running total.
 
-**Chat is not limited by the daily AI budget.** That budget protects automatic
-investigations: when it is close or used up, one alert above the composer says what
-happens to them (they pause, and new cases wait for an analyst, when the budget is set
-to block), and chat keeps answering. Chat's spend does not count against the budget, so
-asking questions never pushes investigations to a human. Every chat model call is still
+**Chat is not limited by the AI budget, daily or monthly.** That budget protects
+automatic investigations: when it is close or used up, one alert above the composer
+says what happens to them (they pause, and new cases wait for an analyst, when the
+budget is set to block), and chat keeps answering. Chat's spend does not count against
+the daily or the monthly budget, so asking questions never pushes investigations to a
+human. Every chat model call is still
 recorded in the usage ledger with its cost, and **Analytics → Cost** shows it.
 
 An administrator can set an optional **daily chat spending limit** under **Settings →
@@ -435,7 +463,8 @@ General → Chat assistant**. Once today's chat spend (since 00:00 UTC) reaches 
 starts no new model calls: a new question gets the notice "Chat spending limit
 reached" without a model call, and an answer that was already being written stops where
 it is and says so. A question about the product is still answered from the Help Center
-at no cost. The limit is off by default.
+at no cost. The limit is off by default, and it is chat's only spending limit: there is
+no monthly chat limit.
 
 Money and budget figures need `models:read`, and today's spend also needs `cost:view`;
 without them the meter shows tokens only. Report summaries are not chat questions:
@@ -462,16 +491,27 @@ again**, which is a new, billed request.
 
 ## Long conversations
 
-A conversation has no message limit and no token limit. As it grows, the assistant
-keeps the newest exchanges word for word and folds older ones into a running summary,
-so the next request still fits the model's context window. The run log shows
-"Summarised earlier messages" when this happens. Inside a single long investigation,
-older lookup results are shortened to their headline lines, and the assistant can read
-any of them back in full when it needs them.
+A conversation has no message limit and no token limit. In a saved Workspace
+conversation, when chat runs without limits (the default), the assistant keeps the
+newest exchanges word for word as the conversation grows and folds older ones into a
+running summary, so the next request still fits the model's context window. The run
+log shows "Earlier messages were summarised to keep going" when this happens.
+
+There is no running summary in Case Manager chat, in a conversation that is not saved,
+or when an administrator has set per-question limits (**Bounded**). There, once a
+conversation is long, only the newest exchanges that fit are sent with each question,
+and older ones are left out of what the model sees, without a notice; they stay in the
+transcript. If a question depends on
+something said much earlier, repeat it in your question.
+
+Inside a single long investigation, older lookup results are shortened to their
+headline lines, and the assistant can read any of them back in full when it needs them.
 
 Type `/compact` to summarize the earlier messages now, for example before you start a
-new line of questions in the same conversation. It answers with how many messages were
-summarised; there is nothing to summarize in a new conversation.
+new line of questions in the same conversation. It answers with how many exchanges were
+summarised; there is nothing to summarize in a new conversation. `/compact` works only
+in a saved Workspace conversation when chat runs without limits; elsewhere it says why
+nothing was summarised.
 
 ## Reports
 
@@ -629,7 +669,10 @@ by month.
 History keeps up to **50 conversations** for each user; up to ten pinned conversations
 are exempt from that limit. Messages are no longer removed from a conversation: every
 question and every answer is kept in full, however long, and a reopened conversation
-shows its newest 100 messages. Answers saved before this release keep their compacted
+shows its newest 100 messages. Older messages are stored, but the transcript does not
+load them yet, and the line above a long conversation still uses older wording ("keep
+their newest 100 messages" or "Older messages were removed"): nothing was removed.
+Answers saved before this release keep their compacted
 form: each block holds up to 25 table rows, cases, or timeline events and 100 chart
 points, and says so in its card, for example "Showing top 25 of 200" or "Downsampled for
 saved history"; the oldest of those answers' charts may read "Expired from saved
@@ -697,7 +740,10 @@ why the AI was not used.
 The **Chat** tab in Case Manager uses the same assistant with the selected case as its
 context. It is compact: no history, no report panel, no **Add to report**, and no `/`
 or `@` menus. Its transcript stays when you switch to another tab of the case and back,
-and an answer keeps running if you leave the case.
+and an answer keeps running if you leave the case. Case chat keeps no running summary:
+once its conversation is long, only the newest exchanges that fit are sent with each
+question, and older ones are left out of what the model sees (see
+[Long conversations](#long-conversations)).
 
 Each question and its final answer text (without charts or the run log) are posted to
 the case's discussion thread, where anyone who can read the case sees them. Posting
@@ -753,7 +799,8 @@ Some bounds always apply:
 
 - **Answers at once:** each user can run 4 questions at once, and the backend 16 in
   total. Over that, a new question waits ("Waiting for another answer to finish") and
-  starts by itself as soon as it can.
+  starts by itself as soon as it can; after five minutes of waiting it stops and offers
+  **Retry**.
 - **Indicator lookups:** a question can send up to 3 indicators to enrichment providers,
   and a conversation up to 10.
 - **Spending:** the optional daily chat spending limit described under

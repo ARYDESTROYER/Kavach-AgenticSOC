@@ -41,7 +41,8 @@ depends on the selected state store and a stable JWT secret.
 
 A sign-in without **Remember me** uses a browser-session cookie: it usually ends when
 the browser closes, and the server's idle and absolute limits apply in any case. Its
-token lasts `AUTH_TOKEN_HOURS` (default 12 hours). When a session ends on its own, the
+token lasts `AUTH_TOKEN_HOURS` (default 12 hours; a value above 144 hours is reduced to
+144, for bearer-token API clients too). When a session ends on its own, the
 sign-in page says why: after a period of inactivity, after the time limit, because it
 was ended from another device or by an administrator, or because all of the account's
 sessions were signed out.
@@ -70,9 +71,11 @@ devices stay signed in, add a separate inactivity limit, list roles that are nev
 remembered, and, only when secure cookies are off, allow it on plain HTTP (not
 recommended). Changes apply to live sessions on their next request.
 
-Remember me needs HTTPS with `AUTH_COOKIE_SECURE=true`. Until secure cookies are on, the
-checkbox is shown disabled with the reason, except on a direct request from the server
-itself. It is hidden only when authentication is disabled. A remembered session shows a
+Remember me needs HTTPS with `AUTH_COOKIE_SECURE=true`, unless an administrator allowed
+it on plain HTTP (`session_policy.remember_me.allow_insecure_http`, not recommended).
+Until secure cookies are on, and while that setting is off, the checkbox is shown
+disabled with the reason, except on a direct request from the server itself. It is
+hidden only when authentication is disabled. A remembered session shows a
 **Remembered** badge and its expiry under **Settings → Account → Sessions & activity**
 and in the administrator's session list.
 

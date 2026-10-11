@@ -21,7 +21,7 @@ changing any case or detection policy.
    every non-terminal lifecycle (`new`, `open`, `needs_human`, `investigating`,
    `escalated`, and `on_hold`) and is a **stock** read at the rollup's own timestamp,
    so it is deliberately not filtered by the selected window. Total Critical counts
-   the top band the severity ladder declares, over the whole window, from the server
+   the top band the severity ladder declares, over the window, from the server
    rollup. **AI-verdict FP rate** (called False Positive Rate before this release) is
    the share of the window's verdicted cases that the AI verdicted false positive; it
    measures the AI's call, not an analyst's, and carries no period-over-period chip. Its
@@ -106,9 +106,10 @@ selected Analytics window. Unknown or unmeasured evidence remains visible there 
 is not promoted into a false Overview incident.
 
 The primary Open and Resolved controls drill directly into the matching case scope.
-The combined Critical / High tile opens the selected-window case list without
-pretending that the single-severity Cases filter can express both bands at once; its
-visible open/resolved arithmetic remains the authoritative combined total. A case
+Total Critical opens the selected window's cases filtered to the top severity band;
+because that band is derived when the cases are read, its drill-down states that it
+covers the rows that were read, and the tile's server count remains the authoritative
+total. A case
 opened from Latest Cases retains its full provenance and deterministic decision.
 
 The dashboard shows an explicit empty or degraded state when there is not enough
@@ -140,10 +141,14 @@ Selected-window cards are windowed rollups. Active Risk is deliberately a curren
 open-queue measure rather than a historical-window total, and its help text states
 that scope.
 
-Counts on the dashboard are exact store-wide counts and agree with what Workspace Chat
-reports for the same question. The heavier rollups analyse every case in their window
-up to 20,000 cases; a larger window, typically **All time** on a large store, is
-analysed over its newest 20,000 cases and says so. See
+Every figure for the selected window, including Total Cases, Total Critical, Resolved
+/ Closed, Auto Closed, the AI-verdict FP rate, and the rollups below the strip, is
+computed from the window's cases up to 20,000 cases. A larger window, typically **All
+time** on a large store, is analysed over its newest 20,000 cases: its counts show as
+lower bounds (`≥`) and its rates are withheld. The Open Cases stock is an exact
+store-wide count at any size, as are the case totals on **Analytics → Metrics**, and
+those agree with what Workspace Chat reports for the same question; chat's case counts
+are exact for a window of any size. See
 [the KPI glossary](kpi-glossary.md#how-to-read-a-kpi). Timing cards expose their sample availability, and source coverage is
 reported independently of case volume: a quiet source and an unread source are not
 the same condition.

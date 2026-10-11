@@ -478,24 +478,37 @@ changes these behaviours, which operators should know about before upgrading:
   (2 → 4 per user, 8 → 16 per backend) move to the new ones. Review **Settings →
   General → Chat assistant** after the upgrade. See
   [Configuration](../reference/configuration.md#chat-assistant-bounds).
-- **Chat is no longer paused by the daily AI budget.** Chat spend is still metered and
-  shown on the Cost page but no longer counts toward the budget. To bound it, set the
-  optional daily chat spending limit in the same settings section.
+- **Chat is outside the AI budget, daily and monthly.** Chat calls are never blocked by
+  the daily or the monthly AI budget (`budget.daily_usd`, `budget.monthly_usd`), and
+  their spend no longer counts toward either. Chat is still metered and shown on the
+  Cost page. Its only spending bound is the optional daily chat spending limit
+  (`chat_agent.chat_daily_cap_usd`, off by default) in the same settings section; there
+  is no monthly chat limit. If you relied on the monthly budget as a hard ceiling for
+  all AI spend, set the daily chat limit or a provider-side budget.
 - **Sign-in cookies.** A sign-in without **Remember me** now uses a browser-session
   cookie instead of a persistent 12-hour cookie, and `AUTH_TOKEN_HOURS` now sets the
   token lifetime of those sign-ins only; a remembered sign-in lasts the policy's
   remembered duration (24 hours by default, at most 24). Users who relied on staying
   signed in across browser restarts should use **Remember me**. Bearer-token API clients
-  are unaffected.
+  are unaffected by the cookie change; their token lifetime is `AUTH_TOKEN_HOURS`, now
+  at most 144 hours.
+- **`AUTH_TOKEN_HOURS` is capped at 144 hours.** A value above 144 is reduced to 144,
+  with a warning at startup, so a revoked token can never outlive its session-registry
+  record. This applies to every token, including the bearer tokens of API clients and
+  automation: a deployment that set, for example, `TLSOC_AUTH_TOKEN_HOURS=720` now
+  issues tokens that expire after 6 days, so schedule re-authentication accordingly.
 - **Remember me needs HTTPS.** It is offered only when the server marks cookies as
   secure (`AUTH_COOKIE_SECURE=true` behind TLS), or on a direct request from the server
-  itself. A reverse proxy on the backend's own host must send `X-Forwarded-For` (or
-  another forwarding header), or it looks like a local browser; the bundled Web
-  container already does. See
+  itself, unless an administrator allowed it on plain HTTP
+  (`session_policy.remember_me.allow_insecure_http`, not recommended). A reverse proxy
+  on the backend's own host must send `X-Forwarded-For` (or another forwarding header),
+  or it looks like a local browser; the bundled Web container already does. See
   [Security hardening](security.md#session-lifetimes).
-- **Dashboards are exact.** Dashboard counts are exact store-wide counts, and the
-  heavier rollups analyse up to 20,000 cases per scope instead of a fixed newest page,
-  so some figures on large stores change on upgrade. The Overview tile **False
+- **Dashboard counts.** The Open Cases stock and the case totals on **Analytics →
+  Metrics** are exact store-wide counts at any size. Every Overview figure for the
+  selected window and the heavier rollups analyse up to 20,000 cases per window instead
+  of a fixed newest page; a larger window shows lower bounds (`≥`) and withholds rates.
+  Some figures on large stores therefore change on upgrade. The Overview tile **False
   Positive Rate** is now labelled **AI-verdict FP rate**, and the Metrics tile **Total
   cases (7d)** is now **Total cases (all time)**, which is what it always counted.
 - **Chat storage.** Every new Workspace answer is also stored in full in its own

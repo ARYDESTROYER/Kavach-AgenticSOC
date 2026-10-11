@@ -619,10 +619,17 @@ and preference documents.
   `model_step_timeout_s` (30 → 300, Unlimited only) and the questions-at-once bounds
   (2 → 4 per user, 8 → 16 per backend) move to the new ones. Review **Settings → General
   → Chat assistant** after upgrading.
-- **Chat is outside the daily AI budget.** Chat calls are still ledgered (one usage row
-  each) but neither blocked by nor counted toward `budget.daily_usd`; the optional
-  `chat_agent.chat_daily_cap_usd` (off by default) is chat's only spending bound. Report
-  summaries still count toward the budget.
+- **Chat is outside the AI budget, daily and monthly.** Chat calls are still ledgered
+  (one usage row each) but neither blocked by nor counted toward `budget.daily_usd` or
+  `budget.monthly_usd`; the optional daily `chat_agent.chat_daily_cap_usd` (off by
+  default) is chat's only spending bound, and there is no monthly chat bound. A
+  deployment that relied on `budget.monthly_usd` as a hard ceiling for all AI spend
+  should set the daily chat cap or a provider-side budget. Report summaries still count
+  toward the budget.
+- **`TLSOC_AUTH_TOKEN_HOURS` is capped at 144 hours.** A larger value is reduced to 144
+  with a startup warning, so a revoked token cannot outlive its session-registry row.
+  This applies to bearer tokens too: automation that relied on longer-lived tokens
+  must re-authenticate at least every 6 days.
 - **New chat documents.** In the existing `chat_conversations` namespace, each new
   answer also gets a full-text exchange document (`x-…`), plus the running conversation
   summary (`s-…`), step results for the step inspector (`o-…`, the owner's 100 most
@@ -636,7 +643,7 @@ and preference documents.
   previews, and archived messages are not shown. Rolling forward restores the full
   text, except for conversations the earlier build trimmed to its own 100-message window
   in the meantime. The earlier build also ignores the chat limits mode and the chat
-  spending limit, and counts chat against the daily budget again.
+  spending limit, and counts chat against the daily and monthly budget again.
 - **Single replica.** Running chat turns, their rejoin buffers and Stop live in the
   backend process: a restart ends running answers (nothing is saved for them; the
   conversation stops reading as running once its 10-minute lease lapses, and the
@@ -911,11 +918,17 @@ generous** so an existing auth-on deployment never expires mid-session:
 `TLSOC_AUTH_TOKEN_HOURS` now sets the token lifetime of those sign-ins only. A
 remembered sign-in gets a persistent cookie for `remember_me.duration_seconds`. The
 server's session registry decides in both cases (idle, absolute, revocation); MFA and
-step-up are never skipped. Bearer-token API clients are unaffected.
+step-up are never skipped. Bearer-token API clients are unaffected by the cookie
+change; their token lifetime is `TLSOC_AUTH_TOKEN_HOURS`, now at most 144 hours. A
+larger value is reduced to 144 with a startup warning (a revoked token must expire
+before its registry row is pruned), so automation that relied on longer-lived tokens
+must re-authenticate at least every 6 days.
 
 **HTTPS and proxies.** Remember me is offered only when `TLSOC_AUTH_COOKIE_SECURE=true`
 (behind TLS), or on what looks like a direct request from the server itself: a loopback
-connection to `localhost` with no forwarding header. A reverse proxy on the backend's
+connection to `localhost` with no forwarding header, unless
+`session_policy.remember_me.allow_insecure_http` is `true` (not recommended), which
+also offers it on plain HTTP. A reverse proxy on the backend's
 own host that sends no `Forwarded` / `X-Forwarded-For` / `X-Forwarded-Host` /
 `X-Forwarded-Proto` / `X-Real-IP` header looks exactly like that, so configure it to
 send `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For

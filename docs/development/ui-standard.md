@@ -475,7 +475,7 @@ turn.
 **Add to report.** The answer and block toggles keep one stable name and use
 `aria-pressed` for "In report ✓". They never unmount while a request is in flight
 (a click then is ignored) or when the report is full: the answer toggle becomes
-`aria-disabled` with the reason ("Report is full (40 items)") in its tooltip, a new add
+`aria-disabled` with the reason ("Report is full (60 items)") in its tooltip, a new add
 is refused with that reason, and an item already in the report stays removable.
 
 **Answer features (Round 12).** A clarify answer shows its question in a card with up
@@ -588,8 +588,9 @@ carries one stable idempotency key; a turn whose first model call failed is show
 never enters model history. A deep link (`#/chat?conversationId=&messageId=`) selects,
 scrolls to and highlights the message for 2 s and is cleared from the hash once the
 selection moves; a missing thread reads "This conversation is no longer available".
-History is bounded (50 conversations, 10 of them pinnable beyond the limit, 100
-messages each) and every boundary is disclosed rather than inferred.
+History is bounded (50 conversations, 10 of them pinnable beyond the limit) and every
+boundary is disclosed rather than inferred. Since Round 12 no message is removed: the
+transcript opens on the newest 100 messages and older ones stay stored.
 
 **Case Manager chat** is the same engine scoped to one case: compact presentation, its
 one-line status and quick actions, the compact composer, no rail, no report panel and no
@@ -598,6 +599,29 @@ Add to report. Case turns never enter personal Workspace history.
 **Context failures.** When `/chat/context` fails with nothing cached, the empty state and
 the composer's access popover say so with **Retry** (in Workspace and Case Manager
 alike); they never show skeletons or "Checking…" forever.
+
+**Chart interactions (Round 12).** Every chart interaction is client-side and read-only,
+never a re-query or a model call, and is stated wherever the chart travels: **Group by**
+re-bins a calendar series only to a unit the server allowed (`allowed_rebin`) and the
+caption, table, Copy data, CSV and image say "grouped by month"; **zoom** on line and
+area charts keeps a zoom row on screen at all times (a hint before a zoom, then the range
+and **Reset zoom**) so the plot never moves under the pointer, and is dropped when the view
+changes; **legend toggles** keep at least one series and say "Showing 1 of 2 series";
+**Download PNG / SVG** draws the chart as shown, in the card's theme, with its grouping,
+zoom and hidden series written on the image; **Full width** lets one block leave the
+conversation lane for the conversation's gutters and is offered only when there is room to
+gain. Calendar axes name their time zone and draw the in-progress period lighter with
+"(in progress)".
+
+**The working indicator (Round 12).** While an answer is being written, the Chat item
+shows one glyph in every navigation form (expanded rail, collapsed rail, mobile sheet):
+a turning quarter arc while running, an accent dot for an unread answer, amber for a
+question waiting for input, red for a failure; its text ("Chat: 1 answer in progress:
+<title>") is the item's description, never a live region. Reduced motion keeps the same
+static arc and the tooltip says "Working"; forced colors use system colors. The optional
+ring around the logo tile follows `chat_agent.animated_brand`; an operator's logo itself
+never moves. The tab title takes a "●" (running) or "✓" (unread) prefix, and an answer that
+finishes off screen raises one "Answer ready" toast and one announcement.
 
 ## Navigation and information architecture
 

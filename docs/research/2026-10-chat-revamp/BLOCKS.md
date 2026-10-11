@@ -126,6 +126,68 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     the in-page report sync event is `agentic-soc:report-changed`, like the
     `agentic-soc-workspace-chat-history` BroadcastChannel. Neither is a released wire contract.
 
+
+### Round 12 amendments (SPEC A39+ has the full text)
+
+24. **Grouped columns and comparisons (SPEC A56, Round 12 §3.4).** `chart.kind` adds
+    `grouped_bar` (views `grouped_bar`, `hbar`, `table`): one column per period inside each
+    category slot, a slot announcement that ends with the change against the baseline, and a
+    "Change vs <period>" column in the sr-only table. Artifact kind `comparison` (periods in
+    chronological order, the latest the subject, the one before it the baseline) materialises
+    to a `kpi_group` with deltas, a `grouped_bar` and a delta `table`; its tile view reads the
+    absolute and relative change per metric. Deltas are computed in code
+    (`blocks.compare_values`, round-half-even on both sides). A change from a zero baseline
+    is "new", never ∞ or NaN; a figure on fewer than 20 cases carries a small-sample badge.
+25. **Calendar time axes (Round 12 §3.4, P0-5).** A time series may carry `x.labels` (the
+    server's period labels, such as "Mar 2026" or "W14 2026", clipped with `x.values` in the
+    storage form), `x.tz` (the IANA zone of the calendar maths, named on the axis) and
+    `allowed_rebin` (the coarser calendar buckets the client may re-bin to, finest first,
+    ≤ 200 points). `x.bucket` adds `1M`, `1q` and `1y`. The newest bucket is drawn lighter or
+    dashed with "(in progress)" while `last_in_progress`; a plain time axis keeps UTC labels.
+26. **Client interactions (SPEC A56, P0-8; amends v2 amendment 3).** All client-side and
+    read-only (never a re-query or a model call): **Group by** re-bins a calendar series to a
+    unit in `allowed_rebin`, exactly matching the server's buckets, and the table, Copy data,
+    the downloads, the caption and the file names follow the grouping ("grouped by month");
+    **zoom** on `line`/`area` (drag, click then Shift+click, or Shift+←/→ then Enter; "Reset
+    zoom"; a zoom is dropped when the view changes); **legend toggles** (at least one series
+    stays visible; totals and tooltips say when series are hidden); **Download PNG / SVG**
+    draws the chart as shown, in the card's theme, stating its grouping, zoom and hidden
+    series ("<label> (hidden)") on the image; **Full width** takes a block out of the
+    conversation lane to the conversation's gutters, offered only in a chat lane with room
+    to gain. Charts stay out of the entry chunk.
+27. **Infographic Brief and new templates (SPEC A49).** A `report` envelope may carry
+    `layout: "infographic"` (`document` is the default): a hero KPI row with sparklines and
+    explicit disclosures (caption, as-of, "Showing top N of M", "Downsampled for saved
+    history"), a 2-up chart grid and highlight callouts; print and static modes fall back to
+    a single column. `ReportTemplateName` adds `executive`, `monthly`, `infographic` and
+    `investigation_brief` (labelled advisory: `decide()` decides, #3). The Reports library
+    draws a saved infographic report as an infographic.
+28. **KPI groups on `KpiTileGrid` (SPEC A52).** `kpi_group` renders through
+    `KpiTileGrid count={items.length} framed={false}` inside its block card: one column per
+    figure up to the grid's balance, no double frame, numerals that never truncate (the
+    context line wraps under the number), and in print/static mode each delta on its own line
+    with tiles that are not buttons. This amends the §5.3 `kpi_group` renderer note
+    (container-query column counts).
+29. **Limits (§5.4).** `report_leaves` 40 → 60 (`MAX_REPORT_LEAVES`, matching the 60-item
+    report), `blocks_bytes_target` 40,000 → 400,000 and `blocks_bytes` 48,000 → 480,000 for
+    live turns (long answers are no longer truncated, SPEC A39/A40). The series-point
+    limits are unchanged: `MAX_POINTS` stays 200 per live series and the stored copy
+    stays at `STORED_SERIES_POINTS` 100.
+    Amendment 7's compact storage form now applies to the inline copy only: the full,
+    uncompacted response is stored in the exchange document and restored on read
+    (SPEC A50), so a reopened answer shows its full blocks; answers saved before Round 12
+    keep the compact form.
+30. **Exports (Round 12 WP-REP; amends §7 and v2 amendment 9).** One flat export menu: PDF
+    (the browser print dialog, plus a one-click "Download PDF"), Word (`.docx`) and Excel
+    (`.xlsx`, a "Report" sheet then one sheet per table) generated client-side from the same
+    export AST with an in-repo store-only ZIP writer (no new dependency), then Markdown, HTML,
+    CSV and JSON. Defanging (default on) covers PDF, Word, Markdown, HTML and the Excel
+    "Report" sheet, never the Excel table sheets, CSV or JSON; spreadsheet and CSV cells that
+    look like formulas are neutralised. Log-derived text is escaped in Markdown so it cannot
+    become formatting or links. An export shows button-level progress, cannot start twice,
+    and reports a failure with Retry; download links are revoked only after the browser has
+    taken the file (`lib/download.ts`).
+
 ---
 
 ## 5. The answer-block schema

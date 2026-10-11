@@ -92,7 +92,15 @@ second step but can never be added there. `GET /api/setup/status` reports
 ended it clears the cookie and answers `authenticated: false` with a `reason` of
 `revoked`, `idle_expired`, `absolute_expired`, or `tv_mismatch` (and, for a time limit,
 `lifetime_seconds`), so the sign-in page can say why. Bearer-token API clients are
-unaffected by the cookie change.
+unaffected by the cookie change; their token lifetime is `AUTH_TOKEN_HOURS`, now at most
+144 hours (a larger value is reduced to 144 with a startup warning).
+
+Session listings (`GET /api/sessions`, `GET /api/admin/sessions`) add, per session,
+`remember` and `remember_seconds` (true only while the session is live and the policy
+still remembers it), `active` and `ended_reason` (`revoked`, `idle_expired`, or
+`absolute_expired`), `expires_at` (the earlier of the inactivity and hard limits),
+`effective_idle_expires_at`, and `effective_absolute_expires_at` (which activity never
+extends). Revoking your own current session records the reason `self_signout`.
 
 Authentication is applied centrally to the `/api` routers. A small bootstrap and
 health allowlist remains public; `POST /api/ingest/{source_id}` performs receiver-level

@@ -75,7 +75,9 @@ point-in-time rollback in version 0.1.
   unless an operator explicitly enables it.
 - **Autopilot and budget:** the balanced profile enables broad collection and a
   default daily LLM budget backstop. A budget block routes work to a human; it does
-  not discard or silently close the case.
+  not discard or silently close the case. Chat is outside this budget; its only
+  spending bound is the optional daily chat spending limit (see
+  [Chat assistant](#chat-assistant)), which is off by default.
 - **Reset:** reset actions are separate, freshly authenticated, type-to-confirm
   operations. See [Reset and recovery](reset.md).
 
@@ -92,8 +94,9 @@ point-in-time rollback in version 0.1.
   it: model calls, lookups, the token ceiling, and the time limit, with the answer
   reserve, answer length, and results per step under **More limits**. Switching modes
   keeps the values you set, so switching back is lossless.
-- **Spending.** **Daily chat spending limit** is off by default: the daily AI budget
-  covers automatic investigations and never pauses chat. With a limit, chat stops
+- **Spending.** **Daily chat spending limit** is off by default: the AI budget (daily
+  and monthly) covers automatic investigations and never pauses chat, so this limit is
+  chat's only spending bound, and there is no monthly chat limit. With a limit, chat stops
   starting model calls once its spending since 00:00 UTC reaches the amount, and the
   answer says so; 0 turns the limit off. Every chat call is still recorded in the cost
   ledger.

@@ -27,13 +27,21 @@ ledger; none of them feeds the deterministic close or escalate decision.
   window; the real value is at least that large.
 - **Withheld.** A rate is withheld rather than shown when the window was not fully
   covered, because a partial ratio would look like a fact.
-- **Exact up to 20,000 cases.** Case counts and totals are exact store-wide counts at
-  any size, and they match what Workspace Chat reports for the same question. The
-  heavier rollups behind a dashboard (timing, verdict mix, ATT&CK coverage, auto-close
-  health, agent improvement, and similar) analyse every case in their scope, up to
-  20,000 cases. A scope larger than that, typically **All time** on a large store, is
-  analysed over its newest 20,000 cases, and the figure says so instead of presenting a
-  lower bound as complete.
+- **Exact at any size.** A few figures are exact store-wide counts however many cases
+  the store holds, and they match what Workspace Chat reports for the same question:
+  the **Open Cases** stock, and the case counts on **Analytics → Metrics** (**Total
+  cases (all time)**, Needs human, Closed, open cases, and the counts by status,
+  verdict, and disposition).
+- **Exact up to 20,000 cases in the window.** Every other dashboard figure is computed
+  from the cases in its window, up to 20,000 of them. That covers every Overview figure
+  for the selected window (Total Cases, Total Critical, Resolved / Closed, Auto Closed,
+  the AI-verdict FP rate, and the rollups below them) and the heavier rollups behind
+  the dashboards (timing, verdict mix, ATT&CK coverage, auto-close health, agent
+  improvement, and similar). When a window holds more than 20,000 cases, typically
+  **All time** on a large store, only its newest 20,000 are analysed: a count then shows
+  as a lower bound (`≥`) and a rate is withheld, instead of a partial figure being shown
+  as complete. Chat's case counts have no such limit, so for a window that large the
+  chat figure is the exact one.
 
 ## Risk
 
@@ -81,15 +89,16 @@ under a "declared benign" rule policy. This is the denominator the other window 
 are shares of.
 
 On **Analytics → Metrics**, **Total cases (all time)** is a different figure: every
-case in the store, whatever the selected window, counted exactly. Its caption says
-"Exact", or names the breakdown that could only be counted in part.
+case in the store, whatever the selected window, counted exactly at any store size. Its
+caption says "Every case in the store", or names the breakdown that could only be
+counted in part.
 
 ### Total Critical
 
 Cases in the top severity band of the window's arrivals, counted on the server from the
-severity roll-up over the whole window rather than from the rows the page loaded. The
-band is the top band the severity ladder declares, which is not always called
-"Critical".
+severity roll-up over the window rather than from the rows the page loaded (up to
+20,000 cases; see [How to read a KPI](#how-to-read-a-kpi)). The band is the top band the
+severity ladder declares, which is not always called "Critical".
 
 ### Open Cases
 
@@ -215,10 +224,10 @@ AI spend comes from the usage ledger, which records every model call with its to
 and an estimated price. The **Cost** page breaks it down by model, role, surface, case,
 and time. By default a daily budget of **$10** applies, with a warning at 80% and
 `on_exceed: block`: past the limit, new investigations route to a human instead of
-calling a model. Workspace and Case Manager chat are outside this budget: their spend
-is recorded in the ledger and shown on the Cost page, but it does not count against the
-budget and chat is never paused by it. An administrator can set a separate daily chat
-spending limit instead. Prices are estimates from the model catalog or an operator
+calling a model. Workspace and Case Manager chat are outside this budget, daily and
+monthly: their spend is recorded in the ledger and shown on the Cost page, but it does
+not count against the budget and chat is never paused by it. An administrator can set a
+separate daily chat spending limit instead; it is chat's only spending limit. Prices are estimates from the model catalog or an operator
 override; they do not replace the provider invoice. See
 [Models and spend](../administration/models-spend.md).
 

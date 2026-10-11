@@ -1873,18 +1873,23 @@ older observations become their artifact-manifest lines, and the new read-only t
 `recall_observation(ref)` returns the stored (aggregate, fenced, shrunk) observation, never
 raw log rows (#7); per-observation budgets scale with the window. `/compact` (a saved
 Workspace conversation in `unlimited` mode only; text after it is not sent) forces a
-summary and answers "Summarised N earlier messages…"; in `bounded` mode or a stateless turn
+summary and answers "Summarised N earlier exchanges. The conversation continues from the
+summary." ("exchange" for one; `chat._COMPACT_DONE`); in `bounded` mode or a stateless turn
 it explains why nothing was summarised. The engine never reads or writes the conversation
 store: the route passes `summary_text`/`summary_covers_through` in and persists the new
 summary from the turn outcome. Known limitation: no route returns the summary text, so the
 console shows only the run-log row.
 
-**A43 — Chat and the daily AI budget (§8, §10.3, A35; D5).** Chat is outside the daily AI
-budget. `llm/gateway.BUDGET_EXEMPT_SURFACES = ("chat",)`: a `role=chat` call on
+**A43 — Chat and the daily AI budget (§8, §10.3, A35; D5).** Chat is outside the AI
+budget, both its daily and its monthly ceiling (`budget.daily_usd`, `budget.monthly_usd`).
+`llm/gateway.BUDGET_EXEMPT_SURFACES = ("chat",)`: a `role=chat` call on
 `surface="chat"` is never blocked by the budget gate, and chat spend is excluded from what
-the gate measures for every other call (`GET /api/budget/status` reports it apart as
-`excluded_today`). Every chat call still goes through the one gateway and writes one
-UsageDoc (#6). Report summaries (`surface="report"`) are not exempt. The optional
+the gate measures for every other call, in the daily and the rolling 30-day monthly
+window alike (`engine/budget.BudgetService._window_spend`; `GET /api/budget/status`
+reports today's share apart as `excluded_today`). Every chat call still goes through the
+one gateway and writes one UsageDoc (#6). Report summaries (`surface="report"`) are not
+exempt. Chat's only spending bound is the daily cap below; there is no monthly chat
+bound. The optional
 `chat_agent.chat_daily_cap_usd` (default `null`; 0 or `null` is off) is enforced by the
 engine before each model call against today's chat-surface spend (UTC day) plus calls in
 flight (`_ChatSpendInFlight`, process-local): a blocked first call is answered with the
@@ -1895,8 +1900,10 @@ answer stops here." (`chat_budget_cut`; `budget_cut` is the same sentence for an
 configuration's AI budget). The A35 composer copy is replaced: the one budget alert
 describes what happens to automatic investigations ("It limits automatic investigations,
 not chat."; "Automatic investigations are paused until it resets, so new cases wait for an
-analyst."), and chat keeps answering. `budget_state` in `/chat/context` follows the chat cap
-for chat purposes.
+analyst."), and chat keeps answering. `budget_state` in `/chat/context` still reports the
+AI budget (`reached` or `approaching` on either the daily or the monthly window,
+`routes_chat._budget_state`); the client uses it only to describe automatic
+investigations, never to block Send.
 
 **A44 — Concurrency (§4.2; D6).** Defaults rise to 4 questions per user and 16 per backend.
 A refusal is `429 chat_busy` with `Retry-After` and a body `{code, message, retry_after: 5,
@@ -1926,10 +1933,12 @@ from count to open_now; `compare` with up to 4 periods; a long per-call budget o
 Stop still cancels; `step.progress` "Counted N of M cases…"). `search_cases` totals and the
 case-derived `soc_metrics` kinds use the same aggregator; `cost_usage` uses the usage
 aggregate. A store failure mid-scan is `exact: false` with the counted share. Dashboards
-read exact counts; their heavier rollups are exact up to 20,000 cases per rollup scope and
-analyse the newest 20,000 of a larger scope with an explicit truncation marker
-(`store_total` = cases in the scope, `fetched` = cases analysed); chat aggregates have no
-such bound. Unknown tool inputs are refused visibly (no silent `extra="ignore"` drop).
+read exact store-wide counts (the `/api/metrics` headline counts and the Open Cases
+stock); every window figure, the Overview's window tiles included, and the heavier
+rollups are exact up to 20,000 cases per rollup scope and analyse the newest 20,000 of a
+larger scope with an explicit truncation marker (`store_total` = cases in the scope,
+`fetched` = cases analysed; counts shown as lower bounds, rates withheld); chat
+aggregates have no such bound (Round 12 SPEC §7.2 decision 1). Unknown tool inputs are refused visibly (no silent `extra="ignore"` drop).
 
 **A47 — Routing honesty (§4.3, A34; D9).** `unsupported: true` in the final header is
 honoured only when no data tool ran; otherwise the answer carries the new `limited` notice
@@ -2063,7 +2072,9 @@ older clients); the meta row's outcome word "Partial" is kept for a true failure
 `comparison` materialises to `kpi_group` with deltas, `grouped_bar` and a delta `table`;
 time series gain `x.labels`, `x.tz` and `allowed_rebin`; the Brief adds `layout:
 "infographic"`; bucket tokens add `1M`, `1q`, `1y`; per-message limits rise (`report_leaves`
-60, `blocks_bytes` 480,000, series points 200). Δ% on a zero baseline is "new". Client
+40 → 60, `blocks_bytes` 48,000 → 480,000). The series-point limits are unchanged:
+`MAX_POINTS` stays 200 per live series and the stored copy stays at
+`STORED_SERIES_POINTS` 100. Δ% on a zero baseline is "new". Client
 interactions (Group by, zoom, legend toggles, PNG/SVG download, Full width) are client-side
 and read-only.
 
@@ -2084,7 +2095,16 @@ the chip opens the Workspace chat, never the case chat (#5).
 whole with `fence_block` (the same #9 treatment) instead of `fence()`'s 600-character cut,
 so a selection or query default longer than 600 characters is no longer lost.
 
-**A59 — Bundle (§10.10).** Round 12's only new entry-chunk code is the chat activity store
-and the Remember me sign-in controls; everything else (turn runner, chat views, activity
-effects, charts) stays lazy. The entry baseline and the per-round budget are rebased at
-the end of the round (recorded in the Round 12 SPEC "As built").
+**A59 — Bundle (§10.10).** Round 12 adds this entry-chunk code (measured, as recorded
+beside `PRE_REVAMP_ENTRY_BYTES`): Remember me in the Login page, `auth` and the api client
+(WP-AUTH); the per-viewer preference writes (`patchMisc`, reduced transparency) in
+`prefs.tsx` and the chat activity glyph in `NavSidebar.tsx`; the chat activity store with
+its glyph and tab title (WP-ACT, the only new entry code the Round 12 SPEC §6 planned); and the design
+foundations (WP-DS: the ui recipes, `design-system/transparency.ts`, overlay origins).
+Everything else (turn runner, chat views, activity effects, charts) stays lazy. At the end
+of the round the command palette body and the Settings section metadata left the entry as
+lazy chunks without removing any feature. The entry baseline is rebased once, at the end
+of the round, with the final gates: the number lives in `PRE_REVAMP_ENTRY_BYTES`
+(`webui/src/soc/__tests__/bundle-first-paint.test.ts`), and its value and rationale are
+recorded in one place, the "Entry bundle" item of the Round 12 SPEC §7.3. Byte figures
+are not repeated here.

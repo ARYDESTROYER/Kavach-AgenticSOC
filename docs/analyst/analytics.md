@@ -101,8 +101,8 @@ rate. It does not show whether a reference was correct, useful, or influential.
 
 `retrieval_history_status` is the authoritative lifetime marker. A legacy case remains
 `unavailable` after re-investigation because its earlier lifetime cannot be recovered.
-Consequently, any mixed instrumented/legacy cohort or any truncated 2,000-case read
-keeps `cases_with_references` and `reference_coverage` `null` with `unavailable` status.
+Consequently, any mixed instrumented/legacy cohort or any read truncated at 20,000 cases
+(a store holding more cases than that) keeps `cases_with_references` and `reference_coverage` `null` with `unavailable` status.
 A fully instrumented cohort with no `measured` observation reports
 `insufficient_evidence`, also with a `null` headline. When at least one observation is
 measured, history-complete `not_measured` cases are excluded from the denominator rather

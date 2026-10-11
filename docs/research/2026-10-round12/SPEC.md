@@ -425,3 +425,246 @@ Backend full suite; webui `test:strict`, `tsc`, `eslint` (0/0), design gates, `c
 knowledge `--check`, `check_docs`, `docs:check`, `check_ci_contract`, `check_version`, the CI ruff
 fatal selection; `npm run build`; entry chunk within the bundle rule (the activity store is the
 only new entry code); live Chromium QA with screenshots at 390/1280/1440/1920/2560 in both themes.
+
+## 7. As built
+
+Recorded by WP-DOC at the end of wave 3 (2026-10-11). Where this section and §2–§4
+disagree, this section describes what shipped; the chat-revamp SPEC carries the
+detailed amendments (A39–A59) and BLOCKS.md amendments 24–30.
+
+### 7.1 What each package delivered
+
+- **WP-ENG** (chat engine): `limits_mode` (default `unlimited`) with the one-time
+  `chat_limits_version` migration; loop guards instead of caps (duplicate-lookup reuse, the
+  three-step no-progress stop, the stall timeout with one retry, the hidden 200-call /
+  60-minute fuse); automatic continuation on `length`; intra-turn observation compaction
+  with `recall_observation` and the cross-turn rolling summary in a `CONVERSATION_SUMMARY`
+  untrusted fence; honest `unsupported`/`limited` routing and the `_answer_kind` fix;
+  clarify and report header parsing; the chat budget exemption in the gateway and the
+  optional chat daily cap; `step.progress` plumbing; Stop abandons the in-flight call; the
+  screen context fenced whole (diagnosis T7).
+- **WP-TOOLS** (chat tools, prompts, blocks): `case_stats`; all-time and calendar windows on
+  every aggregate tool, aligned to whole periods when bucketed; comparisons (`compare`,
+  the `comparison` artifact); exact `search_cases` totals and the "still open" fix;
+  humanised window labels; zero-result `suggestions[]`; visible refusal of unknown inputs;
+  `cost_usage` over the usage aggregate; `log_stats` calendar intervals; `grouped_bar`,
+  `allowed_rebin` and infographic materialisation; the routing prompt fixes; the four new
+  report templates; `OUTSIDE_SELECTED_RANGE`.
+- **WP-AGG** (aggregation core and metrics): `engine/time_windows.py` and
+  `engine/case_aggregate.py` (ES composite + calendar `date_histogram`, SQL `GROUP BY`,
+  memory and streaming-fold paths; the optional `CaseRepository.aggregate` push-down);
+  usage aggregation; the case population for dashboards (exact up to 20,000 cases per
+  rollup scope, newest-first, truncation marked); exact `/api/metrics` headline counts with
+  `counts_exact`; SLA attainment `null` with a reason; SLA scored on the derived priority;
+  `analyst_confirmed_fp`; rollups over 2,000 cases run off the event loop.
+- **WP-API** (chat routes and persistence): full-text per-exchange documents, archive pages
+  and windowed reads; conversation-summary storage; the 10-minute lease with a 60-second
+  heartbeat; concurrency 4/16 with `retry_after`/`scope`/`limit`; `turns/active`, the
+  per-turn event ring and rejoin, owner-only `chat.turn` frames bound to the account
+  generation (`chat_account_unavailable`); conversation `status`/`unread` with a temporary
+  running row and mark-read; reports saved from the answer header and from a conversation;
+  the feedback store and routes; the step inspector over a bounded observation ring;
+  `chat_request_failed` for a billed turn that ended unsaved.
+- **WP-DS** (Apple design foundations): size-specific tracking, concentric radii (menus
+  10 px, items 6 px, dialogs and sheets 14 px), one material for floating chrome with
+  reduced-transparency, increased-contrast and in-app **Reduce transparency** fallbacks, one
+  spring vocabulary, trigger-origin overlays, press feedback, reduced-motion fades, KPI
+  tiles whose numerals never truncate.
+- **WP-AUTH** (Remember me): server-bounded remembered sessions (6/12/24 h, default and
+  maximum 24 h, capped by the absolute lifetime; the standard idle limit unless a separate
+  one is set), the remembered username, browser-managed passwords (autocomplete, hidden
+  username field, `PasswordCredential` where available), the warning dialog, disabled-with-
+  reason states, the signed `rm` claim through MFA and SSO, a browser-session cookie for
+  ordinary sign-ins, the registry-aware `/auth/me` with `reason`, the Session policy editor
+  group, Remembered badges and Expires columns, and the session-lifetime table in
+  `docs/operations/security.md`.
+- **WP-REP** (report downloads): reliable PDF/Markdown/HTML/CSV/JSON exports, client-side
+  Word and Excel from the same export AST with an in-repo ZIP writer, the flat export menu,
+  Download PDF, print fixes, defang coverage, Markdown escaping.
+- **WP-CHATUI** (layout and glitches): one lane, two edges; the width preference; frame
+  overflow and StrictMode geometry fixes; Jump to latest outside the content; the Report
+  count only when > 0; the context-window ring with the budget moved into its card; KPI
+  groups on `KpiTileGrid`.
+- **WP-ACT** (working indicator and rejoin): the entry-safe activity store, the turn runner
+  (detach, park, rejoin, busy-wait with backoff), the chat nav glyph on every nav form, the
+  optional brand ring, history-row statuses, the tab-title prefix, the "Answer ready"
+  toast, case chat keeping its transcript across tab switches.
+- **WP-OV** (Overview): flat titled bands, the fluid KPI strip, **AI-verdict FP rate** and
+  **Response time**, one persisted Deeper analytics disclosure with a collapsed summary,
+  Noise Reduction and Human vs AI refinements, the Metrics **Total cases (all time)** label,
+  print CSS; the §2.10 data inventory kept (DOM inventory test).
+- **WP-CM** (Case Manager and the analyst bug): `caseOutcome` (the classification
+  headline, gated on the classification history entry like the backend ground-truth
+  authority) across header, queue rows, Cases list, hover cards, facts rail and grading; a
+  disposition on every terminal path including bulk close and resolve; the server-backed
+  queue (Active/Mine/All, exact totals, `q`/`assignee`/`severity`/`verdict`, Load more, the
+  `cases` realtime topic); the keyboard model; the sticky header with one primary action;
+  the facts rail; de-duplicated tabs; the decision-first Investigation tab; the Close
+  dialog with a sticky footer, **Close & next** and **Reopen**; focus restoration;
+  agreement statistics over real comparisons only.
+- **WP-BLK** (charts and blocks): `grouped_bar`, comparison tiles, calendar labels with the
+  time zone and in-progress marker, Group by, zoom, legend toggles, PNG/SVG download,
+  per-block Full width, the infographic Brief and the four new templates.
+- **WP-DEMO** (Demo planner): every new intent (any window, breakdowns, `case_stats`,
+  trends, comparisons with a direct verdict, report creation, clarify, zero-result
+  follow-ups, deep investigations), the write-verb misroute fix for "create a report", and a
+  230-question golden set checked against the case store.
+- **WP-FEAT-A / WP-FEAT-B** (message-level features, split in two): the clarify card,
+  zero-result chips, removal of the Continue chip and limit-driven "Partial" labels,
+  run-log rows for continuation/compaction/progress/wrap-up, the step inspector with
+  visible escapes, Retry and Explain, ratings, the saved-report line, Add to case, the
+  answer contents list, Jump to end, the copy-last shortcut; the prompt library with
+  promptbooks, `/compact` and `/report` templates, Save conversation as report, and the
+  Settings → Chat assistant editor (mode first, bounded knobs only in Bounded, the chat
+  spending limit, the animated-logo switch).
+- **WP-ASK** ("Ask AI" entity chips): chips on IPs, hosts, users, hashes, domains, URLs,
+  e-mail addresses, rules and case ids in Cases, Logs and Case Manager;
+  `POST /api/chat/entity-question` with a strict per-kind grammar shared with the client
+  through a contract table; the value fenced server-side (`entity_ref`) live and on replay.
+- **WP-DOC** (this record): Help Center pages, the chat-revamp amendments, CHANGELOG,
+  AGENTS.md, ROADMAP, DEPLOY and upgrade notes. Generated artefacts (console map,
+  app-knowledge corpus, `webui/openapi.json`, `api-types.gen.ts`) and the final test
+  counts belong to WP-GEN.
+
+### 7.2 Decisions taken during implementation
+
+1. **Dashboards are exact up to 20,000 cases per rollup scope** (amends D8). Only the
+   store-wide counts are exact COUNT push-downs at any size and agree with chat: the
+   `/api/metrics` headline counts (`total_cases`, `open_cases`, `needs_human_cases`,
+   `closed_cases`, `by_status`, `by_verdict`, `by_disposition`, with `counts_exact`), the
+   Open Cases stock (`open_now`), and Metrics' **Total cases (all time)**. Every window
+   figure (the posture rollup's `case_count`, `severity_counts`, terminal and auto-closed
+   counts and the AI-verdict FP rate behind the Overview's Total Cases, Total Critical,
+   Resolved / Closed and Auto Closed tiles) and the heavier rollups (timing, verdict mix,
+   ATT&CK coverage, auto-close health, agent improvement, …) read the newest-first prefix
+   of their window and stop at 20,000 cases; a larger scope is analysed over its newest
+   20,000 with `truncated: true`, `store_total` (cases in the scope) and `fetched` (cases
+   analysed), `window_covered: false`, its counts shown as lower bounds (`≥`) and its
+   rates withheld. Chat aggregates (`case_stats`, `search_cases` totals) are always exact,
+   so beyond 20,000 cases in a window chat and the Overview window tiles differ.
+2. **Maximum output is requested only on streaming providers** (amends D3). A blocking
+   provider (Azure OpenAI, Bedrock, Vertex, entry-point clients) has a fixed read timeout,
+   so it gets 4,000 output tokens per step and longer answers continue in further steps.
+3. **Stop abandons the in-flight call** (amends D2 and the revamp's §6.3) in unlimited mode;
+   the call is ledgered as `abandoned` with an estimated cost (#6). Bounded mode keeps
+   "finish and record".
+4. **No report from a stopped or failed answer** (amends D11): notice kinds `cancelled`,
+   `partial`, `timeout`, `budget`, `provider` and `breaker` suppress the header's report;
+   "Save as report" stays the explicit path.
+5. **`OUTSIDE_SELECTED_RANGE`** (amends D7): a tool window wholly outside the scope chip is
+   refused inside the turn instead of silently falling back to the chip.
+6. **Bounded per-call timeout**: in bounded mode a model call gets at most the question's
+   remaining time, never less than 30 s.
+7. **Bounded step inspector**: observations are kept for the owner's 100 most recent answers,
+   24,000 characters per step; an older answer's inspector says the result is no longer
+   stored.
+8. **Promptbooks storage form**: no new store or endpoint; a promptbook is a saved
+   `ChatPrompt` whose id starts with `book-`, its 2–10 steps separated by a line holding
+   only `---`, inside the 2,000-character text limit.
+9. **Ask AI sends a server-worded question, never prefilled text.** As built, the chip
+   navigates with a typed reference, the chat page resolves it with
+   `POST /api/chat/entity-question` and sends the server's question with
+   `origin: "starter"` (the topic pattern of "Ask about this"); nothing from the chip is
+   placed in the composer, so a held Enter can never send words the analyst did not
+   choose. The value is fenced as `entity_ref` in the prompt, live and on replay, and never
+   counts as user-authored for indicator lookups. The command palette's free-text "Ask AI"
+   only prefills a fresh composer and never sends. (The WP-ASK commit message describes a
+   prefilled, unsent question; the code and its tests send the server-worded question.)
+10. **Chat summary inside the conversation store**: the engine never touches the store; the
+    route passes the summary in and persists the new one from the turn outcome.
+11. **Report summaries stay inside the daily AI budget** (D5 scope): only `surface="chat"`
+    calls are exempt.
+12. **`max_parallel` is limited to `max_tool_calls` in bounded mode at run time only**, so a
+    Bounded → Unlimited → Bounded round trip never loses the operator's value.
+13. **Case outcome gate**: a disposition counts as the analyst's classification only with
+    `decision_by == "analyst"` and an explicit classification history entry
+    (`set_disposition`/`confirm_fp`, or a close/resolve stamped `classified_disposition`
+    by `disposition_declared: true`); the disposition picker starts empty.
+14. **Reopen, not Undo**: the eight-second action after a close is the existing `reopen`
+    verb, and the recorded classification stays on file until the case is closed again.
+
+### 7.3 Known limitations
+
+- **Process-local turn registry.** Running turns, their rejoin rings, Stop and the
+  questions-at-once bounds live in one backend process; a restart ends running answers and a
+  second replica would not see them (single replica, as before).
+- **The compaction summary is not shown.** No route returns the summary text; the run log
+  only says that earlier messages were summarised.
+- **Demo bulk actions are unavailable.** Bulk case changes run as background jobs, which
+  Demo Mode does not run.
+- **Single replica** for everything else that was already process-local (see
+  `docs/releases/known-limitations.md`).
+- **The chat UI shows the newest 100 messages** of a conversation; older messages are
+  stored and readable through `GET /api/chat/conversations/{id}/messages`, but the
+  transcript does not page them yet.
+- **The transcript's retention notice uses the old wording** (deviation from the
+  no-removal storage of A50). `threadRetentionInfo` in `chat/useChatConversations.ts`
+  still says "Conversations keep their newest 100 messages" (or "Older messages were
+  removed to stay within the storage limit") above a conversation longer than 100
+  messages, although nothing is removed. The Help Center chat page and
+  `docs/releases/known-limitations.md` say so; the copy fix belongs with older-message
+  paging (ROADMAP G).
+- **No "All time" option on the chat scope chip** (deviation from D7). The server and API
+  accept `{"from": "all"}` (`TimeRange.is_all_time`, never clamps), but the composer's
+  presets (`TIME_PRESETS` in `chat/composer/format.ts`) are Last hour, Last 24 hours and
+  Last 7, 30 and 90 days. The default chip (Last 24 hours) sets no outer limit, so a
+  question can still ask for all time while the chip reads Last 24 hours. Open
+  orchestrator decision, recorded in ROADMAP G: add the preset, or keep the default chip
+  as the all-time path.
+- **The scope popover's default hint names the wrong default** (deviation from D7 and
+  from the prompt fix that removed the false "last 24 hours" default). With the default
+  chip, which reads "24h", the popover says "Last 24 hours, unless your question names
+  another window." (`chat/composer/ScopeControls.tsx`). Without a window in the
+  question, case counts and case searches (`case_stats`, `search_cases`) cover all time
+  (`resolve_window(..., default="all")`); only log, metric, cost and audit lookups
+  default to the last 24 hours. An analyst can therefore read an all-time count, such
+  as "How many cases did we close as false positive?", as a one-day figure. The Help
+  Center chat page and `docs/releases/known-limitations.md` give the real defaults. The
+  copy fix belongs with the All time chip decision (ROADMAP G): reword the hint, for
+  example "No outer limit: case questions cover all time, other lookups the last 24
+  hours unless your question names a window."
+- **Case Manager chat keeps no running summary.** The D4 summary is made only when the
+  route will store it (a saved Workspace conversation in unlimited mode,
+  `can_store_summary`); case chat, an unsaved conversation and bounded mode replay only
+  their newest exchanges (unlimited: the fold plan's oldest exchanges are dropped
+  without a notice; bounded: `select_replay`). The composer's context note ("Long
+  conversations are summarised automatically near the limit … There is no hard cap",
+  `contextNote` in `chat/composer/format.ts`) is shown in case chat and in an unsaved
+  conversation too, and overstates it there. The Help Center and
+  `docs/releases/known-limitations.md` describe the real behaviour; the copy fix (show
+  the note only where a summary is stored, otherwise say that only the newest exchanges
+  that fit are sent) is a ROADMAP G item.
+- **Rollback** to an earlier image shows each message's compact inline copy (answers over
+  24,000 characters end there; archived messages are not shown) and ignores the chat
+  limits mode and spending limit.
+- **Entry bundle.** The round's features grew the first-paint entry chunk from
+  392,879 B at the round's branch point (`6769207`) to 399,967 B: +7,088 B, 33 B under
+  the 400,000-byte ceiling. Measured sources: Remember me in the Login page, `auth` and the
+  api client (WP-AUTH, about 2.8 kB); the per-viewer preference writes (`patchMisc`,
+  reduced transparency) in `prefs.tsx` and the chat activity glyph in `NavSidebar.tsx`
+  (about 2.6 kB); the chat activity store with its glyph and tab title (WP-ACT, about
+  0.8 kB, the only new entry code §6 planned); and the design foundations (WP-DS: the ui
+  recipes, `design-system/transparency.ts`, overlay origins, about 0.9 kB net). The turn
+  runner, chat views and charts stay lazy. WP-GEN-A then moved code that first paint
+  never needs out of the entry, keeping every feature: the command palette body
+  (`CommandPalette`, cmdk, `ui/command`, about 20 kB) is a fail-soft lazy chunk that
+  AppShell mounts on the first Cmd/Ctrl-K or search click (warmed when the browser is
+  idle or an opener is hovered); the Settings section metadata (`settings-sections-meta`
+  and `settings-dirty`, about 15.5 kB) left with it once the shell's unsaved-changes hook
+  took `deepEqual` from the dependency-free `lib/deep-equal.ts`; and the shell's two Blob
+  downloads (job artifacts, MFA recovery codes) share `lib/download-blob.ts` (+223 B).
+  Measured with `npm run build:app`, the entry is **365,547 B**, 34,420 B less than
+  before that pass. That measurement is the rebased baseline,
+  `PRE_REVAMP_ENTRY_BYTES = 365_547` in
+  `webui/src/soc/__tests__/bundle-first-paint.test.ts`; later work keeps the +1,024-byte
+  budget over it (chat-revamp SPEC A59 points here).
+
+### 7.4 Deferred (ROADMAP section G)
+
+Background deep-investigation Jobs, saving a chart to a dashboard, conversation sharing,
+branching, folders and scheduling, model tier presets, a multi-replica turn registry,
+showing the conversation summary, older-message paging in the chat UI (with the
+retention-notice copy fix), an "All time" chip preset (open decision) with the scope
+popover's default-hint copy fix, the context note shown only where a summary is stored,
+bulk actions in Demo Mode, and the bounded mapping form for the other id-keyed KV stores
+in the Elasticsearch config index.

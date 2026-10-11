@@ -126,8 +126,9 @@ forgets a revoked session (7 days), and the server never re-registers a token is
 before that window, so a revoked session cannot come back.
 
 **Changed in this release.** A sign-in without Remember me now uses a browser-session
-cookie instead of a 12-hour persistent cookie. API clients that send a bearer token
-are unaffected.
+cookie instead of a 12-hour persistent cookie. API clients that send a bearer token are
+unaffected by the cookie change, but every token, theirs included, now lasts at most
+144 hours: a larger `AUTH_TOKEN_HOURS` is reduced to 144 with a startup warning.
 
 ## Untrusted data and AI
 

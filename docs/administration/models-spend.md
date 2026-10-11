@@ -136,9 +136,10 @@ The budget check is a preflight comparison rather than an atomic reservation. Ca
 already in flight may complete slightly beyond the configured limit. Configure
 provider-side budgets and alerts as the final financial backstop.
 
-Workspace and Case Manager chat are **outside** this budget. A chat model call is
-never blocked by it, and chat spend is not counted toward it, so asking questions can
-never pause investigations or route them to a human. Every chat call is still metered:
+Workspace and Case Manager chat are **outside** this budget, both the daily ceiling and
+the optional monthly one. A chat model call is never blocked by either, and chat spend
+is not counted toward either, so asking questions can never pause investigations or
+route them to a human. Every chat call is still metered:
 it writes one usage row with its tokens and cost, and **Analytics → Cost** shows chat
 spend with everything else. `GET /api/budget/status` reports the figures the budget
 enforces, without chat, and states chat's share for today separately. When the budget
@@ -146,7 +147,8 @@ is close or used up, the chat composer shows one alert about what happens to aut
 investigations; chat keeps answering.
 
 To bound chat spend, set the optional **Daily chat spending limit** under
-**Settings → General → Chat assistant** (off by default). Once today's chat spend
+**Settings → General → Chat assistant** (off by default). It is chat's only spending
+limit; there is no monthly chat limit, so a monthly budget does not cap chat. Once today's chat spend
 (since 00:00 UTC) reaches it, chat starts no new model calls until midnight UTC: a new
 question gets a notice instead, and a product question is still answered from the Help
 Center at no cost. Chat questions otherwise have no per-question limit by default; an
