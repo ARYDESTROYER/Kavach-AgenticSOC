@@ -49,7 +49,7 @@ from ..constants import (
 # historical underscore name here (tests, ``routes_rules`` and route code use them;
 # ``noqa: F401`` marks the re-export-only ones); the ``AppState``-reading ones are
 # thin wrappers further down this module.
-from ..engine.analyst_outcomes import CLASSIFIED_DISPOSITION_KEY
+from ..engine.analyst_outcomes import CLASSIFIED_DISPOSITION_KEY, standing_analyst_disposition
 from ..engine.case_cluster import WIDEN_LADDER as _WIDEN_LADDER  # noqa: F401
 from ..engine.case_cluster import cluster_for_case, entity_events_widening
 from ..engine.case_cluster import entity_field as _entity_field  # noqa: F401
@@ -5348,6 +5348,27 @@ CASE_QUEUE_SEVERITIES: tuple[str, ...] = ("critical", "high", "medium", "low", "
 CASE_QUEUE_VERDICTS: tuple[str, ...] = ("FALSE_POSITIVE", "TRUE_POSITIVE", "NEEDS_HUMAN")
 CASE_QUEUE_SCAN_SORTS: tuple[str, ...] = ("title",)
 CASE_QUEUE_SCAN_PAGE = 1000
+# Round 12 final review (L1): the scan reads a PROJECTION, never whole case documents
+# (which carry evidence and can be tens of kB each). These are the stored fields its
+# predicates and sort keys read: the ten search fields, the filter inputs, every sort
+# key, the severity-band inputs (``engine.priority.severity_band_from_events``) and the
+# fields a ``Case`` requires, so a projected row validates exactly like the full one
+# for every field a predicate reads. A transfer hint (``scan_page`` ``fields``): a
+# store that ignores it returns whole documents, which is equally correct.
+CASE_QUEUE_SCAN_FIELDS: tuple[str, ...] = (
+    "case_id", "case_number", "title", "summary", "status", "verdict", "entity",
+    "entity_type", "source_name", "assignee", "source_surface", "cluster_signature",
+    "created_at", "updated_at", "risk_score", "severity_band", "trigger_reason",
+    "source_id",
+)
+# A scan page with at least this many rows has its predicate work (decoding, the
+# validation a window or severity filter needs) run in a worker thread, so a broad
+# search never stalls the event loop that also serves chat streams, SSE and ingest
+# (the dashboards' ``_OFFLOAD_AT`` idea, applied per page).
+CASE_QUEUE_OFFLOAD_AT = 200
+# How many cases of the requested page are fetched at once when the store has no
+# batch read (``get_many``).
+CASE_QUEUE_FETCH_CONCURRENCY = 16
 
 
 def _queue_value(row: Any, key: str) -> Any:
@@ -5407,16 +5428,34 @@ def _queue_score_band(score: float) -> str:
 def _queue_severity(case: Case) -> str:
     """The band the queue row DISPLAYS: the read-time severity band, else the risk
     band, else ``info`` — the same chain as the console's ``caseSeverity``."""
-    raw = str(getattr(case, "severity_band", "") or "").strip().lower()
+    return _queue_band(getattr(case, "severity_band", ""), getattr(case, "risk_score", None))
+
+
+def _queue_band(band: Any, risk: Any) -> str:
+    raw = str(band or "").strip().lower()
     aliases = {"crit": "critical", "med": "medium", "moderate": "medium",
                "informational": "info", "none": "info"}
     raw = aliases.get(raw, raw)
     if raw in CASE_QUEUE_SEVERITIES:
         return raw
-    risk = getattr(case, "risk_score", None)
     if isinstance(risk, (int, float)) and not isinstance(risk, bool):
         return _queue_score_band(risk)
     return "info"
+
+
+def _queue_row_severity(case: Case, prefs: Preferences) -> str:
+    """The band the list response shows for ``case`` — exactly what
+    ``_queue_severity(_with_advisory_bands(case, prefs))`` returns (the advisory
+    severity axis replaces the stored band; a failed derivation leaves none, and the
+    risk band applies) — without deriving the impact, urgency and priority axes the
+    filter never reads."""
+    from ..engine.priority import severity_band_from_events
+
+    try:
+        band = severity_band_from_events(case, prefs).get("band")
+    except Exception:  # noqa: BLE001 — advisory only, as in ``advisory_bands``
+        band = None
+    return _queue_band(band, getattr(case, "risk_score", None))
 
 
 def _queue_sort_key(row: Any, field: str) -> tuple[Any, str]:
@@ -5429,6 +5468,92 @@ def _queue_sort_key(row: Any, field: str) -> tuple[Any, str]:
         return (number, tiebreak)
     millis = parse_millis_strict(_queue_value(row, field))
     return (millis if millis is not None else -1, tiebreak)
+
+
+class _QueueDesc:
+    """A sort key in REVERSED order (``heapq`` keeps the smallest item on top)."""
+
+    __slots__ = ("key",)
+
+    def __init__(self, key: Any) -> None:
+        self.key = key
+
+    def __lt__(self, other: "_QueueDesc") -> bool:
+        return self.key > other.key
+
+
+def _queue_page_matches(
+    rows: list[Any],
+    *,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee_key: str,
+    verdict: str | None,
+    severity: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    prefs: Preferences,
+) -> list[tuple[Any, str]]:
+    """The ``(sort key, case id)`` of every row of one scan page that matches the
+    queue filters. Pure and synchronous, so a large page runs in a worker thread.
+    Only a row that a window or severity filter must judge is validated, and only
+    its projected fields."""
+    from ..stores.base import case_in_created_window
+
+    out: list[tuple[Any, str]] = []
+    for row in rows:
+        if statuses and str(_queue_value(row, "status") or "") not in statuses:
+            continue
+        if surface and str(_queue_value(row, "source_surface") or "") != surface:
+            continue
+        if entity and _queue_entity(row)[1] != entity:
+            continue
+        if assignee_key and str(_queue_value(row, "assignee") or "").strip().casefold() != assignee_key:
+            continue
+        if verdict and str(_queue_value(row, "verdict") or "").strip().upper() != verdict:
+            continue
+        if terms:
+            hay = _queue_search_haystack(row)
+            if not all(term in hay for term in terms):
+                continue
+        validated: Case | None = row if isinstance(row, Case) else None
+        if lo is not None or hi is not None:
+            validated = validated or Case.model_validate(row)
+            if not case_in_created_window(validated, lo, hi):
+                continue
+        if severity:
+            validated = validated or Case.model_validate(row)
+            if _queue_row_severity(validated, prefs) != severity:
+                continue
+        key = _queue_sort_key(row, sort_field)
+        out.append((key, key[1]))
+    return out
+
+
+async def _queue_cases_by_id(store: Any, case_ids: list[str]) -> dict[str, Case]:
+    """The full cases of one queue page, by id: the store's batch read when it has
+    one (``get_many``), else bounded concurrent ``get`` calls."""
+    import asyncio
+
+    batch = getattr(store, "get_many", None)
+    found: dict[str, Case] = {}
+    if callable(batch):
+        found = dict(await batch(case_ids))
+    missing = [cid for cid in case_ids if cid not in found]
+    if missing:
+        gate = asyncio.Semaphore(CASE_QUEUE_FETCH_CONCURRENCY)
+
+        async def one(case_id: str) -> tuple[str, Case | None]:
+            async with gate:
+                return case_id, await store.get(case_id)
+
+        for case_id, case in await asyncio.gather(*(one(cid) for cid in missing)):
+            if case is not None:
+                found[case_id] = case
+    return found
 
 
 async def _scan_case_queue(
@@ -5448,15 +5573,33 @@ async def _scan_case_queue(
     offset: int,
     verdict: str | None = None,
 ) -> tuple[list[Case], int]:
-    """One exact pass over the case store for the queue filters → (page, total)."""
-    from ..stores.base import case_in_created_window
+    """One exact pass over the case store for the queue filters → (page, total).
+
+    Bounded by design (Round 12 final review, L1): the scan reads only
+    :data:`CASE_QUEUE_SCAN_FIELDS` (a projection, never the evidence-bearing whole
+    documents), keeps only the ``offset + limit`` best ``(sort key, case id)`` pairs
+    while counting every match (memory is bounded by the page, not by the store),
+    runs each large page's predicate work in a worker thread, and finally reads the
+    requested page's full cases by id. The total stays the exact number of matching
+    cases over the whole store."""
+    import asyncio
+    import functools
+    import heapq
 
     prefs = state.execution_prefs
     assignee_key = assignee.casefold()
-    kept: list[tuple[Any, Case | None]] = []
     store = state.cases
+    descending = sort_order == "desc"
+    keep = max(0, offset + limit) if limit > 0 else 0
+    best: list[tuple[Any, str]] = []   # a heap: the WORST kept match on top
+    total = 0
     cursor: Any = None
     started = False
+    match = functools.partial(
+        _queue_page_matches, statuses=statuses, surface=surface, entity=entity,
+        terms=terms, assignee_key=assignee_key, verdict=verdict, severity=severity,
+        lo=lo, hi=hi, sort_field=sort_field, prefs=prefs,
+    )
     try:
         while not started or cursor is not None:
             started = True
@@ -5465,34 +5608,27 @@ async def _scan_case_queue(
                 cursor=cursor,
                 raw=True,
                 statuses=list(statuses) if statuses else None,
+                fields=list(CASE_QUEUE_SCAN_FIELDS),
             )
-            for row in rows:
-                if statuses and str(_queue_value(row, "status") or "") not in statuses:
-                    continue
-                if surface and str(_queue_value(row, "source_surface") or "") != surface:
-                    continue
-                if entity and _queue_entity(row)[1] != entity:
-                    continue
-                if assignee_key and str(_queue_value(row, "assignee") or "").strip().casefold() != assignee_key:
-                    continue
-                if verdict and str(_queue_value(row, "verdict") or "").strip().upper() != verdict:
-                    continue
-                if terms:
-                    hay = _queue_search_haystack(row)
-                    if not all(term in hay for term in terms):
-                        continue
-                validated: Case | None = row if isinstance(row, Case) else None
-                if lo is not None or hi is not None:
-                    validated = validated or Case.model_validate(row)
-                    if not case_in_created_window(validated, lo, hi):
-                        continue
-                if severity:
-                    validated = _with_advisory_bands(
-                        validated or Case.model_validate(row), prefs
-                    )
-                    if _queue_severity(validated) != severity:
-                        continue
-                kept.append((row, validated))
+            rows = list(rows)
+            if len(rows) >= CASE_QUEUE_OFFLOAD_AT:
+                matched = await asyncio.to_thread(match, rows)
+            else:
+                matched = match(rows)
+            total += len(matched)
+            for key, case_id in matched:
+                # The heap's top is the WORST kept match: for a descending order the
+                # smallest key, for an ascending one the largest (``_QueueDesc``).
+                item = (key if descending else _QueueDesc(key), case_id)
+                if len(best) < keep:
+                    heapq.heappush(best, item)
+                elif best and best[0][0] < item[0]:
+                    heapq.heapreplace(best, item)
+        page_items = sorted(
+            best, key=lambda item: item[0] if descending else item[0].key, reverse=descending,
+        )[offset: offset + limit] if limit > 0 else []
+        page_ids = [case_id for _key, case_id in page_items]
+        found = await _queue_cases_by_id(store, page_ids) if page_ids else {}
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — a partial scan must never pass as exact
@@ -5506,11 +5642,8 @@ async def _scan_case_queue(
             status_code=503,
             detail="Could not search every case right now; try again.",
         ) from exc
-    kept.sort(key=lambda item: _queue_sort_key(item[0], sort_field), reverse=sort_order == "desc")
-    total = len(kept)
-    page = kept[offset: offset + limit] if limit > 0 else []
-    cases = [validated or Case.model_validate(row) for row, validated in page]
-    return cases, total
+    # A case removed between the scan and the page read is simply absent from the page.
+    return [found[case_id] for case_id in page_ids if case_id in found], total
 
 
 @router.get("/cases", response_model=CaseListResponse)
@@ -5872,13 +6005,27 @@ _SELF_DECLARING_ACTIONS = {"set_disposition"}
 # terminal status is only allowed via an explicit reopen.
 _TERMINAL = {CaseStatus.CLOSED, CaseStatus.RESOLVED}
 
+# The ONE forward move between terminal statuses: RESOLVED means "worked to
+# completion, pending final close", so the dedicated close verbs may take it to
+# CLOSED. Every other move out of a terminal status still needs ``reopen``; the
+# generic ``set_status`` can never reach CLOSED; CLOSED → RESOLVED stays blocked.
+# Analyst layer only (RBAC: both verbs already need ``cases:close``); never decide() (#3).
+_FINAL_CLOSE_ACTIONS = frozenset({"close", "confirm_fp"})
+
 
 def _guard_transition(action: str, current: CaseStatus, target: CaseStatus | None) -> None:
     """Reject illegal lifecycle moves (e.g. CLOSED→NEW without reopen). Allows
-    reopen explicitly out of a terminal status; allows same-status no-ops."""
+    reopen explicitly out of a terminal status, the final close of a RESOLVED case
+    through ``close``/``confirm_fp``, and same-status no-ops."""
     if target is None or target == current:
         return
-    # Moving OUT of a terminal status is only legal via reopen/deescalate→reopen.
+    if (
+        current == CaseStatus.RESOLVED
+        and target == CaseStatus.CLOSED
+        and action in _FINAL_CLOSE_ACTIONS
+    ):
+        return
+    # Moving OUT of a terminal status is otherwise only legal via reopen.
     if current in _TERMINAL and action not in ("reopen",):
         raise HTTPException(
             status_code=400,
@@ -6015,22 +6162,39 @@ async def _perform_case_action(
     # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
     # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
     # path existed.
+    #
+    # One exception keeps the analyst's word final: an UNDECLARED value never replaces a
+    # disposition an analyst explicitly classified and the case still carries
+    # (``standing_analyst_disposition``). It may be the model-derived value read off the
+    # case before the analyst classified it and posted back, and applying it would turn
+    # the analyst's label into the model's while the classification entry still vouches
+    # for it. The lifecycle move itself still happens; only the echo is not applied.
     classified_disposition = ""
     if body.action == "set_disposition" and not body.disposition:
         raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
     if body.action in _DISPOSITION_ACTIONS and body.disposition:
         try:
-            case.disposition = Disposition(body.disposition)
+            requested = Disposition(body.disposition)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
         if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
-            classified_disposition = case.disposition.value
+            case.disposition = requested
+            classified_disposition = requested.value
+        elif standing_analyst_disposition(case) is None:
+            case.disposition = requested
 
-    # confirm_fp records the FALSE_POSITIVE disposition (an analyst confirming an FP),
-    # overriding only an unset / UNDETERMINED auto-mapping — never a deliberate
-    # analyst classification.
-    if body.action == "confirm_fp" and case.disposition in (None, Disposition.UNDETERMINED):
-        case.disposition = Disposition.FALSE_POSITIVE
+    # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
+    # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
+    # therefore replaces every non-false-positive disposition, including the
+    # ``true_positive`` that ``case_manager.apply()`` mapped from a TRUE_POSITIVE verdict
+    # and any earlier analyst value, and keeps ``benign``, which is the analyst's
+    # false-positive-class refinement. Stamping the value on the history entry makes the
+    # entry self-describing, so ``caseOutcome``, the facts rail and
+    # ``analyst_confirmed_outcome`` all read the same false-positive class.
+    if body.action == "confirm_fp":
+        if case.disposition not in (Disposition.FALSE_POSITIVE, Disposition.BENIGN):
+            case.disposition = Disposition.FALSE_POSITIVE
+        classified_disposition = case.disposition.value
 
     # Apply the lifecycle status move (analyst layer — NOT decide()/#3).
     if target is not None:

@@ -156,7 +156,9 @@ Reporting, and App help) or by **Favorites**, with a search box.
 
 - **Save a prompt** with **Save prompt** beside one of your earlier questions, with
   **Save current prompt** in the Options menu's Prompts list, or with **Save a copy** on
-  a starter prompt. Give it a title and, optionally, a category, and star it to keep it
+  a starter prompt. **Save prompt** appears only beside questions you typed yourself: a
+  question from **Ask AI**, **Ask about this**, a starter or a follow-up is not your own
+  words, so it is not saved as one. Give it a title and, optionally, a category, and star it to keep it
   at the top of the `/` menu.
 - **Placeholders.** Write `{name}` in a prompt, such as `Hunt for {indicator} in the
   last {period}`. When you use it, the composer asks for each value before sending; the
@@ -259,7 +261,10 @@ While chat works away from the screen:
 - the browser tab title starts with **●** while an answer is being written and **✓**
   when one is ready; and
 - when an answer is ready and Chat is not on screen, you get one **Answer ready**
-  notice with **Open**.
+  notice with **Open**. If the first answer in a new chat could not be completed or
+  saved, the notice offers **Ask again** instead: a question you typed comes back in the
+  message box for you to send, and an **Ask AI** or **Ask about this** question is asked
+  again as it was, never put in the message box.
 
 History rows show the same states: answering, needs your input, answer failed, or new
 answer. With reduced motion, the ring is still and its tooltip says "Working". A Case
@@ -498,6 +503,14 @@ If the connection drops, chat rejoins the answer and shows it when it is done. C
 the tab does not stop a question: the answer is saved and appears when you return. If
 an answer could not be saved after the model was billed, chat says so and offers **Ask
 again**, which is a new, billed request.
+
+An answer runs only while its session and access last. Signing out, or ending the
+session in **Sessions & activity** (yourself or an administrator), stops the answers
+that session started at once; signing out everywhere, or disabling or deleting the
+account, stops all of the account's answers. Nothing more is looked up and nothing is
+saved, and the answer ends with "Your session ended". A role change that removes
+access an answer relies on stops it the same way, with "Your access changed"; ask again
+to use your current access. A change that only adds access stops nothing.
 
 ## Long conversations
 

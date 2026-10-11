@@ -1531,7 +1531,9 @@ def trend_metrics(
                 alert_hours[int(key)] = max(0, int(value))
             except (TypeError, ValueError):
                 continue
-        since_dt = _parse_iso(alert_counters.get("since"))
+        # The store's retention-bounded floor when it reports one (the same rule the
+        # chat trend reads), else the first observation.
+        since_dt = _parse_iso(alert_counters.get("coverage_start") or alert_counters.get("since"))
         coverage_start_ts = since_dt.timestamp() if since_dt is not None else None
 
     rows: list[dict[str, Any]] = []

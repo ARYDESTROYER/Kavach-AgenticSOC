@@ -405,6 +405,14 @@ describe('reports (SPEC §9.2)', () => {
     expect(calls[2]).toMatchObject({ method: 'PATCH', body: { expected_version: 3, notes: { 'item-1': null } } });
   });
 
+  it('keeps a whole multi-window item scope (no clip at the old 80 characters)', async () => {
+    const window = 'last 90 days; last 90 days vs previous 90 days; last 90 days (since 14 Jul 2026); all time (since 28 Mar 2026) (Asia/Kolkata)';
+    expect(window.length).toBeGreaterThan(80);
+    stubFetch(() => json({ ...REPORT, items: [{ ...REPORT.items[0], scope: { ...REPORT.items[0].scope, window } }] }));
+    const report = await getReport('rep-1');
+    expect(report.items[0].scope.window).toBe(window);
+  });
+
   it('deletes with the strict-CAS expected_version body', async () => {
     stubFetch(() => json({ ok: true }));
     await deleteReport('rep-1', 4);

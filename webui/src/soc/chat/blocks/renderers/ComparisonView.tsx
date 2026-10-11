@@ -120,8 +120,12 @@ function contextWithoutFlag(context: string): string {
     .join(' · ');
 }
 
-/** "Sep 2026: 1,188", "Sep 2026 to date: —": the server's baseline line names its period first. */
-const PERIOD_FIRST = /^[^:·]+:\s/;
+/**
+ * "Sep 2026: 1,188", "Sep 2026 to date: —", "26 Jul 20:45 – 3 Sep 2026 05:30: —": the
+ * server's baseline line names its period first (a period name may hold clock times,
+ * so the period ends at the first colon followed by a space).
+ */
+const PERIOD_FIRST = /^[^·]+?:\s/;
 
 /** How a row of comparison tiles discloses small samples (pure; exported for tests). */
 export interface SmallSamplePlan {

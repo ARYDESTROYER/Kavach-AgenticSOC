@@ -377,7 +377,9 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
     updatedAt: isoOr(report.updated_at, generatedAt),
     appVersion: options.appVersion ?? (uniq(report.items.map((i) => i.scope.app_version))[0] || null),
     conversations: conversationIds.map((id) => ({ id, title: options.conversationTitles?.get(id) ?? null })),
-    windows: uniq(items.map((i) => i.scope.window)),
+    // An item's scope lists each window its blocks state ("last 90 days; all time"): the
+    // header names each window once, however many items share it.
+    windows: uniq(items.flatMap((i) => (i.scope.window ?? '').split('; '))),
     sources: uniq([...items.flatMap((i) => i.scope.sources ?? []), ...items.flatMap((i) => (i.turn?.steps ?? []).flatMap((s) => s.sources ?? []))]),
     models: uniq([...items.map((i) => i.scope.generated_by), ...items.map((i) => i.turn?.model)]),
     demo: items.some((i) => i.scope.demo === true),

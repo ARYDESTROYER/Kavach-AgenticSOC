@@ -851,7 +851,8 @@ function normaliseReportItem(raw: unknown): ReportItem | null {
       block_id: typeof blockId === 'string' && BLOCK_ID_RE.test(blockId) ? blockId : null,
     },
     scope: {
-      window: optText(scope.window, 80),
+      // Every distinct window the item's blocks state, joined with "; " (ReportItemScope).
+      window: optText(scope.window, 280),
       sources: strings(scope.sources, 20, () => true).map((s) => text(s, 120)).filter(Boolean),
       generated_by: optText(scope.generated_by, 120),
       app_version: optText(scope.app_version, 40),

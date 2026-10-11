@@ -15,9 +15,17 @@
  *    does not know to the turn runner, which follows it WITHOUT holding a connection
  *    (a parked run: one cheap poll) and reads its real outcome when it ends. The
  *    conversation list adds titles, unread answers and waiting questions, and drops
- *    marks for threads that no longer exist. No live connection of its own: the
- *    runner's poll hears that a followed turn ended (a browser allows only six
- *    connections to the console, and the shell's streams already hold some).
+ *    marks for threads that no longer exist.
+ *  - Live frames: the caller's own `chat.turn` frames (topic `chat`, owner-only) ride the
+ *    shell's job stream (`JobMonitor` relays them, `relayChatFrame`), so this observer
+ *    opens no connection of its own (a browser allows only six to the console, and the
+ *    shell's streams already hold some). A frame is a nudge, never the truth: a turn
+ *    this tab does not know (another device or browser) is looked up in
+ *    `turns/active` and followed like one found on load; a parked run's frame updates
+ *    its step label, and its end wakes the run to read the outcome now; a turn that
+ *    ended before it was followed sends the list to be read for its mark. Polling stays
+ *    the fallback: on load, when the tab becomes visible again (with authentication off
+ *    no frame is sent), after an `overflow`, and the runner's park poll.
  *  - Settled turns the analyst was not looking at: one deduplicated toast with Open
  *    (sonner's polite live region announces it; nothing else speaks it again).
  *  - The tab title: "●" while an answer is being written, "✓" for an unread one.
@@ -48,10 +56,13 @@ import {
   putChatActivity,
   requestCaseChat,
   setChatActivitySink,
+  setChatFrameSink,
+  subscribeChatActivity,
   useChatActivity,
   type ChatActivity,
   type ChatActivityMessage,
   type ChatActivitySettled,
+  type ChatFrame,
 } from './activity';
 
 export const ACTIVITY_CHANNEL = 'agentic-soc-chat-activity';
@@ -61,6 +72,19 @@ export const ACTIVITY_CHANNEL = 'agentic-soc-chat-activity';
  */
 const LIST_LIMIT = 60;
 const TOAST_SEEN_LIMIT = 100;
+/**
+ * Frame timings (mutable for tests only):
+ *  - `settleMs`: a turn a frame reports is looked up after this pause (the frames of one
+ *    moment make one request, and the other device's analyst may have read an answer by
+ *    then);
+ *  - `askAgainMs`: a turn's frames ask about it again only after this long (a failed
+ *    lookup heals; a turn that cannot be followed costs one request per interval).
+ */
+export const FRAME_TIMING = { settleMs: 750, askAgainMs: 10_000 };
+/** Turn ids remembered as this tab's (its own, other tabs', followed ones). */
+const KNOWN_LIMIT = 200;
+/** The SSE channel of the caller's chat turns (`STREAM_CHANNELS` in useEventStream). */
+const CHAT_TURN_EVENT = 'chat.turn';
 
 /** Mounted shells (a development double mount must not clear a live store). */
 let mounted = 0;
@@ -119,6 +143,36 @@ function scopeOf(turn: ActiveTurn): { scope: string; kind: ChatActivity['kind'];
   if (conversationId) return { scope: `conv:${conversationId}`, kind: 'workspace', conversationId, caseId: null };
   return { scope: `turn:${turnId}`, kind: 'workspace', conversationId: null, caseId: null };
 }
+
+/** One owner-only `chat.turn` frame, as this observer reads it (exported for tests). */
+export interface ChatTurnFrame {
+  turnId: string;
+  phase: 'started' | 'progress' | 'finished' | 'failed' | 'needs_input';
+  /** The engine's step label, cleaned like every server label (display text). */
+  label: string;
+  lookups: number;
+}
+
+const FRAME_PHASES: ReadonlySet<string> = new Set(['started', 'progress', 'finished', 'failed', 'needs_input']);
+
+/** Read an untrusted `chat.turn` payload (#9): ids by grammar, the label cleaned, else `null`. */
+export function chatTurnFrame(data: unknown): ChatTurnFrame | null {
+  if (!data || typeof data !== 'object') return null;
+  const raw = data as Record<string, unknown>;
+  const turnId = safeId(raw.turn_id);
+  const phase = typeof raw.phase === 'string' && FRAME_PHASES.has(raw.phase) ? (raw.phase as ChatTurnFrame['phase']) : null;
+  if (!turnId || !phase) return null;
+  return { turnId, phase, label: plain(raw.label, 120), lookups: count(raw.lookups) };
+}
+
+/**
+ * A Workspace question sent from this browser whose turn is not named yet (no
+ * `turn.start` so far, or still waiting for capacity): a reported turn with no entry
+ * could be that very one, so none is followed until it is named. A case turn is told
+ * apart by its scope (`case:<id>` from the start).
+ */
+const unnamed = (entry: ChatActivity) =>
+  entry.status === 'running' && !entry.turnId && entry.kind === 'workspace' && entry.source !== 'server';
 
 /** The tab-title prefix for a snapshot (exported for tests): ● working, ✓ unread. */
 export function titlePrefix(entries: readonly ChatActivity[]): string {
@@ -216,6 +270,22 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   navigateRef.current = onNavigate;
   const signInRef = React.useRef({ username, authEnabled });
   signInRef.current = { username, authEnabled };
+  const canReadRef = React.useRef(canRead);
+  canReadRef.current = canRead;
+  /**
+   * Turn ids this tab has held (its own, another tab's, followed ones; oldest dropped
+   * first): a frame about one of them is never a turn to follow or an answer to look up
+   * (a turn this tab stopped may still send a frame or two).
+   */
+  const knownRef = React.useRef(new Set<string>());
+  /** When a turn's frames last asked `turns/active` about it. */
+  const askedRef = React.useRef(new Map<string, number>());
+  /** A reported turn was left until this browser's unnamed question is named. */
+  const waitingRef = React.useRef(false);
+  const timersRef = React.useRef<{ adopt: ReturnType<typeof setTimeout> | null; list: ReturnType<typeof setTimeout> | null }>({
+    adopt: null,
+    list: null,
+  });
 
   /* ------------------------------------------------------------ lifetime -- */
 
@@ -225,7 +295,19 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   React.useEffect(() => {
     if (storeUser !== null && storeUser !== username) clearChatActivity(false);
     storeUser = username;
+    knownRef.current.clear();
+    askedRef.current.clear();
+    waitingRef.current = false;
   }, [username]);
+  React.useEffect(
+    () =>
+      onChatActivity('clear', () => {
+        knownRef.current.clear();
+        askedRef.current.clear();
+        waitingRef.current = false;
+      }),
+    [],
+  );
 
   // The shell goes away. Deferred one tick so a development double mount does nothing;
   // then only a sign-out the server confirms forgets (see `forgetIfSignedOut`).
@@ -387,14 +469,24 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
     } catch {
       return;
     }
+    const entries = getChatActivity().entries;
+    const naming = entries.some(unnamed);
+    let waiting = false;
     const unknown = turns.flatMap((turn) => {
       const where = scopeOf(turn);
+      const turnId = safeId(turn.turn_id);
       const existing = where ? find(where.scope) : undefined;
-      if (!where || (existing?.status === 'running' && existing.source !== 'server')) return [];
+      if (!where || !turnId || (existing?.status === 'running' && existing.source !== 'server')) return [];
+      // Read here or in another tab already, or held before (a turn this tab stopped).
+      if (knownRef.current.has(turnId) || entries.some((entry) => entry.turnId === turnId)) return [];
+      if (naming && where.kind === 'workspace') {
+        waiting = true;
+        return [];
+      }
       return [
         {
           ...where,
-          turnId: safeId(turn.turn_id),
+          turnId,
           title: existing?.title ?? '',
           label: plain(turn.label, 120) || null,
           lookups: count(turn.lookups),
@@ -402,8 +494,108 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
         },
       ];
     });
+    waitingRef.current = waiting;
     if (unknown.length) await follow(unknown);
   }, [follow]);
+
+  /** Look `turns/active` up once after `delay` (a burst of nudges makes one request). */
+  const scheduleAdopt = React.useCallback(
+    (delay: number) => {
+      if (timersRef.current.adopt !== null) return;
+      timersRef.current.adopt = setTimeout(() => {
+        timersRef.current.adopt = null;
+        void pollActive();
+      }, delay);
+    },
+    [pollActive],
+  );
+
+  /** Read the list for marks (an answer or question that ended elsewhere), once. */
+  const scheduleList = React.useCallback(() => {
+    if (timersRef.current.list !== null) return;
+    timersRef.current.list = setTimeout(() => {
+      timersRef.current.list = null;
+      void reconcileList().then(() => {
+        // An answer on screen is read, not news (unless the tab is hidden).
+        if (typeof document === 'undefined' || document.visibilityState !== 'hidden') markViewedChatActivitySeen();
+      });
+    }, FRAME_TIMING.settleMs);
+  }, [reconcileList]);
+
+  React.useEffect(
+    () => () => {
+      const timers = timersRef.current;
+      if (timers.adopt !== null) clearTimeout(timers.adopt);
+      if (timers.list !== null) clearTimeout(timers.list);
+      timers.adopt = null;
+      timers.list = null;
+    },
+    [],
+  );
+
+  // Remember every turn id the store holds; once this browser's unnamed question is
+  // named, look up the turns that were left for it.
+  React.useEffect(() => {
+    const remember = () => {
+      const { entries } = getChatActivity();
+      const known = knownRef.current;
+      for (const entry of entries) {
+        if (!entry.turnId || known.has(entry.turnId)) continue;
+        known.add(entry.turnId);
+        if (known.size > KNOWN_LIMIT) known.delete(known.values().next().value as string);
+      }
+      if (waitingRef.current && !entries.some(unnamed)) {
+        waitingRef.current = false;
+        scheduleAdopt(0);
+      }
+    };
+    remember();
+    return subscribeChatActivity(remember);
+  }, [scheduleAdopt]);
+
+  /* -------------------------------------------------------- live frames -- */
+
+  React.useEffect(() => {
+    if (!canRead) return undefined;
+    const onFrame = ({ type, data }: ChatFrame) => {
+      if (type === 'overflow') {
+        // This tab missed frames: ask what runs now, and what the parked runs did.
+        scheduleAdopt(0);
+        void loadRunner().then((runnerModule) => runnerModule?.pollParkedRuns());
+        return;
+      }
+      if (type !== CHAT_TURN_EVENT) return;
+      const frame = chatTurnFrame(data);
+      if (!frame) return;
+      const entry = getChatActivity().entries.find((item) => item.turnId === frame.turnId);
+      // Only this tab's parked runs take a frame's news: a run with a read open hears
+      // its own events, and another tab's run is that tab's.
+      const parked = entry?.parked === true && entry.source === 'local' && entry.status === 'running';
+      if (frame.phase === 'started' || frame.phase === 'progress') {
+        if (entry) {
+          if (parked && frame.phase === 'progress') {
+            patchChatActivity(entry.scope, { label: frame.label || entry.label, lookups: frame.lookups });
+          }
+          return;
+        }
+        // Another device's or browser's turn: follow it (once `turns/active` lists it).
+        if (knownRef.current.has(frame.turnId) || waitingRef.current) return;
+        const now = Date.now();
+        const asked = askedRef.current;
+        if (now - (asked.get(frame.turnId) ?? -Infinity) < FRAME_TIMING.askAgainMs) return;
+        asked.set(frame.turnId, now);
+        if (asked.size > KNOWN_LIMIT) asked.delete(asked.keys().next().value as string);
+        scheduleAdopt(FRAME_TIMING.settleMs);
+        return;
+      }
+      // It ended: a parked run reads how (its answer, question or failure) right away.
+      if (parked) void loadRunner().then((runnerModule) => runnerModule?.wakeParkedRun(frame.turnId));
+      // Never followed here (it ended before it could be): the list holds its mark.
+      else if (!entry && !knownRef.current.has(frame.turnId)) scheduleList();
+    };
+    setChatFrameSink(onFrame);
+    return () => setChatFrameSink(null);
+  }, [canRead, scheduleAdopt, scheduleList]);
 
   // On load (and for another user): turns still running after a reload, then the list
   // (titles for them, unread answers, waiting questions, marks for gone threads).
@@ -455,11 +647,15 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   React.useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     const onVisible = () => {
-      if (document.visibilityState === 'visible') markViewedChatActivitySeen();
+      if (document.visibilityState !== 'visible') return;
+      markViewedChatActivitySeen();
+      // A turn started on another device or browser while this tab was hidden (with
+      // authentication off, or a frame missed, nothing else says so).
+      if (canReadRef.current) scheduleAdopt(0);
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+  }, [scheduleAdopt]);
 
   return null;
 }

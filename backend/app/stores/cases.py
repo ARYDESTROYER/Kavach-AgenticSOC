@@ -134,6 +134,21 @@ class CaseStore(CaseRepository):
         resp = await self._es.search(CASES_READ_PATTERN, body)
         return _first_case(resp)
 
+    async def get_many(self, case_ids: Any) -> dict[str, Case]:
+        """The cases with these ids in ONE search, keyed by id (the Case Manager
+        queue's page read, Round 12 final review L1). An id with no case is absent;
+        the caller reads any id this misses with :meth:`get`."""
+        ids = sorted({str(cid) for cid in (case_ids or []) if cid})
+        if not ids:
+            return {}
+        body = {"size": len(ids), "query": {"terms": {"case_id": ids}}}
+        resp = await self._es.search(CASES_READ_PATTERN, body)
+        out: dict[str, Case] = {}
+        for hit in resp.get("hits", {}).get("hits", []):
+            case = Case.model_validate(hit.get("_source", {}))
+            out.setdefault(case.case_id, case)
+        return out
+
     async def find_open_by_signature(self, signature: str) -> Case | None:
         """Return an OPEN/NEEDS_HUMAN case for this cluster signature, if any.
 

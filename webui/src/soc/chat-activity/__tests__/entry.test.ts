@@ -9,7 +9,8 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const SRC = path.resolve(__dirname, '../../..');
-const EAGER_HOSTS = ['soc/AppShell.tsx', 'soc/components/NavSidebar.tsx', 'soc/theme.tsx'];
+// JobMonitor relays the shell stream's `chat.turn` frames (`relayChatFrame`, in the store).
+const EAGER_HOSTS = ['soc/AppShell.tsx', 'soc/components/NavSidebar.tsx', 'soc/theme.tsx', 'soc/jobs/JobMonitor.tsx'];
 const EAGER_CORE = ['soc/chat-activity/store.ts', 'soc/chat-activity/glyph.tsx', 'soc/chat-activity/document-title.ts'];
 const ALLOWED = new Set(['store', 'glyph', 'document-title']);
 
@@ -40,6 +41,12 @@ describe('chat activity entry boundary', () => {
       );
       expect(foreign, rel).toEqual([]);
     }
+  });
+
+  it('the job observer hands chat frames over through the store alone', () => {
+    const monitor = read('soc/jobs/JobMonitor.tsx');
+    expect(runtimeImports(monitor)).toContain('@/soc/chat-activity/store');
+    expect(monitor).not.toMatch(/chat-activity\/(activity|ActivityEffects)/);
   });
 
   it('the shell reaches its effects only through a lazy import', () => {

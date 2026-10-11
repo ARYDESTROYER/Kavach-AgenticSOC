@@ -3,9 +3,12 @@ import { act, render, waitFor } from '@testing-library/react';
 
 import type { BackgroundJob } from '@/lib/types';
 
-const { listMock, getMock, toastMock } = vi.hoisted(() => ({
+const { listMock, getMock, toastMock, streamMock } = vi.hoisted(() => ({
   listMock: vi.fn(),
   getMock: vi.fn(),
+  streamMock: vi.fn((_topics: string[], _opts?: { onEvent?: (event: { type: string; data: unknown; lastEventId: string }) => void }) => ({
+    live: false,
+  })),
   toastMock: {
     success: vi.fn(),
     warning: vi.fn(),
@@ -26,10 +29,11 @@ vi.mock('@/lib/api', async (importOriginal) => {
   };
 });
 vi.mock('@/lib/useEventStream', () => ({
-  useEventStream: () => ({ live: false }),
+  useEventStream: streamMock,
 }));
 vi.mock('sonner', () => ({ toast: toastMock }));
 
+import { setChatFrameSink, type ChatFrame } from '@/soc/chat-activity/store';
 import { announceJobAccepted } from '../jobs';
 import { JobMonitor } from '../JobMonitor';
 
@@ -188,5 +192,56 @@ describe('JobMonitor durable terminal delivery', () => {
     const options = toastMock.success.mock.calls[0][1];
     act(() => options.action.onClick());
     expect(navigate).toHaveBeenCalledWith('cases', { status: 'active' });
+  });
+});
+
+describe('JobMonitor carries the chat activity frames (SPEC D13)', () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    listMock.mockReset().mockResolvedValue(response([]));
+    getMock.mockReset().mockResolvedValue({ items: [] });
+    streamMock.mockClear();
+  });
+  afterEach(() => {
+    setChatFrameSink(null);
+  });
+
+  const lastOnEvent = () => {
+    const call = streamMock.mock.calls[streamMock.mock.calls.length - 1];
+    return call?.[1]?.onEvent as (event: { type: string; data: unknown; lastEventId: string }) => void;
+  };
+
+  it('subscribes the caller’s chat turns on its one job stream, with no second stream', async () => {
+    render(<JobMonitor actor="analyst.one" onNavigate={vi.fn()} />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    const topics = new Set(streamMock.mock.calls.map((call) => [...call[0]].sort().join(',')));
+    expect(topics).toEqual(new Set(['chat,jobs']));
+    expect(streamMock.mock.calls.every((call) => call[1]?.enabled === true)).toBe(true);
+  });
+
+  it('hands every frame to the chat observer and refreshes jobs for job frames only', async () => {
+    const frames: ChatFrame[] = [];
+    setChatFrameSink((frame) => frames.push(frame));
+    render(<JobMonitor actor="analyst.one" onNavigate={vi.fn()} />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    const turn = { turn_id: 'turn-1', conversation_id: 'c1', case_id: null, phase: 'progress', label: 'Searching logs', lookups: 1, tokens: 10 };
+    act(() => lastOnEvent()({ type: 'chat.turn', data: turn, lastEventId: '7' }));
+    expect(frames).toEqual([expect.objectContaining({ type: 'chat.turn', data: turn })]);
+    // A chat step is no reason to list jobs again.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(listMock).toHaveBeenCalledTimes(1);
+    act(() => lastOnEvent()({ type: 'job', data: { job_id: 'job-1' }, lastEventId: '8' }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    act(() => lastOnEvent()({ type: 'overflow', data: { dropped: 3 }, lastEventId: '' }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(3));
+    expect(frames.map((frame) => frame.type)).toEqual(['chat.turn', 'job', 'overflow']);
+  });
+
+  it('drops frames quietly while no chat observer has loaded', async () => {
+    setChatFrameSink(null);
+    render(<JobMonitor actor="analyst.one" onNavigate={vi.fn()} />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    expect(() => act(() => lastOnEvent()({ type: 'chat.turn', data: { turn_id: 'turn-2', phase: 'started' }, lastEventId: '9' }))).not.toThrow();
+    expect(listMock).toHaveBeenCalledTimes(1);
   });
 });

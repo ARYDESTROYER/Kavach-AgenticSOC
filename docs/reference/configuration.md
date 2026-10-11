@@ -310,7 +310,7 @@ the sign-in page:
 
 | Key | Default | Range | Meaning |
 |---|---|---|---|
-| `remember_me.enabled` | `true` | — | Offer Remember me on the sign-in page; turning it off makes existing remembered sessions follow the standard limits |
+| `remember_me.enabled` | `true` | — | Offer Remember me on the sign-in page; turning it off ends existing remembered sessions where an ordinary sign-in would (at the standard token lifetime, `AUTH_TOKEN_HOURS`) |
 | `remember_me.duration_seconds` | 86,400 | 3,600–86,400 | How long a remembered device stays signed in; the console offers 6, 12, and 24 hours. Never longer than `absolute_lifetime` |
 | `remember_me.idle_seconds` | `null` | 300–86,400 | Optional separate inactivity limit for remembered sessions; `null` uses `idle_timeout` |
 | `remember_me.excluded_roles` | `[]` | ≤ 50 roles | Roles that are never remembered |

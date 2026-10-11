@@ -53,7 +53,7 @@ vi.mock('@/soc/chat/report/ReportPanel', () => ({ default: () => null, ReportPan
 
 const { exportConversationMock, toastMock } = vi.hoisted(() => ({
   exportConversationMock: vi.fn(),
-  toastMock: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
+  toastMock: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), loading: vi.fn() }),
 }));
 vi.mock('sonner', async (importOriginal) => ({ ...(await importOriginal<typeof import('sonner')>()), toast: toastMock }));
 vi.mock('@/soc/chat/report/export/conversation', () => ({ exportConversation: exportConversationMock }));

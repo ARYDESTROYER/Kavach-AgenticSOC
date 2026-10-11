@@ -257,6 +257,18 @@ class SqlCaseRepository(CaseRepository):
             row = await session.get(CaseRow, case_id)
             return Case.model_validate(row.doc) if row else None
 
+    async def get_many(self, case_ids: Any) -> dict[str, Case]:
+        """The cases with these ids in one query, keyed by id (the Case Manager
+        queue's page read, Round 12 final review L1). An id with no case is absent."""
+        ids = sorted({str(cid) for cid in (case_ids or []) if cid})
+        if not ids:
+            return {}
+        async with self._sm() as session:
+            rows = (await session.execute(
+                select(CaseRow).where(CaseRow.case_id.in_(ids))
+            )).scalars().all()
+        return {row.case_id: Case.model_validate(row.doc) for row in rows}
+
     async def find_open_by_signature(self, signature: str) -> Case | None:
         stmt = (
             select(CaseRow)

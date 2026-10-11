@@ -1226,6 +1226,49 @@ describe('CaseManager', () => {
     await waitFor(() => expect(rowButton(OPEN_HIGH.case_id)).toHaveFocus());
   });
 
+  it('Close & next below xl (queue hidden): lands on the next case title, never a hidden row', async () => {
+    render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
+    await screen.findByText('1 of 2 active · 2 loaded');
+    // Below xl the detail replaces the queue (`hidden xl:flex`). jsdom applies no
+    // Tailwind, so hide the queue the way the browser does.
+    const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    queue.style.display = 'none';
+    // Role queries skip display:none content, so read the hidden row's button directly.
+    const rowButton = (id: string) =>
+      document.querySelector<HTMLElement>(`[data-queue-row][data-case-id="${id}"] button`) as HTMLElement;
+    const title = screen.getByRole('heading', { name: 'Mock title' });
+    const opener = screen.getByRole('button', { name: 'Mock back' });
+    act(() => opener.focus());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mock resolve' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mock advance' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    // The next case's row is mounted but not rendered, so it is never the target.
+    expect(rowButton(OPEN_HIGH.case_id).isConnected).toBe(true);
+    expect(mocks.resolveDialogFocus?.(opener, true)).toBe(title);
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('J below xl opens the next case and focuses its title, not the hidden queue', async () => {
+    render(<CaseManager />);
+    await screen.findByTestId('embedded-case-detail');
+    const first = within(
+      document.querySelector(`[data-queue-row][data-case-id="${OPEN_CRITICAL.case_id}"]`) as HTMLElement,
+    ).getAllByRole('button')[0];
+    act(() => first.focus());
+    // Opening a case from the queue hides the queue below xl.
+    const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    queue.style.display = 'none';
+    fireEvent.keyDown(first, { key: 'j' });
+    await waitFor(() =>
+      expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', OPEN_HIGH.case_id),
+    );
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Mock title' })).toHaveFocus());
+  });
+
   it('a plain Close from a queue row lands on the row that took its place', async () => {
     render(<CaseManager initialCaseId={OPEN_CRITICAL.case_id} />);
     await screen.findByText('1 of 2 active · 2 loaded');

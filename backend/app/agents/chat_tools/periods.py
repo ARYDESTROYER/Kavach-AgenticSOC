@@ -28,6 +28,7 @@ runs in the operator timezone (``SlaPolicy.timezone``).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Literal
@@ -164,7 +165,13 @@ def range_label(start: datetime, end: datetime, tz: str) -> str:
             return f"{_day_label(start, tz)} to {b:%H:%M}"
         head = f"{a.day} {_MONTHS[a.month - 1]}" + ("" if a.year == b.year else f" {a.year}")
         return f"{head} – {_day_label(end, tz)} {b:%H:%M}"
-    return f"{a:%Y-%m-%d %H:%M} – {b:%Y-%m-%d %H:%M} ({tz})"
+    # Any other window to the minute, in the same words as the window it is compared
+    # with ("26 Jul 20:45 – 3 Sep 2026 05:30"). Like every other period name it never
+    # names the zone: a comparison names it once (:func:`comparison_caption`).
+    if a.date() == b.date():
+        return f"{_day_label(start, tz)} {a:%H:%M} – {b:%H:%M}"
+    head = f"{a.day} {_MONTHS[a.month - 1]}" + ("" if a.year == b.year else f" {a.year}")
+    return f"{head} {a:%H:%M} – {_day_label(end, tz)} {b:%H:%M}"
 
 
 def _window_from(start: datetime, end: datetime, base: Window, label: str) -> Window:
@@ -369,10 +376,43 @@ def subject_label(window: Window) -> str:
     unit = _in_progress_unit(window)
     if unit is not None:
         return in_progress_label(window.start, window.end, unit, window.tz)
+    if "→" in window.label and not window.all_time:
+        # A raw UTC minute range (a window narrowed to the selected range) reads in the
+        # same local words as the period it is compared with.
+        return range_label(window.start, window.end, window.tz)
     if window.all_time or window.trailing:
-        return window.label
+        return _zone_free(window.label, window.tz)
     calendar = range_label(window.start, window.end, window.tz)
-    return calendar if "–" not in calendar and "(" not in calendar else window.label
+    return calendar if "–" not in calendar else _zone_free(window.label, window.tz)
+
+
+def _zone_free(label: str, tz: str) -> str:
+    """``label`` without the operator zone the window resolver appended to it ("…
+    (Asia/Kolkata)", "last 6 months (since May 2026, Asia/Kolkata)"): a period name
+    never carries the zone, the comparison names it once (:func:`comparison_caption`)."""
+    if not tz or tz == "UTC":
+        return label
+    return label.removesuffix(f" ({tz})").replace(f", {tz})", ")")
+
+
+# Period names that do not depend on the operator zone: a trailing span ("last 90
+# days", "past month") and the same span before it ("previous 90 days", "same 90 days
+# a year earlier"). Any other name (a calendar period, a dated range) was cut in it.
+_ZONE_FREE_NAME = re.compile(
+    r"^(?:(?:last|previous|same) (?:[\d,]+ (?:minute|hour|day|week|month|year)s?|minute|hour)"
+    r"(?: a year earlier)?|past (?:month|year))$"
+)
+
+
+def comparison_caption(periods: list[Period]) -> str:
+    """The scope caption of a ``comparison`` artifact: its periods, latest first
+    ("Oct 2026 to date vs Sep 2026 to date"), then the operator zone ONCE when any of
+    them was cut in it ("… (Asia/Kolkata)")."""
+    text = " vs ".join(p.label for p in reversed(periods))
+    tz = periods[-1].window.tz if periods else "UTC"
+    if tz and tz != "UTC" and any(not _ZONE_FREE_NAME.match(p.label) for p in periods):
+        text += f" ({tz})"
+    return text
 
 
 def _running(window: Window) -> bool:
@@ -412,12 +452,9 @@ def resolve_periods(
             others.append(other)
     periods = [Period(window, subject_label(window), _running(window))]
     for other in others:
-        # Every period is named the same way as the subject ("Jul 2026", "Q3 2026"); a
-        # raw ISO range ("2026-01-01 00:00 → …") reads better as its calendar label.
-        label = subject_label(other)
-        if "→" in label and not (other.all_time or other.trailing):
-            label = range_label(other.start, other.end, other.tz)
-        periods.append(Period(other, label, _running(other)))
+        # Every period is named the same way as the subject ("Jul 2026", "Q3 2026"; a
+        # raw ISO range reads as its calendar label, :func:`subject_label`).
+        periods.append(Period(other, subject_label(other), _running(other)))
     # Chronological: the latest is the subject of the deltas; equal labels are made unique.
     periods.sort(key=lambda p: (p.window.start if not p.window.all_time else ALL_TIME_START, p.window.end))
     seen: dict[str, int] = {}
@@ -511,6 +548,7 @@ __all__ = [
     "INVALID_COMPARE",
     "MAX_COMPARE_PERIODS",
     "Period",
+    "comparison_caption",
     "comparison_data",
     "comparison_observation",
     "comparison_row",

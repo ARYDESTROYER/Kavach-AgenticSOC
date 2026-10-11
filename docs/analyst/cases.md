@@ -114,7 +114,10 @@ JSON or a Markdown handoff report.
 
 The server rejects illegal transitions. Reopen a terminal case before moving it to
 another non-terminal state; use the dedicated close or resolve action rather than a
-generic status setter.
+generic status setter. A resolved case is the one exception: closing it is its final
+step, so **Close case** works on it directly. A closed case cannot go back to Resolved
+without a reopen. Setting a disposition changes no status, so it works on resolved and
+closed cases alike.
 
 ## Automatic decisions
 

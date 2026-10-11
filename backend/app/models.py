@@ -3476,10 +3476,15 @@ class ReportItemSource(BaseModel):
     block_id: str | None = Field(default=None, max_length=48)
 
 
+# A report item's scope window: every distinct window its blocks state, joined with
+# "; " (a whole answer can hold several), so it is bounded like a block caption.
+REPORT_SCOPE_WINDOW_CHARS = 280
+
+
 class ReportItemScope(BaseModel):
     """Scope captured server-side at add time (never client-supplied)."""
 
-    window: str | None = Field(default=None, max_length=80)
+    window: str | None = Field(default=None, max_length=REPORT_SCOPE_WINDOW_CHARS)
     sources: list[str] = Field(default_factory=list, max_length=20)
     generated_by: str | None = Field(default=None, max_length=120)   # the model id
     app_version: str | None = Field(default=None, max_length=40)
@@ -3491,7 +3496,7 @@ class ReportItemScope(BaseModel):
         if not isinstance(data, dict):
             return data
         out = dict(data)
-        for name, limit in (("window", 80), ("generated_by", 120), ("app_version", 40)):
+        for name, limit in (("window", REPORT_SCOPE_WINDOW_CHARS), ("generated_by", 120), ("app_version", 40)):
             raw = out.get(name)
             out[name] = (display_text(raw, limit) or None) if isinstance(raw, str) else None
         out["sources"] = _display_list(out.get("sources"), 20, 120)

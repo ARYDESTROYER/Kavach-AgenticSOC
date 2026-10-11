@@ -51,6 +51,7 @@ import re
 import time
 import weakref
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Mapping, Union
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -63,10 +64,12 @@ from ..agents.blocks import (
     is_expired_block,
 )
 from ..agents.chat_protocol import notice_for_failure, parse_report_summary, turn_error_code
+from ..agents.chat_tools.common import operator_tz
 from ..constants import MAX_REPORT_ITEMS, MAX_REPORTS_PER_USER, ActionType, Role
 from ..engine.report_digest import bounded_digest, report_summary_messages
 from ..llm.gateway import GatewayError, UsageReceipt, estimate_message_tokens
 from ..models import (
+    REPORT_SCOPE_WINDOW_CHARS,
     ChatResponse,
     ChatSavedReport,
     Report,
@@ -358,10 +361,41 @@ def _unusable(block: dict[str, Any]) -> bool:
     )
 
 
-# The effective window a tool reported is the trailing segment of the engine-written
-# block caption (``blocks._caption``: truncation · basis · window), in the tool window
-# label grammar: ``last 24h``, ``2026-10-01 00:00 → 2026-10-02 00:00 UTC``, ``all time``.
-_CAPTION_WINDOW_RE = re.compile(r"^(last \d+[smhdw]|all time|.+ → .+)$")
+# The effective window a tool reported is a segment of the engine-written block
+# caption (``blocks._caption``: truncation · basis · the tool's scope, e.g. "Top 5 of 7
+# · 95 cases · exact · all time (since 28 Mar 2026) · a case can count under several
+# rules"). A segment is the window when it is in the window label grammar of
+# ``engine.time_windows`` / ``chat_tools.common`` / ``chat_tools.periods``: "last 90
+# days", "past month", "all time (since 28 Mar 2026)", "September 2026", "Oct 2026 to
+# date", "Q3 2026", "W41 2026", "2026 to date", "today", "14 Sep 2026", "1 Mar – 10 Oct
+# 2026", "3 Sep 2026 05:30 – 11 Oct 2026 14:15", "since 1 Mar 2026", "last 6 months
+# (since May 2026)", a comparison "Oct 2026 to date vs Sep 2026 to date", each with
+# the operator zone when it is not UTC ("… (Asia/Kolkata)"); and the earlier forms
+# stored answers still carry ("last 24h", "2026-10-01 00:00 → 2026-10-02 00:00 UTC").
+_SHORT_MONTH = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
+_LONG_MONTH = "January|February|March|April|May|June|July|August|September|October|November|December"
+_HHMM = r"\d{2}:\d{2}"
+_DAY = rf"\d{{1,2}} (?:{_SHORT_MONTH})(?: \d{{4}})?"
+_INSTANT = rf"{_DAY}(?: {_HHMM})?"
+_ISO_MINUTE = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}"
+_PERIOD_NAME = "|".join((
+    r"all time",
+    r"(?:last|previous|past|same) (?:[\d,]+ )?(?:minute|hour|day|week|month|quarter|year)s?(?: a year earlier)?",
+    r"last \d+[smhdwMy]",
+    r"today|yesterday|this week|last week",
+    rf"(?:{_LONG_MONTH}|{_SHORT_MONTH}) \d{{4}}(?: to date)?",
+    r"Q[1-4] \d{4}(?: to date)?",
+    r"W\d{2} \d{4}(?: to date)?",
+    r"\d{4}(?: to date)?",
+    rf"(?:since|until) {_INSTANT}",
+    rf"{_INSTANT}(?: to {_HHMM})?",
+    rf"{_INSTANT} – (?:{_INSTANT}|{_HHMM})",
+    rf"{_ISO_MINUTE} – {_ISO_MINUTE}",
+    r"\S[^·]* → [^·]*\S",
+))
+_ZONE_SUFFIX = r"(?: \((?:UTC|[A-Za-z][A-Za-z0-9_+\-]*(?:/[A-Za-z0-9_+\-]+)+)\))"
+_ONE_PERIOD = rf"(?:{_PERIOD_NAME})(?: \(since [^()]+\))?{_ZONE_SUFFIX}?(?: \(\d+\))?"
+_CAPTION_WINDOW_RE = re.compile(rf"^{_ONE_PERIOD}(?: vs {_ONE_PERIOD})*{_ZONE_SUFFIX}?$")
 
 
 def _caption_window(block: Any) -> str | None:
@@ -372,16 +406,65 @@ def _caption_window(block: Any) -> str | None:
     return next((s for s in reversed(segments) if _CAPTION_WINDOW_RE.match(s)), None)
 
 
-def _window_of(params: Mapping[str, Any]) -> str | None:
-    if isinstance(params.get("window"), str) and params["window"]:
-        return params["window"]
-    start, end = params.get("time_from"), params.get("time_to")
-    if isinstance(start, str) and start:
-        return f"{start} → {end if isinstance(end, str) and end else 'now'}"
-    hours = params.get("window_hours")
-    if isinstance(hours, (int, float)) and not isinstance(hours, bool) and hours > 0:
-        return f"last {int(hours)}h"
-    return None
+def _join_windows(windows: list[str]) -> str | None:
+    """The distinct windows, each WHOLE ("last 90 days; all time"): when they do not
+    all fit the scope bound, the ones that fit and how many more ("…; and 2 more"),
+    never one cut mid-word."""
+    if not windows:
+        return None
+    kept: list[str] = []
+    for index, window in enumerate(windows):
+        rest = len(windows) - index - 1
+        candidate = "; ".join([*kept, window])
+        tail = f"; and {rest} more" if rest else ""
+        if len(candidate) + len(tail) > REPORT_SCOPE_WINDOW_CHARS:
+            break
+        kept.append(window)
+    if not kept:
+        return windows[0][:REPORT_SCOPE_WINDOW_CHARS]
+    more = len(windows) - len(kept)
+    return "; ".join(kept) + (f"; and {more} more" if more else "")
+
+
+def _answered_at(answer: _Answer) -> datetime | None:
+    """When the answer was written (its message's ``created_at``), else ``None``."""
+    raw = _field(answer.message, "created_at")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        moment = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def _window_of(params: Mapping[str, Any], *, tz: str = "UTC", now: datetime | None = None) -> str | None:
+    """The window a step's own input asked for, in the words its block caption would
+    use ("last 90 days", "September 2026", "all time"): resolved by the one window
+    grammar (``engine.time_windows``) as of when the answer was written, in the
+    operator zone. An input that grammar cannot read is shown as given."""
+    from ..engine.time_windows import resolve_window
+
+    spec: Any = None
+    if isinstance(params.get("window"), str) and params["window"].strip():
+        spec = params["window"].strip()
+    else:
+        start, end = params.get("time_from"), params.get("time_to")
+        if isinstance(start, str) and start.strip():
+            spec = {"from": start.strip(), "to": end.strip() if isinstance(end, str) and end.strip() else "now"}
+        else:
+            hours = params.get("window_hours")
+            if isinstance(hours, (int, float)) and not isinstance(hours, bool) and hours > 0:
+                spec = f"now-{int(hours)}h"
+    if spec is None:
+        return None
+    try:
+        label = resolve_window(spec, tz=tz, now=now).label
+    except Exception:  # noqa: BLE001 -- an unreadable input is shown as given
+        label = None
+    if isinstance(label, str) and label:
+        return label
+    return spec if isinstance(spec, str) else f"{spec['from']} → {spec['to']}"
 
 
 # The chat tools that query the turn's log source (``effective_source_name``).
@@ -389,25 +472,35 @@ _LOG_TOOLS: frozenset[str] = frozenset({"search_logs", "log_stats"})
 
 
 def _scope_for(answer: _Answer, conversation: Any, *, block: dict[str, Any] | None,
-               demo: bool) -> dict[str, Any]:
+               demo: bool, blocks: list[dict[str, Any]] | None = None, tz: str = "UTC") -> dict[str, Any]:
     """SPEC §9.1 scope, captured SERVER-side at add time: the effective window and
     sources of the lookups behind the item, the model that wrote the answer, this
     build's version and whether it was Demo data.
 
+    The item covers ``block``, else ``blocks`` (a Brief section's own leaves), else
+    the whole answer; only the lookups behind what it covers count.
+
     Window precedence: the effective window the tool stated in the block caption(s)
-    (a section with differently windowed blocks lists each once), then a window chip
-    on the producing step, then the conversation's composer window."""
+    (a section with differently windowed blocks lists each once), then the window the
+    producing step asked for (in the same words, ``tz`` the operator zone), then the
+    conversation's composer window."""
     steps = [s for s in answer.response.steps if s.kind == "tool"]
-    from_step = block.get("from_step") if isinstance(block, dict) else None
-    if isinstance(from_step, int):
-        relevant = [s for s in steps if s.index == from_step] or steps
+    if block is not None:
+        covered = [block]
+    elif blocks is not None:
+        covered = [b for b in blocks if isinstance(b, dict)]
+    else:
+        covered = _all_blocks(list(answer.response.blocks))
+    if block is not None or blocks is not None:
+        produced = {b.get("from_step") for b in covered if isinstance(b.get("from_step"), int)}
+        relevant = [s for s in steps if s.index in produced] or steps
     else:
         relevant = steps
-    covered = [block] if block is not None else _all_blocks(list(answer.response.blocks))
     windows = list(dict.fromkeys(w for w in (_caption_window(b) for b in covered) if w))
-    window = "; ".join(windows) if windows else None
+    window = _join_windows(windows)
     if window is None:
-        window = next((w for w in (_window_of(s.params) for s in relevant) if w), None)
+        now = _answered_at(answer)
+        window = next((w for w in (_window_of(s.params, tz=tz, now=now) for s in relevant) if w), None)
     if window is None:
         time_range = _field(conversation, "time_range")
         label = getattr(time_range, "label", None)
@@ -438,14 +531,14 @@ def _scope_for(answer: _Answer, conversation: Any, *, block: dict[str, Any] | No
 
 
 def _build_item(answer: _Answer, conversation: Any, *, conversation_id: str, message_id: str,
-                block_id: str | None, demo: bool) -> ReportItem:
+                block_id: str | None, demo: bool, tz: str = "UTC") -> ReportItem:
     """The first (or only) item of :func:`_build_items`."""
     return _build_items(answer, conversation, conversation_id=conversation_id,
-                        message_id=message_id, block_id=block_id, demo=demo)[0]
+                        message_id=message_id, block_id=block_id, demo=demo, tz=tz)[0]
 
 
 def _build_items(answer: _Answer, conversation: Any, *, conversation_id: str, message_id: str,
-                 block_id: str | None, demo: bool) -> list[ReportItem]:
+                 block_id: str | None, demo: bool, tz: str = "UTC") -> list[ReportItem]:
     """Snapshot one stored block (or the whole answer as a ``section``) into report
     items. Raises 404 when the block never existed and 409 ``block_unavailable`` when
     it was trimmed or expired from saved history.
@@ -476,7 +569,7 @@ def _build_items(answer: _Answer, conversation: Any, *, conversation_id: str, me
         item = ReportItem.model_validate({
             "id": new_item_id(), "kind": "block", "block": block, "note": None,
             "source": {"conversation_id": conversation_id, "message_id": message_id, "block_id": block_id},
-            "scope": _scope_for(answer, conversation, block=block, demo=demo),
+            "scope": _scope_for(answer, conversation, block=block, demo=demo, tz=tz),
             "added_at": iso_now(),
         })
         # Re-validation (ReportItem → parse_persisted_blocks) replaces an unreadable
@@ -490,7 +583,7 @@ def _build_items(answer: _Answer, conversation: Any, *, conversation_id: str, me
     if not parts:
         raise _http(409, "block_unavailable", "This answer has nothing to add.")
     title = answer.question or "Answer"
-    scope = _scope_for(answer, conversation, block=None, demo=demo)
+    scope = _scope_for(answer, conversation, block=None, demo=demo, tz=tz)
     items: list[ReportItem] = []
     for part, start in enumerate(range(0, len(parts), MAX_SECTION_BLOCKS)):
         # Saved history cut this answer (its text carries "[truncated in saved
@@ -546,14 +639,19 @@ def _text_blocks(text: str, *, prefix: str) -> list[dict[str, Any]]:
 
 def _section_items(
     answer: _Answer, conversation: Any, *, title: str, blocks: list[dict[str, Any]],
-    conversation_id: str, message_id: str, block_id: str, demo: bool,
+    conversation_id: str, message_id: str, block_id: str, demo: bool, tz: str = "UTC",
+    whole_answer: bool = False,
 ) -> list[ReportItem]:
     """One or more ``section`` items (a section snapshot holds at most
-    ``MAX_SECTION_BLOCKS`` blocks; a longer one continues in the next item)."""
+    ``MAX_SECTION_BLOCKS`` blocks; a longer one continues in the next item). Its scope
+    is that of its own blocks (a Brief section's leaves and the lookups behind them),
+    or of the whole answer for the answer's own text (``whole_answer``)."""
     from ..agents.blocks import MAX_SECTION_BLOCKS
 
     out: list[ReportItem] = []
     usable = [b for b in blocks if isinstance(b, dict) and not _unusable(b)]
+    scope = _scope_for(answer, conversation, block=None, demo=demo, tz=tz,
+                       blocks=None if whole_answer else usable)
     for part, start in enumerate(range(0, len(usable), MAX_SECTION_BLOCKS)):
         group = usable[start:start + MAX_SECTION_BLOCKS]
         heading = title if part == 0 else f"{title} (continued)"
@@ -563,7 +661,7 @@ def _section_items(
             "block": {"title": heading, "blocks": group, "truncated": answer.stored_truncated},
             "source": {"conversation_id": conversation_id, "message_id": message_id,
                        "block_id": source_block[:48]},
-            "scope": _scope_for(answer, conversation, block=None, demo=demo),
+            "scope": scope,
             "added_at": iso_now(),
         })
         out.append(item)
@@ -572,7 +670,7 @@ def _section_items(
 
 def items_for_answer(
     answer: _Answer, conversation: Any, *, conversation_id: str, message_id: str, demo: bool,
-    expand_briefs: bool = True,
+    expand_briefs: bool = True, tz: str = "UTC",
 ) -> list[ReportItem]:
     """The report items of one persisted answer (D11): its text as a "Summary"
     section, every Brief section as its own section (``expand_briefs``), and every
@@ -586,6 +684,7 @@ def items_for_answer(
         items.extend(_section_items(
             answer, conversation, title="Summary", blocks=text_blocks,
             conversation_id=conversation_id, message_id=message_id, block_id="answer", demo=demo,
+            tz=tz, whole_answer=True,
         ))
     for block in answer.response.blocks:
         if not isinstance(block, dict) or _unusable(block):
@@ -607,13 +706,13 @@ def items_for_answer(
                 items.extend(_section_items(
                     answer, conversation, title=str(section.get("heading") or "Section"),
                     blocks=leaves, conversation_id=conversation_id, message_id=message_id,
-                    block_id=f"{block_id}.{section_id}", demo=demo,
+                    block_id=f"{block_id}.{section_id}", demo=demo, tz=tz,
                 ))
             continue
         item = ReportItem.model_validate({
             "id": new_item_id(), "kind": "block", "block": block, "note": None,
             "source": {"conversation_id": conversation_id, "message_id": message_id, "block_id": block_id or None},
-            "scope": _scope_for(answer, conversation, block=block, demo=demo),
+            "scope": _scope_for(answer, conversation, block=block, demo=demo, tz=tz),
             "added_at": iso_now(),
         })
         if not _unusable(item.block):
@@ -656,7 +755,7 @@ async def save_answer_as_report(
         return None
     items = items_for_answer(
         answer, conversation, conversation_id=conversation_id, message_id=message_id,
-        demo=bool(getattr(state, "demo_active", False)),
+        demo=bool(getattr(state, "demo_active", False)), tz=operator_tz(state),
     )
     if not items:
         return None
@@ -757,6 +856,7 @@ async def report_from_conversation(
     if conversation is None:
         raise _not_found("conversation_not_found", "That conversation is not available.")
     demo = bool(getattr(state, "demo_active", False))
+    tz = operator_tz(state)
     items: list[ReportItem] = []
     answers = 0
     beyond = 0
@@ -775,7 +875,7 @@ async def report_from_conversation(
         items.extend(_section_items(
             answer, conversation, title=answer.question or "Answer", blocks=blocks,
             conversation_id=body.conversation_id, message_id=str(_field(message, "id")),
-            block_id="answer", demo=demo,
+            block_id="answer", demo=demo, tz=tz, whole_answer=True,
         ))
     if not items:
         raise _http(409, "report_empty", "This conversation has no answers to save.")
@@ -1075,7 +1175,7 @@ async def add_to_report(
         raise _not_found("message_not_found", "That answer is not in this conversation.")
     item, *continuations = _build_items(
         answer, conversation, conversation_id=body.conversation_id, message_id=body.message_id,
-        block_id=body.block_id, demo=bool(getattr(state, "demo_active", False)),
+        block_id=body.block_id, demo=bool(getattr(state, "demo_active", False)), tz=operator_tz(state),
     )
     title = str(_field(conversation, "title") or "") or "Untitled report"
     try:

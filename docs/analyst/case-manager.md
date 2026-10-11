@@ -100,8 +100,11 @@ and the **Cases** back control returns to it instead of exposing a resize handle
 ## Read the workspace
 
 The case header stays in view while you scroll. Its first line holds the title and one
-primary action chosen for the case's state (for example **Acknowledge** on a new case),
-**Take action** for every other command, and **Share**. When the title is long, the
+primary action chosen for the case's state (for example **Acknowledge** on a new case,
+**Close case** on a resolved case, which is its final close, and **Reopen** on a closed
+one), **Take action** for every other command, and **Share**. On a resolved or closed
+case, **Take action** still offers **Set disposition**, so an outcome that reads
+**Outcome not recorded** can be recorded without reopening the case. When the title is long, the
 actions move to their own line rather than squeezing it. Its second line holds the facts
 every tab needs: the case ID with a copy button, source severity, risk with its band,
 status, the outcome of record, the AI verdict, the owner (select to reassign), tags,

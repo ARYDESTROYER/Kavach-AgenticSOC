@@ -224,8 +224,8 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     icon: RefreshCw,
     variant: 'default',
     confirmTitle: 'Reopen this case?',
-    confirmBody: 'Reopen a closed case and return it to the open queue.',
-    help: 'Reopen a closed case.',
+    confirmBody: 'Return this case to the open queue.',
+    help: 'Return a closed or resolved case to the open queue.',
     fields: [],
   },
   acknowledge: {
@@ -317,13 +317,18 @@ export const PRIORITY_OPTIONS: Array<{ value: string; text: string }> = [
  *
  *   - `primary`  — the single filled CTA for the current state (context-dependent:
  *                  Acknowledge when new, Escalate/Resolve when working, Resume when
- *                  held, Reopen when terminal). Never null for a loaded case.
+ *                  held, Close when resolved, Reopen when closed). Never null for a
+ *                  loaded case.
  *   - `close`    — the unified Close-with-disposition action, shown as a secondary
  *                  button, UNLESS it is already the primary (resolved cases).
  *   - `overflow` — the remaining contextual actions, in a "More" menu.
  *
  * Every entry is one of the existing `ALL_ACTIONS` records, so the confirm dialog +
- * `runAction` wire keys are unchanged. Terminal states expose no close (only reopen).
+ * `runAction` wire keys are unchanged. The plan mirrors the backend transition guard:
+ * a closed case offers no close (only reopen), and a resolved case offers its final
+ * close (resolved → closed through `close`, the one forward move out of a terminal
+ * status the server allows). Both terminal states keep Set disposition, so an outcome
+ * that was never recorded can be recorded without reopening the case.
  */
 export interface ActionPlan {
   primary: ActionDef;
@@ -335,7 +340,7 @@ export function actionPlanForStatus(status?: string): ActionPlan {
   const s = (status || '').toLowerCase();
   const close = ALL_ACTIONS.close_disposition;
 
-  // Terminal states: only reopen (and re-classify) is legal — no close.
+  // Closed: only reopen (and re-classify) is legal, no close.
   if (s === 'closed') {
     return {
       primary: { ...ALL_ACTIONS.reopen, fill: true },
@@ -344,11 +349,14 @@ export function actionPlanForStatus(status?: string): ActionPlan {
     };
   }
   if (s === 'resolved') {
-    // Close IS the primary here; don't duplicate it as a secondary button.
+    // Resolved is "worked to completion, pending final close": Close IS the primary
+    // here (the server allows resolved → closed through `close`), so it is not repeated
+    // as a secondary button. Set disposition records or corrects the outcome without
+    // closing, e.g. a case resolved before resolve captured one ("outcome not recorded").
     return {
       primary: { ...close, fill: true },
       close: null,
-      overflow: [ALL_ACTIONS.reopen],
+      overflow: [ALL_ACTIONS.set_disposition, ALL_ACTIONS.reopen],
     };
   }
   if (s === 'on_hold') {

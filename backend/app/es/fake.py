@@ -18,7 +18,7 @@ import fnmatch
 import functools
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from ..constants import AUDIT_INDEX, USAGE_INDEX
 from ..utils import coerce_float, dotted_get, new_id, parse_es_timestamp
@@ -411,13 +411,13 @@ class InMemoryESClient(BaseESClient):
         frm = int(body.get("from", 0) or 0)
         size = int(body.get("size", 10))
         window = matched[frm: frm + size] if size > 0 else []
-        source_filter = body.get("_source")
+        projector = _source_projector(body.get("_source"))
         hits = [
             {
                 "_index": idx,
                 "_id": did,
                 "_score": None,
-                "_source": _project_source(src, source_filter),
+                "_source": projector(src) if projector is not None and isinstance(src, dict) else src,
                 "sort": _sort_values(did, src, _normalise_sort(sort)) if sort else None,
             }
             for (idx, did, src) in window
@@ -437,8 +437,15 @@ def _project_source(src: Any, spec: Any) -> Any:
     (wildcards and dotted paths into objects allowed). Boolean and absent specs return
     the document unchanged, as before (callers asking for ``_source: false`` never read
     it)."""
-    if not isinstance(src, dict) or spec is None or isinstance(spec, bool):
-        return src
+    projector = _source_projector(spec)
+    return src if projector is None or not isinstance(src, dict) else projector(src)
+
+
+def _source_projector(spec: Any) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+    """:func:`_project_source` compiled once for a search (``None``: the identity), so
+    a projected full-population scan does not re-parse the spec for every hit."""
+    if spec is None or isinstance(spec, bool):
+        return None
     if isinstance(spec, str):
         includes, excludes = [spec], []
     elif isinstance(spec, (list, tuple)):
@@ -449,25 +456,45 @@ def _project_source(src: Any, spec: Any) -> Any:
         includes = [raw_in] if isinstance(raw_in, str) else [str(x) for x in raw_in or []]
         excludes = [raw_ex] if isinstance(raw_ex, str) else [str(x) for x in raw_ex or []]
     else:
-        return src
+        return None
+
+    # Literal patterns are matched by set membership and only wildcard ones through
+    # ``fnmatch``, with exactly the semantics of matching every pattern with ``fnmatch``.
+    in_exact, in_wild = _split_patterns(includes)
+    ex_exact, ex_wild = _split_patterns(excludes)
+    # ``pat.startswith(path + ".")`` for some include ⇔ ``path`` is one of the dotted
+    # prefixes of an include; a leading ``*`` may match below any object.
+    in_prefixes = {pat[:i] for pat in includes for i, ch in enumerate(pat) if ch == "."}
+    star_prefix = any(pat.startswith("*") for pat in includes)
+
+    def matched(path: str, exact: set[str], wild: list[str]) -> bool:
+        return path in exact or any(fnmatch.fnmatchcase(path, pat) for pat in wild)
 
     def pick(node: dict[str, Any], prefix: str) -> dict[str, Any]:
         out: dict[str, Any] = {}
         for key, value in node.items():
             path = f"{prefix}{key}"
-            if any(fnmatch.fnmatchcase(path, pat) for pat in excludes):
+            if (ex_exact or ex_wild) and matched(path, ex_exact, ex_wild):
                 continue
-            if not includes or any(fnmatch.fnmatchcase(path, pat) for pat in includes):
+            if not includes or matched(path, in_exact, in_wild):
                 out[key] = _tree_copy(value)
-            elif isinstance(value, dict) and any(
-                pat.startswith(path + ".") or pat.startswith("*") for pat in includes
-            ):
+            elif isinstance(value, dict) and (star_prefix or path in in_prefixes):
                 inner = pick(value, path + ".")
                 if inner:
                     out[key] = inner
         return out
 
-    return pick(src, "")
+    return lambda src: pick(src, "")
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _split_patterns(patterns: list[str]) -> tuple[set[str], list[str]]:
+    """``(literal patterns, wildcard patterns)``: a literal ``fnmatch`` pattern matches
+    exactly itself, so it is checked by set membership."""
+    exact = {pat for pat in patterns if not (_GLOB_CHARS & set(pat))}
+    return exact, [pat for pat in patterns if pat not in exact]
 
 
 _ATOMIC_TYPES = (str, int, float, bool, type(None))

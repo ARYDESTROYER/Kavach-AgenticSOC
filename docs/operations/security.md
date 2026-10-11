@@ -85,10 +85,21 @@ weakens a stricter policy that was already configured.
 **Policy changes apply to live sessions.** Limits are recomputed from the current
 policy on every request. Shortening the remembered duration ends older remembered
 sessions on their next request. Turning Remember me off, excluding a role, or
-promoting someone into an excluded role makes their remembered sessions follow the
-standard limits from the next request, and the console turns their cookie into a
-browser-session cookie the next time it loads. Out-of-range values sent to the
+promoting someone into an excluded role ends their remembered sessions where an
+ordinary sign-in would, from the next request: a session older than the standard
+token lifetime (`AUTH_TOKEN_HOURS`, 12 hours by default) ends at once, a younger one
+ends when it reaches that age, and a separate remembered inactivity limit keeps
+applying when it is shorter than the **Idle timeout**. The console turns their cookie
+into a browser-session cookie the next time it loads. Out-of-range values sent to the
 settings API are refused (HTTP 422), never silently adjusted.
+
+**Running chat answers end with their authority.** A chat answer can run for a long
+time, so it is checked again before every model call and every set of lookups: when
+the session that started it was revoked or has expired, the account was disabled,
+deleted or replaced, or a role change removed access the answer was using, it stops
+there and saves nothing. Signing out, revoking a session, signing out everywhere,
+disabling or deleting an account and changing its roles also stop the affected answers
+at once, without waiting for the next check.
 
 **Transport.** A persistent cookie is only issued when it cannot cross plain HTTP:
 

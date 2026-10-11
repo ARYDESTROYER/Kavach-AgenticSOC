@@ -4539,7 +4539,16 @@ export interface NoiseReduction {
     available: boolean;
     /** When the counters began accumulating (ISO), or null when unavailable. */
     since: string | null;
-    /** True while counters are still warming up (partial coverage of the window). */
+    /**
+     * When the RETAINED counters start covering (ISO): `since` bounded by the 90-day
+     * retention floor. Additive (Round 12); absent from older servers.
+     */
+    coverage_start?: string | null;
+    /**
+     * True when the alert stages do not cover the whole window: the counters started
+     * (or retention now starts) inside it, or a counted case predates them. Alert-based
+     * reductions are then withheld or flagged as partial coverage.
+     */
     incomplete: boolean;
   };
   cases_meta: {

@@ -41,7 +41,7 @@ import {
 import { TEXT_WIDTH, columnChunks, columnWidths, docxParts, reportToDocx } from '../export/docx';
 import { documentNodes } from '../export/walker';
 import { exportReport } from '../export/run';
-import { NOW, rawBlock, sampleConversation, sampleReport } from './fixtures';
+import { NOW, calendarReport, rawBlock, sampleConversation, sampleReport } from './fixtures';
 import { parseXml, readZip, zipMap } from './zip-reader';
 
 const doc = (report: Report = sampleReport()) =>
@@ -563,6 +563,23 @@ describe('exportReport (files)', () => {
     expect(blobs[1].blob.type).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     checkPackage(await bytesOf(blobs[0].blob), 'word/document.xml');
     checkPackage(await bytesOf(blobs[1].blob), 'xl/workbook.xml');
+  });
+
+  it('writes a calendar chart in its periods in Word and Excel, never as UTC bucket starts', () => {
+    const d = buildReportDoc(calendarReport(), { generatedAt: NOW.toISOString() });
+    const word = textOf(parseXml(docxParts(d, { defang: false }).document));
+    for (const want of ['Period (Asia/Kolkata)', 'Sep 2026 (from 12 Sep)', 'Oct 2026 (in progress)']) expect(word).toContain(want);
+    expect(word).not.toContain('2026-08-31 18:30 UTC');
+    expect(word).not.toContain('Time (UTC)');
+    const sheet = workbookModel(d).sheets.find((s) => s.rows.some((r) => r[0]?.kind === 'text' && r[0].text === 'Period (Asia/Kolkata)'))!;
+    expect(sheet).toBeDefined();
+    const header = sheet.rows.findIndex((r) => r[0]?.kind === 'text' && r[0].text === 'Period (Asia/Kolkata)');
+    const body = sheet.rows.slice(header + 1).filter((r) => r.length);
+    expect(body.map((r) => (r[0]?.kind === 'text' ? r[0].text : null))).toEqual(['Sep 2026 (from 12 Sep)', 'Oct 2026 (in progress)']);
+    // The counts stay numbers.
+    expect(body.map((r) => (r[1]?.kind === 'number' ? r[1].value : null))).toEqual([2, 72]);
+    const flat = sheet.rows.flat().map((c) => (c ? (c.kind === 'text' ? (c.text ?? '') : String(c.value)) : ''));
+    expect(flat.join('\n')).not.toContain('18:30 UTC');
   });
 
   it('keeps every KPI value in the Excel overview and sheets', () => {

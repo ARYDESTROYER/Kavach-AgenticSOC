@@ -595,8 +595,13 @@ detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
    placed in the composer, so a held Enter can never send words the analyst did not
    choose. The value is fenced as `entity_ref` in the prompt, live and on replay, and never
    counts as user-authored for indicator lookups. The command palette's free-text "Ask AI"
-   only prefills a fresh composer and never sends. (The WP-ASK commit message describes a
-   prefilled, unsent question; the code and its tests send the server-worded question.)
+   only prefills a fresh composer and never sends. The same holds when such a question's
+   new chat saved nothing while the analyst was elsewhere: the toast's "Ask again" sends
+   it again with its own origin and topic (`NavOpts.resend`, in memory only) and only an
+   `origin: "user"` question is ever put back in a composer; "Save prompt" is offered
+   only for `origin: "user"` turns (the ↑-recall rule). (The WP-ASK commit message
+   describes a prefilled, unsent question; the code and its tests send the server-worded
+   question.)
 10. **Chat summary inside the conversation store**: the engine never touches the store; the
     route passes the summary in and persists the new one from the turn outcome.
 11. **Report summaries stay inside the daily AI budget** (D5 scope): only `surface="chat"`
@@ -606,7 +611,13 @@ detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
 13. **Case outcome gate**: a disposition counts as the analyst's classification only with
     `decision_by == "analyst"` and an explicit classification history entry
     (`set_disposition`/`confirm_fp`, or a close/resolve stamped `classified_disposition`
-    by `disposition_declared: true`); the disposition picker starts empty.
+    by `disposition_declared: true`); the disposition picker starts empty. The analyst's
+    explicit classification always wins (final review): `confirm_fp` records the
+    false-positive class itself (it replaces a model-mapped `true_positive` or any earlier
+    value, keeps `benign`, and stamps `classified_disposition`), and an undeclared
+    disposition on `close`/`resolve` never replaces a classification the case still
+    carries (`analyst_outcomes.standing_analyst_disposition`). Older records are not
+    rewritten.
 14. **Reopen, not Undo**: the eight-second action after a close is the existing `reopen`
     verb, and the recorded classification stays on file until the case is closed again.
 15. **The scope chip's default reads Auto, not 24h** (amends D7; WP-FIX1). No range is
@@ -621,6 +632,19 @@ detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
     replay and from `/chat`; it is never stored on the answer. The live transcript gives
     it to the question, so a search hit or link to a question asked in this session is
     found on screen without paging the conversation's older history.
+17. **`chat.turn` frames ride the shell's job stream** (§3.2, D13; final review). The
+    console asks for topic `chat` on the job observer's existing stream
+    (`GET /api/events?topics=chat,jobs`, `JobMonitor`), so no connection is added, and
+    relays every frame through the entry-safe store (`relayChatFrame`, +124 B entry) to
+    the lazy `ActivityEffects`. A frame is a nudge: a turn this tab does not know is
+    looked up in `turns/active` and followed by the runner (nav glyph, brand ring, tab
+    title, history rail and the open thread pick it up); a parked run takes a frame's
+    step label and is woken by its end (`wakeParkedRun`) to read the outcome from the
+    ring; a turn that ended before it could be followed sends the conversation list to be
+    read for its mark. While a Workspace question this browser sent has no turn id yet,
+    no other Workspace turn is followed until it is named, so a tab never follows its own
+    question twice. Polling stays the fallback (on load, on becoming visible, after an
+    `overflow`, and the 5 s park poll); with authentication off no frame is sent.
 
 ### 7.3 Known limitations
 

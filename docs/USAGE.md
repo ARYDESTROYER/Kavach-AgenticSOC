@@ -496,8 +496,9 @@ cohort; use job counts, case history, and Audit for exact accountability.
 - **disposition** (what the case turned out to be): `true_positive`,
   `false_positive`, `benign`, `suspicious`, `duplicate`, `undetermined` (the default
   for cases that predate the taxonomy). Set it explicitly with the `set_disposition`
-  action or by supplying `disposition` on a `close`; `confirm_fp` also stamps
-  `false_positive` when the disposition is still undetermined. Note that
+  action or by supplying `disposition` on a `close`; `confirm_fp` is its own
+  classification and records `false_positive` (it keeps `benign`, the
+  false-positive-class refinement), replacing any other value. Note that
   `case_manager.apply()` may already have derived a disposition from the model's
   verdict, so a stored disposition is not by itself an analyst statement — see
   `disposition_declared` below.
@@ -528,8 +529,8 @@ noted below):
 
 | action | resulting status | meaning |
 |---|---|---|
-| `close` | `closed` | analyst closes the case |
-| `confirm_fp` | `closed` | analyst confirms a false positive (sets disposition `false_positive` if still undetermined) |
+| `close` | `closed` | analyst closes the case (also the final close of a `resolved` case) |
+| `confirm_fp` | `closed` | analyst confirms a false positive: records disposition `false_positive` as the analyst's classification, replacing any other value (an existing `benign` is kept) |
 | `resolve` | `resolved` | worked to completion, pending final close |
 | `reopen` | `open` | reopen a closed/resolved case |
 | `escalate` | `escalated` | mark the case Escalated for analyst action |
@@ -559,6 +560,11 @@ tuner's independent-outcome population):
   rejects it without a disposition, so no flag is needed.
 - `close` records the classification only when `disposition_declared` is `true`.
   Omit it and the close still honours the disposition; it simply records no label.
+- `confirm_fp` is self-declaring too: it always records the false-positive class.
+- An undeclared disposition never replaces one an analyst explicitly classified and
+  the case still carries. It may be the model's value read off the case earlier, so
+  the lifecycle move goes ahead and the analyst's classification stays. Send
+  `disposition_declared: true` (or use `set_disposition`) to change a classification.
 
 The Console sets it from the close dialog's picker `onChange` only, and that picker
 opens **empty** rather than pre-filled from the case, so the "a disposition is
@@ -567,8 +573,11 @@ beneath the picker as read-only context. The gate is on intent, not on the value
 differing: an analyst who reviews a case and affirmatively re-states the model's own
 conclusion has confirmed it, and labelling only disagreements would bias every
 downstream false-positive rate. A **transition guard** rejects illegal moves — e.g. leaving a
-terminal status (`closed` / `resolved`) is only legal via `reopen` (a `400`
-otherwise). Every action sets `decision_by=analyst`, stamps `updated_at`, appends
+terminal status (`closed` / `resolved`) is only legal via `reopen`, with one forward
+exception: a `resolved` case (worked to completion, pending final close) takes its final
+close through `close` or `confirm_fp`. Any other move out of a terminal status, including
+`closed` → `resolved`, returns a `400`; `set_disposition` changes no status, so it stays
+legal on both. Every action sets `decision_by=analyst`, stamps `updated_at`, appends
 an entry to the case **history** + `status_history`, and is audited. A `close` /
 `confirm_fp` also indexes the resolved case (entity, rules, verdict, risk, note,
 trigger reason) into the **resolved-case RAG baseline** when `rag.enabled` +

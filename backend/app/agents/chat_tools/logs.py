@@ -58,6 +58,7 @@ from .common import (
 )
 from .periods import (
     Period,
+    comparison_caption,
     comparison_data,
     comparison_observation,
     comparison_row,
@@ -1455,7 +1456,7 @@ def _add_log_comparison(
     exact = not incomplete_periods and all(
         s.exact for per_source in compared for s in per_source if s.status == "ok")
     basis = outcome.basis if exact else "sample"
-    caption = " vs ".join(p.label for p in reversed(periods))
+    caption = comparison_caption(periods)
     total_rows = [comparison_row("events", "Matching events", totals, unit="count")]
     outcome.artifacts.append(Artifact(
         id=f"a{len(outcome.artifacts) + 1}", kind="comparison", title="Events compared", title_trusted=True,

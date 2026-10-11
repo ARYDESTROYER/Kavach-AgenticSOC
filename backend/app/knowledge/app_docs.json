@@ -1223,7 +1223,7 @@
    "page": "analyst/cases.md",
    "anchor": "lifecycle-actions-and-permissions",
    "heading": "Lifecycle actions and permissions",
-   "text": "- Reading cases requires `cases:read`.\n- Acknowledge, hold, resume, escalate, de-escalate, reopen, and non-terminal status\n  changes require `cases:write`.\n- Closing, resolving, or otherwise reaching a terminal state requires `cases:close`.\n- Assignment requires `cases:assign`; discussion requires `cases:comment`.\n- Re-investigation requires `cases:reinvestigate`; running a playbook requires\n  `playbooks:run`.\n\nThe server rejects illegal transitions. Reopen a terminal case before moving it to\nanother non-terminal state; use the dedicated close or resolve action rather than a\ngeneric status setter.",
+   "text": "- Reading cases requires `cases:read`.\n- Acknowledge, hold, resume, escalate, de-escalate, reopen, and non-terminal status\n  changes require `cases:write`.\n- Closing, resolving, or otherwise reaching a terminal state requires `cases:close`.\n- Assignment requires `cases:assign`; discussion requires `cases:comment`.\n- Re-investigation requires `cases:reinvestigate`; running a playbook requires\n  `playbooks:run`.\n\nThe server rejects illegal transitions. Reopen a terminal case before moving it to\nanother non-terminal state; use the dedicated close or resolve action rather than a\ngeneric status setter. A resolved case is the one exception: closing it is its final\nstep, so **Close case** works on it directly. A closed case cannot go back to Resolved\nwithout a reopen. Setting a disposition changes no status, so it works on resolved and\nclosed cases alike.",
    "console": []
   },
   {
@@ -1297,7 +1297,7 @@
    "page": "analyst/case-manager.md",
    "anchor": "read-the-workspace",
    "heading": "Read the workspace",
-   "text": "The case header stays in view while you scroll. Its first line holds the title and one\nprimary action chosen for the case's state (for example **Acknowledge** on a new case),\n**Take action** for every other command, and **Share**. When the title is long, the\nactions move to their own line rather than squeezing it. Its second line holds the facts\nevery tab needs: the case ID with a copy button, source severity, risk with its band,\nstatus, the outcome of record, the AI verdict, the owner (select to reassign), tags,\nage and SLA, and the campaign.\n\nBeside every tab, the **facts rail** lists what is known about the case in one place:\nthe outcome of record (the analyst's classification, the AI verdict, and how they\nrelate, with who classified it and when), the signal profile, the triage bands, owner\nand tags, every lifecycle clock and the SLA, where the case came from, the primary\nentity, the campaign, related cases, and the record (decided by, cost, build,\nnotifications sent, and the classification and verdict history). On a narrow pane the\nsame rail opens from **Details** in the header. Entity values offer **Ask AI**, which\nopens a Workspace chat about that value (see\nWorkspace Chat).",
+   "text": "The case header stays in view while you scroll. Its first line holds the title and one\nprimary action chosen for the case's state (for example **Acknowledge** on a new case,\n**Close case** on a resolved case, which is its final close, and **Reopen** on a closed\none), **Take action** for every other command, and **Share**. On a resolved or closed\ncase, **Take action** still offers **Set disposition**, so an outcome that reads\n**Outcome not recorded** can be recorded without reopening the case. When the title is long, the\nactions move to their own line rather than squeezing it. Its second line holds the facts\nevery tab needs: the case ID with a copy button, source severity, risk with its band,\nstatus, the outcome of record, the AI verdict, the owner (select to reassign), tags,\nage and SLA, and the campaign.",
    "console": []
   },
   {
@@ -1305,11 +1305,19 @@
    "page": "analyst/case-manager.md",
    "anchor": "read-the-workspace",
    "heading": "Read the workspace",
-   "text": "| Tab | Purpose |\n| --- | --- |\n| Overview | Decision brief; signal profile; persisted risk-factor values; conditional latest-run Investigation inputs; source, agent, and code provenance; entities; attack story; status history |\n| Timeline | Six-stage input-to-decision narrative; Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker |\n| Investigation | The deterministic decision first, then the AI assessment, detailed Investigation inputs, evidence, recommendation, reproduction query, and the collapsible full trace |\n| Threat context | IOC reputation, MITRE ATT&CK mapping, related cases, and the redacted persisted alert → correlation cluster → opened case explanation |\n| Collaboration | Case thread, reactions, activity, tasks, assignment, and handoff context |\n| Chat | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs |\n\nEach fact has one home, so a figure shown in the header or the rail is not repeated in\na tab. The Overview visualization is explanatory, not a second scoring engine. It\nrenders the score, confidence, and factors already recorded on the case. If a factor was\nnot persisted, the UI does not manufacture a contribution to make the chart look full.",
+   "text": "Beside every tab, the **facts rail** lists what is known about the case in one place:\nthe outcome of record (the analyst's classification, the AI verdict, and how they\nrelate, with who classified it and when), the signal profile, the triage bands, owner\nand tags, every lifecycle clock and the SLA, where the case came from, the primary\nentity, the campaign, related cases, and the record (decided by, cost, build,\nnotifications sent, and the classification and verdict history). On a narrow pane the\nsame rail opens from **Details** in the header. Entity values offer **Ask AI**, which\nopens a Workspace chat about that value (see\nWorkspace Chat).",
    "console": []
   },
   {
    "id": "analyst/case-manager#read-the-workspace:2",
+   "page": "analyst/case-manager.md",
+   "anchor": "read-the-workspace",
+   "heading": "Read the workspace",
+   "text": "| Tab | Purpose |\n| --- | --- |\n| Overview | Decision brief; signal profile; persisted risk-factor values; conditional latest-run Investigation inputs; source, agent, and code provenance; entities; attack story; status history |\n| Timeline | Six-stage input-to-decision narrative; Risk Assigned reconstructs the arithmetic from persisted factor values and current weights, flags a historical-weight mismatch honestly, and pulses only the final marker |\n| Investigation | The deterministic decision first, then the AI assessment, detailed Investigation inputs, evidence, recommendation, reproduction query, and the collapsible full trace |\n| Threat context | IOC reputation, MITRE ATT&CK mapping, related cases, and the redacted persisted alert → correlation cluster → opened case explanation |\n| Collaboration | Case thread, reactions, activity, tasks, assignment, and handoff context |\n| Chat | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs |\n\nEach fact has one home, so a figure shown in the header or the rail is not repeated in\na tab. The Overview visualization is explanatory, not a second scoring engine. It\nrenders the score, confidence, and factors already recorded on the case. If a factor was\nnot persisted, the UI does not manufacture a contribution to make the chart look full.",
+   "console": []
+  },
+  {
+   "id": "analyst/case-manager#read-the-workspace:3",
    "page": "analyst/case-manager.md",
    "anchor": "read-the-workspace",
    "heading": "Read the workspace",
@@ -1569,7 +1577,7 @@
    "page": "analyst/chat.md",
    "anchor": "the-prompt-library",
    "heading": "The prompt library",
-   "text": "Keep the questions you ask often, and start from the starter prompts that ship with\nthe product. Open the library with **Prompt library** in the `/` menu, or with **Prompt\nlibrary…** in the Options menu's Prompts list. It lists your own prompts and the\nread-only **starter prompts**, filtered by category (Triage, Hunt, IOC, Posture,\nReporting, and App help) or by **Favorites**, with a search box.\n\n- **Save a prompt** with **Save prompt** beside one of your earlier questions, with\n  **Save current prompt** in the Options menu's Prompts list, or with **Save a copy** on\n  a starter prompt. Give it a title and, optionally, a category, and star it to keep it\n  at the top of the `/` menu.\n- **Placeholders.** Write `{name}` in a prompt, such as `Hunt for {indicator} in the\n  last {period}`. When you use it, the composer asks for each value before sending; the\n  values are your own words.\n- **Promptbooks** are prompts that run as several questions in a row, for example\n  \"Triage a case\": investigate, look for related activity, then write an investigation\n  brief. Each step is sent after the previous answer finishes, with a \"Step 2 of 3\"\n  counter and **Stop**. A promptbook has 2 to 10 steps, separated by a line that holds\n  only `---`. Stopping a step, or a step that fails, ends the promptbook; the remaining\n  steps are not sent.",
+   "text": "Keep the questions you ask often, and start from the starter prompts that ship with\nthe product. Open the library with **Prompt library** in the `/` menu, or with **Prompt\nlibrary…** in the Options menu's Prompts list. It lists your own prompts and the\nread-only **starter prompts**, filtered by category (Triage, Hunt, IOC, Posture,\nReporting, and App help) or by **Favorites**, with a search box.",
    "console": []
   },
   {
@@ -1577,7 +1585,7 @@
    "page": "analyst/chat.md",
    "anchor": "the-prompt-library",
    "heading": "The prompt library",
-   "text": "You can keep up to 50 prompts and promptbooks, of up to 2,000 characters each. They\nbelong to your account. A starter prompt appears only when you hold the permissions its\nlookups need.",
+   "text": "- **Save a prompt** with **Save prompt** beside one of your earlier questions, with\n  **Save current prompt** in the Options menu's Prompts list, or with **Save a copy** on\n  a starter prompt. **Save prompt** appears only beside questions you typed yourself: a\n  question from **Ask AI**, **Ask about this**, a starter or a follow-up is not your own\n  words, so it is not saved as one. Give it a title and, optionally, a category, and star it to keep it\n  at the top of the `/` menu.\n- **Placeholders.** Write `{name}` in a prompt, such as `Hunt for {indicator} in the\n  last {period}`. When you use it, the composer asks for each value before sending; the\n  values are your own words.\n- **Promptbooks** are prompts that run as several questions in a row, for example\n  \"Triage a case\": investigate, look for related activity, then write an investigation\n  brief. Each step is sent after the previous answer finishes, with a \"Step 2 of 3\"\n  counter and **Stop**. A promptbook has 2 to 10 steps, separated by a line that holds\n  only `---`. Stopping a step, or a step that fails, ends the promptbook; the remaining\n  steps are not sent.\n\nYou can keep up to 50 prompts and promptbooks, of up to 2,000 characters each. They\nbelong to your account. A starter prompt appears only when you hold the permissions its\nlookups need.",
    "console": []
   },
   {
@@ -1625,7 +1633,15 @@
    "page": "analyst/chat.md",
    "anchor": "leave-and-come-back",
    "heading": "Leave and come back",
-   "text": "You do not need to stay on the Chat page while an answer is being written. Leave for\nanother page and the answer keeps going; come back and the run log and **Stop** pick up\nwhere they are, live. After a page reload, a running answer is rejoined the same way.\nOther open tabs of the console show the same working indicator.\n\nWhile chat works away from the screen:\n\n- the **Chat** item in the navigation shows a turning ring; an accent dot means a new\n  answer you have not read, amber means a question is waiting for your input, and red\n  means an answer failed;\n- the logo can show a thin turning ring too (an administrator can turn this off, and a\n  custom logo itself never moves);\n- the browser tab title starts with **●** while an answer is being written and **✓**\n  when one is ready; and\n- when an answer is ready and Chat is not on screen, you get one **Answer ready**\n  notice with **Open**.\n\nHistory rows show the same states: answering, needs your input, answer failed, or new\nanswer. With reduced motion, the ring is still and its tooltip says \"Working\". A Case\nManager chat keeps its transcript when you switch tabs and shows its own indicator on\nthe case.",
+   "text": "You do not need to stay on the Chat page while an answer is being written. Leave for\nanother page and the answer keeps going; come back and the run log and **Stop** pick up\nwhere they are, live. After a page reload, a running answer is rejoined the same way.\nOther open tabs of the console show the same working indicator.\n\nWhile chat works away from the screen:\n\n- the **Chat** item in the navigation shows a turning ring; an accent dot means a new\n  answer you have not read, amber means a question is waiting for your input, and red\n  means an answer failed;\n- the logo can show a thin turning ring too (an administrator can turn this off, and a\n  custom logo itself never moves);\n- the browser tab title starts with **●** while an answer is being written and **✓**\n  when one is ready; and\n- when an answer is ready and Chat is not on screen, you get one **Answer ready**\n  notice with **Open**. If the first answer in a new chat could not be completed or\n  saved, the notice offers **Ask again** instead: a question you typed comes back in the\n  message box for you to send, and an **Ask AI** or **Ask about this** question is asked\n  again as it was, never put in the message box.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#leave-and-come-back:1",
+   "page": "analyst/chat.md",
+   "anchor": "leave-and-come-back",
+   "heading": "Leave and come back",
+   "text": "History rows show the same states: answering, needs your input, answer failed, or new\nanswer. With reduced motion, the ring is still and its tooltip says \"Working\". A Case\nManager chat keeps its transcript when you switch tabs and shows its own indicator on\nthe case.",
    "console": []
   },
   {
@@ -1762,6 +1778,14 @@
    "anchor": "stop-retry-and-ask-again",
    "heading": "Stop, retry, and ask again",
    "text": "While an answer is being written, **Send** becomes **Stop** (or press **Esc** in the\ncomposer). Stopping is handled by the server: no new lookup starts, a model call in\nprogress is abandoned at once (and still recorded in the usage ledger), and the answer\nis saved as **Stopped** with whatever was completed. When an administrator has set\nper-question limits, a model call in progress finishes instead.\n\n- **Retry same request** repeats a failed request without billing it twice.\n- **Ask again** sends the same question as a new request.\n\nAnswers are never cut short: when the model reaches its output length, the answer\ncontinues in another model call and keeps streaming. There is no **Continue** button.\n\nIf the connection drops, chat rejoins the answer and shows it when it is done. Closing\nthe tab does not stop a question: the answer is saved and appears when you return. If\nan answer could not be saved after the model was billed, chat says so and offers **Ask\nagain**, which is a new, billed request.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#stop-retry-and-ask-again:1",
+   "page": "analyst/chat.md",
+   "anchor": "stop-retry-and-ask-again",
+   "heading": "Stop, retry, and ask again",
+   "text": "An answer runs only while its session and access last. Signing out, or ending the\nsession in **Sessions & activity** (yourself or an administrator), stops the answers\nthat session started at once; signing out everywhere, or disabling or deleting the\naccount, stops all of the account's answers. Nothing more is looked up and nothing is\nsaved, and the answer ends with \"Your session ended\". A role change that removes\naccess an answer relies on stops it the same way, with \"Your access changed\"; ask again\nto use your current access. A change that only adds access stops nothing.",
    "console": []
   },
   {
@@ -4580,7 +4604,7 @@
    "page": "operations/security.md",
    "anchor": "session-lifetimes",
    "heading": "Session lifetimes",
-   "text": "**Policy changes apply to live sessions.** Limits are recomputed from the current\npolicy on every request. Shortening the remembered duration ends older remembered\nsessions on their next request. Turning Remember me off, excluding a role, or\npromoting someone into an excluded role makes their remembered sessions follow the\nstandard limits from the next request, and the console turns their cookie into a\nbrowser-session cookie the next time it loads. Out-of-range values sent to the\nsettings API are refused (HTTP 422), never silently adjusted.\n\n**Transport.** A persistent cookie is only issued when it cannot cross plain HTTP:",
+   "text": "**Policy changes apply to live sessions.** Limits are recomputed from the current\npolicy on every request. Shortening the remembered duration ends older remembered\nsessions on their next request. Turning Remember me off, excluding a role, or\npromoting someone into an excluded role ends their remembered sessions where an\nordinary sign-in would, from the next request: a session older than the standard\ntoken lifetime (`AUTH_TOKEN_HOURS`, 12 hours by default) ends at once, a younger one\nends when it reaches that age, and a separate remembered inactivity limit keeps\napplying when it is shorter than the **Idle timeout**. The console turns their cookie\ninto a browser-session cookie the next time it loads. Out-of-range values sent to the\nsettings API are refused (HTTP 422), never silently adjusted.\n\n**Running chat answers end with their authority.** A chat answer can run for a long\ntime, so it is checked again before every model call and every set of lookups: when\nthe session that started it was revoked or has expired, the account was disabled,\ndeleted or replaced, or a role change removed access the answer was using, it stops\nthere and saves nothing. Signing out, revoking a session, signing out everywhere,\ndisabling or deleting an account and changing its roles also stop the affected answers\nat once, without waiting for the next check.",
    "console": [
     "settings:security",
     "settings:sessions"
@@ -4591,7 +4615,7 @@
    "page": "operations/security.md",
    "anchor": "session-lifetimes",
    "heading": "Session lifetimes",
-   "text": "- Behind TLS, set `AUTH_COOKIE_SECURE=true`. Until it is set, Remember me stays off\n  even on an HTTPS console (the sign-in page says it is not available on this\n  connection, and the Session policy editor explains why).\n- Without secure cookies, Remember me is offered only on what looks like a direct\n  request from the server itself: the connection comes from the same machine, the\n  host name is `localhost` or a loopback address, and the request carries no\n  forwarding header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,\n  `X-Forwarded-Proto` or `X-Real-IP`). The server can recognise a reverse proxy only\n  by those headers. A proxy on the same machine that sends none of them (for\n  example, a plain nginx `proxy_pass http://127.0.0.1:8088;`) looks exactly like a\n  local browser, so people who reach the console through it from the network would\n  get a long-lived cookie over plain HTTP. If you put your own reverse proxy on the\n  backend's host, make it send `X-Forwarded-For` (nginx:\n  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`, as the bundled\n  web container already does), or serve the console over HTTPS and set\n  `AUTH_COOKIE_SECURE=true`. Docker deployments are not affected: the backend\n  container never sees the proxy's connection as coming from its own loopback\n  address.\n- An administrator may allow it on plain HTTP anyway (\"Allow on plain HTTP\", not\n  recommended); the switch is shown only while secure cookies are off.",
+   "text": "**Transport.** A persistent cookie is only issued when it cannot cross plain HTTP:",
    "console": [
     "settings:security",
     "settings:sessions"
@@ -4599,6 +4623,17 @@
   },
   {
    "id": "operations/security#session-lifetimes:5",
+   "page": "operations/security.md",
+   "anchor": "session-lifetimes",
+   "heading": "Session lifetimes",
+   "text": "- Behind TLS, set `AUTH_COOKIE_SECURE=true`. Until it is set, Remember me stays off\n  even on an HTTPS console (the sign-in page says it is not available on this\n  connection, and the Session policy editor explains why).\n- Without secure cookies, Remember me is offered only on what looks like a direct\n  request from the server itself: the connection comes from the same machine, the\n  host name is `localhost` or a loopback address, and the request carries no\n  forwarding header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,\n  `X-Forwarded-Proto` or `X-Real-IP`). The server can recognise a reverse proxy only\n  by those headers. A proxy on the same machine that sends none of them (for\n  example, a plain nginx `proxy_pass http://127.0.0.1:8088;`) looks exactly like a\n  local browser, so people who reach the console through it from the network would\n  get a long-lived cookie over plain HTTP. If you put your own reverse proxy on the\n  backend's host, make it send `X-Forwarded-For` (nginx:\n  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`, as the bundled\n  web container already does), or serve the console over HTTPS and set\n  `AUTH_COOKIE_SECURE=true`. Docker deployments are not affected: the backend\n  container never sees the proxy's connection as coming from its own loopback\n  address.\n- An administrator may allow it on plain HTTP anyway (\"Allow on plain HTTP\", not\n  recommended); the switch is shown only while secure cookies are off.",
+   "console": [
+    "settings:security",
+    "settings:sessions"
+   ]
+  },
+  {
+   "id": "operations/security#session-lifetimes:6",
    "page": "operations/security.md",
    "anchor": "session-lifetimes",
    "heading": "Session lifetimes",
@@ -5831,7 +5866,7 @@
    "page": "reference/configuration.md",
    "anchor": "session-policy-and-remember-me",
    "heading": "Session policy and Remember me",
-   "text": "`session_policy` sets session lifetimes; edit it under **Settings → Security & access →\nSingle sign-on & policy**. Its `remember_me` block controls the **Remember me** option on\nthe sign-in page:\n\n| Key | Default | Range | Meaning |\n|---|---|---|---|\n| `remember_me.enabled` | `true` | — | Offer Remember me on the sign-in page; turning it off makes existing remembered sessions follow the standard limits |\n| `remember_me.duration_seconds` | 86,400 | 3,600–86,400 | How long a remembered device stays signed in; the console offers 6, 12, and 24 hours. Never longer than `absolute_lifetime` |\n| `remember_me.idle_seconds` | `null` | 300–86,400 | Optional separate inactivity limit for remembered sessions; `null` uses `idle_timeout` |\n| `remember_me.excluded_roles` | `[]` | ≤ 50 roles | Roles that are never remembered |\n| `remember_me.allow_insecure_http` | `false` | — | Allow a persistent cookie on plain HTTP when secure cookies are off (not recommended) |\n\nStored values are repaired, not rejected, but a settings write with an out-of-range or\nmalformed `remember_me` value is refused with HTTP 422, so an administrator never gets a\nlooser policy than the one requested. See\nSecurity hardening.",
+   "text": "`session_policy` sets session lifetimes; edit it under **Settings → Security & access →\nSingle sign-on & policy**. Its `remember_me` block controls the **Remember me** option on\nthe sign-in page:\n\n| Key | Default | Range | Meaning |\n|---|---|---|---|\n| `remember_me.enabled` | `true` | — | Offer Remember me on the sign-in page; turning it off ends existing remembered sessions where an ordinary sign-in would (at the standard token lifetime, `AUTH_TOKEN_HOURS`) |\n| `remember_me.duration_seconds` | 86,400 | 3,600–86,400 | How long a remembered device stays signed in; the console offers 6, 12, and 24 hours. Never longer than `absolute_lifetime` |\n| `remember_me.idle_seconds` | `null` | 300–86,400 | Optional separate inactivity limit for remembered sessions; `null` uses `idle_timeout` |\n| `remember_me.excluded_roles` | `[]` | ≤ 50 roles | Roles that are never remembered |\n| `remember_me.allow_insecure_http` | `false` | — | Allow a persistent cookie on plain HTTP when secure cookies are off (not recommended) |\n\nStored values are repaired, not rejected, but a settings write with an out-of-range or\nmalformed `remember_me` value is refused with HTTP 422, so an administrator never gets a\nlooser policy than the one requested. See\nSecurity hardening.",
    "console": []
   },
   {

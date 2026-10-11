@@ -81,7 +81,7 @@ def chart_block(block_id: str = "b1") -> dict[str, Any]:
     return {
         "id": block_id, "type": "chart", "kind": "hbar", "unit": "count", "provenance": "source",
         "artifact_kind": "categories", "allowed_views": ["hbar", "bar", "table"], "from_step": 1,
-        "title": "Top source IPs", "caption": "exact · last 24h",
+        "title": "Top source IPs", "caption": "1,284 events · exact · last 24 hours",
         "x": {"kind": "category", "values": ["10.0.0.1", "10.0.0.2", "10.0.0.3"]},
         "series": [{"key": "count", "label": "Events", "values": [40, 25, 5]}],
     }
@@ -202,7 +202,7 @@ async def test_add_block_creates_the_draft_and_returns_report_and_item_id():
         # Scope is captured server-side at add time.
         # The tool's effective window comes from the engine-written caption.
         assert item["scope"] == {
-            "window": "last 24h", "sources": ["wazuh-prod"], "generated_by": "claude-test",
+            "window": "last 24 hours", "sources": ["wazuh-prod"], "generated_by": "claude-test",
             "app_version": __version__, "demo": False,
         }
 
@@ -212,10 +212,11 @@ async def test_add_block_creates_the_draft_and_returns_report_and_item_id():
         assert again["report"]["version"] == 2
 
         # A report leaf is addable by its id too, into the same draft. With no caption
-        # window, the producing step's window chip is the scope.
+        # window, the window the producing step asked for is the scope, in the words a
+        # caption would use (never the raw "now-24h" input).
         leaf = (await add(h.client, cid, mid, block_id="b4")).json()
         assert leaf["report"]["id"] == report["id"] and leaf["report"]["items"][1]["block"]["type"] == "callout"
-        assert leaf["report"]["items"][1]["scope"]["window"] == "now-24h → now"
+        assert leaf["report"]["items"][1]["scope"]["window"] == "last 24 hours"
 
         listed = (await h.client.get("/api/reports")).json()
         assert [r["id"] for r in listed["reports"]] == [report["id"]]
@@ -254,7 +255,7 @@ async def test_whole_answer_is_added_as_a_section():
             "text": "Three IPs account for most failures.",
         }
         assert [b["id"] for b in section["blocks"][1:]] == ["b1", "b2", "b3"]
-        assert item["scope"]["window"] == "last 24h"
+        assert item["scope"]["window"] == "last 24 hours"
 
 
 async def test_section_of_a_truncated_answer_says_truncated():

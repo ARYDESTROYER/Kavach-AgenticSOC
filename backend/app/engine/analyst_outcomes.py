@@ -100,6 +100,38 @@ def is_classification_entry(entry: Any) -> bool:
     return bool(str(entry.get(CLASSIFIED_DISPOSITION_KEY) or "").strip())
 
 
+def standing_analyst_disposition(case: Case) -> str | None:
+    """The disposition an analyst EXPLICITLY classified that the case still carries.
+
+    Returns the disposition value when the newest classification entry in the history
+    (:func:`is_classification_entry`) names a disposition and the case's current
+    disposition is still that value; otherwise ``None``.
+
+    The writer uses this to keep an explicit classification from being overwritten by a
+    value nobody declared: an undeclared disposition on a ``close``/``resolve`` may be
+    the model-derived value echoed back, and it must never silently replace what an
+    analyst chose. The named value is the entry's :data:`CLASSIFIED_DISPOSITION_KEY`.
+    A legacy ``confirm_fp`` entry written before that key was stamped names the
+    false-positive class, so it stands while the case is still ``false_positive`` or
+    ``benign``. A legacy ``set_disposition`` entry without the key names no value and
+    protects nothing, and neither does an entry whose value was already replaced: both
+    keep the pre-existing behaviour, so no historical record is reinterpreted.
+    """
+    current = str(getattr(case.disposition, "value", case.disposition) or "")
+    if not current:
+        return None
+    for entry in reversed(case.history or []):
+        if not is_classification_entry(entry):
+            continue
+        declared = str(entry.get(CLASSIFIED_DISPOSITION_KEY) or "").strip()
+        if declared:
+            return current if declared == current else None
+        if str(entry.get("action") or "") == "confirm_fp":
+            return current if current in _FP_ANALYST_DISPOSITIONS else None
+        return None
+    return None
+
+
 def _confirmation(case: Case) -> tuple[str | None, str | None, str | None]:
     """``(outcome, evidence_source, confirmed_at)`` — the single classification core.
 

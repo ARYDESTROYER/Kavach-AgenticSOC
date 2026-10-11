@@ -465,7 +465,11 @@ function funnel(block: ChartBlock, ctx: Ctx, styles: SeriesStyle[]): { svg: stri
     out.push(`<path d="${roundedRightPath(r2(x0), y + 2, r2(w), 18)}"${fill(p)}/>`);
     let note = formatValue(v, block.unit);
     const prev = i > 0 ? values[i - 1] : null;
-    if (isNum(prev) && prev > 0) note += `  ·  ${Math.round((v / prev) * 100)}% of the stage above`;
+    if (isNum(prev) && prev > 0) {
+      // A stage larger than the one above is not a reduction (FunnelChart says the same).
+      const ratio = Math.round((v / prev) * 100);
+      note += ratio > 100 ? `  ·  +${ratio - 100}% vs the stage above (not a reduction)` : `  ·  ${ratio}% of the stage above`;
+    }
     out.push(text(x0 + w + 8, y + 11, note, ctx.fg, { baseline: 'middle', weight: 500 }));
   }
   return { svg: out.join(''), height: 4 + n * rowH };

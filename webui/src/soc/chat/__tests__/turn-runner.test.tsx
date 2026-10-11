@@ -25,6 +25,7 @@ import {
   startRun,
   stopRun,
   trackRun,
+  wakeParkedRun,
   writeCaseSession,
   type ChatTranscriptItem,
   type TurnRun,
@@ -350,6 +351,43 @@ describe('parking: a run nobody views holds no connection', () => {
     await until(() => run.state !== 'running', 'the end');
     expect(getChatActivity().entries).toEqual([]);
     expect(settled).toEqual([]);
+  });
+
+  it('a turn whose frame says it ended is read at once, not at the next park poll', async () => {
+    // The park poll is far away: only the frame can make the run read now.
+    TURN_RUNNER_TIMING.parkPollMs = 60_000;
+    active = [{ turn_id: 'turn-w', conversation_id: 'cw', status: 'running' }];
+    const run = trackRun({ scope: 'conv:cw', kind: 'workspace', conversationId: 'cw', turnId: 'turn-w' }) as TurnRun;
+    await wait(20);
+    expect(entryOf('conv:cw')).toMatchObject({ status: 'running', parked: true });
+    expect(calls.some((call) => call.includes('/events?'))).toBe(false);
+    // Another turn's frame, or this one before its run parked, wakes nothing.
+    wakeParkedRun('turn-other');
+    await wait(10);
+    expect(openReads()).toHaveLength(0);
+    wakeParkedRun('turn-w');
+    const tail = await waitForWire((wire) => wire.url.includes('turn-w'));
+    expect(tail.url).toBe('/api/chat/turns/turn-w/events?after=0');
+    tail.push(startEvent('turn-w', 'cw'), 1);
+    tail.push(done({ answer: 'Two hosts.', message_id: 'mw', conversation_id: 'cw' }), 2);
+    await until(() => run.state !== 'running', 'the end');
+    expect(run.state).toBe('done');
+    expect(entryOf('conv:cw')).toMatchObject({ status: 'unread', parked: false });
+    expect(settled.map((event) => event.outcome)).toEqual(['done']);
+    // No turns/active request was needed to hear about the end.
+    expect(calls.filter((call) => call.endsWith('/chat/turns/active'))).toEqual([]);
+  });
+
+  it('a woken turn that still runs is read live, then parked again', async () => {
+    TURN_RUNNER_TIMING.parkPollMs = 60_000;
+    const run = trackRun({ scope: 'case:case-w', kind: 'case', caseId: 'case-w', turnId: 'turn-cw' }) as TurnRun;
+    await wait(20);
+    wakeParkedRun('turn-cw');
+    const tail = await waitForWire((wire) => wire.url.includes('turn-cw'));
+    tail.push(startEvent('turn-cw'), 1);
+    await until(() => entryOf('case:case-w')?.parked === true && tail.signal?.aborted === true, 'the park again');
+    expect(run.state).toBe('running');
+    expect(openReads()).toHaveLength(0);
   });
 
   it('a followed question settles as one that needs input', async () => {

@@ -56,6 +56,7 @@ from .common import (
 )
 from .periods import (
     Period,
+    comparison_caption,
     comparison_data,
     comparison_observation,
     comparison_row,
@@ -796,6 +797,13 @@ def _other_metrics(result: Any) -> dict[str, Any] | None:
     return None
 
 
+def _other_groups(result: Any) -> int:
+    """How many groups a ``top_n`` cut folded into the "Other" remainder (exact)."""
+    other = getattr(result, "other", None)
+    groups = other.get("groups") if isinstance(other, dict) else None
+    return groups if isinstance(groups, int) and not isinstance(groups, bool) and groups > 0 else 0
+
+
 def _outcome(
     args: CaseStatsInput, window: Window, fields: list[str], bucket: str | None, metrics: tuple[str, ...],
     result: Any, periods: list[Period], compared: list[Any], *, series_result: Any = None,
@@ -845,7 +853,8 @@ def _outcome(
         artifacts.extend(built)
     elif fields:
         artifacts.extend(_group_artifacts(next_id, fields, metrics, rows, _other_metrics(result), total,
-                                          caption, basis, untrusted, overlap_note=overlap_note))
+                                          caption, basis, untrusted, overlap_note=overlap_note,
+                                          other_groups=_other_groups(result)))
     comparison = None
     comparison_partial = None
     if len(periods) > 1 and len(compared) == len(periods):
@@ -860,7 +869,7 @@ def _outcome(
             artifacts.append(Artifact(
                 id=next_id(), kind="comparison", title="Comparison", title_trusted=True, data=data,
                 provenance="code", untrusted_labels=untrusted and bool(fields), basis=compare_basis,
-                window=" vs ".join(p.label for p in reversed(periods)),
+                window=comparison_caption(periods),
             ))
             comparison = comparison_observation(periods, comparison_rows)
             if "open_now" in metrics:
@@ -936,11 +945,13 @@ def _outcome(
         observation["suggestions"] = zero_case_suggestions(args, window, "case_stats")
 
     noun = "case" if total == 1 else "cases"
-    summary = f"{fmt_int(total)} {noun} ({'exact' if exact else 'partial count'}, {label})"
+    # The label carries its own parentheses ("all time (since 28 Mar 2026)"), so it is
+    # never wrapped in another pair.
+    summary = f"{fmt_int(total)} {noun}, {label}, {'exact' if exact else 'partial count'}"
     if fields:
-        summary += f" grouped by {', '.join(fields)}"
+        summary += f", grouped by {', '.join(fields)}"
     if bucket:
-        summary += f"{' and' if fields else ''} by {bucket}"
+        summary += f"{' and' if fields else ','} by {bucket}"
     if coarsened_note(coarsened):
         summary += f" ({coarsened_note(coarsened)})"
     if comparison is not None:
@@ -1088,11 +1099,15 @@ _UNIT_TITLES = {"percent": "Rates", "minutes": "Response times", "score": "Avera
 def _group_artifacts(
     next_id: Any, fields: list[str], metrics: tuple[str, ...], rows: list[dict[str, Any]],
     other: dict[str, Any] | None, total: int, caption: str, basis: str, untrusted: bool,
-    *, overlap_note: str | None = None,
+    *, overlap_note: str | None = None, other_groups: int = 0,
 ) -> list[Artifact]:
     out: list[Artifact] = []
     other_count = finite((other or {}).get("count")) if other else None
     if len(fields) == 1:
+        # The categories' own population ("Top 5 of 7" rules): the groups shown plus the
+        # ones the top_n cut folded into "Other". ``total`` counts CASES, which the
+        # caption already states ("95 cases · exact · …").
+        cut = bool(other_groups or other_count)
         field = fields[0]
         pairs = [(group_label(field, _key_of(g, field)), _count_of(g)) for g in rows]
         data = categories(pairs, dimension=_GROUP_DIMENSIONS[field], other=other_count or None)
@@ -1101,8 +1116,9 @@ def _group_artifacts(
             data["overlapping"] = True
         out.append(Artifact(
             id=next_id(), kind="categories", title=_GROUP_TITLES[field], title_trusted=True,
-            data=data, provenance="code", untrusted_labels=field in UNTRUSTED_GROUPS, basis=basis, total=total,
-            truncated=bool(other_count), window=f"{caption} · {overlap_note}" if overlap_note else caption,
+            data=data, provenance="code", untrusted_labels=field in UNTRUSTED_GROUPS, basis=basis,
+            total=len(rows) + other_groups if cut else len(rows), truncated=cut,
+            window=f"{caption} · {overlap_note}" if overlap_note else caption,
         ))
     # The full table: each grouping, then every metric (two groupings live here only).
     cols = [column(f, _GROUP_DIMENSIONS[f], untrusted=f in UNTRUSTED_GROUPS) for f in fields]

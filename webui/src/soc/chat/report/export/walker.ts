@@ -23,13 +23,16 @@ import { maybeDefang } from '@/lib/defang';
 import {
   INVESTIGATION_BRIEF_ADVISORY,
   INVESTIGATION_BRIEF_ADVISORY_NOTE,
+  IN_PROGRESS_SUFFIX,
   formatDelta,
   formatUtc,
   formatValue,
+  hasCalendarLabels,
   plainDocTitle,
   truncationNote,
   unitLabel,
 } from '../../blocks/format';
+import { blockTabular } from '../../blocks/export-helpers';
 import { VIEW_LABEL, honestBlock } from '../../blocks/views';
 import type { AnswerBlock, Cell, ColumnType, KpiItem, LeafBlock, TableBlock, ToneKey, ValueUnit } from '../../blocks/schema';
 import { AI_AUTHORED_TYPES, isDocRef, isExpiredBlock } from '../../blocks/schema';
@@ -290,11 +293,24 @@ class Walker {
         return;
       }
       case 'chart': {
-        const head = [block.x.label ?? (block.x.kind === 'time' ? 'Time (UTC)' : 'Category'), ...block.series.map((s) => s.label)];
-        const rows: Cell[][] = block.x.values.map((x, i) => [
-          block.x.kind === 'time' ? formatUtc(x) : x,
-          ...block.series.map((s) => s.values[i] ?? null),
-        ]);
+        // The rows are the shared projection the CSV, the "Show table" view and the
+        // print table read (`blockTabular`), so a download says what the screen says: a
+        // calendar axis reads as its period labels in the operator zone ("Period
+        // (Asia/Kolkata)", "Sep 2026 (from 12 Sep)", the current period marked "(in
+        // progress)"), never as raw UTC bucket starts. Only a plain time axis differs:
+        // the CSV keeps its machine-readable instants, a document shows them readable in
+        // UTC, the still-filling bucket marked as the chart marks it.
+        const tab = blockTabular(block);
+        if (!tab) return;
+        const plainTime = block.x.kind === 'time' && !hasCalendarLabels(block.x);
+        const last = block.x.values.length - 1;
+        const head = tab.columns.map((c) => c.label);
+        const rows: Cell[][] = plainTime
+          ? tab.rows.map((row, i) => [
+              `${formatUtc(block.x.values[i])}${block.last_in_progress && i === last ? IN_PROGRESS_SUFFIX : ''}`,
+              ...row.slice(1),
+            ])
+          : tab.rows;
         this.table(
           head,
           rows,

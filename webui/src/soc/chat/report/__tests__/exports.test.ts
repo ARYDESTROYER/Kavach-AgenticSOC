@@ -15,7 +15,7 @@ import { conversationToHtml, conversationToMarkdown } from '../export/conversati
 import { attackUrl, documentNodes } from '../export/walker';
 import { parseChatMarkdown } from '../../ChatMarkdown';
 import { parseBlock } from '../../blocks/schema';
-import { NOW, rawBlock, sampleConversation, sampleReport } from './fixtures';
+import { NOW, calendarChartRaw, calendarReport, rawBlock, sampleConversation, sampleReport } from './fixtures';
 import { LIMITS } from '../../blocks/schema';
 
 const LIMITS_TITLE = LIMITS.title;
@@ -269,6 +269,42 @@ describe('document nodes', () => {
     expect(reportToHtml(build(), { defang: false })).toContain('<caption>Chart: stacked columns, unit: count.</caption>');
   });
 
+  it('reads a calendar axis as the screen, the CSV and the print do (periods, zone, in progress)', () => {
+    const d = buildReportDoc(calendarReport(), { generatedAt: NOW.toISOString() });
+    const node = documentNodes(d, { defang: false }).find((n) => n.k === 'table');
+    expect(node?.k === 'table' && node.head).toEqual(['Period (Asia/Kolkata)', 'Cases']);
+    expect(node?.k === 'table' && node.rows).toEqual([
+      ['Sep 2026 (from 12 Sep)', '2'],
+      ['Oct 2026 (in progress)', '72'],
+    ]);
+    // The document's x column is the CSV's x column, cell for cell.
+    const csv = blockToCsv(parseBlock(calendarChartRaw()))!.split('\r\n');
+    expect(csv).toEqual(['"Period (Asia/Kolkata)","Cases"', '"Sep 2026 (from 12 Sep)",2', '"Oct 2026 (in progress)",72']);
+    const md = reportToMarkdown(d);
+    expect(md).toContain('| Period (Asia/Kolkata) | Cases |');
+    expect(md).toContain('| Sep 2026 (from 12 Sep) | 2 |');
+    expect(md).toContain('| Oct 2026 (in progress) | 72 |');
+    const html = reportToHtml(d);
+    expect(html).toContain('Period (Asia/Kolkata)');
+    expect(html).toContain('Sep 2026 (from 12 Sep)');
+    expect(html).toContain('Oct 2026 (in progress)');
+    // Never the UTC bucket start (local midnight in Kolkata is 18:30 UTC the day before,
+    // so September would read as August).
+    for (const text of [md, html]) {
+      expect(text).not.toContain('2026-08-31 18:30 UTC');
+      expect(text).not.toContain('Time (UTC)');
+    }
+  });
+
+  it('keeps a plain time axis in readable UTC and marks its still-filling bucket like the chart', () => {
+    const table = documentNodes(build(), { defang: false }).find((n) => n.k === 'table' && n.head[1] === 'Wazuh');
+    expect(table?.k === 'table' && table.head[0]).toBe('Time (UTC)');
+    const xs = table?.k === 'table' ? table.rows.map((r) => r[0]) : [];
+    expect(xs.length).toBeGreaterThan(1);
+    for (const x of xs.slice(0, -1)) expect(x).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC$/);
+    expect(xs[xs.length - 1]).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2} UTC \(in progress\)$/);
+  });
+
   it('builds ATT&CK links only from validated technique ids', () => {
     expect(attackUrl('T1059.001')).toBe('https://attack.mitre.org/techniques/T1059/001/');
     expect(attackUrl('T1110')).toBe('https://attack.mitre.org/techniques/T1110/');
@@ -289,6 +325,17 @@ describe('conversation export', () => {
     expect(md).toContain('## Appendix: queries');
     expect(md).toContain('hxxp://evil\\[.\\]example/login');
     expect(md).toBe(conversationToMarkdown(sampleConversation(), { now: NOW, author: 'ana' }));
+  });
+
+  it('writes a calendar chart in its periods, like a report export', () => {
+    const conversation = sampleConversation();
+    conversation.messages[1].response = { ...conversation.messages[1].response!, blocks: [calendarChartRaw()] };
+    const md = conversationToMarkdown(conversation, { now: NOW });
+    expect(md).toContain('| Period (Asia/Kolkata) | Cases |');
+    expect(md).toContain('| Oct 2026 (in progress) | 72 |');
+    const html = conversationToHtml(conversation, { now: NOW });
+    expect(html).toContain('Sep 2026 (from 12 Sep)');
+    for (const text of [md, html]) expect(text).not.toContain('2026-08-31 18:30 UTC');
   });
 
   it('writes HTML with the same CSP', () => {

@@ -148,6 +148,17 @@ describe('comparison tiles', () => {
     expect(screen.getByTestId('comparison-chat-0-0')).toHaveTextContent('vs Sep 2026: — · not measured');
   });
 
+  it('reads a baseline period named to the minute in the same "vs" words', () => {
+    const raw = ROUND12_RAW[3] as { items: Array<Record<string, unknown>> };
+    const b = parseBlock({
+      ...raw,
+      items: [{ key: 'x', label: 'FP rate', value: 60, unit: 'percent', context: '26 Jul 20:45 – 3 Sep 2026 05:30: —' }],
+    });
+    show([b]);
+    expect(within(screen.getByTestId('comparison-chat-0-0')).getByTestId('comparison-baseline'))
+      .toHaveTextContent(/^vs 26 Jul 20:45 – 3 Sep 2026 05:30: —$/);
+  });
+
   it('flags small samples only on a change that is shown', () => {
     const raw = ROUND12_RAW[3] as { items: Array<Record<string, unknown>> };
     const b = parseBlock({

@@ -245,6 +245,14 @@ async def test_admin_revoke_all_stops_the_turn_mid_call_and_forgets_its_ring(aut
     assert await _conversations(state, "carol") == []
     # The same key is released: nothing was saved and nothing holds it.
     assert handle.response is None
+    # The abandoned model call is still in the usage ledger (#6), exactly once.
+    rows: list[dict] = []
+    for _ in range(50):
+        rows = [r for r in await state.usage_store.records(limit=50) if r.get("surface") == "chat"]
+        if rows:
+            break
+        await asyncio.sleep(0.02)
+    assert len(rows) == 1 and rows[0].get("failure_class") == "abandoned"
 
 
 async def test_logout_stops_only_the_turns_that_session_started(auth_state) -> None:

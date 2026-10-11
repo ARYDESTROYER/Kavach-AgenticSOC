@@ -7,7 +7,7 @@
  * unchanged; a report that holds a whole Brief (briefs do not nest) stays a document.
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 import type { Report, ReportItem } from '@/lib/types';
@@ -108,11 +108,22 @@ describe('infographicBrief', () => {
   });
 });
 
+/**
+ * The blocks render through `React.lazy` (ItemBlocks). A cold import of that chunk takes
+ * over a second in a fresh worker, longer than the default 1 s wait, so it is loaded
+ * once up front and every first wait for it allows as long as the sibling report tests.
+ */
+const LAZY_BLOCKS = { timeout: 15_000 };
+
 describe('ReportDocument — infographic template on screen', () => {
+  beforeAll(async () => {
+    await import('../../blocks/AnswerBlocks');
+  }, 15_000);
+
   it('draws the hero KPI row, the highlights and the 2-up grid, with notes and sources below', async () => {
     const view = show(infographicReport());
     const findings = screen.getByRole('region', { name: 'Findings' });
-    await waitFor(() => expect(within(findings).getByTestId('infographic')).toBeInTheDocument());
+    await waitFor(() => expect(within(findings).getByTestId('infographic')).toBeInTheDocument(), LAZY_BLOCKS);
     expect(within(findings).getByTestId('block-report')).toHaveAttribute('data-layout', 'infographic');
     expect(within(findings).getByTestId('infographic-hero')).toBeInTheDocument();
     expect(within(findings).getByTestId('infographic-highlights')).toHaveTextContent('Brute force from one /24.');
@@ -124,12 +135,12 @@ describe('ReportDocument — infographic template on screen', () => {
     expect(within(findings).getByTestId('report-infographic-notes')).toHaveTextContent('Analyst note: Share with the network team.');
     expect(within(findings).getAllByRole('button', { name: 'Open source conversation' })).toHaveLength(1);
     expect(await axe(view.container)).toHaveNoViolations();
-  });
+  }, 20_000);
 
   it('never skips a heading level under the page title (Reports library: Findings is an H2)', async () => {
     const view = show(infographicReport(), 'screen', 0);
     const findings = screen.getByRole('region', { name: 'Findings' });
-    await waitFor(() => expect(within(findings).getByTestId('infographic')).toBeInTheDocument());
+    await waitFor(() => expect(within(findings).getByTestId('infographic')).toBeInTheDocument(), LAZY_BLOCKS);
     const levels = outline(view.container);
     expect(levels[0]).toBe(2); // "Findings"
     expect(levels).toContain(4); // the Brief's title ("At a glance")
@@ -140,10 +151,10 @@ describe('ReportDocument — infographic template on screen', () => {
     // Under an H3 "Findings" (a shifted host) no bridge is needed.
     view.unmount();
     const shifted = show(infographicReport(), 'screen', 1);
-    await waitFor(() => expect(screen.getByTestId('infographic')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('infographic')).toBeInTheDocument(), LAZY_BLOCKS);
     expect(screen.queryByRole('heading', { name: 'Infographic' })).toBeNull();
     expect(skippedLevel(outline(shifted.container))).toBeNull();
-  });
+  }, 20_000);
 
   it('keeps the document layout in print and for every other template', async () => {
     const printed = show(infographicReport(), 'print');
@@ -154,5 +165,5 @@ describe('ReportDocument — infographic template on screen', () => {
     show(sampleReport());
     expect(screen.queryByTestId('report-infographic')).toBeNull();
     expect(document.querySelectorAll('[data-report-item]').length).toBeGreaterThan(0);
-  });
+  }, 20_000);
 });

@@ -474,6 +474,20 @@ describe('export SVG', () => {
     expect(zoomed).toEqual(['Zoomed to Jul 2026 – Oct 2026 (4 of 12 points)']);
   });
 
+  it('writes a funnel stage larger than the one above as a rise, never as over 100% of it', () => {
+    const funnel = rawChart({
+      kind: 'funnel',
+      artifact_kind: 'funnel',
+      allowed_views: ['funnel', 'hbar', 'table'],
+      x: { kind: 'category', values: ['Alerts ingested', 'After clustering', 'Cases opened'] },
+      series: [{ key: 'n', label: 'Alerts', values: [182, 43, 82] }],
+    });
+    const { svg } = chartSvg(funnel, { title: 'Noise', paint: paintFrom(LIGHT), generatedAt: NOW });
+    expect(svg).toContain('24% of the stage above');
+    expect(svg).toContain('+91% vs the stage above (not a reduction)');
+    expect(svg).not.toContain('191%');
+  });
+
   it('a re-binned chart image says "grouped by month" (and its file name too)', () => {
     const monthly = rebinChart(chart('daily-cases'), '1M');
     const doc = chartSvgDocument({ block: monthly, title: 'Cases opened per day', subtitle: '1 Aug – 9 Oct 2026', grouping: 'month', host: null });

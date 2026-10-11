@@ -71,6 +71,7 @@ from .common import (
 )
 from .periods import (
     Period,
+    comparison_caption,
     comparison_data,
     comparison_observation,
     comparison_row,
@@ -303,6 +304,67 @@ def _minutes(stat: Any, key: str = "p50") -> float | None:
     if not isinstance(stat, dict) or not stat.get("available"):
         return None
     return finite(stat.get(key))
+
+
+def _duration_text(minutes: Any) -> str:
+    """A run-log duration: "1.9 min", "45 min", "2.5 h" (hours from 120 minutes, the
+    answer's own rule); "not measured" when no case made the move, never "— min" and
+    never a fraction floored away (1.9 is not "1 min")."""
+    number = finite(minutes)
+    if number is None:
+        return "not measured"
+    if 0 < number < 0.05:
+        return "under 0.1 min"   # a real but tiny duration never reads as zero
+    value, unit = (number / 60, "h") if number >= 120 else (number, "min")
+    shown = f"{value:,.1f}"
+    return f"{shown[:-2] if shown.endswith('.0') else shown} {unit}"
+
+
+def _headed(title: str, label: str) -> str:
+    """A run-log summary's head, "Response times, all time (since 28 Mar 2026)": the
+    window label already carries its own parentheses, so it is never wrapped in more."""
+    return f"{title}, {label}" if label else title
+
+
+def _instant_text(moment: datetime, tz: str) -> str:
+    """"11 Oct 2026 09:14" in the window's zone (named when it is not UTC)."""
+    from ...engine.time_windows import zone_for
+
+    zone, name = zone_for(tz)
+    local = moment.astimezone(zone)
+    shown = f"{local.day} {local:%b %Y %H:%M}"
+    return shown if name == "UTC" else f"{shown} ({name})"
+
+
+def _parse_instant(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def counters_coverage_start(counters: Any) -> datetime | None:
+    """When the durable alert counters start covering: the store's retention-bounded
+    ``coverage_start``, else (a reader that predates it) the first observation."""
+    if not isinstance(counters, dict):
+        return None
+    return _parse_instant(counters.get("coverage_start")) or _parse_instant(counters.get("since"))
+
+
+@dataclass(frozen=True)
+class AlertSeries:
+    """Ingested alerts per trend bucket. ``values[i]`` is ``None`` for a bucket that
+    ends at or before ``coverage_start`` (the counters were not recording, or retention
+    pruned it: not measured, never 0). ``partial_index`` is the bucket the coverage
+    start cuts (counted from ``coverage_start`` only); ``coverage_start`` is set only
+    when it falls after the first bucket's start, i.e. inside the series."""
+
+    values: list[int | None]
+    coverage_start: datetime | None = None
+    partial_index: int | None = None
 
 
 def _lifecycle(totals: dict[str, Any]) -> dict[str, Any]:
@@ -642,7 +704,7 @@ class SocMetricsTool(ChatTool):
                 "before it"
             )
         summary = (
-            f"Posture ({label}): {fmt_int(main.total)} cases, {fmt_int(totals.get('open_now'))} open now, "
+            f"{_headed('Posture', label)}: {fmt_int(main.total)} cases, {fmt_int(totals.get('open_now'))} open now, "
             f"FP rate {fmt_pct(fp)}, Active Risk Index {fmt_int(risk_index)}"
         )
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
@@ -694,7 +756,7 @@ class SocMetricsTool(ChatTool):
         artifacts.append(Artifact(
             id=f"a{len(artifacts) + 1}", kind="comparison", title="Comparison", title_trusted=True,
             data=comparison_data(periods, rows, dimension=dimension, unit="count" if dimension else None),
-            provenance="code", basis=basis, window=" vs ".join(p.label for p in reversed(periods)),
+            provenance="code", basis=basis, window=comparison_caption(periods),
         ))
         observation["comparison"] = comparison_observation(periods, rows)
         if partial:
@@ -747,12 +809,15 @@ class SocMetricsTool(ChatTool):
             ]},
             provenance="code", basis="exact" if exact else "sample", total=agg.total, window=caption,
         )]
-        alerts = await self._alerts(ctx, window, mw, axis)
-        if alerts is not None and any(v for v in alerts):
+        alert_series = await self._alerts(ctx, window, mw, axis)
+        alerts = alert_series.values if alert_series is not None else None
+        alerts_from = (_instant_text(alert_series.coverage_start, window.tz)
+                       if alert_series is not None and alert_series.coverage_start is not None else None)
+        if alerts is not None and any(v for v in alerts if v is not None):
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="series", title="Alerts ingested over time", title_trusted=True,
                 data={**base, "series": [{"key": "alerts", "label": "Alerts", "values": alerts}]},
-                provenance="code", window=label,
+                provenance="code", window=f"alerts counted from {alerts_from} · {label}" if alerts_from else label,
             ))
         if any(v is not None for v in fp):
             artifacts.append(Artifact(
@@ -778,6 +843,17 @@ class SocMetricsTool(ChatTool):
             "note": "auto-closed and analyst-closed count the cases opened in each period",
         }
         _bucket_notes(observation, partial_info, coarsened)
+        if alerts_from and alert_series is not None:
+            # The counters began (or retention now begins) inside the series: earlier
+            # periods are null (not measured), and the period it cuts counts from it.
+            observation["alerts_from"] = alert_series.coverage_start.isoformat()
+            observation["alerts_note"] = (f"alerts are counted from {alerts_from}; earlier periods were not "
+                                          "measured (null, not zero)")
+            index = alert_series.partial_index
+            buckets_obs = observation.get("buckets")
+            if index is not None and isinstance(buckets_obs, list) and 0 <= index < len(buckets_obs):
+                if isinstance(buckets_obs[index], dict):
+                    buckets_obs[index]["alerts_from"] = alerts_from
         if agg.missing_created:
             observation["missing_created"] = agg.missing_created
             observation["missing_created_in_total"] = bool(getattr(agg, "missing_in_total", True))
@@ -791,15 +867,22 @@ class SocMetricsTool(ChatTool):
                                unit="percent", good="down", samples=[t.get("verdicted") for t in totals]),
             ]
             self._add_comparison(artifacts, observation, periods, rows_cmp, None, compared)
-        summary = (f"Trends ({label}, {fmt_int(len(names))} {bucket}s): {fmt_int(agg.total)} cases opened, "
+        summary = (f"{_headed(f'Trends by {bucket}', label)}: {fmt_int(len(names))} {bucket}s, "
+                   f"{fmt_int(agg.total)} cases opened, "
                    f"{fmt_int(sum(v or 0 for v in auto_closed))} auto-closed")
         if coarsened_note(coarsened):
             summary += f" ({coarsened_note(coarsened)})"
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            basis="exact" if exact else "sample", coverage=_partial_share(observation, None, agg))
 
-    async def _alerts(self, ctx: ChatToolContext, window: Window, mw: MetricWindow, axis: Any) -> list[int] | None:
-        """Ingested alerts per bucket from the hourly noise counters, or ``None``."""
+    async def _alerts(self, ctx: ChatToolContext, window: Window, mw: MetricWindow, axis: Any) -> AlertSeries | None:
+        """Ingested alerts per bucket from the hourly noise counters, or ``None``.
+
+        The dashboard trend's rule (``engine.metrics.trend_metrics``): a bucket that
+        ends at or before the counters' coverage start (their first observation, or
+        the 90-day retention floor once older hours are pruned) is ``None``, never a
+        measured 0; the bucket the coverage start cuts is counted from it only and is
+        marked (``partial_index``)."""
         if ctx.noise is None or axis is None or not hasattr(ctx.noise, "read_hourly_ingested"):
             return None
         try:
@@ -811,19 +894,31 @@ class SocMetricsTool(ChatTool):
         if not isinstance(hours, dict) or not (counters or {}).get("available", True):
             return None
         starts = [datetime.fromisoformat(x).timestamp() for x in axis[0]]
+        if not starts:
+            return AlertSeries(values=[])
         end = window.end.timestamp()
-        out = [0] * len(starts)
+        ends = starts[1:] + [end]
+        coverage = counters_coverage_start(counters)
+        cover_ts = coverage.timestamp() if coverage is not None else None
+        out: list[int | None] = [
+            None if cover_ts is not None and bucket_end <= cover_ts else 0 for bucket_end in ends
+        ]
+        partial_index = None
+        if cover_ts is not None and cover_ts > starts[0]:
+            partial_index = next((i for i, (lo, hi) in enumerate(zip(starts, ends)) if lo < cover_ts < hi), None)
         for hour, count in hours.items():
             try:
                 ts = int(hour) * 3600
             except (TypeError, ValueError):
                 continue
-            if ts >= end or not starts or ts < starts[0]:
+            if ts >= end or ts < starts[0]:
                 continue
             slot = bisect.bisect_right(starts, ts) - 1
-            if 0 <= slot < len(out):
-                out[slot] += int(finite(count) or 0)
-        return out
+            current = out[slot] if 0 <= slot < len(out) else None
+            if current is not None:   # a bucket before the coverage start stays not measured
+                out[slot] = current + int(finite(count) or 0)
+        inside = coverage if cover_ts is not None and cover_ts > starts[0] else None
+        return AlertSeries(values=out, coverage_start=inside, partial_index=partial_index)
 
     # -- case mix ---------------------------------------------------------- #
     async def _case_mix(self, ctx, args, window: Window, mw: MetricWindow, periods: list[Period]) -> ToolOutcome:
@@ -886,7 +981,7 @@ class SocMetricsTool(ChatTool):
                                                group_label("verdict", None if verdict == "none" else verdict),
                                                values, unit="count"))
             self._add_comparison(artifacts, observation, periods, rows_cmp, None, compared)
-        summary = f"Case mix ({label}): {fmt_int(mix.total)} cases across {len(by_verdict)} verdicts"
+        summary = f"{_headed('Case mix', label)}: {fmt_int(mix.total)} cases across {len(by_verdict)} verdicts"
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            basis="exact" if exact else "sample", coverage=_partial_share(observation, None, mix, disp))
 
@@ -978,8 +1073,8 @@ class SocMetricsTool(ChatTool):
                 for m in ("mttd", "mtta", "mttr")
             ]
             self._add_comparison(artifacts, observation, periods, rows_cmp, None, compared)
-        summary = (f"Response times ({label}): MTTA median {fmt_int(minutes('mtta_p50'))} min, MTTR median "
-                   f"{fmt_int(minutes('mttr_p50'))} min")
+        summary = (f"{_headed('Response times', label)}: MTTA median {_duration_text(minutes('mtta_p50'))}, "
+                   f"MTTR median {_duration_text(minutes('mttr_p50'))}")
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            basis="exact" if exact else "sample", coverage=_partial_share(observation, None, agg, trend))
 
@@ -1035,45 +1130,87 @@ class SocMetricsTool(ChatTool):
         order = [("ingested", "Alerts ingested"), ("clustered", "After clustering"),
                  ("cases", "Cases opened"), ("needs_human", "Needs a human")]
         reduction = n.get("reduction") or {}
+        counted = n.get("counters") or {}
+        page_note = _page_note(cases, store_total) if load_ok and not complete else None
+        # The overall reduction divides a CASE stage by the ALERT counters, so it is
+        # published only when both halves describe the same, fully counted window: the
+        # Noise Reduction dashboard's partial-coverage rule (``NoiseFunnel.tsx``
+        # ``alertReductionOf``). Counters that start inside the window (or an all-time
+        # window over cases older than the counters or their 90-day retention) and a
+        # partial case tally each withhold it, with the reason named, never a figure
+        # that mixes two spans presented as exact (D8).
+        alerts_partial = bool(counted.get("available")) and bool(counted.get("incomplete"))
+        coverage = counters_coverage_start(counted) if alerts_partial else None
+        alerts_from = _instant_text(coverage, mw.window.tz if mw.window else "UTC") if coverage else None
+        overall = finite(reduction.get("overall_pct"))
+        withheld: str | None = None
+        if alerts_partial:
+            withheld = (f"alert counters start {alerts_from}" if alerts_from
+                        else "alert counters cover part of the window")
+        elif page_note:
+            withheld = "case counts are partial"
+        if withheld and overall is not None:
+            overall = None
+        caption = f"{mw.label} · alerts counted from {alerts_from}" if alerts_from else None
         artifacts = [
             Artifact(id="a1", kind="funnel", title="Noise reduction", title_trusted=True,
                      data={"stages": [label for _k, label in order],
                            "values": [total(k) for k, _l in order], "unit": "count"},
-                     provenance="code", truncated=bool((n.get("cases_meta") or {}).get("truncated"))),
+                     provenance="code", truncated=bool((n.get("cases_meta") or {}).get("truncated")),
+                     window=caption),
             Artifact(id="a2", kind="kpis", title="Reduction figures", title_trusted=True,
                      data={"items": [
-                         kpi("overall_reduction", "Overall reduction", finite(reduction.get("overall_pct")), "percent"),
+                         kpi("overall_reduction", "Overall reduction", overall, "percent",
+                             context=withheld if withheld and load_ok else None),
                          kpi("human_reduction", "Reduction before a human", finite(reduction.get("human_reduction_pct")), "percent"),
                          kpi("auto_cleared", "Auto-cleared by AI", total("auto_cleared")),
                          kpi("escalated", "Escalated", total("escalated")),
                          kpi("closed_by_human", "Closed by a human", total("closed")),
-                     ]}, provenance="code"),
+                     ]}, provenance="code", window=caption),
         ]
         observation = {
             "stages": [{"key": k, "label": text((stages.get(k) or {}).get("label"), 60), "total": total(k)}
                        for k in stages],
-            "reduction_pct": {"overall": finite(reduction.get("overall_pct")),
+            "reduction_pct": {"overall": overall,
                               "before_human": finite(reduction.get("human_reduction_pct"))},
-            "counters": {k: (n.get("counters") or {}).get(k) for k in ("available", "incomplete", "since")},
+            "counters": {k: counted.get(k) for k in ("available", "incomplete", "since", "coverage_start")},
             "drops": n.get("drops"),
             "completeness": n.get("cases_meta"),
         }
+        if withheld and load_ok:
+            observation["overall_reduction_withheld"] = withheld
+        if alerts_partial:
+            observation["alert_stages_note"] = (
+                f"Alerts ingested and After clustering count only from {alerts_from or 'part of the window'}; "
+                f"Cases opened and Needs a human count every case in {mw.label}. The two halves cover "
+                "different spans, so no reduction across them is given."
+            )
         if not load_ok:
             observation["case_store_unavailable"] = True
-        page_note = _page_note(cases, store_total) if load_ok and not complete else None
         if page_note:
             observation["case_stages_scope"] = page_note
+        head = _headed("Noise funnel", mw.label)
         if load_ok:
-            summary = (f"Noise funnel ({mw.label}): {fmt_int(total('ingested'))} alerts ingested -> "
+            summary = (f"{head}: {fmt_int(total('ingested'))} alerts ingested -> "
                        f"{fmt_int(total('cases'))} cases -> {fmt_int(total('needs_human'))} needing a human")
             if page_note:
                 summary += f" (case stages {page_note})"
         else:
-            summary = (f"Noise funnel ({mw.label}): {fmt_int(total('ingested'))} alerts ingested; "
+            summary = (f"{head}: {fmt_int(total('ingested'))} alerts ingested; "
                        "case stages not measured (the case store did not answer)")
+        notes: list[str] = []
+        if alerts_partial:
+            span = f"only from {alerts_from}" if alerts_from else "only part of the window"
+            note = f"alert counters cover {span}"
+            if load_ok:
+                note += ", so the overall reduction is not given"
+            summary += f"; {note}"
+            notes.append(note)
+        if page_note:
+            notes.append(f"case stages {page_note}")
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            basis="exact" if (complete or not load_ok) else "sample",
-                           coverage=f"case stages {page_note}" if page_note else None)
+                           coverage="; ".join(notes) or None)
 
     # -- MITRE coverage (page) --------------------------------------------- #
     async def _mitre_coverage(self, ctx, args, mw: MetricWindow, cases, store_total, load_ok) -> ToolOutcome:
@@ -1124,7 +1261,7 @@ class SocMetricsTool(ChatTool):
             "top_techniques": [{"id": t["id"], "name": t["name"], "cases": t["count"]} for t in ranked[:15]],
             "completeness": {k: cov.get(k) for k in ("truncated", "store_total", "fetched", "invalid_dropped")},
         }
-        summary = (f"ATT&CK coverage ({label}): {fmt_int(cov.get('covered_techniques'))} of "
+        summary = (f"{_headed('ATT&CK coverage', label)}: {fmt_int(cov.get('covered_techniques'))} of "
                    f"{fmt_int(cov.get('total_techniques'))} techniques seen")
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            basis="sample" if cov.get("truncated") else "exact",
@@ -1160,7 +1297,8 @@ class SocMetricsTool(ChatTool):
         for part in ("current", "previous"):
             if observation[part].get("rate") == "—":
                 observation[part]["rate"] = None
-        summary = f"Auto-close health ({mw.label}): status {text(a.get('status'), 40)}, rate {fmt_pct(cur.get('rate'), ratio=True)}"
+        summary = (f"{_headed('Auto-close health', mw.label)}: status {text(a.get('status'), 40)}, "
+                   f"rate {fmt_pct(cur.get('rate'), ratio=True)}")
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts, basis="exact",
                            coverage=_page_note(cases, store_total))
 
@@ -1231,7 +1369,7 @@ class SocMetricsTool(ChatTool):
             "provenance": ai.get("provenance"),
             "synthetic": ai.get("synthetic"),
         }
-        summary = f"Agent improvement ({label}): {text(headline.get('state'), 40) or 'unknown'}"
+        summary = f"{_headed('Agent improvement', label)}: {text(headline.get('state'), 40) or 'unknown'}"
         coverage = None
         if args.window is not None or args.window_hours is not None or ctx.default_range is not None:
             coverage = "fixed comparison windows; the selected range does not apply"
@@ -1259,7 +1397,7 @@ class SocMetricsTool(ChatTool):
         observation = {k: fb.get(k) for k in (
             "graded_cases", "feedback_count", "agreement_rate", "avg_accuracy", "avg_reasoning_quality",
             "avg_action_appropriateness", "time_saved_minutes", "outcome_distribution")}
-        summary = f"Analyst feedback ({mw.label}): {fmt_int(graded)} graded cases"
+        summary = f"{_headed('Analyst feedback', mw.label)}: {fmt_int(graded)} graded cases"
         if graded:
             summary += f", agreement {fmt_pct(fb.get('agreement_rate'), ratio=True)}"
         chat = await _chat_answer_feedback(ctx, mw)
@@ -1582,12 +1720,12 @@ class CostUsageTool(ChatTool):
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="comparison", title="Comparison", title_trusted=True,
                 data=comparison_data(periods, rows_cmp), provenance="code", basis=compare_basis,
-                window=" vs ".join(p.label for p in reversed(periods)),
+                window=comparison_caption(periods),
             ))
             observation["comparison"] = comparison_observation(periods, rows_cmp)
             if compare_partial:
                 observation["comparison"]["partial"] = compare_partial.replace("cases counted", "ledger rows counted")
-        summary = (f"AI spend ({label}): ${finite(totals.get('cost_usd')) or 0:,.4f} over "
+        summary = (f"{_headed('AI spend', label)}: ${finite(totals.get('cost_usd')) or 0:,.4f} over "
                    f"{fmt_int(totals.get('calls'))} calls, {fmt_int(totals.get('total_tokens'))} tokens")
         if simulated:
             summary += " (simulated)"
@@ -1670,7 +1808,7 @@ class CostUsageTool(ChatTool):
         observation["window_clamped_to_request"] = mw.clamped
         if mw.relabelled:
             observation["requested_window"] = mw.requested
-        summary = (f"AI spend ({mw.label}): ${finite(s.get('total_cost')) or 0:,.4f} over "
+        summary = (f"{_headed('AI spend', mw.label)}: ${finite(s.get('total_cost')) or 0:,.4f} over "
                    f"{fmt_int(s.get('call_count'))} calls, {fmt_int(s.get('total_tokens'))} tokens")
         if simulated:
             summary += " (simulated)"

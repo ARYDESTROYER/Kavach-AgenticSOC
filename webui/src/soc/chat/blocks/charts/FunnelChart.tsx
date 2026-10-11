@@ -4,6 +4,11 @@
  * between stages a step-down line reads "42% kept · −58%" (this stage ÷ the previous
  * one). A `null` stage is hatched and both steps around it read "—": a conversion
  * cannot be computed from a stage that was not measured (G3).
+ *
+ * A stage larger than the one before it is not a reduction (the stages then count
+ * different populations or periods, e.g. all-time cases against alert counters that
+ * started later), so it is never described as "kept": its step reads "↑ +91% vs previous
+ * stage (not a reduction)" and a note under the chart names the stages.
  */
 import * as React from 'react';
 
@@ -40,10 +45,76 @@ function pct(v: number): string {
   return `${Math.round(v)}%`;
 }
 
+/** Is this step a rise (the stage is larger than the previous one)? Then it is not a reduction. */
+export function stepGrew(step: { kept: number; drop: number } | null): boolean {
+  return step !== null && Math.round(step.drop) > 0;
+}
+
+/**
+ * The step as a value and the words that follow it (the tooltip's two columns): "11%
+ * kept · −89%" / "from the previous stage" for a reduction, "+91%" / "vs previous stage
+ * (not a reduction)" for a rise. A rise is never written as more than 100% "kept".
+ */
+export function stepParts(step: { kept: number; drop: number } | null): { value: string; label: string } {
+  if (!step) return { value: DASH, label: 'from the previous stage' };
+  const change = Math.round(step.drop);
+  if (change > 0) return { value: `+${change}%`, label: 'vs previous stage (not a reduction)' };
+  return { value: `${pct(step.kept)} kept · ${change < 0 ? '−' : ''}${Math.abs(change)}%`, label: 'from the previous stage' };
+}
+
+/** The step in one line of text (the data table's cell): a rise names itself. */
 export function stepText(step: { kept: number; drop: number } | null): string {
   if (!step) return DASH;
-  const drop = Math.round(step.drop);
-  return `${pct(step.kept)} kept · ${drop > 0 ? '+' : drop < 0 ? '−' : ''}${Math.abs(drop)}%`;
+  const { value, label } = stepParts(step);
+  return stepGrew(step) ? `${value} ${label}` : value;
+}
+
+/**
+ * The step line drawn between two stages: "↓ 11% kept · −89%" for a reduction, "↑ +91% ·
+ * not a reduction" for a rise (short enough for a narrow plot; the table, the tooltip and
+ * the note under the chart say it in full).
+ */
+export function stepLine(step: { kept: number; drop: number } | null): string {
+  return stepGrew(step) ? `↑ ${stepParts(step).value} · not a reduction` : `↓ ${stepText(step)}`;
+}
+
+/** The step as a screen reader hears it after the stage's value. */
+function stepSpoken(step: { kept: number; drop: number } | null): string {
+  const { value, label } = stepParts(step);
+  return `${value} ${label}`;
+}
+
+/**
+ * The stages that are larger than the stage before them (index ≥ 1), for the note that
+ * says those steps are not reductions.
+ */
+export function risingStages(values: ReadonlyArray<number | null>): number[] {
+  const out: number[] = [];
+  for (let i = 1; i < values.length; i += 1) if (stepGrew(stepDown(values[i - 1], values[i]))) out.push(i);
+  return out;
+}
+
+/**
+ * The note under a funnel with a rising stage, naming each pair, as text runs (`stage`
+ * runs are stage names, mono when the labels are untrusted); `null` when every step is a
+ * reduction.
+ */
+export function risingNoteParts(stages: readonly string[], rising: readonly number[]): Array<{ text: string; stage?: boolean }> | null {
+  if (!rising.length) return null;
+  const parts: Array<{ text: string; stage?: boolean }> = [];
+  rising.forEach((i, k) => {
+    if (k > 0) parts.push({ text: '; ' });
+    parts.push({ text: stages[i] ?? `Stage ${i + 1}`, stage: true }, { text: ' is larger than ' }, { text: stages[i - 1] ?? `Stage ${i}`, stage: true });
+  });
+  parts.push({
+    text: `, so ${rising.length === 1 ? 'that step is' : 'those steps are'} not a reduction. The stages may count different populations or periods.`,
+  });
+  return parts;
+}
+
+/** The rising-stage note as one line of text (`null` when every step is a reduction). */
+export function risingNote(stages: readonly string[], rising: readonly number[]): string | null {
+  return risingNoteParts(stages, rising)?.map((p) => p.text).join('') ?? null;
 }
 
 export interface FunnelChartProps {
@@ -59,6 +130,7 @@ export function FunnelChart({ block, title, staticMode = false }: FunnelChartPro
   const color = seriesStyles(block)[0]?.color ?? token('chart-1');
   const values = React.useMemo(() => block.series[0]?.values ?? [], [block]);
   const stages = block.x.values;
+  const riseNote = risingNoteParts(stages, risingStages(values));
   const n = stages.length;
   const unit = block.unit;
   const max = Math.max(0, ...values.filter(isNum));
@@ -73,7 +145,7 @@ export function FunnelChart({ block, title, staticMode = false }: FunnelChartPro
   const summarize = React.useCallback(
     (c: ChartCursor) => {
       const v = values[c.i] ?? null;
-      const step = c.i > 0 ? `, ${stepText(stepDown(values[c.i - 1], v))} from the previous stage` : '';
+      const step = c.i > 0 ? `, ${stepSpoken(stepDown(values[c.i - 1], v))}` : '';
       return `Stage ${c.i + 1}, ${stages[c.i]}: ${srValue(formatValue(v, unit), v)}${step}.`;
     },
     [stages, unit, values],
@@ -95,9 +167,7 @@ export function FunnelChart({ block, title, staticMode = false }: FunnelChartPro
         heading={<span className={block.untrusted ? 'font-mono' : undefined}>{`Stage ${active.i + 1}: ${stages[active.i]}`}</span>}
         rows={[
           { key: 'v', color, value: formatValue(v, unit), label: isNum(v) ? block.series[0].label : 'not measured' },
-          ...(active.i > 0
-            ? [{ key: 'step', value: stepText(stepDown(values[active.i - 1], v)), label: 'from the previous stage' }]
-            : []),
+          ...(active.i > 0 ? [{ key: 'step', ...stepParts(stepDown(values[active.i - 1], v)) }] : []),
           ...(active.i > 0 ? [{ key: 'first', value: ofFirst ? pct(ofFirst.kept) : DASH, label: 'of the first stage' }] : []),
         ]}
       />
@@ -119,11 +189,26 @@ export function FunnelChart({ block, title, staticMode = false }: FunnelChartPro
         anchorFor={anchorFor}
         anchorKey={active ? String(active.i) : ''}
         staticMode={staticMode}
+        footer={
+          riseNote ? (
+            <p className="mt-1.5 text-2xs text-muted-foreground" data-testid="funnel-rise-note">
+              {riseNote.map((p, k) =>
+                p.stage && block.untrusted ? (
+                  <span key={k} className="font-mono">
+                    {p.text}
+                  </span>
+                ) : (
+                  <React.Fragment key={k}>{p.text}</React.Fragment>
+                ),
+              )}
+            </p>
+          ) : null
+        }
         testId="chart-funnel"
         fallback={{
           caption: `${title} (${unitLabel(unit)})`,
           rowHeader: 'Stage',
-          columns: [block.series[0]?.label ?? 'Value', 'Step-down from previous stage'],
+          columns: [block.series[0]?.label ?? 'Value', 'Change from previous stage'],
           rows: stages.map((s, i) => ({
             key: String(i),
             header: `${i + 1}. ${s}`,
@@ -157,7 +242,7 @@ export function FunnelChart({ block, title, staticMode = false }: FunnelChartPro
                 </text>
                 {i > 0 ? (
                   <text x={x0} y={y - STEP_H / 2} dy="0.32em" className="text-2xs tabular-nums" style={{ fill: token('muted-foreground') }} data-testid="funnel-step">
-                    {`↓ ${stepText(stepDown(values[i - 1], v))}`}
+                    {stepLine(stepDown(values[i - 1], v))}
                   </text>
                 ) : null}
                 {nav.focusRing && active?.i === i ? (

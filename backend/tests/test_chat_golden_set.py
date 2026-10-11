@@ -694,6 +694,34 @@ REGRESSIONS_R2 = [
     # R2-13: a named period wholly outside the chip is refused and said, never answered with the chip.
     G("How many cases were opened in March 2026?", tools=(), may_fail=("case_stats",), fields=_CHIP_90D,
       contains=("March 2026 is outside the last 90 days you selected",), absent=("**",)),
+    # Final review (L2): "whole year" is this year, never the last 30 days with a
+    # false "No period was named"; an unreadable period is named as unread.
+    G("Make a report for the whole year", tools=("case_stats", "soc_metrics"), report=True, sections=6,
+      title=rf"^SOC performance report, {_NOW.year}$",
+      params=(P("case_stats", window="this_year"), P("soc_metrics", kind="posture", window="this_year")),
+      absent=("No period was named", "last 30 days"), figures=(Fig("**{n} cases**", "this_year"),)),
+    G("make a report for this whole year", tools=("case_stats", "soc_metrics"), report=True,
+      title=rf"^SOC performance report, {_NOW.year}$", params=(P("case_stats", window="this_year"),),
+      absent=("No period was named",)),
+    G("Make a report for the fiscal year", tools=("case_stats", "soc_metrics"), report=True,
+      title=r"last 30 days$", contains=("I could not read “for the fiscal year” as a period",),
+      absent=("No period was named",)),
+    # Final review (L2): "<field> wise" breakdowns, as "month wise" already was.
+    G("Segregate the open cases severity wise", tools=("case_stats",),
+      params=(P("case_stats", group_by="severity", status_group="active"),), contains=("By severity:",),
+      figures=(Fig("**{n} cases are open right now**", None, _ACTIVE),)),
+    G("Show the closed cases verdict wise this month", tools=("case_stats",),
+      params=(P("case_stats", group_by="verdict", status_group="terminal", window="this_month"),)),
+    # Final review (L2): a share of the AI's closes states the rate, never a case list.
+    G("What percentage of cases were auto closed all time", tools=("case_stats",),
+      params=(P("case_stats", status_group="terminal", window="all", metrics="re:auto_closed"),),
+      forbid=(P("search_cases"),),
+      contains=(r"re:\A\*\*\d+(?:\.\d)?%\*\* of the closed cases were closed automatically by the AI agent",
+                "This is the automation rate."),
+      figures=(Fig(": {n} of", "all", _AI_CLOSED),)),
+    G("What share of cases did the AI close this month?", tools=("case_stats",),
+      params=(P("case_stats", status_group="terminal", window="this_month", metrics="re:auto_closed"),),
+      forbid=(P("search_cases"),), contains=(r"re:\A\*\*(?:\d+(?:\.\d)?%\*\* of the closed cases|No )",)),
 ]
 
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,

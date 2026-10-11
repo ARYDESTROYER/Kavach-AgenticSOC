@@ -127,6 +127,16 @@ describe('buildReportDoc', () => {
     expect(AI_SUMMARY_NOTICE).toBe('AI-generated; verify before acting.');
   });
 
+  it('names each window once in the header, however many items list it', () => {
+    const base = sampleReport();
+    const scoped = (window: string) => ({ ...base.items[1], scope: { ...base.items[1].scope, window } });
+    const report = sampleReport({
+      items: [scoped('last 90 days; all time'), { ...scoped('last 90 days'), id: 'it-x' }, { ...scoped('Q3 2026 (Asia/Kolkata)'), id: 'it-y' }],
+    });
+    const many = buildReportDoc(report, { generatedAt: NOW.toISOString() });
+    expect(many.windows).toEqual(['last 90 days', 'all time', 'Q3 2026 (Asia/Kolkata)']);
+  });
+
   it('writes the methodology from recorded facts, counting each source turn once', () => {
     expect(doc.methodology[0]).toBe(READ_ONLY_NOTICE);
     expect(doc.methodology).toContain('Lookups (2 calls): Counted log events; Searched cases.');

@@ -24,6 +24,7 @@ so a dashboard query can't fail and a poll tick can't break on the counters.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from ..constants import (
@@ -34,7 +35,7 @@ from ..constants import (
     Verdict,
 )
 from ..models import Case
-from .metrics import DASH, _window_filter, truncation_marker
+from .metrics import DASH, _created_dt, _window_filter, truncation_marker
 from .priority import (
     _normalise_severity,
     _severity_band_from_magnitude,
@@ -272,6 +273,33 @@ def _reduction(numer: int, denom: int) -> Any:
     return round(max(0.0, 1.0 - (numer / denom)) * 100, 1)
 
 
+def _cases_predate_counters(cases: list[Case], coverage_start: Any) -> bool:
+    """True when a counted case was opened before the alert counters began covering.
+
+    The counters are hourly buckets, and a poll tick records its alerts AFTER it opens
+    that tick's cases, so a case opened earlier in the counters' first covered hour is
+    still covered: the comparison is against the start of that hour. A case with no
+    usable timestamp cannot be shown to predate anything and is not counted here.
+    Never raises."""
+    if not isinstance(coverage_start, str) or not coverage_start:
+        return False
+    try:
+        start = datetime.fromisoformat(coverage_start.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    first_hour = int(start.timestamp() // 3600) * 3600
+    for case in cases:
+        try:
+            created = _created_dt(case)
+        except Exception:  # noqa: BLE001 — a malformed case never breaks the rollup
+            continue
+        if created is not None and created.timestamp() < first_hour:
+            return True
+    return False
+
+
 def build_noise_reduction(
     cases: list[Case],
     counters: dict[str, Any],
@@ -292,13 +320,27 @@ def build_noise_reduction(
     analyst-attributed subset of Escalated and is therefore not added to that partition.
     When the counters are still warming up
     (``available: false``) the ingested/clustered totals are ``null`` and ``overall_pct``
-    is DASH, so the UI degrades to a case-only funnel. Never raises."""
+    is DASH, so the UI degrades to a case-only funnel.
+
+    ``counters.incomplete`` is the store's flag OR'd with the population check: when a
+    windowed case was opened before the counters' ``coverage_start`` (an all-time
+    window over a store older than its counters, or than their 90-day retention), the
+    alert stages and the case stages cover different spans, so the funnel is a partial
+    view and every alert-based reduction must be withheld or disclosed by the reader.
+    ``counters.coverage_start`` (additive) says from when the alert stages count.
+    Never raises."""
     counters = counters or {}
     available = bool(counters.get("available"))
 
     fetched = int(fetched_count) if fetched_count is not None else len(cases)
     window_cases = _window_filter(list(cases), window_hours=max(0, int(window_hours or 0)), now=now)
     cases_total = len(window_cases)
+    # A reader that predates ``coverage_start`` reports only ``since`` (the first
+    # observation, never later than the retained floor): the weaker, still honest bound.
+    coverage_start = (counters.get("coverage_start") or counters.get("since")) if available else None
+    incomplete = bool(counters.get("incomplete")) or (
+        available and _cases_predate_counters(window_cases, coverage_start)
+    )
 
     # Internal mutually exclusive disposition tally (each case in exactly one bucket,
     # priority order). ``closed`` is a SEPARATE, OVERLAPPING view: terminal cases
@@ -423,7 +465,8 @@ def build_noise_reduction(
         "counters": {
             "available": available,
             "since": counters.get("since"),
-            "incomplete": bool(counters.get("incomplete")),
+            "coverage_start": coverage_start if isinstance(coverage_start, str) else None,
+            "incomplete": incomplete,
         },
         "cases_meta": truncation_marker(fetched, store_total),
     }

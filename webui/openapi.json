@@ -7424,7 +7424,7 @@
           "window": {
             "anyOf": [
               {
-                "maxLength": 80,
+                "maxLength": 280,
                 "type": "string"
               },
               {

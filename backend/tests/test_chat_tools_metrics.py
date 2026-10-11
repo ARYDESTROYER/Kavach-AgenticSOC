@@ -60,7 +60,7 @@ async def test_absolute_past_chip_counts_that_range_not_the_last_hours(store: Ca
     out = await SocMetricsTool().run(ctx, kind="posture")
     assert out.ok and out.observation["window"] == PAST_LABEL
     assert out.observation["case_count"] == 2  # not the 40 recent cases
-    assert out.summary.startswith(f"Posture ({PAST_LABEL}): 2 cases")
+    assert out.summary.startswith(f"Posture, {PAST_LABEL}: 2 cases")
     # open now is a stock over the whole page, measured now, and says so.
     open_now = out.observation["open_now"]
     assert open_now["count"] == 42 and open_now["window_exempt"] is True
@@ -95,7 +95,7 @@ async def test_ranges_longer_than_thirty_days_are_exact_and_never_capped(store: 
     out = await SocMetricsTool().run(ctx, kind="case_mix")
     assert out.observation["window"] == "last 90 days" and out.observation["cases"] == 40
     assert "requested_window" not in out.observation and "window_capped" not in out.observation
-    assert out.coverage is None and out.summary.startswith("Case mix (last 90 days)")
+    assert out.coverage is None and out.summary.startswith("Case mix, last 90 days:")
     lifetime = await SocMetricsTool().run(make_ctx(cases=store), kind="case_mix", window="all")
     assert lifetime.observation["cases"] == 43 and lifetime.observation["window"].startswith("all time (since")
 
@@ -179,7 +179,7 @@ async def test_cost_usage_on_a_summary_only_ledger_reads_trailing_windows_whole(
     long = await CostUsageTool().run(make_ctx(usage=usage, time_range=TimeRange(**{"from": "now-90d"})))
     assert long.ok and usage.hours == [2160]
     assert long.observation["window"] == "last 90 days" and "requested_window" not in long.observation
-    assert long.summary.startswith("AI spend (last 90 days)") and long.coverage is None
+    assert long.summary.startswith("AI spend, last 90 days:") and long.coverage is None
     plain = await CostUsageTool().run(make_ctx(usage=usage))
     assert plain.observation["window"] == "last 24 hours" and plain.coverage is None
 

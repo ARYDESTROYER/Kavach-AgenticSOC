@@ -35,7 +35,8 @@
  * live read. A run nobody views is PARKED shortly after its view leaves (the read is
  * closed; the server turn goes on): one cheap `GET /chat/turns/active` poll follows every
  * parked run, and a run reads the rest of its events (`after=<seq>`) when a view
- * returns or when the poll no longer lists its turn. Turns the server reports that this
+ * returns, when the poll no longer lists its turn, or when the turn's owner-only
+ * `chat.turn` frame says it ended (`wakeParkedRun`). Turns the server reports that this
  * tab did not start (a reload, another tab that closed) are tracked the same way
  * (`trackRun`), so their real outcome (answer, question, failure) comes from their
  * terminal event.
@@ -835,6 +836,16 @@ export async function pollParkedRuns(): Promise<void> {
     }
   }
   scheduleParkPoll();
+}
+
+/**
+ * The server says this turn ended (its `chat.turn` frame): the parked run that follows
+ * it reads the rest of its events now instead of at the next park poll. A frame is a
+ * nudge, the event ring is the outcome: a turn still running is read live and parked
+ * again like any run nobody views.
+ */
+export function wakeParkedRun(turnId: string): void {
+  for (const run of parkedRuns()) if (run.turnId === turnId) unpark(run);
 }
 
 /** Stop (server-side cancel; a second call, or `force`, abandons the stream locally). */

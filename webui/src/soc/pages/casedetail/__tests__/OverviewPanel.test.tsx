@@ -792,6 +792,32 @@ describe('OverviewPanel — the case outcome (Round 12, D15)', () => {
     expect(screen.queryByTestId('overview-set-disposition')).toBeNull();
   });
 
+  it('a resolved case with no recorded outcome offers Set disposition and says resolved', () => {
+    const onSetDisposition = vi.fn();
+    const resolvedUnrecorded = {
+      ...closedAsFp,
+      status: 'resolved',
+      verdict: 'TRUE_POSITIVE',
+      disposition: 'undetermined',
+      history: [{ event: 'analyst_action', action: 'resolve', analyst: 'aryan', ts: '2026-10-09T10:00:00Z' }],
+    } as unknown as Case;
+    render(
+      <OverviewPanel
+        c={resolvedUnrecorded}
+        fpPolicy={null}
+        triage={null}
+        triageLoading={false}
+        presentation="case-manager"
+        onSetDisposition={onSetDisposition}
+      />,
+    );
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/^Resolved by analyst: outcome not recorded$/);
+    const button = screen.getByTestId('overview-set-disposition');
+    expect(button.parentElement).toHaveTextContent('No disposition was recorded when this case was resolved.');
+    fireEvent.click(button);
+    expect(onSetDisposition).toHaveBeenCalledWith(button);
+  });
+
   it('an AI auto-close keeps the code lane and says so', () => {
     renderCaseManager({ ...CASE, verdict: 'FALSE_POSITIVE', status: 'closed', decision_by: 'agent' } as unknown as Case);
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/^Auto-closed as false positive$/);

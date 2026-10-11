@@ -1224,10 +1224,19 @@ _CALENDAR = {
     "ytd": ("this year to date", 8760, "year"), "this_year": ("this year", 8760, "year"),
     "last_year": ("last year", 8760, "year"),
 }
+# "The whole year", "this entire month", "the last full quarter": the calendar period
+# itself. Never "a whole week" (a duration: "open for a whole week"), never a period
+# that names its own month, quarter or year ("the whole month of May", "the full year
+# 2025" are read by the month and year rules), never "full year-over-year".
+_WHOLE = r"(?<!\ba )(?<!\ban )(?:whole|full|entire|complete)"
+_WHOLE_END = rf"(?![\w-]|\s+(?:of\s+)?(?:20\d\d|{_MONTH_WORD}|q[1-4])\b)"
 _CALENDAR_PHRASES: tuple[tuple[str, str], ...] = (
     (r"\b(?:ytd|year[- ]to[- ]date|so far this year|this year so far)\b", "ytd"),
     (r"\b(?:mtd|month[- ]to[- ]date|so far this month)\b", "this_month"),
     (r"\b(?:qtd|quarter[- ]to[- ]date|so far this quarter)\b", "this_quarter"),
+    *((rf"\b(?:last|previous|prior) {_WHOLE} {unit}{_WHOLE_END}", f"last_{unit}")
+      for unit in ("week", "month", "quarter", "year")),
+    *((rf"\b{_WHOLE} {unit}{_WHOLE_END}", f"this_{unit}") for unit in ("week", "month", "quarter", "year")),
     (r"\btoday(?:'s)?\b|\bthis morning\b|\bso far today\b", "today"),
     (r"\byesterday(?:'s)?\b", "yesterday"),
     (r"\b(?:this|current) week(?:'s)?\b|\bweek to date\b", "this_week"),
@@ -1292,6 +1301,15 @@ _DATE_CUE_RE = re.compile(
 _DATE_WORD_RE = re.compile(
     r"\d|\b(?:minutes?|hours?|days?|weeks?|months?|quarters?|years?|today|yesterday|tonight|morning|"
     r"(?:mon|tues|wednes|thurs|fri|satur|sun)days?|weekend|" + _MONTH_WORD[3:-1] + r")\b")
+# A period named with a determiner after "for", "in", "over" ("for the fiscal year",
+# "over the weekend", "during the holiday season"): a period was named even when no
+# rule reads it, so the answer must not say that none was. "For each month", "per
+# week" and "in a week" are a breakdown or a duration, never a period.
+_PERIOD_PHRASE_RE = re.compile(
+    r"\b(?:for|in|during|over|across|throughout|within)\s+(?:the|this|that|our)\s+"
+    r"(?:(?!each\b|every\b|per\b)[a-z0-9'-]+\s+){0,2}"
+    r"(?:years?|quarters?|months?|weeks?|fortnight|weekends?|seasons?|holidays?|summer|winter|spring|autumn|"
+    r"mornings?|afternoons?|evenings?|nights?)\b")
 _CADENCE: tuple[tuple[str, str], ...] = (
     (r"\bdaily (?:report|summary|brief|digest|review)\b", "now-24h"),
     (r"\bweekly (?:report|summary|brief|digest|review)\b", "now-7d"),
@@ -1766,11 +1784,15 @@ def _window_from(lowered: str) -> Win | None:
 
 def _unread_window(lowered: str) -> str | None:
     """A time phrase the question names that :func:`_window_from` could not read
-    ("before the outage last Tuesday"): said in the answer, never dropped silently."""
+    ("before the outage last Tuesday", "for the fiscal year"): said in the answer, never
+    dropped silently, so an answer never claims that no period was named."""
     for match in _DATE_CUE_RE.finditer(lowered):
         phrase = match.group(0).strip(" ,.;")
         if _DATE_WORD_RE.search(match.group(1)):
             return phrase
+    match = _PERIOD_PHRASE_RE.search(lowered)
+    if match:
+        return match.group(0).strip(" ,.;")
     return None
 
 
@@ -1958,6 +1980,24 @@ _CASE_GROUP_WORDS: tuple[tuple[str, str], ...] = (
     (r"\b(?:decided by|who decided|by decision maker)\b", "decided_by"),
     (r"\bopen (?:vs\.?|versus|and) closed\b", "status_group"),
 )
+#: The same groupings in the "<field> wise" phrasing ("segregate the open cases
+#: severity wise", "status-wise", "segregate them on rule"). "Month wise" and the other
+#: calendar units are a creation-time bucket instead (:data:`_BUCKET_WORDS`).
+_FIELD_WISE_WORDS: tuple[tuple[str, str], ...] = (
+    (r"assignee|analyst|owner", "assignee"),
+    (r"severit(?:y|ies)", "severity"),
+    (r"status", "status"),
+    (r"verdict", "verdict"),
+    (r"priorit(?:y|ies)", "priority"),
+    (r"(?:detection )?rule", "rule"),
+    (r"(?:log )?source", "source"),
+    (r"disposition|classification", "disposition"),
+    (r"(?:att&ck |mitre )?tactic", "mitre_tactic"),
+    (r"(?:att&ck |mitre )?technique", "mitre_technique"),
+)
+_CASE_GROUP_WORDS = _CASE_GROUP_WORDS + tuple(
+    (rf"\b(?:{words})[- ]?wise\b|\bsegregat\w* (?:\w+ ){{0,4}}?on (?:the |their )?(?:{words})s?\b", fld)
+    for words, fld in _FIELD_WISE_WORDS)
 
 
 def _case_group_from(lowered: str) -> str | None:
@@ -2000,6 +2040,9 @@ _AUTO_CLOSE_RE = re.compile(
     r"\bauto[- ]?clos\w*|\bclosed automatically\b|\bautomatically closed\b|"
     r"\b(?:the )?(?:ai|agent|agents|model|llm)\b(?:\s+\w+){0,2}?\s+(?:close|closed|closes|resolve|resolved|"
     r"resolves)\b")
+#: A question for a share rather than a count ("what percentage", "what share",
+#: "what proportion", "how much of").
+_SHARE_CUE_RE = re.compile(r"\b(?:percent(?:age)?s?|share|proportion|fraction|ratio|how much of)\b|%")
 #: "Which users had the most cases?", "cases per host": cases counted by the entity
 #: each one is recorded against (never by log events).
 _ENTITY_CASES_RE = re.compile(
@@ -2096,7 +2139,11 @@ def _metric(lowered: str) -> tuple[str, str] | None:
 def _group_field(lowered: str) -> str | None:
     match = re.search(r"\b(?:by|per|across)\s+((?:source |src )?[a-z]+(?: [a-z]+)?)", lowered)
     if not match:
-        return None
+        # "Alerts severity wise", "host-wise": the field named before "wise" (exactly,
+        # so "otherwise" and "likewise" name nothing).
+        fields = dict(_GROUP_FIELDS)
+        return next((fields[m.group(1)] for m in re.finditer(r"\b((?:source |src )?[a-z]+)[- ]?wise\b", lowered)
+                     if m.group(1) in fields), None)
     phrase = match.group(1)
     for words, fld in _GROUP_FIELDS:
         if phrase == words or phrase.startswith(words + " ") or phrase.startswith(words):
@@ -2772,6 +2819,10 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     # comparison is computed by the count itself).
     if not help_like and re.search(r"\b(?:how many|number of|count(?: of)?|total)\b", low) and re.search(
             r"\b(?:true|false)[- ]positives\b", low) and not re.search(r"\brates?\b", low):
+        return ask("breakdown")
+    # "What percentage of cases were auto closed?": the share, from exact case counts
+    # (closed by the AI agent beside closed by an analyst), never a plain case list.
+    if not help_like and not template and _SHARE_CUE_RE.search(low) and _AUTO_CLOSE_RE.search(low):
         return ask("breakdown")
     # "What's the FP rate trend?", "Is MTTR improving?": a trend or a comparison of a
     # named measure, never its definition (that needs a defining word).
@@ -4648,8 +4699,11 @@ def _say_noise(r: Result) -> list[str]:
     stages = _stages(o)
     overall = _dig(o, "reduction_pct", "overall")
     before = _dig(o, "reduction_pct", "before_human")
+    # A withheld overall reduction (the tool's partial-coverage rule) leads with the
+    # stages instead of a "not measured noise reduction" headline.
+    head = f"**{_pct(overall)} noise reduction**" if _num(overall) is not None else "**Noise reduction**"
     out = [
-        f"**{_pct(overall)} noise reduction** {_in(_window(o))}: {_plural(stages.get('ingested'), 'alert')} "
+        f"{head} {_in(_window(o))}: {_plural(stages.get('ingested'), 'alert')} "
         f"ingested became {_plural(stages.get('clustered'), 'cluster')} and "
         f"{_plural(stages.get('cases'), 'case')}, and **{_count(stages.get('needs_human'))} needed a human**."
     ]
@@ -4666,8 +4720,13 @@ def _say_noise(r: Result) -> list[str]:
         out.append(f"Of the cases, {_join(detail)}.")
     if _num(before) is not None:
         out.append(f"Before any human looked, volume was already down {_pct(before)}.")
+    withheld = _num(overall) is None and bool(o.get("overall_reduction_withheld"))
     if _dig(o, "counters", "incomplete"):
-        out.append("The ingest counters do not span the whole window yet, so the alert count is a lower bound.")
+        out.append("The ingest counters do not span the whole window yet, so the alert count is a lower bound"
+                   + (" and no overall reduction is given (alerts and cases cover different spans)." if withheld
+                      else "."))
+    elif withheld:
+        out.append("No overall reduction is given: the case counts for this window are partial.")
     drops = o.get("drops") if isinstance(o.get("drops"), Mapping) else {}
     if _num(drops.get("suppressed")) or _num(drops.get("ignored")):
         out.append(f"{_count(drops.get('suppressed'))} alerts were suppressed and {_count(drops.get('ignored'))} "
@@ -7474,7 +7533,17 @@ def _auto_close_lead(ask: Ask, o: Mapping[str, Any]) -> str:
         return ""
     filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
     window = _window(o, "all time")
-    opened = "" if window.lower().startswith("all time") else f" opened {_in(window)}"
+    all_time = window.lower().startswith("all time")
+    opened = "" if all_time else f" opened {_in(window)}"
+    rate = _automation_rate(auto, totals.get("human_closed")) if _SHARE_CUE_RE.search(ask.lowered) else None
+    if rate is not None:
+        # "What percentage of cases were auto closed?": the share leads, as a share of
+        # the closed cases (the automation rate), with the counts it is computed from.
+        closed = auto + (_num(totals.get("human_closed")) or 0)
+        when = f" {_in(window)}" if all_time else ""
+        return (f"**{_pct(rate)}** of the closed cases{_entity_about(filters)}{opened} were closed automatically "
+                f"by the AI agent{when}: {_count(auto)} of {_plural(closed, 'closed case')}. This is the automation "
+                "rate.")
     verb = "was" if auto == 1 else "were"
     return (f"**{_plural(auto, 'case')}**{_entity_about(filters)}{opened} {verb} closed automatically by the AI "
             f"agent (of {_plural(o.get('total'), _stats_noun(o))}).")

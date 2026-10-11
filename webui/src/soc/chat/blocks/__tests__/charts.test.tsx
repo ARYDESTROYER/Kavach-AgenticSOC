@@ -14,6 +14,7 @@ import AnswerBlocks from '../AnswerBlocks';
 import { BlockBody } from '../BlockCard';
 import { ChartBlockView } from '../charts/ChartBlockView';
 import { placeTooltip } from '../charts/ChartTooltipPortal';
+import { risingNote, risingStages, stepDown, stepLine, stepText } from '../charts/FunnelChart';
 import { galleryBlock } from '../__fixtures__/gallery';
 import { parseBlock, parseBlocks } from '../schema';
 import type { AnswerBlock, ChartBlock, InternalRef } from '../schema';
@@ -331,6 +332,47 @@ describe('sparkline and funnel', () => {
     const plot = focusPlot('chart-funnel');
     fireEvent.keyDown(plot, { key: 'End' });
     expect(tooltip('chart-funnel')).toHaveTextContent('of the first stage');
+    // Every step here is a reduction: no rise note.
+    expect(screen.queryByTestId('funnel-rise-note')).toBeNull();
+  });
+
+  it('never calls a larger stage "kept": a rise reads as a rise, with a note under the chart', () => {
+    // The all-time noise funnel seen live: cases counted over all time, alert stages
+    // only since the counters started, so "Cases opened" exceeds "After clustering".
+    const block = parseBlock({
+      ...(galleryBlock('triage-funnel') as object),
+      x: { kind: 'category', values: ['Alerts ingested', 'After clustering', 'Cases opened', 'Closed automatically'] },
+      series: [{ key: 'n', label: 'Alerts', values: [182, 43, 82, 14] }],
+    });
+    show(block);
+    const steps = screen.getAllByTestId('funnel-step').map((s) => s.textContent ?? '');
+    expect(steps).toEqual(['↓ 24% kept · −76%', '↑ +91% · not a reduction', '↓ 17% kept · −83%']);
+    for (const step of steps) expect(step).not.toMatch(/(1\d\d|[2-9]\d\d)% kept/);
+    expect(screen.getByTestId('funnel-rise-note')).toHaveTextContent(
+      'Cases opened is larger than After clustering, so that step is not a reduction. The stages may count different populations or periods.',
+    );
+    // The data table and the tooltip say the same in full.
+    const table = screen.getByTestId('chart-data-table');
+    expect(table).toHaveTextContent('Change from previous stage');
+    expect(table).toHaveTextContent('+91% vs previous stage (not a reduction)');
+    expect(table).not.toHaveTextContent('191%');
+    const plot = focusPlot('chart-funnel');
+    fireEvent.keyDown(plot, { key: 'ArrowDown' });
+    fireEvent.keyDown(plot, { key: 'ArrowDown' });
+    expect(tooltip('chart-funnel')).toHaveTextContent('+91%vs previous stage (not a reduction)');
+    expect(tooltip('chart-funnel')).not.toHaveTextContent('kept');
+  });
+
+  it('words the step helpers for a drop, a flat step, a rise and an unmeasured stage', () => {
+    expect(stepText(stepDown(100, 25))).toBe('25% kept · −75%');
+    expect(stepText(stepDown(100, 100))).toBe('100% kept · 0%');
+    expect(stepText(stepDown(43, 82))).toBe('+91% vs previous stage (not a reduction)');
+    expect(stepLine(stepDown(43, 82))).toBe('↑ +91% · not a reduction');
+    expect(stepLine(stepDown(100, 25))).toBe('↓ 25% kept · −75%');
+    expect(stepText(stepDown(null, 4))).toBe('—');
+    expect(risingStages([182, 43, 82, 90, 14])).toEqual([2, 3]);
+    expect(risingNote(['A', 'B', 'C', 'D'], [2, 3])).toBe('C is larger than B; D is larger than C, so those steps are not a reduction. The stages may count different populations or periods.');
+    expect(risingNote(['A', 'B'], [])).toBeNull();
   });
 });
 

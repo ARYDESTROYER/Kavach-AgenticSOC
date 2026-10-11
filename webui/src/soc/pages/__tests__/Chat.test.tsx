@@ -111,7 +111,7 @@ vi.mock('@/soc/chat/shortcuts/ShortcutSheet', () => ({ ShortcutSheet: () => null
 
 const { exportConversationMock, toastMock } = vi.hoisted(() => ({
   exportConversationMock: vi.fn(),
-  toastMock: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
+  toastMock: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), loading: vi.fn() }),
 }));
 vi.mock('sonner', async (importOriginal) => ({ ...(await importOriginal<typeof import('sonner')>()), toast: toastMock }));
 vi.mock('@/soc/chat/report/export/conversation', () => ({ exportConversation: exportConversationMock }));
@@ -757,11 +757,16 @@ describe('Workspace Chat page', () => {
     const [conversation, format, options] = exportConversationMock.mock.calls[0];
     expect(conversation).toMatchObject({ id: 'c-older', title: 'Older endpoint review' });
     expect(format).toBe('markdown');
-    expect(options).toEqual({ author: 'analyst' });
+    // The author, plus the PDF guidance hook the runner always passes (shown before a
+    // print dialog opens; unused for Markdown).
+    expect(options).toMatchObject({ author: 'analyst' });
+    expect(typeof options.onPrintOpening).toBe('function');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
     expect(document.body).toHaveTextContent('Conversation exported as Markdown');
+    // Visible too, not only announced.
+    expect(toastMock.success).toHaveBeenLastCalledWith('Conversation exported as Markdown', expect.objectContaining({ id: 'conversation-export-c-older' }));
   });
 
   it('runs case-scoped without history, report or persistence', async () => {

@@ -991,7 +991,10 @@ export const OverviewPanel: React.FC<{
             ) : null}
             {outcome.source === 'analyst_unrecorded' && onSetDisposition ? (
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>No disposition was recorded when this case was closed.</span>
+                <span>
+                  No disposition was recorded when this case was{' '}
+                  {String(c.status || '').toLowerCase() === 'resolved' ? 'resolved' : 'closed'}.
+                </span>
                 <Button
                   type="button"
                   size="sm"

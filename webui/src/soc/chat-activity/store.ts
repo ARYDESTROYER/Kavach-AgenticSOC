@@ -94,6 +94,30 @@ export function writeChatActivity(next: ChatActivitySnapshot): void {
   for (const listener of Array.from(listeners)) listener();
 }
 
+/** One live frame as the shell's stream hands it over (`StreamEvent` fits). */
+export interface ChatFrame {
+  type: string;
+  data: unknown;
+}
+
+let frameSink: ((frame: ChatFrame) => void) | null = null;
+
+/**
+ * The caller's own `chat.turn` frames (topic `chat`, SPEC D13) ride the shell's job
+ * stream (`JobMonitor`), so no connection is opened for them. Every frame of that stream
+ * comes through here to the lazy `ActivityEffects`, which reads only `chat.turn` and
+ * `overflow`; before it loads a frame is dropped (it asks the server when it mounts).
+ * Transport only: the payload is untrusted and nothing here renders it (#9).
+ */
+export function relayChatFrame(frame: ChatFrame): void {
+  frameSink?.(frame);
+}
+
+/** `ActivityEffects` takes the frames; `null` lets go. */
+export function setChatFrameSink(next: ((frame: ChatFrame) => void) | null): void {
+  frameSink = next;
+}
+
 /**
  * The snapshot, or a slice of it. A selector must return a value that keeps its
  * identity while unchanged (the writers keep each summary object until its status or

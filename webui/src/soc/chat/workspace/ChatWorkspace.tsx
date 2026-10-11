@@ -35,7 +35,6 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { LoadingState } from '@/design-system/loading';
 import { useAuth } from '@/soc/auth';
 import { useAnnouncer } from '@/soc/components/announcer';
-import { getFullConversation } from '../chat-api';
 import { BudgetAlert } from '../composer/BudgetAlert';
 import { Composer, type ComposerHandle } from '../composer/Composer';
 import { EmptyState } from '../empty/EmptyState';
@@ -54,6 +53,7 @@ import { ReportOverlay, ReportSplit } from './ReportPanelHost';
 import { ThreadToolbar } from './ThreadToolbar';
 import { useChatLaneWidth } from './useChatLaneWidth';
 import { useConversationReport } from './useConversationReport';
+import { useConversationExport } from './useConversationExport';
 import { useOpenerFocus } from './useOpenerFocus';
 import {
   C_MIN,
@@ -189,21 +189,9 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     [conv],
   );
 
-  const exportThread = React.useCallback(
-    async (id: string, format: ConversationExportFormat) => {
-      try {
-        // The whole conversation, every older page included: an export is never cut to
-        // the newest messages the transcript opened with.
-        const [conversation, module] = await Promise.all([getFullConversation(id), import('../report/export/conversation')]);
-        const outcome = await module.exportConversation(conversation, format, { author });
-        announce(outcome.message);
-        if (!outcome.ok) toast.error(outcome.message);
-      } catch (error) {
-        toast.error(error instanceof Error && error.message ? error.message : 'Could not export the conversation.');
-      }
-    },
-    [announce, author],
-  );
+  // One guarded runner per conversation: progress, a result toast and the PDF guidance
+  // before the print dialog, like a report export (useConversationExport).
+  const { run: exportThread } = useConversationExport({ author });
 
   // Whether un-collapsing would actually dock the rail right now (an open split panel
   // may be what keeps it a strip; then the Sheet is the way to see history).

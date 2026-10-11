@@ -249,6 +249,24 @@ function millisOf(value: string | null | undefined): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+/**
+ * Can `el` take focus right now? Connected is not enough: below xl the queue is
+ * `hidden xl:flex` while a case is open, so its row buttons stay mounted under a
+ * display:none ancestor, and `.focus()` on one does nothing (focus falls to <body>).
+ * `checkVisibility()` where the browser has it, else no ancestor with display:none.
+ */
+function isFocusable(el: HTMLElement | null | undefined): el is HTMLElement {
+  if (!el || !el.isConnected) return false;
+  const check = (el as HTMLElement & { checkVisibility?: () => boolean }).checkVisibility;
+  if (typeof check === 'function') return check.call(el);
+  const view = el.ownerDocument.defaultView;
+  if (!view) return true;
+  for (let node: Element | null = el; node; node = node.parentElement) {
+    if (view.getComputedStyle(node).display === 'none') return false;
+  }
+  return true;
+}
+
 /** The beside-text status glyph from the ONE semantic icon map (reopened → investigating). */
 function queueStatusIcon(status: string) {
   const t = status.trim().toLowerCase();
@@ -638,6 +656,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const gapStopRef = React.useRef<{ id: string; side: 'after' | 'before' } | null>(null);
   const buttonsRef = React.useRef(new Map<string, HTMLButtonElement>());
   const searchRef = React.useRef<HTMLInputElement | null>(null);
+  /** The selected-case workspace; its case title is the focus target when the queue is hidden. */
+  const detailRef = React.useRef<HTMLElement | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const shortcutsOpenerRef = React.useRef<HTMLElement | null>(null);
   const openShortcuts = React.useCallback(() => {
@@ -850,6 +870,16 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const effectiveFocusIdRef = React.useRef(effectiveFocusId);
   effectiveFocusIdRef.current = effectiveFocusId;
 
+  /**
+   * The open case's title heading (tabIndex -1), when it can take focus. Below xl the
+   * detail REPLACES the queue, so this is where focus belongs once a case opens: the
+   * same heading element stays mounted from case to case (CaseDetail is not remounted).
+   */
+  const caseTitleTarget = React.useCallback((): HTMLElement | null => {
+    const title = detailRef.current?.querySelector<HTMLElement>('[data-case-title]') ?? null;
+    return isFocusable(title) ? title : null;
+  }, []);
+
   const selectCase = React.useCallback(
     (caseId: string, opts: { focusRow?: boolean } = {}) => {
       gapStopRef.current = null;
@@ -858,23 +888,32 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       setDismissedSelection(false);
       route.navigate('case_manager', { caseId });
       if (opts.focusRow) {
-        requestAnimationFrame(() => buttonsRef.current.get(caseId)?.focus());
+        // The row when the queue is on screen (the xl split); below xl the queue is
+        // hidden while a case is open, so the case's title instead of <body>.
+        requestAnimationFrame(() => {
+          const row = buttonsRef.current.get(caseId);
+          (isFocusable(row) ? row : caseTitleTarget())?.focus();
+        });
       }
       // Focus on the row already reads its title and id; the announcement adds only
       // what focus does not say — where the case sits in the queue (one live region).
       const index = visibleRef.current.findIndex((row) => row.case_id === caseId);
       if (index >= 0) announce(`Opened. ${index + 1} of ${visibleRef.current.length} loaded.`);
     },
-    [announce, route],
+    [announce, caseTitleTarget, route],
   );
 
-  /** The queue row focus should land on: the given case's row, else the roving tab stop. */
+  /**
+   * The queue row focus should land on: the given case's row, else the roving tab stop.
+   * Null when the queue is not on screen (below xl while a case is open): a row under a
+   * display:none ancestor is connected but cannot take focus.
+   */
   const queueRowButton = React.useCallback((caseId?: string | null): HTMLElement | null => {
     const visible = visibleRef.current;
     const listed = (id: string | null | undefined) => Boolean(id && visible.some((row) => row.case_id === id));
     const id = listed(caseId) ? caseId : listed(effectiveFocusIdRef.current) ? effectiveFocusIdRef.current : visible[0]?.case_id;
     const button = id ? buttonsRef.current.get(id) : undefined;
-    return button && button.isConnected ? button : null;
+    return isFocusable(button) ? button : null;
   }, []);
 
   const closeDetail = React.useCallback(() => {
@@ -901,21 +940,22 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
   /**
    * Where focus goes after a case dialog closes on a submit (CM-3/CM-4). "Close & next"
-   * lands on the next case's row, which `advance` just opened. A plain submit keeps the
+   * lands on the next case's row, which `advance` just opened, or on that case's title
+   * when the queue is hidden (below xl the detail replaces it). A plain submit keeps the
    * dialog's own default (its opener) unless that opener was a queue row the action took
    * out of the view: then the row that took its place, so a keyboard user keeps their
    * place instead of falling to <body> when the row animates away.
    */
   const resolveDialogFocus = React.useCallback(
     (opener: HTMLElement | null, andNext: boolean): HTMLElement | null => {
-      if (andNext) return queueRowButton(selectedIdRef.current);
+      if (andNext) return queueRowButton(selectedIdRef.current) ?? caseTitleTarget();
       const openerRow = opener?.closest<HTMLElement>('[data-queue-row]')?.dataset.caseId;
       if (!openerRow) return null;
       if (visibleRef.current.some((row) => row.case_id === openerRow)) return null;
       // No row left to land on: the open case's title.
-      return queueRowButton(effectiveFocusIdRef.current) ?? document.querySelector<HTMLElement>('[data-case-title]');
+      return queueRowButton(effectiveFocusIdRef.current) ?? caseTitleTarget();
     },
-    [queueRowButton],
+    [caseTitleTarget, queueRowButton],
   );
 
   /**
@@ -2206,6 +2246,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
 
             {/* Detail replaces the queue below xl; desktop retains the persistent split. */}
             <section
+              ref={detailRef}
               aria-label="Selected case workspace"
               className={cn('min-h-0 min-w-0 flex-col bg-background', selectedCaseId ? 'flex' : 'hidden xl:flex')}
             >
@@ -2372,7 +2413,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
               // to whatever held it (the row, the keyboard button), not <body>.
               const opener = shortcutsOpenerRef.current;
               shortcutsOpenerRef.current = null;
-              const target = opener && opener.isConnected ? opener : queueRowButton();
+              const target = isFocusable(opener) ? opener : (queueRowButton() ?? caseTitleTarget());
               if (target) {
                 event.preventDefault();
                 target.focus();
