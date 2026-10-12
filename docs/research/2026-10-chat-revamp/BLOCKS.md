@@ -187,6 +187,13 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     become formatting or links. An export shows button-level progress, cannot start twice,
     and reports a failure with Retry; download links are revoked only after the browser has
     taken the file (`lib/download.ts`).
+31. **Line end labels sized to the chart (SPEC A62; amends the §6 `line`/`area` row).** The
+    selective end labels (2 to 4 series) reserve what their longest label needs, up to a
+    quarter of the chart's width and never fewer than 14 characters (`endLabelColumn` in
+    `charts/geometry.ts`), instead of a fixed 14: "Closed by an analyst" and "False-positive
+    rate" show whole on a wide chart. A label longer than that budget is clipped with "…" and
+    carries the whole label as its SVG `<title>`; the legend, tooltip and sr-only table always
+    name a series in full. Static and print mode (680 px) follow the same rule.
 
 ---
 

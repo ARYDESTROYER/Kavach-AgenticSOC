@@ -1,6 +1,7 @@
 /**
  * useChatLaneWidth — the viewer's conversation width (Round 12 SPEC D12): Comfortable
- * (64rem), Wide (88rem, the default) or Full width (no cap).
+ * (64rem), Wide (88rem) or Full width (no cap, the default since the final review: a
+ * viewer who never chose fills the space; a stored choice is kept).
  *
  * A presentation preference, stored like the nav collapse (`useNavPrefs`): the
  * localStorage mirror paints first (no flash), then — once the effective prefs have

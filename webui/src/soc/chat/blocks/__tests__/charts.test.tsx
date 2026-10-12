@@ -177,8 +177,69 @@ describe('line / area', () => {
     const { container } = show(galleryBlock('mtta-trend'));
     expect(container.querySelectorAll('circle[data-end-dot]')).toHaveLength(2);
     const svgText = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
-    // End labels are clipped to 14 characters; the full label is in the legend and table.
-    expect(svgText).toEqual(expect.arrayContaining(['Median', '90th percenti…']));
+    // At 560 px a quarter of the chart holds 19 characters: "90th percentile" fits whole.
+    expect(svgText).toEqual(expect.arrayContaining(['Median', '90th percentile']));
+    expect(container.querySelector('text[data-end-label] title')).toBeNull();
+  });
+
+  describe('end labels sized to the chart (never a fixed 14 characters)', () => {
+    const trend = () =>
+      parseBlock({
+        id: 'case-trend',
+        type: 'chart',
+        kind: 'line',
+        title: 'Cases by hour',
+        provenance: 'code',
+        artifact_kind: 'series',
+        allowed_views: ['line', 'area', 'bar', 'table'],
+        unit: 'count',
+        x: { kind: 'time', values: ['2026-10-07T00:00:00Z', '2026-10-07T01:00:00Z', '2026-10-07T02:00:00Z'], bucket: '1h' },
+        series: [
+          { key: 'opened', label: 'Opened', values: [12, 18, 15] },
+          { key: 'auto', label: 'Auto-closed', values: [7, 9, 8] },
+          { key: 'analyst', label: 'Closed by an analyst', values: [4, 6, 5] },
+        ],
+      }) as AnswerBlock;
+    const endLabels = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('text[data-end-label]')).map((t) => ({
+        shown: Array.from(t.childNodes)
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.textContent)
+          .join(''),
+        title: t.querySelector('title')?.textContent ?? null,
+      }));
+    const at = (px: number) => vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(px);
+
+    it('shows every label whole on a wide chart, with room reserved for the longest', () => {
+      const width = at(1242);
+      try {
+        const { container } = show(trend());
+        expect(endLabels(container)).toEqual(
+          expect.arrayContaining([
+            { shown: 'Opened', title: null },
+            { shown: 'Auto-closed', title: null },
+            { shown: 'Closed by an analyst', title: null },
+          ]),
+        );
+        // The labels start 8 px right of the plot and their column fits inside the chart.
+        const x = Number(container.querySelector('text[data-end-label]')?.getAttribute('x'));
+        expect(1242 - x).toBeGreaterThanOrEqual(Math.ceil('Closed by an analyst'.length * 6.6));
+      } finally {
+        width.mockRestore();
+      }
+    });
+
+    it('clips only beyond a quarter of a narrow chart, with the whole label as its title', () => {
+      const width = at(338);
+      try {
+        const { container } = show(trend());
+        const labels = endLabels(container);
+        expect(labels).toContainEqual({ shown: 'Closed by an …', title: 'Closed by an analyst' });
+        expect(labels).toContainEqual({ shown: 'Auto-closed', title: null });
+      } finally {
+        width.mockRestore();
+      }
+    });
   });
 
   it('shows a crosshair and every series at x in one tooltip', () => {

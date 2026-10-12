@@ -9,6 +9,8 @@ import {
   areaPath,
   barWidth,
   donutArcs,
+  endLabelBudget,
+  endLabelColumn,
   extent,
   intensityStep,
   lastMeasured,
@@ -208,5 +210,26 @@ describe('intensityStep', () => {
     expect(intensityStep(1, 100)).toBeCloseTo(0.18);
     expect(intensityStep(100, 100)).toBe(1);
     expect(intensityStep(5, 0)).toBe(0);
+  });
+});
+
+describe('endLabelBudget / endLabelColumn (line end labels)', () => {
+  it('lets end labels use a quarter of the chart, never fewer than 14 characters', () => {
+    expect(endLabelBudget(338)).toBe(14);
+    expect(endLabelBudget(560)).toBe(19);
+    expect(endLabelBudget(680)).toBe(23);
+    expect(endLabelBudget(1242)).toBe(44);
+    expect(endLabelBudget(Number.NaN)).toBe(14);
+  });
+
+  it('reserves what the longest label needs within that budget', () => {
+    // A wide chart reserves the whole longest label, not a fixed 14 characters.
+    expect(endLabelColumn(1242, ['Opened', 'Closed by an analyst'])).toEqual({ budget: 44, chars: 20, padRight: 146 });
+    // Short labels reserve only their own width.
+    expect(endLabelColumn(1242, ['p50', 'p90'])).toEqual({ budget: 44, chars: 3, padRight: 34 });
+    // A narrow chart caps the column at the budget (the label is clipped there).
+    expect(endLabelColumn(338, ['Closed by an analyst'])).toEqual({ budget: 14, chars: 14, padRight: 107 });
+    // Characters, not UTF-16 units.
+    expect(endLabelColumn(560, ['\u{1F512} Locked']).chars).toBe(8);
   });
 });

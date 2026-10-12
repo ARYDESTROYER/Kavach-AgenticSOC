@@ -895,6 +895,43 @@ describe('add to case', () => {
     expect(within(dialog).queryByRole('radiogroup')).toBeNull();
   });
 
+  it('quotes the clarified question plus the pick for an answer to a clarify pick', async () => {
+    mocks.searchCasesForPicker.mockResolvedValue([]);
+    const user = userEvent.setup();
+    const clarify = { question: 'Trend of what?', options: ['Alerts', 'Cases'], allow_custom: true };
+    const engine = {
+      ...stubEngine({ conversationId: CONV }),
+      items: [
+        userItem('Show me the trend'),
+        assistantItem({ key: 'a-clarify', response: response({ answer: 'Trend of what?', clarify, steps: [] }) }),
+        userItem('Cases', { origin: 'clarify' }),
+        assistantItem({ key: 'a-pick', response: response({ answer: 'Cases rose 20% this week.', citations: [], steps: [zeroStep(2)] }) }),
+      ],
+    };
+    render(
+      <TooltipProvider>
+        <Transcript engine={engine} />
+      </TooltipProvider>,
+    );
+    const answer = screen.getByText('Cases rose 20% this week.').closest('article') as HTMLElement;
+    await user.click(within(answer).getByRole('button', { name: 'Add to case' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add this answer to a case' });
+    const preview = within(dialog).getByTestId('add-to-case-preview');
+    expect(preview.textContent).toMatch(/^From Workspace chat · .*\nQuestion: Show me the trend → Cases\n\nCases rose 20% this week\.$/);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // A step question still quotes the question exactly as sent: the model and the Demo
+    // planner find the answer by matching it against the conversation.
+    await user.click(within(answer).getByRole('button', { name: /1 lookup/ }));
+    await user.click(within(answer).getByRole('button', { name: 'Inspect step 2: Counted cases' }));
+    const sheet = await screen.findByTestId('step-inspector');
+    await user.click(within(sheet).getByRole('button', { name: 'Explain this step' }));
+    await waitFor(() => expect(engine.send).toHaveBeenCalledTimes(1));
+    expect(engine.send.mock.calls[0][0]).toBe(
+      'Explain step 2 (Counted cases) of your answer to “Cases”: what it looked up, what it found and how it shaped the answer.',
+    );
+  });
+
   it('is offered only with cases:comment on a saved Workspace answer', () => {
     mocks.hasPermission.mockReturnValue(false);
     const { unmount } = renderMessage({ item: assistantItem() });

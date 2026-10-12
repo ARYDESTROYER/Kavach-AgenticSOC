@@ -1507,7 +1507,7 @@
    "page": "analyst/chat.md",
    "anchor": "conversation-width",
    "heading": "Conversation width",
-   "text": "The conversation uses the width the page gives it: when you collapse the navigation\nor the history rail, the answers grow into the space. Prose keeps a readable line\nlength on the left edge, and charts and tables use the whole width. Choose how wide it\nmay grow under `⋯` → **Width**:\n\n| Width | Use it for |\n|---|---|\n| **Comfortable** | A narrower column, up to about 1,024 px |\n| **Wide** (default) | Up to about 1,400 px, enough for wide tables on most screens |\n| **Full width** | Everything the conversation has, for very wide tables on large screens |\n\nThe choice is saved to your account and follows you to other devices. A single chart or\ntable can also take the full width from its own `⋯` menu (**Full width**).",
+   "text": "The conversation uses the width the page gives it: when you collapse the navigation\nor the history rail, the answers grow into the space, up to the full width of the\nscreen. Prose keeps a readable line length on the left edge, and charts, tables, and the\nmessage box use the whole width. Choose how wide it may grow under `⋯` → **Width**:\n\n| Width | Use it for |\n|---|---|\n| **Comfortable** | A narrower column, up to about 1,000 px |\n| **Wide** | Up to about 1,400 px, centred on very wide screens |\n| **Full width** (default) | All the space beside the menus, for wide tables and charts |\n\nThe choice is saved to your account and follows you to other devices; if you chose\nComfortable or Wide before, your choice is kept. With Comfortable or Wide, a single chart\nor table can also take the full width from its own `⋯` menu (**Full width**).",
    "console": []
   },
   {
@@ -1633,7 +1633,7 @@
    "page": "analyst/chat.md",
    "anchor": "leave-and-come-back",
    "heading": "Leave and come back",
-   "text": "You do not need to stay on the Chat page while an answer is being written. Leave for\nanother page and the answer keeps going; come back and the run log and **Stop** pick up\nwhere they are, live. After a page reload, a running answer is rejoined the same way.\nOther open tabs of the console show the same working indicator. When you are signed in,\nso does the console in your other browsers and on your other devices, and an answer you\nread in one of them is no longer marked as new in the others.\n\nWhile chat works away from the screen:\n\n- the **Chat** item in the navigation shows a turning ring; an accent dot means a new\n  answer you have not read, amber means a question is waiting for your input, and red\n  means an answer failed;\n- the logo can show a thin turning ring too (an administrator can turn this off, and a\n  custom logo itself never moves);\n- the browser tab title starts with **●** while an answer is being written and **✓**\n  when one is ready; and\n- when an answer is ready and Chat is not on screen, you get one **Answer ready**\n  notice with **Open**. If the first answer in a new chat could not be completed or\n  saved, the notice offers **Ask again** instead: a question you typed comes back in the\n  message box for you to send, and an **Ask AI** or **Ask about this** question is asked\n  again as it was, never put in the message box.",
+   "text": "You do not need to stay on the Chat page while an answer is being written. Leave for\nanother page and the answer keeps going; come back and the run log and **Stop** pick up\nwhere they are, live. After a page reload, a running answer is rejoined the same way.\nOther open tabs of the console show the same working indicator. When you are signed in,\nso does the console in your other browsers and on your other devices, and an answer you\nread in one of them is no longer marked as new in the others.\n\nWhile chat works away from the screen:\n\n- the **Chat** item in the navigation shows a turning ring; an accent dot means a new\n  answer you have not read, amber means a question you have not opened yet is waiting\n  for your input, and red means an answer failed;\n- the logo can show a thin turning ring too (an administrator can turn this off, and a\n  custom logo itself never moves);\n- the browser tab title starts with **●** while an answer is being written and **✓**\n  when one is ready; and\n- when an answer is ready and Chat is not on screen, you get one **Answer ready**\n  notice with **Open**. If the first answer in a new chat could not be completed or\n  saved, the notice offers **Ask again** instead: a question you typed comes back in the\n  message box for you to send, and an **Ask AI** or **Ask about this** question is asked\n  again as it was, never put in the message box.",
    "console": []
   },
   {
@@ -1665,7 +1665,7 @@
    "page": "analyst/chat.md",
    "anchor": "questions-that-need-your-input",
    "heading": "Questions that need your input",
-   "text": "When a question is ambiguous and there is no sensible default, the assistant asks\ninstead of guessing. The answer is a short question with up to four options; choose one,\nor choose **Something else…** and type your own answer. The conversation's history row\nshows **Needs input** until you reply.",
+   "text": "When a question is ambiguous and there is no sensible default, the assistant asks\ninstead of guessing. The answer is a short question with up to four options; choose one,\nor choose **Something else…** and type your own answer. The conversation's history row\nshows **Needs input** until you reply. The amber mark on **Chat** shows only until you\nopen the question, and when you next open Chat it starts on your newest conversation\nrather than on a question you have already seen.",
    "console": []
   },
   {
@@ -1739,7 +1739,7 @@
    "page": "analyst/chat.md",
    "anchor": "add-an-answer-to-a-case",
    "heading": "Add an answer to a case",
-   "text": "**Add to case…** (in **More actions**) posts a Workspace answer to a case's discussion\nthread as your own comment. Pick the case by ID or by searching, read the exact comment\nthat will be posted, and select **Post comment**. The comment holds your question and\nthe answer text, with the sources the answer cited listed at the end; charts and\ntables stay in chat, and mentions in the answer notify no one. A very long answer is\nshortened to fit the case thread, and the dialog says so. Posting needs the\n`cases:comment` permission and never changes the case's status, verdict, or\ndisposition. Nothing is added to a case without this confirmation.",
+   "text": "**Add to case…** (in **More actions**) posts a Workspace answer to a case's discussion\nthread as your own comment. Pick the case by ID or by searching, read the exact comment\nthat will be posted, and select **Post comment**. The comment holds your question and\nthe answer text, with the sources the answer cited listed at the end. For an answer to\nan option you picked, the question reads as your original question and the option, for\nexample \"Show me the trend → Cases\". Charts and\ntables stay in chat, and mentions in the answer notify no one. A very long answer is\nshortened to fit the case thread, and the dialog says so. Posting needs the\n`cases:comment` permission and never changes the case's status, verdict, or\ndisposition. Nothing is added to a case without this confirmation.",
    "console": []
   },
   {
@@ -1794,6 +1794,14 @@
    "anchor": "long-conversations",
    "heading": "Long conversations",
    "text": "A conversation has no message limit and no token limit. In a saved Workspace\nconversation, when chat runs without limits (the default), the assistant keeps the\nnewest exchanges word for word as the conversation grows and folds older ones into a\nrunning summary, so the next request still fits the model's context window. The run\nlog shows \"Earlier messages were summarised to keep going\" when this happens.\n\nThere is no running summary in Case Manager chat, in a conversation that is not saved,\nor when an administrator has set per-question limits (**Bounded**). There, once a\nconversation is long, only the newest exchanges that fit are sent with each question,\nand older ones are left out of what the model sees, without a notice; they stay in the\ntranscript. If a question depends on\nsomething said much earlier, repeat it in your question.\n\nInside a single long investigation, older lookup results are shortened to their\nheadline lines, and the assistant can read any of them back in full when it needs them.\n\nType `/compact` to summarize the earlier messages now, for example before you start a\nnew line of questions in the same conversation. It answers with how many exchanges were\nsummarised; there is nothing to summarize in a new conversation. `/compact` works only\nin a saved Workspace conversation when chat runs without limits; elsewhere it says why\nnothing was summarised.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#long-conversations:1",
+   "page": "analyst/chat.md",
+   "anchor": "long-conversations",
+   "heading": "Long conversations",
+   "text": "The reply is a short note, not an answer: it says what was summarised and what it cost\n(**No model call · $0** when no model was used, as in Demo Mode), names no data source,\nand has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,\n**Ask again**). The assistant does not see the note in later questions, a later\n`/compact` does not summarise it again, and **Save conversation as report** leaves it out.",
    "console": []
   },
   {

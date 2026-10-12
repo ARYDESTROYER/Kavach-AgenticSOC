@@ -37,7 +37,8 @@ afterEach(() => {
 
 describe('lane vars', () => {
   it('maps each width to its cap and always sets the container-relative gutter', () => {
-    expect(DEFAULT_LANE_WIDTH).toBe('wide');
+    // Full width is the default (Round 12 final review, operator ask 1).
+    expect(DEFAULT_LANE_WIDTH).toBe('full');
     expect(LANE_MAX).toEqual({ comfortable: '64rem', wide: '88rem', full: '100%' });
     expect(LANE_GUTTER).toBe('clamp(1rem, 2.5cqi, 2.5rem)');
     expect(laneVars('comfortable')).toEqual({ '--chat-gutter': LANE_GUTTER, '--chat-lane-max': '64rem' });
@@ -46,16 +47,35 @@ describe('lane vars', () => {
 });
 
 describe('useChatLaneWidth', () => {
-  it('defaults to Wide without storage, prefs or a provider', () => {
+  it('defaults to Full width without storage, prefs or a provider', () => {
     const { result } = renderHook(() => useChatLaneWidth());
-    expect(result.current.width).toBe('wide');
+    expect(result.current.width).toBe('full');
   });
 
   it('paints the stored choice first and ignores a junk value', () => {
-    window.localStorage.setItem(LANE_WIDTH_STORAGE_KEY, 'full');
-    expect(renderHook(() => useChatLaneWidth()).result.current.width).toBe('full');
+    window.localStorage.setItem(LANE_WIDTH_STORAGE_KEY, 'comfortable');
+    expect(renderHook(() => useChatLaneWidth()).result.current.width).toBe('comfortable');
     window.localStorage.setItem(LANE_WIDTH_STORAGE_KEY, 'enormous');
-    expect(renderHook(() => useChatLaneWidth()).result.current.width).toBe('wide');
+    expect(renderHook(() => useChatLaneWidth()).result.current.width).toBe('full');
+  });
+
+  it('keeps a stored Wide or Comfortable choice: only a viewer who never chose gets Full width', () => {
+    for (const chosen of ['wide', 'comfortable'] as const) {
+      window.localStorage.setItem(LANE_WIDTH_STORAGE_KEY, chosen);
+      expect(renderHook(() => useChatLaneWidth()).result.current.width).toBe(chosen);
+    }
+    // The account's stored choice wins over the default once prefs hydrate.
+    window.localStorage.clear();
+    prefsState.value = { ready: true, prefs: { misc: { [LANE_WIDTH_PREF_KEY]: 'wide' } } };
+    const { result } = renderHook(() => useChatLaneWidth());
+    expect(result.current.width).toBe('wide');
+    expect(window.localStorage.getItem(LANE_WIDTH_STORAGE_KEY)).toBe('wide');
+    // An account that never chose keeps the default and writes nothing.
+    window.localStorage.clear();
+    prefsState.value = { ready: true, prefs: { misc: {} } };
+    expect(renderHook(() => useChatLaneWidth()).result.current.width).toBe('full');
+    expect(window.localStorage.getItem(LANE_WIDTH_STORAGE_KEY)).toBeNull();
+    expect(putUserMock).not.toHaveBeenCalled();
   });
 
   it('adopts the server value once prefs hydrate, and mirrors it locally', () => {

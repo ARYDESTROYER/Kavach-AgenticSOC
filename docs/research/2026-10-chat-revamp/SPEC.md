@@ -2174,3 +2174,28 @@ the 100-message window note of §7.5 and A22.
   nothing). A question asked in this session
   takes its saved id from `ChatResponse.user_message_id`, so a hit on it never reads older
   history. Export and report methodology read the whole conversation.
+
+**A62 — Full width by default, unseen questions, and a clarify pick's question (§10.1, §10.3,
+§10.8, A51, A52, A55; Round 12 final review).** Amends A52's default and adds to A51 and A55
+without rewriting them (Round 12 SPEC §7.2 decisions 18 to 20).
+- **Width.** The default conversation width is **Full width** (no cap; `DEFAULT_LANE_WIDTH =
+  'full'`), not Wide 88rem: with every rail collapsed the lane fills the conversation minus its
+  gutters (1440 → 1242 px, 1920 → 1708, 2560 → 2348). Comfortable 64rem and Wide 88rem stay in
+  the thread ⋯ menu → **Width** in that order, each hint on one line of the 15rem menu: Full
+  width's reads "Fills the space (default)", Wide's "Up to about 1,400 px, centred",
+  Comfortable's "Up to about 1,000 px". A stored choice (localStorage `soc.chat.laneWidth` or
+  `UserPrefs.misc.chat_lane_width`) is kept. Prose, notices, the run log and the `markdown`
+  and `callout` blocks keep the 48rem measure on the lane's left edge; framed blocks, the
+  meta row under blocks, follow-ups, the composer and the user bubble span to the right edge.
+  A52's measured Wide widths remain the Wide reference.
+- **Questions.** A `needs_input` conversation marks the navigation (glyph and text) and takes
+  the landing only while its question has not been seen: once the analyst has looked at it,
+  the history row keeps "Needs input" and nothing else does. `preferredThread` is running →
+  unread (an unread answer, or a question not yet seen) → newest.
+- **Add to case.** The snapshot quotes an answer to a clarify pick (`origin: "clarify"`) as
+  the clarified question plus the pick ("Show me the trend → Cases"), chained across
+  clarifies, with the clarify card's question standing in when the clarified question is not
+  on screen. Step questions from the run log keep quoting the question exactly as sent.
+- **Line end labels** (BLOCKS amendment 31): sized to the longest label up to a quarter of the
+  chart's width, never fewer than 14 characters, and clipped only beyond that with the whole
+  label as their hover title.

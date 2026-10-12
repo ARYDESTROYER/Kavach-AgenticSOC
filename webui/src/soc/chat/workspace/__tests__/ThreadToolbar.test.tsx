@@ -153,7 +153,9 @@ describe('ThreadToolbar', () => {
     expect(wide).toHaveAttribute('aria-checked', 'true');
     const full = screen.getByRole('menuitemradio', { name: /^Full width/ });
     expect(full).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByRole('menuitemradio', { name: /^Comfortable/ })).toHaveAccessibleName(/A narrower column/);
+    expect(screen.getByRole('menuitemradio', { name: /^Comfortable/ })).toHaveAccessibleName(/Up to about 1,000 px$/);
+    // The default is named, so a viewer who chose another width can find their way back.
+    expect(full).toHaveAccessibleName(/^Full width ?, Fills the space \(default\)$/);
     act(() => full.focus());
     await user.keyboard('{Enter}');
     expect(onChange).toHaveBeenCalledWith('full');

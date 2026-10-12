@@ -833,12 +833,33 @@ describe('useChatConversations — live statuses (Round 12, SPEC D13)', () => {
     expect(overlayActivity(rows, [])).toBe(rows);
   });
 
-  it('prefers a running thread, then one waiting on the analyst or unread, then the newest', () => {
+  it('prefers a running thread, then unread news (an answer or an unseen question), then the newest', () => {
     expect(preferredThread([NEWEST, { ...OLDER, status: 'running' }])).toBe(OLDER.id);
     expect(preferredThread([NEWEST, { ...OLDER, unread: true }])).toBe(OLDER.id);
-    expect(preferredThread([NEWEST, { ...OLDER, status: 'needs_input' }])).toBe(OLDER.id);
+    // A question the analyst has not opened yet (the server marks it unread too).
+    expect(preferredThread([NEWEST, { ...OLDER, status: 'needs_input', unread: true }])).toBe(OLDER.id);
+    // Opened and left unanswered: it keeps "Needs input" but never takes over the landing.
+    expect(preferredThread([NEWEST, { ...OLDER, status: 'needs_input', unread: false }])).toBe(NEWEST.id);
+    expect(preferredThread([NEWEST, { ...OLDER, status: 'needs_input' }])).toBe(NEWEST.id);
     expect(preferredThread([NEWEST, OLDER])).toBe(NEWEST.id);
     expect(preferredThread([])).toBeNull();
+  });
+
+  it('opens the newest thread, not an old question the analyst already opened (a fresh visit)', async () => {
+    listMock.mockResolvedValue({ conversations: [NEWEST, { ...OLDER, status: 'needs_input', unread: false }] });
+    // A reload re-adds the seen question to the activity store (ActivityEffects).
+    putChatActivity(activity({ scope: `conv:${OLDER.id}`, conversationId: OLDER.id, status: 'needs_input', seen: true, source: 'server' }));
+    const { result } = await mount();
+    expect(result.current.activeId).toBe(NEWEST.id);
+    // The history row still says the question waits for an answer.
+    expect(result.current.conversations.find((row) => row.id === OLDER.id)).toMatchObject({ status: 'needs_input', unread: false });
+  });
+
+  it('opens a question that arrived while the analyst was away (not seen yet)', async () => {
+    listMock.mockResolvedValue({ conversations: [NEWEST, { ...OLDER, status: 'needs_input' }] });
+    putChatActivity(activity({ scope: `conv:${OLDER.id}`, conversationId: OLDER.id, status: 'needs_input', seen: false }));
+    const { result } = await mount();
+    expect(result.current.activeId).toBe(OLDER.id);
   });
 
   it('opens the thread a turn is running in rather than the newest on a fresh visit', async () => {
@@ -905,10 +926,13 @@ describe('useChatConversations — live statuses (Round 12, SPEC D13)', () => {
         activity({ scope: 'conv:fresh-unread', conversationId: 'fresh-unread', status: 'unread', title: 'Top talkers' }),
         activity({ scope: 'conv:fresh-failed', conversationId: 'fresh-failed', status: 'failed', title: 'Broken' }),
         activity({ scope: 'conv:fresh-question', conversationId: 'fresh-question', status: 'needs_input', title: 'Which host?' }),
+        activity({ scope: 'conv:seen-question', conversationId: 'seen-question', status: 'needs_input', seen: true, title: 'Which day?' }),
       ],
     );
     expect(out.map((row) => [row.id, row.status, row.unread === true])).toEqual([
-      ['fresh-question', 'needs_input', false],
+      // A question not looked at yet is news (unread); one already looked at is not.
+      ['seen-question', 'needs_input', false],
+      ['fresh-question', 'needs_input', true],
       ['fresh-failed', 'failed', false],
       ['fresh-unread', 'idle', true],
       [NEWEST.id, undefined, false],

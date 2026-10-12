@@ -36,18 +36,19 @@ Save conversation as report, Width, and Delete.
 ### Conversation width
 
 The conversation uses the width the page gives it: when you collapse the navigation
-or the history rail, the answers grow into the space. Prose keeps a readable line
-length on the left edge, and charts and tables use the whole width. Choose how wide it
-may grow under `⋯` → **Width**:
+or the history rail, the answers grow into the space, up to the full width of the
+screen. Prose keeps a readable line length on the left edge, and charts, tables, and the
+message box use the whole width. Choose how wide it may grow under `⋯` → **Width**:
 
 | Width | Use it for |
 |---|---|
-| **Comfortable** | A narrower column, up to about 1,024 px |
-| **Wide** (default) | Up to about 1,400 px, enough for wide tables on most screens |
-| **Full width** | Everything the conversation has, for very wide tables on large screens |
+| **Comfortable** | A narrower column, up to about 1,000 px |
+| **Wide** | Up to about 1,400 px, centred on very wide screens |
+| **Full width** (default) | All the space beside the menus, for wide tables and charts |
 
-The choice is saved to your account and follows you to other devices. A single chart or
-table can also take the full width from its own `⋯` menu (**Full width**).
+The choice is saved to your account and follows you to other devices; if you chose
+Comfortable or Wide before, your choice is kept. With Comfortable or Wide, a single chart
+or table can also take the full width from its own `⋯` menu (**Full width**).
 
 ## Ask a question
 
@@ -256,8 +257,8 @@ read in one of them is no longer marked as new in the others.
 While chat works away from the screen:
 
 - the **Chat** item in the navigation shows a turning ring; an accent dot means a new
-  answer you have not read, amber means a question is waiting for your input, and red
-  means an answer failed;
+  answer you have not read, amber means a question you have not opened yet is waiting
+  for your input, and red means an answer failed;
 - the logo can show a thin turning ring too (an administrator can turn this off, and a
   custom logo itself never moves);
 - the browser tab title starts with **●** while an answer is being written and **✓**
@@ -314,7 +315,9 @@ earlier messages were summarised to keep the conversation going.
 When a question is ambiguous and there is no sensible default, the assistant asks
 instead of guessing. The answer is a short question with up to four options; choose one,
 or choose **Something else…** and type your own answer. The conversation's history row
-shows **Needs input** until you reply.
+shows **Needs input** until you reply. The amber mark on **Chat** shows only until you
+open the question, and when you next open Chat it starts on your newest conversation
+rather than on a question you have already seen.
 
 ### When nothing matched
 
@@ -431,7 +434,9 @@ for your own totals.
 **Add to case…** (in **More actions**) posts a Workspace answer to a case's discussion
 thread as your own comment. Pick the case by ID or by searching, read the exact comment
 that will be posted, and select **Post comment**. The comment holds your question and
-the answer text, with the sources the answer cited listed at the end; charts and
+the answer text, with the sources the answer cited listed at the end. For an answer to
+an option you picked, the question reads as your original question and the option, for
+example "Show me the trend → Cases". Charts and
 tables stay in chat, and mentions in the answer notify no one. A very long answer is
 shortened to fit the case thread, and the dialog says so. Posting needs the
 `cases:comment` permission and never changes the case's status, verdict, or
@@ -537,6 +542,12 @@ new line of questions in the same conversation. It answers with how many exchang
 summarised; there is nothing to summarize in a new conversation. `/compact` works only
 in a saved Workspace conversation when chat runs without limits; elsewhere it says why
 nothing was summarised.
+
+The reply is a short note, not an answer: it says what was summarised and what it cost
+(**No model call · $0** when no model was used, as in Demo Mode), names no data source,
+and has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,
+**Ask again**). The assistant does not see the note in later questions, a later
+`/compact` does not summarise it again, and **Save conversation as report** leaves it out.
 
 ## Reports
 

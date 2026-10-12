@@ -387,27 +387,28 @@ describe('Workspace Chat page', () => {
     renderChat();
     await screen.findByText('Newest sign-in review answer');
     const frame = screen.getByTestId('workspace-chat-page');
-    expect(frame).toHaveAttribute('data-lane-width', 'wide');
+    // Never chosen: Full width (operator ask 1, Round 12 final review), no cap at all.
+    expect(frame).toHaveAttribute('data-lane-width', 'full');
     const section = screen.getByRole('region', { name: 'Conversation' });
     // The conversation zone is the size container the gutter's cqi resolves against.
     expect(section).toHaveClass('@container');
-    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('88rem');
+    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('100%');
     expect(section.style.getPropertyValue('--chat-gutter')).toBe('clamp(1rem, 2.5cqi, 2.5rem)');
     // The composer column spans the lane (both edges), not the 48rem prose measure.
     const composerCol = screen.getByTestId('composer').closest('.col-start-2') as HTMLElement;
     expect(composerCol).toHaveClass('col-start-2', 'col-end-3');
     expect(composerCol.className).not.toContain('max-w-[48rem]');
-    // Thread ⋯ → Width → Full width removes the cap and is remembered.
+    // Thread ⋯ → Width → Wide caps the lane at 88rem and is remembered.
     await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    const width = await screen.findByRole('menuitem', { name: 'Width, currently Wide' });
+    const width = await screen.findByRole('menuitem', { name: 'Width, currently Full width' });
     await user.click(width);
-    const full = await screen.findByRole('menuitemradio', { name: /^Full width/ });
-    act(() => full.focus());
+    const wide = await screen.findByRole('menuitemradio', { name: /^Wide/ });
+    act(() => wide.focus());
     await user.keyboard('{Enter}');
     await settle();
-    expect(frame).toHaveAttribute('data-lane-width', 'full');
-    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('100%');
-    expect(window.localStorage.getItem('soc.chat.laneWidth')).toBe('full');
+    expect(frame).toHaveAttribute('data-lane-width', 'wide');
+    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('88rem');
+    expect(window.localStorage.getItem('soc.chat.laneWidth')).toBe('wide');
     window.localStorage.removeItem('soc.chat.laneWidth');
   });
 

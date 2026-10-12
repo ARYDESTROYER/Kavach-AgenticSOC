@@ -3121,6 +3121,12 @@ export interface ChatResponse {
   continued?: number;
   /** Round 12 (SPEC D4): earlier context was summarised in this turn. */
   compacted?: boolean;
+  /**
+   * Round 12 (final review): the chat command this turn replied to (`/compact`), or null
+   * for an answer. A command reply is a quiet note: no source, no answer actions, and
+   * real usage (zero when no model call ran).
+   */
+  command?: ChatCommand | null;
 }
 
 /** Round 12 (SPEC §3.1). Options are model-authored: render as untrusted text (#9). */
@@ -3201,6 +3207,8 @@ export type ChatStepKind = 'tool' | 'model';
 export type ChatStepStatus = 'ok' | 'error' | 'denied' | 'timeout' | 'skipped' | 'cancelled';
 export type ChatStepBasis = 'exact' | 'newest_n' | 'sample' | 'cached';
 export type ChatAnswerKind = 'data' | 'product_help' | 'mixed' | 'conversation';
+/** Round 12 (final review): the chat commands a reply can answer (`ChatResponse.command`). */
+export type ChatCommand = 'compact';
 export type TurnNoticeKind =
   | 'partial'
   | 'cap'

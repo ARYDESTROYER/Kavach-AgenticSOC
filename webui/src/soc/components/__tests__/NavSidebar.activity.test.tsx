@@ -131,18 +131,26 @@ describe('NavSidebar — chat activity (expanded)', () => {
     expect(screen.getAllByTestId('nav-chat')[0].querySelector('[data-activity="running"]')).not.toBeNull();
   });
 
-  it('explains every glyph it draws, also a question the analyst already looked at', () => {
-    // Seen questions keep their amber dot until answered: the dot is never unexplained.
+  it('explains every amber glyph it draws, and draws none for a question the analyst already looked at', () => {
+    putChatActivity(entry({ scope: 'conv:c1', status: 'needs_input', title: 'Which host?' }));
+    putChatActivity(entry({ scope: 'case:k', kind: 'case', caseId: 'k', conversationId: null, status: 'needs_input', title: 'Which user?' }));
+    for (const collapsed of [false, true]) {
+      const { container, unmount } = renderNav({ collapsed });
+      const glyphs = Array.from(container.querySelectorAll('[data-activity="needs_input"]'));
+      expect(glyphs.length).toBeGreaterThan(0);
+      for (const glyph of glyphs) {
+        const host = glyph.closest('button') as HTMLElement;
+        expect(describedText(host)).toMatch(/question needs your input: (Case k: )?Which (host|user)\?$/);
+      }
+      unmount();
+    }
+    // Looked at (seen) and left unanswered: no mark on any page, and no text without a mark.
     putChatActivity(entry({ scope: 'conv:c1', status: 'needs_input', seen: true, title: 'Which host?' }));
     putChatActivity(entry({ scope: 'case:k', kind: 'case', caseId: 'k', conversationId: null, status: 'needs_input', seen: true, title: 'Which user?' }));
     for (const collapsed of [false, true]) {
       const { container, unmount } = renderNav({ collapsed });
-      const glyphs = Array.from(container.querySelectorAll('[data-activity]'));
-      expect(glyphs.length).toBeGreaterThan(0);
-      for (const glyph of glyphs) {
-        const host = glyph.closest('button') as HTMLElement;
-        expect(describedText(host)).toMatch(/question waiting for your answer: (Case k: )?Which (host|user)\?$/);
-      }
+      expect(container.querySelectorAll('[data-activity]')).toHaveLength(0);
+      expect(container.textContent).not.toMatch(/question/);
       unmount();
     }
   });

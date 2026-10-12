@@ -16,7 +16,9 @@
  *   sr-only table lists every series, so its Total always covers every series.
  * - `line` / `area`: 2 px round-joined lines that BREAK at `null` (never interpolated),
  *   a flat ~12 % area wash, an end dot with a surface ring, selective end labels for
- *   2–4 series, and a crosshair snapping to the nearest x.
+ *   2–4 series (sized to the longest label, up to a quarter of the chart's width, and
+ *   clipped only beyond that with the whole label as their hover title; the legend and
+ *   tooltip always name a series in full), and a crosshair snapping to the nearest x.
  *
  * One unit, one y axis (G6). Ticks are clean steps from zero. The newest bucket is drawn
  * lighter (0.6, the house value that still clears 3:1) or dashed while `last_in_progress`,
@@ -67,6 +69,7 @@ import {
   CHAR_W,
   areaPath,
   barWidth,
+  endLabelColumn,
   extent,
   lastMeasured,
   lineRuns,
@@ -88,7 +91,6 @@ const X_AXIS_H = 20;
 const Y_GAP = 8;
 const IN_PROGRESS_OPACITY = 0.6;
 const GROUP_GAP = 2;
-const END_LABEL_CHARS = 14;
 /** Extra room for tick glyphs wider than a digit (see `x0`). */
 const TICK_SLACK = 4;
 /** Extra x-axis room for the "(in progress)" line under the newest slot. */
@@ -196,9 +198,10 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   // tick that starts left of the plot.
   const x0 = Math.ceil(Math.max(...tickTexts.map((t) => t.length)) * CHAR_W) + Y_GAP + TICK_SLACK;
   const endLabels = isLine && visibleIdx.length >= 2 && visibleIdx.length <= 4;
-  const padRight = endLabels
-    ? Math.ceil(Math.min(END_LABEL_CHARS, Math.max(...visibleIdx.map((k) => block.series[k].label.length))) * CHAR_W) + 14
-    : 8;
+  // The end labels take what their longest label needs, up to a quarter of the chart
+  // (`endLabelColumn`): a label is clipped only beyond that, never at a fixed length.
+  const endColumn = endLabels ? endLabelColumn(width, visibleIdx.map((k) => block.series[k].label)) : null;
+  const padRight = endColumn ? endColumn.padRight : 8;
   const plotTop = PAD_TOP;
   const baseline = Math.max(plotTop + 24, height - X_AXIS_H - (block.last_in_progress ? IN_PROGRESS_LINE_H : 0));
   const plotW = Math.max(1, width - x0 - padRight);
@@ -437,7 +440,8 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   }
 
   const lines: React.ReactNode[] = [];
-  const labels: Array<{ k: number; y: number; text: string }> = [];
+  /** `full`: the whole label when `text` had to be clipped (its hover title). */
+  const labels: Array<{ k: number; y: number; text: string; full: string | null }> = [];
   if (isLine) {
     visibleIdx.forEach((k) => {
       const values = block.series[k].values;
@@ -485,7 +489,11 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
             className={MARK_FORCED}
           />,
         );
-        if (endLabels) labels.push({ k, y: yOf(values[end] as number), text: clipText(block.series[k].label, END_LABEL_CHARS) });
+        if (endColumn) {
+          const full = block.series[k].label;
+          const text = clipText(full, endColumn.budget);
+          labels.push({ k, y: yOf(values[end] as number), text, full: text === full ? null : full });
+        }
       }
     });
     // De-collide end labels vertically (12 px apart), keeping their order.
@@ -790,7 +798,9 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
               dy="0.32em"
               className={block.untrusted ? 'font-mono text-2xs' : 'text-2xs'}
               style={{ fill: token('foreground') }}
+              data-end-label={l.k}
             >
+              {l.full ? <title>{l.full}</title> : null}
               {l.text}
             </text>
           ))}

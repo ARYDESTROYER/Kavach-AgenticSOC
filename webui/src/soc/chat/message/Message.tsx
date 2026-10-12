@@ -22,6 +22,10 @@
  * any lookup in the step inspector. A saved Workspace answer can be rated, added to a
  * case (human-confirmed) and shows the report the server saved from it.
  *
+ * A reply to a chat command (`/compact`, `response.command`) is not an answer: it renders
+ * as one quiet note (CommandNote: the server's sentence and what it cost) with no source,
+ * run log, meta row or answer actions.
+ *
  * Every string comes normalised from `stream-events.ts` and renders as a text node; the
  * blocks pass through `parseBlocks()` (G9) and load from their own chunk, never
  * statically (`chat-blocks-bundle.test.ts`).
@@ -45,6 +49,7 @@ import { AddToCaseDialog } from './AddToCaseDialog';
 import { AnswerContents, AnswerEnd, LONG_ANSWER_CHARS, TOC_MIN_HEADINGS, useAnswerHeadings } from './AnswerContents';
 import { FeedbackButtons, FeedbackPanel, useAnswerFeedbackControls } from './AnswerFeedback';
 import { ClarifyCard } from './ClarifyCard';
+import { CommandNote } from './CommandNote';
 import { useAnswerFeedback } from './feedback';
 import { FollowUps } from './FollowUps';
 import { CONTENT_COL, LANE_COL, LANE_SUBGRID, META_COL, WIDE_COL } from './lane';
@@ -111,8 +116,17 @@ export interface MessageProps {
   /** Stop abandoned the stream locally (the saved copy appears after a refresh). */
   stoppedLocally?: boolean;
   report?: MessageReportBinding | null;
-  /** The question this answer replied to (display text; "Add to case" quotes it). */
+  /**
+   * The question this answer replied to, exactly as sent (display text): a step question
+   * from the run log quotes it, so the model and the Demo planner can find this answer.
+   */
   question?: string | null;
+  /**
+   * The same question as a reader outside the chat needs it (`questionsInContext`): for
+   * an answer to a clarify pick, the clarified question plus the pick ("Show me the trend
+   * → Cases"). "Add to case" quotes it; without it, `question` is quoted.
+   */
+  questionInContext?: string | null;
   /**
    * Which of several answers to the same question this is, newest first (`answerRecencies`;
    * 0 = the only one): a step question then names "your second most recent answer to …".
@@ -297,6 +311,7 @@ function MessageView({
   stoppedLocally = false,
   report = null,
   question = null,
+  questionInContext = null,
   questionRecency = 0,
   highlighted = false,
   className,
@@ -364,7 +379,11 @@ function MessageView({
   // A D1 turn's answer IS its notice message: say it once, in the callout. A clarify
   // answer that is only its question says it once, in the card.
   const clarifyQuestion = !running ? (response?.clarify?.question ?? null) : null;
+  // A reply to a chat command (`/compact`): a quiet note, not an answer (CommandNote
+  // shows its text).
+  const command = !running && !!response?.command;
   const showAnswer =
+    !command &&
     !!answer &&
     !(notice && answer.trim() === notice.message.trim()) &&
     !(clarifyQuestion && answer.trim() === clarifyQuestion.trim());
@@ -372,8 +391,9 @@ function MessageView({
   const calloutView = calloutNotice
     ? noticeView(calloutNotice, { answered: showAnswer && !unsaved, hasConsoleLink: consoleLinks.length > 0 })
     : null;
-  // D4: a summary of earlier messages is a quiet line, never a callout.
-  const compacted = !running && (notice?.kind === 'compacted' || response?.compacted === true);
+  // D4: a summary of earlier messages is a quiet line, never a callout (a command's
+  // note says it itself).
+  const compacted = !running && !command && (notice?.kind === 'compacted' || response?.compacted === true);
   // The deterministic $0 Help Center answer (§5.4.1: no model call, usage.calls = 0)
   // did answer: its notice explains why AI was unavailable, but the turn is not
   // "Failed". A billed product answer keeps every outcome word (Stopped, Failed).
@@ -392,7 +412,8 @@ function MessageView({
   const persistedMessageId = isSafeChatId(item.messageId) ? item.messageId : null;
   const conversationId = isSafeChatId(engine.conversationId) ? engine.conversationId : null;
   // A saved Workspace answer: rated, inspected and added to a case by its ids.
-  const savedAnswer = !compact && !!conversationId && !!persistedMessageId && !!response && !unsaved;
+  // Never a command's note: it is not rated, inspected or added anywhere.
+  const savedAnswer = !compact && !command && !!conversationId && !!persistedMessageId && !!response && !unsaved;
   const blocksMessageId = persistedMessageId ?? item.key;
   const busy = engine.busy;
 
@@ -405,7 +426,8 @@ function MessageView({
     if (notice?.kind === 'stopped_repeating') out.push({ key: 'n-repeat', text: NOTE_TEXT.repeat, kind: 'repeat' });
     return out;
   }, [compacted, notice?.kind, steps]);
-  const hasLog = steps.some((step) => step.kind === 'tool' || quietModelNote(step) !== null) || notes.length > 0;
+  const hasLog =
+    !command && (steps.some((step) => step.kind === 'tool' || quietModelNote(step) !== null) || notes.length > 0);
 
   // The step inspector (P1-1): any settled lookup of the run log.
   // The last inspected step stays mounted while the sheet closes (its exit animation).
@@ -470,13 +492,13 @@ function MessageView({
   const endRef = React.useRef<HTMLParagraphElement>(null);
   const headings = useAnswerHeadings(answerRef, showAnswer ? answer : '', !running);
   const longAnswer = !running && showAnswer && (headings.length >= TOC_MIN_HEADINGS || answer.length >= LONG_ANSWER_CHARS);
-  useCopyLastAnswer(latest && !running && response?.answer ? response.answer : null);
+  useCopyLastAnswer(latest && !running && !command && response?.answer ? response.answer : null);
 
-  const reportBinding = report && persistedMessageId ? report : null;
+  const reportBinding = report && persistedMessageId && !command ? report : null;
   // Wide rows show every action; a narrow row keeps the thumbs and moves the rest into ⋯
   // (a container query on the meta row, so the two forms never show at once).
   const actions =
-    !running && response ? (
+    !running && response && !command ? (
       <>
         <span className="hidden @[30rem]/meta:contents">{response.answer ? <CopyAnswer text={response.answer} shortcut={latest} /> : null}</span>
         {savedAnswer ? <FeedbackButtons state={feedback} panelId={feedbackId} /> : null}
@@ -589,6 +611,8 @@ function MessageView({
         />
       ) : null}
 
+      {command && response ? <CommandNote className={CONTENT_COL} response={response} /> : null}
+
       {showAnswer ? (
         <div
           ref={answerRef}
@@ -640,7 +664,7 @@ function MessageView({
 
       {longAnswer ? <AnswerEnd ref={endRef} className={CONTENT_COL} /> : null}
 
-      {!running && response ? (
+      {!running && response && !command ? (
         <div className={cn(blocks.length && !compact ? META_COL : CONTENT_COL, 'space-y-1.5')}>
           <MetaRow
             response={response}
@@ -728,7 +752,7 @@ function MessageView({
         <AddToCaseDialog
           open={addCaseOpen}
           onOpenChange={setAddCaseOpen}
-          question={question}
+          question={questionInContext ?? question}
           answer={response.answer}
           at={item.at}
           citations={citations}

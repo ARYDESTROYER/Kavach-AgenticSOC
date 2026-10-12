@@ -18,6 +18,7 @@
  */
 import type {
   ChatAnswerKind,
+  ChatCommand,
   ChatBudgetState,
   ChatCitation,
   ChatCitationKind,
@@ -200,6 +201,7 @@ export const CHAT_ANSWER_KINDS = [
   'mixed',
   'conversation',
 ] as const satisfies readonly ChatAnswerKind[];
+export const CHAT_COMMANDS = ['compact'] as const satisfies readonly ChatCommand[];
 export const TURN_NOTICE_KINDS = [
   'partial',
   'cap',
@@ -726,6 +728,8 @@ export function normaliseChatResponse(raw: unknown): ChatResponse | null {
   out.saved_report_error = normaliseReportSaveError(raw.saved_report_error);
   out.continued = count(raw.continued, 0);
   out.compacted = raw.compacted === true;
+  // Round 12 (final review): a reply to `/compact` is a note, not an answer.
+  out.command = enumOr(raw.command, CHAT_COMMANDS, null);
   return out;
 }
 

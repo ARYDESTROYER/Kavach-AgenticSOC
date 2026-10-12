@@ -300,12 +300,14 @@ describe('ActivityEffects', () => {
     expect(toastMock.success).not.toHaveBeenCalled();
   });
 
-  it('a reload never re-announces a question that was already opened', async () => {
+  it('a reload never re-announces or re-marks a question that was already opened', async () => {
     rows = [{ id: 'c1', title: 'Which host?', status: 'needs_input', unread: false, updated_at: '2026-10-11T09:00:00Z' }];
     await mountEffects();
     await waitFor(() => expect(find('conv:c1')?.seen).toBe(true));
     expect(document.title).toBe('Agentic SOC');
-    expect(getChatActivity().workspace.text).toBe('Chat: 1 question waiting for your answer: Which host?');
+    // The entry stays (an answer elsewhere still drops it), but it is no news: no amber
+    // Chat mark on every page for a question the analyst opened and left.
+    expect(getChatActivity().workspace).toEqual({ status: null, text: '' });
   });
 
   it('drops marks for threads the list no longer has, and questions answered elsewhere', async () => {

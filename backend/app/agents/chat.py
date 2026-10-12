@@ -121,6 +121,7 @@ from .chat_protocol import (
     clean_summary,
     coerce_console_links,
     coerce_fallback_answer,
+    conversation_exchanges,
     drop_summarised,
     extractive_summary,
     fallback_reason,
@@ -298,6 +299,7 @@ _FUSE_SKIPPED = "Wrapped up before this lookup ran"
 _COMPACT_COMMAND = "/compact"
 _COMPACT_DONE = "Summarised {count} earlier {noun}. The conversation continues from the summary."
 _COMPACT_NOTHING = "There is nothing earlier in this conversation to summarise yet."
+_COMPACT_ALREADY = "Everything earlier in this conversation is already summarised."
 _COMPACT_BOUNDED = ("Summarising earlier messages works when chat runs without limits "
                     "(Settings › General › Chat assistant).")
 _COMPACT_UNAVAILABLE = ("Summaries are kept only for saved chat conversations, so this one was "
@@ -1480,8 +1482,10 @@ class _AgentTurn:
         self.summary = (clean_summary(summary_text, limit=self.summary_limit)
                         if self.unlimited and summary_text else "")
         self.summary_covers_through = summary_covers_through if self.summary else None
-        self.pending_exchanges: list[PriorExchange] = (
-            drop_summarised(exchanges, self.summary_covers_through) if self.summary else list(exchanges))
+        # A reply to a chat command (``/compact``) is housekeeping: never replayed,
+        # folded or counted (dropped AFTER the summary's covers_through is found).
+        self.pending_exchanges: list[PriorExchange] = conversation_exchanges(
+            drop_summarised(exchanges, self.summary_covers_through) if self.summary else exchanges)
         self.fold_count = 0
         if self.unlimited:
             if not self.compact_command:
@@ -1492,7 +1496,7 @@ class _AgentTurn:
                     self.pending_exchanges = self.pending_exchanges[planned:]
             self.replay: ReplayResult = render_replay(self.pending_exchanges[self.fold_count:], unbounded=True)
         else:
-            self.replay = render_replay(select_replay(exchanges))
+            self.replay = render_replay(select_replay(conversation_exchanges(exchanges)))
         # §4.8: only USER-authored text (origin "user") may name an indicator; the
         # ledger also carries the per-turn and per-conversation lookup budgets.
         user_texts = [e.user for e in exchanges if e.origin == "user" and e.user]
@@ -2301,7 +2305,11 @@ class _AgentTurn:
         """``/compact`` (D4): fold every replayed exchange into the summary now and
         answer with a short confirmation; no lookups. Bounded chat keeps no summary,
         and neither does a turn whose summary would not be stored (case chat, an
-        unsaved conversation): no billed call whose result would be thrown away."""
+        unsaved conversation): no billed call whose result would be thrown away.
+
+        The reply is marked ``command="compact"`` (a note, not an answer) and always
+        carries usage: the summary call's real totals when one ran (#6), otherwise a
+        zero usage ("No model call · $0"), never the legacy "not recorded"."""
         folded = 0
         notice: TurnNotice | None = None
         if self.unlimited and self.can_store_summary and self.pending_exchanges:
@@ -2320,13 +2328,16 @@ class _AgentTurn:
             text = _COMPACT_UNAVAILABLE
         elif folded:
             text = _COMPACT_DONE.format(count=folded, noun="exchange" if folded == 1 else "exchanges")
+        elif self.summary:
+            text = _COMPACT_ALREADY
         else:
             text = _COMPACT_NOTHING
-        usage = self._totals() if (self.model_usages or self.embedding_usages) else None
+        usage = (self._totals() if (self.model_usages or self.embedding_usages)
+                 else TurnUsage(model=None, simulated=self.simulated))
         response = ChatResponse(
             answer=text, case_id=self.case_id, effective_model=self.effective_model, steps=self.steps,
             usage=usage, answer_kind="conversation", stream_mode=self.stream_mode, turn_id=self.turn_id,
-            compacted=self.compacted, notice=notice,
+            compacted=self.compacted, notice=notice, command="compact",
         )
         self.outcome.notice = notice
         self.outcome.compacted = self.compacted

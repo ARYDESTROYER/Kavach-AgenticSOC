@@ -31,6 +31,7 @@ import {
   JUMP_THRESHOLD_PX,
   Transcript,
   groupExchanges,
+  questionsInContext,
   scrollbarGutter,
   type TranscriptProps,
 } from '../Transcript';
@@ -103,6 +104,46 @@ describe('Transcript', () => {
       ['one', a1.key],
       ['two', null],
     ]);
+  });
+
+  it('names a clarify pick by the question it answered (what "Add to case" quotes)', () => {
+    const clarify = (question: string, options: string[]) =>
+      assistantItem({ response: response({ answer: question, clarify: { question, options, allow_custom: true }, steps: [] }) });
+    const answer = () => assistantItem();
+    const contexts = (items: ChatTranscriptItem[]) => questionsInContext(groupExchanges(items));
+    // A pick, a second clarify answered by a pick (chained), "Ask again" of the pick
+    // (found by the clarify that offered it), and words typed after a clarify (as asked:
+    // they cannot be told from a new question).
+    expect(
+      contexts([
+        userItem('Show me the trend'),
+        clarify('Trend of what?', ['Alerts', 'Cases']),
+        userItem('Cases', { origin: 'clarify' }),
+        clarify('Over which period?', ['This month', 'This year']),
+        userItem('This year', { origin: 'clarify' }),
+        answer(),
+        userItem('This year', { origin: 'clarify' }),
+        answer(),
+        userItem('How many are open?'),
+        clarify('Open alerts or open cases?', ['Alerts', 'Cases']),
+        userItem('Both, please'),
+        answer(),
+      ]),
+    ).toEqual([
+      'Show me the trend',
+      'Show me the trend → Cases',
+      'Show me the trend → Cases → This year',
+      'Show me the trend → Cases → This year',
+      'How many are open?',
+      'Both, please',
+    ]);
+    // The clarified question is not on screen (an older page): the card's question names it.
+    expect(contexts([clarify('Trend of what?', ['Alerts', 'Cases']), userItem('Alerts', { origin: 'clarify' }), answer()])).toEqual([
+      null,
+      'Trend of what? → Alerts',
+    ]);
+    // A clarify-origin turn with nothing that offered it is quoted as it is.
+    expect(contexts([userItem('Alerts', { origin: 'clarify' }), answer()])).toEqual(['Alerts']);
   });
 
   it('is a log with its implicit live region turned off and renders the user content, never the raw prompt', () => {

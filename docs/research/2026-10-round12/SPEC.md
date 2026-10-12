@@ -106,7 +106,8 @@ Inputs (read the parts your package cites; they are the evidence base):
   left-aligned on the lane's left edge; blocks span the lane from the same edge (card text aligned
   with prose); the user bubble aligns to the lane's right edge; the composer spans the lane. Lane
   = min(conversation − 2·clamp(1rem, 2.5cqi, 2.5rem), cap) with a per-viewer width preference
-  Comfortable 64rem / Wide 88rem (default) / Full (no cap). The 24px side strips go.
+  Comfortable 64rem / Wide 88rem / Full (no cap). The 24px side strips go. *Amended in the final
+  review (§7.2 decision 18):* Full is the default; it was Wide 88rem.
 - **D13 Working indicator.** A tiny dependency-free app-level activity store (entry chunk,
   `useSyncExternalStore`), a module-level turn runner in the lazy chat chunk (navigating away
   detaches instead of aborting; returning re-attaches), an animated chat-nav glyph (ring while
@@ -433,7 +434,7 @@ only new entry code); live Chromium QA with screenshots at 390/1280/1440/1920/25
 
 Recorded by WP-DOC at the end of wave 3 (2026-10-11). Where this section and §2–§4
 disagree, this section describes what shipped; the chat-revamp SPEC carries the
-detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
+detailed amendments (A39–A62) and BLOCKS.md amendments 24–31.
 
 ### 7.1 What each package delivered
 
@@ -666,6 +667,53 @@ detailed amendments (A39–A61) and BLOCKS.md amendments 24–30.
     "Answer ready" flashes on a console nobody is reading. Polling stays the fallback (on
     load, on becoming visible, after an `overflow`, and the 5 s park poll); with
     authentication off no frame is sent, nothing is posted, and nothing waits.
+18. **Full width is the default conversation width** (amends D12; final review,
+    orchestrator decision on operator ask 1). With Wide 88rem as the default the lane was
+    1,408 px and centred at 1920 and 2560 px with every rail collapsed, leaving 200 to 520 px
+    empty on each side, which did not meet "use the full screen when the side menus are
+    collapsed". `DEFAULT_LANE_WIDTH` is now `full` (no cap): the lane fills the conversation
+    minus its gutters. Comfortable 64rem and Wide 88rem stay explicit choices in the thread ⋯
+    menu → **Width**, whose Full width entry says "(default)"; a choice already stored (local
+    mirror or `UserPrefs.misc.chat_lane_width`) is kept, so only viewers who never chose get
+    the new default. Prose, notices and the run log keep their 48rem measure on the lane's
+    left edge; framed blocks, the composer, follow-ups and the user bubble reach the right
+    edge. Measured live (both themes; nav and history rail collapsed / expanded): 1440 →
+    lane 1242 / 869, 1920 → 1708 / 1325, 2560 → 2348 / 1956; prose, card text and the
+    composer share one left edge, card text, the composer and the user bubble one right edge,
+    no horizontal overflow, and Jump to latest stays centred on the lane 12 px above the
+    composer. A block's own **Full width** toggle is then offered only under Comfortable or
+    Wide, where there is room to gain. Line chart end labels follow the wider lane: they take
+    what the longest label needs up to a quarter of the chart (never fewer than 14
+    characters) instead of a fixed 14 (chat-revamp BLOCKS amendment 31).
+19. **A clarifying question is news only until it is seen** (amends D13; final review). The
+    nav glyph and its text, the Case Manager glyph and the landing choice count a
+    `needs_input` question only while the analyst has not looked at it (the activity entry's
+    `seen`, the server's `unread`). A question opened and left unanswered keeps **Needs
+    input** on its history row (and its activity entry, so an answer elsewhere still drops
+    it), but no longer marks Chat amber on every page, and a fresh visit to Chat opens the
+    newest conversation instead of that thread: `preferredThread` is running → unread (an
+    answer, or a question not yet seen) → newest.
+20. **"Add to case" names a clarify pick by the question it answered** (final review). A
+    pick sends only the option's label ("Cases"), so the case comment quoted "Question:
+    Cases". The snapshot now quotes the clarified question plus the pick, "Show me the trend
+    → Cases" (`questionsInContext`, chained across clarifies; the clarify card's own question
+    stands in when the clarified question is not on screen). Words typed after "Something
+    else…" are quoted as asked, since they cannot be told from a new question. A run-log
+    step question keeps quoting the question exactly as sent, because the model and the Demo
+    planner find the answer by matching that quote against the conversation.
+21. **A `/compact` reply is a command note, not an answer** (additive to §3.1 and D4; final
+    review). `ChatResponse.command` (`"compact"`, lenient, `None` otherwise) marks it. Its
+    `usage` is always present: the summary call's real totals when one ran (#6, one
+    UsageDoc), otherwise a zero `TurnUsage` (Demo Mode, nothing to summarise, bounded, an
+    unsaved or case conversation, the chat cap reached), so it reads "No model call · $0"
+    instead of the legacy "Usage not recorded". The route stamps no `effective_source_*` on
+    it (live, stored, or completed-key replay) and leaves the conversation's source as it
+    was. The console renders it as one quiet note (`CommandNote`: the server's sentence and
+    the cost) with no run log, meta row, source or answer actions. A command exchange is
+    never replayed to the model, folded into a later summary (a second `/compact` with
+    nothing new says "Everything earlier in this conversation is already summarised."),
+    kept in client history, or saved by "Save conversation as report"; it is dropped after
+    `drop_summarised` so a summary that covers through one still finds its place.
 
 ### 7.3 Known limitations
 

@@ -98,6 +98,39 @@ export function stackTotals(series: ReadonlyArray<ReadonlyArray<number | null>>,
 /** Approximate advance of one 11px tabular glyph. */
 export const CHAR_W = 6.6;
 const MINUTE_MS = 60_000;
+
+/* -------------------------------------------------------------------------- */
+/* Line end labels.                                                            */
+/* -------------------------------------------------------------------------- */
+/** End labels always get at least this many characters, however narrow the chart. */
+export const END_LABEL_MIN_CHARS = 14;
+/** The end-label column may take up to this share of the chart's width. */
+export const END_LABEL_WIDTH_SHARE = 0.25;
+/** The end-label column's padding: 8 px before the label, 6 px after it. */
+export const END_LABEL_PAD = 14;
+
+/**
+ * How many characters a line chart's end labels may use at `width` px: as many as fit in
+ * a quarter of the chart, never fewer than {@link END_LABEL_MIN_CHARS}. A label is clipped
+ * only beyond this budget, so a wide chart shows "Closed by an analyst" in full instead
+ * of a fixed 14-character "Closed by an …" (the legend and tooltip always name it in
+ * full).
+ */
+export function endLabelBudget(width: number): number {
+  const room = Number.isFinite(width) ? Math.floor((width * END_LABEL_WIDTH_SHARE - END_LABEL_PAD) / CHAR_W) : 0;
+  return Math.max(END_LABEL_MIN_CHARS, room);
+}
+
+/**
+ * The end-label column for `labels` at `width` px: the character budget, the characters
+ * the longest label actually uses within it, and the right padding that reserves them.
+ */
+export function endLabelColumn(width: number, labels: readonly string[]): { budget: number; chars: number; padRight: number } {
+  const budget = endLabelBudget(width);
+  const longest = labels.reduce((most, label) => Math.max(most, Array.from(label).length), 0);
+  const chars = Math.min(budget, longest);
+  return { budget, chars, padRight: Math.ceil(chars * CHAR_W) + END_LABEL_PAD };
+}
 /**
  * Candidate label intervals in minutes, smallest first: sub-hour steps for "last hour"
  * lookups at 1m/5m/15m buckets, then the hour/day/week ladder.

@@ -403,9 +403,12 @@ focus trap cannot pull focus out of the field.
 **Lane.** One lane, two edges (`message/lane.ts`). The conversation zone is an
 `@container`; the lane is `min(conversation − 2·gutter, cap)` with the gutter
 `clamp(1rem, 2.5cqi, 2.5rem)` and the cap the viewer's **Width** preference: Comfortable
-64rem, Wide 88rem (default), Full width (no cap), kept in localStorage and
+64rem, Wide 88rem, Full width (no cap, the default since the Round 12 final review, so with
+the side menus collapsed the conversation fills the screen), kept in localStorage and
 `UserPrefs.misc.chat_lane_width` (written through the prefs provider, so the choice
-survives leaving Chat and coming back). Prose, notices and the run log keep a ≤ 48rem
+survives leaving Chat and coming back; a stored Comfortable or Wide choice is kept, and the
+menu marks Full width "(default)"). However wide the lane, prose never widens with it:
+prose, notices and the run log keep a ≤ 48rem
 measure on the lane's LEFT edge (never centred), and so do the bare prose blocks a model
 may add (`markdown`, and `callout`, whose box sits on the prose edge like a notice);
 answer blocks span the whole lane from that edge, and a framed card hangs into the gutter
@@ -618,14 +621,19 @@ changes; **legend toggles** keep at least one series and say "Showing 1 of 2 ser
 **Download PNG / SVG** draws the chart as shown, in the card's theme, with its grouping,
 zoom and hidden series written on the image; **Full width** lets one block leave the
 conversation lane for the conversation's gutters and is offered only when there is room to
-gain. Calendar axes name their time zone and draw the in-progress period lighter with
+gain (under Comfortable or Wide, never in a Full width lane). Line charts with 2 to 4 series
+label each line's end with as much of its name as fits in a quarter of the chart (never fewer
+than 14 characters), with the whole name as the label's hover title when it is clipped. Calendar axes name their time zone and draw the in-progress period lighter with
 "(in progress)".
 
 **The working indicator (Round 12).** While an answer is being written, the Chat item
 shows one glyph in every navigation form (expanded rail, collapsed rail, mobile sheet):
 a turning quarter arc while running, an accent dot for an unread answer, amber for a
-question waiting for input, red for a failure; its text ("Chat: 1 answer in progress:
-<title>") is the item's description, never a live region. Reduced motion keeps the same
+question waiting for input that the analyst has not opened yet, red for a failure; its
+text ("Chat: 1 answer in progress: <title>") is the item's description, never a live
+region. Glyph and text come and go together: a question already looked at keeps "Needs
+input" on its history row only, and a fresh visit to Chat opens the newest conversation
+rather than that thread. Reduced motion keeps the same
 static arc and the tooltip says "Working"; forced colors use system colors. The optional
 ring around the logo tile follows `chat_agent.animated_brand`; an operator's logo itself
 never moves. The tab title takes a "●" (running) or "✓" (unread) prefix, and an answer that

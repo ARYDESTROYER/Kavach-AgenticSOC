@@ -493,8 +493,11 @@ replies to, so a client can find that question on screen; never stored on the an
 (`{question, options (≤ 4), allow_custom}` when the assistant asks instead of answering),
 `saved_report` (`{id, title, items, skipped?}` when the answer asked for a report and the
 server saved it) or `saved_report_error` (`report_limit`, `report_unavailable`, or
-`report_empty`), `continued` (continuation steps the final answer used), and `compacted`
-(earlier messages were folded into the conversation summary). Each step may carry
+`report_empty`), `continued` (continuation steps the final answer used), `compacted`
+(earlier messages were folded into the conversation summary), and `command` (`"compact"`
+on the reply to `/compact`, otherwise `null`: a note about the chat rather than an answer,
+with no source and with `usage` always present, zero when no model call ran; it is never
+replayed to the model, summarised again, or saved by `POST /api/reports/from-conversation`). Each step may carry
 `observation_ref` (for the step inspector) and `progress`. Notice kinds add `limited`
 (data lookups ran, part of the question is beyond them), `stopped_repeating`, and
 `compacted`; `unsupported` is used only when no data lookup ran. A tool window that lies

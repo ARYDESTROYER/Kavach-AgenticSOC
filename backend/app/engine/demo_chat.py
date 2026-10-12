@@ -1046,20 +1046,38 @@ _RECORD_ONE = r"(?:case|incident|ticket|alert|detection)\b"
 _NOT_CONSOLE = (r"(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?|settings?|"
                 r"widgets?|panels?|rates?|counts?|polic(?:y|ies)|lifecycles?|workflows?|menus?|buttons?|"
                 r"status(?:es)?|severit(?:y|ies)|priorit(?:y|ies)|fields?|types?|states?|ids?|numbers?|"
-                r"titles?|formats?|templates?|decisions?|model)\b)")
+                r"titles?|formats?|templates?|decisions?|model|verdicts?|outcomes?|dispositions?|levels?|labels?|"
+                r"categor(?:y|ies)|kinds?|class(?:es)?|stages?|steps?|phases?|rules?|queues?|attributes?)\b)")
+# The records an "explain" can name: the record nouns and the rows of a list ("the
+# results", "the ones"), never followed by a console noun ("the cases view").
+_RECORD_ITEMS = r"(?:" + _RECORD_NOUN + r"|(?:ones|results|findings|rows|matches)\b)" + _NOT_CONSOLE
+_RECORD_ITEM_ONE = r"(?:case|incident|ticket|alert|detection|finding|result|row|match)\b" + _NOT_CONSOLE
+# A few qualifiers before a record noun ("the open critical cases"); never a
+# preposition, so "the top 3 tabs in case detail" names tabs, not cases.
+_RECORD_QUALIFIERS = r"(?:(?!(?:in|on|of|for|from|to|at|about|with|into|across)\b)[a-z0-9'-]+\s+){0,3}?"
+# Where a bare "each", "these" or "the top 3" ends: the clause stops there ("… and
+# explain each.", "explain the top 3 by risk"), so it points back at listed records.
+_CLAUSE_END = (r"(?=\s*(?:[,.?!;:]|$)|\s+(?:and\b(?!\s+every\b)|then\b|with\b|by\b|briefly\b|please\b|"
+               r"for me\b|in turn\b|in detail\b))")
+_THESE_RECORDS = (r"(?:these|those)(?:" + _CLAUSE_END + r"|\s+(?:are|were|have|had)\b|\s+" + _RECORD_QUALIFIERS
+                  + _RECORD_ITEMS + r")")
 # "Explain" whose object is the records the answer lists, never a term: "… and explain
-# each", "explain why each one is critical", "explain them", "explain the top 3",
-# "with an explanation for each". "Explain what each severity level means" names no
-# records ("each" governs a console term), so it stays a definition.
+# each", "explain why each one is critical", "explain each of the open critical cases",
+# "explain them", "explain the top 3 (cases)", "with an explanation for each". A term
+# after it keeps the question a definition: "explain what each severity level means",
+# "explain each case status", "explain each of the verdicts", "explain the first 3
+# steps of onboarding" name no records.
 _EXPLAIN_RECORDS_RE = re.compile(
     r"\bexplain\w*(?:\s+(?:why|how|what))?(?:\s+[a-z']+){0,3}?\s+(?:"
-    r"(?:each|every)(?=\s*(?:[,.?!;:]|$)|\s+(?:one|ones|case|incident|alert|ticket|finding|result|row|match|"
-    r"of|is|was|has|had|got|were|in turn)\b)"
-    r"|them\b|they\b"
-    r"|(?:these|those)(?=\s*(?:[,.?!;:]|$)|\s+(?:ones|cases|incidents|alerts|results|findings|rows|matches|are|"
-    r"were|have|had)\b)"
-    r"|(?:the\s+)?(?:top|first|bottom|last)\s+\d{1,3}\b"
-    r"|the\s+(?:results|list|ones|rows|matches|findings)\b)")
+    r"(?:each|every)(?:\s+one)?(?:" + _CLAUSE_END + r"|\s+(?:is|was|has|had|got|were)\b"
+    r"|\s+of\s+(?:them\b|" + _THESE_RECORDS + r"|(?:the|our|my|all|today's)\s+" + _RECORD_QUALIFIERS
+    + _RECORD_ITEMS + r"))"
+    r"|(?:each|every)\s+(?:[a-z-]+\s+){0,2}?" + _RECORD_ITEM_ONE
+    + r"|them\b|they\b(?!\s+(?:mean|means|meant|stand|stands)\b)"
+    r"|" + _THESE_RECORDS
+    + r"|(?:the\s+)?(?:top|first|bottom|last)\s+\d{1,3}(?:" + _CLAUSE_END + r"|\s+" + _RECORD_QUALIFIERS
+    + _RECORD_ITEMS + r")"
+    r"|the\s+(?:results|list|ones|rows|matches|findings)\b" + _NOT_CONSOLE + r")")
 # A request for records rather than for what a word means: a list verb first ("show
 # the open cases", "list false positives this week"; never a how-to such as "show me
 # how to close cases"), "which <records>", "what are the <records>", "the top 10
@@ -2158,10 +2176,25 @@ def _named_groups(lowered: str) -> list[str]:
     return found
 
 
+#: The ranking length a question asks for: "top 5 rules", "which 3 hosts", "explain the
+#: first 3 (cases)", "the 5 riskiest cases", "the 3 most recent incidents". "The first
+#: 3 days" and "the 7 most recent days" are spans of time, never a length.
+_TOP_N_RE = re.compile(
+    r"\b(?:top|which)[- ](\d{1,3})\b"
+    r"|\bfirst\s+(\d{1,3})(?=\s*(?:[,.?!;:]|$)|\s+(?:by|ones)\b|\s+" + _RECORD_QUALIFIERS
+    + r"(?:cases|incidents|tickets|investigations|escalations|alerts|detections|(?:true|false)[- ]positives|hosts|"
+    r"machines|servers|endpoints|users|accounts|ips|rules|results|findings|rows|matches)\b)"
+    r"|\b(\d{1,3})\s+(?:most\s+|least\s+)?(?:riskiest|risky|highest[- ]risk|lowest[- ]risk|most critical|"
+    r"newest|latest|oldest|recent|worst|biggest|noisiest|busiest|loudest)\b"
+    r"(?!\s+(?:[a-z-]+\s+)?(?:seconds?|minutes?|mins?|hours?|hrs?|days?|weeks?|months?|quarters?|years?)\b)")
+
+
 def _top_n(lowered: str, default: int = 10) -> int:
     """"Top 5 rules": the ranking length asked for (1..50, the tools' bound)."""
-    match = re.search(r"\b(?:top|which)[- ](\d{1,3})\b", lowered)
-    return max(1, min(50, int(match.group(1)))) if match else default
+    match = _TOP_N_RE.search(lowered)
+    if match is None:
+        return default
+    return max(1, min(50, int(next(g for g in match.groups() if g))))
 
 
 #: The AI agent (or automation) closing cases: "auto-closed", "closed automatically",
@@ -2811,6 +2844,12 @@ _CASE_SUBJECT_RE = re.compile(r"\b(cases?|incidents?|tickets?|investigations?|es
 _COUNT_CUE_RE = re.compile(
     r"\b(how many|number of|count|total|amount of|volume|stats|statistics|breakdown|break(?:ing)? down|split|"
     r"distribution|segregat\w*|group(?:ed)? by|per|each|every|tally)\b")
+#: The counting cues without "each" and "every": in a request for records they name
+#: the records to list or explain ("every open case from the last 24 hours", "… this
+#: week and explain each"), not a count spread over something.
+_REAL_COUNT_CUE_RE = re.compile(
+    r"\b(how many|number of|count|total|amount of|volume|stats|statistics|breakdown|break(?:ing)? down|split|"
+    r"distribution|segregat\w*|group(?:ed)? by|per|tally)\b")
 
 
 def classify(question: str, view: PromptView | None = None) -> Ask:
@@ -3108,7 +3147,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     # "Weekly breakdown of false positives": verdict nouns are a case subject too.
     case_subject = bool(_CASE_SUBJECT_RE.search(low)) or bool(
         re.search(r"\b(?:true|false)[- ]positives\b", low) and (base["bucket"] or base["group"]))
-    if case_subject and (base["bucket"] or base["group"] or (_COUNT_CUE_RE.search(low) and win is not None)
+    # A windowed request for records ("show the top 10 open cases this week by risk and
+    # explain each", "list each critical case this week") lists them: only a real
+    # counting cue (how many, number of, breakdown, per, group by) makes it a count.
+    count_cue = (_REAL_COUNT_CUE_RE if records else _COUNT_CUE_RE).search(low)
+    if case_subject and (base["bucket"] or base["group"] or (count_cue and win is not None)
                          or re.search(r"\b(?:case|incident) (?:stats|statistics|numbers|counts?|volume|breakdown)\b",
                                       low)):
         return ask("breakdown")

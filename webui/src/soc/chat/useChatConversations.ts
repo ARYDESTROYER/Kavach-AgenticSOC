@@ -44,8 +44,9 @@
  * list yet keeps a row while it has a status (a new thread being answered, an answer
  * that landed while this thread's own turn holds the list refresh back), except the new
  * thread whose first answer is on screen (it is still "New chat"). The first load
- * prefers a thread that is running, waits on the analyst or has an unread answer over
- * simply the newest, and an answer on screen is marked read (`POST …/read`).
+ * prefers a thread that is running, or holds an unread answer or a question the analyst
+ * has not opened yet, over simply the newest, and an answer on screen is marked read
+ * (`POST …/read`).
  *
  * Case-scoped chat passes `enabled: false`: no list, no detail, no persistence.
  */
@@ -127,6 +128,9 @@ export function newestConversationFirst(a: ChatConversationSummary, b: ChatConve
   return (Number.isFinite(right) ? right : -Infinity) - (Number.isFinite(left) ? left : -Infinity) || 0;
 }
 
+/** A clarifying question the analyst has not looked at yet. */
+const unseenQuestion = (entry: ChatActivity) => entry.status === 'needs_input' && entry.seen !== true;
+
 /**
  * Rows as the analyst should see them right now: the server's statuses overlaid with
  * what this tab and the others know (the activity store), plus a row for every thread
@@ -148,7 +152,9 @@ export function overlayActivity(
   const out = rows.map((row) => {
     const entry = live.get(row.id);
     if (!entry) return row;
-    const unread = entry.status === 'unread' || row.unread === true;
+    // A question the analyst has not looked at yet is news like an unread answer (the
+    // server marks it unread too); this tab never clears the server's own mark here.
+    const unread = entry.status === 'unread' || unseenQuestion(entry) || row.unread === true;
     // A stale list may still say `running` for an answer this tab saw finish.
     const status = entry.status === 'unread' ? (row.status === 'running' ? 'idle' : row.status) : entry.status;
     return status === row.status && unread === (row.unread === true) ? row : { ...row, status, unread };
@@ -156,7 +162,7 @@ export function overlayActivity(
   for (const entry of live.values()) {
     if (rows.some((row) => row.id === entry.conversationId) || hidden(entry)) continue;
     const at = new Date(entry.startedAt).toISOString();
-    const unread = entry.status === 'unread';
+    const unread = entry.status === 'unread' || unseenQuestion(entry);
     out.unshift({
       id: entry.conversationId as string,
       title: entry.title || UNTITLED_CONVERSATION,
@@ -172,16 +178,14 @@ export function overlayActivity(
 }
 
 /**
- * The thread a fresh visit opens: one being answered, then one waiting on the analyst
- * or holding an unread answer, then the newest (rows are newest first).
+ * The thread a fresh visit opens: one being answered, then one holding news the analyst
+ * has not opened yet (an unread answer, or a clarifying question they have not seen),
+ * then the newest (rows are newest first). A question the analyst has already opened
+ * and left unanswered keeps "Needs input" on its history row but takes no priority: an
+ * abandoned question never takes over the landing.
  */
 export function preferredThread(rows: readonly ChatConversationSummary[]): string | null {
-  return (
-    rows.find((row) => row.status === 'running')?.id ??
-    rows.find((row) => row.status === 'needs_input' || row.unread === true)?.id ??
-    rows[0]?.id ??
-    null
-  );
+  return rows.find((row) => row.status === 'running')?.id ?? rows.find((row) => row.unread === true)?.id ?? rows[0]?.id ?? null;
 }
 
 /** A validated chat deep-link request (SPEC §10.7). */
@@ -661,9 +665,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       } else if (selectedOffPage) {
         void confirmBeyondPage(current as string);
       } else {
-        // The first load prefers a thread being answered, waiting on the analyst or
-        // holding an unread answer, then the newest; a deliberate New-chat draft stays
-        // a draft.
+        // The first load prefers a thread being answered, then one holding an unread
+        // answer or an unseen question, then the newest; a deliberate New-chat draft
+        // stays a draft.
         const shown = overlayActivity(next, getChatActivity().entries);
         setActiveId((selected) => {
           if (selected && shown.some((item) => item.id === selected)) return selected;

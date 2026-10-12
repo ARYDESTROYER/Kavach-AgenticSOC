@@ -998,15 +998,18 @@ def _replay_response(reservation: ChatExchangeReservation) -> ChatResponse:
     if assistant is None:
         raise _history_http(ChatHistoryUnavailable("The completed chat response could not be restored."))
     payload = dict(assistant.response or {})
+    # A command reply (``/compact``) ran on no source and maybe no model: it never
+    # borrows the conversation's.
+    inherit = conversation if conversation is not None and not payload.get("command") else None
     payload.update({
         "answer": assistant.content,
         "conversation_id": reservation.conversation_id,
         "conversation_title": reservation.conversation_title
         or (conversation.title if conversation else "Conversation"),
         "idempotency_key": reservation.idempotency_key,
-        "effective_model": assistant.model or (conversation.model if conversation else None),
-        "effective_source_id": assistant.source_id or (conversation.source_id if conversation else None),
-        "effective_source_name": assistant.source_name or (conversation.source_name if conversation else None),
+        "effective_model": assistant.model or (inherit.model if inherit else None),
+        "effective_source_id": assistant.source_id or (inherit.source_id if inherit else None),
+        "effective_source_name": assistant.source_name or (inherit.source_name if inherit else None),
         "truncated": bool(payload.get("truncated")),
         "message_id": assistant.id,
         "user_message_id": _question_id(conversation, assistant),
@@ -1992,9 +1995,13 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
     if response is None:
         raise RuntimeError("the chat engine ended without a response")
     response = _with_legacy_discover(response, body, plan.prefs, plan.ctx)
+    # A reply to a chat command (``/compact``) read no source: it names none, and the
+    # conversation keeps the source its answers ran on.
+    source_id = None if response.command else plan.source_id
+    source_name = None if response.command else plan.source_name
     provenance = {
-        "effective_source_id": plan.source_id,
-        "effective_source_name": plan.source_name,
+        "effective_source_id": source_id,
+        "effective_source_name": source_name,
     }
     first_call_failed = not outcome.persist
     if not plan.persist_workspace:
@@ -2038,8 +2045,8 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
             assistant_content=response.answer,
             response=stored,
             model=response.effective_model,
-            source_id=plan.source_id,
-            source_name=plan.source_name,
+            source_id=source_id,
+            source_name=source_name,
             user_origin=body.origin,
             time_range=body.time_range,
         )
@@ -2623,6 +2630,7 @@ async def _history_estimate(
     ``exchanges`` counts the exchanges replayed verbatim."""
     from ..agents.chat_protocol import (
         clean_summary,
+        conversation_exchanges,
         drop_summarised,
         plan_fold,
         render_conversation_summary,
@@ -2649,7 +2657,7 @@ async def _history_estimate(
         return 0, 0, None
     exchanges = PriorExchange.from_messages(_replay_messages(conversation))
     if not unlimited:
-        kept = select_replay(exchanges)
+        kept = select_replay(conversation_exchanges(exchanges))
         if not kept:
             return 0, 0, conversation
         return estimate_message_tokens(render_replay(kept).messages), len(kept), conversation
@@ -2657,8 +2665,8 @@ async def _history_estimate(
     summary_text = (
         clean_summary(text, limit=summary_max_chars(context_window)) if isinstance(text, str) and text else ""
     )
-    pending = (
-        drop_summarised(exchanges, getattr(summary, "covers_through", None)) if summary_text else list(exchanges)
+    pending = conversation_exchanges(
+        drop_summarised(exchanges, getattr(summary, "covers_through", None)) if summary_text else exchanges
     )
     verbatim = pending[plan_fold(pending, context_window):]
     messages: list[dict[str, str]] = []

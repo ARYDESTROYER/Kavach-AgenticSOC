@@ -1014,9 +1014,13 @@ export function runAssistantItem(run: TurnRun): ChatAssistantItem {
   };
 }
 
-/** The model-history exchange a settled run adds (none for unsaved or stopped turns). */
+/**
+ * The model-history exchange a settled run adds (none for unsaved or stopped turns, and
+ * none for a reply to a chat command such as `/compact`: housekeeping is never replayed).
+ */
 export function runExchange(run: TurnRun): HistoryEntry[] {
   if (run.state !== 'done' || !run.response || isUnsavedTurn(run.response) || !run.request) return [];
+  if (run.response.command) return [];
   return [
     { turn: { role: 'user', content: run.request.message, origin: run.request.origin ?? 'user' }, requestKey: run.requestKey },
     { turn: { role: 'assistant', content: run.response.answer }, requestKey: run.requestKey },

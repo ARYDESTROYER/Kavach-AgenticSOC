@@ -61,6 +61,22 @@ DATA_ASKS = [
     ("Can you show me the open cases and explain them?", "cases"),
     ("List the open critical cases with an explanation for each", "cases"),
     ("List true positives this month and explain each", "tp"),
+    # A record after "each of", "the first 3" or a ranking still names records.
+    ("Explain the first 3 cases by risk", "cases"),
+    ("Show me the 5 riskiest cases and explain each", "cases"),
+    ("Explain each of today's escalated cases", "cases"),
+    ("explain each critical case, briefly", "cases"),
+    ("Show the open cases and explain each with a table", "cases"),
+    # A window beside the records never turns the list into a count: "each" and
+    # "every" name the records here, not a count spread over something.
+    ("Show the top 10 open cases this week by risk with a table and explain each", "cases"),
+    ("Which cases were escalated this week? Explain each", "cases"),
+    ("List the open critical cases this week and explain why each one is critical", "cases"),
+    ("Show the escalated cases from today and explain each", "cases"),
+    ("List cases opened yesterday and explain each", "cases"),
+    ("Show the critical cases this month and explain each of them", "cases"),
+    ("Show me every open case from the last 24 hours", "cases"),
+    ("List each critical case this week", "cases"),
 ]
 
 #: Definitional asks keep their Help Center answer (with our own figure for a KPI).
@@ -80,6 +96,32 @@ DEFINITIONS = [
     ("What are escalated cases?", "help"),
     ("What is the case decision policy?", "help"),
     ("Explain the cases view", "help"),
+    # A record noun followed by a console term ("each case status") names the term,
+    # and "each of / the first 3" with no record after it names none: these ask what
+    # the console's terms mean (final review, L3 held), never for a case list.
+    ("Explain each case status", "help"),
+    ("Explain every case status", "help"),
+    ("Explain each alert severity", "help"),
+    ("Explain each incident severity", "help"),
+    ("Explain each case verdict", "help"),
+    ("Explain each case priority", "help"),
+    ("Explain each case outcome", "help"),
+    ("Explain every alert field", "help"),
+    ("Explain each incident lifecycle state", "help"),
+    ("Explain each of the case statuses", "help"),
+    ("Explain the top 3 tabs in case detail", "help"),
+    ("Explain each of the verdicts", "help"),
+    ("Explain each one of the verdicts", "help"),
+    ("Explain each of the roles", "help"),
+    ("Explain each of the permissions", "help"),
+    ("Explain each ticket state", "help"),
+    ("Explain each detection rule type", "help"),
+    ("Explain the first 3 steps of onboarding", "help"),
+    ("Explain the first 2 steps of the setup wizard", "help"),
+    ("Explain what each case status means", "help"),
+    ("Explain each and every severity level", "help"),
+    ("Explain each of these statuses", "help"),
+    ("Explain the findings tab", "help"),
 ]
 
 
@@ -122,6 +164,23 @@ def test_the_explain_metric_starter_is_unchanged() -> None:
     # The oldest-first list keeps its own order.
     ("Show the oldest open cases by risk", {"status_group": "active", "sort_field": "created_at",
                                             "sort_order": "asc"}, ()),
+    # A window beside the records lists them over that window, ranked as asked.
+    ("Show the top 10 open cases this week by risk with a table and explain each",
+     {"status_group": "active", "window": "this_week", "sort_field": "risk_score", "sort_order": "desc",
+      "limit": 10}, ("severity",)),
+    ("Which cases were escalated this week? Explain each", {"status": "escalated", "window": "this_week"}, ()),
+    ("List the open critical cases this week and explain why each one is critical",
+     {"status_group": "active", "severity": "critical", "window": "this_week"}, ()),
+    ("Show the escalated cases from today and explain each", {"status": "escalated", "window": "today"}, ()),
+    ("List cases opened yesterday and explain each", {"window": "yesterday"}, ()),
+    ("Show the critical cases this month and explain each of them",
+     {"severity": "critical", "window": "this_month"}, ()),
+    ("Show me every open case from the last 24 hours", {"status_group": "active", "window": "now-24h"}, ()),
+    ("List each critical case this week", {"severity": "critical", "window": "this_week"}, ()),
+    # "The first 3" and "the 5 riskiest" are the list's length.
+    ("Explain the first 3 cases by risk", {"sort_field": "risk_score", "sort_order": "desc", "limit": 3}, ()),
+    ("Show me the 5 riskiest cases and explain each",
+     {"sort_field": "risk_score", "sort_order": "desc", "limit": 5}, ()),
 ])
 def test_the_case_list_asks_what_the_question_asked(question: str, expected: dict[str, Any],
                                                     absent: tuple[str, ...]) -> None:
@@ -133,7 +192,7 @@ def test_the_case_list_asks_what_the_question_asked(question: str, expected: dic
         assert inp.get(key) == value, (question, key, inp)
     for key in absent:
         assert key not in inp, (question, key, inp)
-    assert all(tool != "app_help" for tool, _ in ran(rounds)), ran(rounds)
+    assert all(tool not in ("app_help", "case_stats") for tool, _ in ran(rounds)), ran(rounds)
 
 
 def _cases_obs(n: int) -> dict[str, Any]:
@@ -205,6 +264,57 @@ def test_records_and_definitions_are_told_apart_by_their_object() -> None:
     assert demo_chat._defines("explain the false positive rate", records=False)
 
 
+@pytest.mark.parametrize("question", [
+    "Explain each case status", "Explain each of the verdicts", "Explain each one of the verdicts",
+    "Explain each of the case statuses", "Explain the top 3 tabs in case detail",
+    "Explain the first 3 steps of onboarding", "Explain each detection rule type", "Explain each case outcome",
+    "Explain each of these statuses", "Explain the findings tab", "Explain what they mean",
+])
+def test_a_console_term_after_explain_names_no_records(question: str) -> None:
+    assert not demo_chat._asks_for_records(question.lower()), question
+
+
+@pytest.mark.parametrize("question", [
+    "Explain each of the open critical cases", "Explain each of them", "Explain the first 3 cases by risk",
+    "Explain the top 3 by risk", "Explain each escalated case", "Explain each case's risk",
+    "Explain each of today's escalated cases", "Explain these cases", "Explain the verdict of each case",
+])
+def test_records_after_explain_still_name_records(question: str) -> None:
+    assert demo_chat._asks_for_records(question.lower()), question
+
+
+@pytest.mark.parametrize("question", [
+    # A real counting cue keeps the count over a window, records or not.
+    "How many open cases this week?",
+    "Show the number of escalated cases this week",
+    "Show the open cases this week by severity",
+    "List the case volume per day this week",
+    # Without records, "each" and "every" still spread a count over the window.
+    "Cases this week for each severity",
+])
+def test_a_real_count_over_a_window_stays_a_breakdown(question: str) -> None:
+    assert classify(question).intent == "breakdown", question
+    tools = {tool for tool, _ in tools_of(plan_turn(prompt(question)))}
+    assert "case_stats" in tools and "search_cases" not in tools, (question, tools)
+
+
+@pytest.mark.parametrize("question, n", [
+    ("top 5 rules", 5), ("which 3 hosts had the most alerts", 3),
+    ("explain the first 3 cases by risk", 3), ("explain the first 3", 3), ("explain the first 4 by risk", 4),
+    ("show me the 5 riskiest cases and explain each", 5), ("the 4 highest-risk open incidents", 4),
+    ("show me the 3 most recent cases", 3), ("list the 5 newest escalated cases", 5),
+    ("the 2 oldest open cases", 2), ("list the 7 latest alerts", 7),
+    # Spans of time are never a length.
+    ("list the cases from the first 3 days of the month", 10),
+    ("show the cases from the 7 most recent days", 10),
+    ("the 3 latest weeks of cases", 10),
+    ("show the open cases", 10),
+    ("top 500 hosts", 50),
+])
+def test_the_list_length_is_the_ranking_asked_for(question: str, n: int) -> None:
+    assert demo_chat._top_n(question) == n
+
+
 # --------------------------------------------------------------------------- #
 # The same flaw outside the Demo planner.
 # --------------------------------------------------------------------------- #
@@ -219,6 +329,11 @@ def test_records_and_definitions_are_told_apart_by_their_object() -> None:
     "explain each escalated case",
     "Explain why each open case is critical",
     "Explain the escalated cases",
+    "Explain each of the open critical cases",
+    "Explain the first 3 cases by risk",
+    "Which cases were escalated this week? Explain each",
+    "Explain each one",
+    "Explain each of them",
 ])
 def test_the_ai_unavailable_help_route_never_takes_an_explain_data_request(question: str) -> None:
     """While the AI is unavailable, a product question gets a $0 Help Center answer and
@@ -233,10 +348,18 @@ def test_the_ai_unavailable_help_route_never_takes_an_explain_data_request(quest
 @pytest.mark.parametrize("question", [
     "Explain the Active Risk Index", "explain MTTD", "Explain what each severity level means",
     "Explain the false positive rate", "Explain the cases view",
+    # A console term after the record, no record at all, or a defining word: these ask
+    # what something means and keep the $0 Help Center answer (final review, L3 held).
+    "Explain what each case status means", "Explain what each alert severity means", "Explain each case status",
+    "Explain each of the verdicts", "Explain each of the KPIs", "Explain each of the KPIs on the overview",
+    "Explain each of the roles", "Explain each of the permissions", "Explain each case priority",
+    "Explain the first 3 steps of onboarding", "Explain what they mean", "Explain every case status",
+    "Explain each one of the verdicts", "Explain each of the case statuses", "Explain each detection rule type",
 ])
 def test_the_ai_unavailable_help_route_keeps_definitional_explains(question: str) -> None:
-    from app.knowledge.answer import routes_to_app_help
+    from app.knowledge.answer import classify_intent, routes_to_app_help
 
+    assert classify_intent(question) != "data", question
     assert routes_to_app_help(question) is True
 
 

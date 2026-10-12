@@ -11,11 +11,13 @@
  *
  * Three tracks: two side tracks of at least the gutter that share any free space (so the
  * lane is centred once it reaches its cap), and the lane itself, which grows to the cap.
- * The cap is the viewer's width preference (`--chat-lane-max`: Comfortable 64rem, Wide
- * 88rem, Full 100%) and the gutter is `--chat-gutter` (`clamp(1rem, 2.5cqi, 2.5rem)`
+ * The cap is the viewer's width preference (`--chat-lane-max`: Full width 100%, the
+ * default, so the lane fills whatever the side menus leave; Comfortable 64rem and Wide
+ * 88rem on request) and the gutter is `--chat-gutter` (`clamp(1rem, 2.5cqi, 2.5rem)`
  * of the conversation zone), both set by the host (ChatWorkspace). Without a host
  * (the Case Manager embed) the lane is the whole width with no gutter: the embed brings
- * its own 4 px inset.
+ * its own 4 px inset. However wide the lane, prose keeps its 48rem measure on the
+ * lane's left edge; blocks, the composer and the user bubble reach the right edge.
  *
  * Exchanges and messages repeat the lane tracks (messages subgrid their exchange), so
  * every row of every turn shares the same edges as the composer below (which uses the
@@ -95,8 +97,12 @@ export type ChatLaneWidth = 'comfortable' | 'wide' | 'full';
 
 export const LANE_WIDTHS: readonly ChatLaneWidth[] = ['comfortable', 'wide', 'full'];
 
-/** Wide is the default (diagnosis/layout.md §3). */
-export const DEFAULT_LANE_WIDTH: ChatLaneWidth = 'wide';
+/**
+ * Full width is the default (Round 12 final review, operator ask 1: the chat uses the
+ * whole screen when the side menus are collapsed; amends D12's "Wide (default)"). Only a
+ * viewer who never chose gets it: a stored Comfortable or Wide choice is kept.
+ */
+export const DEFAULT_LANE_WIDTH: ChatLaneWidth = 'full';
 
 /** The lane cap per preference (`--chat-lane-max`). Full = the whole conversation. */
 export const LANE_MAX: Record<ChatLaneWidth, string> = {
@@ -112,10 +118,11 @@ export const LANE_WIDTH_LABEL: Record<ChatLaneWidth, string> = {
   full: 'Full width',
 };
 
+/** One line each in the Width menu (it is 15rem wide); the default says so. */
 export const LANE_WIDTH_HINT: Record<ChatLaneWidth, string> = {
-  comfortable: 'A narrower column',
-  wide: 'Room for tables and charts',
-  full: 'Use the whole window',
+  comfortable: 'Up to about 1,000 px',
+  wide: 'Up to about 1,400 px, centred',
+  full: 'Fills the space (default)',
 };
 
 export function isLaneWidth(value: unknown): value is ChatLaneWidth {

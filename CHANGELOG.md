@@ -905,7 +905,8 @@ and, just as importantly, makes each of these conditions a state an operator can
   own counts.
 - **Add to case**: post a Workspace answer to a case thread as your own comment, after
   previewing it (`cases:comment`); the case's status, verdict and disposition never
-  change.
+  change. An answer to a clarify option quotes the question and the option ("Show me the
+  trend → Cases").
 - **Prompt library and promptbooks**: categories, favorites, search and read-only
   starter prompts; `{name}` placeholders filled before sending; promptbooks run 2–10
   prompts as consecutive questions with a step counter and Stop, stored in the existing
@@ -915,8 +916,8 @@ and, just as importantly, makes each of these conditions a state an operator can
   a new chat asks a server-worded question about the value, which stays fenced as
   untrusted and never counts as the analyst's own words for indicator lookups.
 - **Agent-working indicator and rejoin.** A turning ring on the Chat item in every
-  navigation form (accent dot for a new answer, amber for a question waiting for input,
-  red for a failure), an optional ring around the logo (**Animate the logo while chat
+  navigation form (accent dot for a new answer, amber for a question waiting for input
+  until it is opened, red for a failure), an optional ring around the logo (**Animate the logo while chat
   works**), history-row statuses, a tab-title prefix and one "Answer ready" notice when
   chat is off screen. Leaving the chat detaches instead of aborting; returning or
   reloading rejoins the answer live (`GET /api/chat/turns/active`,
@@ -925,11 +926,12 @@ and, just as importantly, makes each of these conditions a state an operator can
   others: marking a conversation read and showing a turn's outcome
   (`POST /api/chat/turns/{turn_id}/seen`) publish an owner-only `chat.read` event on the
   same topic. Case chat keeps its transcript across tab switches.
-- **Conversation width**: Comfortable, Wide (default) or Full width in the thread menu,
-  saved per user; prose keeps a readable measure while blocks use the whole lane. Charts
-  gain Group by, zoom, legend toggles, PNG and SVG download and per-block Full width;
-  long answers get a contents list and Jump to end; Ctrl/⌘+Shift+C copies the last
-  answer.
+- **Conversation width**: Comfortable, Wide or Full width (default: the chat fills the
+  screen when the side menus are collapsed) in the thread menu, saved per user; prose
+  keeps a readable measure while blocks use the whole lane. Charts gain Group by, zoom,
+  legend toggles, line end labels sized to the chart, PNG and SVG download and per-block
+  Full width; long answers get a contents list and Jump to end; Ctrl/⌘+Shift+C copies
+  the last answer.
 - **Optional daily chat spending limit** (`chat_agent.chat_daily_cap_usd`, off by
   default).
 - **Remember me** on sign-in: a warning dialog, a remembered username, passwords saved

@@ -71,6 +71,7 @@ from ..constants import MAX_REPORT_ITEMS, MAX_REPORTS_PER_USER, ActionType, Role
 from ..engine.report_digest import bounded_digest, report_summary_messages
 from ..llm.gateway import GatewayError, UsageReceipt, estimate_message_tokens
 from ..models import (
+    CHAT_COMMANDS,
     REPORT_SCOPE_WINDOW_CHARS,
     ChatResponse,
     ChatSavedReport,
@@ -969,7 +970,8 @@ async def report_from_conversation(
 ) -> ReportFromConversationResponse:
     """"Save conversation as report" (SPEC D11): every answer of one caller-owned
     Workspace conversation becomes one section (its question as the heading, then
-    the answer text and blocks), in order, up to the report's item limit. The server
+    the answer text and blocks), in order, up to the report's item limit; a reply to a
+    chat command (``/compact``) is not an answer and is left out. The server
     resolves every item from the persisted conversation; nothing is client-supplied
     content. Case-scoped chat never enters Workspace history, so a case conversation
     can never be saved this way."""
@@ -996,6 +998,8 @@ async def report_from_conversation(
     for message in list(_field(conversation, "messages") or []):
         if _field(message, "role") != "assistant":
             continue
+        if presentation_of(message).get("command") in CHAT_COMMANDS:
+            continue  # a reply to /compact is a note about the chat, not an answer
         answers += 1
         if len(items) >= MAX_REPORT_ITEMS:
             beyond += 1  # cannot fit: counted as skipped, never restored or snapshotted

@@ -149,6 +149,56 @@ export function groupExchanges(items: readonly ChatTranscriptItem[]): Exchange[]
   return out;
 }
 
+/** Joins a clarified question and the option the analyst picked ("Show me the trend → Cases"). */
+export const CLARIFY_PICK_JOINER = ' → ';
+
+const optionKey = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * For each exchange, its question as a reader outside the chat needs it ("Add to case"
+ * quotes it in the case thread). A clarify pick (`origin: "clarify"`) sends only the
+ * option's label ("Cases"), so its question is the question that was clarified plus the
+ * pick: "Show me the trend → Cases" (chained when a pick answered a second clarify),
+ * or the clarify card's own question plus the pick when the clarified question is not
+ * on screen (an older page not loaded). The exchange that offered the pick is the
+ * nearest earlier one whose clarify lists it, else the one just before. Any other
+ * question, including words the analyst typed after "Something else…" (which cannot be
+ * told from a new question), is quoted as asked. `null` for an exchange without a
+ * question.
+ *
+ * Display only: a step question from the run log still quotes the question exactly as
+ * it was sent (`question`), because the model and the Demo planner find that answer by
+ * matching the quote against the conversation.
+ */
+export function questionsInContext(exchanges: readonly Exchange[]): Array<string | null> {
+  const out: Array<string | null> = [];
+  exchanges.forEach((exchange, index) => {
+    const own = exchange.user?.content ?? null;
+    if (!own || !own.trim() || exchange.user?.origin !== 'clarify') {
+      out.push(own);
+      return;
+    }
+    const pick = optionKey(own);
+    let source = -1;
+    for (let j = index - 1; j >= 0; j -= 1) {
+      const options = exchanges[j].assistant?.response?.clarify?.options ?? [];
+      if (options.some((option) => optionKey(option) === pick)) {
+        source = j;
+        break;
+      }
+    }
+    if (source < 0 && index > 0 && exchanges[index - 1].assistant?.response?.clarify) source = index - 1;
+    if (source < 0) {
+      out.push(own);
+      return;
+    }
+    const asked = out[source];
+    const context = asked && asked.trim() ? asked : (exchanges[source].assistant?.response?.clarify?.question ?? '');
+    out.push(context.trim() ? `${context.trim()}${CLARIFY_PICK_JOINER}${own.trim()}` : own);
+  });
+  return out;
+}
+
 export interface TranscriptHighlight {
   messageId: string;
   /** Changes on every request so the same message can be highlighted again. */
@@ -398,6 +448,9 @@ export function Transcript({
     };
   }, [busy, retry, askAgain, continueAnswer, send, conversationId]);
   const exchanges = React.useMemo(() => groupExchanges(items), [items]);
+  // Each answer's question as a reader outside the chat needs it (a clarify pick names
+  // the question it answered): "Add to case" quotes it.
+  const contextQuestions = React.useMemo(() => questionsInContext(exchanges), [exchanges]);
   // Which of several answers to the same question each one is (newest first), so a step
   // question from the run log names the right answer (Round 12 P1-1). A failed turn left
   // no answer to name, so it is not counted.
@@ -797,6 +850,7 @@ export function Transcript({
                         stoppedLocally={stoppedLocally.has(exchange.assistant.key)}
                         report={reportFor ? reportFor(exchange.assistant) : null}
                         question={exchange.user?.content ?? null}
+                        questionInContext={contextQuestions[index] ?? null}
                         questionRecency={recencies[index] ?? 0}
                         highlighted={!!highlighted && exchange.assistant.messageId === highlighted}
                       />

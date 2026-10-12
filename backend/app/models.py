@@ -2036,6 +2036,10 @@ ChatStepKind = Literal["tool", "model"]
 ChatStepStatus = Literal["ok", "error", "denied", "timeout", "skipped", "cancelled"]
 ChatStepBasis = Literal["exact", "newest_n", "sample", "cached"]
 ChatAnswerKind = Literal["data", "product_help", "mixed", "conversation"]
+# Round 12 (final review): a reply to a chat COMMAND (``/compact``), not an answer. The
+# console shows it as a quiet note without answer actions, and it is never replayed or
+# summarised as part of the conversation.
+ChatCommand = Literal["compact"]
 TurnNoticeKind = Literal[
     "partial", "cap", "budget", "provider", "breaker", "denied", "timeout", "cancelled",
     "unsupported", "not_saved",
@@ -2061,6 +2065,7 @@ CHAT_STEP_KINDS: tuple[str, ...] = get_args(ChatStepKind)
 CHAT_STEP_STATUSES: tuple[str, ...] = get_args(ChatStepStatus)
 CHAT_STEP_BASES: tuple[str, ...] = get_args(ChatStepBasis)
 CHAT_ANSWER_KINDS: tuple[str, ...] = get_args(ChatAnswerKind)
+CHAT_COMMANDS: tuple[str, ...] = get_args(ChatCommand)
 TURN_NOTICE_KINDS: tuple[str, ...] = get_args(TurnNoticeKind)
 CITATION_KINDS: tuple[str, ...] = get_args(CitationKind)
 MEMORY_PROPOSAL_OPS: tuple[str, ...] = get_args(MemoryProposalOp)
@@ -3128,6 +3133,10 @@ class ChatResponse(BaseModel):
     saved_report_error: ChatReportSaveError | None = None
     continued: int = Field(default=0, ge=0)
     compacted: bool = False
+    # Round 12 (final review; additive): the command this turn answered (``"compact"``),
+    # or None for an answer. A command reply makes no lookups, names no source, and
+    # carries real usage (zero when no model call ran), never "not recorded".
+    command: ChatCommand | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -3177,6 +3186,11 @@ class ChatResponse(BaseModel):
     @classmethod
     def _answer_kind(cls, value: Any) -> str:
         return _lenient_enum(value, CHAT_ANSWER_KINDS, "conversation")
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _command(cls, value: Any) -> Any:
+        return _lenient_enum(value, CHAT_COMMANDS, None)
 
     @field_validator("notice", mode="before")
     @classmethod

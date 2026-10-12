@@ -95,15 +95,23 @@ describe('describeChatActivity', () => {
     );
   });
 
-  it('says a question the analyst already looked at is still waiting (a dot always has text)', () => {
+  it('marks a question only until the analyst has looked at it (no glyph, no text after)', () => {
+    // Opened and left unanswered: the history row keeps "Needs input"; the navigation
+    // carries no amber mark for it on every page.
     const seen = describeChatActivity([entry({ scope: 'conv:q', status: 'needs_input', title: 'Which host?', seen: true })]);
-    expect(seen).toEqual({ status: 'needs_input', text: 'Chat: 1 question waiting for your answer: Which host?' });
+    expect(seen).toEqual({ status: null, text: '' });
     const both = describeChatActivity([
       entry({ scope: 'conv:q', status: 'needs_input', title: 'Which host?', seen: true }),
       entry({ scope: 'conv:r', status: 'needs_input', title: 'Which user?' }),
       entry({ scope: 'conv:s', status: 'needs_input', title: 'Which day?', seen: true }),
     ]);
-    expect(both.text).toBe('Chat: 1 question needs your input: Which user?; 2 questions waiting for your answer');
+    expect(both).toEqual({ status: 'needs_input', text: 'Chat: 1 question needs your input: Which user?' });
+    // A seen question never hides other news, and is never counted in it.
+    const mixed = describeChatActivity([
+      entry({ scope: 'conv:q', status: 'needs_input', title: 'Which host?', seen: true }),
+      entry({ scope: 'conv:u', status: 'unread', title: 'Weekly hunt' }),
+    ]);
+    expect(mixed).toEqual({ status: 'unread', text: 'Chat: 1 new answer: Weekly hunt' });
   });
 
   it('names the case of a case chat, so two cases can be told apart', () => {

@@ -13,7 +13,8 @@
  *  - the chat views, which register what is on screen (`viewChatActivity`).
  *
  * A turn that finishes on screen simply ends; elsewhere it becomes `unread` (an answer)
- * or `failed`, and a clarifying question stays as `needs_input` until it is answered.
+ * or `failed`, and a clarifying question stays as `needs_input` until it is answered
+ * (marking the navigation only until the analyst has looked at it).
  */
 import type { ChatOrigin } from '@/lib/types';
 import {
@@ -140,8 +141,14 @@ const PHRASES: Array<[ChatActivityStatus, string, string]> = [
   ['failed', 'answer failed', 'answers failed'],
   ['unread', 'new answer', 'new answers'],
 ];
-/** A question the analyst has already looked at: it stays until it is answered. */
-const SEEN_QUESTION: [string, string] = ['question waiting for your answer', 'questions waiting for your answer'];
+
+/**
+ * Whether an entry is news for the navigation mark. A clarifying question is news only
+ * until the analyst has looked at it (`seen`): one they opened and left unanswered keeps
+ * "Needs input" on its history row and its entry (so the rail and an answer elsewhere
+ * still find it), but no longer marks Chat or Case Manager amber on every page.
+ */
+const isNews = (entry: ChatActivity) => !(entry.status === 'needs_input' && entry.seen === true);
 
 /** Display titles stay short: a case id plus a prompt is clipped here. */
 const TITLE_CHARS = 120;
@@ -158,28 +165,21 @@ export function chatActivityTitle(entry: Pick<ChatActivity, 'kind' | 'caseId' | 
 
 /**
  * The glyph state and its text for a set of entries ("Chat: 1 answer in progress:
- * <title>"). Whenever there is a glyph there is text: a question the analyst has
- * already looked at reads "1 question waiting for your answer".
+ * <title>"). Whenever there is a glyph there is text, and the other way round. A
+ * question the analyst has already looked at is not news (`isNews`): it gives neither.
  */
 export function describeChatActivity(entries: readonly ChatActivity[], label = 'Chat'): ChatActivitySummary {
   const parts: string[] = [];
   let status: ChatActivityStatus | null = null;
-  const phrase = (group: readonly ChatActivity[], one: string, several: string) => {
+  const news = entries.filter(isNews);
+  for (const [kind, one, several] of PHRASES) {
+    const group = news.filter((entry) => entry.status === kind);
+    if (!group.length) continue;
+    status ??= kind;
     if (group.length === 1) {
       const title = chatActivityTitle(group[0]);
       parts.push(`1 ${one}${title ? `: ${title}` : ''}`);
-    } else if (group.length) parts.push(`${group.length} ${several}`);
-  };
-  for (const [kind, one, several] of PHRASES) {
-    const group = entries.filter((entry) => entry.status === kind);
-    if (!group.length) continue;
-    status ??= kind;
-    phrase(
-      group.filter((entry) => !entry.seen),
-      one,
-      several,
-    );
-    if (kind === 'needs_input') phrase(group.filter((entry) => entry.seen), ...SEEN_QUESTION);
+    } else parts.push(`${group.length} ${several}`);
   }
   return { status, text: parts.length ? `${label}: ${parts.join('; ')}` : '' };
 }

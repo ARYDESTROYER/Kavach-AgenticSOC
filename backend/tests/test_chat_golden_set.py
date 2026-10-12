@@ -783,6 +783,10 @@ REGRESSIONS_R2 = [
 # help" with a KPI glossary entry and no case list was the operator's glitch); only a
 # definitional ask does ("Explain the false positive rate", "what each level means").
 _NO_HELP = (P("app_help"),)
+#: A list of records is never answered as a count, and never from the Help Center.
+_NOT_COUNTED = (*_NO_HELP, P("case_stats"))
+#: Each listed case explained, or (an empty window) the zero result saying so.
+_EXPLAINED = r"re:^Case by case:$|^No .+ matched"
 EXPLAIN_RECORDS = [
     G("Show the top 10 open cases by risk with a table and explain each", tools=("search_cases",),
       params=(P("search_cases", status_group="active", sort_field="risk_score", limit=10),),
@@ -822,10 +826,54 @@ EXPLAIN_RECORDS = [
       params=(P("search_cases", status_group="active"),), forbid=_NO_HELP),
     G("Explain the highest risk open cases", tools=("search_cases",),
       params=(P("search_cases", status_group="active", sort_field="risk_score"),), forbid=_NO_HELP),
+    # A window beside the records lists them over that window (ranked as asked) and
+    # explains each one; "each" and "every" there name the records, never a count.
+    G("Show the top 10 open cases this week by risk with a table and explain each", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", window="this_week", sort_field="risk_score", limit=10),),
+      forbid=_NOT_COUNTED, contains=(_EXPLAINED,), figures=(Fig("**{n} open case", "this_week", _ACTIVE),)),
+    G("Which cases were escalated this week? Explain each", tools=("search_cases",),
+      params=(P("search_cases", status="escalated", window="this_week"),), forbid=_NOT_COUNTED,
+      contains=(_EXPLAINED,), figures=(Fig("**{n} escalated case", "this_week", {"status": "escalated"}),)),
+    G("List the open critical cases this week and explain why each one is critical", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", severity="critical", window="this_week"),),
+      forbid=_NOT_COUNTED, contains=(_EXPLAINED,),
+      figures=(Fig("**{n} open critical case", "this_week", {**_ACTIVE, "severity": "critical"}),)),
+    G("Show the escalated cases from today and explain each", tools=("search_cases",),
+      params=(P("search_cases", status="escalated", window="today"),), forbid=_NOT_COUNTED,
+      contains=(_EXPLAINED,), figures=(Fig("**{n} escalated case", "today", {"status": "escalated"}),)),
+    G("List cases opened yesterday and explain each", tools=("search_cases",),
+      params=(P("search_cases", window="yesterday"),), forbid=_NOT_COUNTED, contains=(_EXPLAINED,),
+      figures=(Fig("**{n} case", "yesterday"),)),
+    G("Show the critical cases this month and explain each of them", tools=("search_cases",),
+      params=(P("search_cases", severity="critical", window="this_month"),), forbid=_NOT_COUNTED,
+      contains=(_EXPLAINED,), figures=(Fig("**{n} critical case", "this_month", {"severity": "critical"}),)),
+    G("Show me every open case from the last 24 hours", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", window="now-24h"),), forbid=_NOT_COUNTED,
+      figures=(Fig("**{n} open case", "now-24h", _ACTIVE),)),
+    G("List each critical case this week", tools=("search_cases",),
+      params=(P("search_cases", severity="critical", window="this_week"),), forbid=_NOT_COUNTED,
+      figures=(Fig("**{n} critical case", "this_week", {"severity": "critical"}),)),
+    # "The first 3" and "the 5 riskiest" set the list's length.
+    G("Explain the first 3 cases by risk", tools=("search_cases",),
+      params=(P("search_cases", sort_field="risk_score", limit=3),), forbid=_NOT_COUNTED,
+      contains=("Highest risk first.", _EXPLAINED)),
+    G("Show me the 5 riskiest cases and explain each", tools=("search_cases",),
+      params=(P("search_cases", sort_field="risk_score", limit=5),), forbid=_NOT_COUNTED,
+      contains=("Highest risk first.", _EXPLAINED)),
     # Definitional asks keep their Help Center answer (with our own figure for a KPI).
     G("Explain the false positive rate", kind=("mixed", "product_help"), tools=("app_help", "soc_metrics"),
       params=(P("soc_metrics", kind="posture"),), forbid=(P("search_cases"),)),
     G("Explain what each severity level means", kind="product_help", tools=("app_help",), max_lookups=1),
+    # A console term after the record ("each case status") or no record at all ("each
+    # of the verdicts", "the first 3 steps") is a product question, never a case list.
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, forbid=(P("search_cases"),))
+      for q in ("Explain each case status", "Explain every case status", "Explain each alert severity",
+                "Explain each incident severity", "Explain each case verdict", "Explain each case priority",
+                "Explain each case outcome", "Explain every alert field", "Explain each incident lifecycle state",
+                "Explain each of the case statuses", "Explain the top 3 tabs in case detail",
+                "Explain each of the verdicts", "Explain each one of the verdicts", "Explain each of the roles",
+                "Explain each ticket state", "Explain each detection rule type",
+                "Explain the first 3 steps of onboarding", "Explain the first 2 steps of the setup wizard")),
 ]
 
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,

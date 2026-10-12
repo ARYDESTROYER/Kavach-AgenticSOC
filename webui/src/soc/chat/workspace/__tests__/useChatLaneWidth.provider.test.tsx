@@ -102,18 +102,19 @@ describe('useChatLaneWidth with the app PrefsProvider', () => {
     let resolve: (value: unknown) => void = () => {};
     effective.mockReturnValue(new Promise((r) => (resolve = r)));
     const { rerender } = render(<Shell chat />);
-    expect(screen.getByTestId('lane-width')).toHaveTextContent('wide');
+    // Never chosen: Full width, the default.
+    expect(screen.getByTestId('lane-width')).toHaveTextContent('full');
 
-    act(() => latest!.setWidth('full'));
+    act(() => latest!.setWidth('wide'));
     await act(async () => {
       resolve({ ...base, misc: { [LANE_WIDTH_PREF_KEY]: 'comfortable' } });
     });
-    expect(screen.getByTestId('lane-width')).toHaveTextContent('full');
+    expect(screen.getByTestId('lane-width')).toHaveTextContent('wide');
 
     rerender(<Shell chat={false} />);
     rerender(<Shell chat />);
-    await waitFor(() => expect(screen.getByTestId('lane-width')).toHaveTextContent('full'));
-    expect(window.localStorage.getItem(LANE_WIDTH_STORAGE_KEY)).toBe('full');
+    await waitFor(() => expect(screen.getByTestId('lane-width')).toHaveTextContent('wide'));
+    expect(window.localStorage.getItem(LANE_WIDTH_STORAGE_KEY)).toBe('wide');
   });
 
   it('still adopts the server value on a fresh visit when this session never chose', async () => {

@@ -34,6 +34,7 @@ from typing import Any, Iterable, Literal, Mapping, Protocol, Sequence
 
 from ..constants import CONVERSATION_SUMMARY_CLOSE, CONVERSATION_SUMMARY_OPEN
 from ..models import (
+    CHAT_COMMANDS,
     MAX_REPORT_TITLE_CHARS,
     REPORT_TEMPLATE_NAMES,
     ChatClarify,
@@ -472,7 +473,9 @@ class PriorExchange:
     presentation: ``steps`` and ``blocks`` as persisted, positions intact) or, for
     stateless and case-scoped calls, from the client ``history`` (text only).
     ``origin`` is who authored ``user`` (only ``"user"`` counts for the indicator
-    taint rule, §4.8); ``message_id`` is the assistant message id (``continue_of``)."""
+    taint rule, §4.8); ``message_id`` is the assistant message id (``continue_of``).
+    ``command`` names the chat command the stored answer replied to (``"compact"``):
+    such an exchange is housekeeping, not conversation (:func:`conversation_exchanges`)."""
 
     user: str = ""
     answer: str = ""
@@ -480,6 +483,7 @@ class PriorExchange:
     steps: tuple[Any, ...] = ()
     blocks: tuple[Any, ...] = ()
     origin: str = "user"
+    command: str | None = None
 
     @classmethod
     def from_turns(cls, turns: Iterable[ChatTurn | Mapping[str, Any]] | None) -> list["PriorExchange"]:
@@ -525,8 +529,10 @@ class PriorExchange:
                 steps = response.get("steps") if isinstance(response.get("steps"), list) else []
                 blocks = response.get("blocks") if isinstance(response.get("blocks"), list) else []
                 user, origin = pending if pending is not None else ("", "user")
+                command = response.get("command")
                 out.append(cls(user=user, answer=text, message_id=get("id"),
-                               steps=tuple(steps), blocks=tuple(blocks), origin=origin))
+                               steps=tuple(steps), blocks=tuple(blocks), origin=origin,
+                               command=command if command in CHAT_COMMANDS else None))
                 pending = None
             else:
                 if pending is not None:
@@ -536,6 +542,14 @@ class PriorExchange:
         if pending is not None:
             out.append(cls(user=pending[0], answer="", origin=pending[1]))
         return out
+
+
+def conversation_exchanges(exchanges: Iterable[PriorExchange]) -> list[PriorExchange]:
+    """``exchanges`` without the replies to chat commands (``/compact``): a command and
+    its confirmation are housekeeping, so they are never replayed to the model, folded
+    into the conversation summary, or counted as earlier exchanges. Applied AFTER
+    :func:`drop_summarised`, which still finds a summary's ``covers_through`` id."""
+    return [e for e in exchanges if not e.command]
 
 
 def select_replay(
