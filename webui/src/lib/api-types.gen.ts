@@ -2056,8 +2056,10 @@ export interface paths {
          * Chat Turn Seen
          * @description The caller has their own turn's outcome on screen (an answer, a question or a
          *     failure, in a Workspace or a Case Manager chat). Their other consoles hear it and
-         *     drop the mark they may hold for it. Nothing is stored. 404 for an unknown or expired
-         *     turn (finished turns are kept for 5 minutes) and for anyone else's.
+         *     drop the mark they may hold for it. Nothing is stored. Always 204, for any
+         *     well-formed turn id: the notice goes only to the caller's own consoles and names
+         *     the turn, plus its conversation or case while the server still keeps the finished
+         *     turn (5 minutes).
          */
         post: operations["chat_turn_seen_api_chat_turns__turn_id__seen_post"];
         delete?: never;

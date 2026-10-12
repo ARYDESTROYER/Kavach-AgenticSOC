@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import random
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, AsyncIterator
 
 import pytest
 
@@ -164,37 +165,44 @@ async def test_fold_equals_brute_force(rows, group_by, bucket, tz) -> None:
     assert_matches(result, rows, spec)
 
 
-async def _sql_repo(rows) -> SqlUsageRepository:
+@asynccontextmanager
+async def _sql_repo(rows) -> AsyncIterator[SqlUsageRepository]:
+    """An in-memory SQLite ledger holding ``rows``. The engine is disposed on exit: an
+    engine left to the garbage collector let its aiosqlite worker thread answer after
+    the test's event loop had closed ("Event loop is closed" in a later test)."""
     engine = build_async_engine("sqlite+aiosqlite:///:memory:")
-    await create_all(engine)
-    repo = SqlUsageRepository(engine)
-    async with repo._sm() as session:
-        session.add_all([UsageRow(ts=r["ts"], case_id=r.get("case_id"), surface=r["surface"],
-                                  role=r["role"], model=r["model"], cost=r["cost"],
-                                  total_tokens=r["total_tokens"], doc=r) for r in rows])
-        await session.commit()
-    return repo
+    try:
+        await create_all(engine)
+        repo = SqlUsageRepository(engine)
+        async with repo._sm() as session:
+            session.add_all([UsageRow(ts=r["ts"], case_id=r.get("case_id"), surface=r["surface"],
+                                      role=r["role"], model=r["model"], cost=r["cost"],
+                                      total_tokens=r["total_tokens"], doc=r) for r in rows])
+            await session.commit()
+        yield repo
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize("group_by, bucket", SPECS)
 async def test_sql_pushdown_equals_brute_force(rows, group_by, bucket) -> None:
-    repo = await _sql_repo(rows)
-    for wspec in ("all", "now-90d"):
-        spec = UsageAggregateSpec(window=resolve_window(wspec, tz="America/New_York", now=NOW),
-                                  group_by=group_by, bucket=bucket, metrics=METRICS)
-        result = await aggregate_usage(repo, spec)
-        assert result.method == "pushdown"
-        assert_matches(result, rows, spec)
-        folded = await fold_usage(repo, spec)
-        assert folded.method == "fold"
-        assert_matches(folded, rows, spec)
+    async with _sql_repo(rows) as repo:
+        for wspec in ("all", "now-90d"):
+            spec = UsageAggregateSpec(window=resolve_window(wspec, tz="America/New_York", now=NOW),
+                                      group_by=group_by, bucket=bucket, metrics=METRICS)
+            result = await aggregate_usage(repo, spec)
+            assert result.method == "pushdown"
+            assert_matches(result, rows, spec)
+            folded = await fold_usage(repo, spec)
+            assert folded.method == "fold"
+            assert_matches(folded, rows, spec)
 
 
 async def test_sql_pushdown_declines_derived_filters(rows) -> None:
-    repo = await _sql_repo(rows[:300])
-    spec = UsageAggregateSpec(window=resolve_window("all", now=NOW), filters={"provider": "openai"})
-    assert await repo.aggregate_usage(spec) is None
-    result = await aggregate_usage(repo, spec)
+    async with _sql_repo(rows[:300]) as repo:
+        spec = UsageAggregateSpec(window=resolve_window("all", now=NOW), filters={"provider": "openai"})
+        assert await repo.aggregate_usage(spec) is None
+        result = await aggregate_usage(repo, spec)
     assert result.method == "fold"
     assert result.total == sum(1 for r in rows[:300] if provider_for(r["model"]) == "openai")
 

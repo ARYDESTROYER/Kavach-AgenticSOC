@@ -143,12 +143,17 @@ _DATA_SIGNAL_RE = re.compile(
 # detail") or no record at all ("explain each of the verdicts", "explain the first 3
 # steps of onboarding") keeps it a product question, and so does a defining word
 # (:data:`_DEFINES_RE`): "explain what each case status means".
+#: Parts of the console a record noun can qualify ("each case action", "each alert
+#: icon"): the same list as the Demo planner's (``engine/demo_chat._CONSOLE_PARTS``).
+_CONSOLE_PARTS = (r"actions?|chips?|badges?|permissions?|roles?|shortcuts?|icons?|colou?rs?|options?|sections?|"
+                  r"screens?|dialogs?|modals?|toolbars?|tooltips?|glyphs?|toggles?|switches|controls?|headers?|"
+                  r"layouts?|themes?|links?")
 _NOT_CONSOLE = (
     r"(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?|settings?|widgets?"
     r"|panels?|rates?|counts?|queues?|polic(?:y|ies)|lifecycles?|workflows?|menus?|buttons?|status(?:es)?"
     r"|severit(?:y|ies)|priorit(?:y|ies)|fields?|types?|states?|ids?|numbers?|titles?|formats?|templates?"
     r"|decisions?|models?|verdicts?|outcomes?|dispositions?|levels?|labels?|categor(?:y|ies)|kinds?|class(?:es)?"
-    r"|stages?|steps?|phases?|rules?|roles?|permissions?|attributes?)\b)"
+    r"|stages?|steps?|phases?|rules?|roles?|permissions?|attributes?|" + _CONSOLE_PARTS + r")\b)"
 )
 _RECORDS = (r"(?:cases|incidents|tickets|investigations|escalations|alerts|detections|findings|results|rows"
             r"|matches|ones|(?:true|false)[- ]positives)\b" + _NOT_CONSOLE)
@@ -167,8 +172,13 @@ _EXPLAIN_RECORDS_RE = re.compile(
     r"|(?:the\s+)?(?:top|first)\s+\d{1,3}(?:" + _CLAUSE_END + r"|\s+" + _QUALIFIERS + _RECORDS + r"))",
     re.IGNORECASE,
 )
-# Defining words: with one of them an "explain" asks what something means.
+# Defining words: with one of them an "explain" asks what something means, unless the
+# word points back at the listed records ("explain what each one means", "what they
+# mean for us"; the Demo planner's ``_MEANS_THE_RECORDS_RE``).
 _DEFINES_RE = re.compile(r"\b(?:mean|means|meant|meaning|defin(?:e|es|ed|ition)|stands?\s+for)\b", re.IGNORECASE)
+_MEANS_THE_RECORDS_RE = re.compile(
+    r"\b(?:each(?:\s+one)?(?:\s+of\s+(?:them|these|those))?|every\s+one|they|them|these|those)\s+"
+    r"(?:means?|meant|stands?\s+for)\b", re.IGNORECASE)
 # Soft data signals: a filtered set of cases or a metric of "our"/"my" estate. A strong
 # cue outweighs them, because KPI and glossary questions name the same sets.
 _SOFT_DATA_RE = re.compile(
@@ -278,7 +288,7 @@ def classify_intent(message: str) -> IntentClass:
         return "settings_key"
     if _DATA_SIGNAL_RE.search(text):
         return "data"
-    if _EXPLAIN_RECORDS_RE.search(text) and not _DEFINES_RE.search(text):
+    if _EXPLAIN_RECORDS_RE.search(text) and not _DEFINES_RE.search(_MEANS_THE_RECORDS_RE.sub(" ", text)):
         return "data"
     if _STRONG_CUE_RE.search(text):
         return "strong"

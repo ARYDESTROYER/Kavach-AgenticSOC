@@ -1,6 +1,6 @@
 /**
- * Round 12 SYNTHESIS-chat P1-3 (#3): an investigation brief is labelled "Advisory — the
- * case decision is made by policy (decide())" wherever it is read, not only in chat:
+ * Round 12 SYNTHESIS-chat P1-3 (#3): an investigation brief is labelled "Advisory: the
+ * case decision is made by policy, not by this brief" wherever it is read, not only in chat:
  * the Reports library (ReportDocument draws the walker's header), Print, and every
  * static export (Markdown, HTML, Word) — the copy most likely to be forwarded. A brief
  * Brief block inside another report carries it too; other templates never do.
@@ -30,7 +30,7 @@ const count = (text: string, needle: string) => text.split(needle).length - 1;
 describe('investigation brief advisory label', () => {
   it('is one string, shared by the chat renderer and the document walker', () => {
     expect(RENDERER_LABEL).toBe(INVESTIGATION_BRIEF_ADVISORY);
-    expect(INVESTIGATION_BRIEF_ADVISORY).toBe('Advisory — the case decision is made by policy (decide())');
+    expect(INVESTIGATION_BRIEF_ADVISORY).toBe('Advisory: the case decision is made by policy, not by this brief');
   });
 
   it('heads a saved investigation brief in Markdown, HTML and Word, once', () => {

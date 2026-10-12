@@ -314,6 +314,34 @@ async def test_log_stats_sampled_source_says_sampled_not_top_of_the_event_total(
     assert out.observation["total"] == 5_000  # the match count itself is still stated
 
 
+async def test_log_stats_partial_fan_out_never_states_a_population() -> None:
+    """Two sources planned, one fails: the source that answered knows its own 4 IPs
+    exactly, but the missing source may hold any number of others, so the IPs are
+    "Top 2 shown", never "Top 2 of 4", and no distinct figure is offered."""
+    from app.connectors.base import StructuredQuery
+    from app.engine.log_rows import BrowseTarget
+    from tests.test_chat_tools_logs import _rows
+
+    async def complete(sq: StructuredQuery):
+        rows = [row | {"source_ip": f"203.0.113.{i % 4}"} for i, row in enumerate(_rows("a", 20))]
+        return rows[: sq.size], 20
+
+    async def broken(_sq: StructuredQuery):
+        raise RuntimeError("source unavailable")
+
+    targets = [BrowseTarget("a", "Source a", "search", complete), BrowseTarget("b", "Source b", "search", broken)]
+    out = await LogStatsTool().run(make_ctx(browse_sources=lambda: targets), group_by=["ip"], top_n=2)
+    assert out.coverage == "1 of 2 sources answered"
+    blocks = _log_blocks(out)
+    assert blocks["categories"].get("total") is None
+    assert blocks["categories"]["caption"].startswith("Top 2 shown · "), blocks["categories"]["caption"]
+    assert "distinct_approx" not in out.observation
+    assert not [i for i in blocks["kpis"]["items"] if i["key"].startswith("distinct_")]
+    # The same source alone states its population.
+    alone = await LogStatsTool().run(make_ctx(browse_sources=lambda: targets[:1]), group_by=["ip"], top_n=2)
+    assert _log_blocks(alone)["categories"]["caption"].startswith("Top 2 of 4 · ")
+
+
 # --------------------------------------------------------------------------- #
 # 4. Report item scope windows.
 # --------------------------------------------------------------------------- #

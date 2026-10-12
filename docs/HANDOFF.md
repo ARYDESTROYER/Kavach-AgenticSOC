@@ -6,7 +6,7 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-08-13
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-10-12
 - **Round 12 (newest, 2026-10):** chat without limits, the chat working indicator,
   Remember me, report downloads, and the Overview and Case Manager redesigns, built on
   `claude/round12` and heading to `Testing` by pull request. What shipped, the decisions
@@ -344,7 +344,7 @@ can never override.
 cd backend
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt        # greenlet is pinned, so a fresh install is green
-python -m pytest -q                         # latest recorded full run: 2,306 passed; see Journal.md
+python -m pytest -q                         # latest recorded full run: 7,526 passed, 4 skipped; see Journal.md
 ```
 
 ### WebUI build + tests + lint
@@ -353,7 +353,7 @@ cd webui
 npm ci
 npm run check:types # hard-fail API drift in CI with TLSOC_REQUIRE_TYPEGEN=1
 npm run gates       # tokens, contrast, CVD, and raw-style regression guards
-npm run test:strict # latest recorded full run: 1,935/1,935 passed / 286 files; CI-parity quiet-output gate
+npm run test:strict # latest recorded full run: 4,750 passed, 1 skipped / 466 files; CI-parity quiet-output gate
 npm run lint -- --max-warnings=0
 npm run build      # version-matched MkDocs Help Center + tsc --noEmit + Vite
 npm run docs:check # verify the generated docs artifact matches VERSION

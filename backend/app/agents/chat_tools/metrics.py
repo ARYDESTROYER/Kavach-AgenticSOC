@@ -191,6 +191,18 @@ class MetricWindow:
         return notes
 
 
+def narrowed_range_label(start: datetime, end: datetime, tz: str) -> str:
+    """A past range narrowed to whole hours, in the operator timezone's words like every
+    other range in the answer ("3 Sep 09:30 – 11 Oct 2026 17:30 (Asia/Kolkata)"), the
+    zone named once at the end when it is not UTC. Never the raw UTC arrow form."""
+    from ...engine.time_windows import zone_for
+    from .periods import range_label
+
+    _zone, name = zone_for(tz or "UTC")
+    label = range_label(start, end, name)
+    return label if name == "UTC" else f"{label} ({name})"
+
+
 def metric_window(window: Window, now: datetime) -> MetricWindow:
     """The window an engine function that counts ``window_hours`` back from an instant
     really covers: the span narrowed to whole hours (never widened beyond what was
@@ -210,8 +222,12 @@ def metric_window(window: Window, now: datetime) -> MetricWindow:
         label = window.label
     elif trailing:
         label = window_label(f"now-{hours}h", "now", start, end)
-    else:
+    elif "→" in window.label:
+        # A request's raw UTC range (an absolute chip, or a window clamped into one) keeps
+        # that form, so the answer's lookups read alike.
         label = window_label("", "", start, end)
+    else:
+        label = narrowed_range_label(start, end, window.tz)
     return MetricWindow(
         hours=hours, end=end, now=now, trailing=trailing, label=label,
         requested=window.label, capped=False, clamped=window.clamped, window=window,

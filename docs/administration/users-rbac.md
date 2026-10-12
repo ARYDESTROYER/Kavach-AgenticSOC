@@ -66,6 +66,9 @@ disable/delete an account. Session revocation is checked on subsequent authentic
 requests. Preserve at least one working `super_admin` account and verify it before
 changing another administrator's role.
 
+Deleting an account also deletes that user's Workspace chat conversations, answer
+ratings and reports, and stops their running chat answers. Audit records are kept.
+
 ## Limitations
 
 - Agentic SOC does not yet expose a complete API-key lifecycle for automation clients.

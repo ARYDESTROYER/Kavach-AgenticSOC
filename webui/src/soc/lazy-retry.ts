@@ -59,7 +59,7 @@ const prefetched = new Set<string>();
 /**
  * Warm chunks into the HTTP cache without loading them as modules
  * (`<link rel="prefetch">`). `list` is the JSON list of chunk paths, relative to `base`,
- * that the build writes in place of a `'__TLSOC_CHUNKS:…__'` mark (vite.config.ts
+ * that the build writes in place of a `'__CHUNK_LIST:…__'` mark (vite.config.ts
  * `chunkListPlugin`); unbuilt (the dev server, tests) the mark stays and nothing is
  * warmed. A list is warmed at most once per page; a prefetch that fails changes nothing,
  * since the open imports the chunk anyway.

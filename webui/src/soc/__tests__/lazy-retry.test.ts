@@ -98,7 +98,7 @@ describe('prefetchChunks', () => {
   });
 
   it('warms nothing when the build did not write the list (dev server, tests)', () => {
-    prefetchChunks('__TLSOC_CHUNKS:src/soc/components/CommandPalette.tsx__', `${ORIGIN}/assets/index-123.js`);
+    prefetchChunks('__CHUNK_LIST:src/soc/components/CommandPalette.tsx__', `${ORIGIN}/assets/index-123.js`);
     expect(links()).toEqual([]);
   });
 });

@@ -167,13 +167,13 @@ export function outcomeAgreement(verdict: unknown, disposition: unknown): Outcom
   return 'overrides';
 }
 
-/** "Closed as false positive" / "Resolved as benign" / "Classified as suspicious — on hold". */
+/** "Closed as false positive" / "Resolved as benign" / "Classified as suspicious: on hold". */
 function classifiedHeadline(disposition: string, status: string): string {
   const words = dispositionWords(disposition).toLowerCase();
   if (status === 'closed') return `Closed as ${words}`;
   if (status === 'resolved') return `Resolved as ${words}`;
   const tail = statusTail(status);
-  return tail ? `Classified as ${words} — ${tail}` : `Classified as ${words}`;
+  return tail ? `Classified as ${words}: ${tail}` : `Classified as ${words}`;
 }
 
 function statusTail(status: string): string {

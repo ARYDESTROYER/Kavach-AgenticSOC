@@ -10,8 +10,8 @@ build, and documentation gates pass. Stable promotion moves that accepted source
 tree through a protected pull request to `main`; the resulting commit is gated again
 before application version `v0.1.13` is tagged.
 
-The latest fully recorded local baseline is **2,306 backend tests** and **1,935/1,935
-Console tests across 286 files**. The
+The latest fully recorded local baseline is **7,526 backend tests** (4 skipped) and **4,750
+Console tests (1 skipped) across 466 files**. The
 Console baseline also has zero stderr bytes and zero Vitest-captured console stdout
 blocks under `npm run test:strict`. Counts rise as coverage is added; the commands
 and zero-failure result are the contract, not a frozen target.

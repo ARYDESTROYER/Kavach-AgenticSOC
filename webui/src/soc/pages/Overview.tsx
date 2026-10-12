@@ -2746,7 +2746,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
               label: 'Confirmed false positive by an analyst',
               value: fmtNumber(analystFp),
               title:
-                'Cases an analyst independently confirmed as false positive — graded feedback or an explicit classification',
+                'Cases an analyst independently confirmed as false positive, from graded feedback or an explicit classification',
             },
           ]
         : undefined;
@@ -3001,7 +3001,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           // panel — the face's one context line has no room for a second number at 1280.
           partition: fpPartition,
           partitionCaption:
-            'Over the whole window, from the server rollup — not the cases listed below. ' +
+            'Over the whole window, from the server rollup, not the cases listed below. ' +
             'The two are different judgements of the same cases, so they need not match and ' +
             'do not sum to anything.',
           // The SAME population the server's rate counts. Its numerator and denominator

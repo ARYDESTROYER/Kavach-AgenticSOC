@@ -96,7 +96,7 @@ export interface ChatSettlePolicy {
 type Listener = () => void;
 
 const settledListeners = new Set<(event: ChatActivitySettled) => void>();
-const shownListeners = new Set<(entry: ChatActivity) => void>();
+const shownListeners = new Set<(turnId: string) => void>();
 const clearListeners = new Set<Listener>();
 let policy: ChatSettlePolicy | null = null;
 /**
@@ -240,16 +240,17 @@ export function clearChatActivity(local = true): void {
 }
 
 /**
- * `settled` fires once per finished turn; `shown` when this tab put a turn's outcome on
- * screen (it settled in view, or its mark was looked at), for the other consoles to
- * hear; `clear` on sign-out (the runner aborts).
+ * `settled` fires once per finished turn; `shown` (with its turn id) when this tab put a
+ * turn's outcome on screen (it settled in view, its mark was looked at, or a case chat
+ * transcript shows it), for the other consoles to hear; `clear` on sign-out (the runner
+ * aborts).
  */
 export function onChatActivity(event: 'settled', listener: (event: ChatActivitySettled) => void): () => void;
-export function onChatActivity(event: 'shown', listener: (entry: ChatActivity) => void): () => void;
+export function onChatActivity(event: 'shown', listener: (turnId: string) => void): () => void;
 export function onChatActivity(event: 'clear', listener: Listener): () => void;
 export function onChatActivity(
   event: 'settled' | 'shown' | 'clear',
-  listener: Listener | ((event: ChatActivitySettled) => void) | ((entry: ChatActivity) => void),
+  listener: Listener | ((event: ChatActivitySettled) => void) | ((turnId: string) => void),
 ): () => void {
   if (event === 'clear') {
     const plain = listener as Listener;
@@ -257,7 +258,7 @@ export function onChatActivity(
     return () => clearListeners.delete(plain);
   }
   if (event === 'shown') {
-    const shown = listener as (entry: ChatActivity) => void;
+    const shown = listener as (turnId: string) => void;
     shownListeners.add(shown);
     return () => shownListeners.delete(shown);
   }
@@ -266,9 +267,12 @@ export function onChatActivity(
   return () => settledListeners.delete(typed);
 }
 
-function emitShown(entry: ChatActivity): void {
-  if (!entry.turnId) return;
-  for (const listener of Array.from(shownListeners)) listener(entry);
+/**
+ * These turns' outcomes are on screen here (a case chat transcript lists every answer it
+ * holds, not only its newest), so the other consoles drop exactly their marks.
+ */
+export function showChatTurns(turnIds: readonly (string | null)[]): void {
+  for (const turnId of turnIds) if (turnId) for (const listener of Array.from(shownListeners)) listener(turnId);
 }
 
 export function setAnimatedBrand(value: boolean): void {
@@ -388,7 +392,7 @@ function finishSettle(
   if (status) putChatActivity({ ...current, status, seen: viewed, label: null, parked: false }, local);
   else dropChatActivity(scope, local);
   // On this tab's screen: the analyst's other consoles may hold a mark for it.
-  if (here && outcome !== 'stopped') emitShown(current);
+  if (here && outcome !== 'stopped') showChatTurns([current.turnId]);
   const event: ChatActivitySettled = { activity: current, outcome, viewed };
   if (options.unreachable) {
     event.unreachable = true;
@@ -417,7 +421,7 @@ export function markChatActivitySeen(scope: string, local = true, options: { els
   if (current.status === 'needs_input') replace({ ...current, seen: true }, scope);
   else replace(null, scope);
   send({ t: 'seen', s: scope }, local);
-  if (local && !options.elsewhere) emitShown(current);
+  if (local && !options.elsewhere) showChatTurns([current.turnId]);
 }
 
 /** Mark every on-screen chat seen (the tab became visible again). */

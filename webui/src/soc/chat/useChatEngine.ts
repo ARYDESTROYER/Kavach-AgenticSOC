@@ -57,7 +57,7 @@ import type {
   ChatTimeRange,
   ChatTurn,
 } from '@/lib/types';
-import { getChatActivity, setAnimatedBrand, useChatActivity, viewChatActivity } from '../chat-activity/activity';
+import { getChatActivity, setAnimatedBrand, showChatTurns, useChatActivity, viewChatActivity } from '../chat-activity/activity';
 import { CHAT_SCOPES, CHAT_STREAM_MODES, displayText } from './stream-events';
 import { REQUEST_TOPIC_RE } from './topic';
 import {
@@ -599,6 +599,21 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
   }, []);
 
   React.useEffect(() => (viewScope ? viewChatActivity(viewScope) : undefined), [viewScope]);
+
+  // A case chat lists every answer this tab holds for the case, not only its newest:
+  // each one's turn is seen, so the analyst's other consoles drop exactly those marks
+  // and never another turn's (SPEC §7.2 decision 17). Told once per turn (the observer
+  // dedupes), and only while the tab is visible.
+  React.useEffect(() => {
+    if (!viewScope?.startsWith('case:') || typeof document === 'undefined') return undefined;
+    const turnIds = items.map((item) => (item.kind === 'assistant' && item.status !== 'running' ? (item.response?.turn_id ?? null) : null));
+    const tell = () => {
+      if (document.visibilityState !== 'hidden') showChatTurns(turnIds);
+    };
+    tell();
+    document.addEventListener('visibilitychange', tell);
+    return () => document.removeEventListener('visibilitychange', tell);
+  }, [items, viewScope]);
 
   /** Stop viewing the attached run. The turn goes on (a disconnect is not a Stop). */
   const detach = React.useCallback(() => {

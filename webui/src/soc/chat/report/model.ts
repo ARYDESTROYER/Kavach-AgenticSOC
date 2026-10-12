@@ -252,6 +252,12 @@ export interface ReportDoc {
   /** Source conversations: id plus the title when known. */
   conversations: Array<{ id: string; title: string | null }>;
   windows: string[];
+  /**
+   * An item's stored scope listed only the windows that fit its bound and "and N
+   * more" (`routes_reports._join_windows`): `windows` names the ones listed, and the
+   * methodology says that some items answered over more.
+   */
+  windowsElided?: boolean;
   sources: string[];
   models: string[];
   demo: boolean;
@@ -332,6 +338,16 @@ export function itemBlocks(item: ReportItem): {
   };
 }
 
+/** The trailing "and 2 more" the backend adds to a scope over its bound (`_join_windows`). */
+const MORE_WINDOWS_RE = /^and \d+ more$/;
+
+/** An item scope's windows ("last 90 days; all time; and 2 more"), the count left out. */
+function scopeWindows(window: string | null | undefined): { windows: string[]; elided: boolean } {
+  const parts = (window ?? '').split('; ');
+  const windows = parts.filter((part) => !MORE_WINDOWS_RE.test(part.trim()));
+  return { windows, elided: windows.length !== parts.length };
+}
+
 /** Build the document of a report. Pure and deterministic for the same inputs. */
 export function buildReportDoc(report: Report, options: BuildOptions = {}): ReportDoc {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
@@ -378,8 +394,10 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
     appVersion: options.appVersion ?? (uniq(report.items.map((i) => i.scope.app_version))[0] || null),
     conversations: conversationIds.map((id) => ({ id, title: options.conversationTitles?.get(id) ?? null })),
     // An item's scope lists each window its blocks state ("last 90 days; all time"): the
-    // header names each window once, however many items share it.
-    windows: uniq(items.flatMap((i) => (i.scope.window ?? '').split('; '))),
+    // header names each window once, however many items share it. A scope over its bound
+    // ends "; and 2 more", which is a count, never a window (see `windowsElided`).
+    windows: uniq(items.flatMap((i) => scopeWindows(i.scope.window).windows)),
+    windowsElided: items.some((i) => scopeWindows(i.scope.window).elided),
     sources: uniq([...items.flatMap((i) => i.scope.sources ?? []), ...items.flatMap((i) => (i.turn?.steps ?? []).flatMap((s) => s.sources ?? []))]),
     models: uniq([...items.map((i) => i.scope.generated_by), ...items.map((i) => i.turn?.model)]),
     demo: items.some((i) => i.scope.demo === true),
@@ -744,6 +762,7 @@ export function buildMethodology(
 
   // Windows and sources.
   if (doc.windows.length) lines.push(`Time windows: ${doc.windows.join('; ')}.`);
+  if (doc.windowsElided) lines.push('Some sections cover more time windows than are listed here; each block states its own window.');
   if (doc.sources.length) lines.push(`Sources queried: ${doc.sources.slice(0, 12).join(', ')}${doc.sources.length > 12 ? ', …' : ''}.`);
 
   // Tokens and cost.

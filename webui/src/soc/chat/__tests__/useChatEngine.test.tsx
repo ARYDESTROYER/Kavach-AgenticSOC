@@ -1563,6 +1563,30 @@ describe('useChatEngine — turns outlive their view (Round 12, SPEC D13)', () =
   });
   const activityOf = (scope: string) => getChatActivity().entries.find((entry) => entry.scope === scope) ?? null;
 
+  it('a case chat tells the other consoles about every answer it lists, not only its newest', async () => {
+    const shown: string[] = [];
+    const off = onChatActivity('shown', (turnId) => shown.push(turnId));
+    const { result, rerender } = await mountEngine({ caseId: 'case-s' });
+    act(() => {
+      result.current.send('First question');
+    });
+    await settle();
+    await push(streams[0], start('turn-s1'), done({ answer: 'First answer', turn_id: 'turn-s1' }));
+    act(() => {
+      result.current.send('Second question');
+    });
+    await settle();
+    await push(streams[1], start('turn-s2'), done({ answer: 'Second answer', turn_id: 'turn-s2' }));
+    expect(new Set(shown)).toEqual(new Set(['turn-s1', 'turn-s2']));
+    // Back on the case later (its transcript kept for the session): both are on screen again.
+    rerender({ caseId: 'case-other' });
+    shown.length = 0;
+    rerender({ caseId: 'case-s' });
+    await settle();
+    expect(new Set(shown)).toEqual(new Set(['turn-s1', 'turn-s2']));
+    off();
+  });
+
   it('leaving mid-turn detaches (no abort); returning re-attaches live steps without duplicates and Stop works', async () => {
     const first = await mountEngine({ conversation: thread('conv-a') });
     act(() => {

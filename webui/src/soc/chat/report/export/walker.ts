@@ -387,7 +387,7 @@ class Walker {
         for (const c of block.counts) add(c.label, formatValue(c.value, c.unit));
         this.table(['Field', 'Value'], rows, [false, false], [false, false], (cell) => (cell === null ? '—' : String(cell)), trust);
         if (block.reputation.length) {
-          this.label = `${blockTitle(block)} — reputation`;
+          this.label = `${blockTitle(block)}: reputation`;
           this.table(
             ['Provider', 'Verdict', 'Score', 'Detail'],
             block.reputation.map((r) => [r.provider, r.verdict, r.score ?? null, r.detail ?? null]),

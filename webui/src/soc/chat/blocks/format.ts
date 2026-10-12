@@ -489,6 +489,6 @@ export function truncationNote(shown: number, total: number | null): string {
  * model's advisory assessment; the close/escalate decision is the deterministic policy's.
  * ONE string for the in-chat Brief, the Reports library, Print and every file export.
  */
-export const INVESTIGATION_BRIEF_ADVISORY = 'Advisory — the case decision is made by policy (decide())';
+export const INVESTIGATION_BRIEF_ADVISORY = 'Advisory: the case decision is made by policy, not by this brief';
 /** The sentence that follows the label wherever it is a callout (documents, exports). */
 export const INVESTIGATION_BRIEF_ADVISORY_NOTE = 'This brief is the model’s assessment. It never closes or escalates a case.';

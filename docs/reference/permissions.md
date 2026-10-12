@@ -109,7 +109,10 @@ A few chat features have their own gates:
 - the step inspector, answer ratings, rejoining a running answer, and **Ask AI** entity
   questions need `cases:read`, like chat itself, and work only on the user's own
   conversations and turns;
-- confirming a fact the assistant suggests remembering needs `memory:manage`.
+- confirming a fact the assistant suggests remembering needs `memory:manage`;
+- a running answer keeps only the access it started with: a role change that removes a
+  grant it uses stops it ("Your access changed"); a change that only adds access stops
+  nothing.
 
 Checking these grants for the composer and the starters writes no audit rows; a lookup
 the model requests and the engine refuses for a missing grant writes one ACCESS_DENIED

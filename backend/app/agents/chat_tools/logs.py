@@ -1238,7 +1238,10 @@ class LogStatsTool(ChatTool):
             over_time.update(s.over_time)
             for k, v in s.matrix.items():
                 matrix.setdefault(k, Counter()).update(v)
-        single = len(answered) == 1
+        # One source PLANNED (not one that happened to answer): when a fan-out loses a
+        # source, the survivor's distinct count is not the field's population, since the
+        # missing source may hold any number of other values.
+        single = len(per_source) == 1 and len(answered) == 1
         for f in group_by:
             if single and f in answered[0].distinct:
                 distinct[f] = answered[0].distinct[f]

@@ -15661,7 +15661,7 @@
     },
     "/api/chat/turns/{turn_id}/seen": {
       "post": {
-        "description": "The caller has their own turn's outcome on screen (an answer, a question or a\nfailure, in a Workspace or a Case Manager chat). Their other consoles hear it and\ndrop the mark they may hold for it. Nothing is stored. 404 for an unknown or expired\nturn (finished turns are kept for 5 minutes) and for anyone else's.",
+        "description": "The caller has their own turn's outcome on screen (an answer, a question or a\nfailure, in a Workspace or a Case Manager chat). Their other consoles hear it and\ndrop the mark they may hold for it. Nothing is stored. Always 204, for any\nwell-formed turn id: the notice goes only to the caller's own consoles and names\nthe turn, plus its conversation or case while the server still keeps the finished\nturn (5 minutes).",
         "operationId": "chat_turn_seen_api_chat_turns__turn_id__seen_post",
         "parameters": [
           {

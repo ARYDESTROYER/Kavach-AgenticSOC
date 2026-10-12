@@ -1080,7 +1080,7 @@ describe('investigation brief (P1-3, #3)', () => {
     // The blocks chunk is lazy: give its first import time on a busy machine.
     const labels = await screen.findAllByTestId('report-advisory', undefined, { timeout: 8000 });
     expect(labels).toHaveLength(1);
-    expect(labels[0]).toHaveTextContent('Advisory — the case decision is made by policy (decide())');
+    expect(labels[0]).toHaveTextContent('Advisory: the case decision is made by policy, not by this brief');
   });
 });
 

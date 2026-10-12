@@ -471,6 +471,62 @@ async def test_a_turn_stops_once_the_access_token_that_started_it_expires(
     assert state.chat_turns.active == 0
 
 
+async def test_a_token_expiring_during_admission_keeps_the_turn_bound_to_its_sign_in(
+    short_auth_state, monkeypatch,
+) -> None:
+    """The turn reads the sign-in it acts for before it awaits anything. Admission
+    (grants, account generation, the transcript read and the reservation) can take
+    seconds on a long conversation; a token that was valid when the request was
+    authenticated and expired during that work used to leave the turn bound to no
+    session at all (sid, token version and expiry all ``None``): no expiry stop, no
+    session-row check, and a sign-out push that found nothing to stop."""
+    state, provider = short_auth_state
+    token = await _user(state)
+    claims = state.auth.claims_of(token)
+    real_prepare = routes_chat._prepare
+
+    async def slow_prepare(*args: Any, **kwargs: Any) -> Any:
+        _clock(monkeypatch, 61)                 # the token expires mid-admission
+        return await real_prepare(*args, **kwargs)
+
+    _clock(monkeypatch, 59.95)                  # authenticated 3 s before ``exp``
+    await require_auth(_request(state, token, "/api/cases", "GET"))
+    monkeypatch.setattr(routes_chat, "_prepare", slow_prepare)
+    provider.push("chat", TOOL_STEP)
+    provider.push("chat", FINAL)
+    handle = (await _start(state, token, "expiry-admit-1")).handle
+    reader = asyncio.ensure_future(_drain(_relay(handle)))
+    assert handle.sid == claims["sid"]
+    assert handle.token_version == int(claims.get("tv", 0) or 0)
+    assert handle.token_expires_at == claims["exp"]
+    assert await turn_authority_lost(state, handle) == routes_chat.STOP_SESSION_ENDED
+    # The sign-out push for that session finds the turn too.
+    assert await stop_chat_turns_for(state, "carol", sid=claims["sid"]) == 1
+    provider.gated = False
+    provider.gate.set()
+    events = await asyncio.wait_for(reader, 10)
+    assert _tool_steps(events) == [] and events[-1].type == "turn.error"
+    assert not [e for e in events if e.type == "turn.done"]
+    assert await _conversations(state, "carol") == []
+
+
+async def test_session_identity_reads_an_expired_token_but_never_a_forged_one(
+    short_auth_state, monkeypatch,
+) -> None:
+    """``_session_identity`` skips only the expiry comparison: the signature still
+    decides, so a token signed with another secret binds nothing."""
+    state, _provider = short_auth_state
+    token = await _user(state)
+    claims = state.auth.claims_of(token)
+    _clock(monkeypatch, 120)
+    assert state.auth.claims_of(token) is None          # expired for every request
+    sid, tv, exp = routes_chat._session_identity(_request(state, token), state)
+    assert (sid, tv, exp) == (claims["sid"], int(claims.get("tv", 0) or 0), claims["exp"])
+    body = {k: v for k, v in claims.items() if k not in ("iat", "exp")}
+    forged = tokens_mod.encode(body, "y" * 40, expires_in_s=3600)
+    assert routes_chat._session_identity(_request(state, forged), state) == (None, None, None)
+
+
 async def test_the_session_row_records_the_end_of_the_sign_in(short_auth_state, monkeypatch) -> None:
     """The row's hard limit (absolute lifetime, or the access token's ``exp`` it
     records) ends the turn even when the turn has no token expiry of its own."""

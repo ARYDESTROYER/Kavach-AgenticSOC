@@ -373,8 +373,10 @@ def _unusable(block: dict[str, Any]) -> bool:
 # date", "Q3 2026", "W41 2026", "2026 to date", "today", "14 Sep 2026", "1 Mar – 10 Oct
 # 2026", "3 Sep 2026 05:30 – 11 Oct 2026 14:15", "since 1 Mar 2026", "last 6 months
 # (since May 2026)", a comparison "Oct 2026 to date vs Sep 2026 to date", each with
-# the operator zone when it is not UTC ("… (Asia/Kolkata)"); and the earlier forms
-# stored answers still carry ("last 24h", "2026-10-01 00:00 → 2026-10-02 00:00 UTC").
+# the operator zone when it is not UTC ("… (Asia/Kolkata)"); and the raw UTC minute
+# range ("2026-10-01 00:00 → 2026-10-02 00:00 UTC"), which earlier answers carry and a
+# lookup still reads only when the request itself named an absolute range (an API
+# client's chip, or a window clamped into one), plus earlier trailing forms ("last 24h").
 _SHORT_MONTH = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
 _LONG_MONTH = "January|February|March|April|May|June|July|August|September|October|November|December"
 _HHMM = r"\d{2}:\d{2}"

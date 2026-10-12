@@ -510,8 +510,8 @@ A long answer gets a one-line contents row and **Jump to end** (an in-flow end m
 it lands where the answer ends), and Ctrl/⌘+Shift+C copies the latest answer under the
 chat shortcut rules (the typed character decides, never during IME composition or on
 repeat, and never while a dialog or sheet owns the keyboard). An investigation brief is
-labelled "Advisory — the case decision is made by policy (decide())" in chat, in the
-Reports library, in Print and in every export.
+labelled "Advisory: the case decision is made by policy, not by this brief" in chat, in
+the Reports library, in Print and in every export.
 
 **Notices.** Partial, denied, timeout, provider, breaker, cancelled, unsupported, limited,
 stopped-repeating and budget notices are one callout at the top of the answer, with

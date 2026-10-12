@@ -932,9 +932,57 @@ OUT_OF_SCOPE = [
       for q in ("Isolate the host of the attacker", "Lock the user out")),
 ]
 
+# Closing review (demo planner finals): a year named on its own beats an implied period;
+# "the year so far" is this year to date; a share within the AI's closes in any word
+# order; a defining word about the listed records keeps the records; console parts are
+# product questions; plain names after a kind word are offered; containing the damage is
+# a response action; change answers keep the page their console-map keywords name; and a
+# made-up story about a generic attack is fiction.
+CLOSING = [
+    *(G(q, tools=("case_stats", "soc_metrics"), report=True, title=rf"^SOC performance report, {year}$",
+        params=(P("case_stats", window=year), P("soc_metrics", kind="posture", window=year)),
+        forbid=(P("case_stats", window="this_year"), P("case_stats", window="last_year")))
+      for q, year in (("End of year report 2025", "2025"), ("Make a full year report 2025", "2025"),
+                      ("2024 annual report", "2024"))),
+    G("Make a report for the year so far", tools=("case_stats", "soc_metrics"), report=True,
+      title=rf"^SOC performance report, {_NOW.year} to date$", params=(P("case_stats", window="ytd"),),
+      forbid=(P("case_stats", window="all"),)),
+    G("what percentage of the cases the AI closed were medium severity", tools=("case_stats",),
+      params=(P("case_stats", group_by="severity", status_group="terminal", metrics="re:auto_closed"),),
+      contains=(r"re:\A\*\*\d+(?:\.\d)?%\*\* of the \d+ cases that the AI agent closed .*were medium severity: ",),
+      absent=("This is the automation rate",),
+      figures=(Fig("were medium severity: {n} of", None, {**_AI_CLOSED, "severity": "medium"},
+                   zero="were medium severity: 0 of"),)),
+    G("of the auto closed cases, what percentage were false positives", tools=("case_stats",),
+      params=(P("case_stats", group_by="verdict", status_group="terminal", metrics="re:auto_closed"),),
+      contains=(r"re:\A\*\*\d+(?:\.\d)?%\*\* of the \d+ cases that the AI agent closed .*were false positives: ",),
+      figures=(Fig("were false positives: {n} of", None, {**_AI_CLOSED, "verdict": "FALSE_POSITIVE"},
+                   zero="were false positives: 0 of"),)),
+    *(G(q, tools=("search_cases",), forbid=(*_NO_HELP, P("case_stats")), absent=("From the Help Center",))
+      for q in ("Show the escalated cases and explain what each one means",
+                "Show today's critical alerts and explain what they mean",
+                "List the open critical cases and explain what each means for us",
+                "List the escalated cases and tell me what each one means")),
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, forbid=(P("search_cases"),))
+      for q in ("Explain each case action", "Explain every incident badge", "Explain each alert icon")),
+    *(G(q, kind="product_help", max_lookups=0,
+        contains=(_CANT_ACT, f"Before you act, chat can investigate {who}"), absent=_UNRELATED)
+      for q, who in (("Lock user dsingh", "user `dsingh`"), ("Isolate host workstation", "host `workstation`"),
+                     ("Contain the issue on host srv-db-01", "host `srv-db-01`"))),
+    G("Contain the damage now", kind="product_help", max_lookups=0, contains=(_CANT_ACT,), absent=_UNRELATED),
+    G("Change the theme to dark", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=(_CANT_CHANGE, "Do it in the console: **Settings › Account › Appearance & customization**")),
+    G("Change the case ID format", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=(_CANT_CHANGE, "**Settings › General › Cases**")),
+    *(G(q, kind="conversation", max_lookups=0, contains=("I can't write jokes, poems or stories.", _SCOPE),
+        absent=_UNRELATED)
+      for q in ("Make up a story about an intrusion", "Write a story about a phishing attack",
+                "Tell me stories about cyber attacks")),
+]
+
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,
                    *CASES, *DEEP, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2,
-                   *EXPLAIN_RECORDS, *OUT_OF_SCOPE]
+                   *EXPLAIN_RECORDS, *OUT_OF_SCOPE, *CLOSING]
 
 
 def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> None:

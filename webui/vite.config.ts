@@ -198,8 +198,8 @@ function resolvePreloadDependencies(
   return kept.length === 1 && kept[0] === filename ? [] : kept;
 }
 
-/** `'__TLSOC_CHUNKS:<source path>__'` (either quote) in rendered, not yet minified code. */
-const CHUNK_LIST_MARK_RE = /(["'])__TLSOC_CHUNKS:([A-Za-z0-9_./-]+)__\1/g;
+/** `'__CHUNK_LIST:<source path>__'` (either quote) in rendered, not yet minified code. */
+const CHUNK_LIST_MARK_RE = /(["'])__CHUNK_LIST:([A-Za-z0-9_./-]+)__\1/g;
 
 /**
  * Lists, at build time, the chunks a lazy feature needs that first paint does not hold,
@@ -210,7 +210,7 @@ const CHUNK_LIST_MARK_RE = /(["'])__TLSOC_CHUNKS:([A-Za-z0-9_./-]+)__\1/g;
  * feature that shares its chunks (cmdk with Chat, the Settings metadata with Settings).
  * A prefetch only fills the HTTP cache: when it fails, nothing remembers it.
  *
- * Each string literal `'__TLSOC_CHUNKS:<path under webui/>__'` becomes a JSON string
+ * Each string literal `'__CHUNK_LIST:<path under webui/>__'` becomes a JSON string
  * holding the paths, relative to the chunk that holds the literal, of the chunk built
  * from that module and of its static imports, without the chunks the holder already
  * loads. Names carry Rollup's hash placeholders here; Rollup puts the final hashes in
@@ -219,10 +219,10 @@ const CHUNK_LIST_MARK_RE = /(["'])__TLSOC_CHUNKS:([A-Za-z0-9_./-]+)__\1/g;
  */
 function chunkListPlugin(): Plugin {
   return {
-    name: 'tlsoc-chunk-list',
+    name: 'chunk-list',
     apply: 'build',
     renderChunk(code, chunk, _options, meta) {
-      if (!code.includes('__TLSOC_CHUNKS:')) return null;
+      if (!code.includes('__CHUNK_LIST:')) return null;
       const closure = (name: string, into = new Set<string>()): Set<string> => {
         for (const dep of meta.chunks[name]?.imports ?? []) {
           if (!into.has(dep)) {
@@ -237,7 +237,7 @@ function chunkListPlugin(): Plugin {
       const out = code.replace(CHUNK_LIST_MARK_RE, (_mark, _quote, source: string) => {
         const id = path.resolve(__dirname, source);
         const target = Object.values(meta.chunks).find((c) => c.facadeModuleId === id);
-        if (!target) this.error(`no chunk is built from ${source} (a __TLSOC_CHUNKS mark names it)`);
+        if (!target) this.error(`no chunk is built from ${source} (a __CHUNK_LIST mark names it)`);
         const names = [target.fileName, ...closure(target.fileName)].filter((name) => !held.has(name));
         return JSON.stringify(JSON.stringify(names.map((name) => path.posix.relative(dir, name))));
       });

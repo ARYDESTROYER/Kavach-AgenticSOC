@@ -847,7 +847,8 @@ class Report(BaseModel):
 
 Storage: one KV document per report (`reports:<user-hash>:<report-id>`, ≤ 512 kB, `items_json` and
 `summary_json` as opaque strings) plus one small per-user index document (ids, titles, template,
-conversation_id, item count, updated_at; ≤ 100 reports), all under strict CAS. Delete is a strict
+conversation_id, source_conversation_id (Round 12 final review), item count, updated_at; ≤ 100
+reports), all under strict CAS. Delete is a strict
 tombstone put followed by index removal. `AppState.reports` is demo-switchable (DemoStack.reports
 over the demo KV, purged on disable) and the namespace is covered by factory reset. Reports
 survive conversation deletion or eviction; the source link then reads "Conversation no longer
@@ -1460,7 +1461,10 @@ window (caption, else its step's input read back in caption words), each listed 
 Brief covers every section leaf; text no lookup produced (a "Next steps" section) covers the
 whole answer; then the window the Brief recorded for its turn. A step input the window grammar
 cannot read (a display-form range cut short, any other text) names no window and is never shown.
-(i) Reports are purged only by the factory reset tier, like chat history.
+(i) Reports, like chat history, are purged by the factory reset tier and when their owner's
+account is deleted (Round 12 final review: `AuthService.purge_user_side_state` clears the
+user's conversations, answer ratings and reports, so a new account with the same name starts
+empty).
 (j) Content writes (adds and growing PATCHes) keep `SUMMARY_RESERVE_BYTES` (16 kB) free inside
 the 512 kB document, so they are refused (409 `report_full`, `reason: "size"`) at about 496 kB
 and writing a billed summary never fails on size; a shrinking PATCH is always accepted.
@@ -2108,8 +2112,8 @@ its glyph and tab title (WP-ACT, the only new entry code the Round 12 SPEC §6 p
 foundations (WP-DS: the ui recipes, `design-system/transparency.ts`, overlay origins).
 Everything else (turn runner, chat views, activity effects, charts) stays lazy. At the end
 of the round the command palette body and the Settings section metadata left the entry as
-lazy chunks without removing any feature. The entry baseline is rebased once, at the end
-of the round, with the final gates: the number lives in `PRE_REVAMP_ENTRY_BYTES`
+lazy chunks without removing any feature. The entry baseline was rebased after WP-GEN-A and
+again after the final review's first-paint fixes: the number lives in `PRE_REVAMP_ENTRY_BYTES`
 (`webui/src/soc/__tests__/bundle-first-paint.test.ts`), and its value and rationale are
 recorded in one place, the "Entry bundle" item of the Round 12 SPEC §7.3. Byte figures
 are not repeated here.
@@ -2199,3 +2203,24 @@ without rewriting them (Round 12 SPEC §7.2 decisions 18 to 20).
 - **Line end labels** (BLOCKS amendment 31): sized to the longest label up to a quarter of the
   chart's width, never fewer than 14 characters, and clipped only beyond that with the whole
   label as their hover title.
+
+**A63 — Read sync, command replies and turn authority (§3.2, §6.4, A42, A51; Round 12 SPEC
+§7.2 decisions 17, 21 and 22).** Adds to A42 and A51 without rewriting them.
+- **Read sync.** `POST …/read` and `POST /api/chat/turns/{turn_id}/seen` (204, stores nothing,
+  any well-formed turn id) publish an owner-only, unretained `chat.read` frame on topic
+  `chat`: `{conversation_id}` for a conversation read, `{turn_id}` plus `conversation_id` or
+  `case_id` for a turn whose outcome is on screen. The turn's conversation or case is named
+  only from the caller's own record while the server keeps the finished turn (5 minutes);
+  after that, or for an id that is not the caller's, the frame names the turn alone. The
+  console listens on the job stream (`topics=chat,jobs`) and drops exactly the named turn's
+  mark and toast (never another turn's in the same chat); a conversation read drops that
+  conversation's mark. A Case Manager chat posts `…/seen` for every answer its transcript
+  lists, not only its newest.
+- **Command replies.** `ChatResponse.command` (`"compact"`, lenient, null otherwise) marks a
+  reply to `/compact`; its `usage` is always present (zero when no model call ran); it gets
+  no `effective_source_*`, and it is never replayed, folded into a summary or saved by
+  `from-conversation`. The stream contract lists the value under `commands`.
+- **Turn authority.** The rule of Round 12 SPEC §7.2 decision 22: a turn acts only while the
+  session, token, account generation and grants it was admitted with last; the stop ends
+  the stream with a non-retryable `turn.error` (`internal`), and `POST /api/chat` answers
+  `401 session_invalid` (reason `session_ended`) or `403 chat_access_changed`.

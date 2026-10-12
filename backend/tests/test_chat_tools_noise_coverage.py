@@ -23,8 +23,9 @@ Offline (fake ES, in-memory KV). Advisory metrics only; nothing here reaches
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -385,22 +386,50 @@ def test_demo_noise_answer_never_narrates_unmeasured_alerts_as_zero() -> None:
 # The alert trend series
 # --------------------------------------------------------------------------- #
 class _HourlyNoise:
-    """A counter reader whose observations began ``since`` ago (161 alerts since)."""
+    """A counter reader whose observations began at ``since`` (161 alerts in the latest
+    hour that began before ``now``).
 
-    def __init__(self, since: datetime, *, coverage: datetime | None = None, total: int = 161) -> None:
+    ``since`` is an instant, or a function of the ``now`` the tool passes (its window
+    end), so the counters and the tool's buckets share one clock. A fixed
+    ``NOW - 3h`` made the trend test depend on the time of day: run in the first three
+    hours after UTC midnight it began in yesterday's bucket, which the series rightly
+    counts as a partly measured day."""
+
+    def __init__(self, since: datetime | Callable[[datetime], datetime], *, coverage: datetime | None = None,
+                 total: int = 161) -> None:
         self.since = since
         self.coverage = coverage
         self.total = total
 
     async def read_hourly_ingested(self, hours: int, now: Any = None) -> dict[str, Any]:
-        first = int(self.since.timestamp() // 3600)
-        last = int(NOW.timestamp() // 3600)
+        ref = now if isinstance(now, datetime) else NOW
+        since = self.since(ref) if callable(self.since) else self.since
+        first = int(since.timestamp() // 3600)
+        last = math.ceil(ref.timestamp() / 3600) - 1   # the latest hour that began before now
         hours_map = {h: 0 for h in range(first, last + 1)}
-        hours_map[last] = self.total
-        out: dict[str, Any] = {"available": True, "since": self.since.isoformat(), "hours": hours_map}
+        if first <= last:
+            hours_map[last] = self.total
+        out: dict[str, Any] = {"available": True, "since": since.isoformat(), "hours": hours_map}
         if self.coverage is not None:
             out["coverage_start"] = self.coverage.isoformat()
         return out
+
+
+def _began_earlier_today(hours: int) -> Callable[[datetime], datetime]:
+    """Counters that began ``hours`` before ``now``, but strictly inside ``now``'s UTC
+    day (the default operator timezone), so only the latest day and month buckets are
+    measured and the coverage start cuts them, at any time of day."""
+
+    def since(now: datetime) -> datetime:
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        return max(now - timedelta(hours=hours), midnight + (now - midnight) / 2)
+
+    return since
+
+
+def _began_after(now: datetime) -> datetime:
+    """Counters that began after the window the tool asked about had ended."""
+    return now + timedelta(hours=1)
 
 
 async def _spread_store() -> CaseStore:
@@ -411,7 +440,7 @@ async def test_trend_buckets_before_the_counters_began_are_not_measured_never_ze
     """Before: every bucket started at 0, so months before the counters existed read
     as measured zero alerts (a fake surge)."""
     cases = await _spread_store()
-    noise = _HourlyNoise(NOW - timedelta(hours=3))
+    noise = _HourlyNoise(_began_earlier_today(3))
     out = await SocMetricsTool().run(make_ctx(cases=cases, noise=noise), kind="trends", window="all",
                                      bucket="month")
     assert out.ok
@@ -453,7 +482,7 @@ async def test_trend_buckets_older_than_retention_are_not_measured() -> None:
 
 async def test_a_window_wholly_before_the_counters_has_no_alert_chart() -> None:
     cases = await _spread_store()
-    noise = _HourlyNoise(NOW - timedelta(hours=1))
+    noise = _HourlyNoise(_began_after)
     out = await SocMetricsTool().run(make_ctx(cases=cases, noise=noise), kind="trends", window="last_month",
                                      bucket="day")
     assert out.ok
@@ -525,3 +554,32 @@ def test_demo_noise_answer_leads_with_the_stages_when_the_reduction_is_withheld(
     _header, body = final_of(plan_turn(prompt("Show the noise funnel",
                                               [call("soc_metrics", sampled, artifacts=NOISE_ARTS)])))
     assert "No overall reduction is given: the case counts for this window are partial." in body
+
+
+async def test_a_time_of_day_range_reads_in_the_operator_zone_never_the_raw_utc_form() -> None:
+    """A past range whose span is not whole hours (09:00 to 17:30) is narrowed to whole
+    hours for the hour-based engines. The narrowed range used to be relabelled in the
+    raw UTC arrow form ("2026-09-03 04:00 → 2026-10-11 12:00 UTC") beside posture's
+    operator-zone words, mixing two zones in one sentence and reaching report scopes."""
+    from app.config import Preferences
+    from zoneinfo import ZoneInfo
+
+    prefs = Preferences()
+    prefs.sla.timezone = "Asia/Kolkata"
+    zone = ZoneInfo("Asia/Kolkata")
+    start = (NOW - timedelta(days=40)).astimezone(zone).replace(hour=9, minute=0, second=0, microsecond=0)
+    end = (NOW - timedelta(days=1)).astimezone(zone).replace(hour=17, minute=30, second=0, microsecond=0)
+    window = {"from": start.isoformat(), "to": end.isoformat()}
+    cases = await _store([_case(i, start.astimezone(timezone.utc) + timedelta(days=i)) for i in range(4)])
+    noise = await _counters_last_days(3, 10)
+    ctx = make_ctx(cases=cases, noise=noise, prefs=prefs)
+    for kind in ("noise_funnel", "mitre_coverage"):
+        out = await SocMetricsTool().run(ctx, kind=kind, window=window)
+        assert out.ok, out.error
+        texts = [out.summary, str(out.observation.get("window") or "")] + [a.window or "" for a in out.artifacts]
+        for text in texts:
+            assert "→" not in text and "UTC" not in text, (kind, text)
+        assert out.observation["window"].endswith("(Asia/Kolkata)"), out.observation["window"]
+        assert "narrowed to whole hours" in (out.coverage or ""), out.coverage
+    posture = await SocMetricsTool().run(ctx, kind="posture", window=window)
+    assert posture.observation["window"].endswith("(Asia/Kolkata)") and "→" not in posture.observation["window"]

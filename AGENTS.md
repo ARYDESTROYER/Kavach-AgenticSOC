@@ -709,9 +709,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green) — latest recorded full run: 2,306 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green) — latest recorded full run: 7,530 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 2,306 passed (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 7,526 passed, 4 skipped (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -719,7 +719,7 @@ uvicorn app.main:app --port 8088
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
 npm run docs:check                         # validate app 0.1.13 ↔ bundled docs 0.1
-npm run test:strict                        # -> latest recorded full run: 1,935 passed / 286 files; zero stderr/console output
+npm run test:strict                        # -> latest recorded full run: 4,750 passed, 1 skipped / 466 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -781,8 +781,8 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 2,306) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 1,935/1,935 passed / 286 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 7,526 passed, 4 skipped) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 4,750 passed, 1 skipped / 466 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
@@ -942,9 +942,11 @@ identity, process privilege, or frozen-base bytes. Repository-level branch
 protection, required-check, and `github-pages` environment policy remain administrator
 controls and must be verified independently of source changes.
 
-**Current baseline (2026-08-05):** backend **2,306 pytest** passed (0 failures);
-webui **1,935/1,935 Vitest** specs / 286 files with zero stderr or captured console output,
-full docs+app build clean (3,189 modules;
+**Current baseline (2026-10-12, Round 12 close):** backend **7,526 pytest** passed, 4 skipped (0 failures);
+webui **4,750 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 466 files
+with zero stderr or captured console output, full docs+app build clean (3,382 modules; entry chunk
+367,201 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
+366,837 B and under the 400,000 B ceiling;
 motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
 deps except the deliberate lazy `motion`** (12.42.2). Version 0.1 adds only the
 explicitly pinned connector/SQL packaging dependencies required by its advertised
@@ -1080,8 +1082,8 @@ a retelling — do not re-derive round detail from here.
   coverage banner/Overview tile/Noise-Reduction "awaiting" stage. **motion.dev** —
   ONE new lazy runtime dep (`motion` 12.42.2, replacing the Round-5-removed
   `framer-motion`) behind `LazyMotion`/`domAnimation`, landing in an ~83.85 kB lazy
-  chunk (entry was 281.44 kB at the time of Round 10; it is ~366 kB after the Round 12
-  trim, against the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
+  chunk (entry was 281.44 kB at the time of Round 10; it is 367,201 B at the Round 12
+  close, against the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
   line), animating route transitions, CaseDetail tabs, Cases
   bulk-bar/row reflow, the nav rail, and KPI count-ups — reduced-motion honored.
   Built research(vendor+standards) → code (5 batches) → adversarial verify (5 major +

@@ -137,6 +137,29 @@ describe('buildReportDoc', () => {
     expect(many.windows).toEqual(['last 90 days', 'all time', 'Q3 2026 (Asia/Kolkata)']);
   });
 
+  it('never lists a scope\'s "and N more" as a window, and says some sections cover more', () => {
+    // `routes_reports._join_windows` ends a scope over its bound with the count of the
+    // windows it left out: a count, never the name of a window (closing review).
+    const base = sampleReport();
+    const scoped = (window: string) => ({ ...base.items[1], scope: { ...base.items[1].scope, window } });
+    const overflowed =
+      '3 Sep 2026 09:15 – 11 Oct 2026 17:15 (America/Argentina/Buenos_Aires); Sep 2026 vs Aug 2026; and 2 more';
+    const report = sampleReport({ items: [scoped(overflowed), { ...scoped('all time'), id: 'it-x' }] });
+    const many = buildReportDoc(report, { generatedAt: NOW.toISOString() });
+    expect(many.windows).toEqual([
+      '3 Sep 2026 09:15 – 11 Oct 2026 17:15 (America/Argentina/Buenos_Aires)',
+      'Sep 2026 vs Aug 2026',
+      'all time',
+    ]);
+    expect(many.windows.some((w) => /more/.test(w))).toBe(false);
+    expect(many.windowsElided).toBe(true);
+    expect(many.methodology).toContain(
+      'Some sections cover more time windows than are listed here; each block states its own window.',
+    );
+    // A scope that fit says nothing more.
+    expect(buildReportDoc(sampleReport({ items: [scoped('all time')] }), { generatedAt: NOW.toISOString() }).windowsElided).toBe(false);
+  });
+
   it('writes the methodology from recorded facts, counting each source turn once', () => {
     expect(doc.methodology[0]).toBe(READ_ONLY_NOTICE);
     expect(doc.methodology).toContain('Lookups (2 calls): Counted log events; Searched cases.');

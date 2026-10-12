@@ -77,7 +77,23 @@ DATA_ASKS = [
     ("Show the critical cases this month and explain each of them", "cases"),
     ("Show me every open case from the last 24 hours", "cases"),
     ("List each critical case this week", "cases"),
+    # A defining word that points back at the listed records ("what each one means",
+    # "what they mean") asks what each record means for us, never what a term means
+    # (closing review).
+    ("Show the escalated cases and explain what each one means", "cases"),
+    ("Show today's critical alerts and explain what they mean", "cases"),
+    ("List the open critical cases and explain what each means for us", "cases"),
+    ("List the escalated cases and tell me what each one means", "cases"),
 ]
+
+#: A record noun qualifying a console part ("each case action", "every incident badge").
+CONSOLE_PART_QUESTIONS = (
+    "Explain each case action", "Explain each of the case actions", "Explain each case chip",
+    "Explain each case badge", "Explain each case permission", "Explain each case shortcut",
+    "Explain each case icon", "Explain each case color", "Explain each case option", "Explain each case section",
+    "Explain each case screen", "Explain each alert action", "Explain every incident badge",
+    "Explain each alert icon", "Explain each of the case options",
+)
 
 #: Definitional asks keep their Help Center answer (with our own figure for a KPI).
 DEFINITIONS = [
@@ -122,6 +138,9 @@ DEFINITIONS = [
     ("Explain each and every severity level", "help"),
     ("Explain each of these statuses", "help"),
     ("Explain the findings tab", "help"),
+    # Console parts a record noun qualifies (closing review): a question about the
+    # console, never a case list.
+    *((q, "help") for q in CONSOLE_PART_QUESTIONS),
 ]
 
 
@@ -258,8 +277,12 @@ def test_records_and_definitions_are_told_apart_by_their_object() -> None:
     assert not demo_chat._asks_for_records("explain what each severity level means")
     assert not demo_chat._asks_for_records("show me the cases page")
     assert not demo_chat._asks_for_records("what is the case decision policy?")
-    # A strong defining word still wins beside a record request.
+    # A strong defining word still wins beside a record request, unless it points back
+    # at the listed records.
     assert demo_chat._defines("list the escalated cases; what does escalated mean?", records=True)
+    assert demo_chat._defines("list the escalated cases and explain what each case status means", records=True)
+    assert not demo_chat._defines("show the escalated cases and explain what each one means", records=True)
+    assert not demo_chat._defines("show today's critical alerts and explain what they mean", records=True)
     assert not demo_chat._defines("show the top 10 open cases by risk and explain each", records=True)
     assert demo_chat._defines("explain the false positive rate", records=False)
 
@@ -334,6 +357,9 @@ def test_the_list_length_is_the_ranking_asked_for(question: str, n: int) -> None
     "Which cases were escalated this week? Explain each",
     "Explain each one",
     "Explain each of them",
+    "Show the escalated cases and explain what each one means",
+    "List the escalated cases and tell me what each one means",
+    "Explain each of the escalated cases and what each one means",
 ])
 def test_the_ai_unavailable_help_route_never_takes_an_explain_data_request(question: str) -> None:
     """While the AI is unavailable, a product question gets a $0 Help Center answer and
@@ -355,6 +381,7 @@ def test_the_ai_unavailable_help_route_never_takes_an_explain_data_request(quest
     "Explain each of the roles", "Explain each of the permissions", "Explain each case priority",
     "Explain the first 3 steps of onboarding", "Explain what they mean", "Explain every case status",
     "Explain each one of the verdicts", "Explain each of the case statuses", "Explain each detection rule type",
+    *CONSOLE_PART_QUESTIONS,
 ])
 def test_the_ai_unavailable_help_route_keeps_definitional_explains(question: str) -> None:
     from app.knowledge.answer import classify_intent, routes_to_app_help

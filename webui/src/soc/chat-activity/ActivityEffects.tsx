@@ -28,12 +28,13 @@
  *    analyst sees on another console is no news here (`chat.read`): a console that marks
  *    a conversation read sends one for that conversation, and a console that puts a
  *    turn's outcome on screen (an answer, a question or a failure, in a Workspace or a
- *    Case Manager chat) sends one for that turn (`POST …/turns/{id}/seen`, from the
- *    `shown` signal). Its mark and its toast go, and a mark for it that lands a moment
- *    later goes too, with no toast: for that turn always, for that conversation until a
- *    new turn's frame there arrives (30 seconds at most). A turn this tab only follows
- *    waits a short grace before it marks or announces anything (`followGraceMs`), so a
- *    "seen" from the console that asked can land first. Polling stays the fallback: on
+ *    Case Manager chat, which lists several) sends one for each turn it shows
+ *    (`POST …/turns/{id}/seen`, from the `shown` signal). Exactly that turn's mark and
+ *    toast go (never another turn's in the same chat), and a mark for it that lands a
+ *    moment later goes too, with no toast; a conversation read drops its mark and holds
+ *    any on its way until a new turn's frame there arrives (30 seconds at most). A turn
+ *    this tab only follows waits a short grace before it marks or announces anything
+ *    (`followGraceMs`), so a "seen" from the console that asked can land first. Polling stays the fallback: on
  *    load, when the tab becomes visible again (with authentication off no frame is
  *    sent), after an `overflow`, and the runner's park poll.
  *  - Settled turns the analyst was not looking at: one deduplicated toast with Open
@@ -210,7 +211,7 @@ async function postSeen(turnId: string): Promise<void> {
   try {
     await api.post(`chat/turns/${encodeURIComponent(turnId)}/seen`);
   } catch {
-    /* a finished turn is kept for 5 minutes; past that, or offline, nothing is told */
+    /* offline: nothing is told (the server answers any well-formed id of the caller's) */
   }
 }
 
@@ -758,37 +759,33 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
         // Seen on another console (or this one): no news here, now or later.
         const seen = chatReadFrame(data);
         if (!seen) return;
-        const { turnId, conversationId, caseId } = seen;
-        const toasts = new Set<string>();
-        const dismissScope = (scope: string) => {
-          const toastId = toastByScopeRef.current.get(scope);
-          if (!toastId) return;
-          toastByScopeRef.current.delete(scope);
-          toasts.add(toastId);
-        };
+        const { turnId, conversationId } = seen;
         if (turnId) {
+          // One turn's outcome (`…/seen`): exactly that turn's mark and toast go. Never
+          // another turn's in the same chat, older or newer, settled or running: that
+          // console showed this one (a case chat posts one for every answer it lists).
           keepBounded(seenTurnsRef.current, turnId);
           for (const entry of getChatActivity().entries) {
             // Settled, or waiting out its grace (it then settles as seen).
             if (entry.turnId === turnId) markChatActivitySeen(entry.scope, true, { elsewhere: true });
           }
-          if (toastedRef.current.includes(turnId)) toasts.add(`chat-${turnId}`);
+          if (toastedRef.current.includes(turnId)) toast.dismiss(`chat-${turnId}`);
+          return;
         }
+        const toasts = new Set<string>();
         if (conversationId) {
+          // A Workspace conversation read there (`…/read`): its mark goes, and one on its
+          // way is held until a new turn's frame arrives there.
           const read = readRef.current;
           read.delete(conversationId);
           read.set(conversationId, Date.now());
           if (read.size > KNOWN_LIMIT) read.delete(read.keys().next().value as string);
           markChatActivitySeen(`conv:${conversationId}`, true, { elsewhere: true });
-          dismissScope(`conv:${conversationId}`);
-        }
-        if (caseId) {
-          // The case's chat was on screen there: an earlier mark here is old news. A newer
-          // turn in it (still running, or waiting out its grace) is not.
-          const mark = find(`case:${caseId}`);
-          if (mark && (mark.status !== 'running' || mark.turnId === turnId)) {
-            markChatActivitySeen(mark.scope, true, { elsewhere: true });
-            dismissScope(mark.scope);
+          const scope = `conv:${conversationId}`;
+          const toastId = toastByScopeRef.current.get(scope);
+          if (toastId) {
+            toastByScopeRef.current.delete(scope);
+            toasts.add(toastId);
           }
         }
         // Its "Answer ready" toast, if one still shows here, is old news too.
@@ -867,9 +864,9 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   // once per turn per tab.
   React.useEffect(
     () =>
-      onChatActivity('shown', (entry) => {
+      onChatActivity('shown', (shownTurnId) => {
         if (!authEnabledRef.current || !canReadRef.current) return;
-        const turnId = safeId(entry.turnId);
+        const turnId = safeId(shownTurnId);
         if (!turnId || postedRef.current.has(turnId)) return;
         keepBounded(postedRef.current, turnId);
         void postSeen(turnId);

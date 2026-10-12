@@ -132,7 +132,12 @@ CODE_ASKS = (
     "Write code",
 )
 CREATIVE_ASKS = ("Tell me a joke", "Write a poem about phishing", "Tell me a funny story", "Tell me a story",
-                 "Write a short story about a hacker", "Tell me stories from the SOC", "Tell me a joke about this case")
+                 "Write a short story about a hacker", "Tell me stories from the SOC", "Tell me a joke about this case",
+                 # A generic security noun after an indefinite article or as a bare plural is
+                 # fiction, and "make up" is always fiction (closing review).
+                 "Make up a story about an intrusion", "Write a short story about a hacker who breaches a bank",
+                 "Write a story about a phishing attack", "Tell me stories about cyber attacks",
+                 "Tell me some stories about famous breaches", "Make up a story about this case")
 RESPONSE_ASKS = (
     "Isolate host srv-db-01 and block IP 203.0.113.77",
     "Quarantine host srv-db-01",
@@ -151,6 +156,12 @@ RESPONSE_ASKS = (
     "Contain the host now",
     # A question after a named target still asks to act on it.
     "Isolate host srv-db-01: what else did it talk to?",
+    # Containing the issue, the damage or the impact asks to act (closing review): only a
+    # case record in the clause, or a question after it, makes it a read.
+    "Contain the issue on host srv-db-01", "Contain the damage now", "Contain the damage",
+    "Contain the impact of the breach", "Isolate the issue", "Contain the scope of the attack",
+    # Ordinary names after a kind word are the names the analyst typed.
+    "Lock user dsingh", "Lock out user rmenon", "Isolate host workstation",
 )
 #: Requests that look alike but are something chat (or the console) does.
 NOT_OUT_OF_SCOPE = (
@@ -365,7 +376,8 @@ def test_a_response_verb_used_to_read_is_neither_an_action_nor_a_change(question
 
 
 @pytest.mark.parametrize("question", [
-    "Isolate the host of the attacker", "Lock the account of dsingh", "Lock the user out", "Contain the host now",
+    "Isolate the host of the attacker", "Lock the user out", "Contain the host now", "Lock the user account",
+    "Isolate the host machine",
 ])
 def test_a_response_answer_never_presents_an_ordinary_word_as_a_host_or_user(question: str) -> None:
     assert demo_chat._response_targets(question) == []
@@ -377,6 +389,38 @@ def test_a_response_answer_never_presents_an_ordinary_word_as_a_host_or_user(que
     assert not any(f.startswith("Investigate everything about") for f in header["follow_ups"])
     for invented in ("`of`", "`out`", "`now`"):
         assert invented not in body
+
+
+@pytest.mark.parametrize("question, expected", [
+    # After an explicit kind word the next word is the name the analyst typed, whatever
+    # its shape: every seeded Demo user is a plain word (closing review).
+    ("Lock user dsingh", [("user", "dsingh")]), ("Lock out user rmenon", [("user", "rmenon")]),
+    ("Block user jdoe", [("user", "jdoe")]), ("Lock user admin", [("user", "admin")]),
+    ("Disable account jdoe immediately", [("user", "jdoe")]), ("Isolate host workstation", [("host", "workstation")]),
+    ("Quarantine host webserver", [("host", "webserver")]), ("Isolate machine laptop", [("host", "laptop")]),
+    ("Lock the account of dsingh", [("user", "dsingh")]), ("Lock the user account dsingh", [("user", "dsingh")]),
+    ("Contain the issue on host srv-db-01", [("host", "srv-db-01")]),
+])
+def test_a_response_answer_keeps_the_name_after_a_kind_word(question: str, expected: list[tuple[str, str]]) -> None:
+    assert demo_chat._response_targets(question) == expected
+
+
+@pytest.mark.parametrize("question, kind, value", [
+    ("Lock user dsingh", "user", "dsingh"), ("Isolate host workstation", "host", "workstation"),
+    ("Contain the issue on host srv-db-01", "host", "srv-db-01"),
+])
+def test_a_response_answer_offers_to_investigate_a_plain_name(question: str, kind: str, value: str) -> None:
+    rounds, header, body = drive(question)
+    assert rounds == [] and body.startswith("I can't do that: chat is read-only")
+    assert f"Before you act, chat can investigate {kind} `{value}`" in body, body
+    assert header["follow_ups"][0] == f"Investigate everything about {kind} {value}"
+
+
+def test_containing_the_damage_is_refused_as_a_response_action() -> None:
+    rounds, header, body = drive("Contain the damage now")
+    assert rounds == [] and body.startswith("I can't do that: chat is read-only")
+    assert "I could not map" not in body and "open case" not in body
+    assert header["answer_kind"] == "product_help"
 
 
 def test_a_response_answer_keeps_a_value_that_reads_as_a_name() -> None:
@@ -464,3 +508,35 @@ def test_campaign_entities_are_said_whole() -> None:
     text = demo_chat._say_campaigns(result)
     assert "3 cases sharing user `svc_payments_reconciliation_batch_runner@finance-operations.corp.example`" in text
     assert "…" not in text
+
+
+@pytest.mark.parametrize("question, target, page", [
+    ("Change the theme to dark",
+     {"id": "settings:customization", "label": "Settings › Account › Appearance & customization",
+      "requires": None, "allowed": True}, "Settings › Account › Appearance & customization"),
+    ("Change the case ID format",
+     {"id": "settings:cases", "label": "Settings › General › Cases", "requires": None, "allowed": True},
+     "Settings › General › Cases"),
+])
+def test_a_change_answer_keeps_the_page_its_console_keywords_name(question: str, target: dict[str, Any],
+                                                                  page: str) -> None:
+    """The console map's own keywords ("theme", "dark mode"; "case id", "nomenclature")
+    name the page even when its label does not: the analyst is told where to do it
+    (closing review), never only that chat cannot."""
+    assert classify(question).intent == "change"
+    assert demo_chat._target_keywords(target["id"]), "the bundled console map names the page's keywords"
+    # The search also returned a passage that is not about the change: never quoted.
+    obs = _help(_NARROW, targets=(target,))
+    header, body = final_of(plan_turn(prompt(question, [call("app_help", obs)])))
+    assert body.startswith("I can't change that from chat")
+    assert f"Do it in the console: **{page}**." in body, body
+    assert header["console_links"] == [target["id"]] and "narrow composer" not in body
+
+
+def test_a_change_answer_never_keeps_a_page_only_the_verb_names() -> None:
+    """"Change" is in many keyword lists; the object decides ("Create a case" never
+    keeps Standup, whose keywords name a shift handoff)."""
+    standup = {"id": "page:standup", "label": "Overview › Standup", "requires": None, "allowed": True}
+    header, body = final_of(plan_turn(prompt("Create a case for the bot activity",
+                                             [call("app_help", _help(_NARROW, targets=(standup,)))])))
+    assert "Standup" not in body and header["console_links"] == []

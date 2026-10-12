@@ -3,7 +3,7 @@
  * `helpLabel`). Existing call sites (no new props) are unaffected — covered by
  * KpiTile.test.tsx + KpiTile.delta-neutral.test.tsx, which stay green.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { KpiTile } from '../KpiTile';
 
@@ -21,6 +21,13 @@ async function springLoaded(): Promise<void> {
 }
 
 describe('KpiTile round-7 props', () => {
+  // Load the spring module before the first tile, so `springLoaded` waits on React.lazy
+  // only, never on a cold worker loading motion.dev (which could outlast waitFor's one
+  // second on a busy machine).
+  beforeAll(async () => {
+    await import('../motion/AnimatedNumber');
+  });
+
   it('countTo renders a rolling numeral (static first mount = the target), overriding `value`', async () => {
     render(<KpiTile label="Open" value="0" countTo={7} />);
     const tile = screen.getByTestId('kpi-open');

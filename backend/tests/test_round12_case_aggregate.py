@@ -328,8 +328,22 @@ async def es_store(cases: list[Case]) -> CaseStore:
     return CaseStore(es)
 
 
+_ENGINES: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+async def _dispose_engines():
+    """Dispose every engine a test opened, inside its own event loop: an engine left to
+    the garbage collector let its aiosqlite worker thread answer after that loop had
+    closed ("Event loop is closed", reported against a later test)."""
+    yield
+    while _ENGINES:
+        await _ENGINES.pop().dispose()
+
+
 async def sql_store(cases: list[Case]) -> SqlCaseRepository:
     engine = build_async_engine("sqlite+aiosqlite:///:memory:")
+    _ENGINES.append(engine)
     await create_all(engine)
     repo = SqlCaseRepository(engine)
     async with repo._sm() as session:  # bulk seed, mirroring ``save``'s columns

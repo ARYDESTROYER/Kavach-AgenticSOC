@@ -472,7 +472,7 @@ export function workbookModel(doc: ReportDoc, options: { defang?: boolean } = {}
         push(text(`${node.label}: ${node.text}`, S.wrap));
         break;
       case 'attack':
-        for (const t of node.items) push(text(`${t.id}${t.label ? ` ${t.label}` : ''}${t.url ? ` — ${t.url}` : ''}`, S.wrap));
+        for (const t of node.items) push(text(`${t.id}${t.label ? ` ${t.label}` : ''}${t.url ? ` (${t.url})` : ''}`, S.wrap));
         break;
       case 'table': {
         const n = tables.length + 1;

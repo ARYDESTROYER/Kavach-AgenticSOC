@@ -70,6 +70,7 @@ import {
   relayChatFrame,
   rekeyChatActivity,
   settleChatActivity,
+  showChatTurns,
   viewChatActivity,
   type ChatActivity,
 } from '../activity';
@@ -655,6 +656,48 @@ describe('a turn seen on another console, and the grace of a followed turn', () 
     expect(toastMock.success.mock.calls[0][1]).toMatchObject({ id: 'chat-turn-u' });
     expect(toastMock.dismiss).not.toHaveBeenCalled();
     expect(document.title).toBe('✓ Agentic SOC');
+  });
+
+  it('a turn seen elsewhere drops exactly its own mark: a newer one in that chat, and its toast, stay', async () => {
+    await mountShell();
+    // This console asked T2 in case X and in conversation cw, and left: marks and toasts.
+    act(() => putChatActivity(entry({ scope: 'case:case-x', kind: 'case', caseId: 'case-x', turnId: 'turn-T2' })));
+    act(() => settleChatActivity('case:case-x', 'done'));
+    act(() => putChatActivity(entry({ scope: 'conv:cw', conversationId: 'cw', turnId: 'turn-W2' })));
+    act(() => settleChatActivity('conv:cw', 'error'));
+    expect(find('case:case-x')).toMatchObject({ status: 'unread', turnId: 'turn-T2' });
+    expect(find('conv:cw')).toMatchObject({ status: 'failed', turnId: 'turn-W2' });
+    expect(document.title).toBe('✓ Agentic SOC');
+    // Another console shows an EARLIER turn of the same case and conversation.
+    emit('chat.read', { turn_id: 'turn-T1', case_id: 'case-x' });
+    emit('chat.read', { turn_id: 'turn-W1', conversation_id: 'cw' });
+    expect(find('case:case-x')).toMatchObject({ status: 'unread', turnId: 'turn-T2' });
+    expect(find('conv:cw')).toMatchObject({ status: 'failed', turnId: 'turn-W2' });
+    expect(toastMock.dismiss).not.toHaveBeenCalled();
+    expect(document.title).toBe('✓ Agentic SOC');
+    // The turn itself, shown there: its mark and toast go.
+    emit('chat.read', { turn_id: 'turn-T2', case_id: 'case-x' });
+    expect(find('case:case-x')).toBeNull();
+    expect(toastMock.dismiss).toHaveBeenCalledWith('chat-turn-T2');
+  });
+
+  it('a look after the server forgot the turn still clears it: the frame names the turn alone', async () => {
+    await mountShell();
+    act(() => putChatActivity(entry({ scope: 'case:case-late', kind: 'case', caseId: 'case-late', turnId: 'turn-late' })));
+    act(() => settleChatActivity('case:case-late', 'done'));
+    expect(find('case:case-late')).toMatchObject({ status: 'unread' });
+    emit('chat.read', { turn_id: 'turn-late' });
+    expect(find('case:case-late')).toBeNull();
+    expect(toastMock.dismiss).toHaveBeenCalledWith('chat-turn-late');
+    expect(document.title).toBe('Agentic SOC');
+  });
+
+  it('every answer a case chat lists is told once', async () => {
+    await mountShell();
+    act(() => showChatTurns(['turn-a', null, 'turn-b', 'turn-a']));
+    act(() => showChatTurns(['turn-a', 'turn-b']));
+    await settle();
+    expect(seenFrames()).toEqual(['chat/turns/turn-a/seen', 'chat/turns/turn-b/seen']);
   });
 
   it('a question shown on the asking console stays, but as one already seen, with no toast', async () => {

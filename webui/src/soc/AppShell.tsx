@@ -151,7 +151,7 @@ import type { RouteMotionProps } from './components/motion/RouteMotion';
 const loadCommandPalette = retryingLoader(() => import('./components/CommandPalette'));
 
 /** The palette's chunks, written in by the build (vite.config.ts `chunkListPlugin`). */
-const COMMAND_PALETTE_CHUNKS = '__TLSOC_CHUNKS:src/soc/components/CommandPalette.tsx__';
+const COMMAND_PALETTE_CHUNKS = '__CHUNK_LIST:src/soc/components/CommandPalette.tsx__';
 
 /** Prefetch the palette chunks without loading them (no state change, nothing re-renders). */
 function warmCommandPalette(): void {

@@ -450,7 +450,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
         }}
         destructive
         title={deleteFor ? `Delete user "${deleteFor.username}"?` : 'Delete user?'}
-        description="This cannot be undone."
+        description="Their chat conversations, answer ratings and reports are deleted too. This cannot be undone."
         confirmLabel="Delete"
         onConfirm={() => {
           const u = deleteFor;

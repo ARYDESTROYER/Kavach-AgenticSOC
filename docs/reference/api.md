@@ -474,7 +474,8 @@ streaming, with no `text.reset`); the last line is always `turn.done` (the saved
 (`provider_unavailable`, `budget_blocked`, `breaker_open`, `history_unavailable`, or
 `internal`, with `retryable`). Every check that can fail before work starts (auth,
 permissions, concurrency, validation, conversation lookup, idempotency, source) fails as
-an ordinary HTTP error before the 200, never as a `turn.error`. A completed key replays
+an ordinary HTTP error before the 200, never as a `turn.error`; losing authority after the
+turn started is a `turn.error` (see below). A completed key replays
 as `turn.start {replayed: true}` followed by `turn.done`, with no model call.
 
 Additive request fields, all optional: `stream_mode` (`steps` or `text`; presentation
@@ -516,7 +517,7 @@ add the answer; a missing `cases:comment` grant or a missing case is not retryab
 | `POST /api/chat/turns/{turn_id}/cancel` | Stop a running turn you own. No new step starts and the stream ends with `turn.done` carrying a `cancelled` notice. With `limits_mode: unlimited` the in-flight model call is abandoned at once and ledgered as `abandoned`; with `bounded` it finishes and is recorded. 404 when the turn is unknown, finished, or another user's |
 | `GET /api/chat/turns/active` | The caller's running turns: `[{turn_id, conversation_id, case_id, started_at, label, lookups, tokens, status}]`, `status` being `running` or `needs_input`. Owner-scoped and process-local |
 | `GET /api/chat/turns/{turn_id}/events?after=<seq>` | Rejoin a turn: NDJSON replay of the turn's bounded event ring after line `seq` (text deltas coalesced; at most 2,000 entries), then the live tail to the terminal event. A finished turn stays readable for 5 minutes. 404 for another user's or an unknown turn |
-| `POST /api/chat/turns/{turn_id}/seen` | The turn's outcome (an answer, a question or a failure, in a Workspace or a Case Manager chat) is on your screen (204). Stores nothing; publishes the owner-only `chat.read` event naming the turn, so your other consoles drop the mark they hold for it. 404 for another user's, an unknown, or an expired turn (finished turns are kept for 5 minutes) |
+| `POST /api/chat/turns/{turn_id}/seen` | The turn's outcome (an answer, a question or a failure, in a Workspace or a Case Manager chat) is on your screen (204 for any well-formed turn id). Stores nothing; publishes the owner-only `chat.read` event naming the turn, so your other consoles drop the mark they hold for exactly that turn. The event names the turn's conversation or case only while the server still keeps your finished turn (5 minutes); after that, or for an id that is not yours, it names the turn alone and reaches only your own consoles |
 | `GET /api/chat/context` | The caller's effective model, context window, `max_output_tokens`, `limits_mode`, the operator `timezone`, prompt estimates, tool catalogue with `allowed` (the caller's grants) and `available` (false when this deployment switched the tool off; absent means true) per tool, starters, bounds, and text-streaming availability; money and budget fields only with `models:read`, today's spend also with `cost:view`. Writes no audit rows |
 | `GET /api/chat/topics/{topic_id}` | The fixed question for an "Ask about this" topic. `topic_id` is a console-map id, `<family>:<anchor>` such as `kpi:mtta` or `settings:models`; 404 for an unknown topic |
 | `POST /api/chat/entity-question` | `{kind, value}` for an "Ask AI" chip (`ip`, `host`, `user`, `hash`, `domain`, `url`, `email`, `rule`, or `case`) → `{kind, value, question}`, the server-worded question to send with `origin: "starter"`. 422 when the value does not have its kind's shape. Writes nothing and calls no model |
@@ -529,6 +530,19 @@ bound, not a token limit; the console waits and sends again. When the caller's a
 record cannot be read, the turn is `503 chat_account_unavailable` with `retry_after`. A non-default model without
 `models:read` is `403 chat_model_forbidden`; a model that is not an enabled chat model is
 `422 chat_model_unavailable`.
+
+A running answer acts only while the authority it started with lasts. The server checks
+again before every model step and lookup batch. Signing out, revoking the session,
+signing out everywhere, disabling, deleting or replacing the account, or a role change
+that removes a grant the turn uses stops it at once: nothing more is looked up or saved.
+An access token that expires while the turn runs (or while it is being admitted) ends it
+at the next check. The stream (and a rejoin) ends with `turn.error {code: "internal",
+retryable: false}` and the message "Your session ended, so this answer was stopped
+before it finished. Sign in again to ask." or "Your access changed, so this answer was
+stopped before it finished. Ask again to use your current access." `POST /api/chat`
+answers `401 {code: "session_invalid", reason: "session_ended"}` or
+`403 {code: "chat_access_changed"}`. A stop that covers the whole account also forgets
+its finished turns, so `…/events` returns 404.
 
 ## Workspace Chat persistence and retry
 
@@ -625,7 +639,7 @@ Reports are owner-scoped and need `cases:read`. All error details are
 
 | Operation | Contract |
 |---|---|
-| `GET /api/reports` | `{reports, total, limit}`: the caller's reports, newest first (at most 100) |
+| `GET /api/reports` | `{reports, total, limit}`: the caller's reports, newest first (at most 100). Each row has `id`, `title`, `template`, `conversation_id` (the conversation whose draft it is), `source_conversation_id` (the one conversation its items come from, else the draft's; `null` on rows written before this build until the report next changes), `item_count`, `created_at`, `updated_at`, `version`, `has_summary` |
 | `POST /api/reports` | Create a report (`title`, `template`, optional `conversation_id`); `409 report_conversation_draft_exists` carries the existing draft's `report_id`; `409 report_limit` at 100 reports |
 | `GET /api/reports/{report_id}` | The report, its items, and its summary |
 | `PATCH /api/reports/{report_id}` | Title, template, item order, notes, or removed items, with `expected_version`; `409 report_version_conflict` carries `current_version`; `409 report_full` (`reason: size`) when the change would outgrow the document |

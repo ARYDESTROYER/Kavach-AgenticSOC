@@ -192,9 +192,9 @@ Additive only. Names are binding:
 - Realtime: targeted `chat.turn` events `{turn_id, conversation_id, case_id, phase: started |
   progress | finished | failed | needs_input, label, lookups, tokens}` on the existing EventBus with
   `audience = {owner}`; `POST …/read` adds a targeted `chat.read` event `{conversation_id}`, and
-  `POST /api/chat/turns/{turn_id}/seen` (204, stores nothing, owner-checked like re-attach) the
-  same event naming a turn whose outcome is on screen, `{turn_id, conversation_id | case_id}`
-  (§7.1 #17). When auth is disabled the client polls `turns/active` every 5 s while a turn is known to
+  `POST /api/chat/turns/{turn_id}/seen` (204 for any well-formed id, stores nothing; the
+  conversation or case is named only from the caller's own record) the same event naming a turn
+  whose outcome is on screen, `{turn_id, conversation_id | case_id}` (§7.2 decision 17). When auth is disabled the client polls `turns/active` every 5 s while a turn is known to
   run.
 - Remember me: `POST /api/auth/login` accepts `remember: bool = False` and returns
   `remembered: bool` plus `remember_reason` when refused (`role_excluded`, `insecure_transport`,
@@ -434,7 +434,7 @@ only new entry code); live Chromium QA with screenshots at 390/1280/1440/1920/25
 
 Recorded by WP-DOC at the end of wave 3 (2026-10-11). Where this section and §2–§4
 disagree, this section describes what shipped; the chat-revamp SPEC carries the
-detailed amendments (A39–A62) and BLOCKS.md amendments 24–31.
+detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
 
 ### 7.1 What each package delivered
 
@@ -639,8 +639,8 @@ detailed amendments (A39–A62) and BLOCKS.md amendments 24–31.
 17. **`chat.turn` frames ride the shell's job stream** (§3.2, D13; final review). The
     console asks for topic `chat` on the job observer's existing stream
     (`GET /api/events?topics=chat,jobs`, `JobMonitor`), so no connection is added, and
-    relays every frame through the entry-safe store (`relayChatFrame`; with the
-    `chat.read` channel, +142 B entry, measured) to the lazy `ActivityEffects`. A frame
+    relays every frame through the entry-safe store (`relayChatFrame`, with the `chat.read`
+    channel; its entry cost is recorded in §7.3 "Entry bundle") to the lazy `ActivityEffects`. A frame
     is a nudge: a turn this tab does not know is
     looked up in `turns/active` and followed by the runner (nav glyph, brand ring, tab
     title, history rail and the open thread pick it up); a parked run takes a frame's
@@ -656,12 +656,15 @@ detailed amendments (A39–A62) and BLOCKS.md amendments 24–31.
     for it already on its way (a followed run that ends, a list read before the read),
     with no toast, until a new turn's frame arrives there (30 s at most; an `overflow`
     ends every such hold). Case chat and failed turns keep no stored unread state, so a
-    console that shows a turn's outcome (it settles in view, or its mark is looked at)
-    posts `POST /api/chat/turns/{turn_id}/seen` once per turn (signed in only); the route
-    stores nothing and publishes the same owner-only `chat.read` frame naming the turn
-    (`{turn_id, conversation_id}` or `{turn_id, case_id}`, from the server's own record),
-    and the other consoles drop that turn's mark and toast whenever it lands (a case
-    chat's earlier marks go too). A turn a console only follows (it did not start it)
+    console that shows a turn's outcome (it settles in view, its mark is looked at, or a
+    case chat lists its answer: a Case Manager chat posts for every answer in its
+    transcript) posts `POST /api/chat/turns/{turn_id}/seen` once per turn (signed in only);
+    the route stores nothing and publishes the same owner-only `chat.read` frame naming
+    the turn, for any well-formed id (closing review: a look after the 5-minute recent-turn
+    window used to be a silent 404), with `conversation_id` or `case_id` added only from
+    the caller's own record while the server keeps the finished turn. The other consoles
+    drop exactly that turn's mark and toast whenever it lands, never another turn's in
+    the same chat (closing review: a case chat's newer settled mark used to go too). A turn a console only follows (it did not start it)
     waits a short grace before it marks or announces anything (`FRAME_TIMING.followGraceMs`,
     2.5 s, still shown as running), so the asking console's "seen" lands first and no
     "Answer ready" flashes on a console nobody is reading. Polling stays the fallback (on
@@ -715,6 +718,36 @@ detailed amendments (A39–A62) and BLOCKS.md amendments 24–31.
     kept in client history, or saved by "Save conversation as report"; it is dropped after
     `drop_summarised` so a summary that covers through one still finds its place.
 
+22. **A chat turn runs only while its authority lasts** (amends §3.2, D13; final review L1). The
+    turn records the session, token version, access-token expiry, account generation and
+    grants it was admitted with; the session identity is read before admission awaits
+    anything, without the expiry comparison (`require_auth` has just verified the token), so
+    a token that expires while the turn is being admitted still binds it to its sign-in
+    (closing review). `routes_chat.turn_authority_lost` re-checks them before every model
+    step and lookup batch. Sign-out, revoke, sign out everywhere, account disable/delete and
+    role changes stop matching turns at once (`stop_chat_turns_for`,
+    `recheck_chat_turns_for`); a refresh rebinds them. A stopped turn saves nothing: stream
+    `turn.error` (internal, not retryable), blocking `401 session_invalid` (reason
+    `session_ended`) or `403 chat_access_changed`.
+23. **Remember me off or a role excluded never lengthens a session** (amends D14): the row is
+    judged as a standard sign-in, also capped at `AUTH_TOKEN_HOURS` from `created_at`; a
+    stricter `remember_me.idle_seconds` keeps applying.
+24. **Deleting an account deletes its chat material** (amends chat-revamp §9.1 / A23(i)):
+    conversations and every auxiliary document, request receipts, the step-observation ring,
+    live state, answer ratings and reports (`purge_user_side_state`).
+25. **`ReportListEntry.source_conversation_id`** (additive to §3.1): the one conversation all
+    of a report's items name, else the draft's; derived at write time, never stored on the
+    report.
+26. **The router tells its own hash echo from a traversal** (closing review). It records the
+    hash it writes and treats only that `hashchange` (matched by the event's `newURL`) as the
+    echo of its navigate, which changes nothing. Any other same-page change (Back/Forward, a
+    typed or pasted link, even to the hash it wrote earlier) is reconciled key by key
+    (`samePageOpts(…, traversal)`): durable in-memory filters stay, the one-shot requests
+    (`newChat`, `ask`, `topic`, `entity`, `resend`) go, so Forward never asks or sends a
+    question again, and a hash that names a key the page owns yields a new opts object, so
+    a pasted link to the conversation the opts still name (Chat cleared its link with
+    `replaceState`) is applied.
+
 ### 7.3 Known limitations
 
 - **Process-local turn registry.** Running turns, their rejoin rings, Stop and the
@@ -763,6 +796,24 @@ detailed amendments (A39–A62) and BLOCKS.md amendments 24–31.
   `PRE_REVAMP_ENTRY_BYTES = 365_547` in
   `webui/src/soc/__tests__/bundle-first-paint.test.ts`; later work keeps the +1,024-byte
   budget over it (chat-revamp SPEC A59 points here).
+  The final review's first-paint fixes then took the entry to 367,234 B, 663 B over that
+  budget (98078d4 re-measured 366,517 B the same way): the router's same-page hash
+  reconciliation (`samePageOpts`, +788 B), which lets Back leave a report and runs
+  synchronously on every hash change of the eager router, so it cannot be lazy; and the
+  `chat.read` relay (+124 B). Reading `optsFromHash` from the router's one `hashKeys` table
+  instead of its own per-key copy saved 397 B. The measured 366,837 B is the rebased
+  baseline (`PRE_REVAMP_ENTRY_BYTES = 366_837`), with the same +1,024-byte budget over it.
+  The closing review's fixes then took the entry to 367,201 B (+364 B, measured with
+  `npm run build`, inside that budget; the baseline was not rebased): the router telling its
+  own hash echo from a traversal (§7.2 decision 26), which must run on every hash change of
+  the eager router, and `showChatTurns`, the entry-safe store's signal for every answer a
+  case chat lists (§7.2 decision 17).
+
+- **Source conversation on older reports.** Index rows written before decision 25 read
+  `null` (the library shows no source) until the report next changes.
+- **Authority expiry is checked at step boundaries.** An idle, absolute or token expiry or a
+  policy edit is noticed before the next model step or lookup batch, so a model call already
+  running finishes first; explicit revocations stop the turn at once.
 
 ### 7.4 Deferred (ROADMAP section G)
 

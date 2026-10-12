@@ -1,12 +1,13 @@
-"""Round 12 (SPEC D13, §7.1 #17): a turn's outcome seen on one console is news on no other.
+"""Round 12 (SPEC D13, §7.2 decision 17): a turn's outcome seen on one console is news on no other.
 
 Case Manager chat and failed turns keep no stored "unread" state, so the console that has
 a turn's outcome on screen posts ``POST /api/chat/turns/{turn_id}/seen``. The route stores
 nothing: it publishes an owner-only, unretained ``chat.read`` frame naming the turn and
 where it ran, and the owner's other consoles drop the mark (and the notice) they hold for
-it. These tests pin the server side of that contract: ids only, owner only, 404 for an
-unknown turn or anyone else's, ``cases:read`` like every chat route, and a frame that
-cannot go out is not an error.
+it. These tests pin the server side of that contract: ids only, owner only, the turn's
+conversation or case named only from the caller's own live record, a look after the
+server forgot the turn still heard (the turn id alone), ``cases:read`` like every chat
+route, and a frame that cannot go out is not an error.
 """
 from __future__ import annotations
 
@@ -93,22 +94,51 @@ def test_seeing_a_workspace_turn_names_its_conversation() -> None:
         assert client.get("/api/chat/conversations").json()["conversations"][0]["unread"] is True
 
 
-def test_an_unknown_turn_or_another_user_s_is_not_found_and_publishes_nothing() -> None:
+def test_an_unknown_turn_or_another_user_s_names_nothing_but_the_id_to_the_caller() -> None:
+    """Every well-formed id is answered alike (204), so the route is no oracle for
+    someone else's turns; the frame goes to the caller alone and names only the id, so
+    it can never reveal or clear anything of another user's."""
     provider = MockProvider()
     provider.push("chat", FINAL)
     with _auth_client(provider) as client:
         _login(client, "Admin", "Admin@123")
         turn_id = client.post("/api/chat", json={"message": "Summarize this case", "case_id": "case-9"}).json()["turn_id"]
         owner, other, _anonymous = _subscribers(client)
-        assert client.post("/api/chat/turns/turn-missing/seen").status_code == 404
+        assert client.post("/api/chat/turns/turn-missing/seen").status_code == 204
+        assert _read_frames(owner) == [{"turn_id": "turn-missing"}]
         assert client.post("/api/chat/turns/..%2Fturn/seen").status_code in (404, 422)
         created = client.post("/api/users", json={
             "username": "analyst", "password": "analyst-pass-12345", "role": "analyst_tier1",
         })
         assert created.status_code == 200, created.text
         _login(client, "analyst", "analyst-pass-12345")
-        assert client.post(f"/api/chat/turns/{turn_id}/seen").status_code == 404
-        assert not owner._queue and not other._queue  # noqa: SLF001
+        owner._queue.clear()  # noqa: SLF001
+        assert client.post(f"/api/chat/turns/{turn_id}/seen").status_code == 204
+        # The analyst hears the id they sent, never the admin's case; the admin hears nothing.
+        assert _read_frames(other) == [{"turn_id": turn_id}]
+        assert not owner._queue  # noqa: SLF001
+
+
+def test_a_look_after_the_server_forgot_the_turn_still_reaches_the_other_consoles(
+    monkeypatch,
+) -> None:
+    """Finished turns are kept for 5 minutes (and 256 across all users). An analyst who
+    comes back to a case answer after a meeting still clears it on their other
+    consoles: the frame names the turn, which is what a console matches on."""
+    import app.api.routes_chat as routes_chat_mod
+
+    provider = MockProvider()
+    provider.push("chat", FINAL)
+    with _auth_client(provider) as client:
+        _login(client, "Admin", "Admin@123")
+        turn_id = client.post("/api/chat", json={"message": "Summarize this case", "case_id": "case-4"}).json()["turn_id"]
+        owner, other, anonymous = _subscribers(client)
+        later = routes_chat_mod.time.monotonic() + routes_chat_mod.RECENT_TURN_TTL_S + 60
+        monkeypatch.setattr(routes_chat_mod.time, "monotonic", lambda: later)
+        assert client.app.state.tlsoc.chat_turns.find(turn_id, "admin") is None
+        assert client.post(f"/api/chat/turns/{turn_id}/seen").status_code == 204
+        assert _read_frames(owner) == [{"turn_id": turn_id}]
+        assert not other._queue and not anonymous._queue  # noqa: SLF001
 
 
 def test_seen_needs_cases_read() -> None:

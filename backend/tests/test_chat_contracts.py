@@ -1243,7 +1243,7 @@ def test_stream_events_contract_parity() -> None:
     pairs = {
         "stream_modes": CHAT_STREAM_MODES, "origins": CHAT_ORIGINS, "scopes": CHAT_SCOPES,
         "step_kinds": CHAT_STEP_KINDS, "step_statuses": CHAT_STEP_STATUSES,
-        "step_bases": CHAT_STEP_BASES, "answer_kinds": CHAT_ANSWER_KINDS,
+        "step_bases": CHAT_STEP_BASES, "answer_kinds": CHAT_ANSWER_KINDS, "commands": M.CHAT_COMMANDS,
         "notice_kinds": TURN_NOTICE_KINDS, "citation_kinds": CITATION_KINDS,
         "memory_proposal_ops": MEMORY_PROPOSAL_OPS, "budget_states": CHAT_BUDGET_STATES,
         "text_streaming_reasons": TEXT_STREAMING_REASONS, "report_templates": REPORT_TEMPLATE_NAMES,

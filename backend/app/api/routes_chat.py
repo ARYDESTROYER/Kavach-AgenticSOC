@@ -1248,12 +1248,21 @@ def _session_identity(
     request: Request, state: AppState,
 ) -> tuple[str | None, int | None, float | None]:
     """The session id, token version and ``exp`` (epoch seconds) the caller's access
-    token carries (``None`` each with auth off or for a token without them)."""
+    token carries (``None`` each with auth off or for a token without them).
+
+    Read once, before the turn awaits anything (``run_chat_turn``). ``require_auth``
+    has already verified this token's signature and expiry for this request, so the
+    claims are read without the expiry comparison: a token that expires while the
+    turn is being admitted still names its sign-in, and its recorded ``exp`` stops
+    the turn at its first check instead of leaving it bound to no session."""
     auth = getattr(state, "auth", None)
     if auth is None or not getattr(auth, "is_enabled", False):
         return None, None, None
     token = request.cookies.get("tlsoc_token") or _bearer(request)
     claims = auth.claims_of(token) if token else None
+    expired_claims = getattr(auth, "expired_session_claims", None)
+    if not isinstance(claims, dict) and token and callable(expired_claims):
+        claims = expired_claims(token)
     if not isinstance(claims, dict):
         return None, None, None
     sid = claims.get("sid")
@@ -1590,6 +1599,9 @@ async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) ->
     (or return the completed-key replay). Every failure here is an HTTP error."""
     author = current_username(request)
     owner = normalize_user_id(author)
+    # The sign-in the turn acts for, read before any await: the access token can
+    # expire while the turn is being admitted (``_session_identity``).
+    identity = _session_identity(request, state)
     grants = await state.chat_grants(request)
     # Before any slot is taken: a turn is never admitted without a generation its
     # owner can match later (Stop, turns/active, re-attach).
@@ -1631,7 +1643,7 @@ async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) ->
         )
         # The authority the turn was admitted with (re-checked while it runs).
         handle.author = author or ""
-        handle.sid, handle.token_version, handle.token_expires_at = _session_identity(request, state)
+        handle.sid, handle.token_version, handle.token_expires_at = identity
         handle.grants = frozenset(grants)
         handle.publisher = functools.partial(_publish_turn, state)
         registry.register(handle)
@@ -2411,21 +2423,27 @@ async def chat_turn_seen(
 ) -> Response:
     """The caller has their own turn's outcome on screen (an answer, a question or a
     failure, in a Workspace or a Case Manager chat). Their other consoles hear it and
-    drop the mark they may hold for it. Nothing is stored. 404 for an unknown or expired
-    turn (finished turns are kept for 5 minutes) and for anyone else's."""
-    # An owner-only ``chat.read`` frame naming the turn and where it ran (SPEC §7.1 #17).
-    # Case chat and failures have no stored "unread" state to clear, so this is their
-    # only cross-console signal. Best effort: a frame that cannot go out is not an error.
+    drop the mark they may hold for it. Nothing is stored. Always 204, for any
+    well-formed turn id: the notice goes only to the caller's own consoles and names
+    the turn, plus its conversation or case while the server still keeps the finished
+    turn (5 minutes)."""
+    # An owner-only ``chat.read`` frame naming the turn and where it ran (SPEC §7.2
+    # decision 17). Case chat and failures have no stored "unread" state to clear, so
+    # this is their only cross-console signal, and an analyst may look at an outcome
+    # long after the registry forgot the turn (after a meeting): the frame then names
+    # the turn alone, which is all a console matches on. It reaches only the caller's
+    # consoles and carries ids only, so a turn id that is unknown, expired or someone
+    # else's changes nothing for anyone else and tells the caller nothing (the
+    # conversation or case is named only from the caller's OWN live record). Best
+    # effort: a frame that cannot go out is not an error.
     # (A comment, not the docstring: the docstring is the published OpenAPI description.)
     author = current_username(request)
     generation = await _generation_or_503(state, author)
     handle = state.chat_turns.find(turn_id, normalize_user_id(author), generation)
-    if handle is None:
-        raise HTTPException(status_code=404, detail="turn not found")
     try:
         publish_chat_read(
-            state.event_bus, author, handle.conversation_id,
-            turn_id=handle.turn_id, case_id=handle.case_id,
+            state.event_bus, author, handle.conversation_id if handle is not None else None,
+            turn_id=turn_id, case_id=handle.case_id if handle is not None else None,
         )
     except Exception:  # noqa: BLE001 -- a nudge; nothing else depends on it
         logger.debug("chat.read frame not published", exc_info=True)

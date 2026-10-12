@@ -700,6 +700,20 @@ describe('useChatConversations — requested selection (NavOpts)', () => {
     expect(result.current.activeId).toBe(NEWEST.id);
   });
 
+  it('applies a new request object for the thread the old one named (a pasted link after a rail switch)', async () => {
+    const link: NavOpts = { conversationId: OLDER.id };
+    const { result, rerender } = await mount({ requested: link });
+    expect(result.current.activeId).toBe(OLDER.id);
+    act(() => result.current.select(NEWEST));
+    rerender({ requested: link });
+    await settle();
+    expect(result.current.activeId).toBe(NEWEST.id);
+    // The router hands a pasted link to the same thread over as a new object.
+    rerender({ requested: { conversationId: OLDER.id } });
+    await settle();
+    expect(result.current.activeId).toBe(OLDER.id);
+  });
+
   it('applies a navigation at once, even while a turn runs (an "Answer ready — Open" toast)', async () => {
     const { result, rerender } = await mount();
     act(() => result.current.setBusy(true));

@@ -238,6 +238,16 @@ def test_the_auto_close_rate_question_keeps_its_posture_answer() -> None:
     # Nothing else named: still the current period (and it beats a report cadence).
     ("make a full-year report", "this_year"),
     ("monthly report for the whole year", "this_year"),
+    # A year named on its own, with no preposition, beats an implied period and a report
+    # cadence (closing review): never this year or last year in its place.
+    ("end of year report 2025", "2025"), ("year end report 2025", "2025"), ("year-end report 2025", "2025"),
+    ("year in review 2025", "2025"), ("make a full year report 2025", "2025"), ("2024 annual report", "2024"),
+    ("annual report 2024", "2024"), ("make a report 2025", "2025"),
+    # "The year so far" is this year to date, never all time; a named year so far is that year.
+    ("make a report for the year so far", "ytd"), ("report on the year so far", "ytd"),
+    ("cases over the quarter so far", "this_quarter"), ("cases for the month so far", "this_month"),
+    ("cases for the week so far", "this_week"), ("cases for the year 2026 so far", "2026"),
+    ("2025 so far", "2025"),
 ])
 def test_a_named_period_beats_an_implied_whole_period(text: str, spec: str) -> None:
     win = demo_chat._window_from(text)
@@ -248,6 +258,10 @@ def test_a_named_period_beats_an_implied_whole_period(text: str, spec: str) -> N
     ("Make a full-year report for last year", "last_year"),
     ("Make a full year report for 2025", "2025"),
     ("Make a whole week report for last week", "last_week"),
+    ("End of year report 2025", "2025"),
+    ("Make a full year report 2025", "2025"),
+    ("2024 annual report", "2024"),
+    ("Make a report for the year so far", "ytd"),
 ])
 def test_a_whole_period_report_for_a_named_period_covers_that_period(question: str, spec: str) -> None:
     rounds, header, _body = drive(question)
@@ -332,6 +346,24 @@ def test_a_loose_period_word_is_found(text: str, phrase: str) -> None:
 ])
 def test_a_bucket_duration_or_name_is_not_a_loose_period(text: str) -> None:
     assert demo_chat._loose_period(text, text) is None
+
+
+@pytest.mark.parametrize("text", ["end of year report for fy2025", "make a year-end report for fy2025",
+                                  "annual report covering fy26"])
+def test_an_unread_fiscal_year_is_never_replaced_by_an_implied_period(text: str) -> None:
+    """"End of year report for fy2025" used to cover this year: the implied period and
+    the report cadence replaced a period the analyst named but no rule reads."""
+    assert demo_chat._window_from(text) is None
+    assert demo_chat._loose_period(text, text) is not None
+
+
+def test_a_bare_number_that_is_not_a_year_names_no_period() -> None:
+    """A port, an id or a host name is never read as a year, and never lets an implied
+    period stand in for one either."""
+    assert demo_chat._window_from("annual summary for port 2049") is None
+    assert demo_chat._window_from("yearly review of event 2025") is None
+    # A year inside a host name is part of the name: the report cadence still applies.
+    assert demo_chat._window_from("annual report for host srv-2025").spec == "last_year"
 
 
 def test_no_period_named_is_said_only_when_the_question_has_no_period_word() -> None:
@@ -437,6 +469,9 @@ def _within_obs(tool: str, inp: dict[str, Any]) -> dict[str, Any] | None:
 @pytest.mark.parametrize("question, pct, words", [
     ("what percentage of auto closed cases were false positives", "100%", "false positives"),
     ("What % of the auto-closed cases were true positives?", "0%", "true positives"),
+    # Other word orders (closing review): the set before a comma, "the cases the AI closed".
+    ("of the auto closed cases, what percentage were false positives", "100%", "false positives"),
+    ("what percentage of the cases the AI closed were true positives", "0%", "true positives"),
 ])
 def test_a_share_within_the_ai_closes_is_not_the_automation_rate(question: str, pct: str, words: str) -> None:
     ask = classify(question)
@@ -446,6 +481,20 @@ def test_a_share_within_the_ai_closes_is_not_the_automation_rate(question: str, 
     assert stats and stats[0].get("group_by") == ["verdict"] and "verdict" not in stats[0], stats
     assert body.startswith(f"**{pct}** of the 53 cases that the AI agent closed"), body
     assert f"were {words}: " in body and "automation rate" not in body.lower(), body
+
+
+@pytest.mark.parametrize("question, part", [
+    ("what percentage of auto closed cases this month were medium severity", ("severity", "medium", "medium severity")),
+    ("what percentage of the cases the ai closed were medium severity", ("severity", "medium", "medium severity")),
+    ("of the auto closed cases, what percentage were false positives",
+     ("verdict", "FALSE_POSITIVE", "false positives")),
+    ("what share of auto-closed cases last week were critical", ("severity", "critical", "critical")),
+])
+def test_a_share_within_the_ai_closes_reads_any_word_order(question: str, part: tuple[str, str, str]) -> None:
+    """A window or a few words between the set and its verb, the set named first, or "the
+    cases the AI closed" used to fall back to the automation rate WITHIN that filter (the
+    reverse conditional, with a wrong figure)."""
+    assert demo_chat._within_auto_closed(question) == part
 
 
 def test_a_share_within_the_ai_closes_chat_cannot_count_says_so() -> None:

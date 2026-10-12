@@ -74,7 +74,7 @@ describe('caseOutcome — precedence table', () => {
         disposition: 'suspicious',
         history: [{ event: 'analyst_action', action: 'set_disposition', analyst: 'a', ts: at }],
       }),
-      { source: 'analyst', headline: 'Classified as suspicious — on hold' },
+      { source: 'analyst', headline: 'Classified as suspicious: on hold' },
     ],
     [
       'confirm_fp closes as false positive',

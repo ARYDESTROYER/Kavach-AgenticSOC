@@ -907,7 +907,7 @@ generous** so an existing auth-on deployment never expires mid-session:
 | `refresh_ttl` | `2592000` (30d) | Refresh-token lifetime. |
 | `sudo_reauth_window` | `600` (10m) | How recently the user must have re-authenticated for a step-up-gated action (`require_fresh_auth`). |
 | `notify_on_new_device` / `notify_on_terminate` | `false` | Best-effort operator notification on a first-seen device / a termination. |
-| `remember_me.enabled` | `true` | Offer **Remember me** on the sign-in page. |
+| `remember_me.enabled` | `true` | Offer **Remember me** on the sign-in page. Turning it off ends existing remembered sessions where an ordinary sign-in would (at `TLSOC_AUTH_TOKEN_HOURS` from sign-in). |
 | `remember_me.duration_seconds` | `86400` (24h) | How long a remembered device stays signed in (1–24 h; the UI offers 6/12/24 h); never longer than `absolute_lifetime`. |
 | `remember_me.idle_seconds` | `null` | Optional inactivity limit for remembered sessions (5 min–24 h); `null` uses `idle_timeout`. |
 | `remember_me.excluded_roles` | `[]` | Roles that are never remembered. |

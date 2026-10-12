@@ -335,7 +335,25 @@ and, just as importantly, makes each of these conditions a state an operator can
   closed".** Resolving could not capture a disposition, and the case headline led with
   the AI verdict even after an analyst classified the case; both are fixed, and the
   outcome is computed by one rule shared by every case surface that mirrors the backend
-  ground-truth check.
+  ground-truth check. **Confirm FP** always records the false-positive class (benign is
+  kept), and a disposition sent on close or resolve without `disposition_declared` never
+  replaces a classification the case already carries.
+- **Noise funnel honesty in chat**: a window or trend bucket that ends before the alert
+  counters began (or is older than their 90-day retention) shows the alert stages as not
+  measured, never 0, and gives no overall reduction. A past range that is not whole hours
+  is named in the operator time zone's words, never as a raw UTC range.
+- **`/compact` replies** are a quiet note (`ChatResponse.command: "compact"`) with real
+  usage, or "No model call · $0"; they are never replayed or saved to reports.
+- **A chat outcome looked at on one console clears exactly that turn on the others**: a
+  case chat's newer answer is no longer cleared by a look at an older one, a look more
+  than 5 minutes after the answer still reaches the other consoles
+  (`POST /api/chat/turns/{turn_id}/seen` answers 204 for any well-formed id of the
+  caller's), and a Case Manager chat reports every answer it lists.
+- **Back/Forward on one page never repeats a one-shot request**: Forward to a new chat
+  no longer puts the question back in the composer or sends "Ask again" twice, and a
+  pasted link to the conversation chat last opened from a link is applied.
+- **Log statistics over several sources** never state "Top N of M" when a source did not
+  answer: the missing source may hold other values.
 - **Chat did not use the full width** when the side menus were collapsed; the lane now
   grows with the space, the frame can no longer be scrolled by hidden headings, geometry
   survives React StrictMode, Jump to latest never covers content, and KPI groups never
@@ -895,7 +913,8 @@ and, just as importantly, makes each of these conditions a state an operator can
   conversation as report** (`POST /api/reports/from-conversation`); new `executive`,
   `monthly`, `infographic` and `investigation_brief` templates and an infographic Brief
   layout; reports hold 60 items, and a long whole answer continues in "(continued)"
-  sections.
+  sections; the Reports library shows each report's source conversation
+  (`source_conversation_id`).
 - **Step inspector** (`GET /api/chat/conversations/{id}/messages/{message_id}/steps/{index}`):
   what each lookup sent and exactly what the model saw, with Retry step and Explain this
   step; invisible and look-alike characters are shown as escapes.
@@ -941,7 +960,8 @@ and, just as importantly, makes each of these conditions a state an operator can
   never skipped. Administrators turn it off, shorten it, add an inactivity limit or
   exclude roles under the session policy (`session_policy.remember_me`); it needs HTTPS
   with secure cookies. Account and Admin sessions show a Remembered badge and an Expires
-  column.
+  column. Turning it off or excluding a role ends live remembered sessions where an
+  ordinary sign-in would (at `AUTH_TOKEN_HOURS` from sign-in).
 - **Word and Excel report exports**, generated in the browser with an in-repo ZIP
   writer (no new dependency), and a one-click **Download PDF**.
 - **Reduce transparency** (Settings → Account → Appearance & customization) for the
@@ -1337,7 +1357,15 @@ and, just as importantly, makes each of these conditions a state an operator can
   `409 chat_request_failed` (send the question again with a new idempotency key); a
   turn whose account record cannot be read is refused with
   `503 chat_account_unavailable` and `retry_after`; and `429 chat_busy` gains `scope`
-  (`user` or `global`) and `limit`.
+  (`user` or `global`) and `limit`. A running answer stops when its sign-in or access
+  ends (sign-out, a revoked session, sign out everywhere, a disabled, deleted or
+  replaced account, an expired access token, or a role change that removes a grant it
+  uses): the stream ends with a non-retryable `turn.error` (`internal`), and
+  `POST /api/chat` answers `401 session_invalid` (reason `session_ended`) or
+  `403 chat_access_changed`.
+- **Deleting a user account also deletes that user's Workspace chat conversations,
+  answer ratings and reports**, and stops their running chat answers. Audit records are
+  kept.
 - **Stop** abandons an in-flight model call at once in Unlimited mode (ledgered as
   abandoned) and keeps what was written; Bounded mode still lets the call finish.
 - **Chat answers and conversations are stored in full**: each answer also gets its own

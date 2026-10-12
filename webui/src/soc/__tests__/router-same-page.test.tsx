@@ -93,6 +93,9 @@ describe('same-page hash changes', () => {
     const switched = route.opts;
     goHash('#/chat?conversationId=conv-2');
     expect(route.opts).toBe(switched);
+    // Back to the new chat's hash is a traversal: its one-shot request is not re-applied.
+    goHash('#/chat');
+    expect(route.opts).toBeUndefined();
   });
 
   it('keeps a Settings section, which travels in its own hash grammar', () => {
@@ -159,6 +162,59 @@ describe("the real hash echo of an in-app navigate", () => {
     window.location.hash = '#/cases?status=__terminal__';
     await settle();
     expect(route.opts).toEqual({ status: '__terminal__', window: 24 });
+  });
+});
+
+describe('a change the router did not write is never mistaken for its echo (closing review)', () => {
+  it('applies a pasted link to the conversation the opts still name after Chat cleared its link', async () => {
+    mount('#/chat?conversationId=c1');
+    const first = route.opts;
+    expect(first).toEqual({ conversationId: 'c1' });
+    // Chat drops its deep link with replaceState (no hashchange): the opts still say c1
+    // while the analyst switches threads in the rail.
+    window.history.replaceState(null, '', `${window.location.pathname}#/chat`);
+    await settle();
+    // Pasting the c1 link is a real navigation: a new object, so Chat applies it.
+    window.location.hash = '#/chat?conversationId=c1';
+    await settle();
+    expect(route.opts).toEqual({ conversationId: 'c1' });
+    expect(route.opts).not.toBe(first);
+  });
+
+  it('keeps one-shot requests through the echo, but Back/Forward never re-applies them', async () => {
+    mount('#/chat?conversationId=c0');
+    const resend = { message: 'Investigate host dc01', origin: 'starter' };
+    act(() => route.navigate('chat', { newChat: true, resend }));
+    const opts = route.opts;
+    await settle(); // the navigate's own echo
+    expect(route.opts).toBe(opts);
+    window.location.hash = '#/chat?conversationId=c0'; // Back
+    await settle();
+    expect(route.opts).toEqual({ conversationId: 'c0' });
+    window.location.hash = '#/chat'; // Forward
+    await settle();
+    for (const key of ['newChat', 'ask', 'topic', 'entity', 'resend']) {
+      expect(route.opts ?? {}).not.toHaveProperty(key);
+    }
+  });
+
+  it('drops an ask or a topic on a traversal too, and keeps durable in-memory filters', async () => {
+    mount('#/cases');
+    act(() => route.navigate('cases', { caseId: 'case-a', severity: 'high' }));
+    await settle();
+    window.location.hash = '#/cases';
+    await settle();
+    expect(route.opts).toEqual({ severity: 'high' });
+    expect(samePageOpts('chat', { newChat: true, ask: 'x', topic: 't' }, '#/chat', true)).toBeUndefined();
+    expect(samePageOpts('chat', { newChat: true, ask: 'x' }, '#/chat')).toEqual({ newChat: true, ask: 'x' });
+  });
+
+  it('returns a new object for a traversal whose hash names a key the page owns', () => {
+    const current = { conversationId: 'c1' };
+    expect(samePageOpts('chat', current, '#/chat?conversationId=c1')).toBe(current);
+    const traversed = samePageOpts('chat', current, '#/chat?conversationId=c1', true);
+    expect(traversed).toEqual(current);
+    expect(traversed).not.toBe(current);
   });
 });
 

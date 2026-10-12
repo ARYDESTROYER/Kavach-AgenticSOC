@@ -672,13 +672,15 @@ and cannot start a second one; a failed export says why and offers **Retry**.
 ### The Reports library
 
 Open **Triage → Workspace → Reports** to see every report you own, with its template,
-item count, source conversation, and last update. Search by title or template, and open,
+item count, source conversation (blank for a report saved by an earlier version until
+you next change it), and last update. Search by title or template, and open,
 rename, export, or delete any report; an open report shows the same document view as
 the exports, with **Download PDF** and a link back to its source conversation. A report
 made from an infographic Brief keeps its infographic layout.
 
 A report holds up to **60 items**, and you can keep up to **100 reports**; at that limit,
-delete one to start another. Reports are never removed automatically, and a report
+delete one to start another. Reports are never removed automatically (deleting your
+user account removes them, with your conversations and ratings), and a report
 survives the deletion of its conversation: its source link then reads "Conversation no
 longer available". Reports are visible only to the user who created them, every change
 is recorded in the audit log, and each summary writes one usage record like any other
@@ -734,7 +736,7 @@ Each lookup needs the same permission as the console page that shows the same da
 |---|---|
 | `logs` | Search logs (one source or every browsable source) and log statistics such as top values and counts over time, by any interval up to a year |
 | `cases` | Search cases, exact case counts and breakdowns (by month, week, severity, status, verdict, rule, assignee, source, ATT&CK, and more, with comparisons between periods), read a case, explain a case decision, the shift report, and campaigns |
-| `metrics` | Posture, trends, the noise funnel, case mix, timing, ATT&CK coverage, auto-close health, agent improvement, analyst feedback, and your own chat answer ratings |
+| `metrics` | Posture, trends, the noise funnel, case mix, timing, ATT&CK coverage, auto-close health, agent improvement, analyst feedback, and your own chat answer ratings. Alert stages the counters do not cover read "not measured" (see the [KPI glossary](kpi-glossary.md#noise-reduction-funnel)) |
 | `intel` | Indicator reputation from your enrichment providers, ATT&CK techniques, and the knowledge corpus |
 | `platform` | AI cost and usage, source health, automation status, and the audit log |
 | `docs` | The bundled Help Center and the status of this deployment |

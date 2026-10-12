@@ -73,6 +73,9 @@
     "mixed",
     "conversation"
   ],
+  "commands": [
+    "compact"
+  ],
   "notice_kinds": [
     "partial",
     "cap",

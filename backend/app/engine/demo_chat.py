@@ -41,6 +41,7 @@ Rules, all structural so the planner can never become a back door:
 from __future__ import annotations
 
 import calendar
+import functools
 import json
 import math
 import re
@@ -237,6 +238,27 @@ class ConsoleTarget:
     label: str
     allowed: bool
     requires: str | None = None
+    #: The console map's own words for the page ("theme", "dark mode" for Appearance &
+    #: customization; "case id", "nomenclature" for Cases), from the Help Center corpus
+    #: (``_target_keywords``): a change answer keeps a page they name.
+    keywords: tuple[str, ...] = ()
+
+
+@functools.lru_cache(maxsize=1)
+def _console_keywords() -> dict[str, tuple[str, ...]]:
+    """Every console target's keywords and blurb words from the bundled console map (the
+    same corpus ``app_help`` reads). Fail-soft: an unreadable corpus gives none."""
+    try:
+        from ..knowledge import get_app_knowledge
+
+        knowledge = get_app_knowledge()
+        return {tid: tuple(t.keywords) for tid, t in knowledge.targets.items()}
+    except Exception:  # noqa: BLE001 -- a missing corpus only loses the keyword match
+        return {}
+
+
+def _target_keywords(target_id: str) -> tuple[str, ...]:
+    return _console_keywords().get(target_id, ())
 
 
 @dataclass
@@ -485,7 +507,8 @@ def _parse_reference(content: str) -> Reference:
         if match:
             ref.targets.append(ConsoleTarget(
                 id=match.group(1), label=match.group(2),
-                allowed=match.group(3) == "the user can open it", requires=match.group(4)))
+                allowed=match.group(3) == "the user can open it", requires=match.group(4),
+                keywords=_target_keywords(match.group(1))))
             current = None
             continue
         if line.startswith("Console destinations") or _OMITTED_RE.match(line):
@@ -1056,11 +1079,18 @@ _DATA_ASK_RE = re.compile(r"^\s*(?:can|could) (?:i|we|you) (?:see|show|get|find|
 _RECORD_NOUN = (r"(?:cases|incidents|tickets|investigations|escalations|alerts|detections|"
                 r"(?:true|false)[- ]positives)\b")
 _RECORD_ONE = r"(?:case|incident|ticket|alert|detection)\b"
+#: Parts of the console a record noun can qualify ("each case action", "every incident
+#: badge", "each alert icon"): the question is about the console, not about records.
+#: Shared with ``knowledge/answer.py`` (the AI-unavailable Help Center route).
+_CONSOLE_PARTS = (r"actions?|chips?|badges?|permissions?|roles?|shortcuts?|icons?|colou?rs?|options?|sections?|"
+                  r"screens?|dialogs?|modals?|toolbars?|tooltips?|glyphs?|toggles?|switches|controls?|headers?|"
+                  r"layouts?|themes?|links?")
 _NOT_CONSOLE = (r"(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?|settings?|"
                 r"widgets?|panels?|rates?|counts?|polic(?:y|ies)|lifecycles?|workflows?|menus?|buttons?|"
                 r"status(?:es)?|severit(?:y|ies)|priorit(?:y|ies)|fields?|types?|states?|ids?|numbers?|"
                 r"titles?|formats?|templates?|decisions?|model|verdicts?|outcomes?|dispositions?|levels?|labels?|"
-                r"categor(?:y|ies)|kinds?|class(?:es)?|stages?|steps?|phases?|rules?|queues?|attributes?)\b)")
+                r"categor(?:y|ies)|kinds?|class(?:es)?|stages?|steps?|phases?|rules?|queues?|attributes?|"
+                + _CONSOLE_PARTS + r")\b)")
 # The records an "explain" can name: the record nouns and the rows of a list ("the
 # results", "the ones"), never followed by a console noun ("the cases view").
 _RECORD_ITEMS = r"(?:" + _RECORD_NOUN + r"|(?:ones|results|findings|rows|matches)\b)" + _NOT_CONSOLE
@@ -1127,14 +1157,25 @@ def _asks_for_records(lowered: str) -> bool:
     return bool(_EXPLAIN_RECORDS_RE.search(lowered) or _RECORDS_ASK_RE.search(lowered))
 
 
+#: A defining word whose subject points back at the records the question lists ("show
+#: the escalated cases and explain what each one MEANS", "… what they mean for us"):
+#: it asks what each listed record means for the analyst, not what a term means.
+_MEANS_THE_RECORDS_RE = re.compile(
+    r"\b(?:each(?:\s+one)?(?:\s+of\s+(?:them|these|those))?|every\s+one|they|them|these|those)\s+"
+    r"(?:means?|meant|stands?\s+for)\b")
+
+
 def _defines(lowered: str, records: bool) -> bool:
     """Does the question ask what a term, measure or setting means? A bare "explain"
     or "what are" is definitional only when the question asks for no records: "Show
     the top 10 open cases by risk and explain each" wants the cases, and "Explain the
-    false positive rate" wants the definition (with our figure)."""
+    false positive rate" wants the definition (with our figure). Beside a request for
+    records, a defining word holds only when its subject is a term ("what does
+    escalated mean", "what each case status means"), never when it points back at the
+    listed records ("explain what each one means")."""
     if not _DEFINITION_RE.search(lowered):
         return False
-    return not records or bool(_DEFINES_STRONGLY_RE.search(lowered))
+    return not records or bool(_DEFINES_STRONGLY_RE.search(_MEANS_THE_RECORDS_RE.sub(" ", lowered)))
 
 
 _ACCESS_RE = re.compile(r"\b(what can (?:i|you|chat) do|my access|my role|my permissions?|permissions?|"
@@ -1178,11 +1219,16 @@ _CONSOLE_VERBS = frozenset({"kill", "lock", "lock out", "terminate", "block", "u
 _RESPONSE_NOUN_USE_RE = re.compile(
     r"^[\s-]*(?:outs?[\s-]+)?(?:events?|attempts?|logs?|alerts?|activity|history|status|counts?|rates?|"
     r"polic(?:y|ies)|thresholds?|records?|reports?|trends?|switch(?:es)?)\b")
-#: Isolating or containing a cause, a problem or the damage is figurative ("help me
-#: isolate the root cause of the newest case"): a read.
-_RESPONSE_READ_OBJECT_RE = re.compile(
-    r"^\s*(?:(?:the|this|that|these|those|our|any|all|its|their)\s+)?(?:root[- ]causes?|causes?|issues?|problems?|"
-    r"events?|cases?|damage|impact|scope|blast radius)\b")
+_RESPONSE_DET = r"^\s*(?:(?:the|this|that|these|those|our|any|all|its|their)\s+)?"
+#: Isolating a cause, or the records ("help me isolate the root cause of the newest
+#: case", "isolate the cases for host dc01"): always a read.
+_RESPONSE_READ_OBJECT_RE = re.compile(_RESPONSE_DET + r"(?:root[- ]causes?|causes?|events?|cases?)\b")
+#: Containing the issue, the damage or the impact is a real request to act ("contain
+#: the issue on host srv-db-01", "contain the damage now"), unless the clause is about
+#: a case record ("contain the issue with case-abc123") or a question follows it
+#: (``_LATER_QUESTION_RE``: "contain the damage: which hosts are affected?").
+_RESPONSE_FIGURATIVE_RE = re.compile(_RESPONSE_DET + r"(?:issues?|problems?|damage|impact|scope|blast radius)\b")
+_RECORD_REF_RE = re.compile(r"\b(?:cases?|incidents?|tickets?)\b")
 #: A question after the verb's clause ("help me contain the damage: which hosts are
 #: affected?"): the analyst asks to read something, not to act.
 _LATER_QUESTION_RE = re.compile(
@@ -1204,14 +1250,20 @@ _CREATIVE_RE = re.compile(
     _POLITE_RE + r"(?:tell|write|give|make up|compose)\s+(?:me\s+|us\s+)?(?:"
     r"(?:(?:a|an|another|some)\s+)?(?:\w+\s+)?(?:jokes?|poems?|songs?|haikus?|limericks?|riddles?)"
     r"|(?P<story>(?:a|an|another|some)\s+(?:\w+\s+)?stor(?:y|ies)|stories))\b(?P<rest>.*)$")
-#: What a story about the analyst's own security data names: a case, an incident, an
-#: alert, an entity or indicator, a back-reference, or a period ("a story about this
-#: case", "a story of what happened today").
+#: What a story about the analyst's OWN security data names (a case id, an entity or
+#: indicator value, checked beside this): one of their records with a definite
+#: determiner ("this case", "the breach", "our incidents", "today's alerts"), a
+#: back-reference ("a story about it"), or a period ("what happened overnight", "so
+#: far", "this week"). A generic noun after an indefinite article or as a bare plural
+#: ("a phishing attack", "an intrusion", "cyber attacks", "famous breaches") is fiction.
 _SOC_SUBJECT_RE = re.compile(
-    r"\b(?:cases?|incidents?|alerts?|attacks?|breach(?:es)?|intrusions?|compromises?|campaigns?|hosts?|"
-    r"machines?|servers?|endpoints?|users?|accounts?|ips?|domains?|hash(?:es)?|indicators?|iocs?|sign[- ]?ins?|"
-    r"logins?|events?|logs?|this|that|these|those|it|today|yesterday|tonight|overnight|so far|shifts?|"
-    r"(?:this|last|past) (?:hour|day|night|week|month|quarter|year)|happened|going on)\b")
+    r"\b(?:this|that|these|those|the|our|my|today's|yesterday's|tonight's|last night's)\s+(?:[\w-]+\s+){0,2}?"
+    r"(?:cases?|incidents?|alerts?|attacks?|breach(?:es)?|intrusions?|compromises?|campaigns?|hosts?|machines?|"
+    r"servers?|endpoints?|users?|accounts?|ips?|domains?|hash(?:es)?|indicators?|iocs?|sign[- ]?ins?|logins?|"
+    r"events?|logs?|shifts?|activity|detections?)\b"
+    r"|\b(?:it|them)\b"
+    r"|\b(?:today|yesterday|tonight|overnight|so far|happened|going on)\b"
+    r"|\b(?:this|last|past) (?:hour|day|night|week|month|quarter|year)\b")
 #: What chat answers: the agent prompt's own scope (``prompts._CHAT_AGENT_BODY``).
 _CHAT_SCOPE = ("Chat answers questions about your security data (cases, logs, metrics, threat intelligence and "
                "platform health) and about this console, using read-only lookups.")
@@ -1445,9 +1497,11 @@ _IMPLIED_PERIODS: tuple[tuple[str, str], ...] = (
     *((rf"\b{unit} in review\b", this) for unit, this, _last in _WHOLE_UNITS[1:]),
 )
 _CALENDAR_PHRASES: tuple[tuple[str, str], ...] = (
-    (r"\b(?:ytd|year[- ]to[- ]date|so far this year|this year so far)\b", "ytd"),
-    (r"\b(?:mtd|month[- ]to[- ]date|so far this month)\b", "this_month"),
-    (r"\b(?:qtd|quarter[- ]to[- ]date|so far this quarter)\b", "this_quarter"),
+    # "The year so far" is this year to date, never all time ("so far" alone is).
+    (r"\b(?:ytd|year[- ]to[- ]date|so far this year|(?:the|this) year so far)\b", "ytd"),
+    (r"\b(?:mtd|month[- ]to[- ]date|so far this month|(?:the|this) month so far)\b", "this_month"),
+    (r"\b(?:qtd|quarter[- ]to[- ]date|so far this quarter|(?:the|this) quarter so far)\b", "this_quarter"),
+    (r"\b(?:the|this) week so far\b", "this_week"),
     (r"\btoday(?:'s)?\b|\bthis morning\b|\bso far today\b", "today"),
     (r"\byesterday(?:'s)?\b", "yesterday"),
     (r"\b(?:this|current) (?:calendar )?week(?:'s)?\b|\bweek to date\b", "this_week"),
@@ -1923,18 +1977,40 @@ def _named_bound(low: str, anchor: tuple[int, int] | None = None) -> Win | None:
     return None
 
 
+_YEAR_SO_FAR_RE = re.compile(r"(?<![\w.:#/-])(20\d\d)\s+(?:so far|to date)\b")
+#: A year named on its own ("End of year report 2025", "2024 annual report", "year in
+#: review 2025"): never an id, a host or a port, and only beside a report or period
+#: word, so a bare number elsewhere is not read as a year.
+_BARE_YEAR_RE = re.compile(r"(?<![\w.:#/@-])(?<!\bport )(?<!\bpid )(?<!\bid )(?<!\bevent )(20\d\d)(?![\w.:/@-])")
+_YEAR_CONTEXT_RE = re.compile(rf"\b(?:{_REPORT_NOUN}|annual|yearly|years?|fy|fiscal|calendar|period)\b")
+#: A period token no rule read ("fy2025", a year with no report or period word near
+#: it): an implied period or a report cadence must not replace it.
+_UNREAD_PERIOD_TOKEN_RE = re.compile(r"(?<![\w.:#/@-])(?:fy\s?\d{2,4}|20\d\d)(?![\w.:/@-])")
+
+
 def _window_from(lowered: str) -> Win | None:
     """The window the question names, or None (each lookup's own default applies).
 
     Explicit periods come first (a case-age bound, ISO ranges, named ranges and
-    bounds, quarters, months, calendar phrases, rolling spans, all time, years). A
-    period the question only implies ("a full-year report", "for the quarter") counts
+    bounds, quarters, months, calendar phrases, rolling spans, all time, years, then a
+    year named on its own beside a report or period word). A period token no rule reads
+    ("fy2025") stops there: nothing implied replaces it. A period the question only implies ("a full-year report", "for the quarter") counts
     when nothing else names one, so "a full-year report for last year" covers last
     year. A report CADENCE word ("monthly report") only sets the window when nothing
     else does, so "monthly report for this month" covers this month."""
     win = _named_window(lowered)
     if win is not None:
         return win
+    # A year the analyst named outranks a period they only implied: "End of year report
+    # 2025" and "Make a full year report 2025" cover 2025, never this year.
+    match = _BARE_YEAR_RE.search(lowered)
+    if match and _YEAR_CONTEXT_RE.search(lowered):
+        year = int(match.group(1))
+        return Win(spec=str(year), phrase=str(year), hours=8760, unit="year")
+    if _UNREAD_PERIOD_TOKEN_RE.search(lowered):
+        # A period token no rule reads ("fy2025"): said in the answer as not read
+        # (:func:`_loose_period`), never silently replaced by "this year".
+        return None
     for pattern, token in (*_IMPLIED_PERIODS, *_CADENCE):
         if re.search(pattern, lowered):
             return _token_win(token)
@@ -1981,6 +2057,12 @@ def _named_window(low: str) -> Win | None:
     match = _RELATIVE_RE.search(low)
     if match:
         return _relative_from(match.group(1), match.group(2))
+    # "2026 so far", "for the year 2025 to date": that year (to date while it runs), never
+    # all time, which "so far" and "to date" alone mean.
+    match = _YEAR_SO_FAR_RE.search(low)
+    if match:
+        year = int(match.group(1))
+        return Win(spec=str(year), phrase=str(year), hours=8760, unit="year")
     if _ALL_TIME_RE.search(low):
         return Win(spec="all", phrase="all time", all_time=True)
     match = _NAMED_MONTH_RE.search(low)
@@ -2302,11 +2384,22 @@ _SHARE_CUE_RE = re.compile(
 _COST_WORD_RE = re.compile(r"\b(?:cost|costs|spend|spent|spending|tokens?|budget|billing|money)\b|\$")
 #: "What percentage of the auto-closed cases were false positives?": a share WITHIN
 #: the cases the AI agent closed (group 1 names the part), not the automation rate.
-_WITHIN_AUTO_CLOSED_RE = re.compile(
-    r"(?:\b(?:percent(?:age)?|proportion|fraction|ratio|share|how much|how many)|%)\s+of\s+(?:the\s+|all\s+|our\s+|"
-    r"those\s+|these\s+)?(?:auto[- ]?closed|automatically closed|ai[- ]closed|closed automatically)\s*"
-    r"(?:cases?|incidents?|ones)?\s+(?:were|are|was|is|got|had|have)\s+(?:(?:a|an|the|marked|marked as|rated|"
-    r"classified as|labell?ed|labell?ed as|deemed|actually|really)\s+)*([a-z].*)$")
+_SHARE_WORD = r"(?:\b(?:percent(?:age)?|proportion|fraction|ratio|share|how much|how many)|%)"
+_AUTO_CLOSED_SET = (r"(?:the\s+|all\s+|our\s+|those\s+|these\s+)?(?:(?:auto[- ]?closed|automatically closed|"
+                    r"ai[- ]closed|closed automatically)\s*(?:cases?|incidents?|ones)?|(?:cases?|incidents?|ones)\s+"
+                    r"(?:that\s+)?(?:the\s+)?(?:ai|agent|model|llm|automation)\s+(?:auto[- ]?)?(?:closed|resolved))")
+#: A few qualifier words between the set and its verb ("… auto-closed cases this month
+#: were …", "… the cases the AI closed last week were …").
+_WITHIN_QUALIFIERS = r"(?:\s+(?!(?:were|are|was|is)\b)[\w'-]+){0,4}?"
+_WITHIN_VERB_AND_PART = (r"\s+(?:were|are|was|is|got|had|have)\s+(?:(?:a|an|the|marked|marked as|rated|"
+                         r"classified as|labell?ed|labell?ed as|deemed|actually|really)\s+)*([a-z].*)$")
+_WITHIN_AUTO_CLOSED_RES: tuple[re.Pattern[str], ...] = (
+    # "What percentage of the auto-closed cases (this month) were medium severity?"
+    re.compile(_SHARE_WORD + r"\s+of\s+" + _AUTO_CLOSED_SET + _WITHIN_QUALIFIERS + _WITHIN_VERB_AND_PART),
+    # "Of the auto-closed cases, what percentage were false positives?"
+    re.compile(r"\bof\s+" + _AUTO_CLOSED_SET + _WITHIN_QUALIFIERS + r"\s*,?\s+(?:what|which)\s+(?:\w+\s+)?"
+               + _SHARE_WORD + r"(?:\s+of\s+(?:them|those|these))?" + _WITHIN_VERB_AND_PART),
+)
 _WITHIN_PARTS: tuple[tuple[str, str, str, str], ...] = (
     (r"false[- ]positives?|fps?|benign", "verdict", "FALSE_POSITIVE", "false positives"),
     (r"true[- ]positives?|tps?|malicious|real (?:threats?|incidents?|attacks?)", "verdict", "TRUE_POSITIVE",
@@ -2323,7 +2416,7 @@ def _within_auto_closed(lowered: str) -> tuple[str, str, str] | None:
     """``(field, value, words)`` for a share within the AI's closes ("what % of the
     auto-closed cases were false positives" is ``("verdict", "FALSE_POSITIVE",
     "false positives")``); ``("", "", "")`` when the part is not one chat can count."""
-    match = _WITHIN_AUTO_CLOSED_RE.search(lowered)
+    match = next((m for m in (p.search(lowered) for p in _WITHIN_AUTO_CLOSED_RES) if m is not None), None)
     if match is None:
         return None
     part = match.group(1).strip()
@@ -2762,7 +2855,9 @@ def _out_of_scope(low: str) -> str | None:
     creative = _CREATIVE_RE.match(low)
     if creative is not None:
         rest = creative.group("rest")
-        if creative.group("story") and (_SOC_SUBJECT_RE.search(rest) or _CASE_ID_RE.search(rest)
+        # "Make up a story" is fiction whatever it is about.
+        made_up = re.search(r"\bmake up\b", low[:creative.start("rest")]) is not None
+        if creative.group("story") and not made_up and (_SOC_SUBJECT_RE.search(rest) or _CASE_ID_RE.search(rest)
                                         or _IPV4_RE.search(rest) or _DOMAIN_RE.search(rest)
                                         or _HASH_RE.search(rest)):
             return None   # "a story of case-abc123": a question about the analyst's data
@@ -2772,16 +2867,24 @@ def _out_of_scope(low: str) -> str | None:
 
 def _acting(low: str) -> re.Match[str] | None:
     """The response verb that opens ``low`` when the analyst asks to act with it; None
-    for a noun use ("lock-out events"), a figurative object ("isolate the root cause")
-    or a question asked after it ("contain the damage: which hosts are affected?")."""
+    for a noun use ("lock-out events"), a read object ("isolate the root cause",
+    "isolate the cases for host dc01"), the issue of a case record ("contain the issue
+    with case-abc123") or a question asked after it ("contain the damage: which hosts
+    are affected?"). "Contain the damage now" and "contain the issue on host srv-db-01"
+    ask to act."""
     action = _RESPONSE_VERB_RE.match(low)
     if action is None:
         return None
     rest = action.group("rest")
     if _RESPONSE_NOUN_USE_RE.match(rest):
         return None
-    if action.group("verb") in ("isolate", "contain") and _RESPONSE_READ_OBJECT_RE.match(rest):
-        return None
+    if action.group("verb") in ("isolate", "contain"):
+        if _RESPONSE_READ_OBJECT_RE.match(rest):
+            return None
+        clause = _first_clause(rest)
+        if (_RESPONSE_FIGURATIVE_RE.match(rest) and (_RECORD_REF_RE.search(clause) or _CASE_ID_RE.search(clause))
+                and not _names_target(clause)):
+            return None
     question = _LATER_QUESTION_RE.search(rest)
     if question is not None:
         # The question is the ask unless the verb's own clause names what to act on:
@@ -2791,6 +2894,12 @@ def _acting(low: str) -> re.Match[str] | None:
                 or _URL_RE.search(head) or _DOMAIN_RE.search(head)):
             return None
     return action
+
+
+def _names_target(clause: str) -> bool:
+    """Does a response verb's clause name what to act on (a host, an address, …)?"""
+    return bool(_RESPONSE_OBJECT_RE.search(clause) or _IPV4_RE.search(clause) or _HASH_RE.search(clause)
+                or _URL_RE.search(clause) or _DOMAIN_RE.search(clause))
 
 
 def _is_response_action(q: str, low: str) -> bool:
@@ -2821,8 +2930,49 @@ _TARGET_STOP = frozenset({
     "too", "also", "please", "fully", "completely", "entirely", "here", "there", "which", "who", "whose",
     "involved", "affected", "compromised", "infected", "responsible", "behind",
 })
-#: What makes a value read as an identifier: a digit or one of . _ - @ \.
-_IDENTIFIER_RE = re.compile(r"[0-9._@\\-]")
+#: Words that join a kind word to its name: "the account OF dsingh", "a host NAMED web01".
+_TARGET_LINK = frozenset({"of", "named", "called"})
+#: Words that never name a host or user after a kind word: determiners, pronouns,
+#: function words and the generic nouns of a description ("the host of the attacker").
+_TARGET_NOT_NAME = frozenset({
+    "the", "a", "an", "this", "that", "these", "those", "its", "his", "her", "their", "our", "my", "your",
+    "it", "them", "him", "me", "us", "we", "they", "you", "and", "or", "but", "nor", "if", "is", "are", "was",
+    "were", "be", "been", "has", "have", "had", "do", "does", "did", "will", "would", "should", "can", "could",
+    "may", "might", "must", "not", "no", "any", "some", "all", "every", "each", "what", "when", "where", "why",
+    "how", "with", "without", "in", "for", "after", "before", "until", "while", "because", "via", "using",
+    "attacker", "attackers", "adversary", "victim", "intruder", "hacker", "culprit", "suspect", "actor",
+    "threat", "source", "target", "owner", "one", "ones", "same", "other", "others", "list",
+})
+_NEXT_TOKEN_RE = re.compile(r"\s+[\"'`]?([A-Za-z0-9][A-Za-z0-9._@\\-]{1,62})[\"'`]?")
+
+
+_USER_KIND_WORDS = frozenset({"user", "username", "account"})
+_DETERMINER_BEFORE_RE = re.compile(r"\b(?:the|this|that|these|those|a|an|its|their|our|his|her|my|your)\s+$", re.I)
+
+
+def _target_after(question: str, kind_at: int, at: int, token: str) -> tuple[int, str] | None:
+    """The name a kind word introduces, as ``(offset, value)``, or ``None``. After an
+    explicit kind word ("user", "account", "host", "machine", …) the next word is the
+    name the analyst typed ("lock user dsingh", "isolate host workstation"), whatever
+    its shape, unless it is a word that never names one: "lock the user OUT", "contain
+    the host NOW", "the host of THE attacker". A linking word ("the account of dsingh")
+    is passed over, and so is a second kind word that only describes ("the user
+    account dsingh", "the host machine dc01"); "host workstation" with no article names
+    a host called workstation."""
+    described = bool(_DETERMINER_BEFORE_RE.search(question[:kind_at]))
+    for _hop in range(3):
+        value = token.strip(".,;:")
+        low = value.lower()
+        if low in _TARGET_LINK or (low in _DEEP_KINDS and (described or low in _USER_KIND_WORDS)):
+            following = _NEXT_TOKEN_RE.match(question, at + len(token))
+            if following is None:
+                return None
+            at, token = following.start(1), following.group(1)
+            continue
+        if low in _TARGET_STOP or low in _TARGET_NOT_NAME or low in _DEEP_STOP or low in _LOG_TERM_GENERIC:
+            return None
+        return at, value
+    return None
 
 
 def _response_targets(question: str) -> list[tuple[str, str]]:
@@ -2836,19 +2986,17 @@ def _response_targets(question: str) -> list[tuple[str, str]]:
         found.extend((m.start(), kind, m.group(0)) for m in pattern.finditer(question)
                      if not question.startswith("@", m.end()))
     for match in _DEEP_ENTITY_RE.finditer(question):
-        value = match.group(2).strip(".,;:")
         kind = _DEEP_KINDS.get(match.group(1).lower(), "host")
-        if (kind == "ip" or value.lower() in _DEEP_STOP or value.lower() in _LOG_TERM_GENERIC
-                or value.lower() in _TARGET_STOP or _IPV4_RE.fullmatch(value) or _DOMAIN_RE.fullmatch(value)):
+        if kind == "ip":
             continue
-        # Only a value that reads as a name is one the analyst named: "srv-db-01",
-        # "svc_backup", a quoted "dsingh". "The host of the attacker", "lock the user
-        # out" and "contain the host now" name no host or user.
-        quoted = match.start(2) > 0 and question[match.start(2) - 1] in "\"'`"
-        if not quoted and not _IDENTIFIER_RE.search(value):
+        named = _target_after(question, match.start(1), match.start(2), match.group(2))
+        if named is None:
             continue
-        found.append((match.start(2), kind, value))
-        spans.append((match.start(2), match.start(2) + len(value)))
+        at, value = named
+        if _IPV4_RE.fullmatch(value) or _DOMAIN_RE.fullmatch(value):
+            continue
+        found.append((at, kind, value))
+        spans.append((at, at + len(value)))
     # An indicator inside a named host or user ("corp.example" of user
     # "j.smith@corp.example") is that name, offered once and whole.
     found = [f for f in found if f[1] in ("host", "user")
@@ -7228,6 +7376,14 @@ def _change_terms(question: str) -> _ChangeTerms:
                         words=frozenset({_stem(w) for w in obj} | ({verb} if verb else set())))
 
 
+def _request_words(question: str) -> set[str]:
+    """The stemmed content words of a change request, ids and indicators left out."""
+    text = _CASE_ID_RE.sub(" case ", _step_shaped_label(question) or question)
+    for pattern in (_URL_RE, _IPV4_RE, _HASH_RE, _DOMAIN_RE):
+        text = pattern.sub(" ", text)
+    return {_stem(w) for w in re.findall(r"[a-z]+", text.lower()) if len(w) >= 3 and w not in _CHANGE_FILLER}
+
+
 def _says_verb_on_noun(text: str, terms: _ChangeTerms) -> bool:
     """Does ``text`` say the request's verb and then its object within three words
     ("close a case", "restart the poller")?"""
@@ -7253,14 +7409,20 @@ def _about_change(section: HelpSection, terms: _ChangeTerms) -> bool:
 
 def _change_reference(ref: Reference, question: str) -> tuple[Reference, bool]:
     """The part of ``ref`` about a change request, and whether that is all of it: the
-    sections about it, and the console pages a kept section links to or whose label
-    names the verb or object ("Analytics › Jobs" for "Kill the export job"; never
-    "Overview › Standup" for "Create a case")."""
+    sections about it, and the console pages a kept section links to or whose label or
+    console-map keywords name the object ("Analytics › Jobs" for "Kill the export job",
+    "Appearance & customization" for "Change the theme to dark"; never "Overview ›
+    Standup" for "Create a case"). The verb alone keeps no page: "change" or "turn"
+    is in many keywords."""
     terms = _change_terms(question)
     cited = [s for s in ref.sections if s.ref]
     sections = [s for s in ref.sections if _about_change(s, terms)]
     linked = {c for s in sections for c in s.console}
-    targets = [t for t in ref.targets if t.id in linked or terms.words & _stems(t.label)]
+    # Every content word of the request but its verb ("theme", "dark"; "mfa", "users" of
+    # "turn on MFA for all users"), against the page's console-map keywords.
+    asked = _request_words(question) - ({terms.verb} if terms.verb else set())
+    targets = [t for t in ref.targets
+               if t.id in linked or terms.words & _stems(t.label) or asked & _stems(" ".join(t.keywords))]
     whole = bool(cited) and all(s in sections for s in cited)
     return Reference(sections=sections, targets=targets, facts=dict(ref.facts)), whole
 

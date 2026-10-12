@@ -213,6 +213,11 @@ its share of the stage it came from.
 | Closed by human | Cases an analyst drove to a terminal state; a subset of Escalated, not a third split |
 | Closed by analyst policy | Cases closed by an operator "declared benign" declaration, with no model call; excluded from agent performance |
 
+Alerts ingested and After clustering come from durable hourly counters kept for 90 days.
+A window, or a trend bucket, that ends before the counters began or lies beyond their
+retention shows those two stages as not measured (never 0), and no overall reduction is
+given. A window the counters cover only in part says from when they count.
+
 Auto-cleared, analyst-policy closes, and Escalated partition the opened cases. The
 funnel does not mean every raw event received a model call: deterministic processing
 handles the broad event stream before a smaller set is admitted to investigation. See
