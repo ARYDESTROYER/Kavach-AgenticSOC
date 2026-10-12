@@ -7103,7 +7103,8 @@ def _final_respond(view: PromptView, ask: Ask) -> Final:
     targets = _response_targets(ask.question)
     follow_ups: list[str] = []
     for kind, value in targets:
-        if kind in ("host", "user") and view.can("search_cases"):
+        if kind in ("host", "user") and view.can("search_cases") and not view.case_scoped:
+            # An in-depth investigation is a Workspace question (never case-scoped).
             follow_ups.append(f"Investigate everything about {kind} {value}")
         elif kind in ("ip", "domain", "hash") and (view.can("lookup_indicator") or view.can("search_cases")):
             follow_ups.append(f"Check {value}")
