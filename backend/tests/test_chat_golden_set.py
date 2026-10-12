@@ -883,6 +883,11 @@ _SCOPE = "Chat answers questions about your security data (cases, logs, metrics,
 _CANT_ACT = "I can't do that: chat is read-only, and this console has no response actions"
 _UNRELATED = ("open case", "From the Help Center", "I could not map", "Do it in the console", "Open it in the console",
               "Correlation across sources", "narrow composer", "KPI glossary")
+#: Help Center passages and console pages the seeded corpus returns for change requests
+#: that are not about them ("Lock the case" once quoted the narrow-composer passage).
+_UNRELATED_HELP = ("open case", "I could not map", "Correlation across sources", "narrow composer", "KPI glossary",
+                   "first bootstrap", "Checkpoints and restart", "Shift handoff", "Overview › Standup",
+                   "Export portable application state")
 OUT_OF_SCOPE = [
     *(G(q, kind="conversation", max_lookups=0, contains=("I can't write code or scripts.", _SCOPE), absent=_UNRELATED)
       for q in ("Write me a python script to scan my network", "Can you write a bash script that pings every host?",
@@ -903,10 +908,28 @@ OUT_OF_SCOPE = [
     G("What is the capital of France?", kind="product_help", tools=("app_help",), max_lookups=1,
       contains=(_SCOPE,), absent=("open case",)),
     # A console object is a change chat cannot make (never a response action), and a case
-    # for the bot activity is a case, not code.
-    G("Kill the export job", kind="product_help", tools=("app_help",), max_lookups=1, contains=(_CANT_CHANGE,)),
+    # for the bot activity is a case, not code. A change answer quotes only a passage and a
+    # console page about the change, or none: never one that merely shares a word with it.
+    # (Its console pointer and passage are not "unrelated" here, unlike a refused request.)
+    G("Kill the export job", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=(_CANT_CHANGE, "**Analytics › Jobs**", "**Background jobs › Work that uses the job system**"),
+      absent=_UNRELATED_HELP),
     G("Create a case for the bot activity", kind="product_help", tools=("app_help",), max_lookups=1,
-      contains=(_CANT_CHANGE,)),
+      contains=(_CANT_CHANGE,), absent=_UNRELATED_HELP),
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, contains=(_CANT_CHANGE,),
+        absent=(*_UNRELATED_HELP, "From the Help Center", "Also see"))
+      for q in ("Lock the case", "Restart the poller")),
+    # The story of a case or a period is a question about it, never a refused story.
+    G("Tell me the story of case demo-00000539-0004", tools=("get_case",),
+      params=(P("get_case", case_id="demo-00000539-0004"),), absent=("I can't write",)),
+    G("Tell me the story of this case", tools=("get_case",), fields={"case_id": "demo-00000539-0004"},
+      contains=("**`demo-00000539-0004`**",), absent=("I can't write",)),
+    G("Tell me the story of what happened today", any_of=("search_cases",), absent=("I can't write",)),
+    # A response answer names only what reads as a host or user name, never "of" or "out".
+    *(G(q, kind="product_help", max_lookups=0,
+        contains=(_CANT_ACT, "Before you act, ask chat about the host, user or indicator involved"),
+        absent=(*_UNRELATED, "`of`", "`out`", "Before you act, chat can investigate"))
+      for q in ("Isolate the host of the attacker", "Lock the user out")),
 ]
 
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,

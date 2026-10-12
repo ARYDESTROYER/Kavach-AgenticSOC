@@ -20,6 +20,12 @@ Three findings from the final whole-round review, each fixed at its root:
 3. (Renderer side, webui) a Brief section no longer says its heading twice; see
    ``webui/src/soc/chat/blocks/__tests__/report-headings.test.tsx``.
 
+The final fixer's follow-ups (section 3 below): "the story of this case" is a question
+about the case, never a refused creative request; a response verb used as a noun or
+figuratively ("lock-out events", "isolate the root cause") is a read; a response answer
+names only a value that reads as a host or user name, never "of" or "out"; and a change
+answer quotes only a Help Center passage about the change, or none.
+
 Offline and pure; the end-to-end checks over the seeded demo stores are the
 ``OUT_OF_SCOPE`` entries of ``tests/test_chat_golden_set.py``.
 """
@@ -34,7 +40,7 @@ from app.agents.chat_tools.common import case_row
 from app.config import Preferences
 from app.constants import SourceSurface
 from app.engine import demo_chat
-from app.engine.demo_chat import classify, plan_turn
+from app.engine.demo_chat import PromptView, classify, plan_turn
 from app.models import Case, Entity, EntityType
 from tests.test_demo_chat_e2e import _prior, _turn, demo_state  # noqa: F401 (the seeded Demo stack fixture)
 from tests.test_demo_chat_planner import call, final_of, prompt, tools_of
@@ -125,7 +131,8 @@ CODE_ASKS = (
     "Create a python script that lists open cases",
     "Write code",
 )
-CREATIVE_ASKS = ("Tell me a joke", "Write a poem about phishing", "Tell me a funny story")
+CREATIVE_ASKS = ("Tell me a joke", "Write a poem about phishing", "Tell me a funny story", "Tell me a story",
+                 "Write a short story about a hacker", "Tell me stories from the SOC", "Tell me a joke about this case")
 RESPONSE_ASKS = (
     "Isolate host srv-db-01 and block IP 203.0.113.77",
     "Quarantine host srv-db-01",
@@ -138,6 +145,12 @@ RESPONSE_ASKS = (
     "Can you isolate dc01?",
     "Sinkhole evil.example",
     "Unblock 203.0.113.9",
+    "Isolate the host of the attacker",
+    "Lock the account of dsingh",
+    "Lock the user out",
+    "Contain the host now",
+    # A question after a named target still asks to act on it.
+    "Isolate host srv-db-01: what else did it talk to?",
 )
 #: Requests that look alike but are something chat (or the console) does.
 NOT_OUT_OF_SCOPE = (
@@ -152,6 +165,16 @@ NOT_OUT_OF_SCOPE = (
     ("Kill chain stages for the newest escalated case", "case"),
     ("How do I isolate a host?", "help"),
     ("Tell me something interesting", "fallback"),
+    # The story of a case, an incident or a period is a question about it.
+    ("Tell me the story of case-abc123", "case"),
+    ("Write the story of case demo-00000539-0004 for the CISO", "case"),
+    ("Tell me the story of what happened today", "tp"),
+    # A response verb used figuratively, as a noun, or before a question asks to read.
+    ("Help me isolate the root cause of the newest escalated case", "help"),
+    ("Help me contain the damage: which hosts are affected?", "help"),
+    ("Lock-out events for user dsingh in the last day", "fallback"),
+    ("Lock out events for user dsingh", "fallback"),
+    ("Kill switch status", "fallback"),
 )
 
 
@@ -310,3 +333,134 @@ def test_a_change_request_quotes_only_a_help_center_passage_that_shares_its_word
     _header, body = final_of(plan_turn(prompt("Rename the dashboard to SOC wall", [call("app_help", help_obs)])))
     assert body.startswith("I can't change that from chat")
     assert "Correlation" not in body and "From the Help Center" not in body
+
+
+# --------------------------------------------------------------------------- #
+# 3. Final fixer follow-ups.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("question", ["Tell me the story of this case", "Give me the story of this case"])
+def test_the_story_of_this_case_in_case_chat_reads_the_case(question: str) -> None:
+    assert classify(question, PromptView(case_scoped=True)).intent == "case"
+    rounds, _header, body = drive(question, case_scoped=True)
+    assert "get_case" in [tool for tool, _inp in ran(rounds)]
+    assert "I can't write" not in body
+
+
+@pytest.mark.parametrize("question", [
+    "Tell me the story of case-abc123", "Tell me a story about case-abc123", "Tell me a story about this incident",
+    "Give me a story of what happened overnight", "Write the story of today's shift",
+])
+def test_a_story_about_the_analysts_own_data_is_never_refused_as_creative(question: str) -> None:
+    assert classify(question).intent != "out_of_scope", question
+    rounds, _header, body = drive(question)
+    assert rounds and "I can't write jokes, poems or stories." not in body
+
+
+@pytest.mark.parametrize("question", [
+    "Block events from 203.0.113.7", "Quarantine status of file abc", "Kill-switch status",
+    "Contain the issue with case-abc123", "Isolate the cases for host dc01",
+])
+def test_a_response_verb_used_to_read_is_neither_an_action_nor_a_change(question: str) -> None:
+    assert classify(question).intent not in ("respond", "change", "out_of_scope"), question
+
+
+@pytest.mark.parametrize("question", [
+    "Isolate the host of the attacker", "Lock the account of dsingh", "Lock the user out", "Contain the host now",
+])
+def test_a_response_answer_never_presents_an_ordinary_word_as_a_host_or_user(question: str) -> None:
+    assert demo_chat._response_targets(question) == []
+    rounds, header, body = drive(question)
+    assert rounds == []
+    assert body.endswith("Before you act, ask chat about the host, user or indicator involved: its cases, its log "
+                         "activity and, for an indicator, its reputation.")
+    assert "Before you act, chat can investigate" not in body
+    assert not any(f.startswith("Investigate everything about") for f in header["follow_ups"])
+    for invented in ("`of`", "`out`", "`now`"):
+        assert invented not in body
+
+
+def test_a_response_answer_keeps_a_value_that_reads_as_a_name() -> None:
+    assert demo_chat._response_targets("Isolate host dc01 immediately") == [("host", "dc01")]
+    assert demo_chat._response_targets('Lock user "dsingh"') == [("user", "dsingh")]
+    # An email's local part is not a domain, and a named value is offered once, whole.
+    assert demo_chat._response_targets("Lock out user j.smith@corp.example") == [("user", "j.smith@corp.example")]
+    assert demo_chat._response_targets("Block sender j.smith@corp.example") == [("domain", "corp.example")]
+
+
+def _help(*sections: tuple[str, str, tuple[str, ...]], targets: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
+    """An ``app_help`` observation (the real shape) with the seeded corpus's own leads."""
+    return {"kind": "app_help", "available": True, "docs_version": "0.1", "results": [
+        {"ref": f"D{i}", "title": title, "breadcrumb": "", "href": f"page/{i}/", "console": list(console),
+         "text": text} for i, (title, text, console) in enumerate(sections, 1)], "console_targets": list(targets)}
+
+
+_NARROW = ("Workspace Chat › Ask a question",
+           ("On a narrow composer, the scope chips merge into one **Scope · n** chip, the **Read-only** chip "
+            "shows only its lock, and the model chip shows only its icon."), ())
+_BOOTSTRAP = ("Upgrades and promotion › The unavoidable first bootstrap",
+              ("An installation made before the updater exists cannot grant itself host update authority. The "
+               "wrapper and supervisor serialize mutations through the same advisory lifecycle lock."), ())
+_RESTART = ("Queues and object stores › Checkpoints and restart",
+            ("Object-store and Kinesis receivers can attach to the Agentic SOC cursor store. Broker offsets or "
+             "subscriptions may also be durable in the provider."), ())
+_HANDOFF = ("Case collaboration › Shift handoff",
+            ("Use **Overview → Standup** to review the urgency-ranked attention queue, SLA pressure, workload by "
+             "assignee, and action items. Analysts with `cases:write` can create and update handoff actions and "
+             "acknowledge the report."), ("page:standup",))
+_EXPORT = ("Settings administration › Export portable application state",
+           ("The Knowledge scope includes exact catalog counts, sanitized authoritative Markdown for operator-owned "
+            "runbooks and playbooks."), ("settings:data_export", "page:batchjobs"))
+_JOBS = ("Background jobs › Work that uses the job system",
+         ("The current job registry covers Case Manager bulk reinvestigation, lifecycle changes, assignment and "
+          "tagging, and Data export archive collection."), ())
+_STANDUP = {"id": "page:standup", "label": "Overview › Standup", "requires": None, "allowed": True}
+_JOBS_PAGE = {"id": "page:batchjobs", "label": "Analytics › Jobs", "requires": None, "allowed": True}
+
+
+@pytest.mark.parametrize("question,obs,unrelated", [
+    ("Lock the case", _help(_NARROW, _BOOTSTRAP), ("narrow composer", "first bootstrap", "Also see")),
+    ("Restart the poller", _help(_RESTART), ("Checkpoints and restart", "Kinesis")),
+    ("Create a case for the bot activity", _help(_HANDOFF, targets=(_STANDUP,)),
+     ("Shift handoff", "Overview › Standup", "Do it in the console")),
+])
+def test_a_change_answer_quotes_no_passage_that_only_shares_a_word(question: str, obs: dict[str, Any],
+                                                                  unrelated: tuple[str, ...]) -> None:
+    assert classify(question).intent == "change"
+    header, body = final_of(plan_turn(prompt(question, [call("app_help", obs)])))
+    assert body == ("I can't change that from chat: the assistant is read-only, so it can search and explain but "
+                    "never close, edit, assign or configure anything.")
+    for text in (*unrelated, "From the Help Center"):
+        assert text not in body
+    assert header["citations"] == [] and header["console_links"] == [] and header["blocks"] == []
+
+
+def test_a_change_answer_keeps_the_passage_and_page_about_the_request() -> None:
+    obs = _help(_EXPORT, _JOBS, targets=(_STANDUP, _JOBS_PAGE))
+    header, body = final_of(plan_turn(prompt("Kill the export job", [call("app_help", obs)])))
+    assert body.startswith("I can't change that from chat")
+    assert "Do it in the console: **Analytics › Jobs**." in body and "Standup" not in body
+    assert "From the Help Center:\n\n**Background jobs › Work that uses the job system** [D2]: The current job" in body
+    assert "Export portable application state" not in body and header["citations"] == ["D2"]
+    # The Help Center card would list the unrelated hit too, so it is left out.
+    assert header["blocks"] == []
+    assert header["console_links"][0] == "page:batchjobs" and "page:standup" not in header["console_links"]
+
+
+def test_a_change_terms_reading_names_the_verb_and_object() -> None:
+    terms = demo_chat._change_terms("Please kill the export job now")
+    assert (terms.verb, terms.noun) == ("kill", "job") and terms.words == {"kill", "export", "job"}
+    # A case id names a case; the rerun shape reads the analyst's own words.
+    assert demo_chat._change_terms("Close case-0042 now").noun == "cas"
+    assert demo_chat._change_terms("Run step 3 (rename the dashboard) again").noun == "dashboard"
+
+
+def test_campaign_entities_are_said_whole() -> None:
+    entity = "user:svc_payments_reconciliation_batch_runner@finance-operations.corp.example"
+    # The real ``list_campaigns`` observation shape: an entity value bounded to 120 characters.
+    obs = {"status_filter": None, "total": 1, "returned": 1, "campaigns": [
+        {"id": "camp-1", "name": None, "status": "open", "case_count": 3, "case_ids": ["case-a", "case-b", "case-c"],
+         "entities": [entity], "mitre": ["T1078"], "severity": "high", "first_seen": None, "last_seen": None}]}
+    result = demo_chat.Result(ordinal=1, tool="list_campaigns", status="ok", summary="1 campaign", observation=obs)
+    text = demo_chat._say_campaigns(result)
+    assert "3 cases sharing user `svc_payments_reconciliation_batch_runner@finance-operations.corp.example`" in text
+    assert "…" not in text

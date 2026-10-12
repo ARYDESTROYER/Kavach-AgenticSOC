@@ -1170,6 +1170,25 @@ _CONSOLE_OBJECT_RE = re.compile(
     r"conversations?|answers?|questions?|lookups?)\b")
 #: Block and deny lists live in a firewall or a proxy, not in this console.
 _RESPONSE_LIST_RE = re.compile(r"\b(?:block|deny|ban)[- ]?lists?\b")
+#: The verbs that can also act on a console object ("kill the export job", "lock the
+#: case"): a change chat cannot make. Isolating or containing never acts on one.
+_CONSOLE_VERBS = frozenset({"kill", "lock", "lock out", "terminate", "block", "unblock", "ban"})
+#: The verb used as a noun or a modifier: "lock-out events for user dsingh", "kill
+#: switch status", "block events from 203.0.113.7". A read, never a request to act.
+_RESPONSE_NOUN_USE_RE = re.compile(
+    r"^[\s-]*(?:outs?[\s-]+)?(?:events?|attempts?|logs?|alerts?|activity|history|status|counts?|rates?|"
+    r"polic(?:y|ies)|thresholds?|records?|reports?|trends?|switch(?:es)?)\b")
+#: Isolating or containing a cause, a problem or the damage is figurative ("help me
+#: isolate the root cause of the newest case"): a read.
+_RESPONSE_READ_OBJECT_RE = re.compile(
+    r"^\s*(?:(?:the|this|that|these|those|our|any|all|its|their)\s+)?(?:root[- ]causes?|causes?|issues?|problems?|"
+    r"events?|cases?|damage|impact|scope|blast radius)\b")
+#: A question after the verb's clause ("help me contain the damage: which hosts are
+#: affected?"): the analyst asks to read something, not to act.
+_LATER_QUESTION_RE = re.compile(
+    r"(?:[:;]|\s[-\u2013\u2014]\s)\s*(?:which|what|who|whose|where|when|why|how)\b"
+    r"|(?:[:;,]|\s[-\u2013\u2014]\s)\s*(?:which|what|who|whose|where|when|why|how|is|are|was|were|did|does|do|"
+    r"has|have|had|should|can|could)\b[^:;,]*\?\s*$")
 #: Requests that are not about this deployment at all (final review L4): writing code
 #: or scripts, and jokes, poems or stories. One honest sentence says what chat
 #: answers instead, never a case list or an unrelated Help Center passage.
@@ -1178,9 +1197,21 @@ _CODE_ASK_RE = re.compile(
 _CODE_NOUN_RE = re.compile(
     r"\b(?:scripts?|programs?|code|functions?|snippets?|one-liners?|apps?|applications?|web ?sites?|"
     r"web ?pages?|games?|exploits?|payloads?|malware|keyloggers?|bots?|macros?|regex(?:es)?)\s*$")
+#: A story is creative only as "a story", "another story", "some stories" or bare
+#: "stories" ("a funny story"): "the story of this case" is the case's own story, a
+#: question about it.
 _CREATIVE_RE = re.compile(
-    _POLITE_RE + r"(?:tell|write|give|make up|compose)\s+(?:me\s+|us\s+)?(?:a\s+|an\s+|another\s+|some\s+)?"
-    r"(?:\w+\s+)?(?:jokes?|poems?|stor(?:y|ies)|songs?|haikus?|limericks?|riddles?)\b")
+    _POLITE_RE + r"(?:tell|write|give|make up|compose)\s+(?:me\s+|us\s+)?(?:"
+    r"(?:(?:a|an|another|some)\s+)?(?:\w+\s+)?(?:jokes?|poems?|songs?|haikus?|limericks?|riddles?)"
+    r"|(?P<story>(?:a|an|another|some)\s+(?:\w+\s+)?stor(?:y|ies)|stories))\b(?P<rest>.*)$")
+#: What a story about the analyst's own security data names: a case, an incident, an
+#: alert, an entity or indicator, a back-reference, or a period ("a story about this
+#: case", "a story of what happened today").
+_SOC_SUBJECT_RE = re.compile(
+    r"\b(?:cases?|incidents?|alerts?|attacks?|breach(?:es)?|intrusions?|compromises?|campaigns?|hosts?|"
+    r"machines?|servers?|endpoints?|users?|accounts?|ips?|domains?|hash(?:es)?|indicators?|iocs?|sign[- ]?ins?|"
+    r"logins?|events?|logs?|this|that|these|those|it|today|yesterday|tonight|overnight|so far|shifts?|"
+    r"(?:this|last|past) (?:hour|day|night|week|month|quarter|year)|happened|going on)\b")
 #: What chat answers: the agent prompt's own scope (``prompts._CHAT_AGENT_BODY``).
 _CHAT_SCOPE = ("Chat answers questions about your security data (cases, logs, metrics, threat intelligence and "
                "platform health) and about this console, using read-only lookups.")
@@ -2695,6 +2726,10 @@ def _is_change(low: str) -> bool:
     alert trend" stay changes chat cannot make."""
     if not _CHANGE_RE.match(low) or low.startswith(("show", "list", "summar")):
         return False
+    if _RESPONSE_VERB_RE.match(low) and _acting(low) is None:
+        # "Block events from 203.0.113.7", "isolate the root cause", "isolate host
+        # srv-db-01: what else did it talk to?": the verb asks to read, not to change.
+        return False
     verb = _ANSWER_VERB_RE.match(low)
     if verb is None:
         return True
@@ -2724,16 +2759,45 @@ def _out_of_scope(low: str) -> str | None:
         cut = _OBJECT_END_RE.search(rest)
         if _CODE_NOUN_RE.search(rest[:cut.start()] if cut else rest):
             return "code"
-    if _CREATIVE_RE.match(low):
+    creative = _CREATIVE_RE.match(low)
+    if creative is not None:
+        rest = creative.group("rest")
+        if creative.group("story") and (_SOC_SUBJECT_RE.search(rest) or _CASE_ID_RE.search(rest)
+                                        or _IPV4_RE.search(rest) or _DOMAIN_RE.search(rest)
+                                        or _HASH_RE.search(rest)):
+            return None   # "a story of case-abc123": a question about the analyst's data
         return "creative"
     return None
+
+
+def _acting(low: str) -> re.Match[str] | None:
+    """The response verb that opens ``low`` when the analyst asks to act with it; None
+    for a noun use ("lock-out events"), a figurative object ("isolate the root cause")
+    or a question asked after it ("contain the damage: which hosts are affected?")."""
+    action = _RESPONSE_VERB_RE.match(low)
+    if action is None:
+        return None
+    rest = action.group("rest")
+    if _RESPONSE_NOUN_USE_RE.match(rest):
+        return None
+    if action.group("verb") in ("isolate", "contain") and _RESPONSE_READ_OBJECT_RE.match(rest):
+        return None
+    question = _LATER_QUESTION_RE.search(rest)
+    if question is not None:
+        # The question is the ask unless the verb's own clause names what to act on:
+        # "isolate host srv-db-01: what else did it talk to?" still asks to isolate it.
+        head = rest[:question.start()]
+        if not (_RESPONSE_OBJECT_RE.search(head) or _IPV4_RE.search(head) or _HASH_RE.search(head)
+                or _URL_RE.search(head) or _DOMAIN_RE.search(head)):
+            return None
+    return action
 
 
 def _is_response_action(q: str, low: str) -> bool:
     """A response action (isolate a host, block an IP, quarantine a file, kill a
     process): something no part of this console does (final review L4). "Kill the
     export job" acts on a console object, so it stays a change chat cannot make."""
-    action = _RESPONSE_VERB_RE.match(low)
+    action = _acting(low)
     if action is None:
         # "Add 203.0.113.7 to the block list": a firewall's list, not a console one.
         return bool(_RESPONSE_LIST_RE.search(low)) and _is_change(low)
@@ -2750,20 +2814,45 @@ def _first_clause(text: str) -> str:
     return re.split(r"\b(?:and|then|but|also)\b|[,;.!?]", text, maxsplit=1)[0]
 
 
+#: Words that follow "host" or "user" in a response request without naming one.
+_TARGET_STOP = frozenset({
+    "of", "out", "now", "to", "on", "at", "by", "off", "up", "down", "into", "onto", "from", "as", "so", "then",
+    "immediately", "temporarily", "permanently", "right", "asap", "today", "tonight", "again", "first", "quickly",
+    "too", "also", "please", "fully", "completely", "entirely", "here", "there", "which", "who", "whose",
+    "involved", "affected", "compromised", "infected", "responsible", "behind",
+})
+#: What makes a value read as an identifier: a digit or one of . _ - @ \.
+_IDENTIFIER_RE = re.compile(r"[0-9._@\\-]")
+
+
 def _response_targets(question: str) -> list[tuple[str, str]]:
     """``(kind, value)`` of each host, user and indicator a response action names, in
     the analyst's own words ("isolate host srv-db-01 and block IP 203.0.113.77"), at
     most three, so the answer can offer to investigate them instead."""
     found: list[tuple[int, str, str]] = []
+    spans: list[tuple[int, int]] = []
     for kind, pattern in (("ip", _IPV4_RE), ("hash", _HASH_RE), ("domain", _DOMAIN_RE)):
-        found.extend((m.start(), kind, m.group(0)) for m in pattern.finditer(question))
+        # An email's local part ("j.smith" of "j.smith@corp.example") is not a domain.
+        found.extend((m.start(), kind, m.group(0)) for m in pattern.finditer(question)
+                     if not question.startswith("@", m.end()))
     for match in _DEEP_ENTITY_RE.finditer(question):
         value = match.group(2).strip(".,;:")
         kind = _DEEP_KINDS.get(match.group(1).lower(), "host")
         if (kind == "ip" or value.lower() in _DEEP_STOP or value.lower() in _LOG_TERM_GENERIC
-                or _IPV4_RE.fullmatch(value) or _DOMAIN_RE.fullmatch(value)):
+                or value.lower() in _TARGET_STOP or _IPV4_RE.fullmatch(value) or _DOMAIN_RE.fullmatch(value)):
+            continue
+        # Only a value that reads as a name is one the analyst named: "srv-db-01",
+        # "svc_backup", a quoted "dsingh". "The host of the attacker", "lock the user
+        # out" and "contain the host now" name no host or user.
+        quoted = match.start(2) > 0 and question[match.start(2) - 1] in "\"'`"
+        if not quoted and not _IDENTIFIER_RE.search(value):
             continue
         found.append((match.start(2), kind, value))
+        spans.append((match.start(2), match.start(2) + len(value)))
+    # An indicator inside a named host or user ("corp.example" of user
+    # "j.smith@corp.example") is that name, offered once and whole.
+    found = [f for f in found if f[1] in ("host", "user")
+             or not any(start <= f[0] and f[0] + len(f[2]) <= end for start, end in spans)]
     out: list[tuple[str, str]] = []
     for _at, kind, value in sorted(found):
         if (kind, value) not in out and not any(value == v for _k, v in out):
@@ -3039,8 +3128,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     shaped = _step_shaped_label(q)
     if _is_response_action(q, low) or (shaped is not None and _is_response_action(shaped, shaped.lower())):
         return ask("respond", save=False)
-    acting = _RESPONSE_VERB_RE.match(low)
-    if acting is not None and _CONSOLE_OBJECT_RE.search(_first_clause(acting.group("rest"))):
+    acting = _acting(low)
+    if (acting is not None and acting.group("verb") in _CONSOLE_VERBS
+            and _CONSOLE_OBJECT_RE.search(_first_clause(acting.group("rest")))):
         # "Kill the export job", "Lock the case": a change to a console object.
         return ask("change", save=False)
     if _out_of_scope(low):
@@ -5243,7 +5333,8 @@ def _say_campaigns(r: Result, rows: Sequence[Mapping[str, Any]] | None = None) -
         what = _plural(c.get("case_count"), "case")
         entities = [e for e in c.get("entities") or [] if isinstance(e, str)][:2]
         if entities:
-            what += " sharing " + _join([_entity_phrase(e, 60) for e in entities])
+            # Said whole: ``list_campaigns`` already bounds a value (operator ask 3).
+            what += " sharing " + _join([_entity_phrase(e) for e in entities])
         bits = []
         if c.get("severity"):
             bits.append(display_text(c.get("severity"), 20))
@@ -7081,21 +7172,116 @@ def _final_explain_metric(view: PromptView, ask: Ask) -> Final | None:
                  follow_ups=_follow_ups(view, "explain_metric", charts=metric is not None))
 
 
+#: Words of a change request that say nothing about what it changes.
+_CHANGE_FILLER = frozenset({
+    "the", "and", "all", "any", "our", "your", "its", "their", "this", "that", "these", "those", "now", "can",
+    "you", "could", "would", "will", "help", "want", "need", "then", "them", "every", "each", "some", "off",
+    "out", "new", "just", "right", "away", "asap", "again", "also", "too", "for", "with", "how",
+}) | _TOPIC_STOP_WORDS
+
+
+def _stem(word: str) -> str:
+    """A crude stem, so "cases", "closed" and "closing" meet "case" and "close"."""
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 5 and word.endswith("ing"):
+        word = word[:-3]
+    elif len(word) > 4 and (word.endswith("ed") or (word.endswith("es") and (word[-3] in "sxz"
+                                                                               or word[-4:-2] in ("ch", "sh")))):
+        word = word[:-2]
+    elif len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        word = word[:-1]
+    return word[:-1] if len(word) > 3 and word.endswith("e") else word
+
+
+def _stems(text: str) -> set[str]:
+    return {_stem(w) for w in re.findall(r"[a-z]+", text.lower()) if len(w) >= 3}
+
+
+@dataclass(frozen=True)
+class _ChangeTerms:
+    """A change request's words, stemmed: its verb ("kill"), the head noun of the
+    verb's direct object ("job" of "Kill the export job") and every word of the verb
+    and that object ("kill", "export", "job"). Ids and indicators are left out."""
+
+    verb: str | None = None
+    noun: str | None = None
+    words: frozenset[str] = frozenset()
+
+
+def _change_terms(question: str) -> _ChangeTerms:
+    # A case id names a case ("Close case-0042 now"); other ids and indicators name
+    # nothing a Help Center section is about.
+    text = _CASE_ID_RE.sub(" case ", _step_shaped_label(question) or question)
+    for pattern in (_URL_RE, _IPV4_RE, _HASH_RE, _DOMAIN_RE):
+        text = pattern.sub(" ", text)
+    low = text.lower()
+    lead = re.match(_POLITE_RE + r"(?:go ahead and\s+)?", low)
+    words = re.findall(r"[a-z]+", low[lead.end():] if lead else low)
+    if not words:
+        return _ChangeTerms()
+    rest = " ".join(words[1:])
+    cut = _OBJECT_END_RE.search(rest)
+    obj = [w for w in (rest[:cut.start()] if cut else rest).split() if len(w) >= 3 and w not in _CHANGE_FILLER]
+    verb = _stem(words[0]) if len(words[0]) >= 3 and words[0] not in _CHANGE_FILLER else None
+    return _ChangeTerms(verb=verb, noun=_stem(obj[-1]) if obj else None,
+                        words=frozenset({_stem(w) for w in obj} | ({verb} if verb else set())))
+
+
+def _says_verb_on_noun(text: str, terms: _ChangeTerms) -> bool:
+    """Does ``text`` say the request's verb and then its object within three words
+    ("close a case", "restart the poller")?"""
+    if not terms.verb or not terms.noun:
+        return False
+    tokens = [_stem(w) for w in re.findall(r"[a-z]+", text.lower())]
+    return any(t == terms.verb and terms.noun in tokens[i + 1:i + 4] for i, t in enumerate(tokens))
+
+
+def _about_change(section: HelpSection, terms: _ChangeTerms) -> bool:
+    """Is a Help Center section about the change asked (final review L4)? Its own
+    heading names the object ("Background jobs › Work that uses the job system" for
+    "Kill the export job"), its title shares two of the request's verb and object
+    words, or its lead says the verb on the object ("close a case"). A word shared
+    anywhere is not enough: "Lock the case" never quotes a passage that merely says
+    "lock", "Restart the poller" one about restarts, nor "Create a case" one where
+    analysts "with cases:write can create" handoff actions."""
+    heading = section.title.rsplit("›", 1)[-1]
+    if terms.noun and terms.noun in _stems(heading):
+        return True
+    return len(terms.words & _stems(section.title)) >= 2 or _says_verb_on_noun(_lead(section), terms)
+
+
+def _change_reference(ref: Reference, question: str) -> tuple[Reference, bool]:
+    """The part of ``ref`` about a change request, and whether that is all of it: the
+    sections about it, and the console pages a kept section links to or whose label
+    names the verb or object ("Analytics › Jobs" for "Kill the export job"; never
+    "Overview › Standup" for "Create a case")."""
+    terms = _change_terms(question)
+    cited = [s for s in ref.sections if s.ref]
+    sections = [s for s in ref.sections if _about_change(s, terms)]
+    linked = {c for s in sections for c in s.console}
+    targets = [t for t in ref.targets if t.id in linked or terms.words & _stems(t.label)]
+    whole = bool(cited) and all(s in sections for s in cited)
+    return Reference(sections=sections, targets=targets, facts=dict(ref.facts)), whole
+
+
 def _final_change(view: PromptView, ask: Ask) -> Final:
     body = ["I can't change that from chat: the assistant is read-only, so it can search and explain but "
             "never close, edit, assign or configure anything."]
-    # Only an excerpt that shares a word with the request is shown: an unrelated top
-    # hit would read as the way to make the change (final review L4).
-    paragraphs, cited = _help_paragraphs(view.reference, limit=1, topic=_change_query(ask), require_match=True)
-    console = _console_sentence(view.reference).replace("Open it in the console:", "Do it in the console:")
+    # Only a passage and a console page about the request are shown: an unrelated top
+    # hit would read as the way to make the change (final review L4). The Help Center
+    # card lists every search hit, so it is shown only when all of them are about it.
+    ref, whole = _change_reference(view.reference, ask.question)
+    paragraphs, cited = _help_paragraphs(ref, limit=1, topic=_change_query(ask))
+    console = _console_sentence(ref).replace("Open it in the console:", "Do it in the console:")
     if console:
         body.append(console)
     if paragraphs:
         body.append("From the Help Center:")
         body.extend(paragraphs)
-    return Final(body=body, blocks=_keep(_block(view.ok("app_help"), "guide", view="guide", title="Help Center")),
-                 citations=cited, console_links=_console_ids(view.reference), answer_kind="product_help",
-                 follow_ups=_follow_ups(view, "change"))
+    guide = _block(view.ok("app_help"), "guide", view="guide", title="Help Center") if whole else None
+    return Final(body=body, blocks=_keep(guide), citations=cited, console_links=_console_ids(ref),
+                 answer_kind="product_help", follow_ups=_follow_ups(view, "change"))
 
 
 def _final_respond(view: PromptView, ask: Ask) -> Final:
