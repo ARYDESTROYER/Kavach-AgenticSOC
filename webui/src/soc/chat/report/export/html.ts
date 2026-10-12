@@ -69,7 +69,7 @@ hr{border:0;border-top:1px solid hsl(var(--border));margin:24px 0 8px}
 a{color:hsl(var(--primary))}
 tr,figure,.callout,li{break-inside:avoid}
 @page{size:A4;margin:14mm 12mm}
-@media print{.doc{max-width:none;padding:0}*{print-color-adjust:exact;-webkit-print-color-adjust:exact}h1,h2,h3,h4,h5,h6{break-after:avoid}p{orphans:3;widows:3}td,th{overflow-wrap:anywhere}}
+@media print{.doc{max-width:none;padding:0}*{print-color-adjust:exact;-webkit-print-color-adjust:exact}h1,h2,h3,h4,h5,h6,:is(h1,h2,h3,h4,h5,h6)+.meta{break-after:avoid}p{orphans:3;widows:3}td,th{overflow-wrap:anywhere}}
 `.trim();
 
 /* -------------------------------------------------------------------------- */

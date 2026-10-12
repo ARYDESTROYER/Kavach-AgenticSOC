@@ -9611,6 +9611,13 @@ export interface components {
         /**
          * ReportListEntry
          * @description One row of the per-user report index (``GET /api/reports``).
+         *
+         *     ``conversation_id`` names the conversation whose DRAFT this report is (at most one
+         *     per conversation); ``source_conversation_id`` names the conversation the report
+         *     came from (the one conversation all its items name, else the draft's), for the
+         *     library's "Source conversation" column. A report saved from an answer or a whole
+         *     conversation is never a draft, so it carries only the second. Rows written before
+         *     the field existed read ``None`` until the report next changes.
          */
         ReportListEntry: {
             /** Conversation Id */
@@ -9629,6 +9636,8 @@ export interface components {
              * @default 0
              */
             item_count: number;
+            /** Source Conversation Id */
+            source_conversation_id?: string | null;
             /**
              * Template
              * @default custom

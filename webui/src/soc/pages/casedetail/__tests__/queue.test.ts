@@ -10,6 +10,7 @@ import {
   QUEUE_STATUS_OPTIONS,
   caseInScope,
   compareQueueOrder,
+  keepAdvisoryBands,
   matchesSearch,
   mergeQueueRow,
   queueMembership,
@@ -152,5 +153,43 @@ describe('windowPlacement / compareQueueOrder', () => {
       { case_id: 'c1', status: 'closed' },
     );
     expect(merged).toMatchObject({ status: 'closed', severity_band: 'critical', severity_source: 'source_asserted' });
+  });
+});
+
+describe('keepAdvisoryBands (the case detail header guard)', () => {
+  const shown = {
+    case_id: 'c1',
+    risk_score: 7.41,
+    severity_band: 'critical',
+    severity_source: 'source_asserted',
+    urgency_band: 'low',
+    priority_level: 'P3',
+  };
+
+  it('a response for the same case without bands keeps the bands on screen', () => {
+    const next = keepAdvisoryBands(shown, { case_id: 'c1', risk_score: 7.41, status: 'investigating' });
+    expect(next).toMatchObject({
+      status: 'investigating',
+      severity_band: 'critical',
+      severity_source: 'source_asserted',
+      urgency_band: 'low',
+      priority_level: 'P3',
+    });
+  });
+
+  it('a response that carries bands is taken as it is, including a priority turned off', () => {
+    const next = keepAdvisoryBands(shown, {
+      case_id: 'c1',
+      severity_band: 'medium',
+      severity_source: 'source_asserted',
+      priority_level: undefined,
+    });
+    expect(next.severity_band).toBe('medium');
+    expect(next.priority_level).toBeUndefined();
+  });
+
+  it('never carries bands across to a different case or onto a first load', () => {
+    expect(keepAdvisoryBands(shown, { case_id: 'c2' }).severity_band).toBeUndefined();
+    expect(keepAdvisoryBands(null, { case_id: 'c1' }).severity_band).toBeUndefined();
   });
 });

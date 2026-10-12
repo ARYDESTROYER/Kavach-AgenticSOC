@@ -53,6 +53,18 @@ describe('Overview print rules', () => {
     expect(box).not.toMatch(/overflow(-x|-y)?:\s*(hidden|auto|scroll)/);
   });
 
+  it('scales a chart wider than the paper column down to it instead of clipping it', () => {
+    // Printed from a 1024px window the on-screen chart is ~900px wide, wider than the A4
+    // column; clipped sideways, the newest buckets (where the closes are) were not
+    // printed under a header that still counted them (Round 12 final review). The SVG
+    // carries a viewBox (CloseAttributionChart), so these two properties scale it.
+    const svg = rule(block, "#socMain [data-testid='human-vs-ai-figure'] > svg {");
+    expect(svg).toMatch(/max-width:\s*100% !important/);
+    expect(svg).toMatch(/height:\s*auto !important/);
+    // `max-width`, never `width: 100%`: a narrow xl-column chart must not be enlarged.
+    expect(svg).not.toMatch(/(^|[\s;{])width:\s*100%/);
+  });
+
   it('keeps the card on one page inside a plain block band', () => {
     expect(rule(block, "#socMain [data-testid='human-vs-ai'] {")).toMatch(/break-inside:\s*avoid/);
     expect(rule(block, "#socMain [aria-labelledby='overview-band-flow'] > div {")).toMatch(

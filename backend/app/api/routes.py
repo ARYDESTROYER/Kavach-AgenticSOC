@@ -2006,7 +2006,7 @@ async def investigate(
     case = await state.pipeline.investigate_cluster(
         cluster, body.source_surface, state.execution_prefs, query_source=query_source
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 # --------------------------------------------------------------------------- #
@@ -5323,7 +5323,7 @@ CASE_PAGE_LIMIT = 200
 CASE_RESULT_WINDOW = 10_000
 
 
-def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
+def _with_advisory_bands(case: Case, prefs: Preferences | None) -> Case:
     """Populate the five READ-TIME advisory band fields (severity/impact/urgency/
     priority) on a Case copy for the presentation surfaces (Round-7 W0.7).
 
@@ -5335,6 +5335,24 @@ def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
         return case.model_copy(update=advisory_bands(case, prefs))
     except Exception:  # noqa: BLE001 — advisory only; never break the endpoint
         return case
+
+
+def _case_view(case: Case, state: AppState) -> dict[str, Any]:
+    """The JSON every single-case MUTATION returns (Round 12 final review): the same
+    shape as ``GET /cases/{id}``, the stored case plus its read-time advisory bands
+    under ``execution_prefs``. A client that renders the response (the Case Manager
+    header after Acknowledge or Close) otherwise saw ``severity_band: null`` and fell
+    back to a risk-score band, so a source-asserted Critical case read as Info until a
+    reload. Display only: nothing here is stored or read by ``decide()`` (#3).
+
+    Fail-open like the read path: the mutation is already saved when this runs, so a
+    preference lookup that fails degrades to the prefs-free severity axis
+    (``advisory_bands(case, None)``) instead of reporting a saved action as an error."""
+    try:
+        prefs: Preferences | None = state.execution_prefs
+    except Exception:  # noqa: BLE001 — advisory only; never fail a saved mutation
+        prefs = None
+    return _with_advisory_bands(case, prefs).model_dump(mode="json")
 
 
 # --------------------------------------------------------------------------- #
@@ -6341,7 +6359,7 @@ async def _perform_case_action(
             )
     except Exception as exc:  # noqa: BLE001 — notifications never affect the action
         logger.debug("lifecycle notification scheduling skipped for %s: %s", case_id, exc)
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 class BulkCaseAction(CaseAction):
@@ -6493,7 +6511,7 @@ async def case_feedback(
             await state.rag_service.index_resolved_case(case, note=body.comment)
         except Exception as exc:  # noqa: BLE001 — feedback must survive RAG outages
             logger.warning("Feedback RAG refresh failed for %s: %s", case_id, exc)
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.post("/cases/{case_id}/comment")
@@ -6521,7 +6539,7 @@ async def case_comment(
         action_type=ActionType.COLLAB, surface="case", actor=body.author or "analyst",
         case_id=case_id, result_summary="comment added",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.post("/cases/{case_id}/tags")
@@ -6553,7 +6571,7 @@ async def case_tags(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
         case_id=case_id, result_summary=f"tags set ({len(case.tags)})",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.post("/cases/{case_id}/assign")
@@ -6579,7 +6597,7 @@ async def case_assign(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
         case_id=case_id, result_summary=f"assigned to {case.assignee or '(unassigned)'}",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.get("/cases/{case_id}/export")
@@ -6689,7 +6707,7 @@ async def case_investigate(
         cluster, case.source_surface, state.execution_prefs,
         force=True, query_source=query_source,
     )
-    return updated.model_dump(mode="json")
+    return _case_view(updated, state)
 
 
 class ReinvestigateRequest(BaseModel):
@@ -6756,7 +6774,7 @@ async def case_reinvestigate(
     updated = await state.pipeline.investigate_cluster(
         cluster, case.source_surface, prefs_eff, force=True, query_source=query_source
     )
-    return updated.model_dump(mode="json")
+    return _case_view(updated, state)
 
 
 class RunPlaybookRequest(BaseModel):
@@ -6810,7 +6828,7 @@ async def case_run_playbook(
         state.pipeline, cluster, case.source_surface, state.execution_prefs, body.playbook_id,
         query_source=query_source,
     )
-    return updated.model_dump(mode="json")
+    return _case_view(updated, state)
 
 
 @router.get("/cases/{case_id}/threat-context")

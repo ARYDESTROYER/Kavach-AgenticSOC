@@ -111,34 +111,38 @@ export function ReportDocument({
           if (item.addedAt) meta.push(`${doc.kind === 'conversation' ? 'Asked' : 'Added'} ${formatUtc(item.addedAt)}`);
           return (
             <div key={item.id} className="report-block min-w-0 space-y-2" data-report-item={item.id}>
-              <H3 className="text-sm font-semibold text-foreground">
-                {index + 1}. {item.title}
-              </H3>
-              <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
-                <span>{meta.join(' · ')}</span>
-                {mode === 'screen' && item.source.conversation_id ? (
-                  gone ? (
-                    <span>{SOURCE_UNAVAILABLE}</span>
-                  ) : onOpenSource ? (
-                    <button
-                      type="button"
-                      onClick={() => onOpenSource(item)}
-                      // A screen action: the Ctrl/Cmd+P fallback leaves it off paper.
-                      data-print-hide=""
-                      className={cn('inline-flex items-center gap-1 rounded-sm text-primary hover:underline', focusRing)}
-                    >
-                      <ExternalLink className="size-3" aria-hidden />
-                      Open source conversation
-                    </button>
-                  ) : null
+              {/* The item header (heading, meta line, question): print keeps it whole and on
+                  the same page as the item's first content (`.report-item-header` in PRINT_CSS). */}
+              <div className="report-item-header space-y-2">
+                <H3 className="text-sm font-semibold text-foreground">
+                  {index + 1}. {item.title}
+                </H3>
+                <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
+                  <span>{meta.join(' · ')}</span>
+                  {mode === 'screen' && item.source.conversation_id ? (
+                    gone ? (
+                      <span>{SOURCE_UNAVAILABLE}</span>
+                    ) : onOpenSource ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenSource(item)}
+                        // A screen action: the Ctrl/Cmd+P fallback leaves it off paper.
+                        data-print-hide=""
+                        className={cn('inline-flex items-center gap-1 rounded-sm text-primary hover:underline', focusRing)}
+                      >
+                        <ExternalLink className="size-3" aria-hidden />
+                        Open source conversation
+                      </button>
+                    ) : null
+                  ) : null}
+                </p>
+                {item.question ? (
+                  <div role="note" className="whitespace-pre-wrap rounded-md border border-l-4 border-border border-l-info bg-surface px-3 py-2 text-sm">
+                    <span className="font-semibold">Question: </span>
+                    {item.question}
+                  </div>
                 ) : null}
-              </p>
-              {item.question ? (
-                <div role="note" className="whitespace-pre-wrap rounded-md border border-l-4 border-border border-l-info bg-surface px-3 py-2 text-sm">
-                  <span className="font-semibold">Question: </span>
-                  {item.question}
-                </div>
-              ) : null}
+              </div>
               {item.emptyType && !item.blocks.length ? (
                 <p className="text-xs text-muted-foreground">{EMPTY_LOOKUP_TEXT}</p>
               ) : renderBlocks ? (

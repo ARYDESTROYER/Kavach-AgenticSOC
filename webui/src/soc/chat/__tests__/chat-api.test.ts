@@ -389,6 +389,24 @@ describe('reports (SPEC §9.2)', () => {
     expect((await listReports()).map((r) => r.id)).toEqual(['rep-2']);
   });
 
+  it('carries the source conversation of a report saved from chat (never a draft link)', async () => {
+    stubFetch(() =>
+      json({
+        reports: [
+          { id: 'rep-1', title: 't', updated_at: 'u', conversation_id: null, source_conversation_id: 'conv-1' },
+          { id: 'rep-2', title: 't', updated_at: 'u', source_conversation_id: '../x' },
+          { id: 'rep-3', title: 't', updated_at: 'u' },
+        ],
+      }),
+    );
+    const rows = await listReports();
+    expect(rows.map((r) => [r.id, r.conversation_id, r.source_conversation_id])).toEqual([
+      ['rep-1', null, 'conv-1'],
+      ['rep-2', null, null],
+      ['rep-3', null, null],
+    ]);
+  });
+
   it('creates, gets and patches with normalised reports', async () => {
     stubFetch(() => json(REPORT));
     const created = await createReport({ title: 'Shift brief', template: 'shift', conversation_id: 'conv-1' });

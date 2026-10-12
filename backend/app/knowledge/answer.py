@@ -133,7 +133,14 @@ _DATA_SIGNAL_RE = re.compile(
     r"|\bwho\s+(?:closed|opened|assigned|escalated|changed|acknowledged|approved|resolved|owns"
     r"|is\s+assigned|logged|accessed|deleted|edited)\b"
     r"|\bwhat\s+happened\b|\b(?:so|too)\s+(?:many|much|high|low|few|slow)\b"
-    r"|\b(?:spikes?|surges?|bursts?|failed\s+log-?ins?|log-?in\s+(?:failures|attempts?))\b",
+    r"|\b(?:spikes?|surges?|bursts?|failed\s+log-?ins?|log-?in\s+(?:failures|attempts?))\b"
+    # "Explain" about listed records, never a term: "… and explain each", "explain why
+    # each one is critical", "explain them", "explain the top 3", "explain each
+    # escalated case". "Explain what each severity level means" names no record.
+    r"|\bexplain\w*(?:\s+(?:why|how|what))?(?:\s+[a-z']+){0,3}?\s+(?:(?:each|every)(?=\s*(?:[,.?!;:]|$)"
+    r"|\s+(?:one|ones|of|is|was|has|had|were)\b)|them\b|they\b|(?:the\s+)?(?:top|first)\s+\d{1,3}\b)"
+    r"|\bexplain\w*(?:\s+(?:why|how|what))?\s+(?:each|every)\s+(?:[\w-]+\s+){0,2}?(?:case|incident|alert"
+    r"|ticket|detection)s?\b",
     re.IGNORECASE,
 )
 # Soft data signals: a filtered set of cases or a metric of "our"/"my" estate. A strong
@@ -144,7 +151,12 @@ _SOFT_DATA_RE = re.compile(
     r"|detections|tickets|findings)\b"
     r"|\b(?:our|my)\s+(?:[\w-]+\s+){0,2}?(?:rates?|scores?|mttd|mtta|mttr|dwell|spend(?:ing)?|costs?"
     r"|posture|coverage|backlog|queue|volume|numbers|trends?|exposure|alerts|cases|incidents"
-    r"|detections|tickets|tasks|workload|sla|performance|stats|statistics|metrics)\b",
+    r"|detections|tickets|tasks|workload|sla|performance|stats|statistics|metrics)\b"
+    # "Explain" with records as its object: "explain the highest risk cases". A console
+    # noun after them ("explain the cases view") keeps the product cue.
+    r"|\bexplain\w*\s+(?:the|our|my|all)\s+(?:[\w-]+\s+){0,3}?(?:cases|incidents|alerts|tickets|detections"
+    r"|escalations)\b(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?"
+    r"|settings?|widgets?|panels?|rates?|counts?|queues?|polic(?:y|ies))\b)",
     re.IGNORECASE,
 )
 

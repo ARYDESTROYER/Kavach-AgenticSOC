@@ -778,8 +778,59 @@ REGRESSIONS_R2 = [
                    zero="were false positives: 0 of"),)),
 ]
 
+# Final review round 3 (L3, held): a data request that also says "explain" (or "what
+# are") is a data request. The bare word never routes it to the Help Center ("Product
+# help" with a KPI glossary entry and no case list was the operator's glitch); only a
+# definitional ask does ("Explain the false positive rate", "what each level means").
+_NO_HELP = (P("app_help"),)
+EXPLAIN_RECORDS = [
+    G("Show the top 10 open cases by risk with a table and explain each", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", sort_field="risk_score", limit=10),),
+      forbid=_NO_HELP, contains=("Highest risk first.", "Case by case:"), absent=("From the Help Center",),
+      figures=(Fig("**{n} open case", None, _ACTIVE),)),
+    G("List the open critical cases and explain why each one is critical", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", severity="critical"),), forbid=_NO_HELP,
+      absent=("From the Help Center",),
+      figures=(Fig("**{n} open critical case", None, {**_ACTIVE, "severity": "critical"},
+                   zero="No open critical case"),)),
+    G("Which cases had the highest risk this week? Explain the top 3", tools=("search_cases",),
+      params=(P("search_cases", window="this_week", sort_field="risk_score", limit=3, severity=None),),
+      forbid=_NO_HELP, absent=("From the Help Center",),
+      figures=(Fig("**{n} case", "this_week", zero="No case matched"),)),
+    G("List false positives this week and explain each", tools=("search_cases",),
+      params=(P("search_cases", verdict="FALSE_POSITIVE", window="this_week"),),
+      forbid=(*_NO_HELP, P("soc_metrics")), absent=("From the Help Center",),
+      figures=(Fig("**{n} false positive case", "this_week", {"verdict": "FALSE_POSITIVE"},
+                   zero="No false positive case matched"),)),
+    # Near variants: the same request in other words.
+    G("Top 5 critical cases, explain each", tools=("search_cases",),
+      params=(P("search_cases", severity="critical", limit=5),), forbid=_NO_HELP,
+      figures=(Fig("**{n} critical case", None, {"severity": "critical"}, zero="No critical case"),)),
+    G("What are the open critical cases?", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", severity="critical"),), forbid=_NO_HELP),
+    G("What are the highest risk cases this week?", tools=("search_cases",),
+      params=(P("search_cases", window="this_week", sort_field="risk_score", severity=None),), forbid=_NO_HELP),
+    G("Explain each of the escalated cases", tools=("search_cases",),
+      params=(P("search_cases", status="escalated"),), forbid=_NO_HELP),
+    G("Which incidents are open? Explain them", tools=("search_cases",),
+      params=(P("search_cases", status_group="active"),), forbid=_NO_HELP),
+    G("Show false positives this week", tools=("search_cases",),
+      params=(P("search_cases", verdict="FALSE_POSITIVE", window="this_week"),), forbid=_NO_HELP),
+    G("List true positives this month and explain each", tools=("search_cases",),
+      params=(P("search_cases", verdict="TRUE_POSITIVE", window="this_month"),), forbid=_NO_HELP),
+    G("Can you show me the open cases and explain them?", tools=("search_cases",),
+      params=(P("search_cases", status_group="active"),), forbid=_NO_HELP),
+    G("Explain the highest risk open cases", tools=("search_cases",),
+      params=(P("search_cases", status_group="active", sort_field="risk_score"),), forbid=_NO_HELP),
+    # Definitional asks keep their Help Center answer (with our own figure for a KPI).
+    G("Explain the false positive rate", kind=("mixed", "product_help"), tools=("app_help", "soc_metrics"),
+      params=(P("soc_metrics", kind="posture"),), forbid=(P("search_cases"),)),
+    G("Explain what each severity level means", kind="product_help", tools=("app_help",), max_lookups=1),
+]
+
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,
-                   *CASES, *DEEP, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2]
+                   *CASES, *DEEP, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2,
+                   *EXPLAIN_RECORDS]
 
 
 def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> None:

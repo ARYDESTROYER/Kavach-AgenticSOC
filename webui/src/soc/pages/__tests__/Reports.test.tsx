@@ -103,6 +103,24 @@ describe('Reports library', () => {
     expect(navigate).toHaveBeenLastCalledWith('chat', { conversationId: 'conv-1' });
   });
 
+  it('links a report saved from an answer or a conversation to its source conversation', async () => {
+    api.listReports.mockResolvedValue([
+      // Saved from chat: not that conversation's draft, but it came from it.
+      { ...ROWS[1], id: 'rep-4', title: 'Lifetime performance', conversation_id: null, source_conversation_id: 'conv-1' },
+      // Items from several conversations (or none): no single source.
+      { ...ROWS[1], id: 'rep-5', title: 'Mixed', conversation_id: null, source_conversation_id: null },
+    ]);
+    const user = userEvent.setup();
+    show();
+    const table = await screen.findByRole('table', { name: 'Reports' });
+    const link = await within(table).findByRole('button', { name: 'Open the source conversation of Lifetime performance: VPN brute force' });
+    expect(link).toHaveTextContent('VPN brute force');
+    const mixed = within(table).getByRole('button', { name: 'Mixed' }).closest('tr')!;
+    expect(within(mixed).getByText('—')).toBeInTheDocument();
+    await user.click(link);
+    expect(navigate).toHaveBeenLastCalledWith('chat', { conversationId: 'conv-1' });
+  });
+
   it('exports a list row with the same source facts as the document view', async () => {
     const user = userEvent.setup();
     show();
@@ -168,6 +186,25 @@ describe('Reports library', () => {
     show();
     expect(await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
     expect(api.getReport).toHaveBeenCalledWith('rep-1', expect.anything());
+  });
+
+  it('follows browser Back and Forward between a report and the list', async () => {
+    window.location.hash = '#/reports?reportId=rep-1';
+    show();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
+    const go = (hash: string) =>
+      act(() => {
+        window.location.hash = hash;
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+    // Back: the URL is the list, so the page is the list (never the stale document).
+    go('#/reports');
+    expect(await screen.findByRole('table', { name: 'Reports' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Reports' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download PDF' })).toBeNull();
+    // Forward: the document again.
+    go('#/reports?reportId=rep-1');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
   });
 
   it('says so when the report no longer exists', async () => {

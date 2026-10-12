@@ -381,6 +381,17 @@ describe('CloseAttributionChart — stacked columns', () => {
     expect(box(only[0]).y + box(only[0]).h).toBe(baseline);
   });
 
+  it('carries a viewBox of its drawn size, so print can scale it instead of clipping it', () => {
+    renderRich();
+    const svg = figure().querySelector('svg')!;
+    const width = svg.getAttribute('width');
+    const height = svg.getAttribute('height');
+    expect(Number(width)).toBeGreaterThan(0);
+    expect(Number(height)).toBeGreaterThan(0);
+    // 1:1 on screen: the viewBox is exactly the width and height attributes.
+    expect(svg.getAttribute('viewBox')).toBe(`0 0 ${width} ${height}`);
+  });
+
   it('keeps a single close visible beside a tall bar (2px floor)', () => {
     render(
       <CloseAttributionChart

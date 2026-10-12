@@ -442,13 +442,6 @@ const SNAPSHOT_RING_WIDE_PX = 192;
  */
 const VERDICT_RING_PX = 160;
 
-/**
- * Lets a Deeper-analytics strip tile's one-line context/state (`[data-kpi-line]`, which
- * KpiTile truncates) wrap instead. Applied from the page so the shared tile keeps its
- * one-line contract on the main strip, where six numerals share a baseline.
- */
-const DEEPER_LINE_WRAP = '[&_[data-kpi-line]]:whitespace-normal';
-
 /** Round a resolved range down to whole hours (min 1) for the window-scoped fetches. */
 function rangeHours(range: TimeRange): number {
   const { fromMs, toMs } = resolveRange(range);
@@ -762,76 +755,92 @@ function SnapshotCard({
   const wideRing = ringPx >= SNAPSHOT_RING_WIDE_PX;
   const segments = sevSegments(counts);
   const legend = SEV_ORDER.map((s) => ({ key: s, value: counts[s] })).filter((r) => r.value > 0);
+  const legendId = React.useId();
   const centerClass = cn(
     'font-semibold tabular-nums text-foreground',
     total >= 1000 ? 'text-2xl' : 'text-3xl',
     'leading-none',
   );
+  /*
+   * The ring and its legend WRAP (Round 12 final review). Side by side the legend had
+   * whatever width the ring left: in a 228px card (768px with the navigation pinned) that
+   * was 44px, every severity name collapsed to 0px and the counts ran into the chevron,
+   * so severity was told by colour alone. Now the legend asks for its own max-content
+   * width (`w-max`, never more than 15rem) and, when that does not fit beside the ring,
+   * drops under it at full width; a name is cut only in a card narrower than the legend
+   * itself. The chevron has its own column outside this row, so no count can reach it.
+   */
   const content = (
     <>
-      {segments.length ? (
-        <DonutChart
-          segments={segments}
-          height={ringPx}
-          thickness={0.26}
-          showTooltip={false}
-          className={cn('shrink-0', wideRing ? 'w-48' : 'w-32')}
-          ariaLabel={ariaLabel}
-          center={
-            roll ? (
-              <CountUp value={total} format={fmtSnapshotCenter} className={centerClass} />
-            ) : (
-              <span className={centerClass} data-testid="snapshot-center">
-                {fmtSnapshotCenter(total)}
-              </span>
-            )
-          }
-        />
-      ) : (
-        <div
-          role="img"
-          aria-label={`${ariaLabel} (none)`}
-          className={cn(
-            'flex shrink-0 items-center justify-center',
-            wideRing ? 'h-48 w-48' : 'h-32 w-32',
-          )}
-        >
-          <span className="text-3xl font-semibold tabular-nums text-muted-foreground">0</span>
-        </div>
-      )}
-      {/*
-       * The legend is CAPPED at 15rem with each count and share immediately after its
-       * label (Round 12). Uncapped and `flex-1`, a 2560px viewport put "Critical" ~470px
-       * from its own count, which read as two unrelated columns.
-       */}
-      <ul className={cn('min-w-0 max-w-[15rem] flex-1', wideRing ? 'space-y-3' : 'space-y-1.5')}>
-        {legend.length ? (
-          legend.map((r) => {
-            const pct = total > 0 ? Math.round((r.value / total) * 100) : 0;
-            return (
-              <li key={r.key} className="flex items-center gap-2 text-sm">
-                <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: token(r.key) }}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                  {SEV_LABEL[r.key]}
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-3" data-testid="snapshot-body">
+        {segments.length ? (
+          <DonutChart
+            segments={segments}
+            height={ringPx}
+            thickness={0.26}
+            showTooltip={false}
+            className={cn('shrink-0', wideRing ? 'w-48' : 'w-32')}
+            ariaLabel={ariaLabel}
+            center={
+              roll ? (
+                <CountUp value={total} format={fmtSnapshotCenter} className={centerClass} />
+              ) : (
+                <span className={centerClass} data-testid="snapshot-center">
+                  {fmtSnapshotCenter(total)}
                 </span>
-                <span className="font-semibold tabular-nums text-foreground">
-                  {fmtNumber(r.value)}
-                </span>
-                <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
-                  {pct}%
-                </span>
-              </li>
-            );
-          })
+              )
+            }
+          />
         ) : (
-          <li className="text-sm text-muted-foreground">No cases in this window.</li>
+          <div
+            role="img"
+            aria-label={`${ariaLabel} (none)`}
+            className={cn(
+              'flex shrink-0 items-center justify-center',
+              wideRing ? 'h-48 w-48' : 'h-32 w-32',
+            )}
+          >
+            <span className="text-3xl font-semibold tabular-nums text-muted-foreground">0</span>
+          </div>
         )}
-      </ul>
-      {onClick ? <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
+        {/*
+         * The legend is CAPPED at 15rem with each count and share immediately after its
+         * label (Round 12). Uncapped and `flex-1`, a 2560px viewport put "Critical" ~470px
+         * from its own count, which read as two unrelated columns.
+         */}
+        <ul
+          id={legendId}
+          className={cn('w-max min-w-0 max-w-[15rem] grow', wideRing ? 'space-y-3' : 'space-y-1.5')}
+          data-testid="snapshot-legend"
+        >
+          {legend.length ? (
+            legend.map((r) => {
+              const pct = total > 0 ? Math.round((r.value / total) * 100) : 0;
+              return (
+                <li key={r.key} className="flex items-center gap-2 text-sm">
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: token(r.key) }}
+                    aria-hidden
+                  />
+                  <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                    {SEV_LABEL[r.key]}
+                  </span>
+                  <span className="font-semibold tabular-nums text-foreground">
+                    {fmtNumber(r.value)}
+                  </span>
+                  <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
+                    {pct}%
+                  </span>
+                </li>
+              );
+            })
+          ) : (
+            <li className="text-sm text-muted-foreground">No cases in this window.</li>
+          )}
+        </ul>
+      </div>
+      {onClick ? <ChevronRight className="ml-auto h-4 w-4 shrink-0 text-muted-foreground" aria-hidden /> : null}
     </>
   );
 
@@ -840,12 +849,15 @@ function SnapshotCard({
       type="button"
       onClick={onClick}
       aria-label={ctaLabel}
+      // The button's name replaces its contents for assistive tech, so the legend is
+      // attached as its description: a screen reader hears the severity split too.
+      aria-describedby={legendId}
       className="-mx-1 mt-3 flex w-full min-w-0 items-center gap-4 self-start rounded-md px-1 py-1 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       {content}
     </button>
   ) : (
-    <div className="mt-3 flex items-center gap-4 self-start py-1">{content}</div>
+    <div className="mt-3 flex w-full min-w-0 items-center gap-4 self-start py-1">{content}</div>
   );
 
   /*
@@ -2884,7 +2896,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // bound is derived here rather than from `boundSub`.
         bound:
           postureSub == null && !openNowComplete
-            ? 'Open now · not window-filtered · lower bound'
+            ? // The qualifier FIRST, in the context's own words (Round 12 final review):
+              // the longer "Open now · not window-filtered · lower bound" ran to three
+              // lines on a 140px tile at 1280, and "any arrival date" already says
+              // "not window-filtered".
+              'Lower bound · any arrival date'
             : undefined,
         help:
           'Open now, and not window-filtered. A STOCK, not a flow: the cases open right now, ' +
@@ -3874,175 +3890,188 @@ export default function Overview({ onNavigate }: OverviewProps) {
               caption={`Cases that arrived in the ${windowPhrase} · response timing is p50, computed on the server`}
               aside={<Freshness at={posture?.generated_at ?? null} />}
             >
-              <div
-                // From 1920px the band is TWO rows (Round 12 review): the snapshots over the
-                // response-time pair on the left, the queue spanning both on the right (the
-                // 460px rail at 4xl). Row 2 is `1fr`, so the queue's eight rows set the
-                // band's height and any slack lands under the timing pair, not as a void
-                // beside a short snapshot row. DOM order — and so heading order — is
-                // unchanged: case state, response time, latest cases.
-                className={cn(
-                  'grid min-w-0 items-stretch gap-x-6 gap-y-8 md:grid-cols-2 xl:grid-cols-12 3xl:gap-x-8',
-                  '3xl:grid-rows-[auto_1fr] 4xl:grid-cols-[minmax(0,1fr)_460px]',
-                )}
-                data-testid="cases-band-grid"
-              >
-                {/* Case state: ONE labelled region holding both snapshots. They sit side by
-                    side whenever the cell is at least 35rem (560px) wide and stack below
-                    that — a container query, so it follows the cell, not the viewport. */}
-                <section
-                  aria-label="Resolved and open cases"
-                  className="@container min-w-0 xl:col-span-5 3xl:col-span-8 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1"
+              {/* Below xl the band splits into two columns by ITS OWN width, not the
+                  viewport's (Round 12 final review): `md:grid-cols-2` split it at 768px even
+                  with the navigation pinned, where each half was 228px and the snapshot
+                  legends lost every severity name. `@[48rem]` keeps each half at least
+                  ~372px, whatever the navigation takes; narrower, the cells stack full
+                  width as they did before Round 12. `max-xl:` scopes the container rule
+                  below the 12-column grid, so the two never compete. */}
+              <div className="@container min-w-0" data-testid="cases-band-container">
+                <div
+                  // From 1920px the band is TWO rows (Round 12 review): the snapshots over the
+                  // response-time pair on the left, the queue spanning both on the right (the
+                  // 460px rail at 4xl). Row 2 is `1fr`, so the queue's eight rows set the
+                  // band's height and any slack lands under the timing pair, not as a void
+                  // beside a short snapshot row. DOM order — and so heading order — is
+                  // unchanged: case state, response time, latest cases.
+                  className={cn(
+                    'grid min-w-0 items-stretch gap-x-6 gap-y-8 max-xl:@[48rem]:grid-cols-2 xl:grid-cols-12 3xl:gap-x-8',
+                    '3xl:grid-rows-[auto_1fr] 4xl:grid-cols-[minmax(0,1fr)_460px]',
+                  )}
+                  data-testid="cases-band-grid"
                 >
-                  {/* `content-start`: the band stretches this cell, and a grid's auto rows
-                      would otherwise share that stretch and push each snapshot's footnote
-                      away from its own donut. */}
-                  <div className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0">
-                    <SnapshotCard
-                      title="Open cases"
-                      caption={`Arrived in the ${windowPhrase}, still open`}
-                      total={derived.open}
-                      delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
-                      bound={snapshotBound}
-                      roll={rollKpis}
-                      ringPx={wideScreen ? SNAPSHOT_RING_WIDE_PX : SNAPSHOT_RING_PX}
-                      goodDirection="down"
-                      counts={derived.openSev}
-                      ariaLabel="Open cases by severity"
-                      ctaLabel="View open cases"
-                      trend={{
-                        metric: 'New cases opened',
-                        points: bucketTrends?.newCases,
-                        windowLabel: bucketTrends?.label ?? trendFallbackLabel,
-                        caption: 'case arrivals per bucket',
-                        format: fmtInt,
-                        colorToken: 'primary',
-                      }}
-                      onClick={navigate
-                        ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
-                        : undefined}
-                      // The visual link between the three "open" figures (Round 12): this
-                      // cohort is part of the strip's window-exempt Open Cases stock, and
-                      // the flow's "open cases from this window" action is this same cohort.
-                      footnote={
-                        openNowCount != null
-                          ? `Part of the ${fmtNumber(openNowCount)} open now, any arrival date (Open Cases above).`
-                          : undefined
-                      }
-                    />
-                    <SnapshotCard
-                      title="Cases resolved"
-                      caption={`Arrived in the ${windowPhrase}, now resolved or closed`}
-                      total={derived.resolved}
-                      delta={
-                        snapshotDeltaHonest ? countDelta(derived.resolved, prev?.resolved ?? null) : null
-                      }
-                      bound={snapshotBound}
-                      roll={rollKpis}
-                      ringPx={wideScreen ? SNAPSHOT_RING_WIDE_PX : SNAPSHOT_RING_PX}
-                      goodDirection="up"
-                      counts={derived.resolvedSev}
-                      ariaLabel="Resolved cases by severity"
-                      ctaLabel="View resolved cases"
-                      trend={{
-                        metric: 'Cases now closed',
-                        points: bucketTrends?.closed,
-                        windowLabel: bucketTrends?.label ?? trendFallbackLabel,
-                        caption: 'by case-arrival bucket',
-                        format: fmtInt,
-                        colorToken: 'success',
-                      }}
-                      // `derived.resolved` counts BOTH terminal statuses, so the deep link
-                      // uses the `__terminal__` facet (a `status: 'closed'` link silently
-                      // dropped every RESOLVED case).
-                      footnote={
-                        crossRefs.resolved
-                          ? 'The same cases as Resolved / Closed above, by severity.'
-                          : undefined
-                      }
-                      onClick={
-                        navigate
-                          ? () =>
-                              navigate('cases', { status: TERMINAL_CASES_FILTER, window: navWindow })
-                          : undefined
-                      }
-                    />
-                  </div>
-                </section>
-
-                {/* Response time: the detect / first-response pair, TOP-aligned with 24px
-                    between them (the old `justify-center` halves left a ~110px void). */}
-                <section
-                  aria-label="Mean time to detect / respond"
-                  className="flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <h2 className="text-base font-semibold text-foreground">Response time</h2>
-                      <p className="text-sm text-muted-foreground">p50 · server-computed</p>
+                  {/* Case state: ONE labelled region holding both snapshots. They sit side by
+                      side whenever the cell is at least 35rem (560px) wide and stack below
+                      that — a container query, so it follows the cell, not the viewport. */}
+                  <section
+                    aria-label="Resolved and open cases"
+                    className="@container min-w-0 xl:col-span-5 3xl:col-span-8 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1"
+                  >
+                    {/* `content-start`: the band stretches this cell, and a grid's auto rows
+                        would otherwise share that stretch and push each snapshot's footnote
+                        away from its own donut. */}
+                    <div className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0">
+                      <SnapshotCard
+                        title="Open cases"
+                        caption={`Arrived in the ${windowPhrase}, still open`}
+                        total={derived.open}
+                        delta={snapshotDeltaHonest ? countDelta(derived.open, prev?.open ?? null) : null}
+                        bound={snapshotBound}
+                        roll={rollKpis}
+                        ringPx={wideScreen ? SNAPSHOT_RING_WIDE_PX : SNAPSHOT_RING_PX}
+                        goodDirection="down"
+                        counts={derived.openSev}
+                        ariaLabel="Open cases by severity"
+                        ctaLabel="View open cases"
+                        trend={{
+                          metric: 'New cases opened',
+                          points: bucketTrends?.newCases,
+                          windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                          caption: 'case arrivals per bucket',
+                          format: fmtInt,
+                          colorToken: 'primary',
+                        }}
+                        onClick={navigate
+                          ? () => navigate('cases', { status: ACTIVE_CASES_FILTER, window: navWindow })
+                          : undefined}
+                        // The visual link between the three "open" figures (Round 12): this
+                        // cohort is part of the strip's window-exempt Open Cases stock, and
+                        // the flow's "open cases from this window" action is this same cohort.
+                        footnote={
+                          openNowCount != null
+                            ? `Part of the ${fmtNumber(openNowCount)} open now, any arrival date (Open Cases above).`
+                            : undefined
+                        }
+                      />
+                      <SnapshotCard
+                        title="Cases resolved"
+                        caption={`Arrived in the ${windowPhrase}, now resolved or closed`}
+                        total={derived.resolved}
+                        delta={
+                          snapshotDeltaHonest ? countDelta(derived.resolved, prev?.resolved ?? null) : null
+                        }
+                        bound={snapshotBound}
+                        roll={rollKpis}
+                        ringPx={wideScreen ? SNAPSHOT_RING_WIDE_PX : SNAPSHOT_RING_PX}
+                        goodDirection="up"
+                        counts={derived.resolvedSev}
+                        ariaLabel="Resolved cases by severity"
+                        ctaLabel="View resolved cases"
+                        trend={{
+                          metric: 'Cases now closed',
+                          points: bucketTrends?.closed,
+                          windowLabel: bucketTrends?.label ?? trendFallbackLabel,
+                          caption: 'by case-arrival bucket',
+                          format: fmtInt,
+                          colorToken: 'success',
+                        }}
+                        // `derived.resolved` counts BOTH terminal statuses, so the deep link
+                        // uses the `__terminal__` facet (a `status: 'closed'` link silently
+                        // dropped every RESOLVED case).
+                        footnote={
+                          crossRefs.resolved
+                            ? 'The same cases as Resolved / Closed above, by severity.'
+                            : undefined
+                        }
+                        onClick={
+                          navigate
+                            ? () =>
+                                navigate('cases', { status: TERMINAL_CASES_FILTER, window: navWindow })
+                            : undefined
+                        }
+                      />
                     </div>
-                    {navigate ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="-mr-2 h-7 shrink-0 px-2 text-sm font-medium text-primary hover:text-primary/80"
-                        onClick={() => navigate('metrics', { tab: 'posture' })}
-                      >
-                        Detail →
-                      </Button>
-                    ) : null}
-                  </div>
-                  <div className="mt-4 grid gap-6 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-1 3xl:grid-cols-2 3xl:gap-x-8">
-                    <MetricHoverTrend
-                      metric="MTTD · daily mean"
-                      points={timingTrends?.mttd}
-                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                      format={humanizeMins}
-                      colorToken="info"
-                      side="top"
-                      className="h-auto"
-                    >
-                      <TimingStat
-                        label="MTTD"
-                        sub="Detect · log arrival → case"
-                        block={mttdBlock}
-                        dotClass="bg-info"
-                        help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
-                      />
-                    </MetricHoverTrend>
-                    <MetricHoverTrend
-                      metric="Respond · daily mean"
-                      points={timingTrends?.respond}
-                      windowLabel={timingTrends?.label ?? trendFallbackLabel}
-                      format={humanizeMins}
-                      colorToken="success"
-                      side="top"
-                      className="h-auto"
-                    >
-                      {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes`:
-                          calling it MTTR would present time-to-first-human-action as
-                          time-to-resolve. True MTTR is in Deeper analytics, and the MTTA
-                          there reads this same clock — said so here, so the two equal
-                          figures read as one measurement shown twice, not a coincidence. */}
-                      <TimingStat
-                        label="Respond"
-                        sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
-                        block={respondBlock}
-                        dotClass="bg-success"
-                        help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
-                      />
-                    </MetricHoverTrend>
-                  </div>
-                </section>
+                  </section>
 
-                <div className="min-w-0 md:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2">
-                  <TopCasesPanel
-                    cases={latestCases}
-                    navigate={navigate}
-                    navWindow={navWindow}
-                    onOpenCase={setOpenCaseId}
-                    caseOpen={openCaseId !== null}
-                  />
+                  {/* Response time: the detect / first-response pair, TOP-aligned with 24px
+                      between them (the old `justify-center` halves left a ~110px void). */}
+                  <section
+                    aria-label="Mean time to detect / respond"
+                    className="@container flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h2 className="text-base font-semibold text-foreground">Response time</h2>
+                        <p className="text-sm text-muted-foreground">p50 · server-computed</p>
+                      </div>
+                      {navigate ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="-mr-2 h-7 shrink-0 px-2 text-sm font-medium text-primary hover:text-primary/80"
+                          onClick={() => navigate('metrics', { tab: 'posture' })}
+                        >
+                          Detail →
+                        </Button>
+                      ) : null}
+                    </div>
+                    {/* The detect / respond pair sits side by side whenever THIS cell is at
+                        least 30rem wide (a container query, like the band above), so it
+                        follows the cell through every band layout instead of a ladder of
+                        viewport breakpoints that guessed the cell's width. */}
+                    <div className="mt-4 grid gap-6 @[30rem]:grid-cols-2 3xl:gap-x-8">
+                      <MetricHoverTrend
+                        metric="MTTD · daily mean"
+                        points={timingTrends?.mttd}
+                        windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                        format={humanizeMins}
+                        colorToken="info"
+                        side="top"
+                        className="h-auto"
+                      >
+                        <TimingStat
+                          label="MTTD"
+                          sub="Detect · log arrival → case"
+                          block={mttdBlock}
+                          dotClass="bg-info"
+                          help="Mean time to detect: the cluster's first event → case-open. Shown as an honest n/a when no case carries a first-event instant."
+                        />
+                      </MetricHoverTrend>
+                      <MetricHoverTrend
+                        metric="Respond · daily mean"
+                        points={timingTrends?.respond}
+                        windowLabel={timingTrends?.label ?? trendFallbackLabel}
+                        format={humanizeMins}
+                        colorToken="success"
+                        side="top"
+                        className="h-auto"
+                      >
+                        {/* "Respond" is the ACK clock (`mtta_minutes`), NOT `mttr_minutes`:
+                            calling it MTTR would present time-to-first-human-action as
+                            time-to-resolve. True MTTR is in Deeper analytics, and the MTTA
+                            there reads this same clock — said so here, so the two equal
+                            figures read as one measurement shown twice, not a coincidence. */}
+                        <TimingStat
+                          label="Respond"
+                          sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
+                          block={respondBlock}
+                          dotClass="bg-success"
+                          help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
+                        />
+                      </MetricHoverTrend>
+                    </div>
+                  </section>
+
+                  <div className="min-w-0 max-xl:@[48rem]:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2">
+                    <TopCasesPanel
+                      cases={latestCases}
+                      navigate={navigate}
+                      navWindow={navWindow}
+                      onOpenCase={setOpenCaseId}
+                      caseOpen={openCaseId !== null}
+                    />
+                  </div>
                 </div>
               </div>
             </Band>
@@ -4151,12 +4180,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 : s.help
                             }
                             askTopic={kpiTopic(s.key)}
-                            // The context/state line WRAPS here (Round 12 review): at 1280
-                            // with the navigation pinned these tiles are ~215px, and a server
-                            // reason such as "no case has been acknowledged yet" lost its last
-                            // word to an ellipsis. Two lines at most in practice; the strip's
-                            // rows stretch, so the four tiles keep one height.
-                            className={DEEPER_LINE_WRAP}
+                            // The context/state line wraps in its two-line slot (KpiTile,
+                            // every hero strip since the final review): at 1280 with the
+                            // navigation pinned these tiles are ~215px, and a server reason
+                            // such as "no case has been acknowledged yet" takes two lines.
                           />
                         );
                         if (s.key === 'dwell') {
@@ -4198,7 +4225,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
                           numeral="hero"
                           size="fluid"
                           testId="llm-spend-detail"
-                          className={DEEPER_LINE_WRAP}
                           label="LLM spend"
                           value={
                             usageUnavailable ? 'Unavailable' : fmtMoney(usage?.total_cost, usage?.currency)

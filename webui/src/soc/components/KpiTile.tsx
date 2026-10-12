@@ -846,10 +846,11 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       ) : null;
 
     /*
-     * HERO context line: one line under the numeral, with a fixed precedence so exactly one
-     * thing ever occupies it — a STATE disclosure (`sub`: loading, unavailable, not
-     * measured) beats a conditional BOUND, which beats the plain scale CONTEXT. A bound
-     * shown here is visible text, so it no longer needs its `sr-only` twin below.
+     * HERO context line: under the numeral (it wraps, in a two-line slot), with a fixed
+     * precedence so exactly one thing ever occupies it — a STATE disclosure (`sub`:
+     * loading, unavailable, not measured) beats a conditional BOUND, which beats the
+     * plain scale CONTEXT. A bound shown here is visible text, so it no longer needs its
+     * `sr-only` twin below.
      */
     const heroLine = hero ? (sub ?? bound ?? context ?? null) : null;
     const boundShownInLine = hero && !sub && Boolean(bound);
@@ -1034,14 +1035,17 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         {hero ? (
           heroLine ? (
             <span
-              // One line, ellipsized, with the full text reachable: as the trigger's text
-              // content it is part of the button's accessible name, and `title` serves the
-              // mouse. `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
+              // The line WRAPS, never ellipsized (Round 12 final review): one line cut a
+              // bound's "lower bound" qualifier and 4-digit captions ("1,234 of 1,876
+              // verdicted") at ordinary widths, and a `title` is out of a touch user's
+              // reach. Every hero line reserves TWO lines (`min-h-[2lh]`), so a caption
+              // that wraps never lifts its numeral above its neighbours' (the numeral row
+              // is `mt-auto`). The text is also the trigger's accessible name.
+              // `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
               className={cn(
-                'mt-1.5 block min-w-0 truncate tabular-nums text-muted-foreground',
+                'mt-1.5 block min-h-[2lh] min-w-0 whitespace-normal break-words tabular-nums text-muted-foreground',
                 comfortable ? 'text-sm' : 'text-xs',
               )}
-              title={heroLine}
               // A data attribute, not a `kpi-*` test id: the strip's specs count every
               // `kpi-*` id inside it to pin the cell count at exactly six.
               data-kpi-line={sub ? 'state' : boundShownInLine ? 'bound' : 'context'}

@@ -1325,6 +1325,7 @@ function Header({
   hidden,
   onToggleHidden,
   onExpand,
+  expandRef,
   flat,
   view,
   onViewChange,
@@ -1332,6 +1333,8 @@ function Header({
   hidden?: boolean;
   onToggleHidden?: () => void;
   onExpand?: () => void;
+  /** The Full screen button, so closing the inspection returns focus to it. */
+  expandRef?: React.Ref<HTMLButtonElement>;
   flat?: boolean;
   view: NoiseFunnelView;
   onViewChange: (view: NoiseFunnelView) => void;
@@ -1376,6 +1379,7 @@ function Header({
           // inspection whichever presentation is selected, and the selected mode carries
           // into it, so "Expand" in Detailed named a different-sounding action for it.
           <button
+            ref={expandRef}
             type="button"
             onClick={onExpand}
             aria-label="Open full-screen noise reduction flow"
@@ -1437,6 +1441,19 @@ export function NoiseFunnel({
     [controlledView, onViewChange],
   );
   const [expanded, setExpanded] = React.useState(false);
+  // The inspection opens from STATE (its trigger lives in Header, outside the Dialog
+  // root), so Radix has no trigger to refocus on close and focus fell to <body> on
+  // Escape or the X (Round 12 final review). Closing returns focus to the Full screen
+  // button, the same fix as KpiDrilldownPanel's `restoreFocusTo`.
+  const expandTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const restoreExpandFocus = React.useCallback((event: Event) => {
+    const trigger = expandTriggerRef.current;
+    // Only claim the default when there is somewhere real to send focus.
+    if (trigger && trigger.isConnected) {
+      event.preventDefault();
+      trigger.focus();
+    }
+  }, []);
   const [hoveredStage, setHoveredStage] = React.useState<string | null>(null);
   const [focusedStage, setFocusedStage] = React.useState<string | null>(null);
   const activeStage = focusedStage ?? hoveredStage;
@@ -2642,6 +2659,7 @@ export function NoiseFunnel({
           hidden={hidden}
           onToggleHidden={onToggleHidden}
           onExpand={expandable ? () => setExpanded(true) : undefined}
+          expandRef={expandTriggerRef}
           flat={flat}
           view={view}
           onViewChange={setView}
@@ -2655,6 +2673,7 @@ export function NoiseFunnel({
           <DialogContent
             className="h-[min(92dvh,960px)] w-[min(96dvw,1800px)] max-w-none gap-0 overflow-hidden rounded-[6px] p-0"
             data-testid="noise-funnel-expanded"
+            onCloseAutoFocus={restoreExpandFocus}
           >
             <DialogHeader className="border-b border-border px-6 py-5">
               <DialogTitle>Noise reduction flow · Last {data.window_hours} hours</DialogTitle>

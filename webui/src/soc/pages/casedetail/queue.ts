@@ -197,8 +197,9 @@ export function windowPlacement(
 }
 
 /**
- * The read-time advisory fields `GET /api/cases` adds. A lifecycle-action response is
- * the stored case without them, so a row keeps the ones it was listed with.
+ * The read-time advisory fields `GET /api/cases` adds. Every single-case mutation now
+ * returns them too (Round 12 final review); an older backend's lifecycle-action response
+ * is the stored case without them, so a row keeps the ones it was listed with.
  */
 const ADVISORY_FIELDS = ['severity_band', 'severity_source', 'impact_band', 'urgency_band', 'priority_level'] as const;
 
@@ -210,6 +211,21 @@ export function mergeQueueRow(previous: Case, next: Case): Case {
     }
   }
   return merged;
+}
+
+/**
+ * The case detail's guard for the same gap (Round 12 final review). A response for the
+ * case on screen that carries NO read-time bands (the backend always resolves a severity
+ * band when it adds them, so both severity fields missing means they were never added)
+ * keeps the bands already shown, so the header never falls back to the risk-score ladder
+ * and relabels a Critical case as Info. A response that carries them is taken as it is:
+ * a reinvestigation can legitimately change a band, and a priority the operator turned
+ * off is `null` on purpose.
+ */
+export function keepAdvisoryBands(previous: Case | null, next: Case): Case {
+  if (!previous || previous.case_id !== next.case_id) return next;
+  if (next.severity_band != null || next.severity_source != null) return next;
+  return mergeQueueRow(previous, next);
 }
 
 /** The queue heading for a scope. */

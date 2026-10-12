@@ -319,6 +319,18 @@ def decode_report(doc: dict[str, Any] | None) -> ReportRecord | None:
     return ReportRecord(report=report, summary_key=key if isinstance(key, str) and key else None)
 
 
+def source_conversation_of(report: Report) -> str | None:
+    """The conversation ``report`` came from, for the library's "Source conversation":
+    the one conversation every item names, else the draft's own conversation, else
+    ``None`` (items from several conversations, or no items). Derived, never stored on
+    the report: ``conversation_id`` keeps meaning "this conversation's draft" (a report
+    saved from an answer or a whole conversation is not that conversation's draft)."""
+    ids = {item.source.conversation_id for item in report.items if item.source.conversation_id}
+    if len(ids) == 1:
+        return next(iter(ids))
+    return report.conversation_id
+
+
 def index_entry(report: Report) -> dict[str, Any]:
     """The index row of ``report`` (fixed keys only; the title is plain text)."""
     return {
@@ -326,6 +338,7 @@ def index_entry(report: Report) -> dict[str, Any]:
         "title": report.title,
         "template": report.template,
         "conversation_id": report.conversation_id,
+        "source_conversation_id": source_conversation_of(report),
         "item_count": len(report.items),
         "created_at": report.created_at,
         "updated_at": report.updated_at,
@@ -964,4 +977,5 @@ __all__ = [
     "new_item_id",
     "new_report_id",
     "report_key",
+    "source_conversation_of",
 ]

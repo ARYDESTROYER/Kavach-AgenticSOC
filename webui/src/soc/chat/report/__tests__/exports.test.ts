@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 
 import { buildConversationDoc, buildReportDoc, sourceTurnsFromConversation } from '../model';
 import { markdownFromAst, mdCode, mdText, reportToMarkdown } from '../export/markdown';
-import { REPORT_CSP, esc, htmlFromAst, reportToHtml } from '../export/html';
+import { REPORT_CSP, REPORT_CSS, esc, htmlFromAst, reportToHtml } from '../export/html';
 import { blockToCsv, reportTablesCsv } from '../export/csv';
 import { reportToJson } from '../export/json';
 import { conversationToHtml, conversationToMarkdown } from '../export/conversation';
@@ -170,6 +170,15 @@ describe('HTML export', () => {
     expect(html.startsWith('<!doctype html>')).toBe(true);
     expect(html).toContain('--background:240 20% 99%;');
     expect(html).toContain('@page{size:A4');
+  });
+
+  it("keeps a heading's meta line with what follows when printed", () => {
+    const html = reportToHtml(build());
+    // Every item heading is followed by its meta line ("Answer · Window …"): printed from
+    // a browser, neither may be left alone at the bottom of a page.
+    expect(html).toMatch(/<h3>[^<]*<\/h3>\s*<p class="meta">/);
+    const print = /@media print\{([^]*)\}$/m.exec(REPORT_CSS)?.[1] ?? '';
+    expect(print).toMatch(/h6,:is\(h1,h2,h3,h4,h5,h6\)\+\.meta\{break-after:avoid\}/);
   });
 
   it('carries no script, image, form or external link from data', () => {

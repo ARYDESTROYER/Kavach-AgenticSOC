@@ -167,6 +167,7 @@ import { ConfirmActionDialog } from './casedetail/ConfirmActionDialog';
 import { CaseHeaderMeta } from './casedetail/CaseHeaderMeta';
 import { FactsRail } from './casedetail/FactsRail';
 import { shortcutBlocked } from './casedetail/keyboard';
+import { keepAdvisoryBands } from './casedetail/queue';
 import { CaseChatActivityGlyph, useCaseChatRequest } from '@/soc/chat-activity/case-glyph';
 import {
   deriveAgreement,
@@ -347,8 +348,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
 
+  // The case on screen, read by `commitCase`: a mutation response for it that omits the
+  // read-time advisory bands keeps the ones shown (`keepAdvisoryBands`, Round 12 final
+  // review), so the header never relabels a Critical case from the risk-score ladder.
+  const shownCaseRef = React.useRef<Case | null>(null);
+  shownCaseRef.current = c;
+
   const commitCase = React.useCallback(
-    (next: Case) => {
+    (incoming: Case) => {
+      const next = keepAdvisoryBands(shownCaseRef.current, incoming);
+      shownCaseRef.current = next;
       setC(next);
       onCaseChange?.(next);
     },

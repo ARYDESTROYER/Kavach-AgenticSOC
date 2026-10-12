@@ -3684,7 +3684,14 @@ export interface ReportListEntry {
   id: string;
   title: string;
   template: ReportTemplateName;
+  /** The conversation whose draft this report is (at most one per conversation). */
   conversation_id?: string | null;
+  /**
+   * The conversation the report came from: the one conversation all its items name, else
+   * the draft's. Reports saved from an answer or a whole conversation carry only this.
+   * Absent on rows written before it existed.
+   */
+  source_conversation_id?: string | null;
   item_count: number;
   created_at?: string | null;
   updated_at: string;

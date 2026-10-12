@@ -318,6 +318,50 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     );
   });
 
+  it('Cases and response band: the split and the snapshot legends never cost a severity name (final review)', async () => {
+    // At 768px with the navigation pinned, `md:grid-cols-2` made each snapshot card 228px;
+    // the legend got 44px, every severity name rendered 0px wide and the counts ran into
+    // the chevron (severity told by colour only, WCAG 1.4.1). jsdom cannot measure, so
+    // this pins the layout contract; the live sweep measures the widths.
+    await mount();
+    const grid = screen.getByTestId('cases-band-grid');
+    // The band splits by ITS OWN width (a container query), never by the viewport, and
+    // only below the 12-column xl grid, so the two rules never compete.
+    expect(grid.className).not.toMatch(/(^|\s)md:grid-cols-2(\s|$)/);
+    expect(grid.className).toContain('max-xl:@[48rem]:grid-cols-2');
+    expect(grid.className).toContain('xl:grid-cols-12');
+    expect(screen.getByTestId('cases-band-container')).toHaveClass('@container');
+    expect(grid.parentElement).toBe(screen.getByTestId('cases-band-container'));
+    const queueCell = screen.getByRole('region', { name: 'Latest cases' }).parentElement as HTMLElement;
+    expect(queueCell.className).not.toMatch(/(^|\s)md:col-span-2(\s|$)/);
+    expect(queueCell.className).toContain('max-xl:@[48rem]:col-span-2');
+    // The detect / respond pair follows its own cell too.
+    const timing = screen.getByRole('region', { name: 'Mean time to detect / respond' });
+    expect(timing).toHaveClass('@container');
+
+    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    for (const card of within(lifecycle).getAllByTestId('snapshot-card')) {
+      const body = within(card).getByTestId('snapshot-body');
+      const legend = within(card).getByTestId('snapshot-legend');
+      // The ring and the legend share a WRAPPING row; the legend asks for its own
+      // max-content width, so it drops under the ring rather than squeezing its names.
+      expect(body).toHaveClass('flex-wrap');
+      expect(body.contains(legend)).toBe(true);
+      expect(legend).toHaveClass('w-max', 'max-w-[15rem]');
+      expect(legend).not.toHaveClass('flex-1');
+      // The chevron has its own column OUTSIDE the wrapping row, so no count reaches it.
+      const chevron = card.querySelector('svg.lucide-chevron-right');
+      expect(chevron).not.toBeNull();
+      expect(body.contains(chevron)).toBe(false);
+      expect(chevron).toHaveClass('shrink-0');
+      // The button's name replaces its contents for assistive tech; the legend is its
+      // description, so the severity split is not colour-only there either.
+      const button = within(card).getByRole('button');
+      expect(button).toHaveAttribute('aria-describedby', legend.id);
+      expect(button).toHaveAccessibleDescription(/^(Critical|High|Medium|Low|Informational) \d/);
+    }
+  });
+
   it('Cases and response band: snapshots, cross-reference, response time with p90, the live queue', async () => {
     await mount();
     const band = screen.getByRole('region', { name: 'Cases and response' });

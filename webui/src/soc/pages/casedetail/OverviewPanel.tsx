@@ -85,6 +85,7 @@ import { DecisionCard } from './DecisionCard';
 import {
   aiHeadline,
   caseOutcome,
+  dispositionWords,
   isHumanClosed,
   type CaseOutcome,
 } from '@/soc/components/outcome';
@@ -796,6 +797,16 @@ export const OverviewPanel: React.FC<{
   // visible as a labelled secondary line. Until then the AI assessment leads, attributed.
   const outcome: CaseOutcome = caseOutcome(c);
   const humanClosed = isHumanClosed(c);
+  // The terminal verb this case carries ("resolved" or "closed"), so every sentence about
+  // the human action matches the status chip and the headline (Round 12 final review).
+  const resolvedByHuman = String(c.status || '').toLowerCase() === 'resolved';
+  const terminalVerb = resolvedByHuman ? 'resolved' : 'closed';
+  // A disposition stored on the case that is a real class, not a classification: the
+  // model-derived value triage maps, or one an undeclared close applied (SPEC §7.2 D13).
+  const dispositionOnFile = (() => {
+    const value = typeof c.disposition === 'string' ? c.disposition.trim().toLowerCase() : '';
+    return value && value !== 'none' && value !== 'undetermined' ? value : null;
+  })();
   const vHead = verdictHeadline(c.verdict);
   const headline = outcome.source === 'pending' ? aiHeadline(c.verdict, c.status) : outcome.headline;
   const summarySentence = firstSentence(c.summary);
@@ -991,9 +1002,15 @@ export const OverviewPanel: React.FC<{
             ) : null}
             {outcome.source === 'analyst_unrecorded' && onSetDisposition ? (
               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span>
-                  No disposition was recorded when this case was{' '}
-                  {String(c.status || '').toLowerCase() === 'resolved' ? 'resolved' : 'closed'}.
+                {/* What is missing is the ANALYST'S classification, not a disposition:
+                    the case can carry one (model-derived, or applied by a close that did
+                    not declare it), and the facts rail shows it as "not confirmed by an
+                    analyst". This line uses the same terms so the two never disagree. */}
+                <span data-testid="overview-unrecorded-note">
+                  No analyst classification was recorded when this case was {terminalVerb}.
+                  {dispositionOnFile
+                    ? ` The disposition on file (${dispositionWords(dispositionOnFile)}) is not confirmed by an analyst.`
+                    : null}
                 </span>
                 <Button
                   type="button"
@@ -1059,7 +1076,7 @@ export const OverviewPanel: React.FC<{
               {outcome.source === 'analyst_policy'
                 ? 'Closed by an operator rule that declared this detection benign. No model was asked.'
                 : humanClosed
-                  ? 'Closed by an analyst (a human lifecycle action). The deterministic policy did not close this case.'
+                  ? `${resolvedByHuman ? 'Resolved' : 'Closed'} by an analyst (a human lifecycle action). The deterministic policy did not ${resolvedByHuman ? 'resolve' : 'close'} this case.`
                   : 'The close or escalate decision is made by deterministic code against the operator policy, never by this panel or by the model.'}
             </p>
             {autoClose ? (

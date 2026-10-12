@@ -20,6 +20,7 @@ export const SCREEN_DOC_ID = 'agentic-soc-report-screen';
  * Its table rules match the print root's (`export/print.tsx`): every cell wraps anywhere
  * (numbers and times only at their spaces), and screen-reader-only tables (the charts'
  * data tables on screen) are not laid out, so none can widen the page and shrink the PDF.
+ * Headings and each item's header (`.report-item-header`) stay with what follows.
  */
 export function screenPrintCss(): string {
   const D = `#${SCREEN_DOC_ID}`;
@@ -40,7 +41,8 @@ export function screenPrintCss(): string {
   ${off} ${D} th, ${off} ${D} td { white-space: normal !important; overflow-wrap: anywhere; }
   ${off} ${D} th *, ${off} ${D} td .whitespace-nowrap { white-space: normal !important; }
   ${off} ${D} td .tabular-nums { overflow-wrap: normal; }
-  ${off} ${D} tr, ${off} ${D} li { break-inside: avoid; }
+  ${off} ${D} tr, ${off} ${D} li, ${off} ${D} .report-item-header { break-inside: avoid; }
+  ${off} ${D} h1, ${off} ${D} h2, ${off} ${D} h3, ${off} ${D} h4, ${off} ${D} figcaption, ${off} ${D} .report-item-header { break-after: avoid; }
 }
 `.trim();
 }

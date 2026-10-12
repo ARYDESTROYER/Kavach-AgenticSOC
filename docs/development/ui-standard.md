@@ -751,9 +751,11 @@ sentence-case label, the numeral, and exactly one muted **context line** that an
 "compared to what?" ("17% of 47 cases", "36 of 47 verdicted"). The line is data, never a
 sentence about the metric; that belongs in help. A state disclosure (loading,
 unavailable) takes the line first, then a conditional bound, then the context, so the
-row's rhythm never changes with state. Never put context beside the numeral: at six
-columns flex shrinks the numeral first. Hero numerals are neutral ink; only a non-zero
-critical count is red. Hero tiles carry no icon, and their help and drill-down marks
+row's rhythm never changes with state. The line wraps and is never ellipsized: every hero
+line reserves a two-line slot (`min-h-[2lh]`), so a caption that wraps keeps its numeral
+level with its neighbours' and nothing is left to a mouse-only `title`. Never put context
+beside the numeral: at six columns flex shrinks the numeral first. Hero numerals are
+neutral ink; only a non-zero critical count is red. Hero tiles carry no icon, and their help and drill-down marks
 appear on hover or focus beside the numeral (always shown on devices without hover).
 A strip is followed by the next band after the normal band gap; its own bottom rule
 closes the strip, and the band below draws no second rule against it.

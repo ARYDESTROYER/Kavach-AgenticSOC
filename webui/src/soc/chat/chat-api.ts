@@ -823,6 +823,7 @@ export function normaliseReportListEntry(raw: unknown): ReportListEntry | null {
     title: text(raw.title, CHAT_LIMITS.report_title_chars) || 'Untitled report',
     template: enumOr<ReportTemplateName, ReportTemplateName>(raw.template, REPORT_TEMPLATES, 'custom'),
     conversation_id: safeId(raw.conversation_id),
+    source_conversation_id: safeId(raw.source_conversation_id),
     item_count: count(raw.item_count, 0),
     created_at: optStr(raw.created_at),
     updated_at: str(raw.updated_at),

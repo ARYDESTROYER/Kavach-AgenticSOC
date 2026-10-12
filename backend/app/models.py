@@ -3636,12 +3636,20 @@ class Report(BaseModel):
 
 
 class ReportListEntry(BaseModel):
-    """One row of the per-user report index (``GET /api/reports``)."""
+    """One row of the per-user report index (``GET /api/reports``).
+
+    ``conversation_id`` names the conversation whose DRAFT this report is (at most one
+    per conversation); ``source_conversation_id`` names the conversation the report
+    came from (the one conversation all its items name, else the draft's), for the
+    library's "Source conversation" column. A report saved from an answer or a whole
+    conversation is never a draft, so it carries only the second. Rows written before
+    the field existed read ``None`` until the report next changes."""
 
     id: str
     title: str
     template: ReportTemplateName = "custom"
     conversation_id: str | None = None
+    source_conversation_id: str | None = None
     item_count: int = Field(default=0, ge=0)
     created_at: str | None = None
     updated_at: str

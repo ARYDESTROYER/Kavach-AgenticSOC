@@ -14,8 +14,10 @@
  *      (a dark console would otherwise paint the page margins black), lifts the scroll lock a
  *      closing menu may still hold (`html, body` overflow/height), lays the document out
  *      on A4 and keeps only SMALL atoms unbroken (rows, KPI groups, chart plots, notes,
- *      list items) — never a whole block, which left half-empty pages; headings stay with
- *      what follows and table headers repeat on every page. Only `[data-print-hide]`
+ *      list items, an item's header) — never a whole block, which left half-empty pages;
+ *      headings stay with what follows (an item's header — its heading, meta line and
+ *      question, `.report-item-header` in `ReportDocument` — with its first content) and
+ *      table headers repeat on every page. Only `[data-print-hide]`
  *      elements and copy controls ({@link PRINT_HIDDEN}) are hidden: content rendered
  *      as a button (a KPI tile with a link, a case id) prints. Every table cell wraps
  *      anywhere (`overflow-wrap: anywhere` lowers a cell's minimum width, `break-word`
@@ -100,7 +102,7 @@ export const PRINT_CSS = `
   ${R} td .font-mono, ${R} td code, ${R} td .break-all { overflow-wrap: anywhere; word-break: break-all; }
   ${R} table[data-static-table] { table-layout: fixed !important; }
   ${R} table[data-static-table] th, ${R} table[data-static-table] td { overflow-wrap: anywhere; }
-  ${R} tr, ${R} li, ${R} [role="note"], ${R} [data-testid="block-kpis"], ${R} [data-testid$="-plot"], ${R} [data-testid="trend-columns"], ${R} [data-print-atom] { break-inside: avoid; }
+  ${R} tr, ${R} li, ${R} [role="note"], ${R} [data-testid="block-kpis"], ${R} [data-testid$="-plot"], ${R} [data-testid="trend-columns"], ${R} [data-print-atom], ${R} .report-item-header { break-inside: avoid; }
   ${R} h1, ${R} h2, ${R} h3, ${R} h4, ${R} h5, ${R} h6, ${R} figcaption, ${R} .report-item-header { break-after: avoid; }
   ${R} p { orphans: 3; widows: 3; }
 }

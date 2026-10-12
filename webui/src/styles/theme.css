@@ -1726,7 +1726,14 @@ select:-webkit-autofill:focus {
      box's on-screen `flex-1` basis from shrinking it back under the SVG; and the card is
      kept on one page inside a plain block band (a monolithic SVG pushed across a page
      inside the band's grid painted over the next band). Wider than the paper column, the
-     chart clips sideways only. */
+     chart SCALES down to it (Round 12 final review): the SVG carries a viewBox of its
+     drawn size, so `max-width: 100%` with `height: auto` keeps every bucket on paper,
+     the newest included. `max-width`, not `width`, so a narrow chart is never enlarged.
+     The sideways clip stays only as a backstop. */
+  #socMain [data-testid='human-vs-ai-figure'] > svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
   #socMain [data-testid='human-vs-ai-chart'] {
     flex: none !important;
     height: auto !important;

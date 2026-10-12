@@ -10,13 +10,13 @@
 import { act, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildReportDoc } from '../model';
+import { buildConversationDoc, buildReportDoc } from '../model';
 import { PRINT_CSS, PRINT_HIDDEN, PRINT_ROOT_ID, clearPrintRoot, mountPrintRoot, printDocument, printRootMounted } from '../export/print';
 import { GALLERY_RAW } from '../../blocks/__fixtures__/gallery';
 import { REPORT_LIGHT_TOKENS } from '../export/report-tokens';
 import { SCREEN_DOC_ID, screenPrintCss } from '../print-fallback';
 import { BlockCard } from '../../blocks/BlockCard';
-import { NOW, rawBlock, sampleReport } from './fixtures';
+import { NOW, rawBlock, sampleConversation, sampleReport } from './fixtures';
 
 const doc = () => buildReportDoc(sampleReport(), { author: 'ana', appVersion: '0.1.13', generatedAt: NOW.toISOString() });
 
@@ -418,6 +418,57 @@ describe('print content is never hidden (R6, R7, R13)', () => {
     // The KPI values are all there (a tile with a link still prints).
     expect(root).toHaveTextContent('12,840');
     expect(root).toHaveTextContent('6,400');
+  });
+
+  it.each([
+    ['a report', () => doc()],
+    [
+      'a conversation',
+      () => {
+        // A multi-line prompt is quoted under its heading (a one-line prompt is the heading).
+        const conversation = sampleConversation();
+        const first = conversation.messages.findIndex((m) => m.role === 'user');
+        conversation.messages[first] = {
+          ...conversation.messages[first],
+          content: 'Who is failing logins against vpn-gw-2?\nInclude every gateway and the last 24 hours.',
+        };
+        return buildConversationDoc(conversation, { generatedAt: NOW.toISOString() });
+      },
+    ],
+  ])("keeps each item's header with its first content in %s (heading, meta line, question)", async (_name, make) => {
+    const printed = make();
+    await act(async () => {
+      await printDocument(printed, { defang: false });
+    });
+    const root = document.getElementById(PRINT_ROOT_ID)!;
+    const items = Array.from(root.querySelectorAll('[data-report-item]'));
+    expect(items).toHaveLength(printed.items.length);
+    for (const item of items) {
+      // The CSS selector and the rendered markup can no longer drift apart: every item
+      // carries the header the print rule targets, holding the heading and the meta line.
+      const header = item.querySelector(':scope > .report-item-header');
+      expect(header, item.outerHTML.slice(0, 200)).not.toBeNull();
+      expect(header!.querySelector(':scope > h3')).not.toBeNull();
+      expect(header!.querySelector(':scope > p')).not.toBeNull();
+      // Nothing but the header precedes the item's content.
+      expect(item.firstElementChild).toBe(header);
+      expect(printValues(header!, 'break-after')).toContain('avoid');
+      expect(printValues(header!, 'break-inside')).toContain('avoid');
+    }
+    // A conversation's question note sits inside its header (it introduces the answer).
+    if (printed.kind === 'conversation') {
+      const questions = Array.from(root.querySelectorAll('[data-report-item] [role="note"]')).filter((n) =>
+        (n.textContent ?? '').startsWith('Question: '),
+      );
+      expect(questions.length).toBeGreaterThan(0);
+      for (const q of questions) expect(q.parentElement?.classList.contains('report-item-header')).toBe(true);
+    }
+  });
+
+  it('keeps headings and item headers with what follows in the Ctrl/Cmd+P fallback', () => {
+    const css = screenPrintCss();
+    expect(css).toMatch(/\.report-item-header \{ break-inside: avoid; \}/);
+    expect(css).toMatch(/figcaption, [^{]*\.report-item-header \{ break-after: avoid; \}/);
   });
 
   it('keeps page breaks on small atoms only (R8)', () => {

@@ -30,6 +30,8 @@ vi.mock('@/lib/api', () => ({
 
 import { OverviewPanel, riskFactorBarColor } from '../OverviewPanel';
 import { SignalProfile } from '../SignalProfile';
+import { FactsRail } from '../FactsRail';
+import { caseOutcome } from '@/soc/components/outcome';
 import type { Case } from '@/lib/types';
 
 function render(ui: ReactElement) {
@@ -813,9 +815,79 @@ describe('OverviewPanel — the case outcome (Round 12, D15)', () => {
     );
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/^Resolved by analyst: outcome not recorded$/);
     const button = screen.getByTestId('overview-set-disposition');
-    expect(button.parentElement).toHaveTextContent('No disposition was recorded when this case was resolved.');
+    expect(button.parentElement).toHaveTextContent('No analyst classification was recorded when this case was resolved.');
+    // `undetermined` is not a class on file, so no "not confirmed" note is added.
+    expect(screen.getByTestId('overview-unrecorded-note')).toHaveTextContent(
+      /^No analyst classification was recorded when this case was resolved\.$/,
+    );
     fireEvent.click(button);
     expect(onSetDisposition).toHaveBeenCalledWith(button);
+  });
+
+  it('a resolved case says resolved in the authority sentence, once (final review)', () => {
+    renderCaseManager({
+      ...closedAsFp,
+      status: 'resolved',
+      history: [
+        {
+          event: 'analyst_action',
+          action: 'resolve',
+          analyst: 'aryan',
+          ts: '2026-10-09T10:00:00Z',
+          classified_disposition: 'false_positive',
+        },
+      ],
+    } as unknown as Case);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/^Resolved as false positive$/);
+    const authority = screen.getByTestId('overview-authority');
+    expect(authority).toHaveTextContent(
+      'Resolved by an analyst (a human lifecycle action). The deterministic policy did not resolve this case.',
+    );
+    expect(authority).not.toHaveTextContent(/closed by an analyst/i);
+    expect(screen.getAllByText(/resolved by an analyst/i)).toHaveLength(1);
+  });
+
+  it('an undeclared close that applied a disposition: the Overview and the facts rail agree (final review)', () => {
+    // `POST /action {action: 'close', disposition: 'false_positive'}` without
+    // `disposition_declared`: the disposition is applied, but no classification is
+    // recorded (SPEC §7.2 D13).
+    const undeclared = {
+      ...closedAsFp,
+      verdict: 'NEEDS_HUMAN',
+      disposition: 'false_positive',
+      history: [{ event: 'analyst_action', action: 'close', analyst: 'aryan', ts: '2026-10-09T10:00:00Z' }],
+    } as unknown as Case;
+    render(
+      <>
+        <OverviewPanel
+          c={undeclared}
+          fpPolicy={null}
+          triage={null}
+          triageLoading={false}
+          presentation="case-manager"
+          onSetDisposition={vi.fn()}
+        />
+        <FactsRail
+          c={undeclared}
+          outcome={caseOutcome(undeclared)}
+          triage={null}
+          slaPolicy={null}
+          fpPolicy={null}
+          users={[]}
+          canAssign={false}
+          onCaseChange={vi.fn()}
+          onShowRelated={vi.fn()}
+          onSetDisposition={vi.fn()}
+        />
+      </>,
+    );
+    expect(screen.queryByText(/no disposition was recorded/i)).toBeNull();
+    expect(screen.getByTestId('overview-unrecorded-note')).toHaveTextContent(
+      'No analyst classification was recorded when this case was closed. The disposition on file (False positive) is not confirmed by an analyst.',
+    );
+    expect(screen.getByTestId('facts-recorded-disposition')).toHaveTextContent(
+      'Recorded disposition: False positive (not confirmed by an analyst)',
+    );
   });
 
   it('an AI auto-close keeps the code lane and says so', () => {

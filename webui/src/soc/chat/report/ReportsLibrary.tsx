@@ -569,8 +569,11 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
       id: 'conversation',
       header: 'Source conversation',
       cell: (r) => {
-        if (!r.conversation_id) return <span className="text-muted-foreground">—</span>;
-        const known = conversations?.titles.get(r.conversation_id);
+        // A draft's own conversation, else the one its items came from (a report saved
+        // from an answer or a whole conversation is not that conversation's draft).
+        const sourceId = r.conversation_id ?? r.source_conversation_id ?? null;
+        if (!sourceId) return <span className="text-muted-foreground">—</span>;
+        const known = conversations?.titles.get(sourceId);
         if (!known && conversations?.complete) return <span className="text-muted-foreground">{SOURCE_UNAVAILABLE}</span>;
         // A report started from a conversation is titled after it: never print the same
         // sentence twice side by side; the link (and its accessible name) still names it.
@@ -578,7 +581,7 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
         return (
           <button
             type="button"
-            onClick={() => navigate('chat', { conversationId: r.conversation_id ?? undefined })}
+            onClick={() => navigate('chat', { conversationId: sourceId })}
             className={cn(
               'inline-flex max-w-[12rem] items-center gap-1 rounded-sm text-primary hover:underline 2xl:max-w-[16rem]',
               focusRing,

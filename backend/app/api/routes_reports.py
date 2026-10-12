@@ -666,7 +666,7 @@ def _build_items(answer: _Answer, conversation: Any, *, conversation_id: str, me
         return [item]
     if any(_unusable(b) for b in _all_blocks(blocks)):
         raise unavailable
-    parts = [*_text_blocks(answer.response.answer or "", prefix="answer"), *blocks]
+    parts = [*_text_blocks(_report_prose(answer.response.answer or ""), prefix="answer"), *blocks]
     if not parts:
         raise _http(409, "block_unavailable", "This answer has nothing to add.")
     title = answer.question or "Answer"
@@ -701,6 +701,48 @@ def report_id_for(owner: str | None, key: str, purpose: str) -> str:
         "\x00".join(("report", purpose, normalize_user_id(owner), str(key))).encode("utf-8")
     ).hexdigest()[:32]
     return f"rpt-{digest}"
+
+
+def _chat_only_closings() -> frozenset[str]:
+    """The closing sentences the Demo planner ends a chat answer with. They speak about
+    the chat itself ("the report below", "being saved to your Reports") and are wrong
+    in a saved report, so a snapshot leaves them out (:func:`_report_prose`)."""
+    from ..engine.demo_chat import _BRIEF_READY, _REPORT_READY, _REPORT_SAVING
+
+    return frozenset({_BRIEF_READY, _REPORT_READY, _REPORT_SAVING})
+
+
+def _report_prose(text: str) -> str:
+    """The answer text a report keeps: the stored text without its trailing chat-only
+    closing paragraphs (the chat's own "Saved to Reports" line confirms a save; a
+    report never says it is being saved or that a report is "below")."""
+    text = (text or "").strip()
+    closings = _chat_only_closings()
+    while text:
+        cut = text.rfind("\n\n")
+        if text[cut + 2 if cut >= 0 else 0:].strip() not in closings:
+            break
+        text = text[:cut].rstrip() if cut >= 0 else ""
+    return text
+
+
+#: The answer text's section title, in order of preference: the first one no expanded
+#: Brief section already uses (a report never opens with two "Summary" sections).
+_PROSE_TITLES = ("Summary", "Overview", "Answer", "Answer text")
+
+
+def _prose_title(blocks: list[Any], *, expand_briefs: bool) -> str:
+    """The title of the section holding an answer's own text: "Summary", unless an
+    expanded Brief of the same answer has a section of that name (its first section
+    usually is "Summary"), then the next unused name of :data:`_PROSE_TITLES`."""
+    if not expand_briefs:
+        return _PROSE_TITLES[0]
+    taken = {
+        str(section.get("heading") or "").strip().casefold()
+        for block in blocks if isinstance(block, dict) and block.get("type") == "report"
+        for section in block.get("sections") or [] if isinstance(section, dict)
+    }
+    return next((t for t in _PROSE_TITLES if t.casefold() not in taken), _PROSE_TITLES[-1])
 
 
 def _text_blocks(text: str, *, prefix: str) -> list[dict[str, Any]]:
@@ -760,16 +802,20 @@ def items_for_answer(
     expand_briefs: bool = True, tz: str = "UTC",
 ) -> list[ReportItem]:
     """The report items of one persisted answer (D11): its text as a "Summary"
-    section, every Brief section as its own section (``expand_briefs``), and every
-    other block as its own item. Expired and unreadable blocks are left out. Built
-    server-side from the STORED answer only (the model never supplies block JSON)."""
+    section ("Overview" when an expanded Brief has its own "Summary"; chat-only
+    closing sentences left out), every Brief section as its own section
+    (``expand_briefs``), and every other block as its own item. Expired and
+    unreadable blocks are left out. Built server-side from the STORED answer only (the
+    model never supplies block JSON)."""
     if answer.presentation_lost:
         return []
     items: list[ReportItem] = []
-    text_blocks = _text_blocks(answer.response.answer or "", prefix="answer")
+    text_blocks = _text_blocks(_report_prose(answer.response.answer or ""), prefix="answer")
     if text_blocks:
         items.extend(_section_items(
-            answer, conversation, title="Summary", blocks=text_blocks,
+            answer, conversation,
+            title=_prose_title(answer.response.blocks, expand_briefs=expand_briefs),
+            blocks=text_blocks,
             conversation_id=conversation_id, message_id=message_id, block_id="answer", demo=demo,
             tz=tz, whole_answer=True,
         ))
@@ -957,7 +1003,7 @@ async def report_from_conversation(
         answer = _resolve_answer(conversation, str(_field(message, "id")))
         if answer is None or answer.presentation_lost:
             continue
-        blocks = [*_text_blocks(answer.response.answer or "", prefix="answer"),
+        blocks = [*_text_blocks(_report_prose(answer.response.answer or ""), prefix="answer"),
                   *[b for b in answer.response.blocks if isinstance(b, dict)]]
         items.extend(_section_items(
             answer, conversation, title=answer.question or "Answer", blocks=blocks,

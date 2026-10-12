@@ -502,6 +502,31 @@ describe('NoiseFunnel', () => {
     expect(view.container.querySelector('[data-testid="noise-simple-view"]')).not.toBeNull();
   });
 
+  it('returns focus to the Full screen button when the inspection closes (final review)', async () => {
+    // The inspection opens from state, outside a DialogTrigger, so Radix had nothing to
+    // refocus and focus fell to <body> on Escape and on the X (WCAG 2.4.3).
+    const user = userEvent.setup();
+    const loader = vi.fn().mockResolvedValue(lineageFixture());
+    render(<NoiseFunnel data={fixture()} animate={false} variant="flat" expandable lineageLoader={loader} />);
+    const trigger = screen.getByRole('button', { name: 'Open full-screen noise reduction flow' });
+
+    // Keyboard: focus the trigger, Enter, then Escape.
+    trigger.focus();
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(await screen.findByText('cluster-4cb33a5bf9d8')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+
+    // The dialog's own Close (X) button.
+    await user.click(trigger);
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /^close$/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('keeps Open cases separate, actionable, and absent from Sankey topology', async () => {
     const user = userEvent.setup();
     const onOpenCasesClick = vi.fn();

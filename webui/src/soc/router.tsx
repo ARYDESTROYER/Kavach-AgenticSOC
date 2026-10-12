@@ -237,6 +237,26 @@ export function optsFromHash(): NavOpts | undefined {
   }
 }
 
+/**
+ * The opts after a hash change that stays on `page`. The keys `current` would write to
+ * the hash ({@link pageHash}) belong to the hash, so the new hash replaces them: Back
+ * from `#/reports?reportId=x` to `#/reports` drops `reportId` and shows the list again.
+ * Keys never written to the hash (a severity drill-through, `newChat`, a Settings
+ * section) stay. Returns `current` itself when nothing changed, so the echo of an in-app
+ * navigate never hands consumers keyed on the opts identity a second request.
+ */
+export function samePageOpts(page: PageId, current: NavOpts | undefined, hashOpts: NavOpts | undefined): NavOpts | undefined {
+  const next: Record<string, unknown> = { ...(current ?? {}) };
+  const query = pageHash(page, current).split('?')[1];
+  if (query) for (const key of new URLSearchParams(query).keys()) delete next[key];
+  for (const [key, value] of Object.entries(hashOpts ?? {})) if (value !== undefined) next[key] = value;
+  const defined = (o: Record<string, unknown>) => Object.keys(o).filter((k) => o[k] !== undefined);
+  const keys = defined(next);
+  const before = (current ?? {}) as Record<string, unknown>;
+  if (keys.length === defined(before).length && keys.every((k) => next[k] === before[k])) return current;
+  return keys.length ? (next as NavOpts) : undefined;
+}
+
 export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [page, setPage] = React.useState<PageId>(() => pageFromHash());
   // Seed opts from the hash query on first paint so a deep-link / new tab (e.g.
@@ -320,12 +340,11 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const next = pageFromHash();
       setPage((prev) => {
         if (prev === next) {
-          // A same-page case change (e.g. Case Manager queue row A → row B)
-          // changes only the query. Reconcile that explicit durable option, but do
-          // not erase in-memory list filters such as a severity drill-through when
-          // their navigate() hash change settles on the already-updated page.
+          // A same-page change (Case Manager row A → row B, Back from a report to the
+          // list) changes only the query: the hash decides the durable options, the
+          // in-memory ones (a severity drill-through, a new chat) stay.
           const hashOpts = optsFromHash();
-          if (hashOpts) setOpts(hashOpts);
+          setOpts((current) => samePageOpts(next, current, hashOpts));
           return prev;
         }
         // Back/forward/direct navigation to a different page carries only durable
