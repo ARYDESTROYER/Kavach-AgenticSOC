@@ -694,10 +694,23 @@ def _plural(n: Any, one: str, many: str | None = None) -> str:
     return f"{_count(n)} {word}"
 
 
-def _code(value: Any, limit: int = 80) -> str:
+#: Operator ask 3 (no truncation; final review L4): the narration never clips a value
+#: tighter than the lookup that returned it. Every observation string is already
+#: bounded where its tool builds it (the shared case projection keeps a case id to 128
+#: characters, a title to 160, a rule or a source to 120 and an entity to 300; a top
+#: value or a grouped label to 200 or 300; an indicator to 512), so a case title or a
+#: rule name reads in full, exactly as the lookup returned it, and the console wraps a
+#: long one instead of the prose cutting it mid-word ("account takeov…"). This bound
+#: only stops a malformed observation from flooding the prose.
+_NARRATED_CHARS = 512
+
+
+def _code(value: Any, limit: int = _NARRATED_CHARS) -> str:
     """A log- or case-derived value as inline code, no backticks. Invisible characters
     are written as visible ``\\uXXXX`` escapes (``visible_text``, as the chart labels
-    show them), never deleted: ``ad``+ZWSP+``min`` must not read as ``admin``."""
+    show them), never deleted: ``ad``+ZWSP+``min`` must not read as ``admin``. Shown
+    whole (:data:`_NARRATED_CHARS`): pass a smaller ``limit`` only for a value the
+    narration itself bounds (a digest input), never for a name a lookup returned."""
     text = visible_text(value if isinstance(value, str) else ("" if value is None else str(value)), limit)
     text = text.replace("`", "'").strip()
     return f"`{text}`" if text else "`(blank)`"
@@ -1132,6 +1145,45 @@ _CHANGE_RE = re.compile(
     r"assign|reassign|escalate|approve|reject|create|add|update|change|modify|set|turn (?:on|off)|"
     r"restart|reset|block|isolate|contain|quarantine|suppress|mute|acknowledge|ack|edit|rename|"
     r"tune|purge|wipe)\b")
+#: A polite opening before a request's verb ("please", "can you", "help me").
+_POLITE_RE = (r"^\s*(?:(?:please|pls|hey|hi|ok|okay)[,\s]+)?"
+              r"(?:(?:can|could|would|will) you\s+(?:please\s+)?|help me\s+|i (?:want|need) you to\s+)?")
+#: Response actions (final review L4): isolating or containing a host, blocking an
+#: address, quarantining a file, stopping a process. This console has none, from chat
+#: or anywhere else (no write-side response actions), so the answer says where they
+#: run instead of pointing at a console page that cannot do them.
+_RESPONSE_VERB_RE = re.compile(
+    _POLITE_RE + r"(?:go ahead and\s+)?(?P<verb>isolate|contain|quarantine|sinkhole|blackhole|kill(?![- ]chain)|"
+    r"terminate|block|unblock|ban|lock out|lock)\b(?P<rest>.*)$")
+#: Verbs that are a response action whatever they act on ("contain the outbreak").
+_RESPONSE_STRONG = frozenset({"isolate", "contain", "quarantine", "sinkhole", "blackhole", "kill"})
+#: What the other verbs must act on to be a response action ("block this IP").
+_RESPONSE_OBJECT_RE = re.compile(
+    r"\b(?:hosts?|machines?|servers?|endpoints?|workstations?|laptops?|devices?|ips?|ip address(?:es)?|"
+    r"address(?:es)?|domains?|urls?|hash(?:es)?|files?|process(?:es)?|pids?|users?|accounts?|senders?|"
+    r"emails?|attackers?|traffic|connections?|it|this|that|them|these|those)\b")
+#: Console objects a verb such as "kill" or "lock" can also act on ("kill the export
+#: job"): a change chat cannot make, answered as one, never as a response action.
+_CONSOLE_OBJECT_RE = re.compile(
+    r"\b(?:jobs?|rules?|sources?|feeds?|connectors?|cases?|incidents?|reports?|dashboards?|notifications?|"
+    r"channels?|webhooks?|proposals?|runbooks?|playbooks?|settings?|roles?|sessions?|tasks?|chats?|"
+    r"conversations?|answers?|questions?|lookups?)\b")
+#: Block and deny lists live in a firewall or a proxy, not in this console.
+_RESPONSE_LIST_RE = re.compile(r"\b(?:block|deny|ban)[- ]?lists?\b")
+#: Requests that are not about this deployment at all (final review L4): writing code
+#: or scripts, and jokes, poems or stories. One honest sentence says what chat
+#: answers instead, never a case list or an unrelated Help Center passage.
+_CODE_ASK_RE = re.compile(
+    _POLITE_RE + r"(?:write|generate|create|code|build|make|draft|develop|program)\b(?P<rest>.*)$")
+_CODE_NOUN_RE = re.compile(
+    r"\b(?:scripts?|programs?|code|functions?|snippets?|one-liners?|apps?|applications?|web ?sites?|"
+    r"web ?pages?|games?|exploits?|payloads?|malware|keyloggers?|bots?|macros?|regex(?:es)?)\s*$")
+_CREATIVE_RE = re.compile(
+    _POLITE_RE + r"(?:tell|write|give|make up|compose)\s+(?:me\s+|us\s+)?(?:a\s+|an\s+|another\s+|some\s+)?"
+    r"(?:\w+\s+)?(?:jokes?|poems?|stor(?:y|ies)|songs?|haikus?|limericks?|riddles?)\b")
+#: What chat answers: the agent prompt's own scope (``prompts._CHAT_AGENT_BODY``).
+_CHAT_SCOPE = ("Chat answers questions about your security data (cases, logs, metrics, threat intelligence and "
+               "platform health) and about this console, using read-only lookups.")
 #: The step inspector's follow-ups (``StepInspector.tsx`` ``explainStepQuestion`` and
 #: ``retryStepQuestion``): engine words around the step's template label and, when
 #: known, a quote of the question its answer replied to.
@@ -1167,13 +1219,19 @@ def _step_ask(question: str) -> StepRef | None:
                    recency=recency)
 
 
-def _step_shaped_change(question: str) -> bool:
-    """"Run step 3 (block the IP) again": the rerun shape around the analyst's own
-    write request (not a run-log label) asks for that change, which chat cannot make.
-    "Explain step 2 (isolate the host): why …?" asks a question, not for the change."""
+def _step_shaped_label(question: str) -> str | None:
+    """The analyst's own words in the rerun shape ("Run step 3 (block the IP) again"
+    gives "block the IP"), or ``None``. "Explain step 2 (isolate the host): why …?"
+    asks a question, not for the change, so only "Run step" counts."""
     match = _STEP_ASK_RE.match(question.strip())
-    return (match is not None and match.group("verb").lower() == "run"
-            and _is_change(match.group("label").strip().lower()))
+    return match.group("label").strip() if match is not None and match.group("verb").lower() == "run" else None
+
+
+def _step_shaped_change(question: str) -> bool:
+    """"Run step 3 (rename the case) again": the rerun shape around the analyst's own
+    write request (not a run-log label) asks for that change, which chat cannot make."""
+    label = _step_shaped_label(question)
+    return label is not None and _is_change(label.lower())
 
 
 _REMEMBER_RE = re.compile(r"^\s*(?:please\s+)?(?:remember|note)\s+(?:that\s+)?(.{3,500})$", re.IGNORECASE)
@@ -2655,6 +2713,58 @@ def _is_change(low: str) -> bool:
     return True
 
 
+def _out_of_scope(low: str) -> str | None:
+    """``"code"`` or ``"creative"`` for a request chat is not for (final review L4):
+    the head of the verb's direct object must be code ("a python script to scan my
+    network", "code"), so "Create a case for the bot activity" stays a change and
+    "Write a report" stays a report."""
+    code = _CODE_ASK_RE.match(low)
+    if code is not None:
+        rest = code.group("rest")
+        cut = _OBJECT_END_RE.search(rest)
+        if _CODE_NOUN_RE.search(rest[:cut.start()] if cut else rest):
+            return "code"
+    if _CREATIVE_RE.match(low):
+        return "creative"
+    return None
+
+
+def _is_response_action(q: str, low: str) -> bool:
+    """A response action (isolate a host, block an IP, quarantine a file, kill a
+    process): something no part of this console does (final review L4). "Kill the
+    export job" acts on a console object, so it stays a change chat cannot make."""
+    action = _RESPONSE_VERB_RE.match(low)
+    if action is None:
+        # "Add 203.0.113.7 to the block list": a firewall's list, not a console one.
+        return bool(_RESPONSE_LIST_RE.search(low)) and _is_change(low)
+    rest = action.group("rest")
+    indicator = bool(_IPV4_RE.search(q) or _HASH_RE.search(q) or _URL_RE.search(q) or _DOMAIN_RE.search(rest))
+    if _CONSOLE_OBJECT_RE.search(rest) and not indicator:
+        return False
+    return action.group("verb") in _RESPONSE_STRONG or indicator or bool(_RESPONSE_OBJECT_RE.search(rest))
+
+
+def _response_targets(question: str) -> list[tuple[str, str]]:
+    """``(kind, value)`` of each host, user and indicator a response action names, in
+    the analyst's own words ("isolate host srv-db-01 and block IP 203.0.113.77"), at
+    most three, so the answer can offer to investigate them instead."""
+    found: list[tuple[int, str, str]] = []
+    for kind, pattern in (("ip", _IPV4_RE), ("hash", _HASH_RE), ("domain", _DOMAIN_RE)):
+        found.extend((m.start(), kind, m.group(0)) for m in pattern.finditer(question))
+    for match in _DEEP_ENTITY_RE.finditer(question):
+        value = match.group(2).strip(".,;:")
+        kind = _DEEP_KINDS.get(match.group(1).lower(), "host")
+        if (kind == "ip" or value.lower() in _DEEP_STOP or value.lower() in _LOG_TERM_GENERIC
+                or _IPV4_RE.fullmatch(value) or _DOMAIN_RE.fullmatch(value)):
+            continue
+        found.append((match.start(2), kind, value))
+    out: list[tuple[str, str]] = []
+    for _at, kind, value in sorted(found):
+        if (kind, value) not in out and not any(value == v for _k, v in out):
+            out.append((kind, value))
+    return out[:3]
+
+
 #: "Investigate everything about host dc01", "deep dive into user pnair".
 _DEEP_RE = re.compile(
     r"\b(everything (?:about|on|for)|all (?:about|activity (?:of|for|from|on))|deep[- ]?dive|full (?:investigation|"
@@ -2917,6 +3027,18 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     remember = _REMEMBER_RE.match(q)
     if remember and not re.search(r"\?\s*$", q):
         return ask("remember", memory=display_text(remember.group(1).strip(), 500))
+    # Final review L4: a response action, or a request chat is not for at all (code,
+    # a joke), gets an honest answer about what chat can do, never a case list or an
+    # unrelated Help Center passage.
+    shaped = _step_shaped_label(q)
+    if _is_response_action(q, low) or (shaped is not None and _is_response_action(shaped, shaped.lower())):
+        return ask("respond", save=False)
+    acting = _RESPONSE_VERB_RE.match(low)
+    if acting is not None and _CONSOLE_OBJECT_RE.search(acting.group("rest")):
+        # "Kill the export job", "Lock the case": a change to a console object.
+        return ask("change", save=False)
+    if _out_of_scope(low):
+        return ask("out_of_scope", save=False)
     if _is_change(low) or _step_shaped_change(q):
         return ask("change", save=False)
 
@@ -4574,13 +4696,13 @@ def _filter_words(filters: Iterable[tuple[str, Any]]) -> str:
     parts: list[str] = []
     for key, value in filters:
         if key == "contains":
-            parts.append(_code(value, 60))
+            parts.append(_code(value))
         elif key == "severity_gte":
             parts.append(f"severity {_count(value)} or higher")
         elif key == "ids":
             parts.append(f"the {_plural(value, 'requested event ID')}")
         else:
-            parts.append(f"{_LOG_FIELD_NOUNS.get(key, key.replace('_', ' '))} {_code(value, 60)}")
+            parts.append(f"{_LOG_FIELD_NOUNS.get(key, key.replace('_', ' '))} {_code(value)}")
     return _join(parts)
 
 
@@ -4666,7 +4788,7 @@ _ENTITY_NOUNS = {"ip": "IP", "domain": "domain", "url": "URL", "file_hash": "fil
 _MACHINE_TITLE_RE = re.compile(r"^([a-z][a-z_]{0,30}):(.+?) — (.+)$")
 
 
-def _entity_phrase(raw: Any, limit: int = 80) -> str:
+def _entity_phrase(raw: Any, limit: int = _NARRATED_CHARS) -> str:
     """An entity in words (browser-QA D6): ``user:dsingh`` becomes "user `dsingh`".
     The value is log-derived, so it stays inline code; the kind is an engine word."""
     if not isinstance(raw, str) or not raw.strip():
@@ -4681,7 +4803,7 @@ def _entity_phrase(raw: Any, limit: int = 80) -> str:
     return f"{noun} {_code(value.strip(), limit)}"
 
 
-def _rule_words(rules: str, limit: int = 60) -> str:
+def _rule_words(rules: str, limit: int = _NARRATED_CHARS) -> str:
     """Detection rule ids as plain words ("identity_signin" → "identity signin"),
     Markdown-neutral. Nothing is deleted, so no lookalike can form: invisible
     characters are written as visible ``\\uXXXX`` escapes (:func:`visible_text`, as
@@ -4706,12 +4828,12 @@ def _case_name(case: Mapping[str, Any], *, with_entity: bool = True) -> str:
         what = _rule_words(rules) or "activity"
         return f"{what} on {_entity_phrase(f'{kind}:{value}')}" if with_entity else what
     if title.strip() and title.strip() != case.get("case_id"):
-        return _code(title, 80)
+        return _code(title)
     return _entity_phrase(case.get("entity")) if with_entity else ""
 
 
 def _case_line(case: Mapping[str, Any]) -> str:
-    bits = [_code(case.get("case_id"), 60)]
+    bits = [_code(case.get("case_id"))]
     name = _case_name(case)
     if name:
         bits.append(name)
@@ -4752,10 +4874,10 @@ def _entity_about(filters: Mapping[str, Any]) -> str:
     " from rule `ssh_brute`" when it was filtered to one detection rule (Round 12
     WP-ASK), so a filtered count never reads as the unfiltered one."""
     entity = filters.get("entity")
-    about = f" involving {_code(entity, 60)}" if isinstance(entity, str) and entity.strip() else ""
+    about = f" involving {_code(entity)}" if isinstance(entity, str) and entity.strip() else ""
     rule = filters.get("rule")
     if isinstance(rule, str) and rule.strip():
-        about += f" from rule {_code(rule, 60)}"
+        about += f" from rule {_code(rule)}"
     return about
 
 
@@ -5064,7 +5186,7 @@ def _say_cost(r: Result) -> list[str]:
     for key, name in (("by_role", "By role"), ("by_model", "By model"), ("by_surface", "By surface")):
         rows = [x for x in o.get(key) or [] if isinstance(x, Mapping)][:4]
         if rows:
-            out.append(f"{name}: " + _join([f"{_code(x.get('key'), 40)} {_usd(x.get('cost'))} "
+            out.append(f"{name}: " + _join([f"{_code(x.get('key'))} {_usd(x.get('cost'))} "
                                             f"({_plural(x.get('calls'), 'call')})" for x in rows]) + ".")
     daily = _dig(o, "budget", "daily")
     if _dig(o, "budget", "enabled") and isinstance(daily, Mapping) and _num(daily.get("cap")):
@@ -5111,7 +5233,7 @@ def _say_campaigns(r: Result, rows: Sequence[Mapping[str, Any]] | None = None) -
         # Named by its display name, else by what ties it together (the shared
         # entity): the content-hash id stays in the table (browser-QA D6). The name
         # is stored text, so it is inline code like a case id (exact, lookalikes visible).
-        name = _code(c.get("name"), 60) if isinstance(c.get("name"), str) and c.get("name").strip() else ""
+        name = _code(c.get("name")) if isinstance(c.get("name"), str) and c.get("name").strip() else ""
         what = _plural(c.get("case_count"), "case")
         entities = [e for e in c.get("entities") or [] if isinstance(e, str)][:2]
         if entities:
@@ -5129,7 +5251,7 @@ def _say_campaigns(r: Result, rows: Sequence[Mapping[str, Any]] | None = None) -
 
 def _say_lookup(r: Result) -> str:
     o = r.obs
-    value = _code(o.get("indicator"), 100)
+    value = _code(o.get("indicator"))
     score = _num(o.get("reputation_score"))
     verdict = display_text(o.get("verdict"), 30) or "unknown"
     answered, queried = _num(o.get("providers_answered")) or 0, _num(o.get("providers_queried")) or 0
@@ -5177,7 +5299,7 @@ def _say_get_case(r: Result, *, lead: bool = True) -> list[str]:
     out: list[str] = []
     if lead:
         name = _case_name(case)
-        head = (f"**{_code(case.get('case_id'), 60)}**" + (f" ({name})" if name else "")
+        head = (f"**{_code(case.get('case_id'))}**" + (f" ({name})" if name else "")
                 + f" {_case_facts(case)}, status **{display_text(case.get('status'), 30).replace('_', ' ')}**")
         if case.get("decision_by"):
             head += f", last decided by {display_text(case.get('decision_by'), 30)}"
@@ -5190,16 +5312,16 @@ def _say_get_case(r: Result, *, lead: bool = True) -> list[str]:
         facts.append(entity)
     rules = [x for x in case.get("rules") or [] if isinstance(x, str)][:3]
     if rules:
-        facts.append(("rule " if len(rules) == 1 else "rules ") + _join([_code(x, 60) for x in rules]))
+        facts.append(("rule " if len(rules) == 1 else "rules ") + _join([_code(x) for x in rules]))
     if case.get("source"):
-        facts.append(f"source {_code(case.get('source'), 60)}")
+        facts.append(f"source {_code(case.get('source'))}")
     if _num(case.get("member_events")) is not None:
         facts.append(_plural(case.get("member_events"), "member event"))
     if facts:
         out.append(f"It covers {_join(facts)}.")
     evidence = [e for e in o.get("evidence") or [] if isinstance(e, Mapping) and e.get("summary")]
     if evidence:
-        out.append(f"Recorded evidence: {_plain(evidence[0].get('summary'))}")
+        out.append(f"Recorded evidence: {_plain(evidence[0].get('summary'), _NARRATED_CHARS)}")
     mitre = [m for m in o.get("mitre") or [] if isinstance(m, Mapping) and m.get("id")]
     if mitre:
         out.append("ATT&CK: " + _join([
@@ -5293,7 +5415,7 @@ def _say_sources(r: Result) -> list[str]:
         if not s.get("enabled", True):
             state.append("disabled")
         state = state or [display_text(s.get("state"), 20) or "ok"]
-        out.append(f"- {_code(s.get('name'), 60)} ({display_text(s.get('type'), 20)}, "
+        out.append(f"- {_code(s.get('name'))} ({display_text(s.get('type'), 20)}, "
                    f"{display_text(s.get('kind'), 10)}): {', '.join(state)}")
     return out
 
@@ -5572,6 +5694,8 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "rerun": ("as_table", "posture", "shift"),
     "cases": ("case", "tp", "shift"),
     "change": ("access", "help", "posture"),
+    "respond": ("case", "pivot", "access"),
+    "out_of_scope": ("posture", "case", "shift"),
     "unsupported": ("access", "help", "posture"),
     "remember": ("posture", "shift", "help"),
     "fallback": ("posture", "shift", "help"),
@@ -5833,7 +5957,7 @@ def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None
     breached = [b for b in _dig(o, "sla", "breached") or [] if isinstance(b, Mapping)]
     if breached:
         steps.append(f"Work the {_plural(len(breached), 'case')} past SLA first: "
-                     + _join([_code(b.get("case_id"), 60) for b in breached[:3]]) + ".")
+                     + _join([_code(b.get("case_id")) for b in breached[:3]]) + ".")
     if _num(head.get("needs_human")):
         steps.append(f"Decide the {_plural(head.get('needs_human'), 'case')} in Needs human status.")
     if _num(head.get("escalated")):
@@ -5900,7 +6024,7 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
             if _num(first.get("risk_score")) is not None:
                 why.append(f"risk {_count(first.get('risk_score'))}")
             why = [w for w in why if w]
-            lead.append(f"Start with {_code(first.get('case_id'), 60)}" + (f" ({', '.join(why)})" if why else "")
+            lead.append(f"Start with {_code(first.get('case_id'))}" + (f" ({', '.join(why)})" if why else "")
                         + ".")
         body = [line for line in lead if line]
     # One figure shown once (A34): the Summary's own text states only what no block
@@ -6467,7 +6591,7 @@ def _final_case(view: PromptView, ask: Ask) -> Final | None:
     if case:
         # The id is the handle; what happened to which entity names the case (D6).
         name = _case_name(case)
-        lead = f"**{_code(case.get('case_id'), 60)}**" + (f" ({name})" if name else "")
+        lead = f"**{_code(case.get('case_id'))}**" + (f" ({name})" if name else "")
         if search is not None and not ask.case_id:
             lead += f", the newest of {_plural(search.obs.get('count'), f'{status_word} case')},"
         lead += (f" {_case_facts(case)}, and its status is "
@@ -6486,7 +6610,7 @@ def _final_case(view: PromptView, ask: Ask) -> Final | None:
         entity = _entity_of(got.obs) if got else None
         subject = f"for {_code(entity[1])}" if entity else ""
         body.append("In the logs: " + _say_log_stats(stats, subject=subject))
-    action = _plain(_dig(case, "recommended_action"), 200)
+    action = _plain(_dig(case, "recommended_action"), _NARRATED_CHARS)
     if action:
         body.append(f"Recorded recommendation: {action}")
     # As a report: the case in one sentence and its recorded recommendation (case
@@ -6695,7 +6819,7 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
             anchor = ("The question names no indicator or known attack type, so this hunt is anchored on the "
                       "highest-risk open case with an indicator entity,")
         name = _case_name(source, with_entity=False)
-        body.append(f"{anchor} {_code(source.get('case_id'), 60)}" + (f" ({name})" if name else "")
+        body.append(f"{anchor} {_code(source.get('case_id'))}" + (f" ({name})" if name else "")
                     + f", which {_case_facts(source)}; its {_ENTITY_WORDS.get(entity[0], entity[0])} is "
                     f"**{_code(entity[1])}**.")
         if not ask.keyword:
@@ -6832,12 +6956,12 @@ def _explained_cases(r: Result, limit: int) -> list[str]:
     for case in cases:
         name = _case_name(case)
         status = display_text(case.get("status"), 30).replace("_", " ")
-        line = (f"- {_code(case.get('case_id'), 60)}" + (f" ({name})" if name else "") + f" {_case_facts(case)}"
+        line = (f"- {_code(case.get('case_id'))}" + (f" ({name})" if name else "") + f" {_case_facts(case)}"
                 + (f", status {status}" if status else ""))
         rules = [x for x in case.get("rules") or [] if isinstance(x, str)][:2]
         shown = [x for x in rules if _rule_words(x) not in name]
         if shown:
-            line += ("; rule " if len(shown) == 1 else "; rules ") + _join([_code(x, 60) for x in shown])
+            line += ("; rule " if len(shown) == 1 else "; rules ") + _join([_code(x) for x in shown])
         lines.append(line + ".")
     if not lines:
         return []
@@ -6875,7 +6999,10 @@ def _final_help(view: PromptView, ask: Ask, intent: str = "help") -> Final | Non
             body.append("From the Help Center:")
             body.extend(paragraphs)
         elif help_result is not None:
-            body.append("The Help Center has no section that answers this directly.")
+            # Nothing in the Help Center or the console matched (often a question that
+            # is not about this deployment at all): say what chat answers (final review L4).
+            body.append("The Help Center has no section that answers this directly."
+                        + ("" if allowed else f" {_CHAT_SCOPE}"))
     locked = _console_sentence(Reference(targets=[t for t in ref.targets if not t.allowed]))
     if locked:
         body.append(locked)
@@ -6951,7 +7078,9 @@ def _final_explain_metric(view: PromptView, ask: Ask) -> Final | None:
 def _final_change(view: PromptView, ask: Ask) -> Final:
     body = ["I can't change that from chat: the assistant is read-only, so it can search and explain but "
             "never close, edit, assign or configure anything."]
-    paragraphs, cited = _help_paragraphs(view.reference, limit=1, topic=_change_query(ask))
+    # Only an excerpt that shares a word with the request is shown: an unrelated top
+    # hit would read as the way to make the change (final review L4).
+    paragraphs, cited = _help_paragraphs(view.reference, limit=1, topic=_change_query(ask), require_match=True)
     console = _console_sentence(view.reference).replace("Open it in the console:", "Do it in the console:")
     if console:
         body.append(console)
@@ -6961,6 +7090,48 @@ def _final_change(view: PromptView, ask: Ask) -> Final:
     return Final(body=body, blocks=_keep(_block(view.ok("app_help"), "guide", view="guide", title="Help Center")),
                  citations=cited, console_links=_console_ids(view.reference), answer_kind="product_help",
                  follow_ups=_follow_ups(view, "change"))
+
+
+def _final_respond(view: PromptView, ask: Ask) -> Final:
+    """A response action (final review L4): no lookup runs and no console page is
+    offered, because nothing in this console isolates, blocks, quarantines or stops
+    anything. The answer says where the action runs and offers to investigate the
+    hosts, users and indicators the analyst named, in their own words."""
+    body = ["I can't do that: chat is read-only, and this console has no response actions, so nothing here can "
+            "isolate a host, block an address, quarantine a file or stop a process. Run the action in your EDR, "
+            "firewall or SOAR tool."]
+    targets = _response_targets(ask.question)
+    follow_ups: list[str] = []
+    for kind, value in targets:
+        if kind in ("host", "user") and view.can("search_cases"):
+            follow_ups.append(f"Investigate everything about {kind} {value}")
+        elif kind in ("ip", "domain", "hash") and (view.can("lookup_indicator") or view.can("search_cases")):
+            follow_ups.append(f"Check {value}")
+    named = _join([_entity_phrase(f"{kind}:{value}") for kind, value in targets])
+    if named and follow_ups:
+        one = len(targets) == 1
+        body.append(f"Before you act, chat can investigate {named}: the cases that involve "
+                    f"{'it' if one else 'them'} and {'its' if one else 'their'} log activity.")
+    elif follow_ups or view.can("search_cases"):
+        body.append("Before you act, ask chat about the host, user or indicator involved: its cases, its log "
+                    "activity and, for an indicator, its reputation.")
+    follow_ups.extend(f for f in _follow_ups(view, "respond") if f not in follow_ups)
+    return Final(body=body, answer_kind="product_help", follow_ups=follow_ups[:3])
+
+
+def _final_out_of_scope(view: PromptView, ask: Ask) -> Final:
+    """A request chat is not for (code, a joke): one honest sentence about what chat
+    answers, and starter questions. No lookup, no case list, no Help Center passage
+    and no "unsupported" notice: it is not a question about data chat cannot read
+    (final review L4, SPEC D9)."""
+    kind = _out_of_scope(ask.lowered)
+    refusal = {"code": "I can't write code or scripts.",
+               "creative": "I can't write jokes, poems or stories."}.get(kind or "", "I can't help with that here.")
+    follow_ups = _follow_ups(view, "out_of_scope")
+    body = [f"{refusal} {_CHAT_SCOPE}"]
+    if follow_ups:
+        body.append("Try one of the suggested questions below, or ask about a case, a host, a user or an indicator.")
+    return Final(body=body, answer_kind="conversation", follow_ups=follow_ups)
 
 
 def _final_unsupported(view: PromptView, ask: Ask) -> Final:
@@ -6996,11 +7167,11 @@ def _final_reshape(view: PromptView, ask: Ask) -> Final:
     if chosen is None:
         charts = [b for b in view.prior_blocks if b.view != "table"]
         latest = (charts or view.prior_blocks or [None])[-1]
-        hint = (f" The latest one, {_code(latest.title, 80)}, can be shown as "
+        hint = (f" The latest one, {_code(latest.title)}, can be shown as "
                 f"{_join([_VIEW_LABEL.get(v, v) for v in latest.views], 'or')}.") if latest else ""
         return Final(body=[f"None of the earlier charts can be shown as a {label}.{hint}"],
                      answer_kind="conversation", follow_ups=_follow_ups(view, "reshape"))
-    return Final(body=[f"Here is {_code(chosen.title, 80)} from the earlier answer as a {label}. No new lookup "
+    return Final(body=[f"Here is {_code(chosen.title)} from the earlier answer as a {label}. No new lookup "
                        "was needed: the numbers are the stored ones."],
                  blocks=[{"ref": chosen.ref, "view": wanted}], answer_kind="data",
                  follow_ups=_follow_ups(view, "reshape"))
@@ -7331,8 +7502,12 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
     body: list[str] = []
     lead, advice = _missing_lead(view, ask) if ask.intent in _DATA_INTENTS else ("", "")
     locked, _scoped = _missing_split(view, ask) if lead else ([], [])
-    if ask.intent == "fallback" and data:
-        body.append("I could not map that to one specific lookup, so here is where things stand:")
+    orientation = ask.intent == "fallback"
+    if orientation:
+        # The orientation answer (chat-revamp §5.5): what chat answers, then where
+        # things stand (final review L4: never an unrelated Help Center passage).
+        body.append(f"I could not map that to one specific lookup. {_CHAT_SCOPE}"
+                    + (" Here is where things stand:" if data else ""))
     elif lead and data:
         # The direct answer to "why is this not the answer I asked for".
         reads = "what you can read" if locked else "what those scopes cover"
@@ -7349,14 +7524,18 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
         body.append("These match your question:")
     body.extend(narration)
     # In a degraded answer only excerpts that match the question's topic are worth
-    # showing; an unrelated top hit would read as an answer it is not.
-    degraded = ask.intent != "fallback"
-    paragraphs, cited = _help_paragraphs(view.reference, topic=(ask.topic or ask.question) if degraded else "",
-                                         require_match=degraded)
-    if paragraphs:
-        body.append("From the Help Center:")
+    # showing; an unrelated top hit would read as an answer it is not. The orientation
+    # answer points to the Help Center's Workspace Chat section only.
+    if orientation:
+        paragraphs, cited = _orientation_pointer(view.reference)
         body.extend(paragraphs)
-    console = _console_sentence(view.reference)
+    else:
+        paragraphs, cited = _help_paragraphs(view.reference, topic=ask.topic or ask.question, require_match=True)
+        if paragraphs:
+            body.append("From the Help Center:")
+            body.extend(paragraphs)
+    # The orientation lookup's console pages answer nothing that was asked.
+    console = "" if orientation else _console_sentence(view.reference)
     if console:
         body.append(console)
     if advice:
@@ -7387,9 +7566,20 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
         opening = body[0] if first else f"{lead}."
     notes = [console, advice, *(["Lookups that did not complete:", *failures] if failures else [])]
     return Final(body=body, blocks=_default_blocks(data), citations=cited,
-                 console_links=_console_ids(view.reference), answer_kind=kind, unsupported=unsupported,
-                 follow_ups=_follow_ups(view, ask.intent, charts=bool(data)),
+                 console_links=[] if orientation else _console_ids(view.reference), answer_kind=kind,
+                 unsupported=unsupported, follow_ups=_follow_ups(view, ask.intent, charts=bool(data)),
                  lead=[p for p in (opening, first) if p], notes=[n for n in notes if n])
+
+
+def _orientation_pointer(ref: Reference) -> tuple[list[str], list[str]]:
+    """``(lines, cited ids)``: one pointer to the Help Center's Workspace Chat section
+    the orientation lookup returned ("To see what else you can ask, read …"), never a
+    quoted passage: the lookup searched for how to ask, not for the question asked."""
+    for section in ref.sections:
+        if section.ref and section.title.strip().lower().startswith("workspace chat"):
+            return ([f"To see what else you can ask, read **{display_text(section.title, 120)}** [{section.ref}] "
+                     "in the Help Center."], [section.ref])
+    return [], []
 
 
 # --------------------------------------------------------------------------- #
@@ -7466,12 +7656,12 @@ def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bo
     out: list[str] = []
     skipped = {s.lower() for s in skip}
     rows = [r for r in comp.get("rows") or [] if isinstance(r, Mapping)
-            and display_text(r.get("label"), 60).lower() not in skipped]
+            and display_text(r.get("label"), _NARRATED_CHARS).lower() not in skipped]
     for row in rows[:limit]:
         values = row.get("values") if isinstance(row.get("values"), list) else []
         if len(values) < 2 or all(_num(v) is None for v in (values[cur_at], values[base_at])):
             continue
-        label = display_text(row.get("label"), 60) if plain_labels else _code(row.get("label"), 60)
+        label = display_text(row.get("label"), _NARRATED_CHARS) if plain_labels else _code(row.get("label"))
         unit = row.get("unit")
         if _num(values[base_at]) is None:
             out.append(f"{label}: **{_value_text(values[cur_at], unit)}** {_in(subject)}; not measured "
@@ -7516,11 +7706,11 @@ def _group_value(field: str, label: Any) -> str:
     """A grouped value in prose: an engine enum as words, a rule, assignee or source
     (case- or log-derived) as inline code."""
     if field in ("rule", "assignee", "source", "surface", "mitre_tactic", "mitre_technique", "closed_by"):
-        text = display_text(label, 80)
+        text = display_text(label, _NARRATED_CHARS)
         if field in ("assignee", "closed_by") and text in ("Unassigned", "Not closed"):
             return text.lower()
-        return _code(label, 80)
-    return display_text(label, 60) or "(none)"
+        return _code(label)
+    return display_text(label, _NARRATED_CHARS) or "(none)"
 
 
 def _stats_groups(o: Mapping[str, Any]) -> list[Mapping[str, Any]]:
@@ -7755,7 +7945,7 @@ def _say_case_stats(r: Result) -> list[str]:
         zero_filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
         rule = zero_filters.get("rule")
         # Round 12 WP-ASK: a rule-filtered zero names the rule it counted.
-        from_rule = f" from rule {_code(rule, 60)}" if isinstance(rule, str) and rule.strip() else ""
+        from_rule = f" from rule {_code(rule)}" if isinstance(rule, str) and rule.strip() else ""
         return [f"No {_stats_noun(o)}{from_rule} matched {_in(_window(o, 'all time'))}." + (f" {hint}" if hint else "")]
     out = [_stats_lead(o) + "."]
     for sentence in (_say_bucket_counts(o) if o.get("bucket") else "",
@@ -7903,8 +8093,8 @@ def _final_breakdown(view: PromptView, ask: Ask) -> Final | None:
         if cases:
             first = cases[0]
             created = _date_text(first.get("created_at"))
-            body.append(f"The oldest still open is {_code(first.get('case_id'), 60)} ({_case_name(first)}), opened "
-                        f"{created}." if created else f"The oldest still open is {_code(first.get('case_id'), 60)}.")
+            body.append(f"The oldest still open is {_code(first.get('case_id'))} ({_case_name(first)}), opened "
+                        f"{created}." if created else f"The oldest still open is {_code(first.get('case_id'))}.")
             rest = _case_bullets(oldest, limit=5)[1:]
             if rest:
                 body.append("The next oldest:")
@@ -8094,12 +8284,12 @@ def _final_entity_cases(view: PromptView, ask: Ask) -> Final | None:
     else:
         ranked = sorted(counted, key=lambda kv: (-kv[1], kv[0].lower()))
         top_count = ranked[0][1]
-        leaders = [_code(value, 60) for value, n in ranked if n == top_count]
+        leaders = [_code(value) for value, n in ranked if n == top_count]
         each = " each" if len(leaders) > 1 else ""
         verb = "have" if len(leaders) > 1 else "has"
         body = [f"Of the {_plural_noun(noun)} on {pool} {when}, {_join(leaders)} {verb} the most cases: "
                 f"**{_count(top_count)}**{each} (exact)."]
-        body.extend(f"- {_code(value, 60)}: {_plural(n, 'case')}" for value, n in ranked)
+        body.extend(f"- {_code(value)}: {_plural(n, 'case')}" for value, n in ranked)
     article = "an" if noun == "IP" else "a"
     body.append(f"Cases are not grouped by {noun}, so {article} {noun} that appears only on lower-risk cases is not "
                 "ranked here. To count cases by the analyst they are assigned to, ask for cases by assignee.")
@@ -8545,7 +8735,7 @@ def _case_missing(view: PromptView, ask: Ask) -> Final | None:
     reason = display_text(failed.summary, 120).lower()
     if "not found" not in reason and "no case" not in reason:
         return None
-    named = _code(ask.case_id, 60) if ask.case_id else "that id"
+    named = _code(ask.case_id) if ask.case_id else "that id"
     body = [f"No case with the id {named} was found: it does not exist, or it is outside what you can see. "
             "Check the id, or find the case by searching for words from its title."]
     follow = ["List the open cases", "Which cases were escalated this week?", "Show the newest escalated case"]
@@ -8635,10 +8825,10 @@ def _final_brief(view: PromptView, ask: Ask) -> Final | None:
     envelope = {"type": "report", "title": title[:120], "template": "investigation_brief", "sections": sections,
                 "subtitle": "Advisory · the case decision is made by policy"}
     name = _case_name(case)
-    lead = [f"**Investigation brief for {_code(case_id, 60)}**" + (f" ({name})" if name else "")
+    lead = [f"**Investigation brief for {_code(case_id)}**" + (f" ({name})" if name else "")
             + f": the case {_case_facts(case)}, status **{status}**; confidence in the verdict is {confidence}.",
             "The brief is advisory: the case decision is made by the deterministic policy, not by this brief."]
-    action = _plain(_dig(case, "recommended_action"), 200)
+    action = _plain(_dig(case, "recommended_action"), _NARRATED_CHARS)
     body = lead + ([f"Recorded recommendation: {action}"] if action else [])
     return Final(body=body, blocks=[envelope], follow_ups=["Why was this case decided this way?",
                                                            "Show the other cases for the same entity",
@@ -8766,6 +8956,7 @@ _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "hunt": _final_hunt, "pivot": _final_pivot, "mitre": _final_mitre, "sources": _final_sources,
     "campaigns": _final_campaigns, "cases": _final_cases, "help": _final_help,
     "explain_metric": _final_explain_metric, "change": _final_change, "unsupported": _final_unsupported,
+    "respond": _final_respond, "out_of_scope": _final_out_of_scope,
     "remember": _final_remember, "reshape": _final_reshape, "rerun": _final_rerun,
     "explain_step": _final_explain_step, "rerun_step": _final_rerun_step,
     "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty,
@@ -8950,7 +9141,7 @@ def _report_window(view: PromptView, ask: Ask) -> str | None:
 #: builds its own, and a question ABOUT reports ("How do reports work?"), a change
 #: request, a clarify or an unsupported ask carries no findings to report on.
 _NO_REPORT_INTENTS = frozenset({"shift", "help", "explain_metric", "change", "unsupported", "remember", "empty",
-                                "clarify"})
+                                "clarify", "respond", "out_of_scope"})
 
 
 _OUTSIDE_RANGE_TEXT = "wholly outside the selected time range"
@@ -8980,7 +9171,8 @@ def _final_outside_range(view: PromptView, ask: Ask) -> Final | None:
 def _compose_final(view: PromptView, ask: Ask) -> Final:
     if view.legacy is not None:
         return _final_legacy(view, ask)
-    if not view.granted and ask.intent not in ("remember", "empty", "reshape", "explain_step"):
+    if not view.granted and ask.intent not in ("remember", "empty", "reshape", "explain_step", "respond",
+                                               "out_of_scope"):
         return _final_no_tools(view, ask)
     builder = _FINALS.get(ask.intent)
     final = _final_outside_range(view, ask)

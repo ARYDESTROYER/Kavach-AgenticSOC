@@ -1226,11 +1226,14 @@ def test_other_questions_about_steps_are_not_step_follow_ups(question: str) -> N
 
 
 def test_a_free_text_label_in_the_step_shape_is_classified_as_the_request_it_is() -> None:
-    # A write request inside the step shape is the change it asks for (chat is read-only).
-    assert classify("Run step 3 (block the IP) again on the firewall").intent == "change"
-    assert classify("Block the IP 203.0.113.9 on the firewall again").intent == "change"
+    # A write request inside the step shape is the request it asks for (chat is
+    # read-only). Blocking an IP is a response action, which no part of this console
+    # performs (final review L4); renaming a case is a change made in the console.
+    assert classify("Run step 3 (block the IP) again on the firewall").intent == "respond"
+    assert classify("Block the IP 203.0.113.9 on the firewall again").intent == "respond"
+    assert classify("Run step 3 (rename the case) again").intent == "change"
     _r, header, body = drive("Run step 3 (block the IP) again on the firewall", history=(_TWO_LOOKUPS,))
-    assert body.startswith("I can't change that from chat")
+    assert body.startswith("I can't do that: chat is read-only, and this console has no response actions")
     assert classify("Explain step 2 (isolate the host): why does the ransomware runbook do this first?").intent \
         == classify("Why does the ransomware runbook isolate the host first?").intent
 

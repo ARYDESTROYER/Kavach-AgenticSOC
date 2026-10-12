@@ -12,6 +12,9 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+# Downloaded or locally built wheels never belong in the source tree. CI builds
+# its wheel into dist/; keep tool downloads in a session scratchpad instead.
+*.whl
 # Auto-bootstrapped pinned MkDocs toolchain for one-command Console builds.
 /.docs-venv/
 /.docs-venv.lock
