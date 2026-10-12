@@ -754,9 +754,16 @@ export function CloseAttributionChart({
             first and last bucket. A table of every bucket follows the chart.
           </p>
         ) : null}
+        {/* `viewBox` equals the drawn size, so on screen the scale is 1:1 (hover, band
+            and tooltip math are unchanged). On paper it lets the print rule scale the
+            chart down to the column instead of clipping it: no script runs between the
+            print reflow and the printout, so the on-screen width cannot be re-measured,
+            and a 900px chart printed from a 1024px window lost its newest buckets off
+            the right edge (Round 12 final review). */}
         <svg
           width={geo.width}
           height={geo.height}
+          viewBox={`0 0 ${geo.width} ${geo.height}`}
           className="block overflow-visible"
           aria-hidden
           data-plot-top={geo.plotTop}

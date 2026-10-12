@@ -1,6 +1,6 @@
 /**
  * "Export conversation" for the chat toolbar and history rail (chat revamp SPEC §9.3,
- * §10.1a): Markdown, HTML or Print, through the SAME document model and serialisers as
+ * §10.1a): Markdown, HTML, PDF (print) or Word, through the SAME document model and serialisers as
  * a report — one section per exchange (the user's question, the answer prose, that
  * turn's blocks), then the deterministic Methodology & limitations built from the turns'
  * recorded steps and usage, and an appendix of the queries that ran.
@@ -16,12 +16,13 @@ import { exportDocument, type ExportOutcome } from './run';
 import { reportToHtml } from './html';
 import { reportToMarkdown } from './markdown';
 
-export type ConversationExportFormat = 'markdown' | 'html' | 'print';
+export type ConversationExportFormat = 'markdown' | 'html' | 'print' | 'docx';
 
 export const CONVERSATION_EXPORT_LABEL: Readonly<Record<ConversationExportFormat, string>> = {
+  print: 'PDF (.pdf)',
+  docx: 'Word (.docx)',
   markdown: 'Markdown (.md)',
   html: 'HTML (.html)',
-  print: 'Print / Save as PDF',
 };
 
 export interface ConversationExportOptions {
@@ -31,6 +32,8 @@ export interface ConversationExportOptions {
   author?: string | null;
   /** Export instant (tests pin it). */
   now?: Date;
+  /** Print only: called just before the print dialog opens (show "Choose Save as PDF" here). */
+  onPrintOpening?: (filename: string) => void;
 }
 
 /** The conversation as Markdown text (pure; for tests and Copy). */
@@ -70,7 +73,7 @@ export async function exportConversation(
     appVersion: CONSOLE_RELEASE_IDENTITY.version,
     generatedAt: now.toISOString(),
   });
-  return exportDocument(doc, format, { defang: options.defang, kind: 'conversation', now });
+  return exportDocument(doc, format, { defang: options.defang, kind: 'conversation', now, onPrintOpening: options.onPrintOpening });
 }
 
 export default exportConversation;

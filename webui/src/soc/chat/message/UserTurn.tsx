@@ -5,7 +5,9 @@
  * It renders `ChatUserItem.content` — the DISPLAY form with invisible, bidi and
  * control characters already stripped — and never `.prompt` (the exact stored text
  * that Ask again reuses). Copy and Save prompt sit beside the bubble on hover or
- * keyboard focus.
+ * keyboard focus. Save prompt is offered only for the analyst's own words (`origin:
+ * user`, the ↑-recall rule): a saved prompt runs later as typed by them, so an Ask AI,
+ * starter or follow-up question, whose text they did not write, is never saved (#9).
  */
 import * as React from 'react';
 import { Bookmark, Check, Copy } from 'lucide-react';
@@ -20,7 +22,7 @@ import type { ChatUserItem } from '../useChatEngine';
 export interface UserTurnProps {
   item: ChatUserItem;
   headingId: string;
-  /** Save the prompt to the viewer's saved prompts (Workspace only). */
+  /** Save the prompt to the viewer's saved prompts (Workspace only; `user` turns only). */
   onSavePrompt?: (item: ChatUserItem) => void;
   compact?: boolean;
   /** A requested message (deep link / search hit): ringed for 2 s. */
@@ -57,7 +59,7 @@ function UserTurnView({ item, headingId, onSavePrompt, compact = false, highligh
         <IconButton label={copied ? 'Copied' : 'Copy message'} size="sm" onClick={copy}>
           {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
         </IconButton>
-        {onSavePrompt ? (
+        {onSavePrompt && item.origin === 'user' ? (
           <IconButton label="Save prompt" size="sm" onClick={() => onSavePrompt(item)}>
             <Bookmark aria-hidden />
           </IconButton>

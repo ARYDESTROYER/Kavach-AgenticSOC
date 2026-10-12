@@ -14,6 +14,7 @@ import AnswerBlocks from '../AnswerBlocks';
 import { BlockBody } from '../BlockCard';
 import { ChartBlockView } from '../charts/ChartBlockView';
 import { placeTooltip } from '../charts/ChartTooltipPortal';
+import { risingNote, risingStages, stepDown, stepLine, stepText } from '../charts/FunnelChart';
 import { galleryBlock } from '../__fixtures__/gallery';
 import { parseBlock, parseBlocks } from '../schema';
 import type { AnswerBlock, ChartBlock, InternalRef } from '../schema';
@@ -84,6 +85,61 @@ describe('columns (bar)', () => {
     const plot = screen.getByTestId('chart-bar-plot');
     fireEvent.mouseMove(plot, { clientX: 400, clientY: 50 });
     expect(tooltip('chart-bar')).not.toBeNull();
+  });
+
+  it('centres a narrower plot for a few buckets on a wide card and leaves full charts alone', () => {
+    // Tour 3: "Cases by month" (Sep 2026: 2, Oct 2026: 18) across the 1,808 px lane drew
+    // two 22 px bars about 850 px apart in an empty plot.
+    const chartOf = (kind: 'bar' | 'line', labels: string[], values: number[]) => {
+      const block = parseBlock({
+        id: `wide-${kind}-${labels.length}`,
+        type: 'chart',
+        kind,
+        title: 'Cases by month',
+        provenance: 'code',
+        artifact_kind: 'series',
+        allowed_views: ['bar', 'line', 'table'],
+        unit: 'count',
+        x: { kind: 'category', values: labels },
+        series: [{ key: 'cases', label: 'Cases', values }],
+      });
+      if (block.type !== 'chart') throw new Error('not a chart');
+      return block;
+    };
+    const frameOf = (container: HTMLElement) => {
+      const svg = container.querySelector('svg[data-plot-width]');
+      expect(svg).not.toBeNull();
+      return { x: Number(svg!.getAttribute('data-plot-x')), w: Number(svg!.getAttribute('data-plot-width')) };
+    };
+    const spy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1800);
+    try {
+      const two = show(chartOf('bar', ['Sep 2026', 'Oct 2026'], [2, 18]));
+      const frame = frameOf(two.container);
+      expect(frame.w).toBe(264);
+      // Centred in the card (its tick column rides along on the left).
+      expect(Math.abs(frame.x + frame.w / 2 - 900)).toBeLessThan(24);
+      const bars = Array.from(two.container.querySelectorAll('path[data-series="0"]'));
+      expect(bars).toHaveLength(2);
+      for (const bar of bars) {
+        const x = Number(/^M([\d.]+),/.exec(bar.getAttribute('d') ?? '')?.[1]);
+        expect(x).toBeGreaterThan(frame.x);
+        expect(x + 22).toBeLessThan(frame.x + frame.w);
+      }
+      two.unmount();
+
+      // Twenty-four hourly buckets already fill the card: the plot spans it as before.
+      const hours = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+      const many = show(chartOf('bar', hours, hours.map((_, h) => h)));
+      expect(frameOf(many.container).w).toBeGreaterThan(1700);
+      many.unmount();
+
+      // A line with two points is not a column chart: it keeps the full width.
+      const line = show(chartOf('line', ['Sep 2026', 'Oct 2026'], [2, 18]));
+      expect(frameOf(line.container).w).toBeGreaterThan(1700);
+      line.unmount();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
@@ -176,8 +232,69 @@ describe('line / area', () => {
     const { container } = show(galleryBlock('mtta-trend'));
     expect(container.querySelectorAll('circle[data-end-dot]')).toHaveLength(2);
     const svgText = Array.from(container.querySelectorAll('svg text')).map((t) => t.textContent);
-    // End labels are clipped to 14 characters; the full label is in the legend and table.
-    expect(svgText).toEqual(expect.arrayContaining(['Median', '90th percenti…']));
+    // At 560 px a quarter of the chart holds 19 characters: "90th percentile" fits whole.
+    expect(svgText).toEqual(expect.arrayContaining(['Median', '90th percentile']));
+    expect(container.querySelector('text[data-end-label] title')).toBeNull();
+  });
+
+  describe('end labels sized to the chart (never a fixed 14 characters)', () => {
+    const trend = () =>
+      parseBlock({
+        id: 'case-trend',
+        type: 'chart',
+        kind: 'line',
+        title: 'Cases by hour',
+        provenance: 'code',
+        artifact_kind: 'series',
+        allowed_views: ['line', 'area', 'bar', 'table'],
+        unit: 'count',
+        x: { kind: 'time', values: ['2026-10-07T00:00:00Z', '2026-10-07T01:00:00Z', '2026-10-07T02:00:00Z'], bucket: '1h' },
+        series: [
+          { key: 'opened', label: 'Opened', values: [12, 18, 15] },
+          { key: 'auto', label: 'Auto-closed', values: [7, 9, 8] },
+          { key: 'analyst', label: 'Closed by an analyst', values: [4, 6, 5] },
+        ],
+      }) as AnswerBlock;
+    const endLabels = (container: HTMLElement) =>
+      Array.from(container.querySelectorAll('text[data-end-label]')).map((t) => ({
+        shown: Array.from(t.childNodes)
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => node.textContent)
+          .join(''),
+        title: t.querySelector('title')?.textContent ?? null,
+      }));
+    const at = (px: number) => vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(px);
+
+    it('shows every label whole on a wide chart, with room reserved for the longest', () => {
+      const width = at(1242);
+      try {
+        const { container } = show(trend());
+        expect(endLabels(container)).toEqual(
+          expect.arrayContaining([
+            { shown: 'Opened', title: null },
+            { shown: 'Auto-closed', title: null },
+            { shown: 'Closed by an analyst', title: null },
+          ]),
+        );
+        // The labels start 8 px right of the plot and their column fits inside the chart.
+        const x = Number(container.querySelector('text[data-end-label]')?.getAttribute('x'));
+        expect(1242 - x).toBeGreaterThanOrEqual(Math.ceil('Closed by an analyst'.length * 6.6));
+      } finally {
+        width.mockRestore();
+      }
+    });
+
+    it('clips only beyond a quarter of a narrow chart, with the whole label as its title', () => {
+      const width = at(338);
+      try {
+        const { container } = show(trend());
+        const labels = endLabels(container);
+        expect(labels).toContainEqual({ shown: 'Closed by an …', title: 'Closed by an analyst' });
+        expect(labels).toContainEqual({ shown: 'Auto-closed', title: null });
+      } finally {
+        width.mockRestore();
+      }
+    });
   });
 
   it('shows a crosshair and every series at x in one tooltip', () => {
@@ -331,6 +448,47 @@ describe('sparkline and funnel', () => {
     const plot = focusPlot('chart-funnel');
     fireEvent.keyDown(plot, { key: 'End' });
     expect(tooltip('chart-funnel')).toHaveTextContent('of the first stage');
+    // Every step here is a reduction: no rise note.
+    expect(screen.queryByTestId('funnel-rise-note')).toBeNull();
+  });
+
+  it('never calls a larger stage "kept": a rise reads as a rise, with a note under the chart', () => {
+    // The all-time noise funnel seen live: cases counted over all time, alert stages
+    // only since the counters started, so "Cases opened" exceeds "After clustering".
+    const block = parseBlock({
+      ...(galleryBlock('triage-funnel') as object),
+      x: { kind: 'category', values: ['Alerts ingested', 'After clustering', 'Cases opened', 'Closed automatically'] },
+      series: [{ key: 'n', label: 'Alerts', values: [182, 43, 82, 14] }],
+    });
+    show(block);
+    const steps = screen.getAllByTestId('funnel-step').map((s) => s.textContent ?? '');
+    expect(steps).toEqual(['↓ 24% kept · −76%', '↑ +91% · not a reduction', '↓ 17% kept · −83%']);
+    for (const step of steps) expect(step).not.toMatch(/(1\d\d|[2-9]\d\d)% kept/);
+    expect(screen.getByTestId('funnel-rise-note')).toHaveTextContent(
+      'Cases opened is larger than After clustering, so that step is not a reduction. The stages may count different populations or periods.',
+    );
+    // The data table and the tooltip say the same in full.
+    const table = screen.getByTestId('chart-data-table');
+    expect(table).toHaveTextContent('Change from previous stage');
+    expect(table).toHaveTextContent('+91% vs previous stage (not a reduction)');
+    expect(table).not.toHaveTextContent('191%');
+    const plot = focusPlot('chart-funnel');
+    fireEvent.keyDown(plot, { key: 'ArrowDown' });
+    fireEvent.keyDown(plot, { key: 'ArrowDown' });
+    expect(tooltip('chart-funnel')).toHaveTextContent('+91%vs previous stage (not a reduction)');
+    expect(tooltip('chart-funnel')).not.toHaveTextContent('kept');
+  });
+
+  it('words the step helpers for a drop, a flat step, a rise and an unmeasured stage', () => {
+    expect(stepText(stepDown(100, 25))).toBe('25% kept · −75%');
+    expect(stepText(stepDown(100, 100))).toBe('100% kept · 0%');
+    expect(stepText(stepDown(43, 82))).toBe('+91% vs previous stage (not a reduction)');
+    expect(stepLine(stepDown(43, 82))).toBe('↑ +91% · not a reduction');
+    expect(stepLine(stepDown(100, 25))).toBe('↓ 25% kept · −75%');
+    expect(stepText(stepDown(null, 4))).toBe('—');
+    expect(risingStages([182, 43, 82, 90, 14])).toEqual([2, 3]);
+    expect(risingNote(['A', 'B', 'C', 'D'], [2, 3])).toBe('C is larger than B; D is larger than C, so those steps are not a reduction. The stages may count different populations or periods.');
+    expect(risingNote(['A', 'B'], [])).toBeNull();
   });
 });
 

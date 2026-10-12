@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import (
     Float,
     Integer,
+    Text,
     and_,
     cast,
     delete,
@@ -47,6 +48,7 @@ from ...constants import (
     SourceSurface,
 )
 from ...models import AuditDoc, Case, Cursor, UsageDoc
+from ...realtime import publish_case_changed
 from ...utils import (
     now_utc,
     parse_es_timestamp,
@@ -198,6 +200,11 @@ def _case_order_by(sort_field: str, sort_order: str) -> list[Any]:
 class SqlCaseRepository(CaseRepository):
     """Cases persisted as JSON with materialised filter/sort columns."""
 
+    #: Round 12 (WP-CM): see ``CaseStore.case_event_bus`` — one ``case.changed`` nudge
+    #: on the ``cases`` realtime topic after every successful save.
+    case_event_bus: Any = None
+    publishes_case_events: bool = True
+
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
         self._sm = _sessionmaker(engine)
@@ -234,17 +241,33 @@ class SqlCaseRepository(CaseRepository):
                 updated_at=persisted.updated_at or "",
                 doc=doc,
             )
+            created = row is None
             if row is None:
                 session.add(CaseRow(case_id=case.case_id, **values))
             else:
                 for k, v in values.items():
                     setattr(row, k, v)
             await session.commit()
+        if self.publishes_case_events:
+            # Ids, status and timestamps only (#7/#9); never fails the write.
+            publish_case_changed(persisted, created=created, bus=self.case_event_bus)
 
     async def get(self, case_id: str) -> Case | None:
         async with self._sm() as session:
             row = await session.get(CaseRow, case_id)
             return Case.model_validate(row.doc) if row else None
+
+    async def get_many(self, case_ids: Any) -> dict[str, Case]:
+        """The cases with these ids in one query, keyed by id (the Case Manager
+        queue's page read, Round 12 final review L1). An id with no case is absent."""
+        ids = sorted({str(cid) for cid in (case_ids or []) if cid})
+        if not ids:
+            return {}
+        async with self._sm() as session:
+            rows = (await session.execute(
+                select(CaseRow).where(CaseRow.case_id.in_(ids))
+            )).scalars().all()
+        return {row.case_id: Case.model_validate(row.doc) for row in rows}
 
     async def find_open_by_signature(self, signature: str) -> Case | None:
         stmt = (
@@ -424,6 +447,777 @@ class SqlCaseRepository(CaseRepository):
         )
         async with self._sm() as session:
             return int((await session.execute(stmt)).scalar() or 0)
+
+    # -- Round 12 exact aggregates -------------------------------------------- #
+    async def scan_page(
+        self,
+        *,
+        limit: int = 1000,
+        cursor: Any = None,
+        created_from: Any = None,
+        created_to: Any = None,
+        raw: bool = False,
+        statuses: Any = None,
+        newest_first: bool = False,
+        fields: Any = None,
+    ) -> tuple[list[Case], Any | None, int | None, str]:
+        """Keyset page over ``(created_at, case_id)`` — O(page) per call at any depth,
+        unlike the inherited OFFSET export (diagnosis E7).
+
+        The half-open window ``[created_from, created_to)`` is pushed down on the
+        canonical ``created_at`` column with the same never-drop escape hatch as
+        :meth:`list_window` (an empty or non-canonical column is always kept; the
+        caller re-checks every row); ``statuses`` is pushed down on the indexed
+        ``status`` column. ``total`` is counted once, on the first page, and carried in
+        the cursor. Rows inserted mid-scan behind the keyset are not revisited, so the
+        scan is ``bounded_at_start``.
+
+        ``newest_first`` reads newest first by the REAL creation instant, then case id,
+        with a ``created_at`` that cannot be placed in time last — the order the
+        Elasticsearch store gets from its ``created_at`` date sort (``missing: _last``).
+        See :meth:`_scan_newest_page`. ``fields`` is accepted and ignored (whole
+        documents are read; a raw page's JSON is decoded in a worker thread, off the
+        event loop)."""
+        from ...engine.case_aggregate import iso_bound
+
+        del fields
+
+        cap = max(1, min(int(limit or 1000), 5000))
+        state = dict(cursor) if isinstance(cursor, dict) else {}
+        lo, hi = iso_bound(created_from), iso_bound(created_to)
+        keep = _created_keep(lo, hi)
+        wanted = sorted({str(v) for v in statuses}) if statuses is not None else None
+        filters: list[Any] = []
+        if keep is not None:
+            filters.append(keep)
+        if wanted is not None:
+            filters.append(CaseRow.status.in_(wanted))
+        # A raw page reads the document as TEXT and decodes it in a worker thread (see
+        # ``_decode_docs``): a 1,000-row page of JSON decoded by the driver's result
+        # processing would otherwise run on the event loop.
+        doc_col = cast(CaseRow.doc, Text).label("doc") if raw else CaseRow.doc
+        if newest_first:
+            return await self._scan_newest_page(
+                state=state, cap=cap, filters=filters, doc_col=doc_col, raw=raw,
+                lo=lo, hi=hi,
+            )
+        after = state.get("after")
+        stmt = select(CaseRow.created_at, CaseRow.case_id, doc_col).where(*filters)
+        if isinstance(after, list) and len(after) == 2:
+            stmt = stmt.where(or_(
+                CaseRow.created_at > str(after[0]),
+                and_(CaseRow.created_at == str(after[0]), CaseRow.case_id > str(after[1])),
+            ))
+        stmt = stmt.order_by(CaseRow.created_at.asc(), CaseRow.case_id.asc()).limit(cap)
+        total = state.get("total")
+        async with self._sm() as session:
+            rows = (await session.execute(stmt)).all()
+            if not isinstance(total, int):
+                count_stmt = select(func.count()).select_from(CaseRow).where(*filters)
+                total = int((await session.execute(count_stmt)).scalar() or 0)
+        cases = await _page_cases([row.doc for row in rows], raw)
+        if len(rows) < cap:
+            return cases, None, total, "bounded_at_start"
+        last = rows[-1]
+        return (
+            cases,
+            {"phase": "asc", "after": [str(last.created_at), str(last.case_id)],
+             "total": total},
+            total,
+            "bounded_at_start",
+        )
+
+    async def _scan_newest_page(
+        self,
+        *,
+        state: dict[str, Any],
+        cap: int,
+        filters: list[Any],
+        doc_col: Any,
+        raw: bool,
+        lo: str | None,
+        hi: str | None,
+    ) -> tuple[list[Any], Any | None, int | None, str]:
+        """One ``newest_first`` page: the next ``cap`` rows of ONE stream ordered by
+        ``(position, case_id)`` descending, where ``position`` is the canonical UTC
+        spelling of the row's creation instant (``""`` when it cannot be placed, so
+        those rows come last).
+
+        The ``created_at`` column is lexicographically ordered only where it holds the
+        canonical spelling, so the stream is merged from three sources, each read in
+        that order and each bounded:
+
+        * **canonical** rows: a descending keyset on the indexed column, at most
+          ``cap`` rows with their documents;
+        * **legacy** rows (a non-empty, non-canonical spelling written before the
+          column was normalised; healed by their next save): only ``(created_at,
+          case_id)`` is read, and each value is placed with the same parser the column
+          normaliser and the engine use (:func:`_newest_position`);
+        * **undated** rows (an empty column): ``case_id`` descending, at most ``cap``
+          keys, read only when the canonical rows cannot fill the page.
+
+        The legacy key read cannot use the index, so it is not repeated on every page:
+        the cursor carries ``legacy_next``, the newest legacy key left behind the
+        keyset (``None`` once none is left). The set of legacy rows only ever shrinks
+        (a save heals a row AT its position; every new row is canonical or undated),
+        so every legacy row still behind the keyset is at or behind that key, and the
+        rows ahead of it are canonical rows alone. A page first reads those with the
+        index only (the **head**); when the head fills the page, the page is complete
+        without the legacy read. Only a page that reaches ``legacy_next`` reads the
+        legacy keys again, for its remainder (the **tail**), and the tail recomputes
+        ``legacy_next``. A page reads at most ``cap`` documents per source: the
+        canonical ones with their keys, the chosen legacy/undated ones by id.
+
+        The cursor stays a small keyset (``after = [position, case_id]``), so the scan
+        is resumable, and a row re-saved mid-scan keeps its position (the column
+        normaliser writes exactly the position the legacy read computed), so it is
+        read once: the tail reads the legacy keys BEFORE its canonical page, and a row
+        seen on both sides of a concurrent re-save is de-duplicated by case id."""
+        bound = _newest_key(state.get("after"))
+        # A cursor without ``legacy_next`` (the first page, or one written before it
+        # existed) says nothing about the legacy rows, so its page reads them.
+        known = bound is not None and "legacy_next" in state
+        legacy_next = _newest_key(state.get("legacy_next")) if known else None
+        total = state.get("total")
+        async with self._sm() as session:
+            taken: list[tuple[str, str, Any]] = []
+            # ``bound`` is known here; past the last placed row there is no head.
+            if legacy_next is not None and bound is not None and bound[0] != "":
+                head = await session.execute(
+                    _canonical_newest(filters, doc_col, below=bound, above=legacy_next)
+                    .limit(cap)
+                )
+                taken = [(str(r.created_at), str(r.case_id), r.doc) for r in head.all()]
+            legacy: list[tuple[str, str]] = []
+            tail = len(taken) < cap
+            if tail:
+                # The head ran out (or there is none): every row between the keyset and
+                # ``legacy_next`` is taken, so the tail continues from the last of them.
+                if taken:
+                    bound = (taken[-1][0], taken[-1][1])
+                if not known or legacy_next is not None:
+                    pairs = [(str(r.created_at), str(r.case_id)) for r in (await session.execute(
+                        select(CaseRow.created_at, CaseRow.case_id).where(*filters).where(
+                            CaseRow.created_at != "",
+                            _not_canonical_created(),
+                        )
+                    )).all()]
+                    if len(pairs) > _LEGACY_PLACE_OFFLOAD_AT:
+                        legacy = await asyncio.to_thread(_legacy_positions, pairs, lo, hi, bound)
+                    else:
+                        legacy = _legacy_positions(pairs, lo, hi, bound)
+                room = cap - len(taken)
+                canonical: list[Any] = []
+                if bound is None or bound[0] != "":
+                    canonical = list((await session.execute(
+                        _canonical_newest(filters, doc_col, below=bound).limit(room)
+                    )).all())
+                undated: list[str] = []
+                if len(canonical) < room:
+                    stmt = select(CaseRow.case_id).where(*filters, CaseRow.created_at == "")
+                    if bound is not None and bound[0] == "":
+                        stmt = stmt.where(CaseRow.case_id < bound[1])
+                    undated = [str(cid) for cid in (await session.execute(
+                        stmt.order_by(CaseRow.case_id.desc()).limit(room)
+                    )).scalars().all()]
+                taken.extend(_merge_newest(canonical, legacy, undated, room))
+            fetch = [cid for _pos, cid, doc in taken if doc is _UNREAD]
+            by_id: dict[str, Any] = {}
+            if fetch:
+                by_id = {str(r.case_id): r.doc for r in (await session.execute(
+                    select(CaseRow.case_id, doc_col).where(CaseRow.case_id.in_(fetch))
+                )).all()}
+            if not isinstance(total, int):
+                count_stmt = select(func.count()).select_from(CaseRow).where(*filters)
+                total = int((await session.execute(count_stmt)).scalar() or 0)
+        # A row deleted between its key read and its document read is simply absent.
+        docs = [by_id[cid] if doc is _UNREAD else doc
+                for _pos, cid, doc in taken if doc is not _UNREAD or cid in by_id]
+        cases = await _page_cases(docs, raw)
+        if len(taken) < cap:
+            return cases, None, total, "bounded_at_start"
+        last = (taken[-1][0], taken[-1][1])
+        # The head alone filled the page: the legacy keys were not read and still sit
+        # at or behind ``legacy_next``. Otherwise the tail read them (or knew none was
+        # left): the newest one still behind the new keyset.
+        following = (legacy_next if not tail
+                     else next((key for key in legacy if key < last), None))
+        return (
+            cases,
+            {"phase": "newest", "after": list(last),
+             "legacy_next": list(following) if following is not None else None,
+             "total": total},
+            total,
+            "bounded_at_start",
+        )
+
+    async def aggregate(self, spec: Any) -> Any | None:
+        """``GROUP BY`` push-down over the JSON documents for COUNT-style specs.
+
+        Answers ``count``/``open_now`` grouped by the materialised ``status`` /
+        ``source_surface`` columns and the JSON fields ``verdict``, ``decision_by``,
+        ``disposition``, ``assignee`` and ``source_id`` (``json_extract`` on SQLite,
+        ``->>`` on PostgreSQL via SQLAlchemy's JSON accessor), filtered by the exact
+        filters, windowed on the canonical ``created_at`` column. Calendar buckets come
+        from the UTC hour (``substr(created_at, 1, 13)``) folded into ``spec.window.tz``
+        periods in Python — exact whenever every UTC hour maps into one local period
+        (any whole-hour offset zone); otherwise, or when a non-canonical legacy
+        ``created_at`` would have to be placed in time, it returns ``None`` and the
+        engine folds. Multi-valued and derived fields always fold."""
+        return await _sql_case_pushdown(self._sm, spec)
+
+
+def _not_canonical_created() -> Any:
+    """``created_at`` the column order cannot place in time: empty, or not the canonical
+    ``YYYY-MM-DDTHH:MM:SS…+00:00`` spelling (legacy rows)."""
+    return or_(
+        CaseRow.created_at == "",
+        ~CaseRow.created_at.like(_ISO_CREATED_AT_SHAPE),
+        ~CaseRow.created_at.like(_ISO_CREATED_AT_UTC_TAIL),
+    )
+
+
+# A newest-first page places this many legacy keys or more in a worker thread.
+_LEGACY_PLACE_OFFLOAD_AT = 1000
+# A row a newest-first page has chosen by key whose document is read afterwards.
+_UNREAD: Any = object()
+
+
+def _newest_key(value: Any) -> tuple[str, str] | None:
+    """A cursor's ``[position, case_id]`` pair, or ``None`` when it holds none."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (str(value[0]), str(value[1]))
+    return None
+
+
+def _canonical_newest(
+    filters: list[Any],
+    doc_col: Any,
+    *,
+    below: tuple[str, str] | None,
+    above: tuple[str, str] | None = None,
+) -> Any:
+    """Canonical rows with their documents, newest first by ``(created_at, case_id)``,
+    strictly behind the keyset ``below`` and strictly ahead of ``above``: a range read
+    on the indexed column (a canonical column value IS its stream position)."""
+    stmt = select(CaseRow.created_at, CaseRow.case_id, doc_col).where(
+        *filters, ~_not_canonical_created(),
+    )
+    if below is not None:
+        stmt = stmt.where(or_(
+            CaseRow.created_at < below[0],
+            and_(CaseRow.created_at == below[0], CaseRow.case_id < below[1]),
+        ))
+    if above is not None:
+        stmt = stmt.where(or_(
+            CaseRow.created_at > above[0],
+            and_(CaseRow.created_at == above[0], CaseRow.case_id > above[1]),
+        ))
+    return stmt.order_by(CaseRow.created_at.desc(), CaseRow.case_id.desc())
+
+
+def _newest_position(value: Any) -> str:
+    """A ``created_at``'s position in the newest-first stream: the canonical column
+    spelling of its instant (exactly what :func:`_canonical_created_at` writes on the
+    row's next save, via the engine's own parser), or ``""`` when it cannot be placed
+    in time (such rows sort last, as Elasticsearch's ``missing: _last`` does)."""
+    try:
+        return _canonical_created_at(value)
+    except (ValueError, OverflowError, OSError, TypeError):
+        return ""
+
+
+def _legacy_positions(
+    pairs: list[tuple[str, str]],
+    lo: str | None,
+    hi: str | None,
+    bound: tuple[str, str] | None,
+) -> list[tuple[str, str]]:
+    """Legacy ``(created_at, case_id)`` keys → ``(position, case_id)`` newest first,
+    keeping only those behind the keyset ``bound``. A row now PLACED outside
+    ``[lo, hi)`` is left out (the caller's own window check, on the same parser, would
+    drop it); one that still cannot be placed is always kept (never-drop, #4). Pure;
+    runs in a worker thread for a large set."""
+    out: list[tuple[str, str]] = []
+    for raw, case_id in pairs:
+        position = _newest_position(raw)
+        if position and ((lo is not None and position < lo)
+                         or (hi is not None and position >= hi)):
+            continue
+        if bound is not None and (position, case_id) >= bound:
+            continue
+        out.append((position, case_id))
+    out.sort(reverse=True)
+    return out
+
+
+def _merge_newest(
+    canonical: list[Any],
+    legacy: list[tuple[str, str]],
+    undated: list[str],
+    cap: int,
+) -> list[tuple[str, str, Any]]:
+    """The first ``cap`` distinct rows of the three newest-first sources merged by
+    ``(position, case_id)`` descending → ``[(position, case_id, doc-or-_UNREAD)]``.
+    Each source is already in that order (the canonical one in the database's own
+    order, which the merge preserves); a case id met twice (a row re-saved between two
+    of the reads) is taken once."""
+    import heapq
+
+    streams = (
+        ((str(r.created_at), str(r.case_id), r.doc) for r in canonical),
+        ((position, case_id, _UNREAD) for position, case_id in legacy),
+        (("", case_id, _UNREAD) for case_id in undated),
+    )
+    taken: list[tuple[str, str, Any]] = []
+    seen: set[str] = set()
+    for position, case_id, doc in heapq.merge(
+        *streams, key=lambda item: (item[0], item[1]), reverse=True,
+    ):
+        if len(taken) >= cap:
+            break
+        if case_id in seen:
+            continue
+        seen.add(case_id)
+        taken.append((position, case_id, doc))
+    return taken
+
+
+async def _page_cases(docs: list[Any], raw: bool) -> list[Any]:
+    """A page's stored documents → raw dicts (decoded in a worker thread) or ``Case``."""
+    if raw:
+        return await asyncio.to_thread(_decode_docs, docs)
+    return [Case.model_validate(doc) for doc in docs]
+
+
+# A canonical ``created_at``/``ts`` whose fields are out of range (month 13, minute 60,
+# 30 February): it passes the LIKE shape, but the fold cannot place it in time, so a
+# push-down that string-compared it would count what the fold calls undatable.
+_PG_VALID_ISO_PREFIX = (
+    r"^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]"
+)
+
+
+def _impossible_iso(column: Any, dialect: str) -> Any | None:
+    """A predicate true for a non-empty canonical-looking timestamp that is not a real
+    instant, or ``None`` when the dialect offers no check (the caller then relies on
+    the shape guard alone)."""
+    if dialect == "sqlite":
+        return and_(column != "", or_(
+            func.julianday(column).is_(None),
+            func.strftime("%Y-%m-%dT%H:%M:%S", column) != func.substr(column, 1, 19),
+        ))
+    if dialect == "postgresql":
+        return and_(column != "", ~column.op("~")(_PG_VALID_ISO_PREFIX))
+    return None
+
+
+def _session_dialect(session: Any) -> str:
+    try:
+        return str(session.get_bind().dialect.name)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def _begin_snapshot(session: Any) -> bool:
+    """Make every later statement of ``session`` read ONE database snapshot, so a
+    multi-statement push-down (groups, total, missing count, edges, open stock) is one
+    consistent answer whose total always equals the sum of its groups.
+
+    PostgreSQL: a ``REPEATABLE READ`` transaction (its snapshot is taken at the first
+    statement and held). SQLite: an explicit read transaction (the pysqlite driver
+    otherwise runs each SELECT in autocommit, i.e. on its own snapshot). Returns False
+    when neither could be established — the caller then declines the push-down and the
+    engine folds, rather than claiming a consistency it cannot prove."""
+    try:
+        name = session.get_bind().dialect.name
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        if name == "postgresql":
+            await session.connection(execution_options={"isolation_level": "REPEATABLE READ"})
+            return True
+        if name == "sqlite":
+            await session.execute(text("BEGIN"))
+            return True
+    except Exception as exc:  # noqa: BLE001 — no snapshot: fold instead
+        logger.debug("snapshot transaction unavailable: %s", exc)
+    return False
+
+
+def _decode_docs(values: list[Any]) -> list[dict[str, Any]]:
+    """Stored case documents read as JSON text (or, from a driver that already
+    decoded them, as mappings) → fresh dicts; a NULL or non-object document is ``{}``,
+    as before. Pure; called in a worker thread for raw scan pages."""
+    import json
+
+    out: list[dict[str, Any]] = []
+    for value in values:
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8")
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                value = None
+        out.append(dict(value) if isinstance(value, dict) else {})
+    return out
+
+
+def _created_keep(lo: str | None, hi: str | None) -> Any | None:
+    """The never-drop ``[lo, hi)`` predicate on the canonical ``created_at`` column."""
+    inside = [c for c in (
+        CaseRow.created_at >= lo if lo is not None else None,
+        CaseRow.created_at < hi if hi is not None else None,
+    ) if c is not None]
+    if not inside:
+        return None
+    return or_(
+        CaseRow.created_at == "",
+        ~CaseRow.created_at.like(_ISO_CREATED_AT_SHAPE),
+        ~CaseRow.created_at.like(_ISO_CREATED_AT_UTC_TAIL),
+        and_(*inside),
+    )
+
+
+def _sql_json_text(key: str) -> Any:
+    return CaseRow.doc[key].as_string()
+
+
+_SQL_GROUP_FIELDS: dict[str, Any] = {
+    "status": lambda: CaseRow.status,
+    "status_group": lambda: CaseRow.status,
+    "surface": lambda: CaseRow.source_surface,
+    "verdict": lambda: _sql_json_text("verdict"),
+    "decided_by": lambda: _sql_json_text("decision_by"),
+    "disposition": lambda: _sql_json_text("disposition"),
+    "assignee": lambda: _sql_json_text("assignee"),
+    "source": lambda: _sql_json_text("source_id"),
+}
+_SQL_FILTER_FIELDS: dict[str, Any] = {
+    "status": lambda: CaseRow.status,
+    "status_group": lambda: CaseRow.status,
+    "verdict": lambda: _sql_json_text("verdict"),
+    "entity": lambda: CaseRow.entity_value,
+    "surface": lambda: CaseRow.source_surface,
+    "decided_by": lambda: _sql_json_text("decision_by"),
+}
+_SQL_PUSHDOWN_METRICS = frozenset({"count", "open_now"})
+
+
+def _sql_group_value(name: str, raw: Any) -> Any:
+    from ..base import CASE_STATUS_GROUPS
+
+    if raw is None:
+        return None
+    text_value = str(raw)
+    if name == "status_group":
+        if text_value in CASE_STATUS_GROUPS["active"]:
+            return "active"
+        if text_value in CASE_STATUS_GROUPS["terminal"]:
+            return "terminal"
+        return None
+    if name == "assignee":
+        return text_value.strip() or None
+    if name in ("source", "verdict", "decided_by", "disposition"):
+        return text_value or None
+    return text_value or None
+
+
+async def _sql_case_pushdown(sessionmaker: Any, spec: Any) -> Any | None:
+    from datetime import datetime as _datetime
+    from datetime import timedelta as _timedelta
+
+    from ...engine.case_aggregate import (
+        MISSING_BUCKET,
+        RowSet,
+        build_case_result,
+        iso_bound,
+        normalise_case_filters,
+    )
+    from ...engine.time_windows import period_start, zone_for
+    from ..base import CASE_STATUS_GROUPS
+
+    metrics = set(spec.metrics)
+    if not metrics <= _SQL_PUSHDOWN_METRICS:
+        return None
+    group_by = tuple(spec.group_by)
+    if any(name not in _SQL_GROUP_FIELDS for name in group_by):
+        return None
+    try:
+        filters = normalise_case_filters(spec.filters or {})
+    except ValueError:
+        return None
+    if any(key not in _SQL_FILTER_FIELDS for key in filters):
+        return None
+
+    clauses: list[Any] = []
+    for key, values in filters.items():
+        column = _SQL_FILTER_FIELDS[key]()
+        if key == "status_group":
+            statuses = sorted({s for v in values for s in CASE_STATUS_GROUPS.get(v, ())})
+            clauses.append(column.in_(statuses))
+        else:
+            clauses.append(column.in_(list(values)))
+    window = spec.window
+    lo = iso_bound(window.start) if window.start is not None else None
+    hi = None if window.open_end else iso_bound(window.end)
+    # A bounded window is a positive range on the canonical column: an empty
+    # ``created_at`` is not in it (disclosed in ``missing_created``), exactly the fold's
+    # membership rule. Sound only once the guard below has proven every filtered row is
+    # either empty or canonical.
+    in_window: list[Any] = [c for c in (
+        CaseRow.created_at >= lo if lo is not None else None,
+        CaseRow.created_at < hi if hi is not None else None,
+    ) if c is not None]
+    non_canonical = and_(
+        CaseRow.created_at != "",
+        or_(
+            ~CaseRow.created_at.like(_ISO_CREATED_AT_SHAPE),
+            ~CaseRow.created_at.like(_ISO_CREATED_AT_UTC_TAIL),
+        ),
+    )
+    want_open = "open_now" in metrics
+    unit = spec.bucket
+    zone, _ = zone_for(window.tz)
+    group_cols = [_SQL_GROUP_FIELDS[name]().label(f"g{i}") for i, name in enumerate(group_by)]
+    cols = list(group_cols)
+    if want_open:
+        cols.append(CaseRow.status.label("st"))
+    hour = func.substr(CaseRow.created_at, 1, 13).label("hr")
+    if unit:
+        cols.append(hour)
+    active = set(CASE_STATUS_GROUPS["active"])
+    state = RowSet()
+    hour_cache: dict[str, Any] = {}
+
+    def bucket_of(raw_hour: Any) -> Any:
+        """The local bucket of one UTC hour, or ``False`` when the hour straddles two."""
+        text_hour = str(raw_hour or "")
+        if not text_hour:
+            return MISSING_BUCKET
+        if text_hour in hour_cache:
+            return hour_cache[text_hour]
+        try:
+            start = _datetime.fromisoformat(text_hour + ":00:00+00:00")
+        except ValueError:  # a legacy ISO-shaped but unreadable value: let the fold place it
+            hour_cache[text_hour] = False
+            return False
+        first = period_start(start, unit, zone)
+        last = period_start(start + _timedelta(minutes=59, seconds=59, microseconds=999_999),
+                            unit, zone)
+        hour_cache[text_hour] = first if first == last else False
+        return hour_cache[text_hour]
+
+    async with sessionmaker() as session:
+        if not await _begin_snapshot(session):
+            return None  # no single snapshot: the fold answers instead
+        # The guard runs over the FILTERS ONLY, never the window: a legacy spelling
+        # string order misplaces (an offset that sorts outside the window but falls
+        # inside it, or an unreadable ISO-shaped value) must make the push-down decline.
+        impossible = _impossible_iso(CaseRow.created_at, _session_dialect(session))
+        guard = non_canonical if impossible is None else or_(non_canonical, impossible)
+        if int((await session.execute(
+            select(func.count()).select_from(CaseRow).where(*clauses, guard)
+        )).scalar() or 0):
+            return None  # a legacy or impossible spelling only the fold can judge
+        if cols:
+            stmt = (
+                select(*cols, func.count().label("n"))
+                .select_from(CaseRow)
+                .where(*clauses, *in_window)
+                .group_by(*cols)
+            )
+            for row in (await session.execute(stmt)).all():
+                mapping = row._mapping
+                count = int(mapping["n"] or 0)
+                gkey = tuple(
+                    _sql_group_value(name, mapping[f"g{i}"]) for i, name in enumerate(group_by)
+                )
+                bkey: Any = None
+                if unit:
+                    bkey = bucket_of(mapping["hr"])
+                    if bkey is False:
+                        return None
+                opened = count if want_open and str(mapping["st"]) in active else 0
+                state.acc(gkey, bkey).add_counts(count, opened)
+        state.total = int((await session.execute(
+            select(func.count()).select_from(CaseRow).where(*clauses, *in_window)
+        )).scalar() or 0)
+        state.totals.add_counts(state.total, 0)
+        # Matching cases with no creation date: inside an all-time total, disclosed
+        # beside a bounded one (they match no range).
+        state.missing = int((await session.execute(
+            select(func.count()).select_from(CaseRow)
+            .where(*clauses, CaseRow.created_at == "")
+        )).scalar() or 0)
+        edges = (await session.execute(
+            select(func.min(CaseRow.created_at), func.max(CaseRow.created_at))
+            .where(*clauses, *in_window, CaseRow.created_at != "")
+        )).one()
+        if want_open:
+            open_clauses = [*clauses, CaseRow.status.in_(sorted(active))]
+            state.open_total = int((await session.execute(
+                select(func.count()).select_from(CaseRow).where(*open_clauses)
+            )).scalar() or 0)
+            if not unit and group_cols:
+                stmt = (
+                    select(*group_cols, func.count().label("n"))
+                    .select_from(CaseRow)
+                    .where(*open_clauses)
+                    .group_by(*group_cols)
+                )
+                for row in (await session.execute(stmt)).all():
+                    mapping = row._mapping
+                    gkey = tuple(
+                        _sql_group_value(name, mapping[f"g{i}"])
+                        for i, name in enumerate(group_by)
+                    )
+                    state.open_by_group[gkey] = (
+                        state.open_by_group.get(gkey, 0) + int(mapping["n"] or 0)
+                    )
+    state.earliest = parse_es_timestamp(edges[0]) if edges[0] else None
+    state.latest = parse_es_timestamp(edges[1]) if edges[1] else None
+    state.scanned = state.total
+    return build_case_result(
+        spec, state, exact=True, consistency="point_in_time", method="pushdown",
+        expected_total=state.total,
+    )
+
+
+_SQL_USAGE_GROUPS = ("role", "model", "surface", "service_tier", "provider")
+_SQL_USAGE_FILTERS = ("role", "model", "surface", "case_id")
+
+
+async def _sql_usage_pushdown(sessionmaker: Any, spec: Any) -> Any | None:
+    from datetime import datetime as _datetime
+    from datetime import timedelta as _timedelta
+
+    from ...engine.case_aggregate import (
+        MISSING_USAGE_BUCKET,
+        UsageRowSet,
+        build_usage_result,
+        iso_bound,
+        usage_values,
+    )
+    from ...engine.time_windows import period_start, zone_for
+
+    group_by = tuple(spec.group_by)
+    if any(name not in _SQL_USAGE_GROUPS for name in group_by):
+        return None
+    filters: list[Any] = []
+    for key, raw in (spec.filters or {}).items():
+        if key not in _SQL_USAGE_FILTERS:
+            return None
+        values = raw if isinstance(raw, (list, tuple, set)) else [raw]
+        wanted = sorted({str(v).strip() for v in values if v is not None and str(v).strip()})
+        if not wanted:
+            continue
+        filters.append(getattr(UsageRow, key).in_(wanted))
+    window = spec.window
+    lo = iso_bound(window.start) if window.start is not None else None
+    hi = None if window.open_end else iso_bound(window.end)
+    # Positive range (an empty ``ts`` is disclosed, not counted, in a bounded window).
+    in_window: list[Any] = [c for c in (
+        UsageRow.ts >= lo if lo is not None else None,
+        UsageRow.ts < hi if hi is not None else None,
+    ) if c is not None]
+    non_canonical = and_(
+        UsageRow.ts != "",
+        or_(~UsageRow.ts.like(_ISO_CREATED_AT_SHAPE), ~UsageRow.ts.like(_ISO_CREATED_AT_UTC_TAIL)),
+    )
+    unit = spec.bucket
+    zone, _ = zone_for(window.tz)
+    column_for = {
+        "role": UsageRow.role,
+        "model": UsageRow.model,
+        "surface": UsageRow.surface,
+        "provider": UsageRow.model,
+        "service_tier": UsageRow.doc["processing_tier"].as_string(),
+    }
+    cols = [column_for[name].label(f"g{i}") for i, name in enumerate(group_by)]
+    if unit:
+        cols.append(func.substr(UsageRow.ts, 1, 13).label("hr"))
+    sums = [
+        func.count().label("calls"),
+        func.sum(UsageRow.cost).label("cost"),
+        func.sum(UsageRow.total_tokens).label("total_tokens"),
+        func.sum(UsageRow.doc["prompt_tokens"].as_integer()).label("input_tokens"),
+        func.sum(UsageRow.doc["completion_tokens"].as_integer()).label("output_tokens"),
+    ]
+    state = UsageRowSet()
+    hour_cache: dict[str, Any] = {}
+
+    def bucket_of(raw_hour: Any) -> Any:
+        text_hour = str(raw_hour or "")
+        if not text_hour:
+            return MISSING_USAGE_BUCKET
+        if text_hour not in hour_cache:
+            try:
+                start = _datetime.fromisoformat(text_hour + ":00:00+00:00")
+            except ValueError:
+                hour_cache[text_hour] = False
+                return False
+            first = period_start(start, unit, zone)
+            last = period_start(
+                start + _timedelta(minutes=59, seconds=59, microseconds=999_999), unit, zone
+            )
+            hour_cache[text_hour] = first if first == last else False
+        return hour_cache[text_hour]
+
+    def group_value(name: str, raw: Any) -> Any:
+        if name == "provider":
+            return usage_values({"model": raw}, "provider")
+        if name == "service_tier":
+            return usage_values({"processing_tier": raw}, "service_tier")
+        text_value = str(raw) if raw is not None else ""
+        return text_value or None
+
+    async with sessionmaker() as session:
+        if not await _begin_snapshot(session):
+            return None  # no single snapshot: the fold answers instead
+        # Guard over the filters only (never the window): see the case push-down.
+        impossible = _impossible_iso(UsageRow.ts, _session_dialect(session))
+        guard = non_canonical if impossible is None else or_(non_canonical, impossible)
+        if int((await session.execute(
+            select(func.count()).select_from(UsageRow).where(*filters, guard)
+        )).scalar() or 0):
+            return None
+        stmt = select(*cols, *sums).select_from(UsageRow).where(*filters, *in_window)
+        if cols:
+            stmt = stmt.group_by(*cols)
+        rows = (await session.execute(stmt)).all()
+        missing = int((await session.execute(
+            select(func.count()).select_from(UsageRow)
+            .where(*filters, UsageRow.ts == "")
+        )).scalar() or 0)
+        edges = (await session.execute(
+            select(func.min(UsageRow.ts), func.max(UsageRow.ts))
+            .where(*filters, *in_window, UsageRow.ts != "")
+        )).one()
+    for row in rows:
+        mapping = row._mapping
+        calls = int(mapping["calls"] or 0)
+        if not calls:
+            continue
+        gkey = tuple(group_value(name, mapping[f"g{i}"]) for i, name in enumerate(group_by))
+        bkey: Any = None
+        if unit:
+            bkey = bucket_of(mapping["hr"])
+            if bkey is False:
+                return None
+        values = (calls, int(mapping["input_tokens"] or 0), int(mapping["output_tokens"] or 0),
+                  int(mapping["total_tokens"] or 0), float(mapping["cost"] or 0.0))
+        state.acc(gkey, bkey).add_sums(*values)
+        state.totals.add_sums(*values)
+    state.missing = missing
+    state.earliest = parse_es_timestamp(edges[0]) if edges[0] else None
+    state.latest = parse_es_timestamp(edges[1]) if edges[1] else None
+    state.scanned = state.totals.calls
+    return build_usage_result(
+        spec, state, exact=True, consistency="point_in_time",
+        method="pushdown", expected_total=state.totals.calls,
+    )
 
 
 class SqlAuditRepository(AuditRepository):
@@ -777,6 +1571,72 @@ class SqlUsageRepository(UsageRepository):
         next_cursor = offset + len(rows) if offset + len(rows) < total else None
         return [dict(row.doc or {}) for row in rows], next_cursor, total, "bounded_at_start"
 
+    async def scan_page(
+        self,
+        *,
+        limit: int = 1000,
+        cursor: Any = None,
+        ts_from: Any = None,
+        ts_to: Any = None,
+    ) -> tuple[list[dict[str, Any]], Any | None, int | None, str]:
+        """Keyset ledger page over ``(ts, id)`` pre-filtered to ``[ts_from, ts_to)`` on the
+        indexed ``ts`` column (an empty or non-canonical ``ts`` is always kept, the
+        caller re-checks every row). O(page) at any depth — the inherited OFFSET export
+        is O(n²) over a long ledger — and a 35-day report reads 35 days of rows."""
+        from ...engine.case_aggregate import iso_bound
+
+        cap = max(1, min(int(limit or 1000), 5000))
+        state = dict(cursor) if isinstance(cursor, dict) else {}
+        lo, hi = iso_bound(ts_from), iso_bound(ts_to)
+        inside = [c for c in (
+            UsageRow.ts >= lo if lo is not None else None,
+            UsageRow.ts < hi if hi is not None else None,
+        ) if c is not None]
+        filters: list[Any] = []
+        if inside:
+            filters.append(or_(
+                UsageRow.ts == "",
+                ~UsageRow.ts.like(_ISO_CREATED_AT_SHAPE),
+                ~UsageRow.ts.like(_ISO_CREATED_AT_UTC_TAIL),
+                and_(*inside),
+            ))
+        stmt = select(UsageRow.ts, UsageRow.id, UsageRow.doc).where(*filters)
+        after = state.get("after")
+        if isinstance(after, list) and len(after) == 2:
+            stmt = stmt.where(or_(
+                UsageRow.ts > str(after[0]),
+                and_(UsageRow.ts == str(after[0]), UsageRow.id > int(after[1])),
+            ))
+        stmt = stmt.order_by(UsageRow.ts.asc(), UsageRow.id.asc()).limit(cap)
+        total = state.get("total")
+        async with self._sm() as session:
+            rows = (await session.execute(stmt)).all()
+            if not isinstance(total, int):
+                total = int((await session.execute(
+                    select(func.count()).select_from(UsageRow).where(*filters)
+                )).scalar() or 0)
+        docs = [dict(row.doc or {}) for row in rows]
+        if len(rows) < cap:
+            return docs, None, total, "bounded_at_start"
+        last = rows[-1]
+        return docs, {"after": [str(last.ts), int(last.id)], "total": total}, total, "bounded_at_start"
+
+    async def close_scan_cursor(self, cursor: Any) -> None:
+        return None
+
+    async def aggregate_usage(self, spec: Any) -> Any | None:
+        """``GROUP BY`` + ``SUM`` push-down for :func:`engine.case_aggregate.aggregate_usage`.
+
+        Groups by the ``role``/``model``/``surface`` columns and the JSON
+        ``processing_tier`` (folded into standard/flex/batch/unconfirmed in Python);
+        ``provider`` is grouped by model and folded with ``llm.pricing.provider_for``
+        (exact: the provider is a pure function of the model). Sums the ``cost`` /
+        ``total_tokens`` columns and the JSON prompt/completion token counts. Buckets are
+        the UTC hour of the ``ts`` column folded into ``spec.window.tz`` periods.
+        Returns ``None`` (fold) for a ``provider``/``service_tier`` filter, a
+        non-canonical legacy ``ts``, or an hour that straddles two local periods."""
+        return await _sql_usage_pushdown(self._sm, spec)
+
     async def total_pipeline_cost_for_case(self, case_id: str) -> float | None:
         """Return all-time router/investigator/formatter spend for one case."""
         statement = select(func.sum(UsageRow.cost)).where(
@@ -822,6 +1682,8 @@ class SqlUsageRepository(UsageRepository):
         today_cost = 0.0
         call_count = 0
         by_surface: dict[str, dict[str, float]] = defaultdict(lambda: {"cost": 0.0, "tokens": 0, "calls": 0})
+        today_by_surface: dict[str, dict[str, float]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "calls": 0})
         by_model: dict[str, dict[str, float]] = defaultdict(lambda: {"cost": 0.0, "tokens": 0, "calls": 0})
         by_role: dict[str, dict[str, float]] = defaultdict(lambda: {"cost": 0.0, "tokens": 0, "calls": 0})
         by_processing_tier = _new_processing_tier_bucket()
@@ -842,6 +1704,11 @@ class SqlUsageRepository(UsageRepository):
             call_count += 1
             if ts_millis >= today_start_millis:
                 today_cost += cost
+                # Round 12 (D5): today's exact per-surface spend (budget gate, chat cap).
+                today = today_by_surface[src.get("surface", "unknown")]
+                today["cost"] += cost
+                today["tokens"] += tokens
+                today["calls"] += 1
             for bucket, key in (
                 (by_surface, src.get("surface", "unknown")),
                 (by_model, src.get("model", "unknown")),
@@ -867,6 +1734,7 @@ class SqlUsageRepository(UsageRepository):
             "by_surface": _top(by_surface),
             "by_model": _top(by_model),
             "by_role": _top(by_role),
+            "today_by_surface": _top(today_by_surface, limit=1000),
             **_processing_tier_summary(by_processing_tier),
             "cost_over_time": [
                 {"ts": k, "cost": round(v, 6)} for k, v in sorted(over_time.items())

@@ -75,7 +75,12 @@ zero.
 
 The posture response includes lifecycle and verdict mix, aging, backlog, SLA state,
 period-over-period comparisons, and analyst feedback coverage. Interpret agreement
-rates together with graded-case and feedback counts.
+rates together with graded-case and feedback counts. The agreement rate counts only grades
+that compare the analyst's judgement with the AI verdict (agree, partial or disagree). A
+grade with nothing to compare (an analyst settling a Needs-human hand-off, a duplicate
+close, or a case with no AI verdict) still counts as feedback and in the quality scores,
+but not toward agreement; when no grade compares, agreement shows as not measured rather
+than 0%.
 
 SLA targets and impact × urgency priority are operator-configured advisory policies.
 They rank work and measure response; they do not authorize automatic closure.
@@ -96,8 +101,8 @@ rate. It does not show whether a reference was correct, useful, or influential.
 
 `retrieval_history_status` is the authoritative lifetime marker. A legacy case remains
 `unavailable` after re-investigation because its earlier lifetime cannot be recovered.
-Consequently, any mixed instrumented/legacy cohort or any truncated 2,000-case read
-keeps `cases_with_references` and `reference_coverage` `null` with `unavailable` status.
+Consequently, any mixed instrumented/legacy cohort or any read truncated at 20,000 cases
+(a store holding more cases than that) keeps `cases_with_references` and `reference_coverage` `null` with `unavailable` status.
 A fully instrumented cohort with no `measured` observation reports
 `insufficient_evidence`, also with a `null` headline. When at least one observation is
 measured, history-complete `not_measured` cases are excluded from the denominator rather

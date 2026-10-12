@@ -136,6 +136,49 @@ _DATA_SIGNAL_RE = re.compile(
     r"|\b(?:spikes?|surges?|bursts?|failed\s+log-?ins?|log-?in\s+(?:failures|attempts?))\b",
     re.IGNORECASE,
 )
+# "Explain" about listed records is a data signal too, never a term: "… and explain
+# each", "explain why each one is critical", "explain each of the open critical cases",
+# "explain them", "explain the top 3", "explain each escalated case". A console noun
+# after the record ("explain each case status", "explain the top 3 tabs in case
+# detail") or no record at all ("explain each of the verdicts", "explain the first 3
+# steps of onboarding") keeps it a product question, and so does a defining word
+# (:data:`_DEFINES_RE`): "explain what each case status means".
+#: Parts of the console a record noun can qualify ("each case action", "each alert
+#: icon"): the same list as the Demo planner's (``engine/demo_chat._CONSOLE_PARTS``).
+_CONSOLE_PARTS = (r"actions?|chips?|badges?|permissions?|roles?|shortcuts?|icons?|colou?rs?|options?|sections?|"
+                  r"screens?|dialogs?|modals?|toolbars?|tooltips?|glyphs?|toggles?|switches|controls?|headers?|"
+                  r"layouts?|themes?|links?")
+_NOT_CONSOLE = (
+    r"(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?|settings?|widgets?"
+    r"|panels?|rates?|counts?|queues?|polic(?:y|ies)|lifecycles?|workflows?|menus?|buttons?|status(?:es)?"
+    r"|severit(?:y|ies)|priorit(?:y|ies)|fields?|types?|states?|ids?|numbers?|titles?|formats?|templates?"
+    r"|decisions?|models?|verdicts?|outcomes?|dispositions?|levels?|labels?|categor(?:y|ies)|kinds?|class(?:es)?"
+    r"|stages?|steps?|phases?|rules?|roles?|permissions?|attributes?|" + _CONSOLE_PARTS + r")\b)"
+)
+_RECORDS = (r"(?:cases|incidents|tickets|investigations|escalations|alerts|detections|findings|results|rows"
+            r"|matches|ones|(?:true|false)[- ]positives)\b" + _NOT_CONSOLE)
+_RECORD_ONE = r"(?:case|incident|ticket|alert|detection|finding|result|row|match)\b" + _NOT_CONSOLE
+# A few qualifiers before a record noun ("the open critical cases"), never a preposition.
+_QUALIFIERS = r"(?:(?!(?:in|on|of|for|from|to|at|about|with|into|across)\b)[\w'-]+\s+){0,3}?"
+# Where a bare "each" or "the top 3" ends: it points back at records already listed.
+_CLAUSE_END = (r"(?=\s*(?:[,.?!;:]|$)|\s+(?:and\b(?!\s+every\b)|then\b|with\b|by\b|briefly\b|please\b"
+               r"|for\s+me\b|in\s+turn\b|in\s+detail\b))")
+_EXPLAIN_RECORDS_RE = re.compile(
+    r"\bexplain\w*(?:\s+(?:why|how|what))?(?:\s+[a-z']+){0,3}?\s+(?:"
+    r"(?:each|every)(?:\s+one)?(?:" + _CLAUSE_END + r"|\s+(?:is|was|has|had|got|were)\b"
+    r"|\s+of\s+(?:them\b|(?:the|these|those|our|my|all|today's)\s+" + _QUALIFIERS + _RECORDS + r"))"
+    r"|(?:each|every)\s+(?:[\w-]+\s+){0,2}?" + _RECORD_ONE
+    + r"|them\b|they\b(?!\s+(?:mean|means|meant|stand|stands)\b)"
+    r"|(?:the\s+)?(?:top|first)\s+\d{1,3}(?:" + _CLAUSE_END + r"|\s+" + _QUALIFIERS + _RECORDS + r"))",
+    re.IGNORECASE,
+)
+# Defining words: with one of them an "explain" asks what something means, unless the
+# word points back at the listed records ("explain what each one means", "what they
+# mean for us"; the Demo planner's ``_MEANS_THE_RECORDS_RE``).
+_DEFINES_RE = re.compile(r"\b(?:mean|means|meant|meaning|defin(?:e|es|ed|ition)|stands?\s+for)\b", re.IGNORECASE)
+_MEANS_THE_RECORDS_RE = re.compile(
+    r"\b(?:each(?:\s+one)?(?:\s+of\s+(?:them|these|those))?|every\s+one|they|them|these|those)\s+"
+    r"(?:means?|meant|stands?\s+for)\b", re.IGNORECASE)
 # Soft data signals: a filtered set of cases or a metric of "our"/"my" estate. A strong
 # cue outweighs them, because KPI and glossary questions name the same sets.
 _SOFT_DATA_RE = re.compile(
@@ -144,7 +187,12 @@ _SOFT_DATA_RE = re.compile(
     r"|detections|tickets|findings)\b"
     r"|\b(?:our|my)\s+(?:[\w-]+\s+){0,2}?(?:rates?|scores?|mttd|mtta|mttr|dwell|spend(?:ing)?|costs?"
     r"|posture|coverage|backlog|queue|volume|numbers|trends?|exposure|alerts|cases|incidents"
-    r"|detections|tickets|tasks|workload|sla|performance|stats|statistics|metrics)\b",
+    r"|detections|tickets|tasks|workload|sla|performance|stats|statistics|metrics)\b"
+    # "Explain" with records as its object: "explain the highest risk cases". A console
+    # noun after them ("explain the cases view") keeps the product cue.
+    r"|\bexplain\w*\s+(?:the|our|my|all)\s+(?:[\w-]+\s+){0,3}?(?:cases|incidents|alerts|tickets|detections"
+    r"|escalations)\b(?!\s+(?:kpis?|tiles?|cards?|metrics?|charts?|columns?|pages?|tabs?|views?|filters?"
+    r"|settings?|widgets?|panels?|rates?|counts?|queues?|polic(?:y|ies))\b)",
     re.IGNORECASE,
 )
 
@@ -239,6 +287,8 @@ def classify_intent(message: str) -> IntentClass:
     if _settings_keys(text):
         return "settings_key"
     if _DATA_SIGNAL_RE.search(text):
+        return "data"
+    if _EXPLAIN_RECORDS_RE.search(text) and not _DEFINES_RE.search(_MEANS_THE_RECORDS_RE.sub(" ", text)):
         return "data"
     if _STRONG_CUE_RE.search(text):
         return "strong"

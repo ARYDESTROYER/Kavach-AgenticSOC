@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, renderHook, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { CHAT_SHORTCUTS, keyLabel, shortcutLabel } from '../shortcut-list';
+import { COPY_LAST_ANSWER_KEYS, isCopyLastAnswer } from '../../message/useCopyLastAnswer';
 import { ShortcutSheet } from '../ShortcutSheet';
 import {
   anyLayerOpen,
@@ -176,17 +177,47 @@ describe('useChatShortcuts', () => {
       openShortcuts: 'Control+/ Meta+/',
     });
   });
+
+  it('matches Ctrl/Cmd+Shift+C under the shared rules but leaves it to the answer that registers it (Round 12)', () => {
+    renderHook(() => useChatShortcuts(handlers()));
+    const event = new KeyboardEvent('keydown', { key: 'C', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(matchChatShortcut(key({ ...mod, shiftKey: true, key: 'c' }))).toBe('copyLastAnswer');
+    }
+    // A non-Latin layout's physical C still matches.
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'С', code: 'KeyC' }))).toBe('copyLastAnswer');
+    // Dvorak types "j" on the physical C: Ctrl+Shift+J stays the browser's (console/downloads).
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'J', code: 'KeyC' }))).toBeNull();
+    // Plain Ctrl/Cmd+C stays the browser's copy; composing, repeats, Alt and consumed events are ignored.
+    expect(matchChatShortcut(key({ ctrlKey: true, key: 'c', code: 'KeyC' }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', isComposing: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', keyCode: 229 }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', repeat: true }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, altKey: true, key: 'c' }))).toBeNull();
+    expect(matchChatShortcut(key({ ctrlKey: true, shiftKey: true, key: 'c', defaultPrevented: true }))).toBeNull();
+  });
 });
 
 describe('shortcut list', () => {
   it('documents every shortcut, composer keys included, and none uses K or B', () => {
     const ids = CHAT_SHORTCUTS.map((s) => s.id);
     expect(ids).toEqual(
-      expect.arrayContaining(['send', 'newline', 'edit-last', 'stop', 'focus', 'new-chat', 'toggle-history', 'shortcuts']),
+      expect.arrayContaining(['send', 'newline', 'edit-last', 'stop', 'focus', 'new-chat', 'toggle-history', 'copy-last', 'shortcuts']),
     );
     for (const s of CHAT_SHORTCUTS) {
       expect(s.keys.includes('Mod') && s.keys.some((k) => k === ('K' as never) || k === ('B' as never))).toBe(false);
     }
+  });
+
+  it('documents Ctrl/Cmd+Shift+C exactly as the answer registers it', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'copy-last');
+    expect(entry).toMatchObject({ label: 'Copy the last answer', keys: ['Mod', 'Shift', 'C'], where: 'chat' });
+    for (const mod of [{ ctrlKey: true }, { metaKey: true }]) {
+      expect(isCopyLastAnswer({ key: 'C', code: 'KeyC', shiftKey: true, altKey: false, ctrlKey: false, metaKey: false, ...mod })).toBe(true);
+    }
+    expect(COPY_LAST_ANSWER_KEYS).toBe('Control+Shift+C Meta+Shift+C');
   });
 
   it('labels keys per platform', () => {
@@ -205,7 +236,11 @@ describe('ShortcutSheet', () => {
       expect(within(dialog).getByText(shortcut.label)).toBeInTheDocument();
     }
     const terms = within(dialog).getAllByRole('term').map((t) => t.textContent);
-    expect(terms).toEqual(expect.arrayContaining(['Send', 'New line', 'Edit your last prompt (in an empty composer)', 'Stop the answer (while it runs)']));
+    expect(terms).toEqual(expect.arrayContaining(['Send', 'New line', 'Edit your last prompt (in an empty composer)', 'Stop the answer (while it runs)', 'Copy the last answer']));
+    const copy = within(dialog).getByText('Copy the last answer').closest('div') as HTMLElement;
+    expect(Array.from(copy.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(
+      /mac/i.test(navigator.platform) ? ['⌘', '⇧', 'C'] : ['Ctrl', 'Shift', 'C'],
+    );
     const send = within(dialog).getByText('Send').closest('div') as HTMLElement;
     expect(within(send).getByText('Enter').tagName).toBe('KBD');
     const newline = within(dialog).getByText('New line').closest('div') as HTMLElement;

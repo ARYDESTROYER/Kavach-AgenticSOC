@@ -270,6 +270,13 @@ than 50 conversations deletes that user's oldest conversations (by last activity
 ones included) until 50 remain. Before rolling back, users with more than 50
 conversations should export the extra conversations they want to keep and delete them.
 
+The current build adds a second, milder rollback loss on every backend: each new chat
+answer is stored in full in its own exchange document, which older builds do not read.
+Rolled back, they show each message's compact copy, so answers longer than 24,000
+characters end at that length and the oldest messages of long conversations appear as
+previews or, past 140 messages, are not shown. Rolling forward restores them, except for
+conversations the older build trimmed to its own 100-message window in the meantime.
+
 **Required change:** a versioned, reversible data migration for KV documents, so a
 rollback can restore the form an older build reads.
 
@@ -281,7 +288,11 @@ abstractions do not yet provide all of the leases, uniqueness constraints, and
 atomic claims needed for active-active replicas.
 
 Adding replicas now can duplicate cases or scheduled work, lose receiver ownership,
-and deliver inconsistent live updates. The [scale-out roadmap](../architecture/ingestion.md#scale-out-roadmap)
+and deliver inconsistent live updates. Workspace Chat's running answers are also
+process-local: the turn registry, the buffer a browser rejoins a running answer from,
+Stop, and the questions-at-once bounds live in one backend process. A backend restart
+ends running answers (nothing is saved for them, and the question can be asked again),
+and a second replica would neither see nor stop the first one's answers. The [scale-out roadmap](../architecture/ingestion.md#scale-out-roadmap)
 defines the required worker/lease split.
 
 Application background jobs do use strict-CAS mutations and renewable five-minute
@@ -398,6 +409,36 @@ Use the aggregate stage count, counter-coverage state, and truncation notices fo
 reporting. A complete drill-down requires server-side time/outcome filtering with
 cursor pagination rather than a larger hard client limit.
 
+### Dashboard figures are exact up to 20,000 cases per window
+
+The store-wide case totals are exact at any store size: the Open Cases stock and the
+case counts on **Analytics → Metrics** (Total cases (all time), and the counts by
+status, verdict, and disposition). Every other dashboard figure, including every
+Overview figure for the selected window (Total Cases, Total Critical, Resolved / Closed,
+Auto Closed, and the AI-verdict FP rate) and the heavier rollups (timing, verdict mix,
+ATT&CK coverage, auto-close health, agent improvement, and similar), analyses every case
+in its window up to 20,000 cases. A larger window, typically all time on a large store,
+is analysed over its newest 20,000 cases and reported as truncated with the exact window
+size: its counts show as lower bounds (`≥`) and its rates are withheld. Chat's case
+counts and breakdowns have no such bound, so for a window that large the chat figure and
+the dashboard figure differ, and the chat figure is the exact one.
+
+### Chat conversation summaries are not shown
+
+When a long conversation is summarised to fit the model's context window, the run log
+says so, but the summary text itself is not shown anywhere in the console or returned by
+an API route. It stays inside the conversation's stored data and is used only as
+untrusted context for later questions.
+
+### The context note overstates in Case Manager chat
+
+The composer's context card says "Long conversations are summarised automatically near
+the limit, so the chat keeps going. There is no hard cap." That holds for a saved
+Workspace conversation. Case Manager chat, and a Workspace conversation that is not
+saved, keep no running summary: when the conversation outgrows the model's context
+window, only the newest exchanges that fit are sent, and the oldest are left out without
+a notice. The card shows the same note there.
+
 ### Baseline learning and anomaly promotion are separate
 
 The normal pull/push path now observes and persists aggregate-only source and cluster
@@ -415,7 +456,11 @@ deterministic close/escalate policy.
 
 The default application budget is enabled at `$10/day`, warns at 80%, and blocks new
 provider calls over the ceiling; a blocked investigation persists/fails safe to
-`NEEDS_HUMAN`. The check does not reserve spend atomically, so calls already in flight
+`NEEDS_HUMAN`. Workspace and Case Manager chat are outside this budget, daily and
+monthly: their calls are ledgered but neither blocked by nor counted toward it. Chat
+spend is bounded only by the optional daily chat spending limit (there is no monthly
+chat limit), which is off by default and, like the budget,
+is a preflight check: concurrent chat calls already in flight can finish above it. The check does not reserve spend atomically, so calls already in flight
 can finish above the boundary. It also cannot prevent costs created outside this
 backend. Keep concurrency conservative, configure provider-side budgets/rate limits,
 and alert on ledger/provider disagreement.

@@ -639,7 +639,7 @@ async def test_app_help_abstains_and_validates_input():
     assert abstained.ok and abstained.rows == 0 and abstained.observation["abstained"] is True
     assert "no section" in render_app_docs(abstained.observation)
     bad = await AppHelpTool().run(_ctx(), query="x", top_k=99)
-    assert not bad.ok and bad.error == "Invalid input: check top_k"
+    assert not bad.ok and bad.error == "Invalid input: check top_k (at most 6)"
     empty = await AppHelpTool().run(_ctx(), query="   ")
     assert not empty.ok
 
@@ -785,7 +785,9 @@ def test_every_alias_key_is_reachable_from_a_query():
 async def test_release_pages_are_cited_with_d_ids():
     """Wave-3 integration: the dotted release page now has an expressible Help Center
     link, so it is cited with a ``D*`` id instead of shown as reference only."""
-    outcome = await AppHelpTool().run(_ctx(), query="release notes 0.1.13 known limitations", top_k=4)
+    # The query names the release itself: "release notes … known limitations" now also
+    # matches the known-limitations page's "context note" section, which can outrank it.
+    outcome = await AppHelpTool().run(_ctx(), query="what is new in release 0.1.13", top_k=4)
     results = outcome.observation["results"]
     release = [r for r in results if "/releases/" in (r["href"] or "")]
     assert release, results
@@ -801,7 +803,7 @@ async def test_uncitable_sections_get_no_citable_id_and_rebase_stays_unique(monk
     monkeypatch.setattr(
         render_module, "_DOC_REF_RE", re.compile(r"^/docs/\d+\.\d+/[a-z0-9/_-]+/?(#[a-z0-9_-]+)?$"),
     )
-    first = await AppHelpTool().run(_ctx(), query="release notes 0.1.13 known limitations", top_k=4)
+    first = await AppHelpTool().run(_ctx(), query="release 0.1.13 known limitations", top_k=4)
     second = await AppHelpTool().run(_ctx(), query="what changed in version 0.1.13", top_k=4)
     for outcome in (first, second):
         results = outcome.observation["results"]

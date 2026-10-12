@@ -99,10 +99,8 @@ async function openCloseDialogAndPick(disposition: RegExp): Promise<HTMLElement>
   );
   fireEvent.click(screen.getByRole('button', { name: /^close case/i }));
   const dialog = await screen.findByRole('dialog');
-  // Disposition select is the first combobox in the dialog.
-  const combos = within(dialog).getAllByRole('combobox');
-  fireEvent.click(combos[0]);
-  fireEvent.click(await screen.findByRole('option', { name: disposition }));
+  // Round 12: the disposition picker is a radio-card group (with definitions).
+  fireEvent.click(within(dialog).getByRole('radio', { name: disposition }));
   return dialog;
 }
 
@@ -158,6 +156,99 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     expect(feedbackBody.assessment).toBe('agree');
   });
 
+  it('confirms the close with the recorded outcome and offers Reopen (not "Undo"), which posts the reopen verb', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'needs_human' });
+    caseActionExec
+      .mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'closed', disposition: 'false_positive' })
+      .mockResolvedValueOnce({ ...BASE_CASE, verdict: 'needs_human', status: 'open', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+    toastMock.success.mockReset();
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    const [message, options] = toastMock.success.mock.calls[0] as [
+      string,
+      { action?: { label: string; onClick: () => void }; duration?: number; description?: string },
+    ];
+    expect(message).toBe('Closed as false positive.');
+    expect(options?.duration).toBe(8000);
+    // A reopen keeps the recorded classification (and the resolved-case precedent), so
+    // it is labelled for what it does and says the outcome stays until a new close.
+    expect(options?.action?.label).toBe('Reopen');
+    expect(options?.action?.label).not.toBe('Undo');
+    expect(options?.description).toMatch(/keeps this outcome on record until you close the case again/i);
+
+    options!.action!.onClick();
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(2));
+    expect(caseActionExec.mock.calls[1][1]).toMatchObject({ action: 'reopen' });
+    await waitFor(() =>
+      expect(toastMock.success).toHaveBeenLastCalledWith('Reopened. The recorded outcome stays until you close it again.'),
+    );
+  });
+
+  it('posts NO grade when an analyst settles a Needs-human case without grading it (Agreement stays honest)', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN', status: 'closed', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    await within(dialog).findByText(/Settles the AI's hand-off/i);
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseActionExec).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
+    // The close is the analyst's record; an untouched grade on a hand-off is not "agree".
+    expect(caseFeedback).not.toHaveBeenCalled();
+  });
+
+  it('a Needs-human close the analyst DID grade posts the grade without a made-up assessment', async () => {
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'NEEDS_HUMAN', status: 'closed', disposition: 'false_positive' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/False positive/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: /rate in detail/i }));
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Accuracy: 4 of 5' }));
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    const [, body] = caseFeedback.mock.calls[0];
+    expect(body).toMatchObject({ accuracy: 0.8 });
+    expect(body).not.toHaveProperty('assessment');
+  });
+
+  it('a duplicate close the analyst rated posts the stars with no assessment (nothing to compare)', async () => {
+    // The backend's Agreement rate counts only grades that carry an assessment, so a
+    // star-only grade here neither inflates nor deflates it (Round 12 final review).
+    getCase.mockResolvedValue({ ...BASE_CASE, verdict: 'TRUE_POSITIVE' });
+    caseActionExec.mockResolvedValue({ ...BASE_CASE, verdict: 'TRUE_POSITIVE', status: 'closed', disposition: 'duplicate' });
+    caseFeedback.mockResolvedValue(null);
+
+    renderWithProviders(<CaseDetail caseId="case-91" onClose={vi.fn()} />);
+    const dialog = await openCloseDialogAndPick(/Duplicate/i);
+    fireEvent.click(within(dialog).getByRole('button', { name: /rate in detail/i }));
+    fireEvent.click(await within(dialog).findByRole('button', { name: 'Accuracy: 4 of 5' }));
+    const submit = within(dialog).getByRole('button', { name: /^close case/i });
+    await waitFor(() => expect(submit).not.toBeDisabled());
+    fireEvent.click(submit);
+
+    await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
+    const [, body] = caseFeedback.mock.calls[0];
+    expect(body).toMatchObject({ accuracy: 0.8 });
+    expect(body).not.toHaveProperty('assessment');
+  });
+
   it('POSTs the assessment DERIVED from the FINAL disposition even if the grading section was collapsed first', async () => {
     // Regression: the derived agree/override was previously synced into parent state by
     // an effect INSIDE GradingFields, which unmounts when the analyst collapses the
@@ -194,9 +285,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
 
     // Flip the disposition to an OVERRIDE (false_positive of a TP verdict). The section
     // is unmounted, so the stale-effect model can't re-derive.
-    const combos = within(dialog).getAllByRole('combobox');
-    fireEvent.click(combos[0]);
-    fireEvent.click(await screen.findByRole('option', { name: /False positive/i }));
+    fireEvent.click(within(dialog).getByRole('radio', { name: /False positive/i }));
 
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
@@ -300,7 +389,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     // disposition picker is the 1st).
     const outcome = within(dialog).getByLabelText(/what actually happened/i);
     fireEvent.click(outcome);
-    fireEvent.click(await screen.findByRole('option', { name: /^false positive —/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /^false positive: /i }));
 
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());
@@ -308,6 +397,9 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
 
     await waitFor(() => expect(caseFeedback).toHaveBeenCalledTimes(1));
     expect(caseFeedback.mock.calls[0][1].actual_outcome).toBe('false_positive');
+    // No AI verdict, nothing to compare: the stated outcome carries no assessment, and the
+    // backend's Agreement rate counts only grades that do (Round 12 final review).
+    expect(caseFeedback.mock.calls[0][1]).not.toHaveProperty('assessment');
   });
 
   it('closing a NO-VERDICT case issues ONLY the action POST (grading skipped)', async () => {
@@ -377,10 +469,9 @@ describe('CaseDetail — the disposition picker never answers for the analyst (G
     fireEvent.click(screen.getByRole('button', { name: /^close case/i }));
     const dialog = await screen.findByRole('dialog');
 
-    // The picker shows its placeholder, NOT the model's answer.
-    const picker = within(dialog).getByLabelText(/disposition \(required\)/i);
-    expect(picker).toHaveTextContent(/select an outcome/i);
-    expect(picker).not.toHaveTextContent(/true positive/i);
+    // The picker opens with NOTHING chosen, NOT the model's answer.
+    const picker = within(dialog).getByRole('radiogroup', { name: /disposition \(required\)/i });
+    for (const radio of within(picker).getAllByRole('radio')) expect(radio).not.toBeChecked();
 
     // …so the mandatory-choice guard is real.
     expect(within(dialog).getByRole('button', { name: /^close case/i })).toBeDisabled();

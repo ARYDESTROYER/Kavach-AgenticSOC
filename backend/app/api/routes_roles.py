@@ -534,6 +534,11 @@ async def assign_user_roles(
 
     updated = await state.users.update(username, **patch)
     await state.refresh_users()
+    # Round 12 final review (L1): a running chat answer that relied on a grant this
+    # change removed stops now (one that only gained grants keeps running).
+    from .routes_chat import recheck_chat_turns_for
+
+    await recheck_chat_turns_for(state, username)
     await _audit_rbac(
         state,
         current_username(request),

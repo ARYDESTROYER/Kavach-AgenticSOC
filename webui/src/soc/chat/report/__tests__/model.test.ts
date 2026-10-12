@@ -10,6 +10,7 @@ import type { ReportItem } from '@/lib/types';
 import {
   AI_SUMMARY_NOTICE,
   READ_ONLY_NOTICE,
+  buildConversationDoc,
   buildReportDoc,
   collectQueries,
   itemBlocks,
@@ -126,6 +127,39 @@ describe('buildReportDoc', () => {
     expect(AI_SUMMARY_NOTICE).toBe('AI-generated; verify before acting.');
   });
 
+  it('names each window once in the header, however many items list it', () => {
+    const base = sampleReport();
+    const scoped = (window: string) => ({ ...base.items[1], scope: { ...base.items[1].scope, window } });
+    const report = sampleReport({
+      items: [scoped('last 90 days; all time'), { ...scoped('last 90 days'), id: 'it-x' }, { ...scoped('Q3 2026 (Asia/Kolkata)'), id: 'it-y' }],
+    });
+    const many = buildReportDoc(report, { generatedAt: NOW.toISOString() });
+    expect(many.windows).toEqual(['last 90 days', 'all time', 'Q3 2026 (Asia/Kolkata)']);
+  });
+
+  it('never lists a scope\'s "and N more" as a window, and says some sections cover more', () => {
+    // `routes_reports._join_windows` ends a scope over its bound with the count of the
+    // windows it left out: a count, never the name of a window (closing review).
+    const base = sampleReport();
+    const scoped = (window: string) => ({ ...base.items[1], scope: { ...base.items[1].scope, window } });
+    const overflowed =
+      '3 Sep 2026 09:15 – 11 Oct 2026 17:15 (America/Argentina/Buenos_Aires); Sep 2026 vs Aug 2026; and 2 more';
+    const report = sampleReport({ items: [scoped(overflowed), { ...scoped('all time'), id: 'it-x' }] });
+    const many = buildReportDoc(report, { generatedAt: NOW.toISOString() });
+    expect(many.windows).toEqual([
+      '3 Sep 2026 09:15 – 11 Oct 2026 17:15 (America/Argentina/Buenos_Aires)',
+      'Sep 2026 vs Aug 2026',
+      'all time',
+    ]);
+    expect(many.windows.some((w) => /more/.test(w))).toBe(false);
+    expect(many.windowsElided).toBe(true);
+    expect(many.methodology).toContain(
+      'Some sections cover more time windows than are listed here; each block states its own window.',
+    );
+    // A scope that fit says nothing more.
+    expect(buildReportDoc(sampleReport({ items: [scoped('all time')] }), { generatedAt: NOW.toISOString() }).windowsElided).toBe(false);
+  });
+
   it('writes the methodology from recorded facts, counting each source turn once', () => {
     expect(doc.methodology[0]).toBe(READ_ONLY_NOTICE);
     expect(doc.methodology).toContain('Lookups (2 calls): Counted log events; Searched cases.');
@@ -232,5 +266,31 @@ describe('helpers', () => {
     expect(tokens(12_400)).toBe('12k');
     expect(timeRangeLabel('now-7d')).toBe('last 7d');
     expect(timeRangeLabel('2026-10-01T00:00:00Z', '2026-10-02T00:00:00Z')).toBe('2026-10-01T00:00:00Z → 2026-10-02T00:00:00Z');
+  });
+
+  it('names the All time, 6mo and 12mo scope windows in words, never as raw tokens', () => {
+    // The scope chip's presets (Round 12), worded like the server's TimeRange.label().
+    expect(timeRangeLabel('all', 'now')).toBe('all time');
+    expect(timeRangeLabel('all')).toBe('all time');
+    expect(timeRangeLabel('lifetime', 'now')).toBe('all time');
+    expect(timeRangeLabel('all', '2026-10-01T00:00:00Z')).toBe('all time → 2026-10-01T00:00:00Z');
+    expect(timeRangeLabel('now-6M', 'now')).toBe('last 6 months');
+    expect(timeRangeLabel('now-12M', 'now')).toBe('last 12 months');
+    expect(timeRangeLabel('now-1y', 'now')).toBe('past year');
+    expect(timeRangeLabel('now-1M')).toBe('past month');
+    expect(timeRangeLabel('now-2y')).toBe('last 2 years');
+    // A lower-case m stays minutes.
+    expect(timeRangeLabel('now-30m')).toBe('last 30m');
+    expect(timeRangeLabel('now-6M', '2026-10-01T00:00:00Z')).toBe('now-6M → 2026-10-01T00:00:00Z');
+  });
+
+  it('exports a conversation scoped to All time or 6mo with the window in words', () => {
+    const allTime = buildConversationDoc({ ...sampleConversation(), time_range: { from: 'all', to: 'now' } }, { generatedAt: NOW.toISOString() });
+    expect(allTime.windows).toEqual(['all time']);
+    expect(allTime.methodology).toContain('Time windows: all time.');
+    const sixMonths = buildConversationDoc({ ...sampleConversation(), time_range: { from: 'now-6M', to: 'now' } }, { generatedAt: NOW.toISOString() });
+    expect(sixMonths.windows).toEqual(['last 6 months']);
+    expect(sixMonths.methodology).toContain('Time windows: last 6 months.');
+    expect(sixMonths.methodology.join('\n')).not.toMatch(/now-6M|→ now/);
   });
 });

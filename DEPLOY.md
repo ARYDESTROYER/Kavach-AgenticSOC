@@ -609,6 +609,47 @@ Before rolling back, ask users with more than 50 conversations to export the ext
 conversations they want to keep (history row menu → **Export**) and delete them, so
 the older build has nothing to evict.
 
+**Chat without limits, Remember me and exact dashboards (current build).** No database
+migration, index or table is added; everything below lives in existing KV namespaces
+and preference documents.
+
+- **Chat limits migrate once.** A stored `chat_agent` block moves to
+  `limits_mode: unlimited` on first read unless an operator had changed a per-question
+  limit (then it stays `bounded` with those values); the old defaults of
+  `model_step_timeout_s` (30 → 300, Unlimited only) and the questions-at-once bounds
+  (2 → 4 per user, 8 → 16 per backend) move to the new ones. Review **Settings → General
+  → Chat assistant** after upgrading.
+- **Chat is outside the AI budget, daily and monthly.** Chat calls are still ledgered
+  (one usage row each) but neither blocked by nor counted toward `budget.daily_usd` or
+  `budget.monthly_usd`; the optional daily `chat_agent.chat_daily_cap_usd` (off by
+  default) is chat's only spending bound, and there is no monthly chat bound. A
+  deployment that relied on `budget.monthly_usd` as a hard ceiling for all AI spend
+  should set the daily chat cap or a provider-side budget. Report summaries still count
+  toward the budget.
+- **`TLSOC_AUTH_TOKEN_HOURS` is capped at 144 hours.** A larger value is reduced to 144
+  with a startup warning, so a revoked token cannot outlive its session-registry row.
+  This applies to bearer tokens too: automation that relied on longer-lived tokens
+  must re-authenticate at least every 6 days.
+- **New chat documents.** In the existing `chat_conversations` namespace, each new
+  answer also gets a full-text exchange document (`x-…`), plus the running conversation
+  summary (`s-…`), step results for the step inspector (`o-…`, the owner's 100 most
+  recent answers), archive pages for very long conversations (`a-…`), and one small
+  live-state document per user (`v-…`); answer ratings use the new `chat_feedback`
+  namespace. Every one is a fixed set of `chat_`-prefixed fields holding one opaque
+  JSON string, so the Elasticsearch config-index mapping cannot grow.
+- **Rollback.** An image-only rollback to an earlier build keeps chat history readable
+  from each conversation row's compact copy: answers over 24,000 characters end there
+  with a "truncated" marker, the oldest messages of long conversations appear as
+  previews, and archived messages are not shown. Rolling forward restores the full
+  text, except for conversations the earlier build trimmed to its own 100-message window
+  in the meantime. The earlier build also ignores the chat limits mode and the chat
+  spending limit, and counts chat against the daily and monthly budget again.
+- **Single replica.** Running chat turns, their rejoin buffers and Stop live in the
+  backend process: a restart ends running answers (nothing is saved for them; the
+  conversation stops reading as running once its 10-minute lease lapses, and the
+  question can be asked again), and a second replica would not see the first one's
+  turns. Run one backend replica, as before.
+
 Durable job state survives browser/backend reconnects and ordinary supervisor-process
 restarts. Updater self-replacement uses a restartable helper with an idempotent
 name-swap transaction: after an ordinary helper-process, Docker-daemon, or host restart,
@@ -854,8 +895,8 @@ a backend restart **as long as `TLSOC_AUTH_JWT_SECRET` is stable**). This is wha
 makes a session **revocable** — a valid-looking JWT is rejected once its `sid` is
 revoked or the user's `token_version` is bumped. See `SECURITY.md` for the model.
 
-The lifetimes are a UI-editable tuning block (**Settings → Organization → Security &
-SSO → token policy**), also settable on Preferences. Defaults are **deliberately
+The lifetimes are a UI-editable tuning block (**Settings → Security & access →
+Single sign-on & policy**, Token & session policy), also settable on Preferences. Defaults are **deliberately
 generous** so an existing auth-on deployment never expires mid-session:
 
 | Knob (Preferences `session_policy.*`) | Default | Meaning |
@@ -866,6 +907,36 @@ generous** so an existing auth-on deployment never expires mid-session:
 | `refresh_ttl` | `2592000` (30d) | Refresh-token lifetime. |
 | `sudo_reauth_window` | `600` (10m) | How recently the user must have re-authenticated for a step-up-gated action (`require_fresh_auth`). |
 | `notify_on_new_device` / `notify_on_terminate` | `false` | Best-effort operator notification on a first-seen device / a termination. |
+| `remember_me.enabled` | `true` | Offer **Remember me** on the sign-in page. Turning it off ends existing remembered sessions where an ordinary sign-in would (at `TLSOC_AUTH_TOKEN_HOURS` from sign-in). |
+| `remember_me.duration_seconds` | `86400` (24h) | How long a remembered device stays signed in (1–24 h; the UI offers 6/12/24 h); never longer than `absolute_lifetime`. |
+| `remember_me.idle_seconds` | `null` | Optional inactivity limit for remembered sessions (5 min–24 h); `null` uses `idle_timeout`. |
+| `remember_me.excluded_roles` | `[]` | Roles that are never remembered. |
+| `remember_me.allow_insecure_http` | `false` | Allow a persistent cookie on plain HTTP while `AUTH_COOKIE_SECURE` is off (not recommended). |
+
+**Sign-in cookies (changed in this build).** A sign-in without Remember me now gets a
+**browser-session cookie** (no `Max-Age`) instead of a persistent 12-hour cookie, and
+`TLSOC_AUTH_TOKEN_HOURS` now sets the token lifetime of those sign-ins only. A
+remembered sign-in gets a persistent cookie for `remember_me.duration_seconds`. The
+server's session registry decides in both cases (idle, absolute, revocation); MFA and
+step-up are never skipped. Bearer-token API clients are unaffected by the cookie
+change; their token lifetime is `TLSOC_AUTH_TOKEN_HOURS`, now at most 144 hours. A
+larger value is reduced to 144 with a startup warning (a revoked token must expire
+before its registry row is pruned), so automation that relied on longer-lived tokens
+must re-authenticate at least every 6 days.
+
+**HTTPS and proxies.** Remember me is offered only when `TLSOC_AUTH_COOKIE_SECURE=true`
+(behind TLS), or on what looks like a direct request from the server itself: a loopback
+connection to `localhost` with no forwarding header, unless
+`session_policy.remember_me.allow_insecure_http` is `true` (not recommended), which
+also offers it on plain HTTP. A reverse proxy on the backend's
+own host that sends no `Forwarded` / `X-Forwarded-For` / `X-Forwarded-Host` /
+`X-Forwarded-Proto` / `X-Real-IP` header looks exactly like that, so configure it to
+send `X-Forwarded-For` (nginx: `proxy_set_header X-Forwarded-For
+$proxy_add_x_forwarded_for;`, as the bundled `tlsoc-webui` image does) or serve HTTPS
+with secure cookies. Revoking your own current session from the Sessions page is
+recorded with revoke reason `self_signout` and, like Sign out, is not reported on the
+next sign-in page as "ended from another device". See `docs/operations/security.md` (Session lifetimes) for the full table
+and the documented NIST SP 800-63B-4 deviations.
 
 These are tuned in the UI, not `.env` (they carry no secret). Endpoints:
 `POST /api/auth/refresh` (rotate + **reuse detection** — see `SECURITY.md`),

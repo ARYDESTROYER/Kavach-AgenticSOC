@@ -26,6 +26,9 @@ const TooltipContent = React.forwardRef<
         'data-[state=closed]:animate-out data-[state=closed]:fade-out-0',
         'data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1',
         'data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1',
+        // Scales out of the element it describes (the popper origin rule in theme.css);
+        // reduced motion keeps only the fade.
+        'data-[state=delayed-open]:zoom-in-95 data-[state=instant-open]:zoom-in-95',
         className,
       )}
       {...props}

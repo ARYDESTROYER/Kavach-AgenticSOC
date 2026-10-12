@@ -6,12 +6,21 @@
  *   │                                     │ budget alert · composer        │ (split │
  *   └─────────────────────────────────────┴────────────────────────────────┴ /sheet)┘
  *
- * Chrome contract: the frame bleeds the shell's vertical inset (`-my-6`, the matched
- * pair of `CONTENT_INSET`'s `py-6`) and is exactly `100dvh − 3.5rem` tall, so nothing
- * overflows the document at any reference size; one sr-only `<h1>Chat</h1>`, the thread
- * title is the toolbar `<h2>` and every turn has a hidden `<h3>`. Zones follow the
- * MEASURED frame width (`useChatGeometry`), and exactly one New chat is visible at
+ * Chrome contract: the frame bleeds the shell's whole inset (`-mx-4 -my-6 sm:-mx-6`
+ * with `w-auto`, the matched pair of `CONTENT_INSET`'s `px-4 py-6 sm:px-6`), so the rail,
+ * strip and report panel sit flush with the nav rail and the window edge and there are
+ * no canvas strips beside the chat (Round 12, diagnosis/layout.md (h)). It is exactly
+ * `100dvh − 3.5rem` tall, so nothing overflows the document at any reference size, and
+ * `overflow-clip` (not `hidden`): a clipped box cannot be scrolled programmatically, so a
+ * `focus()`, a contents jump or find-in-page can never slide the toolbar under the header
+ * or leave a blank band below the composer (diagnosis (d)). One sr-only `<h1>Chat</h1>`,
+ * the thread title is the toolbar `<h2>` and every turn has a hidden `<h3>`. Zones follow
+ * the MEASURED frame width (`useChatGeometry`), and exactly one New chat is visible at
  * every width (rail header, icon strip, or toolbar when the rail is a Sheet).
+ *
+ * The conversation zone is an `@container` that sets the lane's gutter and cap
+ * (`laneVars`, from the viewer's width preference in the thread ⋯ menu), so the
+ * transcript and the composer share one lane (lane.ts).
  *
  * The hooks (`useChatConversations`, `useChatEngine`, `useChatContext`) live in the
  * page; this component renders them and owns presentation state only.
@@ -20,30 +29,31 @@ import * as React from 'react';
 import { toast } from 'sonner';
 import { RotateCcw } from 'lucide-react';
 
-import type { ChatConversationSummary, ChatStarter } from '@/lib/types';
+import type { ChatConversation, ChatConversationSummary, ChatStarter } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { LoadingState } from '@/design-system/loading';
 import { useAuth } from '@/soc/auth';
 import { useAnnouncer } from '@/soc/components/announcer';
-import { getConversation } from '../chat-api';
 import { BudgetAlert } from '../composer/BudgetAlert';
 import { Composer, type ComposerHandle } from '../composer/Composer';
-import { estimateNextRequest } from '../display';
 import { EmptyState } from '../empty/EmptyState';
-import { CONTENT_COL, LANE_GRID } from '../message/lane';
+import { LANE_COL, LANE_GRID, laneVars } from '../message/lane';
 import { NoticeCallout } from '../message/NoticeCallout';
 import { Transcript } from '../message/Transcript';
-import { useTurnAnnouncer } from '../message/useTurnAnnouncer';
+import { announcedLookupBound, useTurnAnnouncer } from '../message/useTurnAnnouncer';
 import { ShortcutSheet } from '../shortcuts/ShortcutSheet';
 import { CHAT_KEYSHORTCUTS, useChatShortcuts } from '../shortcuts/useChatShortcuts';
 import type { ChatConversationsController } from '../useChatConversations';
 import type { ChatContextController } from '../useChatContext';
-import { CONTINUE_PROMPT, type ChatEngine, type ChatUserItem } from '../useChatEngine';
+import { type ChatEngine, type ChatUserItem } from '../useChatEngine';
+import { EARLIER_LOAD_ERROR, EARLIER_MISSING_ERROR, useEarlierMessages } from '../useEarlierMessages';
 import { HistoryRail, HistoryStrip, type ConversationExportFormat } from './HistoryRail';
 import { ReportOverlay, ReportSplit } from './ReportPanelHost';
 import { ThreadToolbar } from './ThreadToolbar';
+import { useChatLaneWidth } from './useChatLaneWidth';
 import { useConversationReport } from './useConversationReport';
+import { useConversationExport } from './useConversationExport';
 import { useOpenerFocus } from './useOpenerFocus';
 import {
   C_MIN,
@@ -85,10 +95,20 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [pendingReportFor, setPendingReportFor] = React.useState<string | null>(null);
   const geometry = useChatGeometry(panelOpen && !caseScoped);
+  // Older messages of a long saved conversation ("Show earlier messages", Round 12).
+  const earlier = useEarlierMessages({
+    conversation: caseScoped ? null : conv.conversation,
+    engine,
+    onLoaded: (added) => {
+      if (added > 0) announce(`Loaded ${added} earlier ${added === 1 ? 'message' : 'messages'}`);
+    },
+  });
+  const laneWidth = useChatLaneWidth();
   const busy = engine.busy;
   const ctx = context.context;
 
-  useTurnAnnouncer(engine, ctx?.bounds.max_tool_calls ?? null);
+  // A lookup limit is spoken only in `bounded` mode (chat is unlimited by default, D1).
+  useTurnAnnouncer(engine, announcedLookupBound(ctx));
 
   const activeId = typeof conv.activeId === 'string' ? conv.activeId : null;
   const summary = conv.activeSummary;
@@ -152,13 +172,14 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     [engine, focusComposer],
   );
 
+  // Never refused while an answer is being written: the turn keeps running in the
+  // turn runner and the history row shows it (SPEC D13).
   const newChat = React.useCallback(() => {
-    if (busy) return;
     conv.startNew();
     setHistoryOpen(false);
     // After the draft paints (the composer stays mounted).
     window.setTimeout(() => composerRef.current?.focus(), 0);
-  }, [busy, conv]);
+  }, [conv]);
 
   const select = React.useCallback(
     (item: ChatConversationSummary) => {
@@ -168,19 +189,9 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     [conv],
   );
 
-  const exportThread = React.useCallback(
-    async (id: string, format: ConversationExportFormat) => {
-      try {
-        const [conversation, module] = await Promise.all([getConversation(id), import('../report/export/conversation')]);
-        const outcome = await module.exportConversation(conversation, format, { author });
-        announce(outcome.message);
-        if (!outcome.ok) toast.error(outcome.message);
-      } catch (error) {
-        toast.error(error instanceof Error && error.message ? error.message : 'Could not export the conversation.');
-      }
-    },
-    [announce, author],
-  );
+  // One guarded runner per conversation: progress, a result toast and the PDF guidance
+  // before the print dialog, like a report export (useConversationExport).
+  const { run: exportThread } = useConversationExport({ author });
 
   // Whether un-collapsing would actually dock the rail right now (an open split panel
   // may be what keeps it a strip; then the Sheet is the way to see history).
@@ -224,18 +235,6 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
 
   /* -------------------------------------------------------------- derived -- */
 
-  // Calibrated on every part, exactly like the composer meter (display.estimateNextRequest).
-  const continueEstimate = React.useMemo(() => {
-    if (!ctx) return null;
-    return estimateNextRequest({
-      staticPromptTokens: ctx.static_prompt_tokens,
-      historyTokens: ctx.history_tokens,
-      draft: CONTINUE_PROMPT,
-      charsPerToken: ctx.chars_per_token,
-      calibration: ctx.calibration ?? null,
-    }).total;
-  }, [ctx]);
-
   const disabledReason = conv.restoring
     ? 'Restoring this conversation…'
     : conv.threadError
@@ -247,7 +246,75 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   // there once the thread has finished restoring.
   const highlight =
     conv.highlight && conv.highlight.conversationId === engine.conversationId ? conv.highlight : null;
-  const highlightReady = !!highlight && !conv.restoring && !conv.threadError;
+  const highlightRestored = !!highlight && !conv.restoring && !conv.threadError;
+  // A requested message older than the messages on screen (a search hit or a link into a
+  // long conversation): page back to it first (Round 12), then highlight it.
+  const highlightShown =
+    !!highlight && engine.items.some((item) => item.key === highlight.messageId || item.messageId === highlight.messageId);
+  // (A question asked in this session carries its saved id, `user_message_id`, so a hit
+  // on it is shown and never reads the conversation's older history.)
+  //
+  // A seek belongs to one request (its nonce) and one read of the conversation: a fresh
+  // read (Reopen conversation after a 404, or opening the conversation again) seeks a
+  // request that is still pending in the new copy. A request stays pending only until
+  // the transcript shows or drops it (it then clears it), so this never reads back for
+  // a message already handled.
+  const [seeked, setSeeked] = React.useState<{ nonce: number; conversation: ChatConversation | null } | null>(null);
+  const seekStarted = !!highlight && seeked?.nonce === highlight.nonce && seeked.conversation === conv.conversation;
+  // Only against a read of the highlight's own conversation: while another one is
+  // being handed to the engine, `earlier` still describes the previous read for a
+  // render, and a seek then would read the wrong conversation.
+  const seekOwnRead = !!highlight && conv.conversation?.id === highlight.conversationId;
+  const seekOlder = highlightRestored && seekOwnRead && !highlightShown && earlier.remaining > 0;
+  const { loadUntil, load: loadEarlier, loading: earlierLoading } = earlier;
+  const retryThread = conv.retryThread;
+  // What the page shows now, for a toast action raised earlier (see below).
+  const shownConversationRef = React.useRef(conv.conversation);
+  shownConversationRef.current = conv.conversation;
+  const failedSeekRef = React.useRef(earlier.failedSeek);
+  failedSeekRef.current = earlier.failedSeek;
+  React.useEffect(() => {
+    // A "Show earlier messages" load still running is waited for: the seek starts
+    // once it lands (from the cursor it leaves), and is never used up meanwhile.
+    if (!seekOlder || !highlight || seekStarted || earlierLoading) return;
+    const raisedFor = conv.conversation;
+    const { messageId, nonce } = highlight;
+    setSeeked({ nonce, conversation: raisedFor });
+    void loadUntil(messageId).then((outcome) => {
+      if (outcome !== 'failed' && outcome !== 'missing') return;
+      // The request stays pending (see highlightReady) and the transcript shows the
+      // error at its top; the toast says so wherever the reader is, in the same words
+      // and with the same action as the transcript's control. The kind comes from the
+      // outcome itself: `earlier.errorKind` is not rendered yet when this runs.
+      const gone = outcome === 'missing';
+      // An action acts only on the request it was raised for: never on another
+      // conversation (or a fresh read of this one, which seeks again by itself), and
+      // never once that read-back was resumed elsewhere.
+      const stillPending = () => shownConversationRef.current === raisedFor && failedSeekRef.current === messageId;
+      toast.error('Could not open that message', {
+        description: gone ? EARLIER_MISSING_ERROR : EARLIER_LOAD_ERROR,
+        action: gone
+          ? {
+              label: 'Reopen conversation',
+              onClick: () => {
+                if (stillPending()) retryThread();
+              },
+            }
+          : {
+              label: 'Retry',
+              onClick: () => {
+                if (stillPending()) loadEarlier();
+              },
+            },
+      });
+    });
+  }, [conv.conversation, highlight, loadUntil, loadEarlier, retryThread, seekOlder, seekStarted, earlierLoading]);
+  // Held back while the read-back runs, or after it failed (Retry or Reopen resumes
+  // it): the transcript must not take a failed read for "not in this conversation" and
+  // jump to the latest turn.
+  const seekFailed = !!highlight && earlier.failedSeek === highlight.messageId;
+  const highlightReady =
+    highlightRestored && !(!highlightShown && (earlierLoading || seekFailed || (seekOlder && !seekStarted)));
 
   const title = caseScoped
     ? `Case ${caseId}`
@@ -336,8 +403,8 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     onOpenReport: (item: ChatConversationSummary) => {
       setHistoryOpen(false);
       if (item.id === activeId) setPanelOpen(true);
-      else if (!busy) {
-        // Selection is refused while a turn runs; only then remember to open it.
+      else {
+        // Select it, then open the panel once it is active.
         setPendingReportFor(item.id);
         conv.select(item);
       }
@@ -363,10 +430,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   return (
     <div
       ref={geometry.frameRef}
-      className="-my-6 flex h-[calc(100dvh-3.5rem)] min-h-0 min-w-0 overflow-hidden bg-background"
+      className="-mx-4 -my-6 flex h-[calc(100dvh-3.5rem)] w-auto min-h-0 min-w-0 overflow-clip bg-background sm:-mx-6"
       data-testid="workspace-chat-page"
       data-rail={rail ?? 'none'}
       data-panel={showPanel ? panelMode : 'closed'}
+      data-lane-width={laneWidth.width}
     >
       <h1 className="sr-only">Chat</h1>
 
@@ -413,7 +481,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
         </Sheet>
       ) : null}
 
-      <section className="flex min-w-0 flex-1 flex-col" aria-label="Conversation">
+      <section
+        className="@container flex min-w-0 flex-1 flex-col"
+        aria-label="Conversation"
+        style={laneVars(laneWidth.width) as React.CSSProperties}
+      >
         <ThreadToolbar
           title={title}
           summary={caseScoped ? null : summary}
@@ -430,12 +502,27 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           onExport={(format) => activeId && void exportThread(activeId, format)}
           onDelete={() => summary && void conv.remove(summary)}
           shortcuts={{ newChat: CHAT_KEYSHORTCUTS.newChat, history: CHAT_KEYSHORTCUTS.toggleHistory }}
+          laneWidth={{ value: laneWidth.width, onChange: laneWidth.setWidth }}
         />
 
         <Transcript
           engine={engine}
           label={caseScoped ? `Case ${caseId} messages` : 'Messages'}
           header={hasHeader ? header : null}
+          earlier={
+            caseScoped
+              ? null
+              : {
+                  remaining: earlier.remaining,
+                  loading: earlier.loading,
+                  error: earlier.error,
+                  errorKind: earlier.errorKind,
+                  // Gone (404): re-read the conversation instead of repeating the read.
+                  onReopen: conv.retryThread,
+                  loadedAny: earlier.loadedAny,
+                  onLoad: earlier.load,
+                }
+          }
           replace={replace}
           empty={empty}
           highlight={highlight}
@@ -443,17 +530,17 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           onHighlightDone={conv.clearHighlight}
           onFocusComposer={focusComposer}
           reportFor={caseScoped ? undefined : report.bindingFor}
-          continueEstimate={continueEstimate}
           onSavePrompt={caseScoped ? undefined : onSavePrompt}
         />
 
         {/* The transcript reserves a scrollbar gutter on both edges; the composer area
-            reserves the same one (an overflow box with no overflow), so the composer's
-            edges line up with the bubbles and prose above at every width. Its menus and
-            popovers are portalled, so nothing here is clipped. */}
-        <div className="shrink-0 overflow-hidden px-4 pb-4 pt-1 [scrollbar-gutter:stable_both-edges] sm:px-6">
+            reserves the same one (an overflow box with no overflow), and both take their
+            side gutters from the lane grid's tracks, so the composer spans exactly the
+            lane above (the prose's left edge to the bubble's right edge) at every width.
+            Its menus and popovers are portalled, so nothing here is clipped. */}
+        <div className="shrink-0 overflow-hidden pb-4 pt-1 [scrollbar-gutter:stable_both-edges]">
           <div className={LANE_GRID}>
-            <div className={`${CONTENT_COL} space-y-2`}>
+            <div className={`${LANE_COL} space-y-2`}>
               <BudgetAlert context={ctx} />
               <Composer
                 ref={composerRef}

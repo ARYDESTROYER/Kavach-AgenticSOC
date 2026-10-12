@@ -36,6 +36,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEBUI_ROOT = path.resolve(HERE, '..', '..', '..');
 const DIST = path.join(WEBUI_ROOT, 'dist');
 const HAS_DIST = fs.existsSync(path.join(DIST, 'index.html'));
+// The CI production-build lane runs this file after `npm run build` with
+// REQUIRE_DIST_BUILD=1, so the build-artifact cases below run there and can never pass by
+// skipping; the test lane (no build) still skips them and keeps the source guards.
+const REQUIRE_DIST = process.env.REQUIRE_DIST_BUILD === '1';
 
 const HINT = 'no dist/ build present — run `vite build` first (CI/integrator does)';
 
@@ -50,8 +54,67 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * the baseline is 05a40d1 re-measured with only that change applied (its own vite
  * config): 391,893 B, which is 4,644 B less. The revamp stays capped at +1,024 B. Re-measure
  * the same way if another pre-revamp module leaves or joins the entry.
+ *
+ * Rebased for Round 12 (SPEC §6, WP-GEN-A). The round's features grew the entry from
+ * 392,879 B (6769207, the round's branch point) to 399,967 B: +7,088 B, 8,074 B over the
+ * 391,893 B baseline and 33 B under the 400,000 B ceiling. The growth: Remember me in
+ * Login / auth / the api client (~2.8 kB), per-viewer preference writes (`patchMisc`,
+ * reduced transparency) and the nav activity glyph in prefs.tsx / NavSidebar.tsx
+ * (~2.6 kB), the chat activity store, glyph and title (~0.8 kB, SPEC D13: the only new
+ * entry code the round planned) and the design foundations (ui-recipes, transparency,
+ * overlay origins: ~0.9 kB net). WP-GEN-A then moved code first
+ * paint never needs out of the entry, keeping every feature:
+ *   - the command palette body (CommandPalette, cmdk, ui/command: ~20 kB) is a fail-soft
+ *     lazy chunk AppShell mounts on the first Cmd/Ctrl-K or search click (its chunks are
+ *     prefetched into the HTTP cache when the browser is idle, never imported early);
+ *   - the Settings section metadata (settings-sections-meta + settings-dirty: ~15.5 kB)
+ *     left with it, once the shell's unsaved-changes hook took `deepEqual` from the
+ *     dependency-free lib/deep-equal.ts instead of settings-dirty.ts;
+ *   - the shell's two Blob downloads (job artifacts, MFA recovery codes) now share
+ *     lib/download-blob.ts, whose deferred revoke cannot cancel a download (+223 B).
+ * Measured with `npm run build:app`: 365,547 B, 34,420 B less than before the pass. The
+ * baseline is that measurement; later work keeps the +1,024 B budget over it.
+ * The review fixes that keep a network blip from disabling search, Chat or Settings
+ * spend ~1 kB of that budget: the retrying chunk loader and the prefetch-only warm in
+ * soc/lazy-retry.ts, the build-written list of the palette's chunks (vite.config.ts
+ * `chunkListPlugin`) and the palette's one-toast Reload path. With the rest of the
+ * working tree at its state then, the entry measured 365,885 B before those fixes and
+ * 366,517 B after them (`vite build`, the same way), 54 B under the budget.
+ *
+ * Rebased for the Round 12 final review (L3/L4). Two fixes that must run on first paint
+ * took the entry to 367,234 B, 663 B over the budget (98078d4 re-measured 366,517 B the
+ * same way, so the per-source deltas below are exact):
+ *   - router.tsx +788 B: the same-page hash reconciliation (`samePageOpts`, `hashKeys`)
+ *     that lets Back leave a report and keeps a Case Manager row change from erasing a
+ *     drill-through. It runs synchronously on every hash change of the eager
+ *     RouterProvider, so it cannot be a lazy chunk;
+ *   - the `chat.read` relay, +124 B (chat-activity/store.ts, JobMonitor.tsx,
+ *     useEventStream.ts): the shell's one stream hands the lazy activity observer the
+ *     frames that clear an answer read on another console;
+ *   - Login.tsx -209 B (Remember me tidy-up), others within ±20 B.
+ * `optsFromHash` then read the same `hashKeys` table instead of its own per-key copy
+ * (-397 B, one source of truth for the keys, validators and trim rule). Measured with
+ * `vite build` that way: 366,837 B. A CI build stamps a 40-character commit and a build
+ * time where a local build writes `unknown`, about 46 B more.
+ *
+ * Rebased for the Round 12 final polish (top bar, P1-shell-header-material) by exactly
+ * the top bar's own first-paint bytes, +1,428 B, measured by building the same tree with
+ * and without each file (`vite build`, the same way): AppShell.tsx +958 B (the bar's
+ * container tiers, the page name's priority, the health pill's tooltip, the Console
+ * controls sheet as the desktop overflow), DemoIndicator.tsx +439 B (its tooltip and the
+ * muted-health note the health pill used to carry), SystemUpdateControl.tsx +31 B. The
+ * bar is the first thing every page paints, so none of it can be a lazy chunk.
+ *
+ * Rebased again for the final top bar fixer by exactly its first-paint bytes, +2,738 B:
+ * the same tree built with and without the change (`vite build`, the same way) measured
+ * 371,445 B and 368,707 B. It is top-bar-fold.ts (the measured fold that lets crowded
+ * chips give way before the search field drops under 11rem: the fold order, the six
+ * literal fold classes, the measure and the hook), the search field's own-width tiers,
+ * and the fold classes on each chip label. The fold must decide before first paint (a
+ * lazy chunk would paint the overflowing bar first), so it cannot be split out. Other
+ * work keeps the +1,024 B budget over 371,003 B.
  */
-const PRE_REVAMP_ENTRY_BYTES = 391_893;
+const PRE_REVAMP_ENTRY_BYTES = 371_003;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {
@@ -64,8 +127,19 @@ function readEntry(): string {
   return fs.readFileSync(path.join(DIST, 'assets', m[1]), 'utf8');
 }
 
-describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
-  if (!HAS_DIST) it.skip(HINT, () => undefined);
+/** Chunk file names the entry imports statically (`from"./x.js"`). */
+function entryStaticImports(): string[] {
+  return [...readEntry().matchAll(/from\s*["']\.\/([A-Za-z0-9._-]+\.js)["']/g)].map((mm) => mm[1]);
+}
+
+describe.runIf(REQUIRE_DIST)('first-paint bundle graph is checked on the built output', () => {
+  it('a production build is present', () => {
+    expect(HAS_DIST, 'REQUIRE_DIST_BUILD=1 but dist/index.html is missing: run `npm run build` first').toBe(true);
+  });
+});
+
+describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
+  if (!HAS_DIST && !REQUIRE_DIST) it.skip(HINT, () => undefined);
 
   it('does NOT modulepreload recharts on first paint', () => {
     expect(readHtml()).not.toMatch(/modulepreload[^>]*recharts/);
@@ -112,10 +186,9 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);
     if (!m) throw new Error('could not find the entry chunk in dist/index.html');
     const bytes = fs.statSync(path.join(DIST, 'assets', m[1])).size;
-    // Hard ceiling below the 537 777-byte regression. Today the entry chunk is
-    // ~390 kB, so the remaining headroom is ~10 kB, NOT the ~136 kB an older
-    // "~264 kB" note in this comment implied — the next eager import of any
-    // moderate module will trip this. Keep the figure current when it moves.
+    // Hard ceiling below the 537 777-byte regression. After the Round 12 final polish the
+    // entry chunk is ~371 kB, so the headroom is ~29 kB; the recorded-baseline test
+    // below still caps any growth at 1 kB. Keep the figure current when it moves.
     expect(bytes).toBeLessThan(400_000);
   });
 
@@ -127,6 +200,52 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
     // Chat, reports and the palette's chat entries reach the entry only as nav metadata
     // and `React.lazy` thunks; everything else lives in lazy chunks.
     expect(bytes - PRE_REVAMP_ENTRY_BYTES, `entry is ${bytes} B`).toBeLessThanOrEqual(REVAMP_ENTRY_BUDGET_BYTES);
+  });
+
+  it('the command palette body (cmdk) and the Settings section metadata stay off first paint', () => {
+    // Round 12 WP-GEN-A: AppShell mounts the palette lazily; cmdk writes its `cmdk-*`
+    // attribute names as string literals, so their absence proves cmdk is not in the entry.
+    const entry = readEntry();
+    expect(entry).not.toContain('cmdk-input');
+    expect(entry).not.toContain('cmdk-item');
+    const assets = fs.readdirSync(path.join(DIST, 'assets'));
+    expect(assets.some((f) => /^CommandPalette-[^/]+\.js$/.test(f))).toBe(true);
+    expect(readHtml()).not.toMatch(/modulepreload[^>]*CommandPalette/);
+    // The Settings section metadata (settings-sections-meta, settings-dirty) rides only
+    // with lazy chunks: never modulepreloaded, never a static import of the entry, and
+    // none of its section keywords inside the entry itself.
+    expect(readHtml()).not.toMatch(/modulepreload[^>]*settings-(?:sections-meta|dirty)/);
+    const statics = entryStaticImports();
+    expect(statics.filter((name) => /settings|CommandPalette|cmdk/i.test(name))).toEqual([]);
+    expect(entry).not.toContain(SETTINGS_META_MARKER);
+    const metaChunk = assets
+      .filter((f) => f.endsWith('.js'))
+      .find((f) => fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes(SETTINGS_META_MARKER));
+    expect(metaChunk, 'the Settings section metadata must be emitted in some lazy chunk').toBeDefined();
+    expect(statics).not.toContain(metaChunk);
+  });
+
+  it('the entry prefetches exactly the palette chunks first paint lacks (a build-written list)', () => {
+    // vite.config.ts `chunkListPlugin` replaces AppShell's `__CHUNK_LIST:` mark with the
+    // palette chunk and its static imports, minus what the entry already loads. AppShell
+    // warms them with <link rel="prefetch"> (lazy-retry.ts), never through import().
+    const entry = readEntry();
+    expect(entry).not.toContain('__CHUNK_LIST:');
+    const lists = [...entry.matchAll(/\[(?:\\?"[A-Za-z0-9._-]+\.js\\?",?)+\]/g)]
+      .map((mm) => mm[0].replace(/\\"/g, '"'))
+      .filter((text) => text.includes('CommandPalette-'));
+    expect(lists, 'one chunk list naming the palette chunk').toHaveLength(1);
+    const listed = JSON.parse(lists[0]) as string[];
+    const assets = fs.readdirSync(path.join(DIST, 'assets'));
+    for (const name of listed) expect(assets, name).toContain(name);
+    const holding = (marker: string) =>
+      assets.filter((f) => f.endsWith('.js') && fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes(marker));
+    expect(listed.some((name) => /^CommandPalette-/.test(name))).toBe(true);
+    expect(listed.some((name) => holding('cmdk-input').includes(name)), 'the cmdk chunk is listed').toBe(true);
+    expect(listed.some((name) => holding(SETTINGS_META_MARKER).includes(name)), 'the Settings metadata chunk is listed')
+      .toBe(true);
+    const statics = entryStaticImports();
+    expect(listed.filter((name) => statics.includes(name))).toEqual([]);
   });
 
   it("the entry's preload lists never repeat a chunk the entry already imports statically", () => {
@@ -177,6 +296,112 @@ describe.skipIf(!HAS_DIST)('first-paint bundle graph', () => {
       ...settingsChunks.map((f) => fs.statSync(path.join(DIST, 'assets', f)).size),
     );
     expect(biggest).toBeGreaterThan(50_000);
+  });
+});
+
+/*
+ * Search keywords only the Settings section metadata carries (settings-sections-meta.ts;
+ * no other source module has them). Their absence from the entry chunk proves the module
+ * stayed off first paint, whatever chunk Vite puts it in.
+ */
+const SETTINGS_META_MARKERS = ["'analysis bundle'", "'severity weight'"];
+const SETTINGS_META_MARKER = readSettingsMetaMarker();
+
+function readSettingsMetaMarker(): string {
+  const file = path.join(WEBUI_ROOT, 'src', 'soc', 'pages', 'settings', 'settings-sections-meta.ts');
+  const text = fs.readFileSync(file, 'utf8');
+  const marker = SETTINGS_META_MARKERS.find((m) => text.includes(m));
+  // A renamed keyword must fail loudly here, never turn the bundle check into a no-op.
+  if (!marker) throw new Error(`settings-sections-meta.ts no longer has ${SETTINGS_META_MARKERS.join(' or ')}`);
+  return marker.slice(1, -1);
+}
+
+/*
+ * The STATIC import graph of the first-paint entry (src/main.tsx), read from source: value
+ * imports and re-exports only (`import type` / `export type` are erased, `import()` is a
+ * lazy chunk). Runs without a build, so the CI test lane checks it too.
+ */
+function firstPaintGraph(): { files: Map<string, string>; packages: Map<string, string> } {
+  const SRC = path.join(WEBUI_ROOT, 'src');
+  const IMPORT_RE = /(?:^|[\n;])\s*(?:import|export)\s+(?!type\b)(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g;
+  const files = new Map<string, string>(); // file -> the file that first imported it
+  const packages = new Map<string, string>();
+  const resolve = (from: string, spec: string): string | null => {
+    const bare = spec.split('?')[0];
+    let base: string;
+    if (bare.startsWith('@/')) base = path.join(SRC, bare.slice(2));
+    else if (bare.startsWith('.')) base = path.resolve(path.dirname(from), bare);
+    else return null;
+    for (const candidate of [base, `${base}.ts`, `${base}.tsx`, path.join(base, 'index.ts'), path.join(base, 'index.tsx')]) {
+      if (/\.tsx?$/.test(candidate) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+    return null;
+  };
+  const start = path.join(SRC, 'main.tsx');
+  const stack = [start];
+  files.set(start, '');
+  while (stack.length) {
+    const file = stack.pop() as string;
+    const text = fs.readFileSync(file, 'utf8');
+    for (const match of text.matchAll(IMPORT_RE)) {
+      const spec = match[1];
+      if (!spec.startsWith('.') && !spec.startsWith('@/')) {
+        const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+        if (!packages.has(name)) packages.set(name, path.relative(WEBUI_ROOT, file));
+        continue;
+      }
+      const target = resolve(file, spec);
+      if (target && !files.has(target)) {
+        files.set(target, path.relative(WEBUI_ROOT, file));
+        stack.push(target);
+      }
+    }
+  }
+  return { files, packages };
+}
+
+describe('first-paint shell keeps the palette and Settings metadata lazy (source guard)', () => {
+  const read = (...seg: string[]) => fs.readFileSync(path.join(WEBUI_ROOT, 'src', ...seg), 'utf8');
+
+  it('no first-paint module statically imports the palette, cmdk or the Settings metadata', () => {
+    const { files, packages } = firstPaintGraph();
+    expect(files.size).toBeGreaterThan(20); // the walk really followed the entry graph
+    const lazyOnly = [
+      ['soc', 'components', 'CommandPalette.tsx'],
+      ['ui', 'command.tsx'],
+      ['soc', 'pages', 'settings', 'settings-sections-meta.ts'],
+      ['soc', 'pages', 'settings-dirty.ts'],
+    ].map((seg) => path.join(WEBUI_ROOT, 'src', ...seg));
+    const reached = lazyOnly
+      .filter((file) => files.has(file))
+      .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
+    expect(reached, 'lazy-only modules on the first-paint graph').toEqual([]);
+    expect(packages.has('cmdk') ? `cmdk (imported by ${packages.get('cmdk')})` : null).toBeNull();
+  });
+
+  it('AppShell reaches the command palette only through import()', () => {
+    const text = read('soc', 'AppShell.tsx');
+    // A type-only import is erased; a value import would put cmdk back on first paint.
+    expect(text).not.toMatch(/^import\s+(?!type\b)[^;]*['"]\.\/components\/CommandPalette['"]/m);
+    expect(text).toMatch(/import\(\s*['"]\.\/components\/CommandPalette['"]\s*\)/);
+  });
+
+  it('AppShell warms the palette with a prefetch of its build-written chunk list, never import()', () => {
+    const text = read('soc', 'AppShell.tsx');
+    const warm = text.match(/function warmCommandPalette\(\)[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? '';
+    expect(warm).toContain('prefetchChunks(');
+    expect(warm).not.toMatch(/loadCommandPalette|import\(/);
+    // The mark names the module the palette chunk is built from (vite.config.ts fails the
+    // build when no chunk is built from it).
+    const mark = text.match(/'__CHUNK_LIST:([^']+)__'/)?.[1];
+    expect(mark).toBe('src/soc/components/CommandPalette.tsx');
+    expect(fs.existsSync(path.join(WEBUI_ROOT, mark as string))).toBe(true);
+  });
+
+  it('the eager draft hook takes deepEqual from the dependency-free lib module', () => {
+    const text = read('soc', 'hooks', 'useDirtyDraft.ts');
+    expect(text).toMatch(/from\s+['"]@\/lib\/deep-equal['"]/);
+    expect(text).not.toMatch(/from\s+['"][^'"]*settings-dirty['"]/);
   });
 });
 

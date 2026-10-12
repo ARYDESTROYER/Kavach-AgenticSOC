@@ -9,6 +9,10 @@
  * - Shift+Esc        — focus the composer
  * - Ctrl/Cmd+/       — the shortcut sheet
  *
+ * Ctrl/Cmd+Shift+C (copy the last answer, Round 12) is matched HERE too, under the same
+ * rules (`'copyLastAnswer'`), but handled by the newest settled answer itself
+ * (`message/useCopyLastAnswer.ts`): this hook leaves it alone.
+ *
  * Never Ctrl/Cmd+K or Ctrl/Cmd+B in any combination (the console owns them). Events
  * are ignored while an input method is composing (`isComposing` / keyCode 229), when
  * another handler already consumed them (a Radix layer closing on Escape calls
@@ -37,6 +41,8 @@ export const CHAT_KEYSHORTCUTS = {
 } as const;
 
 export type ChatShortcutAction = keyof ChatShortcutHandlers;
+/** What a keydown can mean: a hook action, or copy-the-last-answer (handled by the answer). */
+export type ChatShortcutMatch = ChatShortcutAction | 'copyLastAnswer';
 
 const OPEN_DIALOGS = '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]';
 const OPEN_LAYERS = `${OPEN_DIALOGS}, [role="menu"][data-state="open"], [role="listbox"][data-state="open"]`;
@@ -86,7 +92,7 @@ function nonLatinCharacter(key: string): boolean {
 export function matchChatShortcut(event: Pick<
   KeyboardEvent,
   'key' | 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey' | 'isComposing' | 'keyCode' | 'repeat' | 'defaultPrevented'
->): ChatShortcutAction | null {
+>): ChatShortcutMatch | null {
   if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || event.repeat || event.altKey) return null;
   const mod = event.ctrlKey || event.metaKey;
   const raw = event.key || '';
@@ -97,6 +103,7 @@ export function matchChatShortcut(event: Pick<
   if (mod && (code === 'KeyK' || code === 'KeyB')) return null;
   if (mod && event.shiftKey && (key === 'o' || code === 'KeyO')) return 'newChat';
   if (mod && event.shiftKey && (key === 's' || code === 'KeyS')) return 'toggleHistory';
+  if (mod && event.shiftKey && (key === 'c' || code === 'KeyC')) return 'copyLastAnswer';
   if (mod && (key === '/' || code === 'Slash')) return 'openShortcuts';
   if (!mod && event.shiftKey && key === 'escape') return 'focusComposer';
   return null;
@@ -109,7 +116,8 @@ export function useChatShortcuts(handlers: ChatShortcutHandlers, enabled = true)
     if (!enabled) return undefined;
     const onKey = (event: KeyboardEvent) => {
       const action = matchChatShortcut(event);
-      if (!action || modalLayerOpen()) return;
+      // Copy-the-last-answer belongs to the newest answer (useCopyLastAnswer).
+      if (!action || action === 'copyLastAnswer' || modalLayerOpen()) return;
       event.preventDefault();
       ref.current[action]();
     };

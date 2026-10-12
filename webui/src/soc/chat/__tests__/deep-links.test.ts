@@ -101,6 +101,13 @@ describe('optsFromHash — chat revamp keys', () => {
       '#/logs?sourceId=%ZZ',
       '#/chat?newChat=1',
       '#/chat?',
+      // Inherited object names are never keys a page owns.
+      '#/chat?toString=x',
+      '#/cases?constructor=x',
+      '#/metrics?hasOwnProperty=x',
+      // Only case keys are trimmed: a padded id or tab is not the value it looks like.
+      '#/chat?conversationId=%20conv-1',
+      '#/metrics?tab=%20effectiveness',
     ]) {
       setHash(hash);
       expect(optsFromHash(), hash).toBeUndefined();

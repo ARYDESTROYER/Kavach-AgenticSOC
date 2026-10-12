@@ -37,7 +37,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from ..agents.blocks import is_expired_block
+from ..agents.blocks import MAX_KPI_CONTEXT, is_expired_block
 from ..agents.prompts import build_report_summary_messages, neutralise_markers
 from ..models import Report, ReportItem
 
@@ -211,9 +211,10 @@ def _kpis(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
             "value": _measured(item.get("value")),
             "unit": item.get("unit"),
             "bound": item.get("bound"),
-            "context": _clip(item.get("context"), 60),
+            # Whole, as the tile states it: a dated period name and its figures.
+            "context": _clip(item.get("context"), MAX_KPI_CONTEXT),
             "change": _num(delta.get("value")) if delta else None,
-            "change_period": _clip(delta.get("period_label"), 40) if delta else None,
+            "change_period": _clip(delta.get("period_label"), 60) if delta else None,
         }))
     return {"kpis": items}
 

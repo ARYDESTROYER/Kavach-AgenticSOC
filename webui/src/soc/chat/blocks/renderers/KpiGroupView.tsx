@@ -1,7 +1,23 @@
 /**
  * `kpi_group` block (BLOCKS.md `kpi_group`, amendment 2): a row of compact strip tiles
- * (`KpiTile variant="strip" density="compact"`) in a hairline grid that reflows by
- * CONTAINER width — 2 columns in a Case Manager embed, 3 at ~40rem, 6 at ~60rem.
+ * (`KpiTile variant="strip" density="compact"`) in the shared `KpiTileGrid`.
+ *
+ * Round 12 (diagnosis/layout.md (c), screenshot 4):
+ * - The columns FOLLOW THE ITEM COUNT (`kpiGridColumns`): three figures make three equal
+ *   columns that fill the card, six make six from ~60rem, and a narrow container steps
+ *   down to a balanced count. No empty track is ever drawn.
+ * - Inside a framed host (a block card, an entity's own frame: 0.75rem padding each) the
+ *   grid draws only its inner hairlines (`framed={false}`, no card-border-plus-grid-border
+ *   double frame) and HANGS by the tiles' own padding (`-mx-3` = KpiTile's `px-3`), so
+ *   every label and numeral starts on the host's content edge, the same edge as the card
+ *   title and the prose above it; the frame's clip still hides the outermost rules. A
+ *   group with no frame around it (a report leaf, the expanded sheet, a report panel
+ *   item) passes `framed`, keeps its own closed frame and does not hang.
+ * - A caption ("in the returned page", "of 22 acknowledged cases") is the tile's
+ *   `secondary` line, on its own line UNDER the numeral, wrapping; the numeral and the
+ *   caption can never truncate each other ("≥…" / "in the returned …").
+ * - Static and print mode: the delta chip always takes its own line under the numeral
+ *   (a fixed-width page never squeezes it beside a long value), and no tile is a button.
  *
  * - The value is passed PRE-FORMATTED (no `countTo`), so a restored transcript never
  *   replays a count-up animation, and `null` is an em dash (G3).
@@ -13,7 +29,9 @@
  * - A tile with a validated `ref` is a keyboard button that navigates; there is no hover
  *   card in the transcript.
  * - A delta reads in the change's own terms: percentage points for a rate, plain points
- *   for a score (`formatDelta`).
+ *   for a score (`formatDelta`). The chip holds only the signed figure, on one line; the
+ *   comparison ("vs previous 90 days") is plain muted words beside it that drop under
+ *   the numeral and wrap between words on a narrow tile (`kpiDelta`).
  * - The strip is a list of tiles (one item per figure). BLOCKS.md asks for a `<dl>`, but
  *   `KpiTile` owns its label/value markup and has no `dt`/`dd` mode; a list keeps the
  *   grouping and count without reading every label twice.
@@ -21,7 +39,7 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
-import { KpiTile, type KpiAccent } from '@/soc/components/KpiTile';
+import { KpiTile, KpiTileGrid, type KpiAccent, type KpiDelta } from '@/soc/components/KpiTile';
 import { RiskGauge } from '@/soc/components/RiskGauge';
 import { SEMANTIC_ICON, token } from '@/soc/components/palette';
 
@@ -68,16 +86,30 @@ function valueNode(item: KpiItem): React.ReactNode {
   );
 }
 
-function deltaLabel(item: KpiItem): string {
+/**
+ * A KPI's change as the tile shows it: the signed figure in the chip ("+87", or "no
+ * change" for a zero, which has no direction), and the comparison ("vs previous 90
+ * days") as the chip's `period`, plain words beside it. Kept apart so the chip never
+ * wraps; the words are the same ones the report export writes (export/walker.ts).
+ */
+export function kpiDelta(item: KpiItem): KpiDelta | undefined {
   const d = item.delta;
-  if (!d) return '';
+  if (!d) return undefined;
+  const period = d.period_label.trim() || undefined;
   // A zero change has no direction: say so in words (no "0" with an arrow).
-  if (d.value === 0) return `no change ${d.period_label}`.trim();
+  if (d.value === 0) return { value: 0, label: 'no change', period };
   const sign = d.value > 0 ? '+' : d.value < 0 ? '−' : '';
-  return `${sign}${formatDelta(Math.abs(d.value), item.unit)} ${d.period_label}`;
+  return { value: d.value, label: `${sign}${formatDelta(Math.abs(d.value), item.unit)}`, period };
 }
 
-export function KpiItemCell({ item, testId }: { item: KpiItem; testId: string }) {
+/**
+ * Static / print: the numeral row (the row that holds the delta chip, `role="img"`) is a
+ * column, so the chip sits on its own line. Selected by what it contains rather than by
+ * its position, so KpiTile's markup order is free to change. Literal for Tailwind.
+ */
+const STATIC_DELTA_OWN_LINE = '[&_div:has(>[role=img])]:flex-col [&_div:has(>[role=img])]:items-start';
+
+export function KpiItemCell({ item, testId, staticMode = false }: { item: KpiItem; testId: string; staticMode?: boolean }) {
   const { navigate } = useBlocks();
   const ref = item.ref;
   const accent = item.semantic ? ACCENT[item.semantic] ?? 'primary' : 'primary';
@@ -87,9 +119,10 @@ export function KpiItemCell({ item, testId }: { item: KpiItem; testId: string })
   if (item.display === 'gauge' && item.value !== null) {
     return (
       <div role="listitem" className="flex min-w-0 flex-col gap-1 px-3 py-2" data-testid={`kpi-${testId}`}>
-        <span className="truncate text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{item.label}</span>
+        {/* Wrap, never truncate: a cut label or caption hides what the figure means. */}
+        <span className="break-words text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{item.label}</span>
         <RiskGauge score={item.value} size={96} />
-        {item.context ? <span className="truncate text-2xs text-muted-foreground">{item.context}</span> : null}
+        {item.context ? <span className="break-words text-xs text-muted-foreground">{item.context}</span> : null}
       </div>
     );
   }
@@ -103,20 +136,15 @@ export function KpiItemCell({ item, testId }: { item: KpiItem; testId: string })
         density="compact"
         accent={accent}
         icon={icon}
-        // The strip renders `secondary` in mono for numeric scale context; a chat
-        // caption ("not windowed", "of 1 queried") is prose, so it is the sans muted
-        // caption style (browser-QA D7). The shared tile is unchanged.
-        secondary={
-          item.context ? (
-            <span className="font-sans font-normal" title={item.context}>
-              {item.context}
-            </span>
-          ) : undefined
-        }
-        delta={item.delta ? { value: item.delta.value, label: deltaLabel(item) } : undefined}
+        // The caption ("not windowed", "of 1 queried") is prose: the sans muted caption
+        // style (browser-QA D7), on its own wrapping line under the numeral.
+        secondary={item.context ? <span className="font-sans font-normal">{item.context}</span> : undefined}
+        delta={kpiDelta(item)}
         goodDirection={item.delta?.good_direction ?? 'none'}
-        onClick={ref ? () => navigate(ref) : undefined}
+        // Paper has nothing to press: a static tile is never a button.
+        onClick={ref && !staticMode ? () => navigate(ref) : undefined}
         testId={testId}
+        className={staticMode ? STATIC_DELTA_OWN_LINE : undefined}
       />
       {trend ? (
         <div className="px-3 pb-2">
@@ -128,27 +156,36 @@ export function KpiItemCell({ item, testId }: { item: KpiItem; testId: string })
   );
 }
 
-export function KpiGroupView({ items, idPrefix, className }: { items: KpiItem[]; idPrefix: string; className?: string }) {
+/**
+ * The unframed grid's hang: out by the tiles' side padding (KpiTile `strip`/`compact`
+ * `px-3`, the gauge cell's `px-3`), so tile text sits on the host's content edge.
+ */
+export const KPI_HANG = '-mx-3';
+
+export interface KpiGroupViewProps {
+  items: KpiItem[];
+  idPrefix: string;
+  /** Print / static export: delta chips on their own line, no tile buttons. */
+  staticMode?: boolean;
+  /**
+   * Draw the grid's own closed frame. Default `false`, for a group inside a framed host
+   * with 0.75rem side padding (a top-level block card, an entity's own frame): the host's
+   * border is the frame and the grid hangs into that padding (see the module note). The
+   * host passes `true` when nothing frames the group (a report leaf, the expanded sheet,
+   * a report panel item), so a bare group still reads as one closed box.
+   */
+  framed?: boolean;
+  className?: string;
+}
+
+export function KpiGroupView({ items, idPrefix, staticMode = false, framed = false, className }: KpiGroupViewProps) {
   return (
-    <div className={cn('@container min-w-0', className)} data-testid="block-kpis">
-      {/* The outer frame is the wrapper's own border, so a partial last row (2 items
-          in 3 columns, 5 in 2) is still a closed box. The cells draw only the inner
-          hairlines; the grid overhangs the frame by 1 px right and bottom, where the
-          clip hides the outermost cells' edges under the frame. */}
-      <div className="overflow-hidden rounded-md border border-border/70" data-testid="block-kpis-frame">
-        <div
-          role="list"
-          className={cn(
-            '-mb-px -mr-px grid',
-            'grid-cols-2 @[40rem]:grid-cols-3 @[60rem]:grid-cols-6',
-            '[&>*]:border-b [&>*]:border-r [&>*]:border-border/70',
-          )}
-        >
-          {items.map((item, i) => (
-            <KpiItemCell key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} />
-          ))}
-        </div>
-      </div>
+    <div className={cn('min-w-0', className)} data-testid="block-kpis" data-static={staticMode || undefined}>
+      <KpiTileGrid count={items.length} framed={framed} containerClassName={framed ? undefined : KPI_HANG} role="list">
+        {items.map((item, i) => (
+          <KpiItemCell key={`${item.key}-${i}`} item={item} testId={`${idPrefix}-${i}`} staticMode={staticMode} />
+        ))}
+      </KpiTileGrid>
     </div>
   );
 }

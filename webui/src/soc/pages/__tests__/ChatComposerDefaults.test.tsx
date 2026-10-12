@@ -2,9 +2,10 @@
  * Workspace Chat with the REAL composer, engine and context hooks (browser-QA D2): the
  * composer must never present a selection the analyst did not make.
  *
- *  - A fresh workspace shows "All sources · 24h" and no model chip.
+ *  - A fresh workspace shows "All sources · Auto" (the default time range: no outer
+ *    limit, Round 12 WP-FIX1) and no model chip.
  *  - Reopening a saved thread whose stored `model` / `source_id` are what the server
- *    RESOLVED (the default model, the primary source) keeps "All sources · 24h", shows
+ *    RESOLVED (the default model, the primary source) keeps "All sources · Auto", shows
  *    no model chip, and sends neither on the next turn.
  *  - Choosing a non-default model still shows the removable chip and sends it; picking
  *    the default by name is the same as "Default model".
@@ -13,9 +14,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({ username: 'analyst', hasPermission: () => true }),
-}));
+vi.mock('@/soc/auth', () => {
+  const auth = { username: 'analyst', hasPermission: () => true };
+  // An answer reads the optional form (Round 12: "Add to case", report export author).
+  return { useAuth: () => auth, useOptionalAuth: () => auth };
+});
 vi.mock('@/soc/chat/report/ReportPanel', () => ({ default: () => null, ReportPanel: () => null }));
 vi.mock('@/soc/chat/shortcuts/ShortcutSheet', () => ({ ShortcutSheet: () => null }));
 
@@ -146,11 +149,11 @@ const modelChip = () => screen.queryByRole('button', { name: /^Use the default m
 const streamBodies = () => calls.filter((c) => c.url.split('?')[0] === '/api/chat/stream').map((c) => c.body ?? {});
 
 describe('Workspace Chat composer defaults (D2)', () => {
-  it('a fresh workspace shows "All sources · 24h" and no model chip', async () => {
+  it('a fresh workspace shows "All sources · Auto" and no model chip', async () => {
     renderChat();
     await waitFor(() => expect(calls.some((c) => c.url.startsWith('/api/sources'))).toBe(true));
     await settle();
-    expect(await scopeChip()).toHaveTextContent('All sources · 24h');
+    expect(await scopeChip()).toHaveTextContent('All sources · Auto');
     expect(modelChip()).toBeNull();
   });
 
@@ -162,7 +165,7 @@ describe('Workspace Chat composer defaults (D2)', () => {
     await screen.findByText('Earlier answer', { selector: 'p, p *' });
     await settle();
 
-    expect(await scopeChip()).toHaveTextContent('All sources · 24h');
+    expect(await scopeChip()).toHaveTextContent('All sources · Auto');
     expect(modelChip()).toBeNull();
 
     const textarea = screen.getByRole('textbox', { name: 'Message the assistant' });

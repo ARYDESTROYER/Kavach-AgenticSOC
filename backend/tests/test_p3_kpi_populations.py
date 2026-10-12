@@ -493,25 +493,26 @@ async def test_posture_endpoint_bands_against_the_configured_source_ceiling(
 async def test_posture_endpoint_publishes_coverage_on_a_truncated_fetch(
     metrics_client, app_state, monkeypatch
 ) -> None:
-    """A store above the fetch bound is permanently ``truncated`` — the flag that made
-    every posture-fed tile withhold. ``window_covered`` is what lets them publish."""
+    """Round 12: the rollup reads every case its window can reach, so a store larger
+    than the in-memory bound no longer truncates a window that fits — and the
+    window-exempt open stock is an exact store COUNT, complete either way."""
     monkeypatch.setattr("app.api.routes_metrics._STORE_FETCH_LIMIT", 2)
-    # Newest-first, the two fetched rows reach back 10 days — past a 24h cutoff — so the
-    # selected window is fully answerable even though the fetch is not complete.
     for cid, hours in (("cvg-new", 2), ("cvg-mid", 240), ("cvg-old", 500)):
         await app_state.cases.save(_case(cid, created=_ago(hours), status=CaseStatus.OPEN))
     body = metrics_client.get("/api/metrics/posture?window_hours=24").json()
-    assert body["truncated"] is True and body["store_total"] == 3 and body["fetched"] == 2
+    # One case is in the 24h window: the scope holds 1 and 1 was analysed.
+    assert body["truncated"] is False and body["store_total"] == 1 and body["fetched"] == 1
     assert body["window_covered"] is True and body["window_coverage_reason"] == ""
     assert body["case_count"] == 1
-    # ...but the window-exempt stock is still only a lower bound.
-    assert body["open_now"]["complete"] is False
-    assert "lower bound" in body["open_now"]["reason"]
+    assert body["open_now"]["count"] == 3 and body["open_now"]["complete"] is True
 
-    # Widen past the oldest FETCHED row and the honest answer flips back to withholding.
+    # A 30-day window holds all three — more than the bound of two. The NEWEST two are
+    # analysed, the marker says so, and the window is honestly reported as not covered.
     wide = metrics_client.get("/api/metrics/posture?window_hours=720").json()
+    assert wide["truncated"] is True and wide["store_total"] == 3 and wide["fetched"] == 2
     assert wide["window_covered"] is False
     assert "starts before the oldest fetched case" in wide["window_coverage_reason"]
+    assert wide["open_now"]["count"] == 3 and wide["open_now"]["complete"] is True
 
 
 async def test_posture_endpoint_reports_a_store_outage_as_not_measured(
@@ -522,7 +523,10 @@ async def test_posture_endpoint_reports_a_store_outage_as_not_measured(
     async def boom(*_a, **_kw):
         raise RuntimeError("elasticsearch unavailable")
 
-    monkeypatch.setattr("app.api.routes_metrics.fetch_case_page", boom)
+    # The store itself fails: every read path the population loader can take.
+    monkeypatch.setattr(app_state.cases, "scan_page", boom)
+    monkeypatch.setattr(app_state.cases, "export_page", boom)
+    monkeypatch.setattr(app_state.cases, "aggregate", boom)
     body = metrics_client.get("/api/metrics/posture?window_hours=24").json()
     assert body["case_count"] == 0 and body["open_now"]["count"] == 0
     assert body["open_now"]["complete"] is False

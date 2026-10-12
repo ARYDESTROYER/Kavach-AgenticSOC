@@ -8,9 +8,11 @@ import { describe, expect, it } from 'vitest';
 import type { ChatPrompt } from '@/lib/types';
 import {
   atMenuGroups,
+  COMPACT_ARGUMENT_HINT,
   expandTemplate,
   parseAtQuery,
   parseSlashQuery,
+  promptHint,
   removeAtToken,
   reportTemplateText,
   REPORT_TEMPLATE_SPECS,
@@ -22,6 +24,7 @@ import {
   toolUsable,
   TURNED_OFF_COPY,
   type ComposerMenuItem,
+  LIBRARY_ITEM_VALUE,
 } from '../commands';
 import { ALL_TOOLS, makeContext } from './fixtures';
 
@@ -52,9 +55,9 @@ describe('parseSlashQuery', () => {
 });
 
 describe('slash menu', () => {
-  it('offers every command when all tools are allowed, then saved prompts', () => {
-    const groups = slashMenuGroups(parseSlashQuery('/')!, makeContext(), prompts);
-    expect(groups.map((g) => g.heading)).toEqual(['Commands', 'Saved prompts']);
+  it('offers every command when all tools are allowed, then your prompts and the library', () => {
+    const groups = slashMenuGroups(parseSlashQuery('/')!, makeContext(), prompts, { canCompact: true });
+    expect(groups.map((g) => g.heading)).toEqual(['Commands', 'Your prompts', 'Prompt library']);
     expect(values(groups)).toEqual([
       'cmd:shift-brief',
       'cmd:report',
@@ -64,9 +67,95 @@ describe('slash menu', () => {
       'cmd:cost',
       'cmd:sources',
       'cmd:help',
-      'prompt:0',
-      'prompt:1',
+      'cmd:compact',
+      'prompt:a',
+      'prompt:b',
+      LIBRARY_ITEM_VALUE,
     ]);
+  });
+
+  it('lists favorites first among your prompts', () => {
+    const starred: ChatPrompt[] = [prompts[0], { ...prompts[1], favorite: true }];
+    const groups = slashMenuGroups(parseSlashQuery('/')!, makeContext(), starred);
+    expect(groups.find((g) => g.heading === 'Your prompts')?.items.map((i) => i.value)).toEqual(['prompt:b', 'prompt:a']);
+  });
+
+  it('shows a promptbook\'s steps in order as its hint, never the stored --- separators', () => {
+    const book: ChatPrompt = {
+      id: 'book-t1',
+      title: 'Case triage',
+      text: 'Open case {case id}.\n---\nRelated cases to {case id}?\n---\nWrite next steps.',
+    };
+    const groups = slashMenuGroups(parseSlashQuery('/case')!, makeContext(), [...prompts, book]);
+    const item = groups.find((g) => g.heading === 'Your prompts')?.items.find((i) => i.value === 'prompt:book-t1');
+    expect(item?.hint).toBe('3 steps: Open case {case id}. → Related cases to {case id}? → Write next steps.');
+    expect(item?.hint).not.toContain('---');
+    // An ordinary prompt keeps its text.
+    expect(promptHint(prompts[1])).toBe('Any odd VPN logins?');
+    expect(promptHint({ id: 'book-x', text: 'Only one step.' })).toBe('1 step: Only one step.');
+  });
+
+  it('offers /compact with a one-line description, but not in bounded mode (Round 12 D4)', () => {
+    const saved = { canCompact: true };
+    const compact = slashMenuGroups(parseSlashQuery('/comp')!, makeContext(), [], saved)
+      .flatMap((g) => g.items)
+      .find((i) => i.value === 'cmd:compact');
+    expect(compact?.hint).toBe('Summarise earlier messages to make room');
+    expect(slashAction(compact!)).toEqual({ type: 'send', text: '/compact' });
+    const bounded = values(slashMenuGroups(parseSlashQuery('/')!, makeContext({ limits_mode: 'bounded' }), [], saved));
+    expect(bounded).not.toContain('cmd:compact');
+    expect(values(slashMenuGroups(parseSlashQuery('/')!, makeContext({ limits_mode: 'unlimited' }), [], saved))).toContain('cmd:compact');
+  });
+
+  it('offers /compact only in a saved conversation (a new chat has no summary to keep)', () => {
+    expect(values(slashMenuGroups(parseSlashQuery('/')!, makeContext(), []))).not.toContain('cmd:compact');
+    expect(values(slashMenuGroups(parseSlashQuery('/comp')!, makeContext(), [], { canCompact: false }))).toEqual([]);
+    expect(values(slashMenuGroups(parseSlashQuery('/compact')!, makeContext(), [], { canCompact: true }))).toEqual(['cmd:compact']);
+  });
+
+  it('sends the bare /compact even with text after it (the engine knows only the word)', () => {
+    const groups = slashMenuGroups(parseSlashQuery('/compact the hosts')!, makeContext(), [], { canCompact: true });
+    const item = groups[0].items[0];
+    expect(item.value).toBe('cmd:compact');
+    expect(item.kind === 'command' && item.arg).toBe('');
+    expect(item.hint).toBe(COMPACT_ARGUMENT_HINT);
+    expect(slashAction(item)).toEqual({ type: 'send', text: '/compact' });
+    // Even an item built with an argument never inserts it into a billed question.
+    expect(slashAction({ ...item, arg: 'the hosts' } as typeof item)).toEqual({ type: 'send', text: '/compact' });
+  });
+
+  it('searches prompts by their whole title once a space is typed after a word that is not a command', () => {
+    const library: ChatPrompt[] = [
+      { id: 'book-w', title: 'Weekly review', text: 'Last week\n---\nThe week before' },
+      { id: 'p-h', title: 'Hunt IP', text: 'Hunt for {ip} in the last 7 days.' },
+    ];
+    // Your promptbook and the starter of the same name.
+    expect(values(slashMenuGroups(parseSlashQuery('/weekly re')!, makeContext(), library))).toEqual(['prompt:book-w', 'prompt:starter:book-weekly-review']);
+    // Starter prompts are found the same way (multi-word titles).
+    const starters = slashMenuGroups(parseSlashQuery('/failed sign')!, makeContext(), []);
+    expect(starters.map((g) => g.heading)).toEqual(['Starter prompts']);
+    expect(values(starters)).toEqual(['prompt:starter:failed-sign-ins']);
+    // The library entry by its two-word name.
+    expect(values(slashMenuGroups(parseSlashQuery('/prompt library')!, makeContext(), []))).not.toContain('cmd:report');
+    // A command keeps its argument item first; a prompt titled like it is listed after.
+    const hunt = slashMenuGroups(parseSlashQuery('/hunt ip')!, makeContext(), library);
+    expect(values(hunt)).toEqual(['cmd:hunt', 'prompt:p-h']);
+    expect(hunt[0].items[0].kind === 'command' && hunt[0].items[0].arg).toBe('ip');
+    // Nothing matches: an empty menu (Enter then sends the text as typed).
+    expect(values(slashMenuGroups(parseSlashQuery('/nothing like this')!, makeContext(), library))).toEqual([]);
+  });
+
+  it('adds starter prompts by title or category once three letters are typed, and the library on /lib', () => {
+    const pos = slashMenuGroups(parseSlashQuery('/pos')!, makeContext(), []);
+    expect(pos.map((g) => g.heading)).toEqual(['Commands', 'Starter prompts']);
+    expect(pos[1].items.every((i) => i.kind === 'prompt' && i.prompt.starter && i.prompt.category === 'posture')).toBe(true);
+    // Two letters never pull starters in.
+    expect(values(slashMenuGroups(parseSlashQuery('/po')!, makeContext(), []))).toEqual(['cmd:posture']);
+    // A starter is offered only when every tool it needs is allowed.
+    const noMetrics = values(slashMenuGroups(parseSlashQuery('/noise')!, makeContext({}, { soc_metrics: 'metrics:view' }), []));
+    expect(noMetrics).toEqual([]);
+    expect(values(slashMenuGroups(parseSlashQuery('/lib')!, makeContext(), []))).toEqual([LIBRARY_ITEM_VALUE]);
+    expect(slashAction(slashMenuGroups(parseSlashQuery('/lib')!, makeContext(), [])[0].items[0])).toEqual({ type: 'library' });
   });
 
   it('hides commands whose tools are denied, and everything without a catalogue', () => {
@@ -81,7 +170,7 @@ describe('slash menu', () => {
 
   it('filters by the typed prefix and matches saved prompts by title or text', () => {
     expect(values(slashMenuGroups(parseSlashQuery('/po')!, makeContext(), prompts))).toEqual(['cmd:posture']);
-    expect(values(slashMenuGroups(parseSlashQuery('/vpn')!, makeContext(), prompts))).toEqual(['prompt:1']);
+    expect(values(slashMenuGroups(parseSlashQuery('/vpn')!, makeContext(), prompts))).toEqual(['prompt:b']);
   });
 
   it('keeps one command with its argument after a space', () => {
@@ -135,14 +224,44 @@ describe('slashAction', () => {
   it('opens the template list for /report and inserts a section request', () => {
     expect(slashAction(item('cmd:report', '/'))).toEqual({ type: 'insert', expansion: { text: '/report ', selection: null } });
     const shift = slashAction(item('report:shift', '/report '));
+    // "Create" asks for a report to be SAVED to Reports, not only shown (Round 12 D11).
     expect(shift).toEqual({
       type: 'insert',
-      expansion: { text: 'Build a shift report with these sections: Summary, Open work, Key metrics, Next steps.', selection: null },
+      expansion: { text: 'Create a shift report with these sections: Summary, Open work, Key metrics, Next steps.', selection: null },
     });
   });
 
+  it('covers the Round 12 templates: executive, monthly, infographic and investigation brief', () => {
+    const monthly = slashAction(item('report:monthly', '/report '));
+    expect(monthly?.type).toBe('insert');
+    if (monthly?.type !== 'insert') return;
+    expect(monthly.expansion.text).toBe(
+      'Create a monthly SOC report for <month> with these sections: Summary, Volume by week, Quality, Response times, Noise reduction, Top cases, Next steps.',
+    );
+    const [start, end] = monthly.expansion.selection!;
+    expect(monthly.expansion.text.slice(start, end)).toBe('<month>');
+    const typed = slashAction(item('report:executive', '/report executive Q3 2026'));
+    expect(typed?.type === 'insert' && typed.expansion.text).toBe(
+      'Create an executive summary report for Q3 2026 with these sections: Summary, Volume, Quality, Response times, Noise reduction, Next steps.',
+    );
+    const brief = REPORT_TEMPLATE_SPECS.find((s) => s.template === 'investigation_brief')!;
+    expect(reportTemplateText(brief)).toBe(
+      'Create an investigation brief on {arg} with these sections: Assessment, Key findings, Affected entities, ATT&CK, Next steps, What could not be checked.',
+    );
+    const infographic = REPORT_TEMPLATE_SPECS.find((s) => s.template === 'infographic')!;
+    expect(reportTemplateText(infographic)).toMatch(/^Create an infographic report for \{arg\} with these sections: Key figures/);
+    // Every report template the backend knows is offered.
+    expect(REPORT_TEMPLATE_SPECS.map((s) => s.template).sort()).toEqual(
+      ['custom', 'executive', 'hunt', 'infographic', 'investigation', 'investigation_brief', 'ioc', 'monthly', 'posture', 'shift'].sort(),
+    );
+    // case_stats gates the performance templates (fail closed).
+    const noStats = values(slashMenuGroups(parseSlashQuery('/report ')!, makeContext({}, { case_stats: 'cases:read' }), []));
+    expect(noStats).not.toContain('report:monthly');
+    expect(noStats).toContain('report:shift');
+  });
+
   it('inserts a saved prompt verbatim', () => {
-    expect(slashAction(item('prompt:0', '/'))).toEqual({
+    expect(slashAction(item('prompt:a', '/'))).toEqual({
       type: 'insert',
       expansion: { text: 'Summarise phishing cases this week.', selection: null },
     });
@@ -159,7 +278,7 @@ describe('expandTemplate', () => {
   it('builds the investigation request around the case placeholder', () => {
     const spec = REPORT_TEMPLATE_SPECS.find((s) => s.template === 'investigation')!;
     expect(reportTemplateText(spec)).toBe(
-      'Build an investigation report on {arg} with these sections: Summary, Evidence, Timeline, Decision, Next steps.',
+      'Create an investigation report on {arg} with these sections: Summary, Evidence, Timeline, Decision, Next steps.',
     );
   });
 });

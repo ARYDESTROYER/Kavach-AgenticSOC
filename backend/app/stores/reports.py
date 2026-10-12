@@ -53,6 +53,7 @@ import asyncio
 import copy
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, TypeVar
 
@@ -109,8 +110,8 @@ class ReportLimitReached(RuntimeError):
 
 
 class ReportFull(RuntimeError):
-    """A write would exceed a report bound: 40 items (``reason="items"``) or the
-    512 kB document bound (``reason="size"``; an add, or a PATCH that grows notes or
+    """A write would exceed a report bound: ``MAX_REPORT_ITEMS`` items (60 since
+    Round 12; ``reason="items"``) or the 512 kB document bound (``reason="size"``; an add, or a PATCH that grows notes or
     the title past it)."""
 
     def __init__(self, reason: str) -> None:
@@ -318,6 +319,18 @@ def decode_report(doc: dict[str, Any] | None) -> ReportRecord | None:
     return ReportRecord(report=report, summary_key=key if isinstance(key, str) and key else None)
 
 
+def source_conversation_of(report: Report) -> str | None:
+    """The conversation ``report`` came from, for the library's "Source conversation":
+    the one conversation every item names, else the draft's own conversation, else
+    ``None`` (items from several conversations, or no items). Derived, never stored on
+    the report: ``conversation_id`` keeps meaning "this conversation's draft" (a report
+    saved from an answer or a whole conversation is not that conversation's draft)."""
+    ids = {item.source.conversation_id for item in report.items if item.source.conversation_id}
+    if len(ids) == 1:
+        return next(iter(ids))
+    return report.conversation_id
+
+
 def index_entry(report: Report) -> dict[str, Any]:
     """The index row of ``report`` (fixed keys only; the title is plain text)."""
     return {
@@ -325,6 +338,7 @@ def index_entry(report: Report) -> dict[str, Any]:
         "title": report.title,
         "template": report.template,
         "conversation_id": report.conversation_id,
+        "source_conversation_id": source_conversation_of(report),
         "item_count": len(report.items),
         "created_at": report.created_at,
         "updated_at": report.updated_at,
@@ -352,6 +366,41 @@ def _encode_index(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _source_identity(item: ReportItem) -> tuple[str, str, str | None]:
     return (item.source.conversation_id, item.source.message_id, item.source.block_id)
+
+
+# A whole answer longer than one section snapshot continues in further ``section``
+# items whose source block id is ``#<n>`` (n ≥ 2). ``#`` never appears in a block id a
+# client can request (``BLOCK_ID_PATTERN``), so a continuation can never collide with
+# an added block.
+_CONTINUATION_RE = re.compile(r"^#[0-9]{1,3}$")
+
+
+def continuation_block_id(part: int) -> str:
+    """The source block id of the ``part``-th (1-based, ≥ 2) section of a whole answer."""
+    return f"#{part}"
+
+
+def _is_whole_answer(item: ReportItem) -> bool:
+    return item.kind == "section" and item.source.block_id is None
+
+
+def _continues(item: ReportItem, primary: ReportItem) -> bool:
+    """``item`` is a continuation section of the whole-answer item ``primary``."""
+    return (
+        item.kind == "section"
+        and item.source.conversation_id == primary.source.conversation_id
+        and item.source.message_id == primary.source.message_id
+        and isinstance(item.source.block_id, str)
+        and bool(_CONTINUATION_RE.match(item.source.block_id))
+    )
+
+
+def _mark_truncated(item: ReportItem) -> ReportItem:
+    """``item`` (a section) with its ``truncated`` flag set: the rest of that answer
+    did not fit in the report, and the report says so (G4)."""
+    block = dict(item.block) if isinstance(item.block, dict) else {}
+    block["truncated"] = True
+    return item.model_copy(update={"block": block})
 
 
 # --------------------------------------------------------------------------- #
@@ -582,6 +631,74 @@ class ReportStore:
                 owner, title=title, template=template, conversation_id=conversation_id,
             )
 
+    # ----- create with items (Round 12, D11) ------------------------------------- #
+    async def create_with_items(
+        self,
+        owner: str | None,
+        *,
+        title: str,
+        template: str = "custom",
+        items: list[ReportItem],
+        report_id: str | None = None,
+    ) -> tuple[Report, bool]:
+        """Create a standalone report already holding ``items`` (a saved chat answer
+        or a whole conversation) in ONE strict write, then index it. Returns
+        ``(report, created)``.
+
+        Idempotent by ``report_id`` (the route derives it from the request's
+        idempotency key): when that report already exists it is returned unchanged
+        (``created=False``), and when its owner deleted it the delete stands
+        (:class:`ReportNotFound`). Items past :data:`MAX_REPORT_ITEMS`, or past the
+        document bound (keeping the summary's headroom), are left out — the caller
+        reports how many were saved. Refused at ``MAX_REPORTS_PER_USER``."""
+        uid = normalize_user_id(owner)
+        target = report_id or new_report_id()
+        key = report_key(owner, target)
+        async with self._lock_for(owner):
+            current = await self._strict_get(key)
+            existing = decode_report(current)
+            if existing is not None and existing.report.owner == uid:
+                return existing.report, False
+            if _is_tombstone(current) or existing is not None:
+                raise ReportNotFound("Report not found.")
+            rows = _index_rows(await self._strict_get(index_key(owner)))
+            if len(rows) >= MAX_REPORTS_PER_USER:
+                raise ReportLimitReached("Delete a report in Reports to start another.")
+            now = iso_now()
+            kept: list[ReportItem] = []
+            seen: set[str] = set()
+            for item in items[:MAX_REPORT_ITEMS]:
+                candidate = item if item.id not in seen else item.model_copy(update={"id": new_item_id()})
+                trial = Report(
+                    id=target, owner=uid, title=title, template=template,  # type: ignore[arg-type]
+                    items=[*kept, candidate], created_at=now, updated_at=now, version=1,
+                )
+                if not _content_fits(encode_report(trial)):
+                    break
+                kept.append(candidate)
+                seen.add(candidate.id)
+            report = Report(
+                id=target, owner=uid, title=title, template=template,  # type: ignore[arg-type]
+                conversation_id=None, items=kept, summary=None,
+                created_at=now, updated_at=now, version=1,
+            )
+
+            def _write(doc: dict[str, Any] | None) -> tuple[dict[str, Any], None]:
+                if _is_live(doc) or _is_tombstone(doc):
+                    raise ReportStoreUnavailable("The report changed while it was being saved; retry.")
+                return encode_report(report), None
+
+            await self._strict_mutate(key, _write)
+            try:
+                await self._index_add_locked(owner, report)
+            except BaseException:
+                try:
+                    await self._strict_mutate(key, lambda cur: (self._tombstone(report.id, uid), None))
+                except Exception:  # noqa: BLE001 -- the original error is the one to report
+                    logger.warning("could not tombstone orphaned report %s", report.id)
+                raise
+            return report, True
+
     # ----- add -------------------------------------------------------------- #
     async def add_item(
         self,
@@ -591,13 +708,21 @@ class ReportStore:
         report_id: str | None = None,
         draft_conversation_id: str | None = None,
         draft_title: str = "Untitled report",
+        continuations: Iterable[ReportItem] = (),
     ) -> ReportAddOutcome:
         """Append ``item`` to ``report_id``, or — when it is None — to the draft of
         ``draft_conversation_id``, creating that draft first if it does not exist.
 
+        ``continuations`` (Round 12): the further sections of a whole answer longer
+        than one section snapshot, appended right after ``item`` in the same write.
+        Those that do not fit (the item or size bound) are left out and the last kept
+        section is marked ``truncated``, so the cut is visible, never silent.
+
         Idempotent per source: an item with the same (conversation, message, block) is
         returned instead of duplicated. Raises :class:`ReportNotFound`,
-        :class:`ReportFull` or :class:`ReportLimitReached` (draft creation)."""
+        :class:`ReportFull` (``item`` itself does not fit) or
+        :class:`ReportLimitReached` (draft creation)."""
+        extra = list(continuations)
         async with self._lock_for(owner):
             created = False
             target = report_id
@@ -633,14 +758,39 @@ class ReportStore:
                     raise ReportFull("items")
                 ids = {i.id for i in report.items}
                 new_item = item if item.id not in ids else item.model_copy(update={"id": new_item_id()})
-                updated = report.model_copy(update={
-                    "items": [*report.items, new_item],
-                    "version": report.version + 1,
-                    "updated_at": iso_now(),
-                })
-                doc = encode_report(updated, summary_key=record.summary_key)
+                ids.add(new_item.id)
+                now = iso_now()
+
+                def _with(items: list[ReportItem]) -> tuple[Report, dict[str, Any]]:
+                    candidate = report.model_copy(update={
+                        "items": [*report.items, *items],
+                        "version": report.version + 1,
+                        "updated_at": now,
+                    })
+                    return candidate, encode_report(candidate, summary_key=record.summary_key)
+
+                added = [new_item]
+                updated, doc = _with(added)
                 if not _content_fits(doc):
                     raise ReportFull("size")
+                for continuation in extra:
+                    if len(report.items) + len(added) >= MAX_REPORT_ITEMS:
+                        cut = True
+                    else:
+                        part = (continuation if continuation.id not in ids
+                                else continuation.model_copy(update={"id": new_item_id()}))
+                        trial, trial_doc = _with([*added, part])
+                        cut = not _content_fits(trial_doc)
+                        if not cut:
+                            added.append(part)
+                            ids.add(part.id)
+                            updated, doc = trial, trial_doc
+                    if cut:
+                        logger.info("whole answer added in part: %d of %d sections fit",
+                                    len(added), len(extra) + 1)
+                        added[-1] = _mark_truncated(added[-1])
+                        updated, doc = _with(added)
+                        break
                 return doc, ReportAddOutcome(updated, new_item.id, True, created)
 
             outcome = await self._strict_mutate(report_key(owner, target), _change)
@@ -670,6 +820,11 @@ class ReportStore:
                     if unknown:
                         raise ReportItemUnknown(unknown)
                     drop = set(patch.remove_items)
+                    # Removing a whole answer removes its continuation sections too
+                    # (one answer, added as one unit; a continuation alone can still
+                    # be removed by its own id).
+                    for primary in [i for i in items if i.id in drop and _is_whole_answer(i)]:
+                        drop.update(i.id for i in items if _continues(i, primary))
                     items = [i for i in items if i.id not in drop]
                 remaining = {i.id for i in items}
                 if patch.notes:
@@ -771,6 +926,34 @@ class ReportStore:
             await self._index_remove_locked(owner, report_id)
             return ReportDeleted(report_id, deleted.conversation_id, deleted)
 
+    async def clear(self, owner: str | None) -> int:
+        """Delete EVERY report of ``owner`` (tombstones, then an empty index) — a
+        deleted account (Round 12 final review, L1): reports are keyed by the
+        username, so a new account of the same name must not inherit them. Returns
+        how many live reports were removed; raises :class:`ReportStoreUnavailable`
+        when storage cannot confirm a write."""
+        uid = normalize_user_id(owner)
+        removed = 0
+        async with self._lock_for(owner):
+            for row in _index_rows(await self._strict_get(index_key(owner))):
+                report_id = row["id"]
+
+                def _change(doc: dict[str, Any] | None, rid: str = report_id) -> tuple[dict[str, Any] | None, bool]:
+                    if not _is_live(doc):
+                        return None, False
+                    return self._tombstone(rid, uid), True
+
+                if await self._strict_mutate(report_key(owner, report_id), _change):
+                    removed += 1
+
+            def _empty(current: dict[str, Any] | None) -> tuple[dict[str, Any] | None, None]:
+                if current is None or not _index_rows(current):
+                    return None, None
+                return _encode_index([]), None
+
+            await self._strict_mutate(index_key(owner), _empty)
+        return removed
+
 
 __all__ = [
     "SUMMARY_RESERVE_BYTES",
@@ -794,4 +977,5 @@ __all__ = [
     "new_item_id",
     "new_report_id",
     "report_key",
+    "source_conversation_of",
 ]

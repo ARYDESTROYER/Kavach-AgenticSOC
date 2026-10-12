@@ -9,9 +9,10 @@
  * listed but disabled, with the permission that would unlock them.
  */
 import * as React from 'react';
-import { AtSign, Bookmark, FileText, Lock, Slash } from 'lucide-react';
+import { AtSign, Bookmark, FileText, Library, ListOrdered, Lock, Slash, Sparkles, Star } from 'lucide-react';
 import { Command, CommandGroup, CommandItem, CommandList } from '@/ui/command';
 import type { ComposerMenuGroup, ComposerMenuItem } from './commands';
+import { isPromptbook } from './prompt-library';
 
 export interface ComposerMenuProps {
   kind: 'slash' | 'at';
@@ -25,7 +26,12 @@ export interface ComposerMenuProps {
 
 function ItemIcon({ item }: { item: ComposerMenuItem }) {
   if (item.kind === 'scope') return item.disabled ? <Lock aria-hidden="true" /> : <AtSign aria-hidden="true" />;
-  if (item.kind === 'prompt') return <Bookmark aria-hidden="true" />;
+  if (item.kind === 'prompt') {
+    if (isPromptbook(item.prompt)) return <ListOrdered aria-hidden="true" />;
+    if (item.prompt.starter) return <Sparkles aria-hidden="true" />;
+    return item.prompt.favorite ? <Star aria-hidden="true" /> : <Bookmark aria-hidden="true" />;
+  }
+  if (item.kind === 'library') return <Library aria-hidden="true" />;
   if (item.kind === 'report') return <FileText aria-hidden="true" />;
   return <Slash aria-hidden="true" />;
 }

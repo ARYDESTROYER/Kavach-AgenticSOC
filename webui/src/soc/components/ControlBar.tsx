@@ -23,6 +23,8 @@ import * as React from 'react';
 import { MoreHorizontal, type LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
+import { materialBar } from '@/lib/ui-recipes';
+import { useScrollEdgeRef } from '@/design-system/material';
 import { Button } from '@/ui/button';
 import {
   DropdownMenu,
@@ -92,12 +94,19 @@ export function ControlBar({
   sticky = false,
   className,
 }: ControlBarProps) {
+  // Sticky = floating chrome: the ONE Console material, with the scroll-edge fade shown
+  // only while content is scrolled under the pinned bar (solid fallbacks in theme.css).
+  const edgeRef = useScrollEdgeRef<HTMLDivElement>(undefined, sticky);
   return (
     <div
+      ref={edgeRef}
       className={cn(
         '@container/controlbar flex flex-wrap items-center gap-x-3 gap-y-2 py-2',
         SURFACE[variant],
-        sticky && 'sticky z-20 top-[var(--header-h)] bg-background/95 backdrop-blur',
+        sticky && cn('sticky z-20 top-[var(--header-h)]', materialBar),
+        // The flat bar's hairline becomes the scroll-edge fade when it pins (a hard rule
+        // returns under increased contrast, from the material's own fallback).
+        sticky && variant === 'flat' && 'border-b-0',
         className,
       )}
     >

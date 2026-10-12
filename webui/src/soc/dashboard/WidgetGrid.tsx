@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
+import { materialBar } from '@/lib/ui-recipes';
 import { Skeleton } from '@/ui/skeleton';
 import {
   DropdownMenu,
@@ -218,7 +219,14 @@ function WidgetEditToolbar({
   };
 
   return (
-    <div className="absolute inset-x-0 top-0 z-10 flex items-center gap-1 rounded-t-lg border-b border-border bg-surface/95 px-2 py-1 backdrop-blur supports-[backdrop-filter]:bg-surface/80">
+    // Edit chrome floating over the widget body: the ONE Console material (solid under
+    // reduced transparency or increased contrast), never a page-local blur.
+    <div
+      className={cn(
+        'absolute inset-x-0 top-0 z-10 flex items-center gap-1 rounded-t-lg border-b border-border px-2 py-1',
+        materialBar,
+      )}
+    >
       {/* The drag grip — the ONLY drag-initiating surface (RGL `handle` selector). Also
           a real, focusable button so keyboard users can move/resize with arrow keys. */}
       <button

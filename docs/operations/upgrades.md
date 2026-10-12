@@ -465,6 +465,85 @@ that correctly reports **Manual upgrade required**:
    installed Help Center, and updater capability.
 10. Retain old artifacts and the verified backup until the observation window closes.
 
+## Changes that need attention when upgrading to this build
+
+This build (the current `0.1.13` source candidate, after the chat, sign-in, dashboard,
+and Case Manager changes) needs no database migration and no new index or table. It
+changes these behaviours, which operators should know about before upgrading:
+
+- **Chat limits migrate once.** The stored chat configuration moves to **Unlimited**
+  per-question limits on first read unless an administrator had changed a per-question
+  limit; then it stays **Bounded** with those values. The old defaults for the model
+  call timeout (30 → 300 seconds, Unlimited only) and the questions-at-once bounds
+  (2 → 4 per user, 8 → 16 per backend) move to the new ones. Review **Settings →
+  General → Chat assistant** after the upgrade. See
+  [Configuration](../reference/configuration.md#chat-assistant-bounds).
+- **Chat is outside the AI budget, daily and monthly.** Chat calls are never blocked by
+  the daily or the monthly AI budget (`budget.daily_usd`, `budget.monthly_usd`), and
+  their spend no longer counts toward either. Chat is still metered and shown on the
+  Cost page. Its only spending bound is the optional daily chat spending limit
+  (`chat_agent.chat_daily_cap_usd`, off by default) in the same settings section; there
+  is no monthly chat limit. If you relied on the monthly budget as a hard ceiling for
+  all AI spend, set the daily chat limit or a provider-side budget.
+- **Sign-in cookies.** A sign-in without **Remember me** now uses a browser-session
+  cookie instead of a persistent 12-hour cookie, and `AUTH_TOKEN_HOURS` now sets the
+  token lifetime of those sign-ins only; a remembered sign-in lasts the policy's
+  remembered duration (24 hours by default, at most 24). Users who relied on staying
+  signed in across browser restarts should use **Remember me**. Bearer-token API clients
+  are unaffected by the cookie change; their token lifetime is `AUTH_TOKEN_HOURS`, now
+  at most 144 hours.
+- **`AUTH_TOKEN_HOURS` is capped at 144 hours.** A value above 144 is reduced to 144,
+  with a warning at startup, so a revoked token can never outlive its session-registry
+  record. This applies to every token, including the bearer tokens of API clients and
+  automation: a deployment that set, for example, `TLSOC_AUTH_TOKEN_HOURS=720` now
+  issues tokens that expire after 6 days, so schedule re-authentication accordingly.
+- **Remember me needs HTTPS.** It is offered only when the server marks cookies as
+  secure (`AUTH_COOKIE_SECURE=true` behind TLS), or on a direct request from the server
+  itself, unless an administrator allowed it on plain HTTP
+  (`session_policy.remember_me.allow_insecure_http`, not recommended). A reverse proxy
+  on the backend's own host must send `X-Forwarded-For` (or another forwarding header),
+  or it looks like a local browser; the bundled Web container already does. See
+  [Security hardening](security.md#session-lifetimes).
+- **Dashboard counts.** The Open Cases stock and the case totals on **Analytics →
+  Metrics** are exact store-wide counts at any size. Every Overview figure for the
+  selected window and the heavier rollups analyse up to 20,000 cases per window instead
+  of a fixed newest page; a larger window shows lower bounds (`≥`) and withholds rates.
+  Some figures on large stores therefore change on upgrade. The Overview tile **False
+  Positive Rate** is now labelled **AI-verdict FP rate**, and the Metrics tile **Total
+  cases (7d)** is now **Total cases (all time)**, which is what it always counted.
+- **Chat storage.** Every new Workspace answer is also stored in full in its own
+  document in the existing chat namespace (an exchange document, a running
+  conversation summary, step results, and a small live-state document per user), and
+  answer ratings in a new `chat_feedback` namespace. Nothing is removed from existing
+  conversations. These use the existing KV store and never add Elasticsearch mapping
+  fields.
+
+### Rolling back from this build
+
+An image-only rollback to an earlier build keeps working, with these losses:
+
+- **Long answers and long conversations.** The earlier build reads only the compact
+  copy kept in the conversation row. Answers longer than 24,000 characters end at that
+  length with a "truncated" marker, the oldest messages of a long conversation appear
+  as short previews, and in a conversation that grew past 140 messages the oldest
+  messages, which this build moved to archive pages, are not shown.
+  Rolling forward again restores the full text, except for conversations the earlier
+  build answered in after it trimmed them to its own 100-message window.
+- **New fields.** The earlier build drops the conversation summary marker on its next
+  write for a user and ignores the running and unread state; the stored summaries,
+  ratings, and step results stay in the store, unused, until a later build reads them
+  again.
+- **Chat limits.** The earlier build ignores `limits_mode` and the daily chat spending
+  limit, applies its own per-question limits again, and counts chat against the daily
+  AI budget.
+- **Sign-in.** Remembered sessions keep working until their token expires (at most
+  24 hours), under the earlier build's idle limit; new sign-ins get the earlier build's
+  persistent cookie.
+
+The Elasticsearch storage-form notes for case threads and chat history from the
+earlier chat rebuild still apply; see
+[Known limitations](../releases/known-limitations.md#rollback-loses-chat-and-thread-data).
+
 ## Observe upstream source revisions
 
 Open **Settings → Organization → Updates & releases** to configure the public

@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest';
 import type { SourceInstance } from '@/lib/types';
 import {
   budgetMeterValue,
-  budgetPausesAnswers,
   budgetValueText,
   calibratedNextRequest,
   calibrationFactor,
@@ -15,11 +14,16 @@ import {
   formatMoney,
   formatTokenCount,
   formatTurnCost,
+  DEFAULT_TIME_PRESET,
+  isAllTimeRange,
   isQueryableSource,
   presetForRange,
   projectedCostRange,
+  scopeChipName,
   sourceChipLabel,
   withClientHistory,
+  TIME_PRESETS,
+  timeRangeHint,
   timeRangeLongLabel,
   timeRangeShortLabel,
 } from '../format';
@@ -88,17 +92,114 @@ describe('calibratedNextRequest', () => {
 });
 
 describe('time range presets', () => {
-  it('reads null and now-24h as the default 24h', () => {
-    expect(presetForRange(null)?.id).toBe('24h');
+  it('reads no range as Auto (no outer limit), never as "24h"', () => {
+    expect(presetForRange(null)?.id).toBe('auto');
+    expect(DEFAULT_TIME_PRESET.id).toBe('auto');
+    expect(timeRangeShortLabel(null)).toBe('Auto');
+    expect(timeRangeLongLabel(null)).toBe('Default windows, no outer limit');
+    expect(timeRangeLongLabel(null)).not.toMatch(/24 hours/);
+  });
+  it('reads an explicit now-24h (or now-1d) as the 24h preset, an outer limit distinct from Auto', () => {
     expect(presetForRange({ from: 'now-24h', to: 'now' })?.id).toBe('24h');
-    expect(timeRangeShortLabel(null)).toBe('24h');
-    expect(timeRangeLongLabel(null)).toBe('Last 24 hours');
+    expect(presetForRange({ from: 'now-1d' })?.id).toBe('24h');
+    expect(presetForRange({ from: 'NOW-24H' })?.id).toBe('24h');
+    expect(timeRangeShortLabel({ from: 'now-24h' })).toBe('24h');
+    expect(timeRangeLongLabel({ from: 'now-24h' })).toBe('Last 24 hours');
+    expect(TIME_PRESETS.find((p) => p.id === '24h')?.range).toEqual({ from: 'now-24h' });
+  });
+  it("names the scope chip with its visible text first (WCAG 2.5.3, label in name)", () => {
+    // The chip shows "<source> · <range>"; its name starts with exactly that, then says
+    // what a short range means, with no doubled brackets.
+    expect(scopeChipName('All sources', null)).toBe(
+      'Scope: All sources · Auto (default windows, no outer limit). Change source and time range',
+    );
+    expect(scopeChipName('All sources', { from: 'now-7d' })).toBe('Scope: All sources · 7d (last 7 days). Change source and time range');
+    expect(scopeChipName('Elastic prod', { from: 'now-6M', to: 'now' })).toBe(
+      'Scope: Elastic prod · 6mo (last 6 months). Change source and time range',
+    );
+    // "All time" already says it: never "All time (all time)".
+    expect(scopeChipName('All sources', { from: 'all' })).toBe('Scope: All sources · All time. Change source and time range');
+    // Every visible chip text is inside the name.
+    for (const range of [null, ...TIME_PRESETS.map((p) => p.range), { from: 'now-3h', to: 'now-1h' }]) {
+      const visible = `All sources · ${timeRangeShortLabel(range)}`;
+      expect(scopeChipName('All sources', range)).toContain(visible);
+      expect(scopeChipName('All sources', range)).not.toMatch(/\(\(|\)\)|\([^)]*\(/);
+    }
   });
   it('maps the presets and labels anything else honestly', () => {
     expect(timeRangeShortLabel({ from: 'now-7d' })).toBe('7d');
     expect(timeRangeShortLabel({ from: 'now-90d', to: 'now' })).toBe('90d');
     expect(presetForRange({ from: 'now-7d', to: 'now-1d' })).toBeNull();
     expect(timeRangeShortLabel({ from: '2026-01-01T00:00:00Z', to: 'now-1d' })).toContain('→');
+  });
+  it('goes from Auto and the last hour to all time, with calendar months and no span limit (Round 12, SPEC D7)', () => {
+    expect(TIME_PRESETS.map((p) => [p.id, p.short, p.range?.from ?? null])).toEqual([
+      ['auto', 'Auto', null],
+      ['1h', '1h', 'now-1h'],
+      ['24h', '24h', 'now-24h'],
+      ['7d', '7d', 'now-7d'],
+      ['30d', '30d', 'now-30d'],
+      ['90d', '90d', 'now-90d'],
+      ['6mo', '6mo', 'now-6M'],
+      ['12mo', '12mo', 'now-12M'],
+      ['all', 'All time', 'all'],
+    ]);
+    // Exactly one preset sets no range.
+    expect(TIME_PRESETS.filter((p) => p.range === null).map((p) => p.id)).toEqual(['auto']);
+    expect(timeRangeShortLabel({ from: 'now-6M' })).toBe('6mo');
+    expect(timeRangeLongLabel({ from: 'now-12M', to: 'now' })).toBe('Last 12 months');
+    expect(presetForRange({ from: 'now-1y' })?.id).toBe('12mo');
+    expect(presetForRange({ from: 'NOW-1Y', to: 'NOW' })?.id).toBe('12mo');
+    // A lower-case m is minutes, never months.
+    expect(presetForRange({ from: 'now-6m' })).toBeNull();
+    expect(timeRangeShortLabel({ from: 'all' })).toBe('All time');
+    expect(timeRangeLongLabel({ from: 'all', to: 'now' })).toBe('All time');
+    for (const spelling of ['all', 'ALL', 'all_time', 'all time', 'lifetime']) {
+      expect(isAllTimeRange({ from: spelling })).toBe(true);
+      expect(presetForRange({ from: spelling })?.id).toBe('all');
+    }
+    expect(isAllTimeRange(null)).toBe(false);
+    expect(isAllTimeRange({ from: 'now-90d' })).toBe(false);
+    // All time up to a fixed end is no preset, and says so.
+    expect(presetForRange({ from: 'all', to: '2026-01-01T00:00:00Z' })).toBeNull();
+    expect(timeRangeLongLabel({ from: 'all', to: '2026-01-01T00:00:00Z' })).toBe('All time to 2026-01-01T00:00:00Z');
+  });
+  it('says exactly what Auto covers, naming the lookups that do not follow the general rule', () => {
+    // No outer limit: ATT&CK coverage joins the case lookups on all time
+    // (soc_metrics kind=mitre_coverage), the shift brief is 24 hours, and agent
+    // improvement never follows the window.
+    expect(timeRangeHint(null)).toBe(
+      'No outer limit. Without a window in your question, case counts, case searches and ATT&CK coverage ' +
+        'cover all time; log, metric, cost and audit lookups and the shift brief cover the last 24 hours. ' +
+        'Agent improvement always compares fixed periods.',
+    );
+    expect(timeRangeHint(null)).not.toMatch(/Last 24 hours, unless/);
+  });
+  it('says a chosen range is the default window and an outer limit, and names the exceptions', () => {
+    // A range of at most 7 days: the shift brief covers it whole.
+    expect(timeRangeHint({ from: 'now-24h' })).toBe(
+      'Last 24 hours. Lookups without a window in your question use this range, except agent improvement, ' +
+        'which compares fixed periods. Questions can narrow it, not widen it.',
+    );
+    expect(timeRangeHint({ from: 'now-1h' })).not.toMatch(/shift brief/);
+    expect(timeRangeHint({ from: 'now-7d' })).not.toMatch(/shift brief/);
+    // Longer ranges: the shift brief covers at most 7 days.
+    expect(timeRangeHint({ from: 'now-6M' })).toBe(
+      'Last 6 months. Lookups without a window in your question use this range, except that the shift brief ' +
+        'covers at most 7 days and agent improvement compares fixed periods. Questions can narrow it, not widen it.',
+    );
+    for (const from of ['now-30d', 'now-90d', 'now-12M']) {
+      expect(timeRangeHint({ from })).toMatch(/the shift brief covers at most 7 days/);
+    }
+    // All time never clamps, and still names the exceptions.
+    expect(timeRangeHint({ from: 'all' })).toBe(
+      'All time. Lookups without a window in your question cover all time, except that the shift brief covers ' +
+        'at most 7 days and agent improvement compares fixed periods. A question can still name a shorter window.',
+    );
+    // A custom range may be longer than a week.
+    expect(timeRangeHint({ from: 'all', to: '2026-01-01T00:00:00Z' })).toMatch(
+      /^All time to 2026-01-01T00:00:00Z\. .*shift brief covers at most 7 days.*not widen it\.$/,
+    );
   });
 });
 
@@ -148,12 +249,6 @@ describe('budget meter', () => {
     expect(sim && budgetValueText(sim)).toMatch(/\(simulated\)$/);
   });
 
-  it('pauses AI answers only when reached AND on_exceed is block', () => {
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'reached', budget }))).toBe(true);
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'reached', budget: { ...budget, on_exceed: 'warn' } }))).toBe(false);
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'reached', budget: null }))).toBe(false);
-    expect(budgetPausesAnswers(makeContext({ budget_state: 'approaching', budget }))).toBe(false);
-  });
 });
 
 describe('projectedCostRange', () => {

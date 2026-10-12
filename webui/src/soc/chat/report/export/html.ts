@@ -51,6 +51,8 @@ pre{background:hsl(var(--surface-sunken));border:1px solid hsl(var(--border));bo
 pre code{background:none;padding:0}
 .caption{color:hsl(var(--muted-foreground));font-size:12px;margin:8px 0 2px}
 table{border-collapse:collapse;width:100%;margin:6px 0 10px;font-size:13px}
+caption{caption-side:bottom;text-align:left;color:hsl(var(--muted-foreground));font-size:12px;padding-top:4px}
+thead{display:table-header-group}
 th,td{border-bottom:1px solid hsl(var(--border));padding:4px 8px;text-align:left;vertical-align:top}
 th{color:hsl(var(--muted-foreground));font-weight:600;font-size:12px;background:hsl(var(--surface))}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
@@ -65,9 +67,9 @@ hr{border:0;border-top:1px solid hsl(var(--border));margin:24px 0 8px}
 .tone-warning{border-left-color:hsl(var(--warning))}
 .tone-critical{border-left-color:hsl(var(--critical))}
 a{color:hsl(var(--primary))}
-.report-block,figure,table,.callout{break-inside:avoid}
+tr,figure,.callout,li{break-inside:avoid}
 @page{size:A4;margin:14mm 12mm}
-@media print{.doc{max-width:none;padding:0}*{print-color-adjust:exact;-webkit-print-color-adjust:exact}h2,h3{break-after:avoid}}
+@media print{.doc{max-width:none;padding:0}*{print-color-adjust:exact;-webkit-print-color-adjust:exact}h1,h2,h3,h4,h5,h6,:is(h1,h2,h3,h4,h5,h6)+.meta{break-after:avoid}p{orphans:3;widows:3}td,th{overflow-wrap:anywhere}}
 `.trim();
 
 /* -------------------------------------------------------------------------- */
@@ -196,7 +198,8 @@ function node(n: DocNode): string {
               .join('')}</tr>`,
         )
         .join('');
-      return `<table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
+      const caption = n.caption ? `<caption>${esc(n.caption)}</caption>` : '';
+      return `<table>${caption}<thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table>`;
     }
     case 'list': {
       const items = n.items.map((line) => `<li>${runs(line)}</li>`).join('');

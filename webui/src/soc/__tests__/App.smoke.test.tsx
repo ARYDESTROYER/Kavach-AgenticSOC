@@ -118,8 +118,13 @@ describe('SOC console — app smoke', () => {
     expect(main?.tagName).toBe('MAIN');
     expect(main).toHaveAttribute('tabindex', '-1');
     // Wide, intentionally scrollable child surfaces (for example the rules table)
-    // must never leak their intrinsic width into the whole Console viewport.
-    expect(main).toHaveClass('overflow-x-hidden');
-    expect(main?.parentElement?.parentElement).toHaveClass('overflow-x-hidden');
+    // must never leak their intrinsic width into the whole Console viewport. CLIP, not
+    // hidden: `overflow-x: hidden` makes the element a vertical scroll container too, so
+    // every sticky descendant (the top bar, sticky material bars, sticky table headers)
+    // would pin to a box that never scrolls and scroll away with the page.
+    for (const el of [main, main?.parentElement?.parentElement]) {
+      expect(el).toHaveClass('overflow-x-clip');
+      expect(el).not.toHaveClass('overflow-x-hidden');
+    }
   });
 });

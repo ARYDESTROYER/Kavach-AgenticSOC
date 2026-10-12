@@ -10,7 +10,9 @@
  * Untrusted text (log/source-derived, G7) renders mono and is NEVER linkified.
  *
  * `staticMode` (print / static export) shows EVERY row with no paging and no "View all"
- * button: a printed page cannot open a dialog.
+ * button: a printed page cannot open a dialog. Its headers are plain text (a sortable
+ * header is a button, and a printed sort control means nothing), a case id is plain
+ * mono text instead of a link, and long text is never clamped (Round 12 WP-REP R6).
  */
 import * as React from 'react';
 
@@ -58,7 +60,18 @@ export function sortRows(rows: readonly Cell[][], col: number, dir: 'asc' | 'des
   });
 }
 
-export function TypedCell({ value, column, untrusted }: { value: Cell; column: TableColumn; untrusted: boolean }) {
+export function TypedCell({
+  value,
+  column,
+  untrusted,
+  staticMode = false,
+}: {
+  value: Cell;
+  column: TableColumn;
+  untrusted: boolean;
+  /** Print / static export: no link, no clamp, no forced single line. */
+  staticMode?: boolean;
+}) {
   if (blank(value)) return <span className="text-muted-foreground">{DASH}</span>;
   if (typeof value === 'boolean') return <span>{value ? 'Yes' : 'No'}</span>;
   if (typeof value === 'number') {
@@ -77,20 +90,23 @@ export function TypedCell({ value, column, untrusted }: { value: Cell; column: T
       if (has(CASE_STATUS_KEYS, text)) return <StatusBadge status={text.trim().toLowerCase()} />;
       break;
     case 'case':
-      if (isSafeCaseId(text)) return <CaseLink facts={{ case_id: text }} className="font-mono text-xs" />;
-      return <span className="font-mono text-xs">{text}</span>;
+      if (isSafeCaseId(text) && !staticMode) return <CaseLink facts={{ case_id: text }} className="font-mono text-xs" />;
+      return <span className="break-all font-mono text-xs">{text}</span>;
     case 'entity':
     case 'code':
       return <InlineCode className="text-xs">{text}</InlineCode>;
     case 'mitre':
       return TECHNIQUE_RE.test(text) ? <InlineCode className="text-xs">{text}</InlineCode> : <span className="font-mono text-xs">{text}</span>;
     case 'time':
-      return <span className="whitespace-nowrap tabular-nums">{formatUtc(text)}</span>;
+      return <span className={cn('tabular-nums', !staticMode && 'whitespace-nowrap')}>{formatUtc(text)}</span>;
     default:
       break;
   }
   return (
-    <span className={cn('line-clamp-3 break-words', untrusted && 'font-mono text-xs')} title={text.length > 80 ? text : undefined}>
+    <span
+      className={cn(staticMode ? 'whitespace-pre-wrap [overflow-wrap:anywhere]' : 'line-clamp-3 break-words', untrusted && 'font-mono text-xs')}
+      title={!staticMode && text.length > 80 ? text : undefined}
+    >
       {text}
     </span>
   );
@@ -139,11 +155,12 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
       id: `col-${i}`,
       header: col.label,
       menuLabel: col.label,
-      sortable: true,
+      // A printed table has no sort control: its headers are plain text.
+      sortable: !staticMode,
       align: col.align ?? (numeric ? 'right' : 'left'),
       className: 'align-top text-sm',
       cell: (row: number) => (
-        <TypedCell value={block.rows[row][i] ?? null} column={col} untrusted={columnUntrusted(col, block)} />
+        <TypedCell value={block.rows[row][i] ?? null} column={col} untrusted={columnUntrusted(col, block)} staticMode={staticMode} />
       ),
     };
   });
@@ -182,8 +199,8 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
   );
 
   return (
-    <div className="min-w-0" data-testid="block-table">
-      {hasCase ? <CaseHoverArm>{table}</CaseHoverArm> : table}
+    <div className="min-w-0" data-testid="block-table" data-static={staticMode || undefined}>
+      {hasCase && !staticMode ? <CaseHoverArm>{table}</CaseHoverArm> : table}
       {!paged && !staticMode && order.length > INLINE_ROWS ? (
         <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
           <span>

@@ -23,7 +23,6 @@ import {
   PlayCircle,
   RefreshCw,
   Tag,
-  X,
 } from 'lucide-react';
 
 import type { components } from '@/lib/api-types.gen';
@@ -31,8 +30,6 @@ import type { Case } from '@/lib/types';
 import { DASH, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
-import { Input } from '@/ui/input';
-import { Badge } from '@/ui/badge';
 import { Card } from '@/ui/card';
 import { isAutoClosedByAI } from '@/soc/components/badges';
 
@@ -65,7 +62,7 @@ export const CASE_MANAGER_PANEL_PADDING =
  * point is informed authorship rather than discouragement.
  */
 export const DURABLE_CONTEXT_NOTE =
-  'Saved with the resolved case as durable context — the AI reads this note when it investigates similar cases later.';
+  'Saved with the resolved case as durable context. The AI reads this note when it investigates similar cases later.';
 
 /** One selectable notification channel in the Notify dialog. */
 export interface NotifyChannelOption {
@@ -173,8 +170,8 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     icon: Check,
     variant: 'default',
     confirmTitle: 'Close this case?',
-    confirmBody: 'Mark this case as CLOSED — triaged and handled.',
-    help: 'Mark this case as CLOSED — triaged / handled.',
+    confirmBody: 'Mark this case as CLOSED: triaged and handled.',
+    help: 'Mark this case as CLOSED: triaged and handled.',
     fields: ['resolution', 'tags'],
   },
   confirm_fp: {
@@ -200,7 +197,7 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     variant: 'default',
     confirmTitle: 'Close with a disposition',
     confirmBody:
-      'Choose the investigative outcome, then close this case. The close/escalate decision is still made by deterministic code — this records your disposition and closes the case.',
+      'Choose the investigative outcome, then close this case. The close/escalate decision is still made by deterministic code. This records your disposition and closes the case.',
     help: 'Pick a disposition and close the case.',
     fields: ['disposition', 'resolution', 'tags', 'grading'],
   },
@@ -224,8 +221,8 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     icon: RefreshCw,
     variant: 'default',
     confirmTitle: 'Reopen this case?',
-    confirmBody: 'Reopen a closed case and return it to the open queue.',
-    help: 'Reopen a closed case.',
+    confirmBody: 'Return this case to the open queue.',
+    help: 'Return a closed or resolved case to the open queue.',
     fields: [],
   },
   acknowledge: {
@@ -235,7 +232,7 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     variant: 'default',
     confirmTitle: 'Acknowledge and start investigating?',
     confirmBody:
-      'Take ownership of this case and move it to INVESTIGATING. It stays open — nothing is closed.',
+      'Take ownership of this case and move it to INVESTIGATING. It stays open and nothing is closed.',
     help: 'Take the case and move it to INVESTIGATING.',
     fields: [],
   },
@@ -246,7 +243,7 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     variant: 'outline',
     confirmTitle: 'Put this case on hold?',
     confirmBody: 'Pause the case (awaiting info / a maintenance window / a third party).',
-    help: 'Pause — awaiting info / maintenance / third party.',
+    help: 'Pause while awaiting info, a maintenance window or a third party.',
     fields: ['reason'],
   },
   resume: {
@@ -265,9 +262,12 @@ export const ALL_ACTIONS: Record<ActionKind, ActionDef> = {
     icon: CheckCircle2,
     variant: 'default',
     confirmTitle: 'Mark this case resolved?',
-    confirmBody: 'Mark the case RESOLVED — worked to completion, pending final close / audit.',
-    help: 'RESOLVED — worked to completion, pending final close.',
-    fields: ['reason', 'tags', 'grading'],
+    confirmBody:
+      'Mark the case resolved: worked to completion and pending final close. Record the outcome you confirmed.',
+    help: 'Resolved: worked to completion, pending final close.',
+    // Round 12 (SPEC D15): resolving is a terminal move, so it captures the outcome like
+    // a close does — required, opened empty, sent with `disposition_declared` (G1).
+    fields: ['disposition', 'reason', 'tags', 'grading'],
   },
   deescalate: {
     key: 'deescalate',
@@ -314,13 +314,18 @@ export const PRIORITY_OPTIONS: Array<{ value: string; text: string }> = [
  *
  *   - `primary`  — the single filled CTA for the current state (context-dependent:
  *                  Acknowledge when new, Escalate/Resolve when working, Resume when
- *                  held, Reopen when terminal). Never null for a loaded case.
+ *                  held, Close when resolved, Reopen when closed). Never null for a
+ *                  loaded case.
  *   - `close`    — the unified Close-with-disposition action, shown as a secondary
  *                  button, UNLESS it is already the primary (resolved cases).
  *   - `overflow` — the remaining contextual actions, in a "More" menu.
  *
  * Every entry is one of the existing `ALL_ACTIONS` records, so the confirm dialog +
- * `runAction` wire keys are unchanged. Terminal states expose no close (only reopen).
+ * `runAction` wire keys are unchanged. The plan mirrors the backend transition guard:
+ * a closed case offers no close (only reopen), and a resolved case offers its final
+ * close (resolved → closed through `close`, the one forward move out of a terminal
+ * status the server allows). Both terminal states keep Set disposition, so an outcome
+ * that was never recorded can be recorded without reopening the case.
  */
 export interface ActionPlan {
   primary: ActionDef;
@@ -332,7 +337,7 @@ export function actionPlanForStatus(status?: string): ActionPlan {
   const s = (status || '').toLowerCase();
   const close = ALL_ACTIONS.close_disposition;
 
-  // Terminal states: only reopen (and re-classify) is legal — no close.
+  // Closed: only reopen (and re-classify) is legal, no close.
   if (s === 'closed') {
     return {
       primary: { ...ALL_ACTIONS.reopen, fill: true },
@@ -341,11 +346,14 @@ export function actionPlanForStatus(status?: string): ActionPlan {
     };
   }
   if (s === 'resolved') {
-    // Close IS the primary here; don't duplicate it as a secondary button.
+    // Resolved is "worked to completion, pending final close": Close IS the primary
+    // here (the server allows resolved → closed through `close`), so it is not repeated
+    // as a secondary button. Set disposition records or corrects the outcome without
+    // closing, e.g. a case resolved before resolve captured one ("outcome not recorded").
     return {
       primary: { ...close, fill: true },
       close: null,
-      overflow: [ALL_ACTIONS.reopen],
+      overflow: [ALL_ACTIONS.set_disposition, ALL_ACTIONS.reopen],
     };
   }
   if (s === 'on_hold') {
@@ -488,7 +496,7 @@ export const HeadlinePanel: React.FC<{
       aria-hidden="true"
       className={cn('absolute inset-x-0 top-0 h-0.5', TONE_ACCENT[tone])}
     />
-    <span className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+    <span className="text-xs font-medium text-muted-foreground">
       {label}
     </span>
     <span
@@ -550,67 +558,3 @@ export const PanelCard: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
   className,
   ...props
 }) => <Card elevation="none" className={cn('p-6', className)} {...props} />;
-
-/* --------------------------------------------------------------- TagInput == */
-
-/** A dependency-free chips input (enter/comma adds, ✕ removes). UNTRUSTED text. */
-export const TagInput: React.FC<{
-  tags: string[];
-  draft: string;
-  onDraftChange: (v: string) => void;
-  onTagsChange: (tags: string[]) => void;
-}> = ({ tags, draft, onDraftChange, onTagsChange }) => {
-  const add = (raw: string) => {
-    const v = raw.trim();
-    if (!v) return;
-    if (!tags.includes(v)) onTagsChange([...tags, v]);
-    onDraftChange('');
-  };
-  return (
-    <div
-      className={cn(
-        // The inner Input has no border/ring of its own, so the WRAPPER carries the
-        // visible focus indicator (#3 — WCAG 2.4.7) via focus-within. The ring shows
-        // whenever the input (or a tag-remove button) holds focus.
-        'rounded-md border border-border bg-background p-1.5',
-        'focus-within:outline-none focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1 focus-within:ring-offset-background',
-      )}
-    >
-      {tags.length ? (
-        <div className="mb-1.5 flex flex-wrap gap-1">
-          {tags.map((t) => (
-            <Badge key={t} variant="secondary" className="gap-1 pr-0.5">
-              {/* UNTRUSTED tag — plain text node. */}
-              <span className="max-w-[10rem] truncate">{t}</span>
-              <button
-                type="button"
-                aria-label={`Remove tag ${t}`}
-                // min 24x24 hit area (#4 — WCAG 2.5.8); the glyph stays 12px but the
-                // padded box is ≥24px so it's an easy keyboard/pointer target.
-                className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => onTagsChange(tags.filter((x) => x !== t))}
-              >
-                <X className="h-3 w-3" aria-hidden />
-              </button>
-            </Badge>
-          ))}
-        </div>
-      ) : null}
-      <Input
-        className="h-7 border-0 px-1 shadow-none focus-visible:ring-0"
-        placeholder="Add a tag…"
-        value={draft}
-        onChange={(e) => onDraftChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ',') {
-            e.preventDefault();
-            add(draft);
-          } else if (e.key === 'Backspace' && !draft && tags.length) {
-            onTagsChange(tags.slice(0, -1));
-          }
-        }}
-        onBlur={() => add(draft)}
-      />
-    </div>
-  );
-};

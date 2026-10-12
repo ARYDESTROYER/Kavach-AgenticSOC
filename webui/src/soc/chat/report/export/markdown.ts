@@ -3,9 +3,12 @@
  * serialiser over the walker's document nodes and the sanitised answer AST.
  *
  * Injection rules — the output is read in viewers that render inline HTML and autolink:
- *   - text escapes Markdown syntax (`\ * _ [ ] ( ) ! | ~ #`) and HTML-significant
- *     characters (`< > &` become entities), so untrusted text can never become a link,
- *     an image, an emphasis run or a tag;
+ *   - text escapes Markdown syntax (`\ ` * _ [ ] | ~ #`, and `!` before `[`) and the
+ *     HTML-significant `< >` (entities), so untrusted text can never become a link, an
+ *     image, an emphasis run or a tag. `&` is escaped only where it would start a
+ *     character reference (`&amp;` stays text, `Network & Linux` stays readable), and
+ *     parentheses are left alone: with `[`/`]` escaped no link or image can form, so
+ *     `\(unassigned\)` noise bought nothing (Round 12 WP-REP R14);
  *   - untrusted values go in code spans with a fence-safe backtick count;
  *   - external URLs from data are never links: they are code spans holding the URL or
  *     its defanged form (per the toggle), so no viewer autolinks them;
@@ -23,8 +26,9 @@ import { documentNodes, type DocNode, type Line, type WalkOptions } from './walk
 /** Escape plain text for a Markdown paragraph (inline position). */
 export function mdText(text: string): string {
   return text
-    .replace(/[\\`*_[\]()!|~#]/g, '\\$&')
-    .replace(/&/g, '&amp;')
+    .replace(/[\\`*_[\]|~#]/g, '\\$&')
+    .replace(/!(?=\\\[)/g, '\\!')
+    .replace(/&(?=#?[a-z0-9]+;)/gi, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\r?\n/g, ' ');
@@ -189,7 +193,9 @@ function node(n: DocNode): string {
       const head = `| ${n.head.map((h) => mdText(h) || ' ').join(' | ')} |`;
       const sep = `| ${n.head.map((_, i) => (n.numeric[i] ? '---:' : '---')).join(' | ')} |`;
       const rows = n.rows.map((r, ri) => `| ${r.map((c, i) => cell(c, n.cellCode?.[ri]?.[i] ?? n.code[i] ?? false)).join(' | ')} |`);
-      return [head, sep, ...rows].join('\n');
+      const table = [head, sep, ...rows].join('\n');
+      // Markdown has no table caption: it is the italic line under the table.
+      return n.caption ? `${table}\n\n_${guardLineStart(mdText(n.caption))}_` : table;
     }
     case 'list':
       return n.items.map((line, i) => `${n.ordered ? `${i + 1}.` : '-'} ${guardLineStart(runs(line))}`).join('\n');

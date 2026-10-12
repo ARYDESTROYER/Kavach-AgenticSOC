@@ -24,19 +24,9 @@ import { isPageId } from '@/soc/nav';
 
 import { CaseHoverArm, CaseLink, RefLink } from '../context';
 import { formatUtc } from '../format';
+import { ENTITY_KIND_LABEL, REPUTATION_LABEL } from '../labels';
 import type { EntityBlock, ReputationVerdict } from '../schema';
 import { KpiGroupView } from './KpiGroupView';
-
-const KIND_LABEL: Record<EntityBlock['entity']['kind'], string> = {
-  ip: 'IP address',
-  domain: 'Domain',
-  url: 'URL',
-  hash: 'File hash',
-  host: 'Host',
-  user: 'User',
-  email: 'E-mail',
-  process: 'Process',
-};
 
 /**
  * Reputation verdicts on the shared glyph vocabulary: malicious → the critical glyph,
@@ -44,10 +34,10 @@ const KIND_LABEL: Record<EntityBlock['entity']['kind'], string> = {
  * "clean" is a lookup result, not a safety guarantee), unknown → muted.
  */
 const REPUTATION: Record<ReputationVerdict, { label: string; icon: string; cls: string }> = {
-  malicious: { label: 'Malicious', icon: 'critical', cls: 'border-critical/40 bg-critical/10 text-critical-text' },
-  suspicious: { label: 'Suspicious', icon: 'high', cls: 'border-high/40 bg-high/10 text-high-text' },
-  clean: { label: 'Clean', icon: 'info', cls: 'border-info/40 bg-info/10 text-info-text' },
-  unknown: { label: 'Unknown', icon: 'undetermined', cls: 'border-border bg-muted/50 text-muted-foreground' },
+  malicious: { label: REPUTATION_LABEL.malicious, icon: 'critical', cls: 'border-critical/40 bg-critical/10 text-critical-text' },
+  suspicious: { label: REPUTATION_LABEL.suspicious, icon: 'high', cls: 'border-high/40 bg-high/10 text-high-text' },
+  clean: { label: REPUTATION_LABEL.clean, icon: 'info', cls: 'border-info/40 bg-info/10 text-info-text' },
+  unknown: { label: REPUTATION_LABEL.unknown, icon: 'undetermined', cls: 'border-border bg-muted/50 text-muted-foreground' },
 };
 
 function CopyValue({ value }: { value: string }) {
@@ -56,6 +46,8 @@ function CopyValue({ value }: { value: string }) {
     <button
       type="button"
       aria-label={copied ? 'Copied' : 'Copy value'}
+      // Paper has nothing to copy with (Round 12 WP-REP rule: controls are print-hidden).
+      data-print-hide=""
       className={cn('inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}
       onClick={() => {
         void copyText(value).then((ok) => {
@@ -70,7 +62,22 @@ function CopyValue({ value }: { value: string }) {
   );
 }
 
-export function EntityView({ block, idPrefix, framed = false }: { block: EntityBlock; idPrefix: string; framed?: boolean }) {
+export interface EntityViewProps {
+  block: EntityBlock;
+  idPrefix: string;
+  /** Draw the entity's own frame (a report leaf: no block card around it). */
+  framed?: boolean;
+  /**
+   * The count tiles draw their own closed frame: nothing frames them (a bare card in a
+   * report panel item, the expanded sheet). Otherwise they sit in the entity's or the
+   * card's frame and hang to its content edge (KpiGroupView).
+   */
+  countsFramed?: boolean;
+  /** Print / static export: count tiles are not buttons and their deltas take their own line. */
+  staticMode?: boolean;
+}
+
+export function EntityView({ block, idPrefix, framed = false, countsFramed = false, staticMode = false }: EntityViewProps) {
   const rawId = React.useId();
   const valueId = `ent-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const canInvestigate = isPageId('investigate');
@@ -87,7 +94,7 @@ export function EntityView({ block, idPrefix, framed = false }: { block: EntityB
           <div>
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="shrink-0 text-2xs">
-                {KIND_LABEL[block.entity.kind]}
+                {ENTITY_KIND_LABEL[block.entity.kind]}
               </Badge>
               {block.verdict ? <VerdictBadge verdict={block.verdict} /> : null}
             </div>
@@ -167,7 +174,9 @@ export function EntityView({ block, idPrefix, framed = false }: { block: EntityB
         </div>
       ) : null}
 
-      {block.counts.length ? <KpiGroupView items={block.counts} idPrefix={`${idPrefix}-counts`} /> : null}
+      {block.counts.length ? (
+        <KpiGroupView items={block.counts} idPrefix={`${idPrefix}-counts`} framed={countsFramed} staticMode={staticMode} />
+      ) : null}
 
       {block.related_cases.length ? (
         <div>

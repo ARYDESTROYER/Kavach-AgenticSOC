@@ -15,13 +15,18 @@
  * A cached conversation that lacks a message an item names (the item was added from a
  * newer turn) is read again once, and a report change for a conversation drops its entry,
  * so an export never reports a fresh item as "not recorded".
+ *
+ * Exports also keep the assembled context per REPORT VERSION (`id@version`, Round 12
+ * WP-REP R3): a second export of the same version reads no conversation at all, and the
+ * library's document view seeds it with what it already loaded. A context with a failed
+ * read is never kept (the next export tries again).
  */
 import * as React from 'react';
 
 import { ApiError } from '@/lib/api';
 import type { ChatConversation, Report } from '@/lib/types';
 
-import { getConversation } from '../chat-api';
+import { getConversation, getConversationCovering } from '../chat-api';
 import { MAX_SOURCE_CONVERSATIONS, sourceTurnsFromConversation, type ConversationReadStatus, type SourceTurnFacts } from './model';
 import { onReportChanged } from './report-sync';
 
@@ -32,10 +37,56 @@ const TTL_MS = 60_000;
 type Entry = { at: number; promise: Promise<ChatConversation | 'gone' | null> };
 const cache = new Map<string, Entry>();
 
+/** Assembled export contexts by `id@version` (bounded; oldest dropped first). */
+const MAX_VERSION_ENTRIES = 20;
+const byVersion = new Map<string, Promise<SourceTurnsState>>();
+
+const versionKey = (report: Report): string => `${report.id}@${report.version}`;
+
 /** Drop cached conversations (tests; a conversation known to have changed). */
 export function clearSourceTurnCache(conversationId?: string): void {
   if (conversationId) cache.delete(conversationId);
-  else cache.clear();
+  else {
+    cache.clear();
+    byVersion.clear();
+  }
+}
+
+function keepVersion(key: string, promise: Promise<SourceTurnsState>): void {
+  byVersion.delete(key);
+  byVersion.set(key, promise);
+  while (byVersion.size > MAX_VERSION_ENTRIES) {
+    const oldest = byVersion.keys().next().value;
+    if (oldest === undefined) break;
+    byVersion.delete(oldest);
+  }
+}
+
+const complete = (state: SourceTurnsState): boolean => !Array.from(state.status.values()).includes('failed');
+
+/**
+ * The export context of one report version, read once and reused (R3). Concurrent
+ * callers share one read; a context with a failed conversation read is not kept.
+ */
+export function cachedReportSourceContext(report: Report): Promise<SourceTurnsState> {
+  const key = versionKey(report);
+  const hit = byVersion.get(key);
+  if (hit) return hit;
+  const promise = loadReportSourceContext(report).then((state) => {
+    if (!complete(state) && byVersion.get(key) === promise) byVersion.delete(key);
+    return state;
+  });
+  keepVersion(key, promise);
+  promise.catch(() => {
+    if (byVersion.get(key) === promise) byVersion.delete(key);
+  });
+  return promise;
+}
+
+/** Seed the per-version cache with a context a view already loaded (complete ones only). */
+export function primeReportSourceContext(report: Report, state: SourceTurnsState): void {
+  if (state.loading || state.turns === null || !complete(state)) return;
+  keepVersion(versionKey(report), Promise.resolve(state));
 }
 
 // An add to (or edit of) a report means its conversation has a newer turn: forget it.
@@ -48,11 +99,17 @@ function watchReportChanges(): void {
   });
 }
 
-function load(conversationId: string): Promise<ChatConversation | 'gone' | null> {
+/**
+ * Read one source conversation. `wanted` (given when a read lacked an answer and the
+ * conversation has older messages) names the answers a report needs: a long
+ * conversation opens on its newest messages (Round 12), so its older pages are read
+ * until they hold every one of them, never leaving an older answer "not recorded".
+ */
+function load(conversationId: string, wanted?: ReadonlySet<string>): Promise<ChatConversation | 'gone' | null> {
   watchReportChanges();
   const hit = cache.get(conversationId);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.promise;
-  const promise = getConversation(conversationId)
+  const promise = (wanted?.size ? getConversationCovering(conversationId, wanted) : getConversation(conversationId))
     .then((c) => c as ChatConversation | 'gone' | null)
     .catch((err: unknown) => {
       if (err instanceof ApiError && err.status === 404) return 'gone' as const;
@@ -106,7 +163,9 @@ export async function loadSourceContext(
       const have = new Set(first.messages.map((m) => m.id));
       if (Array.from(need).some((m) => !have.has(m))) {
         clearSourceTurnCache(id);
-        return load(id);
+        // A newer turn since the cached copy, or (a long conversation, Round 12) an
+        // answer older than the newest messages the read returns: read back to it.
+        return load(id, first.earlier_message_count ? need : undefined);
       }
     }
     return first;
@@ -170,6 +229,8 @@ export function useSourceTurns(report: Report | null, enabled = true): SourceTur
     let alive = true;
     setState((s) => ({ ...s, loading: true }));
     void loadReportSourceContext(current).then((next) => {
+      // An export of this same version reuses what the view just read.
+      primeReportSourceContext(current, next);
       if (alive) setState(next);
     });
     return () => {

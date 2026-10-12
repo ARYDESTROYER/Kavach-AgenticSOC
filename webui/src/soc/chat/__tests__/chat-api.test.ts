@@ -249,6 +249,21 @@ describe('GET /api/chat/context', () => {
     expect(empty.bounds).toEqual(DEFAULT_CHAT_BOUNDS);
     expect(empty.tools).toEqual([]);
   });
+
+  it('carries the brand-ring switch both ways, and leaves it out when absent or malformed', async () => {
+    // Round 12 (SPEC D13): `true` must come through too, so a browser that once stored
+    // "off" turns the ring back on when the administrator does.
+    for (const [sent, expected] of [
+      [true, true],
+      [false, false],
+      [undefined, undefined],
+      ['yes', undefined],
+    ] as const) {
+      stubFetch(() => json({ bounds: sent === undefined ? {} : { animated_brand: sent } }));
+      const context = await getChatContext({});
+      expect(context.bounds.animated_brand).toBe(expected);
+    }
+  });
 });
 
 describe('conversations', () => {
@@ -374,6 +389,24 @@ describe('reports (SPEC §9.2)', () => {
     expect((await listReports()).map((r) => r.id)).toEqual(['rep-2']);
   });
 
+  it('carries the source conversation of a report saved from chat (never a draft link)', async () => {
+    stubFetch(() =>
+      json({
+        reports: [
+          { id: 'rep-1', title: 't', updated_at: 'u', conversation_id: null, source_conversation_id: 'conv-1' },
+          { id: 'rep-2', title: 't', updated_at: 'u', source_conversation_id: '../x' },
+          { id: 'rep-3', title: 't', updated_at: 'u' },
+        ],
+      }),
+    );
+    const rows = await listReports();
+    expect(rows.map((r) => [r.id, r.conversation_id, r.source_conversation_id])).toEqual([
+      ['rep-1', null, 'conv-1'],
+      ['rep-2', null, null],
+      ['rep-3', null, null],
+    ]);
+  });
+
   it('creates, gets and patches with normalised reports', async () => {
     stubFetch(() => json(REPORT));
     const created = await createReport({ title: 'Shift brief', template: 'shift', conversation_id: 'conv-1' });
@@ -388,6 +421,16 @@ describe('reports (SPEC §9.2)', () => {
     expect(calls[1]).toMatchObject({ url: '/api/reports/rep-1', method: 'GET' });
     await patchReport('rep-1', { expected_version: 3, notes: { 'item-1': null } });
     expect(calls[2]).toMatchObject({ method: 'PATCH', body: { expected_version: 3, notes: { 'item-1': null } } });
+  });
+
+  it('keeps a whole multi-window item scope (no clip at the old 80 characters)', async () => {
+    // Distinct windows only: two labels of ONE window are stated once and a comparison of a
+    // stated window reads inside it (report/windows.ts).
+    const window = 'last 90 days (since 14 Jul 2026); Sep 2026 vs Aug 2026; all time (since 28 Mar 2026) (Asia/Kolkata); Q3 2026';
+    expect(window.length).toBeGreaterThan(80);
+    stubFetch(() => json({ ...REPORT, items: [{ ...REPORT.items[0], scope: { ...REPORT.items[0].scope, window } }] }));
+    const report = await getReport('rep-1');
+    expect(report.items[0].scope.window).toBe(window);
   });
 
   it('deletes with the strict-CAS expected_version body', async () => {

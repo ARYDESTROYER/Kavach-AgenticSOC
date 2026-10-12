@@ -13,7 +13,12 @@
  *   - while it is open the tooltip is the TOPMOST layer (SPEC §10.4a): one Esc closes
  *     only the tooltip, never the Expand sheet or dialog the chart sits in;
  *   - every keyboard move is announced through the SHELL announcer — a long transcript
- *     must not grow one live region per chart.
+ *     must not grow one live region per chart;
+ *   - with `onRange` (a zoomable line/area chart), Shift+←/→ (and Shift+Home/End) grow a
+ *     range from the position where the selection started, Enter applies it and Esc
+ *     drops it — the keyboard twin of the pointer brush (WCAG 2.1.1, 2.5.7);
+ *   - `moveTo` re-addresses the cursor when the chart's positions are renumbered (a zoom
+ *     or its reset), so it stays on the SAME period, without a second announcement.
  */
 import * as React from 'react';
 
@@ -44,16 +49,27 @@ export interface ChartNavigatorOptions {
   /** Where focus lands first (default: the last position — the newest bucket). */
   initial?: ChartCursor;
   disabled?: boolean;
+  /** Apply a selected range of primary positions (`[from, to]`, inclusive, from < to). */
+  onRange?: (range: [number, number]) => void;
+  /** Plain-text reading of a selected range for the announcer. */
+  summarizeRange?: (range: [number, number]) => string;
 }
 
 export interface ChartNavigator {
   cursor: ChartCursor | null;
   open: boolean;
   focusRing: boolean;
+  /** The keyboard range being selected (`[from, to]`, from ≤ to), else null. */
+  range: [number, number] | null;
   /** Pointer hover on a position (null = outside every hit target). */
   hover: (cursor: ChartCursor | null) => void;
   /** Keep the tooltip open while the pointer is over it. */
   cancelHide: () => void;
+  /**
+   * Put the cursor on `next` without announcing it or changing whether the tooltip is
+   * open (the caller renumbered the positions and announces the change itself).
+   */
+  moveTo: (next: ChartCursor) => void;
   scheduleHide: () => void;
   /** Spread onto the focusable plot element. */
   plotProps: {
@@ -97,6 +113,8 @@ export function useChartNavigator({
   onActivate,
   initial,
   disabled = false,
+  onRange,
+  summarizeRange,
 }: ChartNavigatorOptions): ChartNavigator {
   const announce = useAnnouncer();
   const plotRef = React.useRef<HTMLDivElement>(null);
@@ -108,6 +126,8 @@ export function useChartNavigator({
   const hideTimer = React.useRef<number | null>(null);
   /** Esc dismissed the tooltip for this position; it stays hidden until the target changes. */
   const dismissedFor = React.useRef<string | null>(null);
+  /** Where a Shift+arrow range selection started (a primary position), else null. */
+  const [anchor, setAnchor] = React.useState<number | null>(null);
   const interactive = !disabled && count > 0;
   const minJ = orientation === 'grid' ? 0 : -1;
   const maxJ = Math.max(minJ, secondary - 1);
@@ -175,6 +195,7 @@ export function useChartNavigator({
     if (next && (plotRef.current?.contains(next) || tipRef.current?.contains(next))) return;
     setFocusRing(false);
     setOpen(false);
+    setAnchor(null);
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!interactive) return;
@@ -183,6 +204,34 @@ export function useChartNavigator({
     const moveI = (d: number) => ({ i: clamp(from.i + d, 0, count - 1), j: from.j });
     const moveJ = (d: number) => ({ i: from.i, j: clamp(from.j + d, minJ, maxJ) });
     const horizontalI = orientation !== 'vertical';
+    const rangeKey = e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End';
+    if (onRange && e.shiftKey && rangeKey && horizontalI) {
+      e.preventDefault();
+      const target = e.key === 'Home' ? 0 : e.key === 'End' ? count - 1 : clamp(from.i + (e.key === 'ArrowRight' ? 1 : -1), 0, count - 1);
+      const origin = anchor ?? from.i;
+      setAnchor(origin);
+      setFocusRing(true);
+      dismissedFor.current = null;
+      const selected: [number, number] = [Math.min(origin, target), Math.max(origin, target)];
+      show({ i: target, j: from.j }, false);
+      announce(summarizeRange ? summarizeRange(selected) : `Selected ${selected[1] - selected[0] + 1} positions.`);
+      return;
+    }
+    if (onRange && e.key === 'Enter' && anchor !== null && valid && anchor !== valid.i) {
+      e.preventDefault();
+      const selected: [number, number] = [Math.min(anchor, valid.i), Math.max(anchor, valid.i)];
+      setAnchor(null);
+      onRange(selected);
+      return;
+    }
+    if (e.key === 'Escape' && anchor !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      setAnchor(null);
+      announce('Selection cleared');
+      return;
+    }
+    if (rangeKey || e.key === 'ArrowUp' || e.key === 'ArrowDown') setAnchor(null);
     switch (e.key) {
       case 'ArrowRight':
         next = horizontalI ? moveI(1) : maxJ > minJ ? moveJ(1) : moveI(1);
@@ -231,6 +280,8 @@ export function useChartNavigator({
   };
 
   const shown = interactive && open && valid !== null;
+  const range: [number, number] | null =
+    anchor !== null && valid && anchor < count ? [Math.min(anchor, valid.i), Math.max(anchor, valid.i)] : null;
 
   // Esc anywhere dismisses a HOVER tooltip too (WCAG 1.4.13), and a press outside the
   // plot or the tooltip closes it on touch.
@@ -266,12 +317,20 @@ export function useChartNavigator({
     };
   }, [shown, valid]);
 
+  const moveTo = React.useCallback((next: ChartCursor) => {
+    dismissedFor.current = null;
+    setAnchor(null);
+    setCursor(next);
+  }, []);
+
   return {
     cursor: valid,
     open: shown,
     focusRing: focusRing && interactive && valid !== null,
+    range,
     hover,
     cancelHide,
+    moveTo,
     scheduleHide,
     plotRef,
     tipRef,

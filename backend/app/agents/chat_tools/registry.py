@@ -52,7 +52,7 @@ logger = logging.getLogger("tlsoc.agents.chat_tools")
 
 # Display / prompt order (SPEC §5.3 table order). Unknown names follow, sorted.
 TOOL_ORDER: tuple[str, ...] = (
-    "search_logs", "log_stats", "search_cases", "get_case", "soc_metrics",
+    "search_logs", "log_stats", "search_cases", "case_stats", "get_case", "soc_metrics",
     "shift_report", "list_campaigns", "lookup_indicator", "mitre_lookup",
     "search_knowledge", "cost_usage", "source_health", "automation_status",
     "explain_decision", "audit_search", "app_help", "app_status",
@@ -63,12 +63,15 @@ LOG_TOOLS: frozenset[str] = frozenset({"search_logs", "log_stats"})
 BUDGETED_TOOLS: frozenset[str] = frozenset({"lookup_indicator"})
 # Modules holding the data tools (this package) and the optional app-knowledge tools
 # (WP-E). A missing optional module is not an error: the catalogue simply lacks it.
-DATA_TOOL_MODULES: tuple[str, ...] = ("logs", "cases", "metrics", "intel", "ops")
+DATA_TOOL_MODULES: tuple[str, ...] = ("logs", "cases", "stats", "metrics", "intel", "ops")
 OPTIONAL_TOOL_MODULES: tuple[str, ...] = ("app_help", "app_status")
 
 _ACTOR_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _TOKEN_RE = re.compile(r"[^A-Za-z0-9_.:\-]")
 _RESERVED_KWARGS = frozenset({"self", "ctx"})
+#: The per-call budget of a tool that scans a whole population (``timeout_s`` on the
+#: tool class, SPEC P0-4): never below the configured ``tool_timeout_s``. Stop cancels.
+DEFAULT_AGGREGATE_TIMEOUT_S = 600.0
 _AUDIT_SUMMARY_CHARS = 900
 
 _CATALOGUE: tuple[ChatTool, ...] | None = None
@@ -308,9 +311,19 @@ class ChatToolbox:
             return ToolOutcome.failure(verdict.reason, status="skipped")
 
         clean = _clean_input(inp)
+        refused = _refused_names(inp)
         limit = float(timeout_s) if timeout_s else float(
             getattr(getattr(self.ctx.prefs, "chat_agent", None), "tool_timeout_s", 15) or 15
         )
+        limit = max(limit, _tool_budget(tool, self.ctx))
+        if refused:
+            # An input name a tool cannot take (``ctx``, a non-string key) is refused
+            # visibly, never dropped: the model retries with an accepted name.
+            from .common import unknown_input_failure
+
+            outcome = unknown_input_failure(getattr(tool, "input_model", None), refused)
+            await self._record_execution(tool, clean, outcome, call, 0)
+            return outcome
         # Third-party lookups are budgeted per turn and per conversation (§4.2): hold
         # one BEFORE running, so parallel calls in one batch cannot overspend, and
         # commit it only when the lookup actually happened.
@@ -485,14 +498,32 @@ def _kind_of(tool: ChatTool, inp: Any) -> str | None:
 
 
 def _clean_input(inp: Any) -> dict[str, Any]:
-    """Model input as keyword arguments: identifier keys only, never ``ctx``/``self``
-    (which would collide with ``run``'s own parameters)."""
+    """Model input as keyword arguments: every string key except ``ctx``/``self``
+    (which would collide with ``run``'s own parameters). A key that is not an
+    identifier ("source.ip") is passed on so the tool's input model REFUSES it by
+    name (Round 12: unknown inputs are never silently dropped)."""
     if not isinstance(inp, dict):
         return {}
-    return {
-        k: v for k, v in inp.items()
-        if isinstance(k, str) and k.isidentifier() and k not in _RESERVED_KWARGS
-    }
+    return {k: v for k, v in inp.items() if isinstance(k, str) and k not in _RESERVED_KWARGS}
+
+
+def _refused_names(inp: Any) -> list[Any]:
+    """Input names no tool can take as a keyword: ``ctx``/``self`` and non-strings."""
+    if not isinstance(inp, dict):
+        return []
+    return [k for k in inp if not isinstance(k, str) or k in _RESERVED_KWARGS]
+
+
+def _tool_budget(tool: ChatTool, ctx: ChatToolContext) -> float:
+    """A long-running tool's own per-call budget (``timeout_s``), else 0. The
+    deployment may set ``chat_agent.aggregate_tool_timeout_s``."""
+    own = getattr(tool, "timeout_s", None)
+    if not isinstance(own, (int, float)) or isinstance(own, bool) or own <= 0:
+        return 0.0
+    configured = getattr(getattr(ctx.prefs, "chat_agent", None), "aggregate_tool_timeout_s", None)
+    if isinstance(configured, (int, float)) and not isinstance(configured, bool) and configured > 0:
+        return float(configured)
+    return float(own)
 
 
 def build_toolbox(ctx: ChatToolContext, scopes: Iterable[str] | None = None) -> ChatToolbox:

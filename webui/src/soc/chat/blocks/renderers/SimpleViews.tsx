@@ -27,25 +27,14 @@ import { CodeBlock } from '@/soc/components/CodeBlock';
 import { Markdown } from '@/soc/components/Markdown';
 
 import { RefLink, citationAnchorId, useBlocks } from '../context';
-import { formatValue, plainDocTitle } from '../format';
+import { plainDocTitle } from '../format';
+import { CITATION_KIND_LABEL, queryCaption } from '../labels';
+import { calloutTitle } from '../report-headings';
 import type { CalloutBlock, CitationsBlock, GuideBlock, MarkdownBlock, QueryBlock, ToneKey } from '../schema';
 import { EXPIRED_TEXT, FALLBACK_TEXT, isDocRef } from '../schema';
 
-const LANGUAGE: Record<QueryBlock['language'], string> = {
-  kql: 'KQL',
-  lucene: 'Lucene',
-  esql: 'ES|QL',
-  dsl: 'Query DSL',
-  sql: 'SQL',
-};
-
-export function queryCaption(block: QueryBlock): string {
-  const parts = [LANGUAGE[block.language]];
-  if (block.source_name) parts.push(block.source_name);
-  if (typeof block.hits === 'number') parts.push(`${formatValue(block.hits, 'count')} hits`);
-  return parts.join(' · ');
-}
-
+// The caption ("ES|QL · Elastic · 12 hits") is the pure `queryCaption` in `labels.ts`,
+// shared with the report exports, which must not import a renderer.
 export function QueryView({ block }: { block: QueryBlock }) {
   return <CodeBlock value={block.query} caption={queryCaption(block)} wrap maxHeightClassName="max-h-64" data-testid="block-query" />;
 }
@@ -57,11 +46,16 @@ const TONE: Record<ToneKey, { variant: 'info' | 'success' | 'warning' | 'destruc
   critical: { variant: 'destructive', icon: <AlertOctagon aria-hidden /> },
 };
 
+// The title a callout draws lives with the pure Brief heading rule (shared with the
+// report exports, which must not import a renderer).
+export { calloutTitle } from '../report-headings';
+
 export function CalloutView({ block }: { block: CalloutBlock }) {
+  const title = calloutTitle(block);
   if (block.expired) {
     return (
       <Alert variant="default" role="note" icon={<Clock aria-hidden />} data-testid="block-expired" className="text-muted-foreground">
-        <AlertTitle className="text-sm">{block.title ?? 'Earlier result'}</AlertTitle>
+        <AlertTitle className="text-sm">{title}</AlertTitle>
         <AlertDescription className="text-xs">{EXPIRED_TEXT}</AlertDescription>
       </Alert>
     );
@@ -77,7 +71,7 @@ export function CalloutView({ block }: { block: CalloutBlock }) {
       data-tone={block.tone}
       className={cn('py-2.5', fallback && 'text-muted-foreground')}
     >
-      {block.title && !fallback ? <AlertTitle className="text-sm">{block.title}</AlertTitle> : null}
+      {title ? <AlertTitle className="text-sm">{title}</AlertTitle> : null}
       <AlertDescription className="whitespace-pre-line break-words text-sm">{block.text}</AlertDescription>
       {fallback && block.fallback_text ? (
         <AlertDescription className="mt-1 whitespace-pre-line break-words text-sm text-foreground">{block.fallback_text}</AlertDescription>
@@ -85,16 +79,6 @@ export function CalloutView({ block }: { block: CalloutBlock }) {
     </Alert>
   );
 }
-
-const CITE_KIND: Record<CitationsBlock['items'][number]['kind'], string> = {
-  runbook: 'Runbook',
-  mitre: 'ATT&CK',
-  case: 'Case',
-  docs: 'Help Center',
-  memory: 'Memory',
-  knowledge: 'Knowledge',
-  log: 'Log',
-};
 
 export function CitationsView({ block, anchored = true }: { block: CitationsBlock; anchored?: boolean }) {
   const { domId } = useBlocks();
@@ -110,7 +94,7 @@ export function CitationsView({ block, anchored = true }: { block: CitationsBloc
           <li key={`${it.n}-${i}`} id={anchor ? citationAnchorId(domId, it.n) : undefined} className="flex min-w-0 gap-2 scroll-mt-16">
             <span className="w-6 shrink-0 text-right tabular-nums text-muted-foreground">[{it.n}]</span>
             <div className="min-w-0 flex-1">
-              <span className="mr-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{CITE_KIND[it.kind]}</span>
+              <span className="mr-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{CITATION_KIND_LABEL[it.kind]}</span>
               {it.ref && !fenced ? (
                 <RefLink refValue={it.ref}>{it.label}</RefLink>
               ) : (

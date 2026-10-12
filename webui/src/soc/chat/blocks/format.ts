@@ -126,6 +126,62 @@ export function formatDelta(value: number | null | undefined, unit: ValueUnit): 
   }
 }
 
+/** The minus sign (U+2212) the console's deltas use. */
+export const MINUS = '−';
+
+export interface ChangeParts {
+  /** `current − baseline`, or null when either is not measured. */
+  delta: number | null;
+  /** The signed change in the unit's own terms ("+96", "−2.1 pp"), "0" for none, "—" unmeasured. */
+  abs: string;
+  /** The change in percent of the baseline ("+8.3%", "0%"), "new" for a zero baseline, "—" unmeasured. */
+  pct: string;
+  /** The baseline was zero and the current value is not (never ∞ or NaN, SPEC §3.4). */
+  isNew: boolean;
+}
+
+/**
+ * Python's `round(x, digits)`, exactly: the EXACT binary value of `x` rounded to `digits`
+ * decimals, an exact tie going to the even digit (`round(1.25, 1)` is 1.2, where
+ * `toFixed` and "round half up" give 1.3). The server computes every comparison figure
+ * this way (`blocks.compare_values`), so the client's own figure for the same change
+ * reads the same as the server's tiles and delta table.
+ *
+ * A tie is only possible where the scaled value is exactly representable: `x` is an odd
+ * multiple of 2^-(digits+1). Every other value is correctly rounded by `toFixed`, which
+ * works on the exact binary value too.
+ */
+export function roundHalfEven(x: number, digits: number): number {
+  if (!Number.isFinite(x) || Math.abs(x) >= 1e21) return x;
+  const scaled = x * 2 ** (digits + 1);
+  if (Number.isInteger(scaled) && Math.abs(scaled) % 2 === 1) {
+    const p = 10 ** digits;
+    const k = Math.floor(Math.abs(x) * p);
+    return (Math.sign(x) * (k % 2 === 0 ? k : k + 1)) / p;
+  }
+  return Number(x.toFixed(digits));
+}
+
+/**
+ * The change from `baseline` to `current`, by the backend `compare_values` rule to the
+ * last digit (`round(cur − base, 6)`, then `round(delta / |base| × 100, 1)`, both
+ * half-even — {@link roundHalfEven}): a rate changes by percentage POINTS, the relative
+ * change is one decimal of the baseline, and a zero baseline with a non-zero current
+ * value is "new" — never infinity or NaN.
+ */
+export function changeParts(current: number | null | undefined, baseline: number | null | undefined, unit: ValueUnit): ChangeParts {
+  const ok = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  if (!ok(current) || !ok(baseline)) return { delta: null, abs: DASH, pct: DASH, isNew: false };
+  const delta = roundHalfEven(current - baseline, 6);
+  const sign = delta > 0 ? '+' : delta < 0 ? MINUS : '';
+  const abs = delta === 0 ? '0' : `${sign}${formatDelta(Math.abs(delta), unit)}`;
+  if (baseline === 0) {
+    return current === 0 ? { delta, abs, pct: '0%', isNew: false } : { delta, abs, pct: 'new', isNew: true };
+  }
+  const pct = roundHalfEven((delta / Math.abs(baseline)) * 100, 1);
+  return { delta, abs, pct: pct === 0 ? '0%' : `${pct > 0 ? '+' : MINUS}${Math.abs(pct).toFixed(1)}%`, isNew: false };
+}
+
 /** Compact axis-tick text (no unit noise on counts; "1.2k" past four digits). */
 export function formatTick(value: number, unit: ValueUnit): string {
   if (unit === 'count' || unit === 'tokens') {
@@ -231,6 +287,11 @@ const BUCKET_MS: Record<TimeBucket, number> = {
   '6h': 21_600_000,
   '1d': 86_400_000,
   '1w': 604_800_000,
+  // Calendar buckets (Round 12): nominal widths only; their real boundaries and labels
+  // come from the block's `x.labels` / `x.tz` (calendar months, quarters and years).
+  '1M': 2_592_000_000,
+  '1q': 7_776_000_000,
+  '1y': 31_536_000_000,
 };
 
 export function bucketMs(bucket: TimeBucket | undefined): number | null {
@@ -271,6 +332,103 @@ export function bucketRangeLabel(value: string, bucket: TimeBucket | undefined):
 export function xLabelFull(value: string, kind: 'category' | 'time', bucket: TimeBucket | undefined): string {
   return kind === 'time' ? bucketRangeLabel(value, bucket) : value;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Calendar axes (Round 12 P0-5): server labels in the operator time zone.     */
+/* -------------------------------------------------------------------------- */
+/** The x axis fields the label helpers read (a `ChartBlock['x']`). */
+export interface AxisLike {
+  kind: 'category' | 'time';
+  values: readonly string[];
+  bucket?: TimeBucket;
+  labels?: readonly string[];
+  tz?: string;
+}
+
+/** The time zone a time axis is read in: its calendar zone, else UTC. */
+export function axisZone(x: Pick<AxisLike, 'kind' | 'tz'>): string {
+  return x.kind === 'time' && x.tz ? x.tz : 'UTC';
+}
+
+/** Does this axis carry calendar labels (a time axis cut in calendar periods)? */
+export function hasCalendarLabels(x: AxisLike): boolean {
+  return x.kind === 'time' && Array.isArray(x.labels) && x.labels.some(Boolean);
+}
+
+/**
+ * The full label of x position `i`: the server's calendar label ("Mar 2026", "W14
+ * 2026", "Jul 2026 (from 12 Jul)") when it sent one, else the UTC bucket range on a
+ * time axis, else the category. Never the in-progress marker (callers add it).
+ */
+export function xPositionLabel(x: AxisLike, i: number): string {
+  const label = x.kind === 'time' ? x.labels?.[i] : undefined;
+  if (label) return label;
+  return xLabelFull(x.values[i] ?? '', x.kind, x.bucket);
+}
+
+const YEAR_SPLIT = /^(.*\S)\s(\d{4})$/;
+
+/**
+ * The span from x position `a` to `b` in words, short enough for a narrow row: on a
+ * time axis a year both ends share is said once ("23 Sep – 7 Oct 2026", "Jul – Oct
+ * 2026", "W14 – W17 2026"); different years, clock times, cut-edge notes and labels
+ * that are ranges themselves read in full ("Dec 2025 – Feb 2026"). Categories always
+ * read in full: a trailing number there is a name, not a year.
+ */
+export function xRangeLabel(x: AxisLike, a: number, b: number): string {
+  const first = xPositionLabel(x, a);
+  const last = xPositionLabel(x, b);
+  if (a === b || first === last) return first;
+  if (x.kind === 'time') {
+    const p = YEAR_SPLIT.exec(first);
+    const q = YEAR_SPLIT.exec(last);
+    // "16 Sep 2026 – 22 Sep 2026" is itself a range: its inner year stays where it is.
+    const plain = (stem: string) => !stem.includes('–') && !/\d{4}/.test(stem);
+    if (p && q && p[2] === q[2] && plain(p[1]) && plain(q[1])) return `${p[1]} – ${q[1]} ${p[2]}`;
+  }
+  return `${first} – ${last}`;
+}
+
+const CLOCK_TAIL = /(\d{2}:\d{2})$/;
+const YEAR_TAIL = /\s\d{4}$/;
+const NOTE_TAIL = /\s*\([^()]*\)$/;
+
+/**
+ * A calendar label short enough for an axis tick: a cut-edge note ("(from 12 Jul)") is
+ * left to the tooltip and the table, a day drops its year ("10 Oct"), an hour keeps its
+ * clock ("14:00"); months, weeks, quarters and years read as sent.
+ */
+export function shortCalendarLabel(label: string, bucket: TimeBucket | undefined): string {
+  const bare = label.replace(NOTE_TAIL, '');
+  if (bucket === '1m' || bucket === '5m' || bucket === '15m' || bucket === '1h' || bucket === '6h') {
+    const clock = CLOCK_TAIL.exec(bare);
+    return clock ? clock[1] : bare;
+  }
+  if (bucket === '1d') return bare.replace(YEAR_TAIL, '');
+  return bare;
+}
+
+/** The short tick text of x position `i` (calendar label, else the UTC time, else the category). */
+export function xTickLabel(x: AxisLike, i: number, maxChars = 12): string {
+  const value = x.values[i] ?? '';
+  if (x.kind !== 'time') return clipText(value, maxChars);
+  const label = x.labels?.[i];
+  if (label) return shortCalendarLabel(label, x.bucket);
+  return shortTimeLabel(value, x.bucket);
+}
+
+/**
+ * The row-header label of an x axis in a data table: the block's own axis title, else
+ * "Period (<zone>)" for a calendar axis, "Time (UTC)" for a plain time axis, "Category".
+ */
+export function xAxisHeader(x: AxisLike & { label?: string }): string {
+  if (x.label) return x.label;
+  if (x.kind !== 'time') return 'Category';
+  return hasCalendarLabels(x) ? `Period (${axisZone(x)})` : 'Time (UTC)';
+}
+
+/** The in-progress marker a current, still-filling period carries in text. */
+export const IN_PROGRESS_SUFFIX = ' (in progress)';
 
 /**
  * Clip display text to `max` characters with an ellipsis, counting code points so a
@@ -320,8 +478,28 @@ export function captionStatesCount(caption: string | null | undefined, shown: nu
   return new RegExp(`(^|\\D)${figure(shown)} of ${figure(total)}(\\D|$)`, 'i').test(caption.replace(/,/g, ''));
 }
 
+/**
+ * The note over one part of a table split by columns to fit the page (the Word export
+ * and print): "Columns 1–5 of 6", a single column "Column 6 of 6", and "(continued)" on
+ * every part after the first. The numbers count the columns after the row label, which
+ * every part repeats.
+ */
+export function columnPartLabel(first: number, last: number, total: number, continued = false): string {
+  const range = first === last ? `Column ${num(first, 0)}` : `Columns ${num(first, 0)}–${num(last, 0)}`;
+  return `${range} of ${num(total, 0)}${continued ? ' (continued)' : ''}`;
+}
+
 /** "top 10 of 1,240" style disclosure for a truncated block (G4). */
 export function truncationNote(shown: number, total: number | null): string {
   if (total !== null && total > shown) return `Showing top ${num(shown, 0)} of ${num(total, 0)}`;
   return `Showing the first ${num(shown, 0)}; more exist`;
 }
+
+/**
+ * The investigation brief's label (Round 12 SYNTHESIS-chat P1-3, #3): the brief is the
+ * model's advisory assessment; the close/escalate decision is the deterministic policy's.
+ * ONE string for the in-chat Brief, the Reports library, Print and every file export.
+ */
+export const INVESTIGATION_BRIEF_ADVISORY = 'Advisory: the case decision is made by policy, not by this brief';
+/** The sentence that follows the label wherever it is a callout (documents, exports). */
+export const INVESTIGATION_BRIEF_ADVISORY_NOTE = 'This brief is the model’s assessment. It never closes or escalates a case.';

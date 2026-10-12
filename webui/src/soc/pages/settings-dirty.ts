@@ -21,6 +21,7 @@
 // pure helper never drags the heavy Settings renderer tree into an eager import chain
 // (Round-5 Coupling-A — keeps the first-paint entry chunk slim).
 import { SECTION_KEYS } from './settings/settings-sections-meta';
+import { deepEqual } from '@/lib/deep-equal';
 
 /** A loose Preferences view — we only ever index it by string key here. */
 export type PrefsRecord = Record<string, unknown>;
@@ -44,35 +45,12 @@ export const NON_EDITABLE_KEYS: ReadonlySet<string> = new Set(['sources', 'setup
  */
 export { SECTION_KEYS };
 
-/** Stable, order-insensitive structural equality for two JSON-able values. */
-export function deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (a === null || b === null) return a === b;
-  if (typeof a !== typeof b) return false;
-  if (typeof a !== 'object') return false;
-
-  const aArr = Array.isArray(a);
-  const bArr = Array.isArray(b);
-  if (aArr !== bArr) return false;
-  if (aArr && bArr) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i += 1) {
-      if (!deepEqual(a[i], b[i])) return false;
-    }
-    return true;
-  }
-
-  const ao = a as Record<string, unknown>;
-  const bo = b as Record<string, unknown>;
-  const aKeys = Object.keys(ao);
-  const bKeys = Object.keys(bo);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const k of aKeys) {
-    if (!Object.prototype.hasOwnProperty.call(bo, k)) return false;
-    if (!deepEqual(ao[k], bo[k])) return false;
-  }
-  return true;
-}
+/**
+ * Stable, order-insensitive structural equality for two JSON-able values. Lives in
+ * `lib/deep-equal.ts` (dependency-free, so the eager draft hook can share it without this
+ * module's Settings metadata); re-exported here for the page and this module's spec.
+ */
+export { deepEqual };
 
 /**
  * The set of EDITABLE top-level keys whose value diverges from the saved snapshot.

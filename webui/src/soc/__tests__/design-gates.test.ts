@@ -25,7 +25,7 @@ import {
 } from '../../../scripts/gate-contrast.mjs';
 import { checkCvd, CHART_TOKENS, SEMANTIC_AXES } from '../../../scripts/gate-cvd.mjs';
 import { checkLoginAccents, TEXT_BAR } from '../../../scripts/gate-login-accents.mjs';
-import { checkGrepGuards, loadBaseline } from '../../../scripts/lib/grep-guard.mjs';
+import { checkGrepGuards, loadBaseline, PATTERNS } from '../../../scripts/lib/grep-guard.mjs';
 
 describe('design gate: token existence (theme.css ⇄ ALLOWED_TOKENS ⇄ palette)', () => {
   it('every ALLOWED_TOKENS + palette token() name exists in :root AND .dark', () => {
@@ -101,6 +101,17 @@ describe('design gate: no NEW arbitrary text sizes / raw hex in .tsx', () => {
     const { ok, violations } = checkGrepGuards();
     expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
     expect(ok).toBe(true);
+  });
+
+  it('counts a colour literal, never an identifier that merely contains "#" and six hex digits', () => {
+    const hits = (text: string) => text.match(new RegExp(PATTERNS['raw-hex-color'].source, 'g'))?.length ?? 0;
+    for (const colour of ["'#aabbcc'", 'bg-[#aabbcc]', 'fill="#00FF00"', 'color: #123abc;']) {
+      expect(hits(colour), colour).toBe(1);
+    }
+    // A case reference such as INC#000042 is not a colour.
+    for (const id of ['INC#000042', 'case INC#000042 escalated', 'SOC#abcdef']) {
+      expect(hits(id), id).toBe(0);
+    }
   });
 });
 

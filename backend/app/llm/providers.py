@@ -1367,13 +1367,16 @@ class DemoMockProvider(MockProvider):
                       if verdict == "TRUE_POSITIVE"
                       else "Analyst review required (impossible to auto-close)."
                       if verdict == "NEEDS_HUMAN" else "No action required.")
-            summary = f"Demo storyline '{story.name}' — {verdict}."
+            # The verdict in the console's words, never the raw enum or an em dash.
+            words = {"TRUE_POSITIVE": "true positive", "FALSE_POSITIVE": "false positive",
+                     "NEEDS_HUMAN": "needs human review"}.get(verdict, verdict.replace("_", " ").lower())
+            summary = f"Demo storyline '{story.name}': {words}."
         else:
             # Benign baseline → a CONFIDENT false positive so it flows through the
             # REAL decide() against the sandboxed policy.
             verdict, confidence, mitre = "FALSE_POSITIVE", 0.97, []
             action = "Benign baseline activity; no action required."
-            summary = "Demo benign baseline — false positive."
+            summary = "Demo benign baseline: false positive."
         payload = {
             "verdict": verdict,
             "confidence": confidence,

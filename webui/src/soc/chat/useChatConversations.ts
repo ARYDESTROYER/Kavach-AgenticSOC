@@ -13,18 +13,21 @@
  *    (no refetch flash) while that thread stays active; switching away clears it;
  *  - refresh on window focus, on `visibilitychange` → visible, and on a cross-tab
  *    `BroadcastChannel('agentic-soc-workspace-chat-history')` `{type:'history-changed'}`
- *    signal — all DEFERRED while a turn is in flight and flushed when it settles;
+ *    signal — all DEFERRED while this thread's turn is in flight and flushed when it
+ *    settles;
  *  - optimistic promotion of a first persisted turn into the rail, then a background
  *    refresh and a broadcast;
  *  - rename / pin / delete (the host confirms deletion), each broadcasting;
  *  - per-thread unsent drafts (never written to the server);
  *  - honest retention (`limit`, `history_truncated`, totals) for the rail footer and
- *    the per-thread "Showing the latest X of Y messages" note.
+ *    the per-thread note about messages an older version removed (Round 12 removes
+ *    none; a long conversation pages its older messages in, `useEarlierMessages`).
  *
  * Revamp additions: server-side content search (`?q=`, debounced, with snippets),
  * pinning (≤ 10; 409 `chat_pin_limit`), `report_id` on rows, and a REQUESTED selection
  * from the route (`NavOpts` `conversationId` / `messageId` / `newChat` / `topic` / the
- * palette's `ask`).
+ * palette's `ask` / an "Ask AI" chip's typed `entity` reference / the toast's `resend`
+ * of a question the analyst did not type).
  *
  * The list is one page of 60: the server keeps the newest 50 unpinned conversations plus
  * up to 10 pin-exempt ones, so every kept thread fits (SPEC A9). A thread can still be
@@ -32,13 +35,35 @@
  * just evicted), so it is CHECKED (`GET …/{id}`) before it is called unavailable or the
  * selection falls back: only a 404 means it is gone.
  *
+ * Round 12 (SPEC D13): a turn no longer pins the analyst to its thread. Answers keep
+ * streaming in the turn runner while another thread, New chat or another page is open,
+ * so selection, New chat, search hits and navigations are never refused (deleting the
+ * thread a turn is running in still is). Rows carry live statuses (`running`,
+ * `needs_input`, `failed`, `unread`) from the server, overlaid with what this tab and
+ * the others know right now (the activity store); a thread the loaded page does not
+ * list yet keeps a row while it has a status (a new thread being answered, an answer
+ * that landed while this thread's own turn holds the list refresh back), except the new
+ * thread whose first answer is on screen (it is still "New chat"). The first load
+ * prefers a thread that is running, or holds an unread answer or a question the analyst
+ * has not opened yet, over simply the newest, and an answer on screen is marked read
+ * (`POST …/read`).
+ *
  * Case-scoped chat passes `enabled: false`: no list, no detail, no persistence.
  */
 import * as React from 'react';
 
 import { ApiError } from '@/lib/api';
-import type { ChatConversation, ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
+import type { ChatConversation, ChatConversationSearchHit, ChatConversationSummary, ChatOrigin } from '@/lib/types';
 import type { NavOpts } from '@/soc/nav-types';
+import {
+  dropChatActivity,
+  getChatActivity,
+  getViewedChatScopes,
+  markChatActivitySeen,
+  subscribeViewedChatScopes,
+  useChatActivity,
+  type ChatActivity,
+} from '../chat-activity/activity';
 import {
   UNTITLED_CONVERSATION,
   apiErrorCode,
@@ -49,11 +74,13 @@ import {
   updateConversation,
 } from './chat-api';
 import { clampAsk } from './ask';
+import { chatEntityRef, type ChatEntityRef } from './entity-ask';
 import { displayText } from './stream-events';
-import { consoleTopic } from './topic';
+import { REQUEST_TOPIC_RE, consoleTopic } from './topic';
+import { HISTORY_CHANNEL, consumeRun, findRun, markConversationRead } from './turn-runner';
 
-/** The cross-tab history signal (unchanged from the pre-revamp page). */
-export const HISTORY_CHANNEL = 'agentic-soc-workspace-chat-history';
+/** The cross-tab history signal (unchanged from the pre-revamp page; the runner posts it too). */
+export { HISTORY_CHANNEL };
 /** Draft key of the New-chat draft. */
 export const NEW_DRAFT_KEY = '__new_workspace_chat__';
 /** Unpinned conversations the server keeps (the retention footer's figure). */
@@ -101,6 +128,66 @@ export function newestConversationFirst(a: ChatConversationSummary, b: ChatConve
   return (Number.isFinite(right) ? right : -Infinity) - (Number.isFinite(left) ? left : -Infinity) || 0;
 }
 
+/** A clarifying question the analyst has not looked at yet. */
+const unseenQuestion = (entry: ChatActivity) => entry.status === 'needs_input' && entry.seen !== true;
+
+/**
+ * Rows as the analyst should see them right now: the server's statuses overlaid with
+ * what this tab and the others know (the activity store), plus a row for every thread
+ * with a status that the loaded page does not list yet: a NEW thread whose first
+ * answer is being written (not listed until its first save), or an answer that landed
+ * while the list refresh waits for the open thread's turn. `hidden` leaves out the
+ * placeholder of a run that is on screen as "New chat".
+ */
+export function overlayActivity(
+  rows: readonly ChatConversationSummary[],
+  entries: readonly ChatActivity[],
+  hidden: (entry: ChatActivity) => boolean = () => false,
+): ChatConversationSummary[] {
+  const live = new Map<string, ChatActivity>();
+  for (const entry of entries) {
+    if (entry.kind === 'workspace' && entry.conversationId) live.set(entry.conversationId, entry);
+  }
+  if (!live.size) return rows as ChatConversationSummary[];
+  const out = rows.map((row) => {
+    const entry = live.get(row.id);
+    if (!entry) return row;
+    // A question the analyst has not looked at yet is news like an unread answer (the
+    // server marks it unread too); this tab never clears the server's own mark here.
+    const unread = entry.status === 'unread' || unseenQuestion(entry) || row.unread === true;
+    // A stale list may still say `running` for an answer this tab saw finish.
+    const status = entry.status === 'unread' ? (row.status === 'running' ? 'idle' : row.status) : entry.status;
+    return status === row.status && unread === (row.unread === true) ? row : { ...row, status, unread };
+  });
+  for (const entry of live.values()) {
+    if (rows.some((row) => row.id === entry.conversationId) || hidden(entry)) continue;
+    const at = new Date(entry.startedAt).toISOString();
+    const unread = entry.status === 'unread' || unseenQuestion(entry);
+    out.unshift({
+      id: entry.conversationId as string,
+      title: entry.title || UNTITLED_CONVERSATION,
+      preview: '',
+      created_at: at,
+      updated_at: at,
+      message_count: 0,
+      status: entry.status === 'unread' ? 'idle' : entry.status,
+      ...(unread ? { unread: true } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * The thread a fresh visit opens: one being answered, then one holding news the analyst
+ * has not opened yet (an unread answer, or a clarifying question they have not seen),
+ * then the newest (rows are newest first). A question the analyst has already opened
+ * and left unanswered keeps "Needs input" on its history row but takes no priority: an
+ * abandoned question never takes over the landing.
+ */
+export function preferredThread(rows: readonly ChatConversationSummary[]): string | null {
+  return rows.find((row) => row.status === 'running')?.id ?? rows.find((row) => row.unread === true)?.id ?? rows[0]?.id ?? null;
+}
+
 /** A validated chat deep-link request (SPEC §10.7). */
 export interface ChatNavRequest {
   conversationId: string | null;
@@ -110,23 +197,75 @@ export interface ChatNavRequest {
   topic: string | null;
   /** The palette's "Ask AI" text, prefilled into the new chat's composer (never sent). */
   ask: string | null;
+  /**
+   * An "Ask AI" chip's typed reference (Round 12 WP-ASK): the page resolves it to the
+   * server's question and sends that (origin `starter`), like a topic.
+   */
+  entity: ChatEntityRef | null;
+  /**
+   * "Ask again" from the toast of a new chat that saved nothing, for a question the
+   * analyst did not type: the page sends it again with its own origin and topic.
+   */
+  resend: ChatResend | null;
+}
+
+/** A question to send again exactly as it was asked (`NavOpts.resend`). */
+export interface ChatResend {
+  message: string;
+  origin: Exclude<ChatOrigin, 'user' | 'continue'>;
+  topic: string | null;
+}
+
+/**
+ * The origins a resend may carry. Never `user` (the analyst's own words are only ever
+ * prefilled, `NavOpts.ask`) and never `continue` (it continues an answer of its own
+ * conversation, which a new chat does not have).
+ */
+const RESEND_ORIGINS: ReadonlySet<string> = new Set<ChatResend['origin']>(['follow_up', 'starter', 'command', 'clarify', 'retry_step']);
+
+/**
+ * The resend a navigation carries, or `null`: a non-blank question (never cut: a cut
+ * question would be a different one), a non-user origin and an optional request topic.
+ */
+export function chatResend(raw: unknown): ChatResend | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const { message, origin, topic } = raw as { message?: unknown; origin?: unknown; topic?: unknown };
+  if (typeof message !== 'string' || !message.trim()) return null;
+  if (typeof origin !== 'string' || !RESEND_ORIGINS.has(origin)) return null;
+  return {
+    message,
+    origin: origin as ChatResend['origin'],
+    topic: typeof topic === 'string' && REQUEST_TOPIC_RE.test(topic) ? topic : null,
+  };
 }
 
 /**
  * Read the chat keys of `NavOpts`, validated (an invalid id is dropped, a message id
  * without its conversation is dropped). `null` when nothing chat-related was asked.
- * A `topic` or an `ask` implies a fresh chat; a `conversationId` wins over `newChat`,
- * and a `topic` (a templated question the page sends) wins over a free-text `ask`.
+ * A `topic`, an `entity`, a `resend` or an `ask` implies a fresh chat; a
+ * `conversationId` wins over `newChat`, and a `topic`, an `entity` or a `resend`
+ * (questions the page sends, never as the analyst's words) wins over a free-text `ask`.
  */
 export function parseChatNavRequest(opts: NavOpts | null | undefined): ChatNavRequest | null {
   if (!opts) return null;
   const conversationId = isSafeChatId(opts.conversationId) ? opts.conversationId : null;
   const messageId = conversationId && isSafeChatId(opts.messageId) ? opts.messageId : null;
   const topic = consoleTopic(opts.topic);
-  const ask = topic ? null : clampAsk(opts.ask);
-  const newChat = !conversationId && (opts.newChat === true || topic !== null || ask !== null);
+  const entity = topic ? null : chatEntityRef(opts.entity);
+  const resend = topic || entity ? null : chatResend(opts.resend);
+  const ask = topic || entity || resend ? null : clampAsk(opts.ask);
+  const newChat =
+    !conversationId && (opts.newChat === true || topic !== null || entity !== null || resend !== null || ask !== null);
   if (!conversationId && !newChat) return null;
-  return { conversationId, messageId, newChat, topic: conversationId ? null : topic, ask: conversationId ? null : ask };
+  return {
+    conversationId,
+    messageId,
+    newChat,
+    topic: conversationId ? null : topic,
+    ask: conversationId ? null : ask,
+    entity: conversationId ? null : entity,
+    resend: conversationId ? null : resend,
+  };
 }
 
 export interface UseChatConversationsOptions {
@@ -167,7 +306,8 @@ export interface ChatThreadRetention {
   truncated: boolean;
   /**
    * Turns were REMOVED: `total_message_count > message_count` (the backend's
-   * `stores.chat_conversations.turns_removed`; the lifetime count only grows).
+   * `stores.chat_conversations.turns_removed`; the lifetime count only grows). Round 12
+   * removes no message, so this is only ever a conversation an older version shortened.
    */
   removed: boolean;
   retained: number | null;
@@ -176,20 +316,21 @@ export interface ChatThreadRetention {
    * The removed-turns note above the transcript (null when nothing was removed). A
    * thread that was only shortened in place gets no thread-level line: each restored
    * answer whose snapshot was compacted carries its own quiet hint (SPEC A22), and
-   * clipped text ends with its own "[truncated in saved history]" marker.
+   * clipped text ends with its own "[truncated in saved history]" marker. A long
+   * conversation is NOT shortened: its older messages are paged in with "Show earlier
+   * messages" (Round 12).
    */
   note: string | null;
 }
 
-/** The per-conversation message window (`MAX_MESSAGES_PER_CONVERSATION`, SPEC §7.5). */
-export const MAX_THREAD_MESSAGES = 100;
-
 /**
  * The thread retention copy from the stored counts. Turns were removed exactly when the
- * lifetime count exceeds the retained count; below the 100-message window that can only
- * be the storage bound, at the window it is the 100-message limit. `history_truncated`
- * alone (no turn missing) means an answer or prompt was shortened in place, which the
- * transcript shows per answer, not here.
+ * lifetime count exceeds the retained count. Since Round 12 nothing removes messages
+ * (every question and answer is kept in full, and a long conversation pages its older
+ * messages in), so a removal can only come from an older version: the note says how
+ * many of the first messages are gone and that messages are no longer removed.
+ * `history_truncated` alone (no turn missing) means an answer or prompt was shortened
+ * in place, which the transcript shows per answer, not here.
  */
 export function threadRetentionInfo(
   retained: number | null,
@@ -199,10 +340,11 @@ export function threadRetentionInfo(
   const removed = typeof retained === 'number' && typeof total === 'number' && total > retained;
   let note: string | null = null;
   if (removed) {
+    const gone = (total as number) - (retained as number);
     note =
-      (retained as number) >= MAX_THREAD_MESSAGES
-        ? `Showing the latest ${retained} of ${total} messages. Conversations keep their newest ${MAX_THREAD_MESSAGES} messages.`
-        : `Showing the latest ${retained} of ${total} messages. Older messages were removed to stay within the storage limit.`;
+      gone === 1
+        ? 'The first message of this conversation was removed by an older version of Agentic SOC. Messages are no longer removed.'
+        : `The first ${gone.toLocaleString('en-US')} messages of this conversation were removed by an older version of Agentic SOC. Messages are no longer removed.`;
   }
   return { truncated, removed, retained, total, note };
 }
@@ -239,6 +381,12 @@ export interface ChatConversationsController {
    */
   ask: string | null;
   clearAsk: () => void;
+  /** The typed reference of the last "Ask AI" chip request (the page asks its question). */
+  entity: ChatEntityRef | null;
+  clearEntity: () => void;
+  /** The question the last `resend` request asks again (the page sends it, never prefills). */
+  resend: ChatResend | null;
+  clearResend: () => void;
   /**
    * Increments whenever the controller deliberately enters a fresh New-chat draft
    * (New chat, deleting the last thread, a `newChat` / `topic` request). Pass it to
@@ -256,7 +404,7 @@ export interface ChatConversationsController {
    */
   transcriptEpoch: number;
 
-  /** A turn is in flight: selection and refresh wait. Wire to the engine. */
+  /** This thread's turn is in flight: list refreshes wait. Wire to the engine. */
   busy: boolean;
   setBusy: (busy: boolean) => void;
 
@@ -281,7 +429,7 @@ export interface ChatConversationsController {
    * The engine persisted a turn into `id` (first or later). `title` is the server title,
    * the prompt for a brand-new thread, or '' to keep the row's title.
    */
-  conversationPersisted: (id: string, title: string) => void;
+  conversationPersisted: (id: string, title: string, options?: { rehydrate?: boolean }) => void;
   /**
    * The conversation's draft report is now `reportId` (the first Add to report created
    * it): its row learns the link at once, so "Open report" and the toolbar count
@@ -318,12 +466,16 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const [highlight, setHighlight] = React.useState<ChatHighlightRequest | null>(null);
   const [topic, setTopic] = React.useState<string | null>(null);
   const [ask, setAsk] = React.useState<string | null>(null);
+  const [entity, setEntity] = React.useState<ChatEntityRef | null>(null);
+  const [resend, setResend] = React.useState<ChatResend | null>(null);
   const [newDraftEpoch, setNewDraftEpoch] = React.useState(0);
   const [transcriptEpoch, setTranscriptEpoch] = React.useState(0);
   const [searchQuery, setSearchQueryState] = React.useState('');
   const [searchResults, setSearchResults] = React.useState<ChatConversationSearchHit[] | null>(null);
   const [searching, setSearching] = React.useState(false);
   const [searchError, setSearchError] = React.useState<string | null>(null);
+  const { entries: activity } = useChatActivity();
+  const viewedScopes = React.useSyncExternalStore(subscribeViewedChatScopes, getViewedChatScopes, getViewedChatScopes);
 
   const detailRequestRef = React.useRef(0);
   const listRequestRef = React.useRef(0);
@@ -340,6 +492,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   /** Bumps on every deliberate selection change, so a slow thread check never overrides one. */
   const selectionEpochRef = React.useRef(0);
   const highlightNonceRef = React.useRef(0);
+  /** The rows as shown (live statuses and a running new thread's row included). */
+  const shownRef = React.useRef<ChatConversationSummary[]>([]);
+  const readingRef = React.useRef<string | null>(null);
   const confirmRef = React.useRef(confirmDelete);
   confirmRef.current = confirmDelete;
 
@@ -417,6 +572,8 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       // The latest navigation decides: an unconsumed ask from an earlier one never
       // prefills a draft it was not meant for.
       setAsk(request.newChat ? request.ask : null);
+      setEntity(request.newChat ? request.entity : null);
+      setResend(request.newChat ? request.resend : null);
       if (request.newChat) {
         if (request.topic) setTopic(request.topic);
         applyTarget(null);
@@ -479,7 +636,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       const response = await listConversations({ limit });
       if (generation !== listRequestRef.current) return;
       const rows = [...response.conversations].sort(newestConversationFirst);
-      const pending = !busyRef.current ? pendingRequestRef.current : null;
+      const pending = pendingRequestRef.current;
       const current = activeIdRef.current;
       const selectedOffPage = !pending && typeof current === 'string' && !rows.some((item) => item.id === current);
       // Keep the selected thread's row while it is checked (no rail flicker).
@@ -508,17 +665,20 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       } else if (selectedOffPage) {
         void confirmBeyondPage(current as string);
       } else {
-        // The first load selects the newest; a deliberate New-chat draft stays a draft.
+        // The first load prefers a thread being answered, then one holding an unread
+        // answer or an unseen question, then the newest; a deliberate New-chat draft
+        // stays a draft.
+        const shown = overlayActivity(next, getChatActivity().entries);
         setActiveId((selected) => {
-          if (selected && next.some((item) => item.id === selected)) return selected;
+          if (selected && shown.some((item) => item.id === selected)) return selected;
           if (selected === null) return null;
-          return next[0]?.id ?? null;
+          return preferredThread(shown);
         });
       }
     } catch (error) {
       if (generation !== listRequestRef.current) return;
       setListError(errorMessage(error, 'Could not load previous conversations.'));
-      const pending = !busyRef.current ? pendingRequestRef.current : null;
+      const pending = pendingRequestRef.current;
       if (pending) {
         pendingRequestRef.current = null;
         void applyRequest(pending, [], true);
@@ -604,9 +764,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       return;
     }
     pendingRequestRef.current = request;
-    // Before the first load, or while a turn runs, the request waits for that load /
-    // for the turn to settle (`setBusy(false)` reloads).
-    if (busyRef.current || !loadedOnceRef.current) return;
+    // Before the first load the request waits for it. A running turn never holds a
+    // navigation back: its answer keeps streaming in the turn runner (SPEC D13).
+    if (!loadedOnceRef.current) return;
     void loadConversations();
     // Only a new navigation (a new opts object) may apply a request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -636,6 +796,16 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       })
       .catch((error) => {
         if (generation !== detailRequestRef.current) return;
+        // A new thread whose first answer is still being written is not saved yet (404
+        // until then; the server lists it as a temporary running row), and a thread only
+        // this browser knows about (a placeholder row): open it empty, and the engine
+        // joins its run (live, or the answer it settled with).
+        const pending = shownRef.current.find((row) => row.id === activeId);
+        const placeholder = !!pending && !conversationsRef.current.some((row) => row.id === activeId);
+        if (error instanceof ApiError && error.status === 404 && pending && (pending.status === 'running' || placeholder)) {
+          setConversation({ ...pending, messages: [] });
+          return;
+        }
         setConversation(null);
         setThreadError(errorMessage(error, 'Could not load this conversation.'));
       })
@@ -665,14 +835,14 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     [loadConversations],
   );
 
+  // Never refused while a turn runs: the engine detaches and the answer keeps
+  // streaming in the turn runner (SPEC D13).
   const startNew = React.useCallback(() => {
-    if (busyRef.current) return;
     enterNewDraft();
   }, [enterNewDraft]);
 
   const select = React.useCallback(
     (item: ChatConversationSummary | string) => {
-      if (busyRef.current) return;
       const id = typeof item === 'string' ? item : item.id;
       if (!isSafeChatId(id)) return;
       if (activeIdRef.current === id) return;
@@ -683,7 +853,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
 
   const openSearchHit = React.useCallback(
     (hit: ChatConversationSearchHit) => {
-      if (busyRef.current || !isSafeChatId(hit.id)) return;
+      if (!isSafeChatId(hit.id)) return;
       if (activeIdRef.current !== hit.id) enterSelection(hit.id);
       const messageId = hit.match?.message_id;
       if (messageId) queueHighlight(hit.id, messageId);
@@ -694,7 +864,7 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
   const retryThread = React.useCallback(() => setThreadRetryEpoch((epoch) => epoch + 1), []);
 
   const conversationPersisted = React.useCallback(
-    (id: string, rawTitle: string) => {
+    (id: string, rawTitle: string, options?: { rehydrate?: boolean }) => {
       // The engine passes the server title, the exact prompt (a new thread whose title
       // it has not seen yet) or '' (keep the row's title): display text only from here
       // on (BLOCKS.md amendment 4).
@@ -730,6 +900,12 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
         delete next[NEW_DRAFT_KEY];
         return next;
       });
+      // A turn followed after a reload (or lost) has no prompt on screen: load the saved
+      // thread once, which holds both.
+      if (options?.rehydrate && activeIdRef.current === id) {
+        skipDetailIdRef.current = null;
+        setThreadRetryEpoch((epoch) => epoch + 1);
+      }
       // The response is saved before this runs. Refresh metadata in the background
       // without re-hydrating the live transcript that owns the answer.
       refresh();
@@ -802,7 +978,10 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       // the engine abandon the turn: refuse, as select / startNew do (checked again
       // after the dialog, since a turn may have started while it was open).
       const refuseWhileBusy = () => {
-        if (!busyRef.current || activeIdRef.current !== item.id) return false;
+        const running =
+          (busyRef.current && activeIdRef.current === item.id) ||
+          shownRef.current.some((row) => row.id === item.id && row.status === 'running');
+        if (!running) return false;
         setListError('Wait for the current answer to finish before deleting this conversation.');
         return true;
       };
@@ -825,6 +1004,10 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       conversationsRef.current = remaining;
       setConversations(remaining);
       setSearchResults((current) => (current ? current.filter((entry) => entry.id !== item.id) : current));
+      // Its marks go with it (in every tab), and so does an answer nobody opened.
+      dropChatActivity(`conv:${item.id}`);
+      const settled = findRun(`conv:${item.id}`);
+      if (settled && settled.state !== 'running') consumeRun(settled);
       setDrafts((current) => {
         if (!(item.id in current)) return current;
         const next = { ...current };
@@ -899,9 +1082,18 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
 
   /* -------------------------------------------------------------- derived -- */
 
+  // The new thread whose first answer is on screen stays "New chat" (no second row);
+  // once the analyst opens its row (or it saves) it is the selected thread instead.
+  const shown = React.useMemo(
+    () =>
+      overlayActivity(conversations, activity, (entry) => viewedScopes.has(entry.scope) && entry.conversationId !== activeId),
+    [activeId, activity, conversations, viewedScopes],
+  );
+  shownRef.current = shown;
+
   const activeSummary = React.useMemo(
-    () => conversations.find((item) => item.id === activeId) ?? null,
-    [activeId, conversations],
+    () => shown.find((item) => item.id === activeId) ?? null,
+    [activeId, shown],
   );
 
   const retention: ChatRetentionInfo = {
@@ -922,9 +1114,39 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
       threadLoading ||
       (!!activeId && conversation?.id !== activeId && skipDetailIdRef.current !== activeId));
 
+  // An answer on screen is read: clear its unread mark on the server (and in every
+  // tab's indicators) once the thread has restored and the tab is visible.
+  const activeUnread = activeSummary?.unread === true;
+  const shownThread = enabled && typeof activeId === 'string' && !restoring && !threadError ? activeId : null;
+  React.useEffect(() => {
+    if (!shownThread || !activeUnread || typeof document === 'undefined') return undefined;
+    const read = (): boolean => {
+      if (document.visibilityState === 'hidden') return false;
+      if (readingRef.current === shownThread) return true;
+      readingRef.current = shownThread;
+      markChatActivitySeen(`conv:${shownThread}`);
+      void markConversationRead(shownThread).then((ok) => {
+        if (readingRef.current === shownThread) readingRef.current = null;
+        if (!ok) return;
+        setConversations((current) => {
+          const next = current.map((row) => (row.id === shownThread && row.unread ? { ...row, unread: false } : row));
+          conversationsRef.current = next;
+          return next;
+        });
+      });
+      return true;
+    };
+    if (read()) return undefined;
+    const onVisible = () => {
+      if (read()) document.removeEventListener('visibilitychange', onVisible);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [activeUnread, shownThread]);
+
   return {
     enabled,
-    conversations,
+    conversations: shown,
     activeId,
     activeSummary,
     conversation,
@@ -943,6 +1165,10 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
     clearTopic: React.useCallback(() => setTopic(null), []),
     ask,
     clearAsk: React.useCallback(() => setAsk(null), []),
+    entity,
+    clearEntity: React.useCallback(() => setEntity(null), []),
+    resend,
+    clearResend: React.useCallback(() => setResend(null), []),
     newDraftEpoch,
     transcriptEpoch,
     busy,

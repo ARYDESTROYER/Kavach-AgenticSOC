@@ -457,17 +457,18 @@ class JobRunner:
             if job.fresh_token_version is None:
                 return False
             policy = getattr(self.state.prefs, "session_policy", None)
+            # Standard + remembered limits for the actor's live role (Round 12,
+            # one builder for every site; an excluded role is never remembered).
+            from ..auth.session_limits import limits_for_username
+
             return await sessions.strict_deferred_authority(
                 sid=job.fresh_session_id,
                 username=job.actor,
                 token_version=job.fresh_token_version,
-                idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
-                absolute_lifetime=int(
-                    getattr(policy, "absolute_lifetime", 0) or 0
-                ),
                 sudo_window=int(
                     getattr(policy, "sudo_reauth_window", 600) or 600
                 ),
+                **limits_for_username(self.state, job.actor).kwargs(),
             )
         except Exception:  # privileged deferred execution fails closed
             return False
@@ -572,8 +573,17 @@ class JobRunner:
             {key: value for key, value in job.params.items() if key != "case_ids"}
         )
 
+        # ONE operator transaction id for the whole job, stamped on every history entry
+        # it writes — the same contract as ``POST /api/cases/bulk`` — so a bulk Close
+        # with a declared disposition is ONE decision to the bounded precedent window
+        # (``PrecedentWindowConfig.max_transaction_fraction``), not N independent ones.
+        # Derived from the job id so a resumed job keeps the same transaction.
+        batch_id = f"bulk-{job.job_id}"
+
         async def run(case_id: str) -> None:
-            await _perform_case_action(case_id, body, job.actor, self.state)
+            await _perform_case_action(
+                case_id, body, job.actor, self.state, batch_id=batch_id
+            )
 
         await self._item_loop(job, token, run, result_kind="case_lifecycle")
 

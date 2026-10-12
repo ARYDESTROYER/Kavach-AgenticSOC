@@ -19,6 +19,8 @@
 import { ApiError } from '@/lib/api';
 import type { Report } from '@/lib/types';
 
+import { CHAT_LIMITS } from '../stream-events';
+
 export const REPORT_CHANGED_EVENT = 'agentic-soc:report-changed';
 
 export interface ReportChangedDetail {
@@ -55,11 +57,14 @@ export function reportItemKey(messageId: string, blockId?: string | null): strin
 /**
  * What a report already holds, keyed by {@link reportItemKey} → item id: the
  * transcript's "In report ✓" state and the item to remove on a second click.
+ * The first item per key wins: a long whole answer is stored as its first section
+ * plus "(continued)" sections, and removing that first section removes the rest.
  */
 export function reportItemIndex(report: Report | null | undefined): Map<string, string> {
   const out = new Map<string, string>();
   for (const item of report?.items ?? []) {
-    out.set(reportItemKey(item.source.message_id, item.kind === 'section' ? null : item.source.block_id), item.id);
+    const key = reportItemKey(item.source.message_id, item.kind === 'section' ? null : item.source.block_id);
+    if (!out.has(key)) out.set(key, item.id);
   }
   return out;
 }
@@ -68,11 +73,14 @@ export function reportItemIndex(report: Report | null | undefined): Map<string, 
 /* Limits and error copy (SPEC §10.6).                                         */
 /* -------------------------------------------------------------------------- */
 
-export const MAX_REPORT_ITEMS = 40;
+/** The server's item bound (Round 12 D11: 60), from the shared chat contract. */
+export const MAX_REPORT_ITEMS = CHAT_LIMITS.report_items;
 export const MAX_REPORTS = 100;
 export const REPORT_FULL_MESSAGE = `Report is full (${MAX_REPORT_ITEMS} items)`;
 export const REPORT_LIMIT_MESSAGE = 'Delete a report in Reports to start another';
-export const REPORT_CONFLICT_MESSAGE = 'This report changed elsewhere — Reload';
+/** The conflict banner's own words (its Reload button sits beside them). */
+export const REPORT_CONFLICT_TEXT = 'This report changed elsewhere';
+export const REPORT_CONFLICT_MESSAGE = `${REPORT_CONFLICT_TEXT}. Reload it, then try again.`;
 /** 409 `report_full` with `reason: "size"`: the document bound, not the item count. */
 export const REPORT_SIZE_MESSAGE = 'This report is at its storage size limit. Shorten a note or remove an item';
 
@@ -111,7 +119,7 @@ export function reportErrorMessage(error: unknown, fallback = 'The report could 
     case 'report_version_conflict':
       return REPORT_CONFLICT_MESSAGE;
     case 'report_full':
-      // A note or title that would grow the document past its bound is not "40 items".
+      // A note or title that would grow the document past its bound is not "N items".
       return reasonOf(error) === 'size' ? REPORT_SIZE_MESSAGE : REPORT_FULL_MESSAGE;
     case 'report_limit':
       return REPORT_LIMIT_MESSAGE;

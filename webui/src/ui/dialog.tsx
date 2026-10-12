@@ -2,7 +2,7 @@ import * as React from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { focusRing, modalOverlay } from '@/lib/ui-recipes';
+import { focusRing, modalOverlay, modalSurface } from '@/lib/ui-recipes';
 
 const Dialog = DialogPrimitive.Root;
 const DialogTrigger = DialogPrimitive.Trigger;
@@ -27,27 +27,43 @@ interface DialogContentProps
    *  sits in the top row (e.g. a command palette's search input) or that render a
    *  custom close, where the fixed X would overlap. */
   hideClose?: boolean;
+  /**
+   * Viewport point the dialog should grow out of — the centre of the control that opened
+   * it (Apple spatial consistency: "if something disappears one way, we expect it to
+   * emerge from where it came"). Radix anchors menus and popovers itself; a dialog
+   * opened from STATE (a KPI tile, a row) has no Radix trigger, so the caller passes
+   * the point, e.g. the centre of `tile.getBoundingClientRect()`. Omitted → its centre.
+   */
+  origin?: { x: number; y: number } | null;
+}
+
+/**
+ * `transform-origin` that pins the zoom's fixed point to a viewport point, with no
+ * measurement: the panel is centred (`left/top: 50%` and a −50% translate), so its
+ * visual top-left is 50dvw − w/2, and the point sits at 50% + (x − 50dvw) of its own box.
+ *
+ * DYNAMIC viewport units, like the panel's own `max-h-[85dvh]`: the fixed panel is laid
+ * out against the dynamic viewport, and on mobile `vh` is the LARGE viewport, so a `vh`
+ * origin would sit half a toolbar's height away from the tile that opened the dialog.
+ */
+export function dialogTransformOrigin(point: { x: number; y: number }): string {
+  return `calc(50% + ${Math.round(point.x)}px - 50dvw) calc(50% + ${Math.round(point.y)}px - 50dvh)`;
 }
 
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
->(({ className, children, hideClose = false, ...props }, ref) => (
+>(({ className, children, hideClose = false, origin, style, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
-      className={cn(
-        // max-h + internal scroll is a safety net so a dialog taller than the viewport
-        // (small laptops, zoom, long forms) scrolls instead of clipping its title/footer
-        // off-screen with no way to reach them. Consumers can still override max-h.
-        'fixed left-1/2 top-1/2 z-50 grid max-h-[85dvh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-y-auto',
-        'rounded-lg border border-border bg-card p-6 text-foreground shadow-elev2',
-        'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
-        'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
-        'duration-200',
-        className,
-      )}
+      className={cn(modalSurface, className)}
+      style={
+        origin && Number.isFinite(origin.x) && Number.isFinite(origin.y)
+          ? { transformOrigin: dialogTransformOrigin(origin), ...style }
+          : style
+      }
       {...props}
     >
       {children}
@@ -90,7 +106,7 @@ const DialogTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Title
     ref={ref}
-    className={cn('text-lg font-semibold leading-none tracking-tight text-foreground', className)}
+    className={cn('text-lg font-semibold leading-none text-foreground', className)}
     {...props}
   />
 ));

@@ -38,6 +38,7 @@ from .config import Preferences
 if TYPE_CHECKING:  # avoid an import cycle (ocsf imports config/constants, not models)
     from .ocsf import OCSFEvent
 from .constants import (
+    INVISIBLE_TEXT_CLASS,
     MAX_REPORT_ITEMS,
     MAX_REPORT_NEXT_STEPS,
     MAX_REPORT_NOTE_CHARS,
@@ -853,23 +854,33 @@ CHAT_PROMPT_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,64}$"
 _CHAT_PROMPT_ID_RE = re.compile(CHAT_PROMPT_ID_PATTERN)
 
 
+ChatPromptCategory = Literal["triage", "hunt", "ioc", "posture", "reporting", "app_help"]
+CHAT_PROMPT_CATEGORIES: tuple[str, ...] = get_args(ChatPromptCategory)
+
+
 class ChatPrompt(BaseModel):
     """One saved composer prompt (chat revamp SPEC §10.4). Plain user text: rendered
-    as text, sent as an ordinary user message (it is the user's own words)."""
+    as text, sent as an ordinary user message (it is the user's own words).
+
+    Round 12 prompt library (SPEC §3.1): an optional ``category`` and a ``favorite``
+    star; ``{name}`` placeholders in ``text`` are filled in by the composer before
+    sending (client-side; the server stores the template as plain text)."""
 
     id: str = Field(pattern=CHAT_PROMPT_ID_PATTERN)
     title: str = Field(min_length=1, max_length=MAX_CHAT_PROMPT_TITLE_CHARS)
     text: str = Field(min_length=1, max_length=MAX_CHAT_PROMPT_TEXT_CHARS)
+    category: ChatPromptCategory | None = None
+    favorite: bool = False
 
 
-def _repair_chat_prompts(value: Any) -> list[dict[str, str]]:
+def _repair_chat_prompts(value: Any) -> list[dict[str, Any]]:
     """Lenient stored-prompt repair: sanitise + clamp, drop unusable or duplicate
     entries, keep at most 50. A bad entry must never fail the WHOLE prefs bucket —
     the store skips a bucket that fails validation, which would silently wipe the
     user's saved views, dashboards and theme along with it."""
     if not isinstance(value, (list, tuple)):
         return []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in value:
         if isinstance(item, ChatPrompt):
@@ -886,7 +897,13 @@ def _repair_chat_prompts(value: Any) -> list[dict[str, str]]:
             text, MAX_CHAT_PROMPT_TITLE_CHARS
         )
         seen.add(prompt_id)
-        out.append({"id": prompt_id, "title": title, "text": text})
+        entry: dict[str, Any] = {"id": prompt_id, "title": title, "text": text}
+        category = item.get("category")
+        if isinstance(category, str) and category in CHAT_PROMPT_CATEGORIES:
+            entry["category"] = category
+        if item.get("favorite") is True:
+            entry["favorite"] = True
+        out.append(entry)
         if len(out) >= MAX_CHAT_PROMPTS:
             break
     return out
@@ -2009,20 +2026,36 @@ class Cursor(BaseModel):
 # --------------------------------------------------------------------------- #
 ChatStreamMode = Literal["steps", "text"]
 ChatScope = Literal["logs", "cases", "metrics", "intel", "docs", "platform"]
-ChatOrigin = Literal["user", "follow_up", "starter", "command", "continue"]
+ChatOrigin = Literal[
+    "user", "follow_up", "starter", "command", "continue",
+    # Round 12 (SPEC §3.1): a clarify-option pick and a step-inspector retry. Both carry the
+    # follow_up taint class (#9): their text is model-authored and may echo log values.
+    "clarify", "retry_step",
+]
 ChatStepKind = Literal["tool", "model"]
 ChatStepStatus = Literal["ok", "error", "denied", "timeout", "skipped", "cancelled"]
 ChatStepBasis = Literal["exact", "newest_n", "sample", "cached"]
 ChatAnswerKind = Literal["data", "product_help", "mixed", "conversation"]
+# Round 12 (final review): a reply to a chat COMMAND (``/compact``), not an answer. The
+# console shows it as a quiet note without answer actions, and it is never replayed or
+# summarised as part of the conversation.
+ChatCommand = Literal["compact"]
 TurnNoticeKind = Literal[
     "partial", "cap", "budget", "provider", "breaker", "denied", "timeout", "cancelled",
     "unsupported", "not_saved",
+    # Round 12 (SPEC D2/D4/D9): answered with what chat can read; the loop guard ended a
+    # repeated lookup; earlier context was summarised to keep going.
+    "limited", "stopped_repeating", "compacted",
 ]
 CitationKind = Literal["doc", "case", "knowledge", "mitre", "query"]
 MemoryProposalOp = Literal["add", "remove"]
 ChatBudgetState = Literal["ok", "approaching", "reached"]
 TextStreamingReason = Literal["disabled_by_admin", "model_does_not_stream"]
-ReportTemplateName = Literal["investigation", "hunt", "ioc", "shift", "posture", "custom"]
+ReportTemplateName = Literal[
+    "investigation", "hunt", "ioc", "shift", "posture", "custom",
+    # Round 12 (SPEC D11).
+    "executive", "monthly", "infographic", "investigation_brief",
+]
 ReportItemKind = Literal["block", "section"]
 
 CHAT_STREAM_MODES: tuple[str, ...] = get_args(ChatStreamMode)
@@ -2032,6 +2065,7 @@ CHAT_STEP_KINDS: tuple[str, ...] = get_args(ChatStepKind)
 CHAT_STEP_STATUSES: tuple[str, ...] = get_args(ChatStepStatus)
 CHAT_STEP_BASES: tuple[str, ...] = get_args(ChatStepBasis)
 CHAT_ANSWER_KINDS: tuple[str, ...] = get_args(ChatAnswerKind)
+CHAT_COMMANDS: tuple[str, ...] = get_args(ChatCommand)
 TURN_NOTICE_KINDS: tuple[str, ...] = get_args(TurnNoticeKind)
 CITATION_KINDS: tuple[str, ...] = get_args(CitationKind)
 MEMORY_PROPOSAL_OPS: tuple[str, ...] = get_args(MemoryProposalOp)
@@ -2192,17 +2226,43 @@ def _display_list(value: Any, limit: int, chars: int) -> list[str]:
 # --- §3.1 time window --------------------------------------------------------- #
 _RELATIVE_TIME_RE = re.compile(r"^now(?:-(\d{1,5})([mhdw]))?$")
 _RELATIVE_SECONDS = {"m": 60, "h": 3_600, "d": 86_400, "w": 604_800}
-_TIME_EXPR_HELP = "expected 'now', 'now-<n>[m|h|d|w]' or an ISO-8601 timestamp"
+# Round 12 (SPEC D7/P0-3): calendar months and years. ``now-6M`` is six MONTHS (an
+# upper-case M; a lower-case ``m`` stays minutes) and ``now-1y`` one year, in calendar
+# arithmetic (the day clamped to the target month), so a "6 months" chip is never six
+# minutes. Matched case-sensitively, after the prefix is lower-cased.
+_CALENDAR_RELATIVE_RE = re.compile(r"^now-(\d{1,4})([My])$")
+_TIME_EXPR_HELP = (
+    "expected 'now', 'now-<n>[m|h|d|w]' (m = minutes), 'now-<n>[M|y]' (M = months, y = years) "
+    "or an ISO-8601 timestamp"
+)
+
+
+def _months_before(moment: datetime, months: int) -> datetime | None:
+    """``moment`` moved back ``months`` calendar months (UTC; the day clamped to the
+    target month's length), or ``None`` before year 1."""
+    from calendar import monthrange
+
+    index = moment.year * 12 + (moment.month - 1) - months
+    year, month = divmod(index, 12)
+    month += 1
+    if year < 1:
+        return None
+    return moment.replace(year=year, month=month, day=min(moment.day, monthrange(year, month)[1]))
 
 
 def resolve_time_expr(expr: str, now: datetime | None = None) -> datetime | None:
     """Resolve one composer time expression to an aware UTC datetime, else ``None``.
-    The grammar is deliberately narrow (SPEC §3.1): ``now``, ``now-<n>[mhdw]`` or an
-    ISO-8601 timestamp (a naive one is read as UTC). No ``now+``, no epoch numbers."""
+    The grammar is deliberately narrow (SPEC §3.1): ``now``, ``now-<n>[m|h|d|w]``
+    (``m`` = minutes), ``now-<n>[M|y]`` (calendar months and years) or an ISO-8601
+    timestamp (a naive one is read as UTC). No ``now+``, no epoch numbers."""
     if not isinstance(expr, str):
         return None
     reference = now or datetime.now(timezone.utc)
     text = expr.strip()
+    calendar = _CALENDAR_RELATIVE_RE.match(text)
+    if calendar:
+        months = int(calendar.group(1)) * (12 if calendar.group(2) == "y" else 1)
+        return _months_before(reference, months)
     match = _RELATIVE_TIME_RE.match(text.lower())
     if match:
         if match.group(1) is None:
@@ -2223,19 +2283,46 @@ def resolve_time_expr(expr: str, now: datetime | None = None) -> datetime | None
 TimeRangeWire = TypedDict("TimeRangeWire", {"from": str, "to": str})
 
 
+# Round 12 (SPEC D7/D7a): ``from: "all"`` is the composer's "All time" chip. It resolves
+# to the start of the epoch and never clamps a tool's window.
+TIME_RANGE_ALL = "all"
+_ALL_TIME_START = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_RELATIVE_WORDS = {"m": "minute", "h": "hour", "d": "day", "w": "week", "M": "month", "y": "year"}
+
+
+def humanise_relative_window(amount: int, unit: str) -> str:
+    """"last 24 hours", "last 7 days", "last 30 days", "last 6 months" for a trailing
+    ``now-<amount><unit>`` window (never "last 720h"). Whole days read as days, so
+    ``now-720h`` is "last 30 days". ``unit`` is ``m`` (minutes), ``h``, ``d``, ``w``,
+    ``M`` (months) or ``y``."""
+    if unit == "h" and amount >= 48 and amount % 24 == 0:
+        amount, unit = amount // 24, "d"
+    if unit == "d" and amount == 1:
+        amount, unit = 24, "h"
+    if unit == "w" and amount == 1:
+        amount, unit = 7, "d"
+    if amount == 1 and unit in ("M", "y"):
+        return f"past {_RELATIVE_WORDS[unit]}"
+    word = _RELATIVE_WORDS.get(unit, unit)
+    return f"last {word}" if amount == 1 else f"last {amount:,} {word}s"
+
+
 class TimeRange(BaseModel):
     """The composer time window ``{from, to}`` (SPEC §3.1).
 
-    Each bound is ``now``, ``now-<n>[mhdw]`` or ISO-8601; ``from`` must be strictly
-    before ``to`` and the window at most :attr:`MAX_SPAN_DAYS` days, else 422. It
-    applies to every windowed chat tool; precedence is the model's explicit window
-    from the user's words, then this, then ``context.time_range``, then 24 h.
-    Serialises as ``{"from", "to"}`` (both keys, always) regardless of ``by_alias``
-    or ``exclude_defaults``, so stored and wire shapes never diverge."""
+    Each bound is ``now``, ``now-<n>[m|h|d|w|M|y]`` (lower-case ``m`` is minutes,
+    ``M`` months, ``y`` years) or ISO-8601, and ``from`` may also be ``all``
+    (``{"from": "all"}``, the "All time" chip, Round 12, which never clamps); ``from``
+    must be strictly before ``to``, else 422. Round 12 (SPEC D7a): chat scope windows
+    have no span limit (:attr:`MAX_SPAN_DAYS` is ``None``). It applies to every
+    windowed chat tool; precedence is the model's explicit window from the user's
+    words, then this, then ``context.time_range``, then the tool's own default. Serialises as ``{"from",
+    "to"}`` (both keys, always) regardless of ``by_alias`` or ``exclude_defaults``, so
+    stored and wire shapes never diverge."""
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    MAX_SPAN_DAYS: ClassVar[int] = 90
+    MAX_SPAN_DAYS: ClassVar[int | None] = None
 
     from_: str = Field(alias="from", min_length=1, max_length=40)
     to: str = Field(default="now", min_length=1, max_length=40)
@@ -2246,12 +2333,26 @@ class TimeRange(BaseModel):
         if not isinstance(value, str):
             return value
         text = value.strip()
-        # Relative expressions are canonicalised to lower case ("NOW-24H" → "now-24h").
-        return text.lower() if text.lower().startswith("now") else text
+        if text.lower() in (TIME_RANGE_ALL, "all_time", "all time", "lifetime"):
+            return TIME_RANGE_ALL
+        # Relative expressions are canonicalised to lower case ("NOW-24H" → "now-24h"),
+        # except a month or year unit: "now-6M" is six MONTHS and must never become
+        # "now-6m" (six minutes); "now-1Y" is "now-1y".
+        lowered = text.lower()
+        if not lowered.startswith("now"):
+            return text
+        unit = text[-1:]
+        if unit in ("M", "y", "Y"):
+            calendar = lowered[:-1] + ("M" if unit == "M" else "y")
+            if _CALENDAR_RELATIVE_RE.match(calendar):
+                return calendar
+        return lowered
 
     @field_validator("from_", "to")
     @classmethod
-    def _grammar(cls, value: str) -> str:
+    def _grammar(cls, value: str, info: Any) -> str:
+        if value == TIME_RANGE_ALL and info.field_name == "from_":
+            return value
         if resolve_time_expr(value) is None:
             raise ValueError(_TIME_EXPR_HELP)
         return value
@@ -2261,9 +2362,14 @@ class TimeRange(BaseModel):
         start, end = self.resolve()
         if start >= end:
             raise ValueError("time_range.from must be before time_range.to")
-        if end - start > timedelta(days=self.MAX_SPAN_DAYS):
+        if self.MAX_SPAN_DAYS is not None and end - start > timedelta(days=self.MAX_SPAN_DAYS):
             raise ValueError(f"time_range spans at most {self.MAX_SPAN_DAYS} days")
         return self
+
+    @property
+    def is_all_time(self) -> bool:
+        """True for the "All time" chip (``from: "all"``), which never clamps."""
+        return self.from_ == TIME_RANGE_ALL
 
     # ``plain`` + a TypedDict return: the wire shape is always both keys, and the
     # annotation is what gives ``openapi.json`` a typed ``{from, to}`` output schema
@@ -2275,7 +2381,7 @@ class TimeRange(BaseModel):
     def resolve(self, now: datetime | None = None) -> tuple[datetime, datetime]:
         """``(from, to)`` as aware UTC datetimes against one shared ``now``."""
         reference = now or datetime.now(timezone.utc)
-        start = resolve_time_expr(self.from_, reference)
+        start = _ALL_TIME_START if self.is_all_time else resolve_time_expr(self.from_, reference)
         end = resolve_time_expr(self.to, reference)
         assert start is not None and end is not None  # guaranteed by _grammar
         return start, end
@@ -2291,11 +2397,14 @@ class TimeRange(BaseModel):
         return min(max(hours, lo), hi)
 
     def label(self) -> str:
-        """Short caption text: ``last 24h`` for a trailing window, else ``a → b``."""
+        """Short caption text: ``last 24 hours`` / ``all time`` for a trailing window,
+        else ``a → b``."""
+        if self.is_all_time:
+            return "all time" if self.to == "now" else f"all time → {self.to}"
         if self.to == "now":
-            match = _RELATIVE_TIME_RE.match(self.from_)
+            match = _RELATIVE_TIME_RE.match(self.from_) or _CALENDAR_RELATIVE_RE.match(self.from_)
             if match and match.group(1):
-                return f"last {int(match.group(1))}{match.group(2)}"
+                return humanise_relative_window(int(match.group(1)), match.group(2))
         return f"{self.from_} → {self.to}"
 
 
@@ -2348,6 +2457,11 @@ class ChatConversationSummary(BaseModel):
     total_tokens: int | None = Field(default=None, ge=0)
     total_cost: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     usage_turns: int | None = Field(default=None, ge=0)
+    # --- Round 12 (SPEC §3.1; additive). Live state for the history rail and the nav
+    # indicator (D13): a question is running, waiting for a clarify pick, or failed; an
+    # answer arrived that the owner has not opened yet.
+    status: Literal["idle", "running", "needs_input", "failed"] = "idle"
+    unread: bool = False
 
     @field_validator("pinned", mode="before")
     @classmethod
@@ -2378,6 +2492,12 @@ class ChatConversationSummary(BaseModel):
 
 class ChatConversation(ChatConversationSummary):
     messages: list[ChatConversationMessage] = Field(default_factory=list)
+    # Round 12 (SPEC D4): the newest message id folded into the stored conversation summary.
+    summary_covers_through: str | None = None
+    # Round 12 (WP-API; additive): how many older messages of this conversation are
+    # not in ``messages`` (``GET /chat/conversations/{id}`` returns the newest window;
+    # read older ones with ``GET .../messages?before=<first message id>``). Never stored.
+    earlier_message_count: int = Field(default=0, ge=0)
 
 
 class ChatConversationMatch(BaseModel):
@@ -2680,14 +2800,62 @@ class TurnUsage(BaseModel):
 
 
 # --- §3.3 steps --------------------------------------------------------------- #
+# Every invisible, bidi, tag and control character (``INVISIBLE_TEXT_RANGES``) and
+# every lone surrogate half: what ``visible_display_text`` writes as an escape.
+_VISIBLE_ESCAPE_RE = re.compile(f"[{INVISIBLE_TEXT_CLASS}]|[\ud800-\udfff]")
+# A ``\uXXXX`` escape (or the high half of an astral pair) a length bound cut.
+_PARTIAL_ESCAPE_RE = re.compile(r"(?:\\ud[89ab][0-9a-f]{2})?(?:\\(?:u[0-9a-f]{0,3})?)?$")
+
+
+def _escape_char(match: "re.Match[str]") -> str:
+    """``\\uXXXX``; an astral code point as its UTF-16 pair, as ``ensure_ascii``
+    (and the step inspector's JSON view) writes it."""
+    code = ord(match.group())
+    if code > 0xFFFF:
+        code -= 0x10000
+        return f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}"
+    return f"\\u{code:04x}"
+
+
+def visible_display_text(value: Any, limit: int, *, multiline: bool = False) -> str:
+    """:func:`display_text` for a model- or log-derived value a person must read
+    EXACTLY (a run-log step's ``untrusted_params`` and ``query``, Round 12 P1-1): every
+    invisible, bidi, tag or control character and lone surrogate is WRITTEN as visible
+    ``\\uXXXX`` escape text instead of being deleted. Deleting it would show "admin" +
+    ZWSP as "admin" (the real account) and let a right-to-left override reorder what
+    the analyst reads, while the stored observation shows the escape (the model read
+    it through ``fence_block``'s ``ensure_ascii``). The escapes are ASCII, so the web
+    normalisers keep them. Line breaks fold to a space unless ``multiline``; the bound
+    never cuts an escape in half. Never raises."""
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, bool) or (isinstance(value, (int, float)) and math.isfinite(value)):
+        return display_text(value, limit)
+    else:
+        return ""
+    text = display_text(_VISIBLE_ESCAPE_RE.sub(_escape_char, text), 0, multiline=multiline)
+    if limit > 0 and len(text) > limit:
+        text = _PARTIAL_ESCAPE_RE.sub("", text[: max(0, limit - 1)]).rstrip() + "…"
+    return text
+
+
 def display_params(
-    value: Any, *, chars: int = _STEP_PARAM_CHARS, strings_only: bool = False
+    value: Any,
+    *,
+    chars: int = _STEP_PARAM_CHARS,
+    strings_only: bool = False,
+    visible: bool = False,
 ) -> dict[str, Any]:
     """Whitelist-shaped display chips: safe keys (``[A-Za-z0-9_.:-]{1,40}``), scalar
     values, display-sanitised text, at most 12 entries. ``strings_only`` renders
-    numbers as text (``untrusted_params`` is ``dict[str, str]``). Never raises."""
+    numbers as text (``untrusted_params`` is ``dict[str, str]``); ``visible`` writes
+    invisible characters as escapes (:func:`visible_display_text`) instead of deleting
+    them. Never raises."""
     if not isinstance(value, dict):
         return {}
+    def text_of(raw: str) -> str:
+        return visible_display_text(raw, chars) if visible else display_text(raw, chars)
+
     out: dict[str, Any] = {}
     for key, raw in value.items():
         if len(out) >= _STEP_MAX_PARAMS:
@@ -2695,10 +2863,10 @@ def display_params(
         if not isinstance(key, str) or not _PARAM_KEY_RE.match(key):
             continue
         if isinstance(raw, str):
-            out[key] = display_text(raw, chars)
+            out[key] = text_of(raw)
         elif strings_only:
             if isinstance(raw, (int, float)) and not isinstance(raw, bool) and math.isfinite(raw):
-                out[key] = display_text(str(raw), chars)
+                out[key] = text_of(str(raw))
         elif raw is None or isinstance(raw, bool) or isinstance(raw, int):
             out[key] = raw
         elif isinstance(raw, float) and math.isfinite(raw):
@@ -2728,6 +2896,11 @@ class ChatStep(BaseModel):
     sources: list[str] = Field(default_factory=list, max_length=_STEP_MAX_SOURCES)
     usage: StepUsage | None = None
     group: int | None = Field(default=None, ge=0)
+    # --- Round 12 (SPEC §3.1; additive). Owner-scoped key for the step inspector
+    # (GET /api/chat/conversations/{id}/messages/{mid}/steps/{index}); progress of a long
+    # aggregate scan ("Counted 42,000 of 118,402 cases").
+    observation_ref: str | None = Field(default=None, max_length=200)
+    progress: ChatStepProgress | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2744,12 +2917,16 @@ class ChatStep(BaseModel):
         out["label"] = display_text(out.get("label"), _STEP_LABEL_CHARS)
         out["summary"] = display_text(out.get("summary"), _STEP_SUMMARY_CHARS)
         out["params"] = display_params(out.get("params"), chars=_STEP_PARAM_CHARS, strings_only=False)
+        # Model- or log-derived values: invisible and bidi characters are written as
+        # visible escapes, never deleted, so the run log and the step inspector show
+        # exactly what was sent ("admin" + ZWSP never reads as "admin", #9, P1-1).
         out["untrusted_params"] = display_params(
-            out.get("untrusted_params"), chars=_STEP_UNTRUSTED_PARAM_CHARS, strings_only=True,
+            out.get("untrusted_params"), chars=_STEP_UNTRUSTED_PARAM_CHARS,
+            strings_only=True, visible=True,
         )
         query = out.get("query")
         out["query"] = (
-            (display_text(query, _STEP_QUERY_CHARS, multiline=True) or None)
+            (visible_display_text(query, _STEP_QUERY_CHARS, multiline=True) or None)
             if isinstance(query, str) else None
         )
         coverage = out.get("coverage")
@@ -2930,6 +3107,10 @@ class ChatResponse(BaseModel):
     turn_id: str | None = None
     # The assistant message id when persisted (reports reference it).
     message_id: str | None = None
+    # Round 12 (WP-FIX1): the persisted id of the QUESTION this answers, when saved, so a
+    # live transcript can name its own question like a restored one does (a search hit
+    # or a link to it then finds it on screen). Never stored: the message is the truth.
+    user_message_id: str | None = None
     # A model-proposed memory change awaiting human confirmation (§4.8).
     memory_proposal: MemoryProposal | None = None
     # Case-scoped turns (§4.6): whether the answer reached the case thread, apart from
@@ -2943,6 +3124,19 @@ class ChatResponse(BaseModel):
     # bills again, so "Run again to save" is offered only when it can help; a missing
     # grant or case would fail the same way). ``None`` otherwise.
     case_save_notice: TurnNotice | None = None
+    # --- Round 12 (SPEC §3.1; additive). A clarifying question instead of a guess (D10);
+    # the report the server saved from this answer (D11); continuation steps used for the
+    # final answer (D3); whether earlier context was summarised in this turn (D4).
+    clarify: ChatClarify | None = None
+    saved_report: ChatSavedReport | None = None
+    # Additive (WP-API): the report the header asked for could not be saved.
+    saved_report_error: ChatReportSaveError | None = None
+    continued: int = Field(default=0, ge=0)
+    compacted: bool = False
+    # Round 12 (final review; additive): the command this turn answered (``"compact"``),
+    # or None for an answer. A command reply makes no lookups, names no source, and
+    # carries real usage (zero when no model call ran), never "not recorded".
+    command: ChatCommand | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2992,6 +3186,11 @@ class ChatResponse(BaseModel):
     @classmethod
     def _answer_kind(cls, value: Any) -> str:
         return _lenient_enum(value, CHAT_ANSWER_KINDS, "conversation")
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _command(cls, value: Any) -> Any:
+        return _lenient_enum(value, CHAT_COMMANDS, None)
 
     @field_validator("notice", mode="before")
     @classmethod
@@ -3075,6 +3274,9 @@ class ChatContextBounds(BaseModel):
     max_indicator_lookups: int
     default_stream_mode: ChatStreamMode = "steps"
     allow_text_streaming: bool = True
+    # Round 12 (SPEC D13): the org's "animate the console logo while chat works"
+    # switch (``ChatAgentConfig.animated_brand``), so every viewer's brand ring honours it.
+    animated_brand: bool = True
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -3133,6 +3335,11 @@ class ChatContextInfo(BaseModel):
     # shape (Demo: engine.demo_chat.DEMO_STARTERS; production: templated from live
     # context, never literal IOCs). The page shows a card only if all its tools are allowed.
     starters: list[ChatStarter] = Field(default_factory=list)
+    # --- Round 12 (SPEC §3.1; additive). Chat limits mode (D1) and the operator timezone
+    # used for calendar windows and buckets (D7). ``context_window`` above drives the
+    # composer's context-use ring.
+    limits_mode: Literal["unlimited", "bounded"] = "unlimited"
+    timezone: str = "UTC"
 
     model_config = ConfigDict(protected_namespaces=())
 
@@ -3158,7 +3365,116 @@ class ChatTopicQuestion(BaseModel):
     question: str
 
 
+# --- Round 12 chat contracts (docs/research/2026-10-round12/SPEC.md §3.1) --------- #
+
+
+class ChatStepProgress(BaseModel):
+    """Progress of one long-running lookup (an exact aggregate scan). ``total`` is None
+    when the store cannot say up front; ``unit`` is a display noun ("cases")."""
+
+    done: int = Field(default=0, ge=0)
+    total: int | None = Field(default=None, ge=0)
+    unit: str = Field(default="", max_length=40)
+
+
+class ChatClarify(BaseModel):
+    """A clarifying question the model asked instead of guessing (SPEC D10). Option
+    text is model-authored and may echo log values: the UI renders it as untrusted
+    text, and a pick is sent with ``origin="clarify"`` (follow_up taint class, #9)."""
+
+    question: str = Field(min_length=1, max_length=200)
+    options: list[str] = Field(default_factory=list, max_length=4)
+    allow_custom: bool = True
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def _options(cls, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        out: list[str] = []
+        for item in value:
+            text = display_text(item, 80) if isinstance(item, str) else ""
+            if text and text not in out:
+                out.append(text)
+            if len(out) == 4:
+                break
+        return out
+
+
+class ChatSavedReport(BaseModel):
+    """The report the server saved from this answer (SPEC D11). Created by the server
+    from the persisted message, never by the model. ``skipped`` (additive): sections
+    of the answer that did not fit the report's item or size limit."""
+
+    id: str
+    title: str = Field(default="", max_length=200)
+    items: int = Field(default=0, ge=0)
+    skipped: int = Field(default=0, ge=0)
+
+
+ChatReportSaveErrorCode = Literal["report_limit", "report_unavailable", "report_empty"]
+
+
+class ChatReportSaveError(BaseModel):
+    """Why the report a chat answer asked for was NOT saved (SPEC D11; additive). The
+    answer itself is saved; ``message`` is a server template, never model text.
+    ``retryable``: the same save may work later (a store outage), so the UI can offer
+    "Save as report"; a full library or an answer with nothing to save cannot.
+
+    ``title`` and ``template`` (additive) record what the answer's header asked for, so
+    "Save as report" (``POST /api/reports/from-answer``) saves the SAME report the server
+    could not; the server reads them from the stored answer, never from the client.
+    ``title`` is model-derived display text (#9); both are lenient on replay."""
+
+    code: ChatReportSaveErrorCode
+    message: str = Field(default="", max_length=300)
+    retryable: bool = False
+    title: str | None = Field(default=None, max_length=MAX_REPORT_TITLE_CHARS)
+    template: ReportTemplateName | None = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _requested_title(cls, value: Any) -> str | None:
+        return (display_text(value, MAX_REPORT_TITLE_CHARS) or None) if isinstance(value, str) else None
+
+    @field_validator("template", mode="before")
+    @classmethod
+    def _requested_template(cls, value: Any) -> Any:
+        return _lenient_enum(value, REPORT_TEMPLATE_NAMES, None)
+
+
+class ChatActiveTurn(BaseModel):
+    """``GET /api/chat/turns/active`` (SPEC D13): one of the caller's running turns.
+    ``label`` is an engine template, never model or log text."""
+
+    turn_id: str
+    conversation_id: str | None = None
+    case_id: str | None = None
+    started_at: str
+    label: str = Field(default="", max_length=120)
+    lookups: int = Field(default=0, ge=0)
+    tokens: int = Field(default=0, ge=0)
+    status: Literal["running", "needs_input"] = "running"
+
+
+ChatFeedbackRating = Literal["up", "down"]
+ChatFeedbackReason = Literal["wrong", "incomplete", "slow", "other"]
+
+
+class ChatFeedbackRequest(BaseModel):
+    """``POST /api/chat/feedback`` (SPEC §3.2). Stored per user and audited; never used
+    to train a model."""
+
+    conversation_id: str = Field(min_length=1, max_length=200)
+    message_id: str = Field(min_length=1, max_length=200)
+    rating: ChatFeedbackRating
+    reason: ChatFeedbackReason | None = None
+    comment: str = Field(default="", max_length=1000)
+
+
 ChatContextInfo.model_rebuild()
+ChatStep.model_rebuild()
+ChatResponse.model_rebuild()
 
 
 # --- §9.1 reports ----------------------------------------------------------------- #
@@ -3174,10 +3490,15 @@ class ReportItemSource(BaseModel):
     block_id: str | None = Field(default=None, max_length=48)
 
 
+# A report item's scope window: every distinct window its blocks state, joined with
+# "; " (a whole answer can hold several), so it is bounded like a block caption.
+REPORT_SCOPE_WINDOW_CHARS = 280
+
+
 class ReportItemScope(BaseModel):
     """Scope captured server-side at add time (never client-supplied)."""
 
-    window: str | None = Field(default=None, max_length=80)
+    window: str | None = Field(default=None, max_length=REPORT_SCOPE_WINDOW_CHARS)
     sources: list[str] = Field(default_factory=list, max_length=20)
     generated_by: str | None = Field(default=None, max_length=120)   # the model id
     app_version: str | None = Field(default=None, max_length=40)
@@ -3189,7 +3510,7 @@ class ReportItemScope(BaseModel):
         if not isinstance(data, dict):
             return data
         out = dict(data)
-        for name, limit in (("window", 80), ("generated_by", 120), ("app_version", 40)):
+        for name, limit in (("window", REPORT_SCOPE_WINDOW_CHARS), ("generated_by", 120), ("app_version", 40)):
             raw = out.get(name)
             out[name] = (display_text(raw, limit) or None) if isinstance(raw, str) else None
         out["sources"] = _display_list(out.get("sources"), 20, 120)
@@ -3329,12 +3650,20 @@ class Report(BaseModel):
 
 
 class ReportListEntry(BaseModel):
-    """One row of the per-user report index (``GET /api/reports``)."""
+    """One row of the per-user report index (``GET /api/reports``).
+
+    ``conversation_id`` names the conversation whose DRAFT this report is (at most one
+    per conversation); ``source_conversation_id`` names the conversation the report
+    came from (the one conversation all its items name, else the draft's), for the
+    library's "Source conversation" column. A report saved from an answer or a whole
+    conversation is never a draft, so it carries only the second. Rows written before
+    the field existed read ``None`` until the report next changes."""
 
     id: str
     title: str
     template: ReportTemplateName = "custom"
     conversation_id: str | None = None
+    source_conversation_id: str | None = None
     item_count: int = Field(default=0, ge=0)
     created_at: str | None = None
     updated_at: str

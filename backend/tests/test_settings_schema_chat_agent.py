@@ -36,3 +36,17 @@ def test_every_chat_agent_field_is_described_with_its_bounds() -> None:
             assert isinstance(field.get("maximum"), int), name
             assert field["minimum"] <= field["default"] <= field["maximum"], name
     assert described["default_stream_mode"]["choices"] == ["steps", "text"]
+
+
+def test_round12_limits_fields_are_described() -> None:
+    """SPEC D1/D5/D13: the mode switch, the optional chat cap and the brand toggle are
+    part of the block (the curated editor shows the mode first)."""
+    described = {f["name"]: f for f in _chat_agent_section()["fields"]}
+    assert described["limits_mode"]["choices"] == ["unlimited", "bounded"]
+    assert described["limits_mode"]["default"] == "unlimited"
+    assert described["chat_daily_cap_usd"]["default"] is None
+    assert described["animated_brand"]["default"] is True
+    assert (described["model_step_timeout_s"]["default"], described["model_step_timeout_s"]["maximum"]) == (300, 900)
+    assert described["max_concurrent_turns_per_user"]["default"] == 4
+    assert described["max_concurrent_turns_global"]["default"] == 16
+    assert all(f["description"] for f in described.values())

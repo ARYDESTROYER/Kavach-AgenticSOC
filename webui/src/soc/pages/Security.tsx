@@ -26,7 +26,7 @@ import { Can } from '@/soc/components/Can';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { MfaSetupCard } from '@/soc/components/MfaSetupCard';
 import { LoadError } from '@/soc/components/LoadError';
-import { SessionPolicySection } from '@/soc/components/SessionPolicyEditor';
+import { SessionPolicySection, rbacEnabledOf } from '@/soc/components/SessionPolicyEditor';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 import { Textarea } from '@/ui/textarea';
@@ -58,6 +58,16 @@ const PROVIDER_PRESETS: Record<string, Partial<SsoProviderConfig>> = {
   google: { type: 'google', display_name: 'Google', scopes: 'openid email profile' },
   microsoft: { type: 'microsoft', display_name: 'Microsoft', scopes: 'openid email profile', tenant: 'organizations' },
   generic: { type: 'generic', display_name: '', scopes: 'openid email profile' },
+};
+
+/**
+ * The Add buttons name each provider as its maker writes it ("Add Google", "Add
+ * Microsoft"), never the lower-case type id the config stores.
+ */
+const SSO_PROVIDER_ADD_LABEL: Record<'google' | 'microsoft' | 'generic', string> = {
+  google: 'Add Google',
+  microsoft: 'Add Microsoft',
+  generic: 'Add generic OIDC',
 };
 
 function newProvider(type: 'google' | 'microsoft' | 'generic'): SsoProviderConfig {
@@ -197,7 +207,7 @@ function ProviderEditor({
               type="password"
               value={secretInput}
               onChange={(e) => setSecretInput(e.target.value)}
-              placeholder={configuredSecret ? '•••••••• (set — leave blank to keep)' : 'paste the OIDC client secret'}
+              placeholder={configuredSecret ? '•••••••• (set; leave blank to keep)' : 'paste the OIDC client secret'}
               autoComplete="off"
             />
             <Button
@@ -497,6 +507,7 @@ export function SecuritySsoInner({
     ? {
         policy: (prefs?.session_policy as SessionPolicy | undefined) ?? {},
         onChange: (next: SessionPolicy) => update?.({ session_policy: next }),
+        rbacEnabled: rbacEnabledOf(prefs),
       }
     : {};
 
@@ -565,7 +576,7 @@ export function SecuritySsoInner({
                     onClick={() => updateSso({ ...sso, providers: [...providers, newProvider(t)] })}
                   >
                     <Plus aria-hidden />
-                    Add {t === 'generic' ? 'generic OIDC' : t}
+                    {SSO_PROVIDER_ADD_LABEL[t]}
                   </Button>
                 ))}
               </div>

@@ -8,12 +8,26 @@
  * they fill the composer with the question and select the placeholder, so the value
  * the analyst types is their own text and is sent with `origin: "user"` — the only
  * origin the indicator taint rule accepts (SPEC §4.8). `/report <template>` inserts the
- * template's section request the same way.
+ * template's section request the same way; it asks to CREATE the report, so the answer
+ * is also saved to the Reports library (Round 12 SPEC D11). `/compact` sends the literal
+ * command the engine recognises (D4), never with text after it (the engine only knows the
+ * bare word), and only in a saved conversation (a new chat has no summary to keep).
+ *
+ * Words after `/` that are not a command search the analyst's prompts and the starter
+ * prompts by their whole text ("/weekly re" finds "Weekly review").
  */
 import type { ChatContextInfo, ChatPrompt, ChatScope, ChatToolInfo, ReportTemplateName } from '@/lib/types';
 import { CHAT_SCOPES } from '../stream-events';
 import { isKindGated } from './access-copy';
 import { SCOPE_DESCRIPTIONS, SCOPE_LABELS } from './format';
+import {
+  CATEGORY_LABEL,
+  isPromptbook,
+  orderPrompts,
+  promptbookSteps,
+  visibleStarters,
+  type LibraryPrompt,
+} from './prompt-library';
 
 /* -------------------------------------------------------------------------- */
 /* Tool access.                                                                */
@@ -101,6 +115,9 @@ export interface SlashCommand {
   template: string;
 }
 
+/** `/compact` (Round 12 SPEC D4): the engine folds the earlier exchanges into a summary. */
+export const COMPACT_COMMAND_ID = 'compact';
+
 export const SLASH_COMMANDS: readonly SlashCommand[] = [
   {
     id: 'shift-brief',
@@ -154,6 +171,12 @@ export const SLASH_COMMANDS: readonly SlashCommand[] = [
     argument: { placeholder: '<topic>' },
     template: 'What is {arg} in this console, and how do I use it?',
   },
+  {
+    id: COMPACT_COMMAND_ID,
+    description: 'Summarise earlier messages to make room',
+    tools: [],
+    template: '/compact',
+  },
 ];
 
 export interface ReportTemplateSpec {
@@ -164,6 +187,8 @@ export interface ReportTemplateSpec {
   tools: readonly string[];
   /** The report's subject, when the template needs one. */
   argument?: SlashArgument;
+  /** The word before the subject: "on" (default) or "for" (a period). */
+  preposition?: 'on' | 'for';
 }
 
 /** `/report <template>`: the section request each template inserts. */
@@ -202,6 +227,37 @@ export const REPORT_TEMPLATE_SPECS: readonly ReportTemplateSpec[] = [
     argument: { placeholder: '<indicator>' },
   },
   {
+    template: 'executive',
+    noun: 'an executive summary report',
+    sections: ['Summary', 'Volume', 'Quality', 'Response times', 'Noise reduction', 'Next steps'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<period>' },
+    preposition: 'for',
+  },
+  {
+    template: 'monthly',
+    noun: 'a monthly SOC report',
+    sections: ['Summary', 'Volume by week', 'Quality', 'Response times', 'Noise reduction', 'Top cases', 'Next steps'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<month>' },
+    preposition: 'for',
+  },
+  {
+    template: 'infographic',
+    noun: 'an infographic report',
+    sections: ['Key figures', 'Volume', 'Quality', 'Response times', 'Noise reduction'],
+    tools: ['case_stats', 'soc_metrics'],
+    argument: { placeholder: '<period>' },
+    preposition: 'for',
+  },
+  {
+    template: 'investigation_brief',
+    noun: 'an investigation brief',
+    sections: ['Assessment', 'Key findings', 'Affected entities', 'ATT&CK', 'Next steps', 'What could not be checked'],
+    tools: ['get_case'],
+    argument: { placeholder: '<case id>' },
+  },
+  {
     template: 'custom',
     noun: 'a report',
     sections: ['Summary', 'Findings', 'Next steps'],
@@ -209,10 +265,14 @@ export const REPORT_TEMPLATE_SPECS: readonly ReportTemplateSpec[] = [
   },
 ];
 
-/** The report request text, with `{arg}` where the subject goes (when it has one). */
+/**
+ * The report request text, with `{arg}` where the subject goes (when it has one). It asks
+ * to CREATE the report, so the finished answer is also saved to the Reports library
+ * (Round 12 SPEC D11: the server saves it from the persisted answer).
+ */
 export function reportTemplateText(spec: ReportTemplateSpec): string {
-  const subject = spec.argument ? ' on {arg}' : '';
-  return `Build ${spec.noun}${subject} with these sections: ${spec.sections.join(', ')}.`;
+  const subject = spec.argument ? ` ${spec.preposition ?? 'on'} {arg}` : '';
+  return `Create ${spec.noun}${subject} with these sections: ${spec.sections.join(', ')}.`;
 }
 
 /** What `/` typed so far: the command word and its argument (single line only). */
@@ -249,7 +309,8 @@ export type ComposerMenuItem =
       label: string;
       hint: string;
     }
-  | { kind: 'prompt'; value: string; prompt: ChatPrompt; label: string; hint: string }
+  | { kind: 'prompt'; value: string; prompt: LibraryPrompt; label: string; hint: string }
+  | { kind: 'library'; value: string; label: string; hint: string }
   | { kind: 'scope'; value: string; access: ScopeAccess; label: string; hint: string; disabled: boolean };
 
 export interface ComposerMenuGroup {
@@ -257,27 +318,115 @@ export interface ComposerMenuGroup {
   items: ComposerMenuItem[];
 }
 
+/** Options the composer knows and the catalogue does not. */
+export interface SlashMenuOptions {
+  /**
+   * `/compact` can fold this conversation: it is a saved Workspace thread. Off by
+   * default (fail closed): in a new chat the command could only say it is not available
+   * and would still save a thread named "/compact".
+   */
+  canCompact?: boolean;
+}
+
 const MAX_PROMPT_ITEMS = 8;
+const MAX_STARTER_ITEMS = 5;
+/** Starter prompts join the `/` menu only once this much has been typed. */
+const STARTER_QUERY_MIN = 3;
+export const LIBRARY_ITEM_VALUE = 'library:open';
+export const LIBRARY_ITEM_LABEL = 'Prompt library';
+const LIBRARY_ITEM_HINT = 'Browse, search and run your prompts and starter prompts';
 
 function commandLabel(command: SlashCommand): string {
   return command.argument ? `/${command.id} ${command.argument.placeholder}` : `/${command.id}`;
 }
 
-/** Commands, report templates and saved prompts for the `/` menu (allowed ones only). */
-export function slashMenuGroups(
-  query: SlashQuery,
+/**
+ * What a prompt's menu row shows after its title: the text, or a promptbook's steps in
+ * order ("3 steps: Open case… → Related cases… → Write next steps."), never the stored
+ * `---` separators.
+ */
+export function promptHint(prompt: Pick<LibraryPrompt, 'id' | 'text'>): string {
+  if (!isPromptbook(prompt)) return prompt.text;
+  const steps = promptbookSteps(prompt.text);
+  return `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}: ${steps.join(' → ')}`;
+}
+
+const promptItem = (prompt: LibraryPrompt): ComposerMenuItem => ({
+  kind: 'prompt',
+  value: `prompt:${prompt.id}`,
+  prompt,
+  label: prompt.title,
+  hint: promptHint(prompt),
+});
+
+/** The analyst's prompts, starter prompts and the library entry matching `typed`. */
+function promptGroups(
+  typed: string,
   context: ChatContextInfo | null | undefined,
   prompts: readonly ChatPrompt[],
 ): ComposerMenuGroup[] {
   const groups: ComposerMenuGroup[] = [];
-  const allowedTemplates = REPORT_TEMPLATE_SPECS.filter((spec) => toolsAllowed(context, spec.tools));
-  const available = SLASH_COMMANDS.filter((command) =>
-    command.id === 'report' ? Boolean(context) && allowedTemplates.length > 0 : toolsAllowed(context, command.tools),
-  );
+  const needle = typed.replace(/-/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  const promptItems = orderPrompts(prompts)
+    .filter((prompt) => !needle || prompt.title.toLowerCase().includes(needle) || prompt.text.toLowerCase().includes(needle))
+    .slice(0, MAX_PROMPT_ITEMS)
+    .map(promptItem);
+  if (promptItems.length) groups.push({ heading: 'Your prompts', items: promptItems });
 
-  if (query.hasSpace) {
-    const command = available.find((c) => c.id === query.command);
-    if (!command) return groups;
+  if (needle.length >= STARTER_QUERY_MIN) {
+    const starters = visibleStarters(context)
+      .filter((prompt) => {
+        const category = prompt.category ? CATEGORY_LABEL[prompt.category].toLowerCase() : '';
+        return prompt.title.toLowerCase().includes(needle) || category.startsWith(needle);
+      })
+      .slice(0, MAX_STARTER_ITEMS)
+      .map(promptItem);
+    if (starters.length) groups.push({ heading: 'Starter prompts', items: starters });
+  }
+
+  // The library entry on a bare "/" (or "/lib…", "/pro…"), never in place of a typed
+  // command that matched nothing (Enter must not open a dialog instead of sending).
+  if (context && (!needle || 'library'.startsWith(needle) || 'prompts'.startsWith(needle))) {
+    groups.push({
+      heading: 'Prompt library',
+      items: [{ kind: 'library', value: LIBRARY_ITEM_VALUE, label: LIBRARY_ITEM_LABEL, hint: LIBRARY_ITEM_HINT }],
+    });
+  }
+  return groups;
+}
+
+/** The hint for `/compact` with text after it: the text is not sent. */
+export const COMPACT_ARGUMENT_HINT = 'Summarise earlier messages to make room. Text after /compact is not sent.';
+
+/**
+ * Commands, report templates, the analyst's prompts (favorites first), starter prompts
+ * (by title or category, once three letters are typed) and the prompt library entry for
+ * the `/` menu (allowed ones only).
+ */
+export function slashMenuGroups(
+  query: SlashQuery,
+  context: ChatContextInfo | null | undefined,
+  prompts: readonly ChatPrompt[],
+  options: SlashMenuOptions = {},
+): ComposerMenuGroup[] {
+  const groups: ComposerMenuGroup[] = [];
+  const allowedTemplates = REPORT_TEMPLATE_SPECS.filter((spec) => toolsAllowed(context, spec.tools));
+  const available = SLASH_COMMANDS.filter((command) => {
+    if (command.id === 'report') return Boolean(context) && allowedTemplates.length > 0;
+    if (command.id === COMPACT_COMMAND_ID) {
+      // Bounded chat keeps no conversation summary, and a new chat has none to keep:
+      // /compact would only say so.
+      if (!options.canCompact || context?.limits_mode === 'bounded') return false;
+    }
+    return toolsAllowed(context, command.tools);
+  });
+
+  const command = query.hasSpace ? available.find((c) => c.id === query.command) : undefined;
+  if (query.hasSpace && !command) {
+    // Not a command: the words search the prompts by their whole text.
+    return promptGroups(`${query.command} ${query.arg}`, context, prompts);
+  }
+  if (command) {
     if (command.id === 'report') {
       const [word, ...rest] = query.arg.split(/\s+/);
       const needle = (word ?? '').toLowerCase();
@@ -295,6 +444,7 @@ export function slashMenuGroups(
       if (items.length) groups.push({ heading: 'Report templates', items });
       return groups;
     }
+    const ignoresArg = command.id === COMPACT_COMMAND_ID;
     groups.push({
       heading: 'Commands',
       items: [
@@ -302,12 +452,17 @@ export function slashMenuGroups(
           kind: 'command',
           value: `cmd:${command.id}`,
           command,
-          arg: query.arg,
+          arg: ignoresArg ? '' : query.arg,
           label: commandLabel(command),
-          hint: command.description,
+          hint: ignoresArg && query.arg ? COMPACT_ARGUMENT_HINT : command.description,
         },
       ],
     });
+    // A saved prompt titled like the command ("/hunt ip" → "Hunt IP") is listed too.
+    if (query.arg) {
+      const matches = promptGroups(`${query.command} ${query.arg}`, context, prompts).filter((g) => g.heading !== 'Prompt library');
+      groups.push(...matches);
+    }
     return groups;
   }
 
@@ -328,20 +483,7 @@ export function slashMenuGroups(
       hint: command.description,
     }));
   if (commands.length) groups.push({ heading: 'Commands', items: commands });
-
-  const needle = query.command.replace(/-/g, ' ').trim();
-  const promptItems = prompts
-    .map((prompt, index) => ({ prompt, index }))
-    .filter(({ prompt }) => !needle || prompt.title.toLowerCase().includes(needle) || prompt.text.toLowerCase().includes(needle))
-    .slice(0, MAX_PROMPT_ITEMS)
-    .map<ComposerMenuItem>(({ prompt, index }) => ({
-      kind: 'prompt',
-      value: `prompt:${index}`,
-      prompt,
-      label: prompt.title,
-      hint: prompt.text,
-    }));
-  if (promptItems.length) groups.push({ heading: 'Saved prompts', items: promptItems });
+  groups.push(...promptGroups(query.command, context, prompts));
   return groups;
 }
 
@@ -426,16 +568,23 @@ export function expandTemplate(template: string, arg: string, placeholder: strin
   return { text, selection: arg || !placeholder ? null : [at, at + placeholder.length] };
 }
 
-/** What choosing a `/` item does: send a fixed question, or fill the composer. */
+/**
+ * What choosing a `/` item does: send a fixed question, fill the composer, or open the
+ * prompt library. (A prompt that asks for values, or a promptbook, is planned by the
+ * composer before it is inserted or run; see `PromptRunner`.)
+ */
 export type SlashAction =
   | { type: 'send'; text: string }
-  | { type: 'insert'; expansion: Expansion };
+  | { type: 'insert'; expansion: Expansion }
+  | { type: 'library' };
 
 export function slashAction(item: ComposerMenuItem): SlashAction | null {
   if (item.kind === 'command') {
     const { command, arg } = item;
     // `/report` opens its template list: the menu re-reads the draft "/report ".
     if (command.id === 'report') return { type: 'insert', expansion: { text: '/report ', selection: null } };
+    // The engine recognises only the bare word: never insert (or send) it with text.
+    if (command.id === COMPACT_COMMAND_ID) return { type: 'send', text: command.template };
     if (!command.argument && !arg) return { type: 'send', text: command.template };
     return { type: 'insert', expansion: expandTemplate(command.template, arg, command.argument?.placeholder ?? null) };
   }
@@ -446,5 +595,6 @@ export function slashAction(item: ComposerMenuItem): SlashAction | null {
     };
   }
   if (item.kind === 'prompt') return { type: 'insert', expansion: { text: item.prompt.text, selection: null } };
+  if (item.kind === 'library') return { type: 'library' };
   return null;
 }

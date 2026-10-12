@@ -29,6 +29,12 @@ from app.engine.demo_chat import DEMO_STARTERS
 from app.models import ChatRequest, ChatResponse
 from tests.test_chat_tools_support import build_demo_state, demo_context
 
+
+#: Round 12 (SPEC D11): "build/give/create … a report" asks the server to SAVE the report to
+#: Reports, so such an answer closes with this sentence instead of "The report below is ready
+#: to add to your Reports." (still used when no report was asked to be made).
+SAVED = "The full report is below, and it is being saved to your Reports."
+
 STARTERS = {s.id: s for s in DEMO_STARTERS}
 EXPECTED_KIND = {"investigate": "data", "hunt": "data", "posture": "data", "shift_brief": "data",
                  "explain_metric": "mixed", "learn_app": "product_help"}
@@ -304,7 +310,7 @@ async def test_report_answers_are_a_short_lead_with_the_detail_in_the_report(dem
         assert any(b.get("type") == "report" for b in response.blocks), question
         paragraphs = [p for p in response.answer.split("\n\n") if p.strip()]
         assert 2 <= len(paragraphs) <= 3, (question, paragraphs)
-        assert paragraphs[-1] in ("The report below is ready to add to your Reports.",
+        assert paragraphs[-1] in (SAVED,
                                   "The brief below is ready to add to a report."), question
         assert not any(p.lstrip().startswith("- ") for p in paragraphs), question
 
@@ -320,7 +326,7 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
     assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
     case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
-    assert re.match(r"\*\*`demo-00000539-0004`\*\* \([a-z ]+ on user `[^`]+`\) has a needs-human verdict",
+    assert re.match(r"\*\*`demo-00000539-0004`\*\* \([a-z ]+ on user `[^`]+`\) needs human review",
                     case.answer), case.answer
 
 
@@ -334,7 +340,7 @@ async def test_a_report_under_a_restricted_role_keeps_its_disclosures(demo_state
     paragraphs = response.answer.split("\n\n")
     assert paragraphs[0].startswith("Not available to you in chat: SOC metrics (needs metrics:view)")
     assert "Ask an administrator for access, or open the matching console page." in paragraphs
-    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+    assert paragraphs[-1] == SAVED
     summary = next(b for s in report["sections"] for b in s["blocks"] if b.get("type") == "markdown")
     assert "needs metrics:view" in summary["text"]
 
@@ -344,8 +350,8 @@ async def test_the_ready_sentence_ends_a_report_after_the_window_note(demo_state
                            time_range={"from": "now-1h", "to": "now"})
     assert _block(response, type="report")
     paragraphs = response.answer.split("\n\n")
-    assert paragraphs[-2] == "Window: the last 1h you selected applies to the windowed lookups above."
-    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+    assert paragraphs[-2] == "Window: the last hour you selected applies to the windowed lookups above."
+    assert paragraphs[-1] == SAVED
 
 
 async def test_every_intent_answers_over_demo_data_without_the_safe_fallback(demo_state) -> None:
@@ -402,12 +408,12 @@ async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_s
     response = await _turn(demo_state, "Search logs for zzqq-no-such-thing", origin="user")
     assert [(s.tool, s.params, s.status) for s in _tool_steps(response)] == [
         ("search_logs", {"contains": "zzqq-no-such-thing"}, "ok")]
-    assert response.answer.startswith("No log events match `zzqq-no-such-thing` in the last 24h")
+    assert response.answer.startswith("No log events match `zzqq-no-such-thing` in the last 24 hours")
     assert response.blocks == [] and "case" not in response.answer.lower()
 
     found = await _turn(demo_state, "Search logs for sql in the last 7 days", origin="user")
     assert [(s.tool, s.status) for s in _tool_steps(found)] == [("search_logs", "ok")]
-    assert re.match(r"\*\*\d+ log events?\*\* match `sql` in the last 7d", found.answer), found.answer
+    assert re.match(r"\*\*\d+ log events?\*\* match `sql` in the last 7 days", found.answer), found.answer
     assert _block(found, type="table", title="Matching log events")
     # The breakdown follow-up regroups the same search (same text filter and window).
     question = "Break that down by user instead"
@@ -418,7 +424,7 @@ async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_s
     assert step.tool == "log_stats" and step.status == "ok"
     assert step.params["contains"] == "sql" and step.params["group_by"] in ("user", ["user"])
     # The re-run names the searched text as written, never the raw filter key.
-    assert re.search(r"\*\*\d+ events?\*\* matching `sql` in the last 7d", regrouped.answer), regrouped.answer
+    assert re.search(r"\*\*\d+ events?\*\* matching `sql` in the last 7 days", regrouped.answer), regrouped.answer
     assert "contains `" not in regrouped.answer
     # Nothing matched: the longer window is offered, and its re-run reads the same way.
     question = "Same for the last 7 days"
@@ -427,7 +433,7 @@ async def test_an_explicit_log_search_runs_a_log_lookup_not_a_case_search(demo_s
                         prior=[_prior("Search logs for zzqq-no-such-thing", response, 1)])
     assert [(s.tool, s.params.get("contains"), s.status) for s in _tool_steps(wider)] == [
         ("search_logs", "zzqq-no-such-thing", "ok")]
-    assert "No log events match `zzqq-no-such-thing` in the last 7d" in wider.answer, wider.answer
+    assert "No log events match `zzqq-no-such-thing` in the last 7 days" in wider.answer, wider.answer
     assert "contains `" not in wider.answer
     again = await _turn(demo_state, "Search logs for zzqq-no-such-thing", origin="user")
     assert _shape(again) == _shape(response)                         # deterministic
@@ -452,7 +458,7 @@ async def test_a_report_on_a_case_materialises_and_case_manager_reports_do_not(d
     report = _block(workspace, type="report")
     assert report["template"] == "investigation" and report["sections"]
     assert not any(b.get("type") == "callout" for b in workspace.blocks)
-    assert workspace.answer.endswith("The report below is ready to add to your Reports.")
+    assert workspace.answer.endswith(SAVED)
 
     case_chat = await _turn(demo_state, "Write a report for this case", origin="user", case_id=case_id)
     assert case_chat.blocks and not any(b.get("type") == "report" for b in case_chat.blocks)
@@ -465,12 +471,12 @@ async def test_the_users_window_wins_over_the_chip_and_the_answer_says_so(demo_s
                            origin="user", time_range={"from": "now-7d"})
     (step,) = _tool_steps(response)
     assert step.params["time_from"] == "now-24h"
-    assert "in the last 24h" in response.answer
+    assert "in the last 24 hours" in response.answer
     assert response.answer.endswith("Window: your question named the last 24 hours, so the lookups used that "
-                                    "window instead of the last 7d you selected.")
+                                    "window instead of the last 7 days you selected.")
     narrower = await _turn(demo_state, "Which hosts generated the most events in the last 7 days?",
                            origin="user", time_range={"from": "now-6h"})
-    assert "so it was limited to the last 6h" in narrower.answer
+    assert "so it was limited to the last 6 hours" in narrower.answer
 
 
 async def test_scopes_are_reported_as_scopes_not_as_missing_permissions(demo_state) -> None:

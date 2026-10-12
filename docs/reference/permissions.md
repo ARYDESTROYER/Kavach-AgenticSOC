@@ -87,7 +87,7 @@ so a role sees the same data through chat as through the console:
 | Lookup | Grant |
 |---|---|
 | Log search and log statistics, source health | `sources:read` |
-| Cases, case decisions, the shift report, campaigns | `cases:read` |
+| Cases, exact case counts and breakdowns, case decisions, the shift report, campaigns | `cases:read` |
 | Metrics (posture, trends, noise funnel, timing, coverage) | `metrics:view` |
 | Indicator reputation | `enrichment:read` |
 | Knowledge corpus search | `rag:read` |
@@ -99,13 +99,20 @@ so a role sees the same data through chat as through the console:
 A few chat features have their own gates:
 
 - choosing a model other than the default, and seeing money and budget figures, need
-  `models:read`; today's spend also needs `cost:view`. When a blocking daily or monthly
-  budget is used up, Send stays available whatever these permissions: a product
-  question is answered from the Help Center at no cost, and any other question gets the
-  budget notice;
+  `models:read`; today's spend also needs `cost:view`. Chat is not paused by the daily
+  AI budget, whatever these permissions; when the optional daily chat spending limit is
+  reached, a product question is still answered from the Help Center at no cost and any
+  other question gets the spending-limit notice;
 - posting a case-chat question and its answer text to the case thread, where every
-  reader of the case sees them, needs `cases:comment`;
-- confirming a fact the assistant suggests remembering needs `memory:manage`.
+  reader of the case sees them, needs `cases:comment`, and so does **Add to case** on a
+  Workspace answer, which posts it as the user's own comment;
+- the step inspector, answer ratings, rejoining a running answer, and **Ask AI** entity
+  questions need `cases:read`, like chat itself, and work only on the user's own
+  conversations and turns;
+- confirming a fact the assistant suggests remembering needs `memory:manage`;
+- a running answer keeps only the access it started with: a role change that removes a
+  grant it uses stops it ("Your access changed"); a change that only adds access stops
+  nothing.
 
 Checking these grants for the composer and the starters writes no audit rows; a lookup
 the model requests and the engine refuses for a missing grant writes one ACCESS_DENIED

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pydantic import Field
 
 from app.agents.chat_tools.common import (
-    MAX_WINDOW_DAYS,
+    OUTSIDE_SELECTED_RANGE,
     ToolInput,
     citation_id,
     opt_text,
@@ -28,7 +28,7 @@ NOW = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
 def test_window_precedence_tool_then_chip_then_default() -> None:
     chip = TimeRange(**{"from": "now-6h"})
     default = resolve_window(make_ctx(), now=NOW)
-    assert (default.time_from, default.label, default.source, default.hours) == ("now-24h", "last 24h", "default", 24)
+    assert (default.time_from, default.label, default.source, default.hours) == ("now-24h", "last 24 hours", "default", 24)
     request = resolve_window(make_ctx(time_range=chip), now=NOW)
     assert (request.time_from, request.source) == ("now-6h", "request")
     tool = resolve_window(make_ctx(time_range=chip), time_from="now-1h", now=NOW)
@@ -43,11 +43,17 @@ def test_window_is_clamped_into_the_request_and_bounded() -> None:
     assert wide.clamped and wide.start == datetime(2026, 10, 8, tzinfo=timezone.utc)
     assert wide.end == datetime(2026, 10, 8, 6, tzinfo=timezone.utc)
     assert wide.label == "2026-10-08 00:00 → 2026-10-08 06:00 UTC"
+    # A window wholly outside the selected range is refused, never answered with the
+    # whole selected range as if it were the period asked for.
     disjoint = resolve_window(make_ctx(time_range=chip), time_from="now-1h", now=NOW)
-    assert disjoint.clamped and disjoint.start == wide.start and disjoint.end == wide.end
+    assert disjoint == OUTSIDE_SELECTED_RANGE
+    # Round 12 (SPEC D7): no 90-day / 720-hour clamp any more.
     huge = resolve_window(make_ctx(), time_from="now-400d", now=NOW)
-    assert huge.clamped and huge.end - huge.start == timedelta(days=MAX_WINDOW_DAYS)
-    assert huge.hours == 720
+    assert not huge.clamped and huge.end - huge.start == timedelta(days=400)
+    assert huge.hours == 9600 and huge.label == "last 400 days"
+    # A model's all-time window is clamped into a chip, like any other window.
+    lifetime = resolve_window(make_ctx(time_range=chip), window="all", now=NOW)
+    assert lifetime.clamped and not lifetime.all_time and lifetime.start == wide.start
 
 
 def test_window_errors_are_engine_templates() -> None:
@@ -61,12 +67,24 @@ class _Inp(ToolInput):
 
 
 def test_parse_input_names_only_known_fields() -> None:
-    ok, err = parse_input(_Inp, {"size": "7", "unknown<<<x>>>": 1})
+    ok, err = parse_input(_Inp, {"size": "7"})
     assert err is None and ok.size == 7
     _bad, err = parse_input(_Inp, {"size": 99})
-    assert err is not None and err.error == "Invalid input: check size" and err.status == "error"
+    assert err is not None and err.error == "Invalid input: check size (at most 10)" and err.status == "error"
     _bad, err = parse_input(_Inp, ["not", "an", "object"])
     assert err is not None and "named arguments" in (err.error or "")
+
+
+def test_unknown_inputs_are_refused_by_name_never_dropped() -> None:
+    """Round 12 (routing fix 4): ``group_by`` on a tool without it used to vanish and the
+    model believed a grouping ran. Now the call is refused with the accepted inputs; an
+    identifier-shaped name is echoed in the FENCED error only, a hostile one never."""
+    _bad, err = parse_input(_Inp, {"size": 2, "group_by": "month"})
+    assert err is not None and not err.ok
+    assert err.error == "Invalid input: group_by is not an input of this lookup. Accepted inputs: size, name."
+    assert err.summary == "Invalid input: unknown input names. Accepted inputs: size, name."
+    _bad, err = parse_input(_Inp, {"unknown<<<x>>>": 1})
+    assert err is not None and "<<<" not in (err.error or "") and "unknown input names" in (err.error or "")
 
 
 def test_observation_text_keeps_invisible_characters_for_the_fence() -> None:
@@ -87,11 +105,14 @@ def test_visible_text_writes_invisible_characters_as_escape_text() -> None:
     assert visible_text("plain") == "plain"
 
 
-def test_window_reports_trailing_and_hour_cap() -> None:
+def test_window_reports_trailing_and_hours_without_a_cap() -> None:
     week = resolve_window(make_ctx(), time_from="now-7d", now=NOW)
     assert week.trailing and not week.hours_capped and week.hours == 168
+    assert week.label == "last 7 days"
     quarter = resolve_window(make_ctx(), time_from="now-90d", now=NOW)
-    assert quarter.trailing and quarter.hours_capped and quarter.hours == 720
+    assert quarter.trailing and not quarter.hours_capped and quarter.hours == 2160
+    assert quarter.label == "last 90 days"
+    assert resolve_window(make_ctx(), window_hours=720, now=NOW).label == "last 30 days"
     past = resolve_window(make_ctx(time_range=TimeRange(**{"from": "2026-09-01T00:00:00Z",
                                                            "to": "2026-09-02T00:00:00Z"})), now=NOW)
     assert not past.trailing and past.hours == 24
@@ -128,7 +149,7 @@ def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
 
     def args(**kw: object) -> SimpleNamespace:
         base = {k: None for k in ("ip", "user", "host", "rule", "severity_gte", "contains",
-                                  "time_from", "time_to", "source_id")}
+                                  "time_from", "time_to", "source_id", "window")}
         base["ids"] = []
         base.update(kw)
         return SimpleNamespace(**base)
@@ -151,10 +172,13 @@ def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
     chip = make_ctx(time_range=TimeRange(**{"from": "now-6h"}))
     assert view(chip, args(), fanout)["opts"]["from"] == "2026-10-08T06:00:00Z"
     assert view(chip, args(time_from="now-30d"), fanout)["opts"]["from"] == "2026-10-08T06:00:00Z"
-    # The 90-day cap is the window the tool searched too: exactly 90 days, which the
-    # Logs page accepts. An ISO window from the model is written in the same grammar.
-    capped = view(make_ctx(), args(time_from="now-120d"), fanout)["opts"]
-    assert (capped["from"], capped["to"]) == ("2026-07-10T12:00:00Z", "2026-10-08T12:00:00Z")
+    # Round 12: the tools read any length, the Logs page at most 90 days: a 90-day window
+    # still has its exact view, a longer one (or all time) has none (never a narrower one).
+    ninety = view(make_ctx(), args(time_from="now-90d"), fanout)["opts"]
+    assert (ninety["from"], ninety["to"]) == ("2026-07-10T12:00:00Z", "2026-10-08T12:00:00Z")
+    assert view(make_ctx(), args(time_from="now-120d"), fanout) is None
+    assert view(make_ctx(), args(window="all"), fanout) is None
+    # An ISO window from the model is written in the same grammar.
     iso = view(make_ctx(), args(time_from="2026-10-01 00:00", time_to="2026-10-02T00:00:00+02:00"), fanout)
     assert iso["opts"]["from"] == "2026-10-01T00:00:00Z" and iso["opts"]["to"] == "2026-10-01T22:00:00Z"
     # Not expressible on the Logs page: a structured filter, ids, unsafe or padded

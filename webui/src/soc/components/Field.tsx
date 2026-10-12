@@ -66,6 +66,8 @@ export interface FieldProps extends Omit<React.HTMLAttributes<HTMLDivElement>, '
   labelAction?: React.ReactNode;
   /** Hide the visible label but keep it for AT (still associated via htmlFor). */
   hideLabel?: boolean;
+  /** Extra classes for the label (a dense dialog sets its labels at `text-xs`). */
+  labelClassName?: string;
   /**
    * The control. Either a render-prop `(ids) => ReactNode` OR a single element
    * (its `id`/`aria-*` are auto-injected unless already set).
@@ -74,7 +76,10 @@ export interface FieldProps extends Omit<React.HTMLAttributes<HTMLDivElement>, '
 }
 
 export const Field = React.forwardRef<HTMLDivElement, FieldProps>(
-  ({ label, description, error, required, labelAction, hideLabel, className, children, ...rest }, ref) => {
+  (
+    { label, description, error, required, labelAction, hideLabel, labelClassName, className, children, ...rest },
+    ref,
+  ) => {
     const base = React.useId();
     const id = `${base}-control`;
     const labelId = `${base}-label`;
@@ -120,7 +125,7 @@ export const Field = React.forwardRef<HTMLDivElement, FieldProps>(
     return (
       <div ref={ref} className={cn('space-y-1.5', className)} {...rest}>
         <div className="flex items-center justify-between gap-2">
-          <Label htmlFor={controlId} id={labelId} className={cn(hideLabel && 'sr-only')}>
+          <Label htmlFor={controlId} id={labelId} className={cn(labelClassName, hideLabel && 'sr-only')}>
             {label}
             {required ? (
               <span className="ml-0.5 text-critical-text" aria-hidden="true">

@@ -160,7 +160,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Sessions & activity',
     blurb: 'Where you are signed in, and your recent account activity.',
     icon: MonitorSmartphone,
-    keywords: ['sessions', 'devices', 'activity', 'sign out', 'revoke', 'login history'],
+    keywords: ['sessions', 'devices', 'activity', 'sign out', 'revoke', 'login history', 'remember me', 'remembered', 'stay signed in', 'expires'],
   },
   {
     id: 'customization',
@@ -168,7 +168,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     title: 'Appearance & customization',
     blurb: 'Your theme, saved views, and (admin) terminology + org defaults.',
     icon: Palette,
-    keywords: ['theme', 'dark mode', 'light mode', 'appearance', 'saved views', 'views', 'terminology', 'labels', 'rename', 'customize', 'customization', 'columns'],
+    keywords: ['theme', 'dark mode', 'light mode', 'appearance', 'saved views', 'views', 'terminology', 'labels', 'rename', 'customize', 'customization', 'columns', 'reduce transparency', 'transparency', 'frosted glass', 'blur'],
   },
 
   /* ---- General (org, low blast radius) ---------------------------------- */
@@ -222,9 +222,9 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'chat_agent',
     group: 'general',
     title: 'Chat assistant',
-    blurb: 'Live answer mode, per-question limits, and which indicators chat may send to enrichment.',
+    blurb: 'Per-question limits (unlimited or bounded), the daily chat spending limit, live answer mode, and which indicators chat may send to enrichment.',
     icon: MessageSquare,
-    keywords: ['chat', 'assistant', 'lookups', 'tokens', 'type out answers', 'internal domains', 'email', 'e-mail'],
+    keywords: ['chat', 'assistant', 'lookups', 'tokens', 'type out answers', 'internal domains', 'email', 'e-mail', 'chat limits', 'question limits', 'unlimited', 'bounded', 'spending limit', 'daily limit', 'chat budget', 'animated logo', 'timeouts', 'questions at once'],
     ownedKeys: ['chat_agent'],
   },
   {
@@ -404,7 +404,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     blurb: 'Single sign-on (OIDC) providers and the token / session policy.',
     icon: ShieldCheck,
     perm: SETTINGS_MANAGE,
-    keywords: ['security', 'sso', 'oidc', 'single sign-on', 'google', 'microsoft', 'session policy', 'token', 'idle', 'access ttl', 'csrf', 'rate limit'],
+    keywords: ['security', 'sso', 'oidc', 'single sign-on', 'google', 'microsoft', 'session policy', 'token', 'idle', 'access ttl', 'csrf', 'rate limit', 'remember me', 'stay signed in', 'keep me signed in', 'session length', 'session lifetime', 'remembered device'],
     ownedKeys: ['sso', 'session_policy', 'mfa'],
   },
   {

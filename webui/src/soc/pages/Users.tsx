@@ -25,7 +25,7 @@ import {
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
 import type { RolesResponse, User } from '@/lib/types';
-import { rolesApi, BUILTIN_ROLES, type CustomRole, type GrantMap } from './Roles.api';
+import { rolesApi, BUILTIN_ROLES, roleLabel, type CustomRole, type GrantMap } from './Roles.api';
 import { RolePermissionSummary } from '@/soc/components/RolePermissionSummary';
 import { RoleMatrixEditor, type RoleDraft } from '@/soc/components/RoleMatrixEditor';
 import { humanizeAge } from '@/lib/format';
@@ -55,20 +55,6 @@ import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { LoadError } from '@/soc/components/LoadError';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { useAuth } from '@/soc/auth';
-
-/** Human-readable role labels (UI copy; falls back to the raw value). */
-const ROLE_LABELS: Record<string, string> = {
-  super_admin: 'Super admin',
-  soc_manager: 'SOC manager',
-  analyst_tier2: 'Analyst — Tier 2',
-  analyst_tier1: 'Analyst — Tier 1',
-  responder: 'Responder',
-  auditor: 'Auditor',
-};
-
-function roleLabel(role: string): string {
-  return ROLE_LABELS[role] ?? role;
-}
 
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
@@ -272,7 +258,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
           <Badge
             variant="warning"
             className="text-2xs"
-            title="Two-factor required — they must set up an authenticator at their next sign-in"
+            title="Two-factor required: they must set up an authenticator at their next sign-in"
           >
             Required
           </Badge>
@@ -450,7 +436,7 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
         }}
         destructive
         title={deleteFor ? `Delete user "${deleteFor.username}"?` : 'Delete user?'}
-        description="This cannot be undone."
+        description="Their chat conversations, answer ratings and reports are deleted too. This cannot be undone."
         confirmLabel="Delete"
         onConfirm={() => {
           const u = deleteFor;
@@ -846,7 +832,7 @@ function AddUserDialog({
               {availableCustomRoles.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
                   Attach custom roles to add or deny specific permissions on top of the
-                  base role. None exist yet — &ldquo;Adjust permissions…&rdquo; creates one.
+                  base role. None exist yet. &ldquo;Adjust permissions…&rdquo; creates one.
                 </p>
               ) : (
                 <div className="flex flex-wrap gap-2">
@@ -983,7 +969,7 @@ function InlineCustomRoleDialog({
       // Truthful wording: the role is durably created NOW, but it is only
       // pre-selected in the not-yet-submitted Add-user form — attachment happens
       // when (and only if) the user is actually created.
-      toast.success(`Created custom role ${res.role.name} — it will be attached when the user is created.`);
+      toast.success(`Created custom role ${res.role.name}. It will be attached when the user is created.`);
       onCreated(res.role);
     } catch (e) {
       // A declined/failed re-auth step-up surfaces here too — keep the dialog open.
@@ -999,7 +985,7 @@ function InlineCustomRoleDialog({
         <DialogHeader>
           <DialogTitle>Adjust permissions</DialogTitle>
           <DialogDescription>
-            Creates a reusable custom role starting from {roleLabel(baseRole)} — toggle
+            Creates a reusable custom role starting from {roleLabel(baseRole)}. Toggle
             each cell: not set → grant → deny. It is pre-selected here and attached
             when the user is created.
           </DialogDescription>
@@ -1009,7 +995,7 @@ function InlineCustomRoleDialog({
 
         {nameTaken ? (
           <p className="text-sm text-warning-text">
-            A role named {draft.name.trim()} already exists — manage it from Roles &amp;
+            A role named {draft.name.trim()} already exists. Manage it from Roles &amp;
             permissions, or pick another name.
           </p>
         ) : null}

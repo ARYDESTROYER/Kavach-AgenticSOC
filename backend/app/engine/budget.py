@@ -28,9 +28,11 @@ by the gateway before this gate is even consulted.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import math
+from typing import Any, Sequence
 
 from ..llm.pricing import resolve_price
+from ..utils import now_utc
 
 logger = logging.getLogger("tlsoc.engine.budget")
 
@@ -47,6 +49,43 @@ _CHARS_PER_TOKEN = 4
 
 def estimate_tokens_from_chars(prompt_chars: int) -> int:
     return max(1, int(prompt_chars) // _CHARS_PER_TOKEN)
+
+
+#: Round 12 (SPEC D5): surfaces whose spend the daily AI budget does not count (the
+#: gateway also never blocks them). Chat has its own optional daily cap instead. Kept
+#: equal to ``llm.gateway.BUDGET_EXEMPT_SURFACES`` (pinned by a test).
+EXCLUDED_SURFACES: tuple[str, ...] = ("chat",)
+
+
+def _surface_cost(summary: dict[str, Any] | None, surfaces: Sequence[str]) -> float:
+    """The cost of ``surfaces`` in a usage ``summary``'s ``by_surface`` rows."""
+    if not isinstance(summary, dict) or not surfaces:
+        return 0.0
+    total = 0.0
+    for row in summary.get("by_surface") or []:
+        if isinstance(row, dict) and row.get("key") in surfaces:
+            try:
+                total += float(row.get("cost") or 0.0)
+            except (TypeError, ValueError):
+                continue
+    return total
+
+
+def _today_surface_cost(summary: dict[str, Any] | None, surfaces: Sequence[str]) -> float | None:
+    """The spend on ``surfaces`` since 00:00 UTC (the ledger's today bucket, the same
+    rows as ``today_cost``) from a usage ``summary``'s exact ``today_by_surface`` rows;
+    ``None`` when the repository does not report them (an out-of-tree store)."""
+    if not isinstance(summary, dict) or not isinstance(summary.get("today_by_surface"), list):
+        return None
+    return _surface_cost({"by_surface": summary["today_by_surface"]}, surfaces)
+
+
+def _hours_since_midnight(*, ceil: bool) -> int:
+    """Whole hours since 00:00 UTC (the ledger's today bucket), rounded down or up.
+    Only the fallback for a usage repository without ``today_by_surface``."""
+    now = now_utc()
+    elapsed = (now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() / 3600
+    return int(math.ceil(elapsed)) if ceil else int(elapsed)
 
 
 class BudgetGate:
@@ -82,25 +121,49 @@ class BudgetGate:
 
     # ----- the gate -----
     async def check(self, *, prompt_chars: int = 0, max_tokens: int = 0, model: str = "",
-                    overlay: tuple[float, float] | None = None) -> dict[str, Any]:
+                    overlay: tuple[float, float] | None = None,
+                    exclude_surfaces: Sequence[str] = ()) -> dict[str, Any]:
         """Decide whether a call costing ~``estimate_cost`` may proceed. Returns an
         ``{"action": allow|warn|block, ...}`` decision (never raises). Budget OFF →
         always ``allow``. The estimated cost of the IMMINENT call is added to the
         already-spent window total before comparing to a ceiling, so the gate blocks
-        the call that WOULD cross the line, not only the one after."""
+        the call that WOULD cross the line, not only the one after.
+
+        ``exclude_surfaces`` (Round 12, D5; the gateway passes the chat surface): spend
+        on those surfaces does not count toward the ceilings."""
         budget = self._budget()
         if budget is None or not getattr(budget, "enabled", False):
             return {"action": "allow"}
         estimate = self.estimate_cost(prompt_chars, max_tokens, model, overlay)
-        spent = await self._window_spend()
+        spent = await self._window_spend(exclude_surfaces)
         return self._decide(budget, spent, estimate)
 
-    async def status(self) -> dict[str, Any]:
+    async def surface_spend_today(self, surface: str) -> float:
+        """Today's spend (since 00:00 UTC, the ledger's today bucket) on one ledger
+        ``surface`` (Round 12: the chat daily cap), exact from the summary's
+        ``today_by_surface``. A repository without it is read over the whole hours
+        since midnight rounded UP (never under-counts: the safe side of a cap).
+        Degrades to $0 on a read failure (fail-open, like every budget read)."""
+        try:
+            summary = await self._usage.summary(window_hours=_DAILY_HOURS)
+            exact = _today_surface_cost(summary, (surface,))
+            if exact is not None:
+                return exact
+            summary = await self._usage.summary(window_hours=max(1, _hours_since_midnight(ceil=True)))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("surface spend read failed (%s); assuming $0", exc)
+            return 0.0
+        return _surface_cost(summary, (surface,))
+
+    async def status(self, exclude_surfaces: Sequence[str] = EXCLUDED_SURFACES) -> dict[str, Any]:
         """A read-only governance snapshot for ``GET /api/budget/status``: the live
         config, the rolling daily/monthly spend, the ceilings, the fraction used, and
-        the current band (ok|warn|over) per window. Never raises."""
+        the current band (ok|warn|over) per window. Never raises.
+
+        Round 12 (D5): the figures are what the gate enforces, so chat spend (outside
+        the budget) is excluded by default and reported apart as ``excluded_today``."""
         budget = self._budget()
-        spent = await self._window_spend()
+        spent = await self._window_spend(exclude_surfaces)
         enabled = bool(getattr(budget, "enabled", False)) if budget else False
         daily_cap = _f(getattr(budget, "daily_usd", None)) if budget else None
         monthly_cap = _f(getattr(budget, "monthly_usd", None)) if budget else None
@@ -113,6 +176,8 @@ class BudgetGate:
             "currency": "USD",
             "daily": _window_status(spent["daily"], daily_cap, warn_pct),
             "monthly": _window_status(spent["monthly"], monthly_cap, warn_pct),
+            "excluded_surfaces": list(exclude_surfaces),
+            "excluded_today": round(spent.get("excluded_daily", 0.0), 6),
         }
 
     # ----- internals -----
@@ -123,12 +188,22 @@ class BudgetGate:
             logger.warning("budget config read failed (%s); treating as OFF", exc)
             return None
 
-    async def _window_spend(self) -> dict[str, float]:
+    async def _window_spend(self, exclude_surfaces: Sequence[str] = ()) -> dict[str, float]:
         """Rolling daily + monthly spend (USD) from the usage ledger. The daily figure
         is the ledger's ``today_cost`` (calendar-day bucket), the monthly is the
-        30-day rolling ``total_cost``. Degrades to zeros on a read failure (fail-open)."""
+        30-day rolling ``total_cost``. Degrades to zeros on a read failure (fail-open).
+
+        ``exclude_surfaces`` (Round 12, D5) subtracts those surfaces' spend exactly:
+        for the monthly window from the same rows' ``by_surface``, and for the day from
+        the same read's ``today_by_surface`` (the rows since 00:00 UTC that make up
+        ``today_cost``). Only a repository that does not report ``today_by_surface``
+        falls back to the whole hours since midnight rounded DOWN, so the excluded
+        share is never over-estimated and the pipeline backstop never under-counts
+        (#10)."""
         daily = 0.0
         monthly = 0.0
+        excluded_daily = 0.0
+        day: dict[str, Any] | None = None
         try:
             day = await self._usage.summary(window_hours=_DAILY_HOURS)
             daily = float(day.get("today_cost", day.get("total_cost", 0.0)) or 0.0)
@@ -137,9 +212,23 @@ class BudgetGate:
         try:
             month = await self._usage.summary(window_hours=_MONTHLY_HOURS)
             monthly = float(month.get("total_cost", 0.0) or 0.0)
+            if exclude_surfaces:
+                monthly = max(0.0, monthly - _surface_cost(month, exclude_surfaces))
         except Exception as exc:  # noqa: BLE001
             logger.warning("monthly spend read failed (%s); assuming $0", exc)
-        return {"daily": daily, "monthly": monthly}
+        if exclude_surfaces and daily > 0:
+            exact = _today_surface_cost(day, exclude_surfaces)
+            if exact is not None:
+                excluded_daily = min(daily, exact)
+            else:
+                hours = _hours_since_midnight(ceil=False)
+                try:
+                    today = await self._usage.summary(window_hours=hours) if hours > 0 else None
+                    excluded_daily = min(daily, _surface_cost(today, exclude_surfaces))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("excluded spend read failed (%s); counting it", exc)
+            daily = max(0.0, daily - excluded_daily)
+        return {"daily": daily, "monthly": monthly, "excluded_daily": excluded_daily}
 
     def _decide(self, budget, spent: dict[str, float], estimate: float) -> dict[str, Any]:
         on_exceed = str(getattr(budget, "on_exceed", "warn") or "warn")

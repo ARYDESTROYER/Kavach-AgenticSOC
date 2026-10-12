@@ -114,6 +114,20 @@ describe('Cases controls (round-6 #0/#6)', () => {
     expect(closeButtons.length).toBe(CASES.length);
   });
 
+  it('returns focus to the row Close button when its close dialog is dismissed, not <body>', async () => {
+    renderCases();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    const closeButton = screen.getAllByRole('button', { name: /close case/i })[0];
+    act(() => closeButton.focus());
+    fireEvent.click(closeButton);
+    const dialog = await screen.findByTestId('bulk-close-dialog');
+    // It opens on the required disposition (CM-3), not a control under the footer.
+    await waitFor(() => expect(dialog.querySelector('[role="radiogroup"]')?.contains(document.activeElement)).toBe(true));
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('bulk-close-dialog')).toBeNull());
+    await waitFor(() => expect(closeButton).toHaveFocus());
+  });
+
   it('renders the bulk action bar via a portal to <body>, outside the @container (#0)', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());

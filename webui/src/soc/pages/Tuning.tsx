@@ -1545,7 +1545,7 @@ function RuleDetailPanel({
       className={cn(
         'min-w-0 space-y-5',
         variant === 'aside' &&
-          'border-y border-border/70 py-4 xl:sticky xl:top-4 xl:self-start xl:border-l xl:border-y-0 xl:py-1 xl:pl-5',
+          'border-y border-border/70 py-4 xl:sticky xl:top-[calc(var(--header-h)+1rem)] xl:self-start xl:border-l xl:border-y-0 xl:py-1 xl:pl-5',
       )}
       aria-label={`Detail for rule ${rule.rule_id}`}
     >

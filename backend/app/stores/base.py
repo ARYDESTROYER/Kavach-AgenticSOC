@@ -474,6 +474,123 @@ class CaseRepository(ABC):
         """Release an optional repository-owned export snapshot handle."""
         return None
 
+    # -- Round 12 exact aggregates (engine/case_aggregate.py) ----------------- #
+    async def aggregate(self, spec: Any) -> Any | None:
+        """Optional native push-down for :func:`app.engine.case_aggregate.aggregate_cases`.
+
+        Return an ``AggregateResult`` ONLY when the backend can answer ``spec`` with
+        exactly the fold's semantics; return ``None`` otherwise and the engine folds over
+        :meth:`scan_page`. This non-abstract default (``None``) keeps third-party
+        repositories source-compatible — they are aggregated by the fold, exactly, just
+        more slowly. Detected with ``getattr`` like ``PullConnector.aggregate``."""
+        return None
+
+    async def scan_page(
+        self,
+        *,
+        limit: int = 1000,
+        cursor: Any = None,
+        created_from: Any = None,
+        created_to: Any = None,
+        raw: bool = False,
+        statuses: Any = None,
+        fields: Any = None,
+    ) -> tuple[list[Case], Any | None, int | None, str]:
+        """One page of a full scan, optionally PRE-filtered to ``[created_from, created_to)``.
+
+        The streaming aggregate fold and the dashboards' population loader read the
+        corpus through this. Contract:
+
+        * ``created_from`` (inclusive) / ``created_to`` (EXCLUSIVE) are aware datetimes or
+          ISO strings; ``None`` means unbounded on that side.
+        * NEVER-DROP (#4): a case whose ``created_at`` cannot be placed in time is always
+          returned. A pre-filter may over-keep (the caller re-checks every row with its
+          own exact predicate), it must never under-keep.
+        * Returns ``(rows, next_cursor, total, consistency)``. ``next_cursor`` is ``None``
+          exactly when the scan is exhausted (a page may be EMPTY and still have a next
+          cursor). ``total`` is the number of rows the scan will visit when the backend
+          can prove it (for progress), else ``None``.
+        * The cursor is repository-private; an unfinished scan is released with
+          :meth:`close_export_cursor`.
+        * ``raw=True`` MAY return each case's stored JSON document instead of a validated
+          ``Case`` (the aggregate fold's fast path); callers must accept either.
+        * ``statuses`` (optional list of status values) MAY pre-filter to those statuses.
+        * ``fields`` (optional, raw pages only) names the stored fields the caller reads;
+          a repository MAY return only those (the Elasticsearch store filters
+          ``_source``). It is a transfer hint: returning whole documents is correct.
+        * A repository that can read NEWEST-FIRST by ``created_at`` (then ``case_id``)
+          declares a ``newest_first`` keyword (the bundled stores do; this default does
+          not, so callers know its order is the export order). The order is by the
+          real creation INSTANT, whatever spelling a row stores, with a ``created_at``
+          that cannot be placed in time last. The dashboards' bounded population read
+          relies on it to stop after the newest N rows.
+
+        This default wraps :meth:`export_page` (so every repository has it), applies the
+        window and statuses in Python and always returns ``Case`` objects; the bundled
+        stores push both into the backend. An unfinished scan's cursor is released with
+        :meth:`close_scan_cursor`."""
+        del raw, fields
+        inner = cursor.get("inner") if isinstance(cursor, dict) else None
+        rows, nxt, total, consistency = await self.export_page(limit=limit, cursor=inner)
+        lo = _bound_millis(created_from)
+        hi = _bound_millis(created_to)
+        wanted = {str(v) for v in statuses} if statuses is not None else None
+        kept = [
+            c for c in rows
+            if case_in_half_open_window(c, lo, hi)
+            and (wanted is None or _status_value(c) in wanted)
+        ]
+        exhausted = (not rows) or nxt is None
+        if exhausted and nxt is not None:
+            try:
+                await self.close_export_cursor(nxt)
+            except Exception:  # noqa: BLE001 — snapshots also expire on their own
+                pass
+        return kept, (None if exhausted else {"inner": nxt}), total, consistency
+
+    async def close_scan_cursor(self, cursor: Any) -> None:
+        """Release an unfinished :meth:`scan_page` cursor. The default unwraps the
+        ``{"inner": export cursor}`` this class's :meth:`scan_page` returns, so a
+        repository-owned export snapshot is released through
+        :meth:`close_export_cursor` (never handed the wrapper)."""
+        if isinstance(cursor, dict) and set(cursor) == {"inner"}:
+            cursor = cursor["inner"]
+        if cursor is None:
+            return
+        await self.close_export_cursor(cursor)
+
+
+def _status_value(case: Any) -> str:
+    raw = case.get("status") if isinstance(case, dict) else getattr(case, "status", None)
+    return str(getattr(raw, "value", raw) or "")
+
+
+def _bound_millis(value: Any) -> int | None:
+    """Epoch millis of a scan bound (aware datetime or ISO/epoch), ``None`` = unbounded."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    return parse_millis_strict(value)
+
+
+def case_in_half_open_window(case: Any, lo: int | None, hi: int | None) -> bool:
+    """``lo <= created_at < hi`` in epoch millis — or ``True`` when ``created_at`` cannot
+    be placed in time (never-drop, #4). The half-open twin of
+    :func:`case_in_created_window` used by :meth:`CaseRepository.scan_page`."""
+    ts = getattr(case, "created_at", "") or ""
+    if not ts:
+        return True
+    millis = parse_millis_strict(ts)
+    if millis is None:
+        return True
+    if lo is not None and millis < lo:
+        return False
+    if hi is not None and millis >= hi:
+        return False
+    return True
+
 
 class AuditRepository(ABC):
     """Append-only audit log (Section 7.2 / Non-negotiable #2).
@@ -672,6 +789,51 @@ class UsageRepository(ABC):
 
     async def close_export_cursor(self, cursor: Any) -> None:
         return None
+
+    async def aggregate_usage(self, spec: Any) -> Any | None:
+        """Optional native push-down for :func:`app.engine.case_aggregate.aggregate_usage`.
+
+        Return an ``AggregateResult`` only when the backend can answer ``spec`` exactly
+        as the fold would; ``None`` (this default) folds over :meth:`scan_page`."""
+        return None
+
+    async def scan_page(
+        self,
+        *,
+        limit: int = 1000,
+        cursor: Any = None,
+        ts_from: Any = None,
+        ts_to: Any = None,
+    ) -> tuple[list[dict[str, Any]], Any | None, int | None, str]:
+        """One page of a ledger scan PRE-filtered to ``[ts_from, ts_to)`` on ``ts``.
+
+        Same contract as :meth:`CaseRepository.scan_page`: a pre-filter may over-keep,
+        never under-keep; a row whose ``ts`` cannot be placed in time is always
+        returned; ``next_cursor`` is ``None`` exactly when exhausted. This default
+        wraps :meth:`export_page` and does not filter at all (every row is read and
+        returned; the caller applies the range) — the bundled stores push the range
+        into the backend so a 35-day report reads 35 days."""
+        del ts_from, ts_to
+        inner = cursor.get("inner") if isinstance(cursor, dict) else None
+        rows, nxt, total, consistency = await self.export_page(limit=limit, cursor=inner)
+        seen = (cursor.get("seen", 0) if isinstance(cursor, dict) else 0) + len(rows)
+        exhausted = (not rows) or nxt is None or (total is not None and seen >= int(total))
+        if exhausted and nxt is not None:
+            try:
+                await self.close_export_cursor(nxt)
+            except Exception:  # noqa: BLE001 — snapshots also expire on their own
+                pass
+        return (list(rows), None if exhausted else {"inner": nxt, "seen": seen},
+                total, consistency)
+
+    async def close_scan_cursor(self, cursor: Any) -> None:
+        """Release an unfinished :meth:`scan_page` cursor (unwrapping this class's
+        ``{"inner": export cursor}`` wrapper)."""
+        if isinstance(cursor, dict) and "inner" in cursor:
+            cursor = cursor["inner"]
+        if cursor is None:
+            return
+        await self.close_export_cursor(cursor)
 
 
 class KVStore(ABC):

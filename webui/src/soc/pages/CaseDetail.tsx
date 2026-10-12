@@ -37,25 +37,21 @@
 import * as React from 'react';
 import {
   AlertTriangle,
-  Bell,
   BookOpen,
-  Bot,
   Check,
-  Copy,
+  ChevronDown,
   Download,
   ExternalLink,
   FileText,
-  Globe,
-  History,
   MessageSquare,
-  MoreHorizontal,
+  PanelRight,
   Play,
   RefreshCw,
-  Search,
   Send,
   Share2,
   Shield,
-  Users,
+  Tag as TagIcon,
+  UserCheck,
   X,
   Zap,
 } from 'lucide-react';
@@ -70,17 +66,18 @@ import type {
   CaseRationale,
   ModelsResponse,
   Playbook,
+  SlaPolicy,
   ThreatContextPanel as ThreatContextPanelData,
 } from '@/lib/types';
+import { downloadText } from '@/lib/download';
 import { errorMessage } from '@/lib/errorMessage';
-import { fmtMoney, humanizeAge } from '@/lib/format';
+import { fmtMoney, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
 import { Label } from '@/ui/label';
-import { Badge } from '@/ui/badge';
 import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
-import { Sheet, SheetContent } from '@/ui/sheet';
+import { Sheet, SheetContent, SheetTitle } from '@/ui/sheet';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/tabs';
 // motion.dev (lazy — CaseDetail is loaded off the lazy Cases chunk, never the eager
 // first-paint graph): the tab-body cross-fade + the DecisionCard "verdict lands" one-shot.
@@ -102,11 +99,6 @@ import {
   SelectItem,
 } from '@/ui/select';
 import {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
-} from '@/ui/popover';
-import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
@@ -121,17 +113,11 @@ import {
   TooltipProvider,
 } from '@/ui/tooltip';
 import { Skeleton } from '@/ui/skeleton';
-import { LoadingState } from '@/design-system';
+import { LoadingBar, LoadingState, materialBar } from '@/design-system';
 
-import {
-  StatusBadge,
-  DispositionBadge,
-  AutoClosedBadge,
-  SeverityBadge,
-  severityBand,
-} from '@/soc/components/badges';
-import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
-import { Can, useCan } from '@/soc/components/Can';
+import { caseOutcome } from '@/soc/components/outcome';
+import { visibleMessageCount } from '@/soc/components/CaseThread';
+import { useCan } from '@/soc/components/Can';
 import { useAuth } from '@/soc/auth';
 
 import {
@@ -162,10 +148,10 @@ import {
 import type { Navigate } from '@/soc/router';
 
 import { campaignsApi, type Campaign } from '@/soc/pages/Campaigns.api';
-import { CampaignChip } from '@/soc/pages/Campaigns';
 
 import {
   type ActionDef,
+  type ActionKind,
   type FpPolicy,
   type NotifyChannelOption,
   ACTION_PERMISSION,
@@ -178,63 +164,21 @@ import { ThreatContextPanel } from './casedetail/ThreatContextPanel';
 import { CollaborationThreadTab } from './casedetail/CollaborationPanel';
 import { ChatTab } from './casedetail/CaseChatPanel';
 import { ConfirmActionDialog } from './casedetail/ConfirmActionDialog';
+import { CaseHeaderMeta } from './casedetail/CaseHeaderMeta';
+import { FactsRail } from './casedetail/FactsRail';
+import { shortcutBlocked } from './casedetail/keyboard';
+import { keepAdvisoryBands } from './casedetail/queue';
+import { CaseChatActivityGlyph, useCaseChatRequest } from '@/soc/chat-activity/case-glyph';
 import {
   deriveAgreement,
   emptyGradingDraft,
   gradingToFeedbackInput,
+  isGradingDirty,
   type GradingDraft,
 } from './casedetail/grading';
 
 // Re-export the co-located API types so existing importers keep working.
 export type { ThreadMessage };
-
-/**
- * Copy the case's display id. Icon-only, so it carries an explicit accessible name and
- * a tooltip; it confirms in place (check glyph + renamed control) and via a toast. The
- * value is a plain string handed to the clipboard helper (#9).
- */
-const CopyCaseIdButton: React.FC<{ value: string }> = ({ value }) => {
-  const [copied, setCopied] = React.useState(false);
-  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  React.useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current);
-    },
-    [],
-  );
-  const onCopy = React.useCallback(async () => {
-    const ok = await copyText(value);
-    if (!ok) {
-      toast.error('Could not copy the case ID.');
-      return;
-    }
-    setCopied(true);
-    toast.success('Case ID copied.');
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(false), 1500);
-  }, [value]);
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-6 w-6 shrink-0 rounded-[3px] text-muted-foreground hover:text-foreground"
-          aria-label={copied ? 'Case ID copied' : 'Copy case ID'}
-          onClick={() => void onCopy()}
-        >
-          {copied ? (
-            <Check className="h-3.5 w-3.5 text-success-text" aria-hidden />
-          ) : (
-            <Copy className="h-3.5 w-3.5" aria-hidden />
-          )}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">{copied ? 'Copied' : 'Copy case ID'}</TooltipContent>
-    </Tooltip>
-  );
-};
 
 /**
  * Embedded (Case Manager) tab trigger: a calm, text-only underline tab. The active tab
@@ -257,8 +201,10 @@ const CaseDetailSurface: React.FC<{
   presentation: CaseDetailPresentation;
   open: boolean;
   onClose: () => void;
+  /** The case title: the sheet focuses it on open (CM-9), never an icon button. */
+  titleRef?: React.RefObject<HTMLHeadingElement | null>;
   children: React.ReactNode;
-}> = ({ presentation, open, onClose, children }) => {
+}> = ({ presentation, open, onClose, titleRef, children }) => {
   /**
    * The element that had focus when this sheet opened, so closing can give it back.
    *
@@ -301,6 +247,16 @@ const CaseDetailSurface: React.FC<{
         size="full"
         className="w-full max-w-[min(98vw,1400px)] p-0"
         aria-label="Case detail"
+        aria-describedby={undefined}
+        // Focus the case TITLE on open (CM-9): Radix's default lands on the first
+        // focusable control, an icon button, whose tooltip then opened by itself.
+        onOpenAutoFocus={(event) => {
+          const title = titleRef?.current;
+          if (title) {
+            event.preventDefault();
+            title.focus();
+          }
+        }}
         /**
          * Focus RETURN on close (WCAG 2.4.3) — which Radix cannot do for this sheet.
          *
@@ -345,6 +301,24 @@ export interface CaseDetailProps {
   presentation?: CaseDetailPresentation;
   /** Emits the authoritative server case after loads and mutations (queue sync only). */
   onCaseChange?: (next: Case) => void;
+  /**
+   * The case as the caller already has it (Case Manager: the queue row, which is the full
+   * case document). When it matches `caseId` it renders IMMEDIATELY while the
+   * authoritative copy loads in the background, so switching cases never blanks the
+   * pane (CM-5). Display only; every action still targets the server's copy.
+   */
+  previewCase?: Case | null;
+  /**
+   * "Close & next" (Case Manager): called after a terminal action succeeds so the queue
+   * advances to the next case. Omitted → the close dialog offers plain Close only.
+   */
+  onAdvance?: () => void;
+  /**
+   * Case Manager: where focus lands after a lifecycle dialog closes on a submit, when the
+   * dialog's opener may have left (a queue row the action took out of the view). Returns
+   * null to keep the dialog's default (its opener).
+   */
+  resolveDialogFocus?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
 }
 
 export const CaseDetail: React.FC<CaseDetailProps> = ({
@@ -353,6 +327,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   onNavigate,
   presentation = 'sheet',
   onCaseChange,
+  previewCase = null,
+  onAdvance,
+  resolveDialogFocus,
 }) => {
   const open = Boolean(caseId && caseId.trim());
   const id = caseId || '';
@@ -371,8 +348,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
 
+  // The case on screen, read by `commitCase`: a mutation response for it that omits the
+  // read-time advisory bands keeps the ones shown (`keepAdvisoryBands`, Round 12 final
+  // review), so the header never relabels a Critical case from the risk-score ladder.
+  const shownCaseRef = React.useRef<Case | null>(null);
+  shownCaseRef.current = c;
+
   const commitCase = React.useCallback(
-    (next: Case) => {
+    (incoming: Case) => {
+      const next = keepAdvisoryBands(shownCaseRef.current, incoming);
+      shownCaseRef.current = next;
       setC(next);
       onCaseChange?.(next);
     },
@@ -386,6 +371,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [tab, setTab] = React.useState<
     'overview' | 'timeline' | 'investigation' | 'threat' | 'collab' | 'chat'
   >('overview');
+  // Round 12 (SPEC D13): "Open" on a case-chat toast lands on this case's Chat tab.
+  useCaseChatRequest(open ? id : null, () => setTab('chat'));
   const panelScrollRef = React.useRef<HTMLDivElement>(null);
 
   // All six panels share one scroll lane. Reset it when the selected tab/case changes
@@ -489,6 +476,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
 
   // FP auto-close policy (best-effort).
   const [fpPolicy, setFpPolicy] = React.useState<FpPolicy>(null);
+  // SLA policy for the header's advisory SLA reading (best-effort, #3-safe).
+  const [slaPolicy, setSlaPolicy] = React.useState<SlaPolicy | null>(null);
+  // Header popovers + the narrow-pane Details sheet (keyboard shortcuts open them).
+  const [ownerOpen, setOwnerOpen] = React.useState(false);
+  const [tagsOpen, setTagsOpen] = React.useState(false);
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const detailsTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const detailsTitleRef = React.useRef<HTMLHeadingElement | null>(null);
+  // The control that opened a lifecycle / editor dialog, so focus returns to it (CM-3).
+  const actionOpenerRef = React.useRef<HTMLElement | null>(null);
+  const takeActionTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const titleRef = React.useRef<HTMLHeadingElement | null>(null);
+  const headerRef = React.useRef<HTMLDivElement | null>(null);
 
   // Notify (manual send) — F5/Wave 4. Channels come from the loaded settings.
   const [notifyOpen, setNotifyOpen] = React.useState(false);
@@ -513,10 +513,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id, commitCase]);
 
+  // The caller's copy of the case (the queue row), read through a ref so a parent
+  // re-render with a fresh row object never re-runs the reset below.
+  const previewRef = React.useRef<Case | null>(previewCase);
+  previewRef.current = previewCase;
+
   React.useEffect(() => {
     if (!open) return;
-    // Reset all per-case lazy state when the case changes / opens.
-    setC(null);
+    // Reset all per-case lazy state when the case changes / opens. The case itself is
+    // NOT blanked (CM-5): the caller's preview renders at once when it matches, and
+    // otherwise the previous case stays on screen, dimmed under a progress bar, until
+    // the new one arrives. Actions stay disabled while the shown case is not `id`.
+    const preview = previewRef.current;
+    if (preview && preview.case_id === id) setC(preview);
     setRationale(null);
     setRationaleError(null);
     setTriage(null);
@@ -539,7 +548,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     // case instead of showing the previous case's IOC/MITRE data.
     setThreat(null);
     setThreatError(null);
-    setTab('overview');
+    // The active tab is kept across case switches: an analyst browsing the queue on the
+    // Timeline stays on the Timeline (Defender's ↑/↓ behaviour).
     void loadCase();
   }, [open, id, loadCase]);
 
@@ -950,7 +960,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       setTimeline(null);
       setStages(null);
       void loadTriage();
-      toast.success('Playbook applied — the case was re-investigated with it as context.');
+      toast.success('Playbook applied. The case was re-investigated with it as context.');
     } catch (e) {
       toast.error(
         e instanceof Error ? e.message : 'Could not run the playbook.',
@@ -984,6 +994,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       .then((res) => {
         if (cancelled) return;
         setFpPolicy((res?.prefs?.fp_auto_close as FpPolicy) || null);
+        setSlaPolicy((res?.prefs?.sla as SlaPolicy | undefined) ?? null);
         const notif = res?.prefs?.notifications;
         setNotifyEnabled(Boolean(notif?.enabled));
         const chans = (notif?.channels || []).map((c) => ({
@@ -1007,7 +1018,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       const okCount = res.sent.filter((s) => s.ok).length;
       const failCount = res.sent.length - okCount;
       if (res.sent.length === 0) {
-        toast.message('No channels matched — nothing was sent.');
+        toast.message('No channels matched, so nothing was sent.');
       } else if (failCount === 0) {
         toast.success(`Notification sent to ${okCount} channel(s).`);
       } else if (okCount === 0) {
@@ -1062,7 +1073,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     resetActionFields();
   }, [resetActionFields]);
 
-  const runAction = React.useCallback(async () => {
+  const runAction = React.useCallback(async (andNext = false) => {
     if (!pending) return;
     setActing(true);
     try {
@@ -1096,6 +1107,50 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       commitCase(next);
       setPending(null);
       resetActionFields();
+      // Completion feedback names the outcome that was recorded (Apple §16). A close or
+      // resolve offers REOPEN for 8 s — the existing `reopen` analyst verb (#3). It is
+      // deliberately not called Undo: a reopen keeps the classification the analyst just
+      // recorded (it stays the case's analyst outcome, and the resolved-case precedent
+      // written at close stays too) until the case is closed again with a new one. The
+      // toast says so, so a misclick is fixed by reopening AND re-closing correctly.
+      if (pending.fields.includes('disposition') && actionDisposition) {
+        const verb = (pending.wireAction ?? pending.key) === 'resolve' ? 'Resolved' : 'Closed';
+        if (pending.key === 'set_disposition') {
+          toast.success(`Recorded as ${humanizeToken(actionDisposition).toLowerCase()}.`);
+        } else {
+          const closedId = id;
+          const canReopen = hasPermission(ACTION_PERMISSION.reopen.resource, ACTION_PERMISSION.reopen.action);
+          toast.success(`${verb} as ${humanizeToken(actionDisposition).toLowerCase()}.`, {
+            duration: 8000,
+            ...(canReopen
+              ? {
+                  description:
+                    'Reopening keeps this outcome on record until you close the case again with a new one.',
+                  action: {
+                    label: 'Reopen',
+                    onClick: () => {
+                      void api
+                        .caseActionExec(closedId, {
+                          action: 'reopen',
+                          note: 'Reopened from the close confirmation right after it was closed.',
+                        })
+                        .then((reopened) => {
+                          // Sync the queue always; the detail only if it still shows this case.
+                          if (activeIdRef.current === closedId) commitCase(reopened);
+                          else onCaseChange?.(reopened);
+                          toast.success('Reopened. The recorded outcome stays until you close it again.');
+                        })
+                        .catch((err: unknown) => {
+                          toast.error(errorMessage(err, 'The case could not be reopened.'));
+                        });
+                    },
+                  },
+                }
+              : {}),
+          });
+        }
+      }
+      if (andNext && onAdvance) onAdvance();
       setRationale(null);
       setTimeline(null);
       setStages(null);
@@ -1132,12 +1187,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         const committedDisposition =
           pending.key === 'confirm_fp' ? 'false_positive' : actionDisposition;
         const derived = deriveAgreement(gradedVerdictRaw, committedDisposition);
-        const freshAssessment = derived.kind === 'none' ? undefined : derived.assessment;
-        const feedbackBody = gradingToFeedbackInput(
-          { ...grading, assessment: freshAssessment },
-          currentUser || undefined,
-        );
-        void api
+        // Only a match or an override is an agreement signal. A Needs-human hand-off the
+        // analyst settled (`resolved`) or an outcome with no comparison (`none`) states no
+        // agreement, so nothing is posted unless the analyst entered a grade themselves —
+        // otherwise every settled hand-off would count as "agree" in the Agreement metric.
+        const freshAssessment =
+          derived.kind === 'match' || derived.kind === 'override' ? derived.assessment : undefined;
+        const gradedDraft: GradingDraft = { ...grading, assessment: freshAssessment };
+        const feedbackBody = gradingToFeedbackInput(gradedDraft, currentUser || undefined);
+        if (freshAssessment || isGradingDirty(gradedDraft)) {
+          void api
           .caseFeedback(id, feedbackBody)
           .then((updated) => {
             // Reflect the just-recorded grading in the prior-gradings history, but only
@@ -1159,6 +1218,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
               toast.warning(`Case updated, but the grading was not recorded: ${detail}`);
             }
           });
+        }
       }
     } catch (e) {
       // A failed lifecycle action is a MUTATION failure, not a case-load failure — use a
@@ -1187,6 +1247,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     loadActivity,
     activity,
     commitCase,
+    onAdvance,
+    hasPermission,
+    onCaseChange,
   ]);
 
   const runReinvestigate = React.useCallback(async () => {
@@ -1214,17 +1277,15 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       setExporting(fmt);
       try {
         const res = await api.exportCase(id, fmt);
-        const blob = new Blob([res.content], {
-          type: res.content_type || 'application/octet-stream',
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = res.filename || `case-${id}.${fmt === 'md' ? 'md' : 'json'}`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        // The shared download helper attaches the anchor for the click and revokes the
+        // object URL LATE (Safari/Firefox cancel a download revoked synchronously).
+        const started = downloadText(
+          res.filename || `case-${id}.${fmt === 'md' ? 'md' : 'json'}`,
+          res.content_type || (fmt === 'md' ? 'text/markdown' : 'application/json'),
+          res.content,
+        );
+        if (started) toast.success(fmt === 'md' ? 'Markdown report downloaded.' : 'Case JSON downloaded.');
+        else toast.error('Downloads are not available in this browser.');
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'The export could not be generated.');
       } finally {
@@ -1265,1148 +1326,867 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     else toast.error('Could not copy the case link.');
   }, [id, presentation]);
 
+  // ---- keyboard shortcuts (CM-4/CM-3) -------------------------------------- //
+  // A / C / E / H acknowledge, close, escalate or hold (each OPENS its dialog — every
+  // mutation still goes through its dialog), R reinvestigate (always confirmed), M the
+  // owner picker, T the tags editor, Alt+1…6 switch tabs. Active only while focus is NOT
+  // in text entry and no menu, popover or dialog of this case is open.
+  const shortcutStateRef = React.useRef({
+    blocked: false,
+    actions: [] as ActionDef[],
+    canAssign: false,
+    canTag: false,
+  });
+  const permittedForShortcuts = (() => {
+    const plan = actionPlanForStatus(c?.status);
+    return [plan.primary, plan.close, ...plan.overflow].filter(
+      (action, index, actions): action is ActionDef =>
+        Boolean(action) &&
+        actions.findIndex((candidate) => candidate?.key === action?.key) === index &&
+        hasPermission(ACTION_PERMISSION[action!.key].resource, ACTION_PERMISSION[action!.key].action),
+    );
+  })();
+  const shownIsCurrent = Boolean(c && c.case_id === id);
+  shortcutStateRef.current = {
+    blocked:
+      !shownIsCurrent ||
+      loading ||
+      acting ||
+      pending !== null ||
+      takeActionOpen ||
+      reinvestOpen ||
+      runPlaybookOpen ||
+      notifyOpen ||
+      ownerOpen ||
+      tagsOpen ||
+      detailsOpen,
+    actions: permittedForShortcuts,
+    canAssign: hasPermission('cases', 'assign'),
+    canTag: hasPermission('cases', 'write'),
+  };
+  const openActionRef = React.useRef(openAction);
+  openActionRef.current = openAction;
+
+  React.useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined;
+    const TAB_KEYS: Array<typeof tab> = ['overview', 'timeline', 'investigation', 'threat', 'collab', 'chat'];
+    const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey) return;
+      // Text entry, a Select (typeahead), a menu or a radio group consumes letters itself;
+      // an open picker owns the keyboard. One key must never do two things.
+      if (shortcutBlocked(event)) return;
+      // A different modal surface (a palette, another dialog) owns the keyboard.
+      if (presentation === 'embedded' && document.querySelector('[role="dialog"][data-state="open"]')) return;
+      const state = shortcutStateRef.current;
+      if (state.blocked) return;
+      if (event.altKey) {
+        const digit = /^Digit([1-6])$/.exec(event.code);
+        if (!digit) return;
+        event.preventDefault();
+        setTab(TAB_KEYS[Number(digit[1]) - 1]);
+        return;
+      }
+      if (event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      const byKind = (kind: ActionKind) => state.actions.find((a) => a.key === kind);
+      const fire = (action: ActionDef | undefined) => {
+        if (!action) return;
+        event.preventDefault();
+        actionOpenerRef.current =
+          document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+            ? document.activeElement
+            : takeActionTriggerRef.current;
+        openActionRef.current(action);
+      };
+      if (key === 'a') fire(byKind('acknowledge'));
+      else if (key === 'c') fire(byKind('close_disposition'));
+      else if (key === 'e') fire(byKind('escalate'));
+      else if (key === 'h') fire(byKind('hold'));
+      else if (key === 'r') {
+        event.preventDefault();
+        actionOpenerRef.current = takeActionTriggerRef.current;
+        setReinvestModel('');
+        setReinvestOpen(true);
+      } else if (key === 'm' && state.canAssign) {
+        event.preventDefault();
+        setOwnerOpen(true);
+      } else if (key === 't' && state.canTag) {
+        event.preventDefault();
+        setTagsOpen(true);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, presentation]);
+
+  // The header's scroll-edge fade: shown only while the tab content has scrolled under it.
+  const onPanelScroll = React.useCallback((event: React.UIEvent<HTMLDivElement>) => {
+    const header = headerRef.current;
+    if (!header) return;
+    if (event.currentTarget.scrollTop > 0) header.dataset.scrolled = 'true';
+    else delete header.dataset.scrolled;
+  }, []);
+
   if (!open) return null;
 
   const actionPlan = actionPlanForStatus(c?.status);
-  const permittedLifecycleActions = [
-    actionPlan.primary,
-    actionPlan.close,
-    ...actionPlan.overflow,
-  ].filter(
-    (action, index, actions): action is ActionDef =>
-      Boolean(action) &&
-      actions.findIndex((candidate) => candidate?.key === action?.key) === index &&
-      hasPermission(
-        ACTION_PERMISSION[action!.key].resource,
-        ACTION_PERMISSION[action!.key].action,
-      ),
-  );
-  const headerSeverity = c
-    ? severityBand(c.severity_band) ?? severityBand(c.risk_score)
-    : null;
+  const permittedLifecycleActions = permittedForShortcuts;
+  const outcome = c ? caseOutcome(c) : null;
+  const busy = loading || acting || !shownIsCurrent;
+  const canClosePrimary =
+    hasPermission(ACTION_PERMISSION[actionPlan.primary.key].resource, ACTION_PERMISSION[actionPlan.primary.key].action);
+  const canCloseSecondary = actionPlan.close
+    ? hasPermission(ACTION_PERMISSION[actionPlan.close.key].resource, ACTION_PERMISSION[actionPlan.close.key].action)
+    : false;
+  const setDispositionAction = permittedLifecycleActions.find((a) => a.key === 'set_disposition');
+  const shortcutFor = (key: ActionKind): string | null =>
+    key === 'acknowledge'
+      ? 'A'
+      : key === 'close_disposition'
+        ? 'C'
+        : key === 'escalate'
+          ? 'E'
+          : key === 'hold'
+            ? 'H'
+            : null;
+  const openFromControl = (action: ActionDef, control: HTMLElement | null) => {
+    actionOpenerRef.current = control;
+    openAction(action);
+  };
+  const mitreCount = Array.isArray(c?.mitre) ? c!.mitre!.length : 0;
+  const traceSteps = timeline?.spans?.length ?? null;
+  const messageCount = thread ? visibleMessageCount(thread) : null;
+  const openTasks = tasks ? tasks.filter((t) => t.status !== 'done').length : null;
+  const rail = c && outcome ? (
+    <FactsRail
+      c={c}
+      outcome={outcome}
+      triage={triage}
+      slaPolicy={slaPolicy}
+      fpPolicy={fpPolicy}
+      users={pickUsers}
+      canAssign={hasPermission('cases', 'assign')}
+      onCaseChange={commitCase}
+      onSetDisposition={
+        setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
+      }
+      onShowRelated={() => setTab('overview')}
+    />
+  ) : null;
+  const tabTrigger = cn(EMBEDDED_TAB_TRIGGER, 'gap-1.5 text-xs');
+  const restoreTo = (ref: React.RefObject<HTMLElement | null>) => (event: Event) => {
+    const target = [ref.current, takeActionTriggerRef.current].find(
+      (el): el is HTMLElement => Boolean(el && el.isConnected),
+    );
+    if (target) {
+      event.preventDefault();
+      target.focus();
+    }
+  };
 
   return (
     <TooltipProvider delayDuration={200}>
-      <CaseDetailSurface presentation={presentation} open={open} onClose={onClose}>
-          <MotionProvider>
-          <div className="flex h-full min-h-0 flex-col">
-            {/* ----------------------------------------------------- header */}
-            <header
+      <CaseDetailSurface
+        presentation={presentation}
+        open={open}
+        onClose={onClose}
+        titleRef={titleRef}
+      >
+        <MotionProvider>
+          <Tabs
+            value={tab}
+            onValueChange={(v) => setTab(v as typeof tab)}
+            className="@container/case flex h-full min-h-0 flex-col"
+            data-case-busy={busy ? 'true' : undefined}
+          >
+            {/* ------------------------------------------- sticky header (CM-2) */}
+            <div
+              ref={headerRef}
+              data-testid="case-detail-header"
               className={cn(
-                'flex shrink-0 items-start gap-4',
-                presentation === 'sheet' &&
-                  'border-b border-border bg-card px-6 py-4',
-                presentation === 'embedded' &&
-                  '@container/case-header flex-col gap-3 bg-background px-4 pb-3 pt-4 sm:flex-row sm:flex-wrap sm:px-5 lg:px-6',
+                materialBar,
+                'relative z-10 shrink-0 px-4 pt-3 sm:px-5 lg:px-6',
+                presentation === 'sheet' && 'pr-14 sm:pr-14 lg:pr-14',
               )}
             >
-              <div
-                className={cn(
-                  presentation === 'sheet' && 'contents',
-                  presentation === 'embedded' &&
-                    'flex min-w-0 w-full flex-1 items-start sm:w-auto sm:min-w-[16rem]',
-                )}
-              >
-              {/* The sheet keeps its identity tile; the embedded header lets the title
-                  lead instead of a tile that encoded nothing. */}
-              {presentation === 'sheet' ? (
-                <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-                  <Shield className="h-5 w-5 text-primary" />
+              <LoadingBar
+                active={loading && Boolean(c)}
+                size="sm"
+                label="Loading case"
+                className="absolute inset-x-0 top-0 rounded-none"
+              />
+              {/* Line 1: the title and the actions share ONE row when the whole title fits
+                  beside them; when it does not (a long title in the default 1280 pane, a
+                  phone) the actions WRAP to their own row and the title takes the full
+                  width — it is never squeezed to a few characters or to nothing. The title
+                  cell's flex basis is its natural width (`flex-auto`), which is what the
+                  wrap decision is made on. Below a 56rem pane the title is a single line
+                  (full title on hover and in its accessible name) and the secondary Close
+                  folds into the Take action menu (casemanager.md §4.1). Line 2: the meta
+                  row, full width. */}
+              <header className="flex flex-wrap items-start gap-x-3 gap-y-2" data-testid="case-title-row">
+                <div className="min-w-0 max-w-full flex-auto" data-testid="case-title-cell">
+                  {/* UNTRUSTED title — plain text node. The full title is in the accessible
+                      name and the hover title when it clamps. The SAME heading element is
+                      rendered while the case loads (visually hidden, "Loading case"), so the
+                      sheet can focus it on open and keep that focus when the case arrives —
+                      never an icon button whose tooltip would then open by itself (CM-9). */}
+                  <h2
+                    ref={titleRef}
+                    tabIndex={-1}
+                    title={c ? c.title || c.case_id : undefined}
+                    data-case-title
+                    className={cn(
+                      'truncate text-lg font-semibold leading-8 tracking-tight text-foreground outline-none',
+                      '@[56rem]/case:line-clamp-2 @[56rem]/case:whitespace-normal @[56rem]/case:text-xl @[56rem]/case:leading-snug',
+                      !c && 'sr-only',
+                      c && !shownIsCurrent && 'opacity-60',
+                    )}
+                  >
+                    {c ? c.title || c.case_id : 'Loading case'}
+                  </h2>
                 </div>
-              ) : null}
-              <div className="min-w-0 flex-1">
-                {loading || !c ? (
-                  <Skeleton className="h-6 w-72" />
-                ) : presentation === 'embedded' ? (
-                  <>
-                    {/* The human title is the heading; the machine id is its quiet,
-                        copyable secondary line. UNTRUSTED title — plain text node. */}
-                    <h2 className="line-clamp-2 text-xl font-semibold leading-snug tracking-tight text-foreground">
-                      {c.title || c.case_id}
-                    </h2>
-                    <div
-                      data-testid="case-detail-meta"
-                      className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
-                    >
-                      <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
-                        {/* Human-facing display id (F7) — falls back to case_id; wraps
-                            rather than truncating so the whole identifier stays legible. */}
-                        <span
-                          data-testid="case-detail-id"
-                          className="min-w-0 break-all font-mono text-xs text-muted-foreground"
-                        >
-                          {c.case_number || c.case_id}
-                        </span>
-                        <CopyCaseIdButton value={c.case_number || c.case_id} />
-                      </span>
-                      {/* The two flags wrap together, so a long id never orphans one. */}
-                      <span className="inline-flex shrink-0 items-center gap-2">
-                        <SeverityBadge
-                          severity={headerSeverity}
-                          labelSuffix="severity"
-                          className="h-5 shrink-0 rounded-[3px] px-1.5"
-                        />
-                        <DemoBadge
-                          show={isDemoCase(c)}
-                          className="h-5 rounded-[3px] px-1.5 text-2xs"
-                        />
-                      </span>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="flex flex-wrap items-center gap-2">
-                      {/* Human-facing display id (F7) — falls back to case_id. */}
-                      <span className="shrink-0 font-mono text-xs font-semibold text-primary">
-                        {c.case_number || c.case_id}
-                      </span>
-                      <DemoBadge show={isDemoCase(c)} className="text-2xs" />
-                    </div>
-                    <h2 className="mt-0.5 truncate text-lg font-semibold tracking-tight text-foreground">
-                      {/* UNTRUSTED title — plain text node. */}
-                      {c.title || c.case_id}
-                    </h2>
-                    {presentation === 'sheet' ? (
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2">
-                      <StatusBadge status={c.status} />
-                      <DispositionBadge disposition={c.disposition ?? null} />
-                      {/* Round-7 #11 — self-hiding: shows only when the AI auto-closed
-                          this case (terminal status + decision_by === 'agent'). */}
-                      <AutoClosedBadge status={c.status} decisionBy={c.decision_by} />
-                      {typeof c.escalation_level === 'number' && c.escalation_level > 0 ? (
-                        <Badge variant="critical" className="gap-1">
-                          <Bell className="h-3 w-3" /> Escalated
-                        </Badge>
-                      ) : null}
-                      {/* Campaign membership (#51) — plain text (#9); clicking deep-links
-                          to the Campaigns surface. Renders nothing when uncampaigned. */}
-                      {campaign ? (
-                        <CampaignChip
-                          campaign={campaign}
-                          onOpen={onNavigate ? () => onNavigate('campaigns') : undefined}
-                        />
-                      ) : null}
-                    </div>
-                    ) : null}
-                  </>
-                )}
-                {presentation === 'sheet' ? (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {c?.created_at ? (
-                    <>Created {humanizeAge(c.created_at)}</>
-                  ) : (
-                    'Created —'
-                  )}
-                  {c?.updated_at ? <> · Updated {humanizeAge(c.updated_at)}</> : null}
-                </p>
-                ) : null}
-              </div>
-              </div>
 
-              {/* Header icon actions. Sheet mode reserves room for Radix's built-in X;
-                  embedded mode supplies its own explicit pane-close control. */}
-              <div
-                className={cn(
-                  'flex shrink-0 items-center',
-                  presentation === 'sheet' && 'pr-8',
-                  presentation === 'embedded' &&
-                    'ml-auto w-full justify-end gap-2 sm:w-auto',
-                )}
-              >
-                {presentation === 'embedded' ? (
-                  <>
-                    {/* In a narrow pane (the 1280px split) Share folds to its icon so
-                        the actions stay beside the title; its name stays "Share". */}
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-8 rounded-[3px] px-2 @[40rem]/case-header:px-3"
-                          aria-label="Share"
-                          onClick={() => void shareCase()}
-                        >
-                          <Share2 className="h-4 w-4" aria-hidden />
-                          <span className="hidden @[40rem]/case-header:inline">Share</span>
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">Copy a link to this case</TooltipContent>
-                    </Tooltip>
-
-                    <DropdownMenu open={takeActionOpen} onOpenChange={setTakeActionOpen}>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          size="sm"
-                          className="h-8 rounded-[3px] px-3"
-                          disabled={loading || acting}
-                        >
-                          <Zap className="h-4 w-4" />
-                          Take Action
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent
-                        align="end"
-                        sideOffset={8}
-                        className="w-72 rounded-[3px]"
-                      >
-                        <DropdownMenuLabel>
-                          Case actions
-                        </DropdownMenuLabel>
-                        {permittedLifecycleActions.map((action) => {
-                          const Icon = action.icon;
-                          return (
-                            <DropdownMenuItem
-                              key={action.key}
-                              disabled={loading || acting}
-                              onSelect={() => openAction(action)}
-                            >
-                              <Icon className="h-4 w-4" />
-                              <span className="flex-1">{action.label}</span>
-                            </DropdownMenuItem>
-                          );
-                        })}
-
-                        <DropdownMenuSeparator />
-                        <DropdownMenuLabel>
-                          Investigation
-                        </DropdownMenuLabel>
-                        <DropdownMenuItem
-                          disabled={reinvesting || loading}
-                          onSelect={() => {
-                            setTakeActionOpen(false);
-                            setReinvestModel('');
-                            setReinvestOpen(true);
-                          }}
-                        >
-                          <Zap className="h-4 w-4" />
-                          Reinvestigate
-                        </DropdownMenuItem>
-                        {hasPermission('playbooks', 'run') ? (
-                          <DropdownMenuItem
-                            disabled={runningPlaybook || loading}
-                            onSelect={() => {
-                              setTakeActionOpen(false);
-                              setRunPlaybookId('');
-                              setRunPlaybookOpen(true);
-                            }}
-                          >
-                            <BookOpen className="h-4 w-4" />
-                            Run a playbook
-                          </DropdownMenuItem>
-                        ) : null}
-                        <DropdownMenuItem
-                          disabled={loading}
-                          onSelect={() => {
-                            setTakeActionOpen(false);
-                            void loadCase();
-                          }}
-                        >
-                          <RefreshCw className="h-4 w-4" />
-                          Refresh case
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onSelect={() => {
-                            setTakeActionOpen(false);
-                            setTab('chat');
-                          }}
-                        >
-                          <MessageSquare className="h-4 w-4" />
-                          Ask about this case
-                        </DropdownMenuItem>
-
-                        <DropdownMenuSeparator />
-                        <DropdownMenuLabel>
-                          Share &amp; export
-                        </DropdownMenuLabel>
-                        <DropdownMenuItem
-                          onSelect={() => {
-                            setTakeActionOpen(false);
-                            openInNewTab();
-                          }}
-                        >
-                          <ExternalLink className="h-4 w-4" />
-                          Open in new tab
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={exporting !== null || loading}
-                          onSelect={() => {
-                            setTakeActionOpen(false);
-                            void runExport('json');
-                          }}
-                        >
-                          <Download className="h-4 w-4" />
-                          Export JSON
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          disabled={exporting !== null || loading}
-                          onSelect={() => {
-                            setTakeActionOpen(false);
-                            void runExport('md');
-                          }}
-                        >
-                          <FileText className="h-4 w-4" />
-                          Export Markdown report
-                        </DropdownMenuItem>
-                        {hasPermission('cases', 'write') ? (
-                          <DropdownMenuItem
-                            disabled={loading}
-                            onSelect={() => {
-                              setTakeActionOpen(false);
-                              setNotifyChannelId('');
-                              setNotifyOpen(true);
-                            }}
-                          >
-                            <Send className="h-4 w-4" />
-                            Notify
-                          </DropdownMenuItem>
-                        ) : null}
-                        {campaign && onNavigate ? (
-                          <DropdownMenuItem
-                            onSelect={() => {
-                              setTakeActionOpen(false);
-                              onNavigate('campaigns');
-                            }}
-                          >
-                            <Shield className="h-4 w-4" />
-                            Open campaign
-                          </DropdownMenuItem>
-                        ) : null}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-
+                <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-1.5 @[48rem]/case:gap-2">
+                  {c && actionPlan.close && canCloseSecondary ? (
                     <Button
                       variant="outline"
-                      size="icon"
-                      className="hidden h-8 w-8 rounded-[3px] xl:inline-flex"
-                      aria-label="Back to case queue"
-                      onClick={onClose}
+                      size="sm"
+                      className="hidden h-8 @[56rem]/case:inline-flex"
+                      disabled={busy}
+                      aria-keyshortcuts="C"
+                      onClick={(event) => openFromControl(actionPlan.close!, event.currentTarget)}
                     >
-                      <X className="h-4 w-4" />
+                      <Check className="h-4 w-4" aria-hidden />
+                      {actionPlan.close.label}
                     </Button>
-                  </>
-                ) : (
-                  <>
-                {/* Reinvestigate (popover) */}
-                <Popover open={reinvestOpen} onOpenChange={setReinvestOpen}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <PopoverTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          disabled={reinvesting || loading}
-                          aria-label="Reinvestigate"
-                          onClick={() => setReinvestModel('')}
-                        >
-                          {reinvesting ? (
-                            <RefreshCw className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Zap className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </PopoverTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent>Reinvestigate</TooltipContent>
-                  </Tooltip>
-                  <PopoverContent align="end" className="w-80">
-                    <div className="space-y-3">
-                      <div className="flex items-center gap-2">
-                        <Search className="h-4 w-4 text-primary" />
-                        <span className="text-sm font-semibold text-foreground">
-                          Re-run the investigation
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground">
-                        Forces a fresh AI investigation. This runs the LLM pipeline and may
-                        take a few seconds.
-                      </p>
-                      <Alert variant="warning" className="py-2">
-                        <AlertTriangle className="h-4 w-4" />
-                        <AlertTitle className="text-xs">
-                          Costs tokens and overwrites the verdict
-                        </AlertTitle>
-                        <AlertDescription className="text-xs">
-                          Investigation cost to date {fmtMoney(c?.token_cost)}. Re-running
-                          spends more tokens and replaces this case&apos;s current verdict,
-                          confidence, and rationale.
-                        </AlertDescription>
-                      </Alert>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs">Model</Label>
-                        <Select
-                          value={reinvestModel || '__configured__'}
-                          onValueChange={(v) =>
-                            setReinvestModel(v === '__configured__' ? '' : v)
-                          }
-                          disabled={reinvesting}
-                        >
-                          <SelectTrigger className="h-8 text-xs" aria-label="Model">
-                            <SelectValue placeholder="Use configured model" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__configured__">
-                              Use configured model
-                            </SelectItem>
-                            {modelOptions.map((m) => (
-                              <SelectItem key={m.value} value={m.value}>
-                                {m.text}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setReinvestOpen(false)}
-                          disabled={reinvesting}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          size="sm"
-                          onClick={() => void runReinvestigate()}
-                          disabled={reinvesting}
-                        >
-                          {reinvesting ? (
-                            <RefreshCw className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Play className="h-4 w-4" />
-                          )}
-                          Reinvestigate
-                        </Button>
-                      </div>
-                    </div>
-                  </PopoverContent>
-                </Popover>
-
-                {/* Run a playbook (CONTEXT-ONLY re-investigation) — gated by playbooks:run */}
-                <Can resource="playbooks" action="run">
-                  <Popover open={runPlaybookOpen} onOpenChange={setRunPlaybookOpen}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <PopoverTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            disabled={runningPlaybook || loading}
-                            aria-label="Run a playbook"
-                            onClick={() => setRunPlaybookId('')}
-                          >
-                            {runningPlaybook ? (
-                              <RefreshCw className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <BookOpen className="h-4 w-4" />
-                            )}
-                          </Button>
-                        </PopoverTrigger>
-                      </TooltipTrigger>
-                      <TooltipContent>Run a playbook</TooltipContent>
-                    </Tooltip>
-                    <PopoverContent align="end" className="w-80">
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <BookOpen className="h-4 w-4 text-primary" />
-                          <span className="text-sm font-semibold text-foreground">
-                            Run a playbook
-                          </span>
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          Re-investigates this case with the chosen playbook injected as
-                          TRUSTED operator procedure. The playbook can only{' '}
-                          <span className="font-medium text-foreground">recommend</span> — the
-                          close / escalate decision is still made by deterministic code.
-                        </p>
-                        <Alert variant="warning" className="py-2">
-                          <AlertTriangle className="h-4 w-4" />
-                          <AlertTitle className="text-xs">Costs tokens</AlertTitle>
-                          <AlertDescription className="text-xs">
-                            This re-runs the LLM pipeline and may replace the verdict /
-                            rationale. It never changes the lifecycle status on its own.
-                          </AlertDescription>
-                        </Alert>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Playbook</Label>
-                          {playbooks.length === 0 ? (
-                            <p className="text-xs text-muted-foreground">
-                              No playbooks are loaded. Add Markdown runbooks on the backend.
-                            </p>
-                          ) : (
-                            <Select
-                              value={runPlaybookId || undefined}
-                              onValueChange={setRunPlaybookId}
-                              disabled={runningPlaybook}
-                            >
-                              <SelectTrigger className="h-8 text-xs" aria-label="Playbook">
-                                <SelectValue placeholder="Select a playbook…" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {playbooks.map((p) => (
-                                  <SelectItem key={p.id} value={p.id}>
-                                    {/* Operator-authored name → plain text. */}
-                                    {p.name || p.id}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          )}
-                        </div>
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => setRunPlaybookOpen(false)}
-                            disabled={runningPlaybook}
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() => void runPlaybook()}
-                            disabled={runningPlaybook || !runPlaybookId.trim()}
-                          >
-                            {runningPlaybook ? (
-                              <RefreshCw className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Play className="h-4 w-4" />
-                            )}
-                            Run playbook
-                          </Button>
-                        </div>
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                </Can>
-
-                {/* Refresh */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Refresh case"
-                      disabled={loading}
-                      onClick={() => void loadCase()}
-                    >
-                      <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Refresh</TooltipContent>
-                </Tooltip>
-
-                {/* Ask about this case → jump to chat tab */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Ask about this case"
-                      onClick={() => setTab('chat')}
-                    >
-                      <MessageSquare className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Ask about this case</TooltipContent>
-                </Tooltip>
-
-                {/* History → the Timeline tab ("what happened" narrative) */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Timeline"
-                      onClick={() => setTab('timeline')}
-                    >
-                      <History className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Timeline</TooltipContent>
-                </Tooltip>
-
-                {/* Investigation → the AI assessment + deterministic decision + full trace */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Investigation"
-                      onClick={() => setTab('investigation')}
-                    >
-                      <Bot className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Investigation</TooltipContent>
-                </Tooltip>
-
-                {/* Open this case in a new browser tab (deep-link to the Cases surface). */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      aria-label="Open in new tab"
-                      onClick={openInNewTab}
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Open in new tab</TooltipContent>
-                </Tooltip>
-
-                {/* Export */}
-                <DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          aria-label="Export case"
-                          disabled={exporting !== null || loading}
-                        >
-                          <Download className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent>Export</TooltipContent>
-                  </Tooltip>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={() => void runExport('json')}>
-                      <FileText className="h-4 w-4" />
-                      JSON
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => void runExport('md')}>
-                      <FileText className="h-4 w-4" />
-                      Markdown report
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-
-                {/* Notify (manual send) — gated by cases:write */}
-                <Can resource="cases" action="write">
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Notify"
-                        disabled={loading}
-                        onClick={() => {
-                          setNotifyChannelId('');
-                          setNotifyOpen(true);
-                        }}
-                      >
-                        <Send className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Notify</TooltipContent>
-                  </Tooltip>
-                </Can>
-                  </>
-                )}
-              </div>
-            </header>
-
-            {/* ----------------------------------------------------- body */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-              {error ? (
-                <div className="px-6 pt-4">
-                  <Alert variant="destructive">
-                    <AlertTriangle className="h-4 w-4" />
-                    <AlertTitle>Could not load case</AlertTitle>
-                    <AlertDescription>
-                      {error instanceof Error ? error.message : 'Something went wrong.'}
-                    </AlertDescription>
-                  </Alert>
-                </div>
-              ) : null}
-
-              {loading || !c ? (
-                <LoadingState
-                  label="Loading case"
-                  description="Retrieving the case record and its evidence."
-                  layout="page"
-                  shape="page"
-                  className="px-6"
-                />
-              ) : (
-                <Tabs
-                  value={tab}
-                  onValueChange={(v) => setTab(v as typeof tab)}
-                  className="flex min-h-0 flex-1 flex-col"
-                >
-                  <div
-                    className={cn(
-                      'shrink-0 overflow-x-auto border-b border-border',
-                      presentation === 'sheet' ? 'px-6' : 'px-4 sm:px-5 lg:px-6',
-                      presentation === 'sheet' && 'pt-3',
-                    )}
-                  >
-                    <TabsList
-                      className={cn(
-                        'w-max min-w-full justify-start',
-                        presentation === 'embedded' &&
-                          'h-auto gap-4 rounded-none border-0 bg-transparent p-0',
-                      )}
-                    >
-                      <TabsTrigger
-                        value="overview"
-                        className={cn(
-                          'gap-1.5',
-                          'text-xs',
-                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
-                        )}
-                      >
-                        {presentation === 'sheet' ? <FileText className="h-3.5 w-3.5" /> : null}
-                        Overview
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="timeline"
-                        className={cn(
-                          'gap-1.5',
-                          'text-xs',
-                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
-                        )}
-                      >
-                        {presentation === 'sheet' ? <History className="h-3.5 w-3.5" /> : null}
-                        Timeline
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="investigation"
-                        className={cn(
-                          'gap-1.5',
-                          'text-xs',
-                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
-                        )}
-                      >
-                        {presentation === 'sheet' ? <Bot className="h-3.5 w-3.5" /> : null}
-                        Investigation
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="threat"
-                        className={cn(
-                          'gap-1.5',
-                          'text-xs',
-                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
-                        )}
-                      >
-                        {presentation === 'sheet' ? <Globe className="h-3.5 w-3.5" /> : null}
-                        Threat context
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="collab"
-                        className={cn(
-                          'gap-1.5',
-                          'text-xs',
-                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
-                        )}
-                      >
-                        {presentation === 'sheet' ? <Users className="h-3.5 w-3.5" /> : null}
-                        Collaboration
-                      </TabsTrigger>
-                      <TabsTrigger
-                        value="chat"
-                        className={cn(
-                          'gap-1.5',
-                          'text-xs',
-                          presentation === 'embedded' && EMBEDDED_TAB_TRIGGER,
-                        )}
-                      >
-                        {presentation === 'sheet' ? <MessageSquare className="h-3.5 w-3.5" /> : null}
-                        Chat
-                      </TabsTrigger>
-                    </TabsList>
-                  </div>
-
-                  <div
-                    ref={panelScrollRef}
-                    className={cn(
-                      'min-h-0 flex-1',
-                      presentation === 'embedded' && tab === 'chat'
-                        ? 'overflow-hidden'
-                        : 'overflow-y-auto',
-                    )}
-                  >
-                    <TabsContent value="overview" className="mt-0">
-                     <TabPanelMotion>
-                      <OverviewPanel
-                        c={c}
-                        fpPolicy={fpPolicy}
-                        triage={triage}
-                        triageLoading={triageLoading}
-                        rationale={rationale}
-                        rationaleLoading={rationaleLoading}
-                        rationaleError={rationaleError}
-                        onRetryRationale={loadRationale}
-                        onOpenInvestigation={() => setTab('investigation')}
-                        onNavigate={onNavigate}
-                        presentation={presentation === 'embedded' ? 'case-manager' : 'default'}
-                      />
-                     </TabPanelMotion>
-                    </TabsContent>
-                    <TabsContent value="timeline" className="mt-0">
-                     <TabPanelMotion>
-                      {/* The clean "what happened" six-stage narrative, alone (task 5).
-                          `stages` is fetched on first visit to this tab by the lazy effect
-                          above. */}
-                      <TimelinePanel
-                        stages={stages}
-                        stagesLoading={stagesLoading}
-                        stagesError={stagesError}
-                        onRetryStages={loadStages}
-                        presentation={presentation === 'embedded' ? 'case-manager' : 'default'}
-                        onOpenInvestigation={() => setTab('investigation')}
-                      />
-                     </TabPanelMotion>
-                    </TabsContent>
-                    <TabsContent value="investigation" className="mt-0">
-                     <TabPanelMotion>
-                      {/* AI assessment → pinned deterministic DecisionCard + a collapsible
-                          full ReAct trace (task 5). rationale/timeline are fetched on first
-                          visit by the lazy effects above; DecisionCard reads its
-                          policy_clause off the timeline. */}
-                      <InvestigationPanel
-                        c={c}
-                        rationale={rationale}
-                        rationaleLoading={rationaleLoading}
-                        rationaleError={rationaleError}
-                        onRetryRationale={loadRationale}
-                        timeline={timeline}
-                        timelineLoading={timelineLoading}
-                        timelineError={timelineError}
-                        onRetryTimeline={loadTimeline}
-                        presentation={presentation === 'embedded' ? 'case-manager' : 'default'}
-                      />
-                     </TabPanelMotion>
-                    </TabsContent>
-                    <TabsContent value="threat" className="mt-0">
-                     <TabPanelMotion>
-                      <ThreatContextPanel
-                        c={c}
-                        panel={threat}
-                        loading={threatLoading}
-                        error={threatError}
-                        onRetry={loadThreat}
-                        onNavigate={onNavigate}
-                        presentation={presentation === 'embedded' ? 'case-manager' : 'default'}
-                      />
-                     </TabPanelMotion>
-                    </TabsContent>
-                    <TabsContent value="collab" className="mt-0">
-                     <TabPanelMotion>
-                      <CollaborationThreadTab
-                        c={c}
-                        thread={thread}
-                        threadLoading={threadLoading}
-                        threadError={threadError}
-                        threadBusyId={threadBusyId}
-                        tasks={tasks}
-                        tasksLoading={tasksLoading}
-                        tasksError={tasksError}
-                        tasksBusyId={tasksBusyId}
-                        activity={activity}
-                        activityLoading={activityLoading}
-                        activityError={activityError}
-                        users={pickUsers}
-                        currentUser={currentUser}
-                        canComment={canComment}
-                        canWrite={canWriteCase}
-                        onRetryThread={loadThread}
-                        onRetryTasks={loadTasks}
-                        onRetryActivity={loadActivity}
-                        onPost={(text) => void postMessage(text)}
-                        onReply={(parentId, text) => void postMessage(text, parentId)}
-                        onEdit={(msgId, text) => void editMessage(msgId, text)}
-                        onDelete={(msgId) => void removeMessage(msgId)}
-                        onReact={(msgId, emoji, remove) => void reactMessage(msgId, emoji, remove)}
-                        onAddTask={(title) => void createTask(title)}
-                        onTaskStatus={(taskId, status) => void setTaskStatus(taskId, status)}
-                        onTaskLog={(taskId, note) => void addTaskLog(taskId, note)}
-                        onAssigned={(next) => {
-                          commitCase(next);
-                          if (activity !== null) void loadActivity();
-                        }}
-                        liveCaseId={id}
-                        onLiveThread={liveRefreshThread}
-                        onLiveActivity={liveRefreshActivity}
-                        presentation={presentation === 'embedded' ? 'case-manager' : 'default'}
-                      />
-                     </TabPanelMotion>
-                    </TabsContent>
-                    <TabsContent value="chat"
-                      className={cn(
-                        'mt-0',
-                        presentation === 'embedded' && 'h-full min-h-0',
-                      )}
-                    >
-                     <TabPanelMotion
-                       className={cn(presentation === 'embedded' && 'h-full min-h-0')}
-                     >
-                      <ChatTab
-                        c={c}
-                        onNavigate={onNavigate}
-                        onClose={onClose}
-                        presentation={presentation === 'embedded' ? 'case-manager' : 'default'}
-                      />
-                     </TabPanelMotion>
-                    </TabsContent>
-                  </div>
-                </Tabs>
-              )}
-            </div>
-
-            {/* ----------------------------------------------------- footer
-                ONE clear primary CTA (context-dependent on status) + a secondary
-                "Close case" (unified Close-with-disposition) + an overflow "More"
-                menu for the rest — instead of a row of equally-weighted buttons.
-                Every control is <Can>-gated by its action's grant. */}
-            {c && presentation === 'sheet' ? (
-              <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-border bg-card px-6 py-3">
-                <Button variant="ghost" size="sm" onClick={onClose}>
-                  <X className="h-4 w-4" /> Dismiss
-                </Button>
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  {/* Overflow — the remaining contextual actions. */}
-                  {(() => {
-                    const overflow = actionPlan.overflow.filter((a) =>
-                      hasPermission(ACTION_PERMISSION[a.key].resource, ACTION_PERMISSION[a.key].action),
-                    );
-                    if (overflow.length === 0) return null;
-                    return (
-                      <DropdownMenu>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={loading || acting}
-                                aria-label="More actions"
-                              >
-                                <MoreHorizontal className="h-4 w-4" />
-                                More
-                              </Button>
-                            </DropdownMenuTrigger>
-                          </TooltipTrigger>
-                          <TooltipContent>More actions</TooltipContent>
-                        </Tooltip>
-                        <DropdownMenuContent align="end" className="w-56">
-                          {overflow.map((a) => {
-                            const Icon = a.icon;
-                            return (
-                              <DropdownMenuItem
-                                key={a.key}
-                                disabled={loading || acting}
-                                onSelect={() => openAction(a)}
-                              >
-                                <Icon className="h-4 w-4" />
-                                <span className="flex-1">{a.label}</span>
-                              </DropdownMenuItem>
-                            );
-                          })}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    );
-                  })()}
-
-                  {/* Unified Close-with-disposition — secondary (unless it's the
-                      primary, i.e. resolved cases, where actionPlan.close is null). */}
-                  {actionPlan.close ? (
-                    <Can
-                      resource={ACTION_PERMISSION[actionPlan.close.key].resource}
-                      action={ACTION_PERMISSION[actionPlan.close.key].action}
-                    >
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={loading || acting}
-                            onClick={() => openAction(actionPlan.close!)}
-                            aria-label={`${actionPlan.close.label} — ${actionPlan.close.help}`}
-                          >
-                            <Check className="h-4 w-4" />
-                            {actionPlan.close.label}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>{actionPlan.close.help}</TooltipContent>
-                      </Tooltip>
-                    </Can>
                   ) : null}
-
-                  {/* Primary CTA — the single filled, context-dependent action. */}
-                  <Can
-                    resource={ACTION_PERMISSION[actionPlan.primary.key].resource}
-                    action={ACTION_PERMISSION[actionPlan.primary.key].action}
-                  >
+                  {c && canClosePrimary ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Button
                           size="sm"
-                          variant={actionPlan.primary.variant === 'outline' ? 'default' : actionPlan.primary.variant}
-                          disabled={loading || acting}
-                          onClick={() => openAction(actionPlan.primary)}
-                          aria-label={`${actionPlan.primary.label} — ${actionPlan.primary.help}`}
+                          className="h-8"
+                          data-testid="case-primary-action"
+                          disabled={busy}
+                          aria-keyshortcuts={shortcutFor(actionPlan.primary.key) ?? undefined}
+                          onClick={(event) => openFromControl(actionPlan.primary, event.currentTarget)}
                         >
                           {React.createElement(actionPlan.primary.icon, { className: 'h-4 w-4' })}
                           {actionPlan.primary.label}
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent>{actionPlan.primary.help}</TooltipContent>
+                      <TooltipContent side="bottom">{actionPlan.primary.help}</TooltipContent>
                     </Tooltip>
-                  </Can>
-                </div>
-              </footer>
-            ) : null}
-          </div>
-          </MotionProvider>
-      </CaseDetailSurface>
+                  ) : null}
 
-      {/* Embedded-only editors launched from the single Take Action menu. They are
-          detached dialogs (not nested popovers), so Select focus/keyboard behavior
-          remains reliable after the Radix menu closes. */}
-      {presentation === 'embedded' ? (
-        <>
-          <Dialog open={reinvestOpen} onOpenChange={setReinvestOpen}>
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  <Zap className="h-4 w-4 text-primary" />
-                  Re-run the investigation
-                </DialogTitle>
-                <DialogDescription>
-                  Force a fresh AI investigation. This runs the LLM pipeline and may
-                  take a few seconds.
-                </DialogDescription>
-              </DialogHeader>
-              <Alert variant="warning">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Costs tokens and overwrites the verdict</AlertTitle>
-                <AlertDescription>
-                  Investigation cost to date {fmtMoney(c?.token_cost)}. Re-running spends
-                  more tokens and replaces the current verdict, confidence, and rationale.
-                </AlertDescription>
-              </Alert>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Model</Label>
-                <Select
-                  value={reinvestModel || '__configured__'}
-                  onValueChange={(value) =>
-                    setReinvestModel(value === '__configured__' ? '' : value)
-                  }
-                  disabled={reinvesting}
-                >
-                  <SelectTrigger aria-label="Model">
-                    <SelectValue placeholder="Use configured model" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__configured__">Use configured model</SelectItem>
-                    {modelOptions.map((model) => (
-                      <SelectItem key={model.value} value={model.value}>
-                        {model.text}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <DialogFooter>
-                <Button
-                  variant="ghost"
-                  onClick={() => setReinvestOpen(false)}
-                  disabled={reinvesting}
-                >
-                  Cancel
-                </Button>
-                <Button onClick={() => void runReinvestigate()} disabled={reinvesting}>
-                  {reinvesting ? (
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4" />
-                  )}
-                  Reinvestigate
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+                  <DropdownMenu open={takeActionOpen} onOpenChange={setTakeActionOpen}>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        ref={takeActionTriggerRef}
+                        size="sm"
+                        variant="outline"
+                        className="h-8"
+                        disabled={!c}
+                      >
+                        <Zap className="h-4 w-4" aria-hidden />
+                        Take action
+                        <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" sideOffset={8} className="w-72">
+                      <DropdownMenuLabel>Case actions</DropdownMenuLabel>
+                      {permittedLifecycleActions.map((action) => {
+                        const Icon = action.icon;
+                        const hint = shortcutFor(action.key);
+                        return (
+                          <DropdownMenuItem
+                            key={action.key}
+                            disabled={busy}
+                            aria-keyshortcuts={hint ?? undefined}
+                            onSelect={() => openFromControl(action, takeActionTriggerRef.current)}
+                          >
+                            <Icon className="h-4 w-4" />
+                            <span className="flex-1">{action.label}</span>
+                            {hint ? <MenuShortcut>{hint}</MenuShortcut> : null}
+                          </DropdownMenuItem>
+                        );
+                      })}
 
-          <Dialog open={runPlaybookOpen} onOpenChange={setRunPlaybookOpen}>
-            <DialogContent className="sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  <BookOpen className="h-4 w-4 text-primary" />
-                  Run a playbook
-                </DialogTitle>
-                <DialogDescription>
-                  Re-investigate with a trusted operator playbook. It can recommend;
-                  deterministic code still owns the close or escalate decision.
-                </DialogDescription>
-              </DialogHeader>
-              <Alert variant="warning">
-                <AlertTriangle className="h-4 w-4" />
-                <AlertTitle>Costs tokens</AlertTitle>
-                <AlertDescription>
-                  This re-runs the LLM pipeline and may replace the verdict and rationale.
-                  It never changes lifecycle status on its own.
-                </AlertDescription>
-              </Alert>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Playbook</Label>
-                {playbooks.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    No playbooks are loaded. Add Markdown runbooks on the backend.
-                  </p>
-                ) : (
-                  <Select
-                    value={runPlaybookId || undefined}
-                    onValueChange={setRunPlaybookId}
-                    disabled={runningPlaybook}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>Investigation</DropdownMenuLabel>
+                      <DropdownMenuItem
+                        disabled={reinvesting || busy}
+                        aria-keyshortcuts="R"
+                        onSelect={() => {
+                          actionOpenerRef.current = takeActionTriggerRef.current;
+                          setTakeActionOpen(false);
+                          setReinvestModel('');
+                          setReinvestOpen(true);
+                        }}
+                      >
+                        <Zap className="h-4 w-4" />
+                        <span className="flex-1">Reinvestigate</span>
+                        <MenuShortcut>R</MenuShortcut>
+                      </DropdownMenuItem>
+                      {hasPermission('playbooks', 'run') ? (
+                        <DropdownMenuItem
+                          disabled={runningPlaybook || busy}
+                          onSelect={() => {
+                            actionOpenerRef.current = takeActionTriggerRef.current;
+                            setTakeActionOpen(false);
+                            setRunPlaybookId('');
+                            setRunPlaybookOpen(true);
+                          }}
+                        >
+                          <BookOpen className="h-4 w-4" />
+                          Run a playbook
+                        </DropdownMenuItem>
+                      ) : null}
+                      <DropdownMenuItem
+                        disabled={loading}
+                        onSelect={() => {
+                          setTakeActionOpen(false);
+                          void loadCase();
+                        }}
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                        Refresh case
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          setTakeActionOpen(false);
+                          setTab('chat');
+                        }}
+                      >
+                        <MessageSquare className="h-4 w-4" />
+                        <span className="flex-1">Ask about this case</span>
+                        <MenuShortcut>Alt 6</MenuShortcut>
+                      </DropdownMenuItem>
+                      {hasPermission('cases', 'assign') ? (
+                        <DropdownMenuItem
+                          disabled={busy}
+                          aria-keyshortcuts="M"
+                          onSelect={() => {
+                            setTakeActionOpen(false);
+                            setOwnerOpen(true);
+                          }}
+                        >
+                          <UserCheck className="h-4 w-4" />
+                          <span className="flex-1">Change owner</span>
+                          <MenuShortcut>M</MenuShortcut>
+                        </DropdownMenuItem>
+                      ) : null}
+                      {canWriteCase ? (
+                        <DropdownMenuItem
+                          disabled={busy}
+                          aria-keyshortcuts="T"
+                          onSelect={() => {
+                            setTakeActionOpen(false);
+                            setTagsOpen(true);
+                          }}
+                        >
+                          <TagIcon className="h-4 w-4" />
+                          <span className="flex-1">Edit tags</span>
+                          <MenuShortcut>T</MenuShortcut>
+                        </DropdownMenuItem>
+                      ) : null}
+
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>Share and export</DropdownMenuLabel>
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          setTakeActionOpen(false);
+                          openInNewTab();
+                        }}
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Open in new tab
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={exporting !== null || !c}
+                        onSelect={() => {
+                          setTakeActionOpen(false);
+                          void runExport('json');
+                        }}
+                      >
+                        <Download className="h-4 w-4" />
+                        Export JSON
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={exporting !== null || !c}
+                        onSelect={() => {
+                          setTakeActionOpen(false);
+                          void runExport('md');
+                        }}
+                      >
+                        <FileText className="h-4 w-4" />
+                        Export Markdown report
+                      </DropdownMenuItem>
+                      {canWriteCase ? (
+                        <DropdownMenuItem
+                          disabled={busy}
+                          onSelect={() => {
+                            actionOpenerRef.current = takeActionTriggerRef.current;
+                            setTakeActionOpen(false);
+                            setNotifyChannelId('');
+                            setNotifyOpen(true);
+                          }}
+                        >
+                          <Send className="h-4 w-4" />
+                          Notify
+                        </DropdownMenuItem>
+                      ) : null}
+                      {campaign && onNavigate ? (
+                        <DropdownMenuItem
+                          onSelect={() => {
+                            setTakeActionOpen(false);
+                            onNavigate('campaigns');
+                          }}
+                        >
+                          <Shield className="h-4 w-4" />
+                          Open campaign
+                        </DropdownMenuItem>
+                      ) : null}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  {/* The facts rail folds into a side sheet in a narrow pane. */}
+                  <Button
+                    ref={detailsTriggerRef}
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 @[60rem]/case:hidden"
+                    disabled={!c}
+                    aria-label="Details"
+                    onClick={() => setDetailsOpen(true)}
                   >
-                    <SelectTrigger aria-label="Playbook">
-                      <SelectValue placeholder="Select a playbook…" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {playbooks.map((playbook) => (
-                        <SelectItem key={playbook.id} value={playbook.id}>
-                          {playbook.name || playbook.id}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    <PanelRight className="h-4 w-4" aria-hidden />
+                    <span className="hidden @[48rem]/case:inline">Details</span>
+                  </Button>
+
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 @[48rem]/case:px-3"
+                        aria-label="Share"
+                        onClick={() => void shareCase()}
+                      >
+                        <Share2 className="h-4 w-4" aria-hidden />
+                        <span className="hidden @[48rem]/case:inline">Share</span>
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">Copy a link to this case</TooltipContent>
+                  </Tooltip>
+
+                  {presentation === 'embedded' ? (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="hidden h-8 w-8 xl:inline-flex"
+                      aria-label="Back to case queue"
+                      onClick={onClose}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  ) : null}
+                </div>
+              </header>
+              {c ? (
+                <>
+                  {outcome ? (
+                    <CaseHeaderMeta
+                      c={c}
+                      outcome={outcome}
+                      campaign={campaign}
+                      onOpenCampaign={onNavigate ? () => onNavigate('campaigns') : undefined}
+                      users={pickUsers}
+                      currentUser={currentUser}
+                      canAssign={hasPermission('cases', 'assign') && shownIsCurrent}
+                      canTag={canWriteCase && shownIsCurrent}
+                      slaPolicy={slaPolicy}
+                      onCaseChange={commitCase}
+                      ownerOpen={ownerOpen}
+                      onOwnerOpenChange={setOwnerOpen}
+                      tagsOpen={tagsOpen}
+                      onTagsOpenChange={setTagsOpen}
+                    />
+                  ) : null}
+                </>
+              ) : (
+                <div className="space-y-2 py-1">
+                  <Skeleton className="h-6 w-72 max-w-full" />
+                  <Skeleton className="h-4 w-96 max-w-full" />
+                </div>
+              )}
+
+              {c ? (
+                <div className="-mx-1 mt-2 overflow-x-auto px-1">
+                  <TabsList className="h-auto w-max min-w-full justify-start gap-4 rounded-none border-0 bg-transparent p-0">
+                    <TabsTrigger value="overview" className={tabTrigger} aria-keyshortcuts="Alt+1">
+                      Overview
+                    </TabsTrigger>
+                    <TabsTrigger value="timeline" className={tabTrigger} aria-keyshortcuts="Alt+2">
+                      Timeline
+                    </TabsTrigger>
+                    <TabsTrigger value="investigation" className={tabTrigger} aria-keyshortcuts="Alt+3">
+                      Investigation
+                      {traceSteps ? <TabCount label="steps">{traceSteps}</TabCount> : null}
+                    </TabsTrigger>
+                    <TabsTrigger value="threat" className={tabTrigger} aria-keyshortcuts="Alt+4">
+                      Threat context
+                      {mitreCount ? <TabCount label="MITRE techniques">{mitreCount}</TabCount> : null}
+                    </TabsTrigger>
+                    <TabsTrigger value="collab" className={tabTrigger} aria-keyshortcuts="Alt+5">
+                      Collaboration
+                      {messageCount ? <TabCount label="messages">{messageCount}</TabCount> : null}
+                      {openTasks ? <TabCount label="open tasks">{openTasks} open</TabCount> : null}
+                    </TabsTrigger>
+                    <TabsTrigger value="chat" className={tabTrigger} aria-keyshortcuts="Alt+6">
+                      Chat
+                      {/* A case chat answer being written, unread, waiting or failed (SPEC D13). */}
+                      <CaseChatActivityGlyph caseId={c.case_id} className="ml-1.5" />
+                    </TabsTrigger>
+                  </TabsList>
+                </div>
+              ) : (
+                <div className="h-3" />
+              )}
+            </div>
+
+            {/* ----------------------------------------------------- body */}
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+                {error ? (
+                  <div className="px-6 pt-4">
+                    <Alert variant="destructive">
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>Could not load case</AlertTitle>
+                      <AlertDescription>
+                        {error instanceof Error ? error.message : 'Something went wrong.'}
+                      </AlertDescription>
+                    </Alert>
+                  </div>
+                ) : null}
+
+                {!c ? (
+                  loading ? (
+                    <LoadingState
+                      label="Loading case"
+                      description="Retrieving the case record and its evidence."
+                      layout="page"
+                      shape="page"
+                      className="px-6"
+                    />
+                  ) : null
+                ) : (
+                  <div
+                    ref={panelScrollRef}
+                    onScroll={onPanelScroll}
+                    data-testid="case-detail-scroll"
+                    className={cn(
+                      'min-h-0 flex-1 transition-opacity duration-fast',
+                      tab === 'chat' ? 'overflow-hidden' : 'overflow-y-auto',
+                      !shownIsCurrent && 'opacity-60',
+                    )}
+                    aria-busy={loading || undefined}
+                  >
+                    <TabsContent value="overview" className="mt-0">
+                      <TabPanelMotion>
+                        <OverviewPanel
+                          c={c}
+                          fpPolicy={fpPolicy}
+                          triage={triage}
+                          triageLoading={triageLoading}
+                          rationale={rationale}
+                          rationaleLoading={rationaleLoading}
+                          rationaleError={rationaleError}
+                          onRetryRationale={loadRationale}
+                          onOpenInvestigation={() => setTab('investigation')}
+                          onOpenTab={(next) => setTab(next)}
+                          onNavigate={onNavigate}
+                          presentation="case-manager"
+                          onSetDisposition={
+                            setDispositionAction && shownIsCurrent
+                              ? (opener) => openFromControl(setDispositionAction, opener)
+                              : undefined
+                          }
+                        />
+                      </TabPanelMotion>
+                    </TabsContent>
+                    <TabsContent value="timeline" className="mt-0">
+                      <TabPanelMotion>
+                        {/* The "what happened" six-stage narrative, alone (task 5). */}
+                        <TimelinePanel
+                          stages={stages}
+                          stagesLoading={stagesLoading}
+                          stagesError={stagesError}
+                          onRetryStages={loadStages}
+                          presentation="case-manager"
+                          onOpenInvestigation={() => setTab('investigation')}
+                        />
+                      </TabPanelMotion>
+                    </TabsContent>
+                    <TabsContent value="investigation" className="mt-0">
+                      <TabPanelMotion>
+                        {/* Decision first, then the AI assessment, inputs, evidence, and the
+                            collapsed full trace (CM-6). */}
+                        <InvestigationPanel
+                          c={c}
+                          rationale={rationale}
+                          rationaleLoading={rationaleLoading}
+                          rationaleError={rationaleError}
+                          onRetryRationale={loadRationale}
+                          timeline={timeline}
+                          timelineLoading={timelineLoading}
+                          timelineError={timelineError}
+                          onRetryTimeline={loadTimeline}
+                          presentation="case-manager"
+                        />
+                      </TabPanelMotion>
+                    </TabsContent>
+                    <TabsContent value="threat" className="mt-0">
+                      <TabPanelMotion>
+                        <ThreatContextPanel
+                          c={c}
+                          panel={threat}
+                          loading={threatLoading}
+                          error={threatError}
+                          onRetry={loadThreat}
+                          onNavigate={onNavigate}
+                          presentation="case-manager"
+                        />
+                      </TabPanelMotion>
+                    </TabsContent>
+                    <TabsContent value="collab" className="mt-0">
+                      <TabPanelMotion>
+                        <CollaborationThreadTab
+                          c={c}
+                          thread={thread}
+                          threadLoading={threadLoading}
+                          threadError={threadError}
+                          threadBusyId={threadBusyId}
+                          tasks={tasks}
+                          tasksLoading={tasksLoading}
+                          tasksError={tasksError}
+                          tasksBusyId={tasksBusyId}
+                          activity={activity}
+                          activityLoading={activityLoading}
+                          activityError={activityError}
+                          users={pickUsers}
+                          currentUser={currentUser}
+                          canComment={canComment}
+                          canWrite={canWriteCase}
+                          onRetryThread={loadThread}
+                          onRetryTasks={loadTasks}
+                          onRetryActivity={loadActivity}
+                          onPost={(text) => void postMessage(text)}
+                          onReply={(parentId, text) => void postMessage(text, parentId)}
+                          onEdit={(msgId, text) => void editMessage(msgId, text)}
+                          onDelete={(msgId) => void removeMessage(msgId)}
+                          onReact={(msgId, emoji, remove) => void reactMessage(msgId, emoji, remove)}
+                          onAddTask={(title) => void createTask(title)}
+                          onTaskStatus={(taskId, status) => void setTaskStatus(taskId, status)}
+                          onTaskLog={(taskId, note) => void addTaskLog(taskId, note)}
+                          onAssigned={(next) => {
+                            commitCase(next);
+                            if (activity !== null) void loadActivity();
+                          }}
+                          liveCaseId={id}
+                          onLiveThread={liveRefreshThread}
+                          onLiveActivity={liveRefreshActivity}
+                          presentation="case-manager"
+                        />
+                      </TabPanelMotion>
+                    </TabsContent>
+                    <TabsContent value="chat" className="mt-0 h-full min-h-0">
+                      <TabPanelMotion className="h-full min-h-0">
+                        <ChatTab
+                          c={c}
+                          onNavigate={onNavigate}
+                          onClose={onClose}
+                          presentation="case-manager"
+                        />
+                      </TabPanelMotion>
+                    </TabsContent>
+                  </div>
                 )}
               </div>
-              <DialogFooter>
-                <Button
-                  variant="ghost"
-                  onClick={() => setRunPlaybookOpen(false)}
-                  disabled={runningPlaybook}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  onClick={() => void runPlaybook()}
-                  disabled={runningPlaybook || !runPlaybookId.trim()}
-                >
-                  {runningPlaybook ? (
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4" />
+
+              {/* The facts rail — every tab, from a 60rem pane (CM-6). */}
+              {rail ? (
+                <div
+                  data-testid="case-facts-column"
+                  className={cn(
+                    'hidden w-[19rem] shrink-0 overflow-y-auto border-l border-border/70 px-4 py-5 @[60rem]/case:block',
+                    !shownIsCurrent && 'opacity-60',
                   )}
-                  Run playbook
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </>
-      ) : null}
+                >
+                  {rail}
+                </div>
+              ) : null}
+            </div>
+          </Tabs>
+        </MotionProvider>
+      </CaseDetailSurface>
+
+      {/* Narrow panes: the same facts in a NON-blocking side sheet (no scrim). */}
+      <Sheet open={detailsOpen} onOpenChange={setDetailsOpen} modal={false}>
+        <SheetContent
+          side="right"
+          size="default"
+          className="overflow-y-auto p-5"
+          aria-describedby={undefined}
+          // Open on the sheet's heading, never its first help tip (whose explainer would
+          // then pop open by itself); close back to the Details button, not <body> — the
+          // sheet is opened from state and non-modal, so Radix has no trigger to return to.
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            detailsTitleRef.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            const trigger = detailsTriggerRef.current;
+            if (trigger && trigger.isConnected) {
+              event.preventDefault();
+              trigger.focus();
+            }
+          }}
+        >
+          <SheetTitle
+            ref={detailsTitleRef}
+            tabIndex={-1}
+            className="mb-4 pr-10 text-base font-semibold leading-8 text-foreground outline-none"
+          >
+            Case facts
+          </SheetTitle>
+          {rail}
+        </SheetContent>
+      </Sheet>
+
+      {/* Editors launched from the Take action menu. Detached dialogs (not nested
+          popovers), so Select focus/keyboard behaviour stays reliable after the menu
+          closes; focus returns to the control that opened them. */}
+      <Dialog open={reinvestOpen} onOpenChange={setReinvestOpen}>
+        <DialogContent className="sm:max-w-md" onCloseAutoFocus={restoreTo(actionOpenerRef)}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Zap className="h-4 w-4 text-primary" />
+              Re-run the investigation
+            </DialogTitle>
+            <DialogDescription>
+              Force a fresh AI investigation. This runs the LLM pipeline and may take a few
+              seconds.
+            </DialogDescription>
+          </DialogHeader>
+          <Alert variant="warning">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Costs tokens and overwrites the verdict</AlertTitle>
+            <AlertDescription>
+              Investigation cost to date {fmtMoney(c?.token_cost)}. Re-running spends more
+              tokens and replaces the current verdict, confidence, and rationale.
+            </AlertDescription>
+          </Alert>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Model</Label>
+            <Select
+              value={reinvestModel || '__configured__'}
+              onValueChange={(value) => setReinvestModel(value === '__configured__' ? '' : value)}
+              disabled={reinvesting}
+            >
+              <SelectTrigger aria-label="Model">
+                <SelectValue placeholder="Use configured model" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__configured__">Use configured model</SelectItem>
+                {modelOptions.map((model) => (
+                  <SelectItem key={model.value} value={model.value}>
+                    {model.text}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setReinvestOpen(false)} disabled={reinvesting}>
+              Cancel
+            </Button>
+            <Button onClick={() => void runReinvestigate()} disabled={reinvesting}>
+              {reinvesting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Reinvestigate
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={runPlaybookOpen} onOpenChange={setRunPlaybookOpen}>
+        <DialogContent className="sm:max-w-md" onCloseAutoFocus={restoreTo(actionOpenerRef)}>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <BookOpen className="h-4 w-4 text-primary" />
+              Run a playbook
+            </DialogTitle>
+            <DialogDescription>
+              Re-investigate with a trusted operator playbook. It can recommend; deterministic
+              code still owns the close or escalate decision.
+            </DialogDescription>
+          </DialogHeader>
+          <Alert variant="warning">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Costs tokens</AlertTitle>
+            <AlertDescription>
+              This re-runs the LLM pipeline and may replace the verdict and rationale. It never
+              changes lifecycle status on its own.
+            </AlertDescription>
+          </Alert>
+          <div className="space-y-1.5">
+            <Label className="text-xs">Playbook</Label>
+            {playbooks.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No playbooks are loaded. Add Markdown runbooks on the backend.
+              </p>
+            ) : (
+              <Select
+                value={runPlaybookId || undefined}
+                onValueChange={setRunPlaybookId}
+                disabled={runningPlaybook}
+              >
+                <SelectTrigger aria-label="Playbook">
+                  <SelectValue placeholder="Select a playbook…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {playbooks.map((playbook) => (
+                    <SelectItem key={playbook.id} value={playbook.id}>
+                      {/* Operator-authored name → plain text. */}
+                      {playbook.name || playbook.id}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRunPlaybookOpen(false)} disabled={runningPlaybook}>
+              Cancel
+            </Button>
+            <Button onClick={() => void runPlaybook()} disabled={runningPlaybook || !runPlaybookId.trim()}>
+              {runningPlaybook ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Run playbook
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* --------------------------------------- confirm / close-with-disposition */}
       <ConfirmActionDialog
         pending={pending}
         acting={acting}
         onClose={closeAction}
-        onSubmit={() => void runAction()}
+        onSubmit={() => void runAction(false)}
+        onSubmitAndNext={onAdvance ? () => void runAction(true) : undefined}
+        returnFocusTo={actionOpenerRef}
+        focusAfterSubmit={resolveDialogFocus}
         note={note}
         onNoteChange={setNote}
         resolution={resolution}
@@ -2419,12 +2199,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         onTagsChange={setActionTags}
         tagDraft={actionTagDraft}
         onTagDraftChange={setActionTagDraft}
+        caseTags={c?.tags ?? null}
         disposition={actionDisposition}
         onDispositionChange={declareDisposition}
         currentDisposition={c?.disposition ?? null}
         reason={actionReason}
         onReasonChange={setActionReason}
         verdict={c?.verdict ?? null}
+        confidence={c?.confidence ?? null}
         grading={grading}
         onGradingChange={setGrading}
       />
@@ -2432,7 +2214,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       {/* Notify (manual send) dialog — F5/Wave 4. Picks one configured channel or
           all enabled; the send is fire-and-forget and never changes the case. */}
       <Dialog open={notifyOpen} onOpenChange={setNotifyOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md" onCloseAutoFocus={restoreTo(actionOpenerRef)}>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Send className="h-4 w-4" />
@@ -2464,16 +2246,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
           ) : (
             <div className="space-y-1.5 py-1">
               <Label>Channel</Label>
-              <Select value={notifyChannelId || '__all__'} onValueChange={(v) => setNotifyChannelId(v === '__all__' ? '' : v)}>
+              <Select
+                value={notifyChannelId || '__all__'}
+                onValueChange={(v) => setNotifyChannelId(v === '__all__' ? '' : v)}
+              >
                 <SelectTrigger aria-label="Channel">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__all__">All enabled channels</SelectItem>
-                  {notifyChannels.map((c) => (
-                    <SelectItem key={c.id} value={c.id} disabled={!c.enabled}>
-                      {c.name} · {c.type}
-                      {c.enabled ? '' : ' (disabled)'}
+                  {notifyChannels.map((ch) => (
+                    <SelectItem key={ch.id} value={ch.id} disabled={!ch.enabled}>
+                      {ch.name} · {ch.type}
+                      {ch.enabled ? '' : ' (disabled)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -2501,5 +2286,21 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     </TooltipProvider>
   );
 };
+
+/** A quiet count beside a tab label ("Investigation 18"). */
+const TabCount: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <span className="rounded-sm bg-muted px-1.5 text-2xs font-medium tabular-nums text-muted-foreground">
+    <span className="sr-only">, </span>
+    {children}
+    <span className="sr-only"> {label}</span>
+  </span>
+);
+
+/** A keyboard shortcut hint at the end of a menu item. */
+const MenuShortcut: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <kbd aria-hidden className="ml-auto font-sans text-xs text-muted-foreground">
+    {children}
+  </kbd>
+);
 
 export default CaseDetail;

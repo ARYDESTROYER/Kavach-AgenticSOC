@@ -2,7 +2,7 @@ import * as React from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
 import { Check, ChevronRight, Circle } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { overlaySurface } from '@/lib/ui-recipes';
+import { menuSurface } from '@/lib/ui-recipes';
 
 const DropdownMenu = DropdownMenuPrimitive.Root;
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
@@ -20,7 +20,7 @@ const DropdownMenuSubTrigger = React.forwardRef<
   <DropdownMenuPrimitive.SubTrigger
     ref={ref}
     className={cn(
-      'flex cursor-default select-none items-center gap-2 rounded-[3px] px-2.5 py-2 text-sm outline-none',
+      'flex cursor-default select-none items-center gap-2 rounded-sm px-2.5 py-2 text-sm outline-none',
       'focus:bg-accent focus:text-accent-foreground data-[state=open]:bg-accent data-[state=open]:text-accent-foreground',
       inset && 'pl-8',
       className,
@@ -43,7 +43,8 @@ const DropdownMenuSubContent = React.forwardRef<
       // Clamp to the Popper-available height + scroll internally so a menu taller than
       // the viewport doesn't push its lower items off-screen (Radix has no scroll buttons).
       'z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-[8rem] overflow-y-auto overflow-x-hidden p-1',
-      overlaySurface,
+      // A sub-menu grows out of the row that opened it (the popper origin rule in theme.css).
+      menuSurface,
       className,
     )}
     {...props}
@@ -63,7 +64,9 @@ const DropdownMenuContent = React.forwardRef<
         // Clamp to the Popper-available height + scroll internally so a long menu
         // (e.g. many saved views) doesn't overflow the viewport with unreachable rows.
         'z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-[8rem] overflow-y-auto overflow-x-hidden p-1',
-        overlaySurface,
+        // 10px surface, 4px (`p-1`) inset, 6px items: concentric radii. The menu scales
+        // out of its trigger rather than out of its own centre.
+        menuSurface,
         'data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1',
         'data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1',
         className,
@@ -83,7 +86,7 @@ const DropdownMenuItem = React.forwardRef<
   <DropdownMenuPrimitive.Item
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center gap-2 rounded-[3px] px-2.5 py-2 text-sm outline-none transition-colors',
+      'relative flex cursor-default select-none items-center gap-2 rounded-sm px-2.5 py-2 text-sm outline-none transition-colors',
       'focus:bg-accent focus:text-accent-foreground',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       '[&>svg]:h-4 [&>svg]:w-4 [&>svg]:shrink-0 [&>svg]:text-muted-foreground',
@@ -102,7 +105,7 @@ const DropdownMenuCheckboxItem = React.forwardRef<
   <DropdownMenuPrimitive.CheckboxItem
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center rounded-[3px] py-2 pl-8 pr-2.5 text-sm outline-none transition-colors',
+      'relative flex cursor-default select-none items-center rounded-sm py-2 pl-8 pr-2.5 text-sm outline-none transition-colors',
       'focus:bg-accent focus:text-accent-foreground',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,
@@ -127,7 +130,7 @@ const DropdownMenuRadioItem = React.forwardRef<
   <DropdownMenuPrimitive.RadioItem
     ref={ref}
     className={cn(
-      'relative flex cursor-default select-none items-center rounded-[3px] py-2 pl-8 pr-2.5 text-sm outline-none transition-colors',
+      'relative flex cursor-default select-none items-center rounded-sm py-2 pl-8 pr-2.5 text-sm outline-none transition-colors',
       'focus:bg-accent focus:text-accent-foreground',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-50',
       className,

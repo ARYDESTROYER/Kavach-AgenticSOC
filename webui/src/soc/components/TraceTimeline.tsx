@@ -326,15 +326,10 @@ const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = 
   const toolCount = spans.filter((span) => span.kind === 'execute_tool').length;
   return (
     <div className="overflow-hidden rounded-[4px] border border-border bg-surface-sunken">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
-        <span className="h-2.5 w-2.5 rounded-full bg-critical" aria-hidden />
-        <span className="h-2.5 w-2.5 rounded-full bg-medium" aria-hidden />
-        <span className="h-2.5 w-2.5 rounded-full bg-success" aria-hidden />
-        <span className="ml-2 font-mono text-2xs uppercase tracking-widest text-muted-foreground">
-          Agent investigation trace
-        </span>
-        <span className="ml-auto font-mono text-2xs text-muted-foreground">
-          {spans.length} steps · {toolCount} tools
+      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
+        <span className="text-xs font-medium text-muted-foreground">Agent investigation trace</span>
+        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+          {spans.length} step{spans.length === 1 ? '' : 's'} · {toolCount} tool{toolCount === 1 ? '' : 's'}
         </span>
       </div>
       <ol className="space-y-3 p-4">
@@ -344,12 +339,35 @@ const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = 
             tone: 'text-foreground',
           };
           const untrusted = span.trusted === false;
+          // The per-step tool, model, cost and tokens the full layout shows (kept here
+          // now that every case surface uses this compact trace).
+          const toolName =
+            span.payload_ref && typeof span.payload_ref.tool_name === 'string'
+              ? (span.payload_ref.tool_name as string)
+              : null;
+          const model =
+            span.payload_ref && typeof span.payload_ref.model === 'string'
+              ? (span.payload_ref.model as string)
+              : null;
           return (
-            <li key={span.id || span.step_index} className="font-mono text-xs leading-relaxed">
+            <li
+              key={span.id || span.step_index}
+              data-trace-kind={span.kind}
+              tabIndex={span.kind === 'decision' ? -1 : undefined}
+              className="scroll-mt-24 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
                 <time className="text-muted-foreground">{terminalTime(span.ts)}</time>
                 <span className={cn('font-semibold', meta.tone)}>[{meta.label}]</span>
                 <span className="text-foreground/80">{humanizeToken(span.name)}</span>
+                {toolName ? <span className="text-foreground">{toolName}</span> : null}
+                {model ? <span className="text-muted-foreground">{model}</span> : null}
+                {typeof span.cost === 'number' && span.cost > 0 ? (
+                  <span className="text-muted-foreground">{fmtMoney(span.cost)}</span>
+                ) : null}
+                {typeof span.tokens === 'number' && span.tokens > 0 ? (
+                  <span className="text-muted-foreground">{fmtTokens(span.tokens)} tok</span>
+                ) : null}
                 {untrusted ? (
                   <Badge variant="warning" className="h-5 gap-1 px-1.5 font-sans text-2xs">
                     <Lock className="h-3 w-3" /> untrusted

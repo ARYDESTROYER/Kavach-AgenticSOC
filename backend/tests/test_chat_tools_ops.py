@@ -142,7 +142,7 @@ async def test_automation_status_kinds_are_read_only_and_gated() -> None:
     versions = await AutomationStatusTool().run(ctx, kind="rule_versions")
     assert not versions.ok  # no version store on the context
     bad = await AutomationStatusTool().run(ctx, kind="secrets")
-    assert bad.error == "Invalid input: check kind"
+    assert bad.error.startswith("Invalid input: check kind (one of ")
     # Per-kind grants: an automation-only caller cannot read approvals or baselines.
     control = RecordingAudit()
     box = build_toolbox(make_ctx(grants=frozenset({("automation", "read")}), control_audit=control,
@@ -160,7 +160,7 @@ async def test_soc_metrics_kind_aliases_and_invalid_kind() -> None:
     alias = await SocMetricsTool().run(make_ctx(), kind="noise")
     assert alias.observation["kind"] == "noise_funnel"
     bad = await SocMetricsTool().run(make_ctx(), kind="everything")
-    assert bad.error == "Invalid input: check kind"
+    assert bad.error.startswith("Invalid input: check kind (one of ")
 
 
 async def test_cost_usage_needs_a_ledger_and_hides_budget_without_models_read() -> None:

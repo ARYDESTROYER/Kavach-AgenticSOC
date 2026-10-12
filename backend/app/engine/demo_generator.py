@@ -807,6 +807,15 @@ def _demo_risk_breakdown(total: float) -> RiskBreakdown:
     )
 
 
+#: A verdict as the console words it in a seeded summary or status reason ("Outbound data
+#: anomaly (needs human review).", never the raw enum "(NEEDS_HUMAN)").
+_VERDICT_TEXT: dict[Verdict, str] = {
+    Verdict.TRUE_POSITIVE: "true positive",
+    Verdict.FALSE_POSITIVE: "false positive",
+    Verdict.NEEDS_HUMAN: "needs human review",
+}
+
+
 def _hist_case(
     rng: random.Random, org: Org, tmpl: dict[str, Any], *, cid: str, sig_suffix: str,
     created_ms: int, first_seen_ms: int, idx: int,
@@ -857,7 +866,7 @@ def _hist_case(
         })
     status_history = [StatusHistoryEntry(
         from_status="new", to_status=st.value, by=decision_by.value,
-        at=created, reason=f"demo: {verdict.value} {tmpl['rname']}",
+        at=created, reason=f"demo: {tmpl['rname']}, {_VERDICT_TEXT[verdict]}",
     )]
     return Case(
         case_id=cid,
@@ -893,7 +902,7 @@ def _hist_case(
         comments=comments,
         assignee=analyst if st in (CaseStatus.ESCALATED, CaseStatus.ON_HOLD) else "",
         title=f"{et.value}:{entity_val} — {tmpl['rule']}",
-        summary=f"{tmpl['rname']} ({verdict.value}).",
+        summary=f"{tmpl['rname']} ({_VERDICT_TEXT[verdict]}).",
         token_cost=round(rng.random() * 0.04, 6),
         notifications_sent=notifications_sent,
         automation_actions=automation_actions,
@@ -1073,12 +1082,12 @@ def generate_capability_seed_cases(
             status_history=[StatusHistoryEntry(
                 from_status="new", to_status=CaseStatus.INVESTIGATING.value,
                 by=DecisionBy.SYSTEM.value, at=hitl_iso,
-                reason="demo: NEEDS_HUMAN impossible-travel",
+                reason=f"demo: impossible travel, {_VERDICT_TEXT[Verdict.NEEDS_HUMAN]}",
             )],
             severity_band="high",
             tags=["demo", "needs-human", "identity"],
             title=f"user:pnair — demo_impossible_travel #{i + 1}",
-            summary="Impossible-travel sign-in (NEEDS_HUMAN).",
+            summary=f"Impossible-travel sign-in ({_VERDICT_TEXT[Verdict.NEEDS_HUMAN]}).",
             retrieval_history_status="available",
             retrieval_observation_status="not_measured",
         ))
@@ -1110,7 +1119,7 @@ def generate_capability_seed_cases(
             status_history=[StatusHistoryEntry(
                 from_status="new", to_status=CaseStatus.CLOSED.value,
                 by=DecisionBy.AGENT.value, at=tuner_iso,
-                reason="demo: FALSE_POSITIVE noisy scanner",
+                reason=f"demo: noisy scanner, {_VERDICT_TEXT[Verdict.FALSE_POSITIVE]}",
             )],
             # Explicit synthetic analyst evidence keeps the demo honest under the
             # production tuner's independent-outcome requirement.  The model verdict
@@ -1130,7 +1139,7 @@ def generate_capability_seed_cases(
             severity_band="low",
             tags=["demo", "noise"],
             title=f"ip — {DEMO_TUNER_RULE} #{i + 1}",
-            summary="Benign scanner noise (FALSE_POSITIVE).",
+            summary=f"Benign scanner noise ({_VERDICT_TEXT[Verdict.FALSE_POSITIVE]}).",
             retrieval_history_status="available",
             retrieval_observation_status="not_measured",
         ))

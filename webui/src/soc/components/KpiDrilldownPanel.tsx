@@ -102,6 +102,7 @@ import { ChevronDown, Download, Search, X } from 'lucide-react';
 import type { Case, CasesResponse } from '@/lib/types';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { downloadText, EXPORT_MIME, exportFileName, UTF8_BOM } from '@/lib/download';
 import { DASH, fmtNumber, humanizeAge, humanizeToken } from '@/lib/format';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
@@ -284,13 +285,14 @@ export interface KpiDrilldownSpec {
    * at all when the page withholds the partition (a stale window, a split that does not
    * reconcile, an unreadable store).
    *
-   * NOT YET GENERIC. The rendered caption is fixed close-attribution copy ("Who closed
-   * them…") and refers to "the numeral above", which is the pressed chip in the metric
-   * switcher — a band that only renders when `metrics.length > 1` and `onSelectMetric` are
-   * both supplied. A second caller needs its own caption, and a numeral to point at,
-   * before either sentence is true for it.
+   * The caption defaults to the close-attribution copy ("Who closed them…", which refers
+   * to "the numeral above" — the pressed chip in the metric switcher). A caller whose rows
+   * are NOT a partition that sums to the numeral passes its own `partitionCaption`
+   * (Round 12: the AI-verdict FP rate's numerator beside the analyst-confirmed count).
    */
   partition?: readonly KpiBreakdownRow[];
+  /** Caption for `partition`; see above. Plain text. */
+  partitionCaption?: string;
   /** The tile's honest server trend, restated here so touch/keyboard can reach it. */
   trend?: MetricTrendSeries;
   /** The full-list drill-through, when one exists for this population. */
@@ -352,6 +354,12 @@ export interface KpiDrilldownPanelProps {
   metrics?: readonly KpiDrilldownMetric[];
   /** Select another metric. The PARENT owns which tile is expanded, so it owns this. */
   onSelectMetric?: (key: string) => void;
+  /**
+   * The viewport point the dialog grows out of — the centre of the tile that opened it
+   * (Apple spatial consistency, Round 12). Read once at open by the parent from the
+   * tile's `getBoundingClientRect()`; omitted → the dialog scales from its own centre.
+   */
+  origin?: { x: number; y: number } | null;
   className?: string;
 }
 
@@ -498,11 +506,6 @@ function csvField(value: unknown): string {
   return `"${defused.replace(/"/g, '""')}"`;
 }
 
-/** Filename-safe slug of a panel title. */
-function slug(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'cases';
-}
-
 /**
  * The listed rows as CSV.
  *
@@ -603,6 +606,7 @@ export function KpiDrilldownPanel({
   restoreFocusTo,
   metrics,
   onSelectMetric,
+  origin,
   className,
 }: KpiDrilldownPanelProps) {
   const { onOpenCase } = spec;
@@ -615,6 +619,9 @@ export function KpiDrilldownPanel({
    * the "not filtered by the window" caveat that a window-exempt stock carries.
    */
   const populationId = `${panelId}-population`;
+  /** "About these rows": the long scope explanation, one click away (Round 12). */
+  const aboutId = `${panelId}-about`;
+  const [aboutOpen, setAboutOpen] = React.useState(false);
 
   const [range, setRange] = React.useState<DrilldownRange>(spec.defaultRange);
   const [sort, setSort] = React.useState<DrilldownSort>('recent');
@@ -993,25 +1000,20 @@ export function KpiDrilldownPanel({
    * sorted as they left it, and nothing more. The row count is in the filename because
    * this is a page export, not a population export; the footer states the bound.
    *
-   * Same Blob/anchor pattern the recovery-code download already uses. The object URL is
-   * revoked immediately: the click is synchronous, so the browser has already taken the
-   * data by the time this returns.
+   * Round 12: through the console's ONE download path (`lib/download.ts`), so this export
+   * gets what every other export gets — a feature-detected object URL (jsdom has none, and
+   * an unguarded call would throw out of the click handler), an anchor attached for the
+   * click, a deferred revoke (a synchronous revoke cancels the download in Safari and older
+   * Firefox), the shared filename rule, and the UTF-8 byte order mark Excel needs to read
+   * the file as UTF-8.
    */
   const exportCsv = React.useCallback(() => {
-    if (typeof document === 'undefined' || !visible.length) return;
-    // Feature-DETECTED, not assumed. `URL.createObjectURL` is absent in some environments
-    // (jsdom implements no object-URL store at all), and an unguarded call there is a
-    // TypeError thrown out of an onClick — which in this suite is a failed run, not a
-    // degraded download. Nothing else on the page depends on this succeeding, so the
-    // honest fallback is to do nothing rather than to throw.
-    if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return;
-    const blob = new Blob([drilldownCsv(visible)], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `agentic-soc-${slug(spec.title)}-${visible.length}-cases.csv`;
-    a.click();
-    URL.revokeObjectURL?.(url);
+    if (!visible.length) return;
+    downloadText(
+      exportFileName('cases', `${spec.title} ${visible.length} listed`, 'csv'),
+      EXPORT_MIME.csv,
+      UTF8_BOM + drilldownCsv(visible),
+    );
   }, [visible, spec.title]);
 
   /**
@@ -1290,6 +1292,8 @@ export function KpiDrilldownPanel({
         data-kpi={spec.key}
         onOpenAutoFocus={onOpenAutoFocus}
         onCloseAutoFocus={onCloseAutoFocus}
+        // Scales out of the tile that opened it rather than from the screen's centre.
+        origin={origin}
         // The built-in top-right X is suppressed for TWO reasons: it is absolutely
         // positioned into this header's own control row, and it is the one close path that
         // drops focus on `<body>` (this panel opens from STATE, never a `DialogTrigger`, so
@@ -1312,13 +1316,17 @@ export function KpiDrilldownPanel({
           className,
         )}
       >
-        {/* ---- BAND 1a — IDENTITY (shrink-0) ------------------------------------- */}
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-border px-5 py-3">
+        {/* ---- BAND 1a — IDENTITY (shrink-0) -------------------------------------
+            Below `sm` the actions sit UNDER the title instead of beside it (Round 12
+            review): beside it at 390px they left the breadcrumb and the title a ~110px
+            column, wrapping "Resolved / Closed · details" onto three lines and leaving the
+            evidence a 72px sliver. */}
+        <div className="flex shrink-0 flex-col gap-2 border-b border-border px-5 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
           <div className="min-w-0">
           {/* Where the operator is. Plain text, product vocabulary only. */}
           <p
             data-testid="kpi-drilldown-breadcrumb"
-            className="mb-1 flex min-w-0 flex-wrap items-center gap-1 text-2xs text-muted-foreground"
+            className="mb-1 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground"
           >
             <span className="truncate">Cyber Defence Center</span>
             <span aria-hidden>/</span>
@@ -1336,7 +1344,9 @@ export function KpiDrilldownPanel({
                 id={headingId}
                 tabIndex={-1}
                 data-testid="kpi-drilldown-heading"
-                className="-mx-1 rounded-sm px-1 text-xs font-semibold uppercase tracking-widest text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                // Sentence case at 16px (Round 12): the tracked 12px capitals read as a
+                // micro-label rather than as the dialog's name.
+                className="-mx-1 rounded-sm px-1 text-lg font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 {spec.title} · details
               </h2>
@@ -1370,7 +1380,7 @@ export function KpiDrilldownPanel({
           <p
             id={populationId}
             data-testid="kpi-drilldown-population"
-            className="mt-0.5 text-2xs text-muted-foreground"
+            className="mt-1 max-w-4xl text-sm text-muted-foreground"
           >
             {spec.population}
             {rangeNarrows ? (
@@ -1384,7 +1394,7 @@ export function KpiDrilldownPanel({
             ) : null}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-1">
+        <div className="-ml-2.5 flex shrink-0 items-center gap-1 sm:ml-0" data-testid="kpi-drilldown-actions">
           {/* Exports the LISTED rows, which is why the label says so rather than
               "Export report" — the panel reads bounded pages and must not offer what
               looks like a population export. Hidden with nothing to export. */}
@@ -1396,7 +1406,7 @@ export function KpiDrilldownPanel({
               onClick={exportCsv}
               data-testid="kpi-drilldown-export"
               aria-label={`Download the ${fmtNumber(visible.length)} listed ${spec.title} cases as CSV`}
-              className="h-7 px-2 text-2xs"
+              className="h-8 px-2.5 text-sm"
             >
               <Download className="h-3.5 w-3.5" aria-hidden />
               Export listed
@@ -1408,7 +1418,7 @@ export function KpiDrilldownPanel({
             size="sm"
             onClick={onClose}
             data-testid="kpi-drilldown-close"
-            className="h-7 px-2 text-2xs"
+            className="h-8 px-2.5 text-sm"
           >
             <X className="h-3.5 w-3.5" aria-hidden />
             Close
@@ -1416,6 +1426,17 @@ export function KpiDrilldownPanel({
         </div>
       </div>
 
+        {/* ---- BODY — switcher, toolbar and evidence -------------------------------
+            From `md` up this wrapper is inert (a flex column) and the evidence band below is
+            the ONE scroll port. Below `md` (Round 12 review) the wrapper itself scrolls and
+            the evidence band takes its content height (`max-md:flex-none`), so on a phone the
+            switcher and the filters scroll away with the evidence instead of standing as
+            three fixed bands over a sliver of it. The evidence band keeps its own port for
+            the table's horizontal scroll at every width. */}
+        <div
+          data-testid="kpi-drilldown-body"
+          className="flex min-h-0 min-w-0 flex-1 flex-col max-md:overflow-y-auto"
+        >
         {/* ---- BAND 1b — METRIC SWITCHER (shrink-0) -------------------------------
             This band is LOAD-BEARING, not chrome. Behind a modal scrim the four
             neighbouring tiles are `aria-hidden` and unclickable, so this is the only
@@ -1439,15 +1460,8 @@ export function KpiDrilldownPanel({
             role="group"
             aria-label="Switch metric — values are the dashboard's own numerals"
             data-testid="kpi-drilldown-metrics"
-            className="flex min-w-0 shrink-0 flex-wrap gap-1 border-b border-border/60 px-5 py-2"
+            className="flex min-w-0 shrink-0 flex-wrap items-center gap-1 border-b border-border/60 px-5 py-2"
           >
-          {/* Visible, not only in the group's aria-label: a sighted operator otherwise sees
-              five bare numerals with nothing saying they are whole-window rollups rather
-              than counts of the rows in the table below. */}
-          <p className="w-full text-2xs text-muted-foreground">
-            Switch metric — these numerals are the dashboard&rsquo;s own window rollups, not
-            counts of the rows listed below.
-          </p>
           {metrics.map((m) => {
             const current = m.key === spec.key;
             return (
@@ -1461,7 +1475,7 @@ export function KpiDrilldownPanel({
                   onSelectMetric(m.key);
                 }}
                 className={cn(
-                  'inline-flex min-w-0 items-center gap-1.5 rounded-[4px] border px-2 py-1 text-2xs transition-colors',
+                  'inline-flex min-w-0 items-center gap-1.5 rounded-md border px-2.5 py-1 text-sm transition-colors',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   current
                     ? 'border-primary/40 bg-primary/10 text-foreground'
@@ -1469,10 +1483,18 @@ export function KpiDrilldownPanel({
                 )}
               >
                 <span className="truncate">{m.label}</span>
-                <span className="shrink-0 font-mono tabular-nums text-foreground">{m.value}</span>
+                <span className="shrink-0 font-semibold tabular-nums text-foreground">{m.value}</span>
               </button>
             );
           })}
+          {/* Visible, not only in the group's aria-label: a sighted operator otherwise sees
+              six bare numerals with nothing saying they are whole-window rollups rather
+              than counts of the rows in the table below. It follows the chips on the same
+              line wherever it fits (Round 12), and wraps under them where it does not. */}
+          <p className="ml-1 min-w-0 flex-1 basis-80 text-xs text-muted-foreground">
+            These numerals are the dashboard&rsquo;s own window rollups, not counts of the rows
+            listed below.
+          </p>
         </div>
       ) : null}
 
@@ -1491,7 +1513,7 @@ export function KpiDrilldownPanel({
           role="group"
           aria-label={`${spec.title} detail filters`}
           data-testid="kpi-drilldown-controls"
-          className="flex shrink-0 flex-wrap items-center gap-2.5 border-b border-border bg-muted/20 px-5 py-2.5 text-xs"
+          className="flex shrink-0 flex-wrap items-center gap-2.5 border-b border-border bg-muted/20 px-5 py-2.5 text-sm"
         >
           <div className="relative min-w-0 flex-1 basis-56">
             <Search
@@ -1504,13 +1526,13 @@ export function KpiDrilldownPanel({
               placeholder="Filter these cases…"
               aria-label={`Filter ${spec.title} cases`}
               data-testid="kpi-drilldown-search"
-              className="h-8 rounded-[4px] pl-8 text-xs"
+              className="h-8 rounded-md pl-8 text-sm"
             />
           </div>
 
           <Select value={band} onValueChange={setBand}>
             <SelectTrigger
-              className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+              className="h-8 w-auto min-w-36 rounded-md text-sm"
               aria-label={`Filter ${spec.title} cases by severity`}
               data-testid="kpi-drilldown-severity"
             >
@@ -1528,7 +1550,7 @@ export function KpiDrilldownPanel({
 
           <Select value={status} onValueChange={setStatus}>
             <SelectTrigger
-              className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+              className="h-8 w-auto min-w-36 rounded-md text-sm"
               aria-label={`Filter ${spec.title} cases by status`}
               data-testid="kpi-drilldown-status"
             >
@@ -1551,7 +1573,7 @@ export function KpiDrilldownPanel({
           {sourceFacets.length ? (
             <Select value={source} onValueChange={setSource}>
               <SelectTrigger
-                className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+                className="h-8 w-auto min-w-36 rounded-md text-sm"
                 aria-label={`Filter ${spec.title} cases by detection source`}
                 data-testid="kpi-drilldown-source"
               >
@@ -1571,7 +1593,7 @@ export function KpiDrilldownPanel({
           <div className="flex min-w-0 items-center gap-2.5">
             <Select value={sort} onValueChange={(v) => setSort(v as DrilldownSort)}>
               <SelectTrigger
-                className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+                className="h-8 w-auto min-w-36 rounded-md text-sm"
                 aria-label={`Sort ${spec.title} cases`}
                 data-testid="kpi-drilldown-sort"
               >
@@ -1596,7 +1618,7 @@ export function KpiDrilldownPanel({
               }}
             >
               <SelectTrigger
-                className="h-8 w-auto min-w-36 rounded-[4px] text-xs"
+                className="h-8 w-auto min-w-36 rounded-md text-sm"
                 aria-label={`Time range for ${spec.title} cases`}
                 data-testid="kpi-drilldown-range"
               >
@@ -1636,96 +1658,105 @@ export function KpiDrilldownPanel({
         tabIndex={0}
         role="group"
         aria-label={`${spec.title} cases — scrollable evidence`}
-        className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring max-md:flex-none"
       >
-      {/* The numeral's WHOLE-WINDOW partition, FIRST in the scroller because a whole-window
-          rollup has to be read before the page-scoped stat cards below it — those are
-          computed over the rows the table lists and carry a caption that says so, and a
-          server rollup under that caption would be a fresh mislabel. (The numeral it
-          partitions sits in the pinned switcher band above and never scrolls away, so
-          co-visibility is not what decides the position.)
+      {/* ONE row above the table (Round 12): the trend (60%) beside a column (40%) that
+          holds the numeral's WHOLE-WINDOW partition, when the tile has one, over the four
+          page-scoped scalars. Stacked, these three blocks cost the table ~250px — the panel
+          showed about six rows at 1440. Either side takes the whole row when the other is
+          absent (Critical and Open Cases carry no honest series).
 
-          The `dt`/`dd` classes are the ones the tile partition used before it moved here;
-          the wrapper is sized for this panel, not for a 300px strip cell. */}
-      {spec.partition && spec.partition.length ? (
-        <div data-testid="kpi-drilldown-partition-block" className="sticky left-0 mb-3 mt-3">
-          <p className="mb-1.5 text-2xs text-muted-foreground">
-            Who closed them, over the whole window — the server rollup behind the numeral
-            above, not the cases listed below. The bands sum to that numeral.
-          </p>
-          {/* `max-w-sm` is load-bearing, not decoration. This panel is as wide as the
-              dashboard it explains, and an uncapped two-column list puts each band's label
-              at the far left and its value at the far right — ~1500px apart at the widest
-              cap, which reads as two unrelated columns rather than as a partition whose
-              rows sum to the numeral above. Capped, the pair stays one line. */}
-          <dl
-            data-testid="kpi-drilldown-partition"
-            className="grid min-w-0 max-w-sm grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-1 text-xs"
-          >
-            {spec.partition.map((row) => (
-              <React.Fragment key={row.label}>
-                <dt className="min-w-0 truncate text-muted-foreground" title={row.title}>
-                  {row.label}
-                </dt>
-                <dd className="font-mono font-medium tabular-nums text-foreground">{row.value}</dd>
-              </React.Fragment>
-            ))}
-          </dl>
-        </div>
-      ) : null}
-
-      {spec.trend ? (
+          Order inside the column is deliberate: the whole-window server rollup is read
+          BEFORE the scalars, which are computed over the rows the table lists and carry a
+          caption that says so — a server rollup under that caption would be a mislabel. */}
+      {spec.trend || statCards.length || (spec.partition && spec.partition.length) ? (
         <div
-          data-testid="kpi-drilldown-trend"
-          className="sticky left-0 mb-3 mt-3 rounded-md border border-border/70 bg-background/40 p-3"
+          className={cn(
+            'sticky left-0 mb-4 mt-4 grid min-w-0 gap-x-10 gap-y-5',
+            spec.trend ? 'lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]' : null,
+          )}
         >
-          <MetricTrendBody {...spec.trend} />
-        </div>
-      ) : null}
+          {spec.trend ? (
+            <div
+              data-testid="kpi-drilldown-trend"
+              // The shared trend body is sized for a hover card (11px captions). In this
+              // dialog its captions, readout and first / peak / latest line are chrome
+              // text, so they take the dialog's 12px floor (Round 12).
+              className="min-w-0 [&_.text-2xs]:text-xs"
+            >
+              <MetricTrendBody {...spec.trend} />
+            </div>
+          ) : null}
 
-      {/* The four scalars, all computed over the rows the table lists — so a card can
-          never disagree with the list under it. The heading says whose numbers these are,
-          because the tile numerals above them answer over the whole window instead. */}
-      {statCards.length ? (
-        <div className="sticky left-0 mb-3 mt-3">
-          <p className="mb-1.5 text-2xs text-muted-foreground">
-            Over the {fmtNumber(visible.length)} case{visible.length === 1 ? '' : 's'} listed
-            below, not the whole window.
-          </p>
-          <dl
-            data-testid="kpi-drilldown-stats"
-            className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-4"
-          >
-            {statCards.map((s) => (
-              <div
-                key={s.key}
-                data-testid={`kpi-drilldown-stat-${s.key}`}
-                className="min-w-0 rounded-md border border-border/70 bg-background/40 px-2.5 py-2"
-              >
-                <dt className="truncate text-2xs uppercase tracking-widest text-muted-foreground">
-                  {s.label}
-                </dt>
-                {/* The hint lives INSIDE the <dd>: a <div> in a <dl> may contain only
-                    <dt>/<dd>, so a sibling <p> here is a definition-list violation. */}
-                <dd className="mt-0.5 min-w-0">
-                  <span
-                    className={cn(
-                      'block font-mono text-sm font-semibold tabular-nums',
-                      s.value == null ? 'text-muted-foreground' : 'text-foreground',
-                    )}
-                  >
-                    {s.value ?? DASH}
-                  </span>
-                  <span
-                    className="mt-0.5 block truncate text-2xs font-normal text-muted-foreground"
-                    title={s.hint}
-                  >
-                    {s.hint}
-                  </span>
-                </dd>
+          <div className="@container min-w-0 space-y-4">
+            {spec.partition && spec.partition.length ? (
+              <div data-testid="kpi-drilldown-partition-block" className="min-w-0">
+                <p className="mb-1.5 text-xs text-muted-foreground">
+                  {spec.partitionCaption ??
+                    'Who closed them over the whole window (the server rollup, not the rows below). The bands sum to the numeral.'}
+                </p>
+                {/* Two label · value PAIRS per row wherever the column is 24rem wide (Round 12
+                    review): four stacked rows made this column taller than the trend beside
+                    it and cost the table two rows at 1440. The <dt>/<dd> stay direct
+                    children (axe's definition-list rule); the grid's four tracks pair them.
+                    `max-w-sm` / `max-w-2xl` are load-bearing: uncapped, a band's label and
+                    its value sit ~1500px apart at the widest cap and read as unrelated. */}
+                <dl
+                  data-testid="kpi-drilldown-partition"
+                  className="grid min-w-0 max-w-sm grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-1 text-sm @[24rem]:max-w-2xl @[24rem]:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)_auto]"
+                >
+                  {spec.partition.map((row) => (
+                    <React.Fragment key={row.label}>
+                      <dt className="min-w-0 truncate text-muted-foreground" title={row.title}>
+                        {row.label}
+                      </dt>
+                      <dd className="font-medium tabular-nums text-foreground">{row.value}</dd>
+                    </React.Fragment>
+                  ))}
+                </dl>
               </div>
-            ))}
-          </dl>
+            ) : null}
+
+            {/* The four scalars, all computed over the rows the table lists — so a stat
+                can never disagree with the list under it. No card borders: they are four
+                facts in the dialog, not four boxes inside a box. */}
+            {statCards.length ? (
+              <div className="min-w-0">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Over the {fmtNumber(visible.length)} case{visible.length === 1 ? '' : 's'}{' '}
+                  listed below, not the whole window.
+                </p>
+                <dl
+                  data-testid="kpi-drilldown-stats"
+                  className="grid min-w-0 grid-cols-2 gap-x-6 gap-y-3 @[28rem]:grid-cols-4"
+                >
+                  {statCards.map((s) => (
+                    <div key={s.key} data-testid={`kpi-drilldown-stat-${s.key}`} className="min-w-0">
+                      <dt className="truncate text-sm text-muted-foreground">{s.label}</dt>
+                      {/* The hint lives INSIDE the <dd>: a <div> in a <dl> may contain only
+                          <dt>/<dd>, so a sibling <p> here is a definition-list violation. */}
+                      <dd className="mt-0.5 min-w-0">
+                        <span
+                          className={cn(
+                            'block text-xl font-semibold leading-tight tabular-nums',
+                            s.value == null ? 'text-muted-foreground' : 'text-foreground',
+                          )}
+                        >
+                          {s.value ?? DASH}
+                        </span>
+                        <span
+                          className="mt-0.5 block truncate text-xs font-normal text-muted-foreground"
+                          title={s.hint}
+                        >
+                          {s.hint}
+                        </span>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -1771,19 +1802,20 @@ export function KpiDrilldownPanel({
                   a background on `<thead>` is not reliably painted, and rows scrolling
                   behind a transparent header read straight through its labels. */}
               <thead className="sticky top-0 z-10">
-                <tr className="border-b border-border/70 text-2xs uppercase tracking-widest text-muted-foreground">
-                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Case</th>
+                {/* Sentence-case 12px column names (Round 12), not tracked 11px capitals. */}
+                <tr className="border-b border-border/70 text-xs text-muted-foreground">
+                  <th scope="col" className="bg-card px-2 py-2 font-medium">Case</th>
                   {/* CREATED, not "detected". `Case.detected_at` is declared on the wire
                       but no backend path assigns it, so a "Detected" column could only ever
                       show the creation instant under a label that claims a sensor time the
                       product does not have. Naming the field we actually read is the whole
                       fix. */}
-                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Created</th>
-                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Title / rule</th>
-                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Source</th>
-                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Severity</th>
-                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Status</th>
-                  <th scope="col" className="bg-card px-2 py-1.5 font-semibold">Owner</th>
+                  <th scope="col" className="bg-card px-2 py-2 font-medium">Created</th>
+                  <th scope="col" className="bg-card px-2 py-2 font-medium">Title / rule</th>
+                  <th scope="col" className="bg-card px-2 py-2 font-medium">Source</th>
+                  <th scope="col" className="bg-card px-2 py-2 font-medium">Severity</th>
+                  <th scope="col" className="bg-card px-2 py-2 font-medium">Status</th>
+                  <th scope="col" className="bg-card px-2 py-2 font-medium">Owner</th>
                 </tr>
               </thead>
               <tbody>
@@ -1798,7 +1830,7 @@ export function KpiDrilldownPanel({
                       data-testid="kpi-drilldown-row"
                       className="border-b border-border/60 last:border-b-0 hover:bg-muted/30"
                     >
-                      <td className="px-2 py-1.5 align-top font-mono text-xs">
+                      <td className="px-2 py-1.5 align-top font-mono text-sm">
                         {onOpenCase ? (
                           <button
                             type="button"
@@ -1808,26 +1840,26 @@ export function KpiDrilldownPanel({
                             // it — speech input targets what a user can see. The id trails
                             // the title so the name still READS as a sentence.
                             aria-label={`Open case ${title} (${id})`}
-                            className="max-w-28 truncate rounded-sm text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            className="block max-w-56 truncate rounded-sm text-left text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title={id}
                           >
                             {id}
                           </button>
                         ) : (
-                          <span className="block max-w-28 truncate text-foreground" title={id}>
+                          <span className="block max-w-56 truncate text-foreground" title={id}>
                             {id}
                           </span>
                         )}
                       </td>
-                      <td className="whitespace-nowrap px-2 py-1.5 align-top font-mono text-2xs text-muted-foreground">
+                      <td className="whitespace-nowrap px-2 py-1.5 align-top text-xs tabular-nums text-muted-foreground">
                         {humanizeAge(c.created_at)}
                       </td>
-                      <td className="px-2 py-1.5 align-top text-xs">
-                        <span className="block max-w-72 truncate text-foreground" title={title}>
+                      <td className="px-2 py-1.5 align-top text-sm">
+                        <span className="block max-w-[32rem] truncate text-foreground" title={title}>
                           {title}
                         </span>
                       </td>
-                      <td className="px-2 py-1.5 align-top text-2xs text-muted-foreground">
+                      <td className="px-2 py-1.5 align-top text-xs text-muted-foreground">
                         {detectionSource ? humanizeToken(detectionSource) : DASH}
                       </td>
                       <td className="px-2 py-1.5 align-top">
@@ -1842,8 +1874,8 @@ export function KpiDrilldownPanel({
                           className="rounded-sm px-1.5 py-0.5 text-2xs"
                         />
                       </td>
-                      <td className="px-2 py-1.5 align-top text-2xs text-muted-foreground">
-                        <span className="block max-w-28 truncate" title={owner || undefined}>
+                      <td className="px-2 py-1.5 align-top text-xs text-muted-foreground">
+                        <span className="block max-w-36 truncate" title={owner || undefined}>
                           {owner || 'Unassigned'}
                         </span>
                       </td>
@@ -1855,6 +1887,7 @@ export function KpiDrilldownPanel({
           </div>
         )}
       </div>
+        </div>
 
         {/* ---- FOOTER — PINNED (shrink-0) -----------------------------------------
             A SIBLING of the scroller, never a child of it. In normal flow this could not clip;
@@ -1863,8 +1896,8 @@ export function KpiDrilldownPanel({
             lie. It states what was read, whether the store PROVED that page complete, which
             narrowings were applied to the rows rather than to the population, and offers the
             full list. */}
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-muted/20 px-5 py-2.5">
-          <p data-testid="kpi-drilldown-scope" className="min-w-0 text-2xs text-muted-foreground">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-t border-border bg-muted/20 px-5 py-2.5">
+          <p data-testid="kpi-drilldown-scope" className="min-w-0 text-xs text-muted-foreground">
             {error ? (
               'This page could not be read.'
             ) : loading ? (
@@ -1897,66 +1930,94 @@ export function KpiDrilldownPanel({
               </>
             )}
           </p>
-          <div className="flex shrink-0 items-center gap-2">
-            {moreToRead && !beyondCeiling ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setPage((p) => p + 1)}
-                data-testid="kpi-drilldown-more"
-                aria-label={`Read the next ${fmtNumber(pageSize)} ${spec.title} cases`}
-                className="h-7 px-2 text-2xs"
+          {/* The long scope and range explanation sits behind "About these rows" (Round 12):
+              three lines of fine print under every list were what squeezed the table. The
+              honesty that must stay ON SCREEN does: the scope line beside this states the
+              rows read and "lower bound" whenever the page is not proven complete, the badge
+              beside the heading says the same, and a range narrowing is stated in the
+              population sentence. This is the explanation of those facts, one click away —
+              a real disclosure button, with the text kept in the DOM (`hidden` while shut). */}
+          {caveats.length > 0 && !error && !loading ? (
+            <button
+              type="button"
+              aria-expanded={aboutOpen}
+              aria-controls={aboutId}
+              onClick={() => setAboutOpen((open) => !open)}
+              data-testid="kpi-drilldown-about"
+              className="inline-flex shrink-0 items-center gap-1 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown
+                className={cn(
+                  'size-3.5 transition-transform motion-reduce:transition-none',
+                  aboutOpen ? 'rotate-0' : '-rotate-90',
+                )}
+                aria-hidden
+              />
+              About these rows
+            </button>
+          ) : null}
+          <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+            {/* Only when something the operator set will NOT survive the hand-off. A filter
+                that silently disappears is worse than one that never travelled: the
+                destination list then looks authoritative while being wider than it claims.
+                When everything travels there is nothing to warn about, so this stays quiet.
+                It sits beside the button it qualifies. */}
+            {spec.target && dropped.length > 0 ? (
+              <p
+                data-testid="kpi-drilldown-carryover"
+                className="min-w-0 text-xs text-muted-foreground"
               >
-                <ChevronDown className="h-3.5 w-3.5" aria-hidden />
-                Read more
-              </Button>
+                {carried.length > 0
+                  ? `“${spec.target.label}” carries ${carried.map((k) => CONTEXT_LABEL[k]).join(', ')}. `
+                  : ''}
+                {`It cannot carry ${dropped
+                  .map((k) => CONTEXT_LABEL[k])
+                  .join(', ')}. Reapply ${dropped.length === 1 ? 'it' : 'them'} there.`}
+              </p>
             ) : null}
-            {spec.target ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                // CLOSE, then hand off. Today the hand-off navigates away and unmounts the
-                // page this panel lives on, so the modal would disappear either way — but
-                // that is the DESTINATION's behaviour, not this panel's, and a modal left
-                // open over a page the operator has just left is never right. Closing first
-                // also returns focus to the tile before the route changes, so the operator
-                // is not dropped on `<body>` at the far end.
-                onClick={() => {
-                  onClose();
-                  spec.target?.onSelect(targetContext);
-                }}
-                data-testid="kpi-drilldown-drillthrough"
-                className="h-7 px-2 text-2xs"
-              >
-                {spec.target.label}
-              </Button>
-            ) : null}
+            <div className="flex shrink-0 items-center gap-2">
+              {moreToRead && !beyondCeiling ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPage((p) => p + 1)}
+                  data-testid="kpi-drilldown-more"
+                  aria-label={`Read the next ${fmtNumber(pageSize)} ${spec.title} cases`}
+                  className="h-8 px-2.5 text-sm"
+                >
+                  <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                  Read more
+                </Button>
+              ) : null}
+              {spec.target ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  // CLOSE, then hand off: a modal left open over a page the operator has
+                  // just left is never right, and closing first returns focus to the tile
+                  // before the route changes.
+                  onClick={() => {
+                    onClose();
+                    spec.target?.onSelect(targetContext);
+                  }}
+                  data-testid="kpi-drilldown-drillthrough"
+                  className="h-8 px-2.5 text-sm"
+                >
+                  {spec.target.label}
+                </Button>
+              ) : null}
+            </div>
           </div>
           {caveats.length > 0 && !error && !loading ? (
             <p
+              id={aboutId}
               data-testid="kpi-drilldown-caveats"
-              className="min-w-0 basis-full text-2xs text-muted-foreground"
+              hidden={!aboutOpen}
+              className="min-w-0 max-w-5xl basis-full text-xs text-muted-foreground"
             >
               {caveats.join(' ')}
-            </p>
-          ) : null}
-          {/* Only when something the operator set will NOT survive the hand-off. A filter
-              that silently disappears is worse than one that never travelled: the
-              destination list then looks authoritative while being wider than it claims.
-              When everything travels there is nothing to warn about, so this stays quiet. */}
-          {spec.target && dropped.length > 0 ? (
-            <p
-              data-testid="kpi-drilldown-carryover"
-              className="min-w-0 basis-full text-2xs text-muted-foreground"
-            >
-              {carried.length > 0
-                ? `“${spec.target.label}” carries ${carried.map((k) => CONTEXT_LABEL[k]).join(', ')}. `
-                : ''}
-              {`It cannot carry ${dropped
-                .map((k) => CONTEXT_LABEL[k])
-                .join(', ')} — reapply ${dropped.length === 1 ? 'it' : 'them'} there.`}
             </p>
           ) : null}
         </div>

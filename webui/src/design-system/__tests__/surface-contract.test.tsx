@@ -2,8 +2,8 @@
  * Shared Console surface contract.
  *
  * These assertions deliberately pin the small set of classes that make the UI read
- * as one command surface: compact squared controls, border-first sections, and no
- * default resting elevation. A page should compose these primitives instead of
+ * as one command surface: compact, quiet controls with concentric radii (an 8px rail
+ * holding 6px targets), border-first sections, and no default resting elevation. A page should compose these primitives instead of
  * reintroducing pill tabs or card-on-card shadows.
  */
 import { describe, expect, it } from 'vitest';
@@ -32,7 +32,7 @@ describe('Console surface contract', () => {
     expect(screen.getByTestId('card')).toHaveClass('shadow-elev1');
   });
 
-  it('uses one compact squared grammar for tabs and value segments', () => {
+  it('uses one compact concentric grammar for tabs and value segments', () => {
     render(
       <>
         <Tabs defaultValue="overview">
@@ -56,8 +56,10 @@ describe('Console surface contract', () => {
 
     expect(tabList).toHaveClass('h-9', 'rounded-md', 'bg-transparent');
     expect(segments).toHaveClass('h-9', 'rounded-md', 'bg-transparent');
-    expect(tab).toHaveClass('h-8', 'rounded-[3px]');
-    expect(segment).toHaveClass('h-7', 'rounded-[3px]');
+    // Round 12: the inner target is concentric with its 8px rail (6px, `rounded-sm`),
+    // replacing the squared 3px — and tabs and segments still match each other.
+    expect(tab).toHaveClass('h-8', 'rounded-sm');
+    expect(segment).toHaveClass('h-7', 'rounded-sm');
     expect(tab.className).not.toContain('shadow-sm');
     expect(segment.className).not.toContain('shadow-sm');
   });

@@ -48,6 +48,7 @@ import { api } from '@/lib/api';
 import type { BackgroundJobKind, Case, CaseActionInput, SavedView } from '@/lib/types';
 import { Can, useCan } from '@/soc/components/Can';
 import { humanizeAge, humanizeToken, DASH } from '@/lib/format';
+import { caseTagError } from '@/lib/tags';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
@@ -85,14 +86,19 @@ import { usePrefs } from '@/soc/prefs';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
+import type { AskAiChipProps } from '@/soc/components/AskAiChip';
+import { useAuth } from '@/soc/auth';
 import { CaseHoverCard } from '@/soc/components/CaseHoverCard';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
+import { useDemo } from '@/soc/demo';
 import { LoadingBar } from '@/soc/components/LoadingBar';
 import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
+import { OwnerMonogram } from '@/soc/components/OwnerMonogram';
 import {
   StatusBadge,
   VerdictBadge,
   DispositionBadge,
+  OutcomeBadge,
   RiskBadge,
   SeverityBadge,
   ConfidenceBadge,
@@ -103,6 +109,12 @@ import {
   SEVERITY_BAND_ORDER,
 } from '@/soc/components/badges';
 import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
+import { caseOutcome } from '@/soc/components/outcome';
+import {
+  BulkCloseDialog,
+  type BulkCloseInput,
+  type BulkTerminalAction,
+} from './casedetail/BulkCloseDialog';
 
 import type { Navigate } from '@/soc/router';
 import { useRoute } from '@/soc/router';
@@ -121,6 +133,49 @@ import { motion, AnimatePresence, MotionProvider, HOUSE_SPRING } from '@/soc/com
 const LIST_LIMIT = 200;
 const CASE_MANAGER_HANDOFF_MS = 500;
 
+/**
+ * Round 12 WP-ASK: the "Ask AI" chip, loaded on demand so it never becomes a shared
+ * chunk every route's preload list (in the entry chunk) must name (see AskAiChip.tsx,
+ * "Loading"). The load starts when this module loads; the chip renders once it has
+ * arrived, and never if it cannot load (the chip is optional, so it fails soft).
+ */
+type AskAiChipModule = typeof import('@/soc/components/AskAiChip');
+let askAiChipModule: AskAiChipModule | null = null;
+const askAiChipLoad: Promise<AskAiChipModule | null> = import('@/soc/components/AskAiChip').then(
+  (loaded) => (askAiChipModule = loaded),
+  () => null,
+);
+/**
+ * A shell context, or null outside it. `useAuth` / `useRoute` read their context before
+ * they throw, so hook order is stable; the hook is looked up inside the guard too (a test
+ * double of the module may not export it).
+ */
+function useOptionalContext<T>(pick: () => () => T): T | null {
+  try {
+    return pick()();
+  } catch {
+    return null;
+  }
+}
+function AskAiChip(props: AskAiChipProps) {
+  const auth = useOptionalContext(() => useAuth);
+  const route = useOptionalContext(() => useRoute);
+  const [loaded, setLoaded] = React.useState(askAiChipModule);
+  React.useEffect(() => {
+    if (loaded) return undefined;
+    let live = true;
+    void askAiChipLoad.then((next) => {
+      if (live && next) setLoaded(next);
+    });
+    return () => {
+      live = false;
+    };
+  }, [loaded]);
+  return loaded ? (
+    <loaded.AskAiChip {...props} navigate={route?.navigate} hasPermission={auth?.hasPermission} />
+  ) : null;
+}
+
 /** Stable id for the Cases table's per-user column state (Wave 7). */
 const CASES_TABLE_ID = 'cases';
 /** The surface scope saved views on this page belong to. */
@@ -136,7 +191,9 @@ const CASES_VIEW_SCOPE = 'cases';
  * any column their explicit stored state wins verbatim (this default no longer applies).
  */
 const CASES_DEFAULT_HIDDEN = [
-  'disposition',
+  // Round 12 (SPEC D15): the Outcome column (id `disposition`, kept so stored column
+  // states still address it) is VISIBLE by default — an analyst's classification is the
+  // case's outcome of record and must not hide behind the Columns menu.
   'alerts',
   'playbooks',
   'enrichments',
@@ -198,10 +255,16 @@ function isTerminalCase(c: Case): boolean {
   return TERMINAL_STATUSES.has((c.status || '').toLowerCase());
 }
 
+/**
+ * Work the agent handed to an analyst that is STILL open. Round 12 (SPEC D15): a case an
+ * analyst already closed or resolved is no longer waiting for a human, whatever the AI
+ * verdict said, so the "Needs human" tile and filter count ACTIVE cases only.
+ */
 function needsHumanCase(c: Case): boolean {
   return (
-    (c.status || '').toLowerCase() === 'needs_human' ||
-    (c.verdict || '').toUpperCase() === 'NEEDS_HUMAN'
+    isActiveCase(c) &&
+    ((c.status || '').toLowerCase() === 'needs_human' ||
+      (c.verdict || '').toUpperCase() === 'NEEDS_HUMAN')
   );
 }
 
@@ -599,8 +662,14 @@ const SummaryTile: React.FC<{
   onClick?: () => void;
   /** Hover title clarifying the count's basis (e.g. "Among N loaded cases"). */
   title?: string;
+  /**
+   * A visible basis line under the count, shown only when the list is truncated, so a
+   * tile never reads as a total it is not ("of 200 loaded"), or says how many of a
+   * server total the filtered list can show ("1 loaded").
+   */
+  note?: string;
   testId?: string;
-}> = ({ label, count, icon: Icon, tone, active = false, onClick, title, testId }) => (
+}> = ({ label, count, icon: Icon, tone, active = false, onClick, title, note, testId }) => (
   <button
     type="button"
     onClick={onClick}
@@ -628,8 +697,20 @@ const SummaryTile: React.FC<{
       <span className="block truncate text-2xs font-medium uppercase tracking-wide text-muted-foreground">
         {label}
       </span>
-      <span className="block text-lg font-semibold leading-tight tabular-nums text-foreground">
-        {count.toLocaleString()}
+      {/* The basis note sits beside the count and wraps under it when the tile is
+          narrow — never truncated, since it is what makes the number honest. */}
+      <span className="flex flex-wrap items-baseline gap-x-1.5">
+        <span className="text-lg font-semibold leading-tight tabular-nums text-foreground">
+          {count.toLocaleString()}
+        </span>
+        {note ? (
+          <span
+            data-testid={testId ? `${testId}-note` : undefined}
+            className="whitespace-nowrap text-xs leading-4 tabular-nums text-muted-foreground"
+          >
+            {note}
+          </span>
+        ) : null}
       </span>
     </span>
   </button>
@@ -715,6 +796,8 @@ export default function Cases({
   initialWindowHours: initialWindowHoursProp,
 }: CasesProps) {
   const route = useRoute();
+  // Bulk changes run as durable jobs, which the server refuses in Demo Mode.
+  const { active: demoActive } = useDemo();
   const navigate = onNavigate ?? route.navigate;
   const initialStatus = initialStatusProp ?? route.opts?.status;
   const initialAssignee = initialAssigneeProp ?? route.opts?.assignee;
@@ -786,6 +869,25 @@ export default function Cases({
   // ConfirmDialog. The close still posts through the SAME analyst action endpoint
   // (server-side decide()), never a client-side status write (#3).
   const [closeTarget, setCloseTarget] = React.useState<Case | null>(null);
+  // The controls that opened the (state-driven) close dialogs: focus returns there, not
+  // to <body>, when the dialog closes.
+  const closeOpenerRef = React.useRef<HTMLElement | null>(null);
+  const bulkTerminalOpenerRef = React.useRef<HTMLElement | null>(null);
+  const captureBulkOpener = () => {
+    const active = document.activeElement;
+    bulkTerminalOpenerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+  };
+  // Round 12 (SPEC D15): every bulk Close / Resolve captures the analyst's disposition.
+  const [bulkTerminal, setBulkTerminal] = React.useState<BulkTerminalAction | null>(null);
+
+  // Exact server totals for the lifecycle tiles when only the newest LIST_LIMIT cases are
+  // loaded (Round 12): the loaded slice is the NEWEST cases, which in a busy deployment are
+  // mostly closed, so counting it read "Active 1 · Needs human 0" while hundreds waited.
+  const [serverCounts, setServerCounts] = React.useState<{
+    active: number | null;
+    terminal: number | null;
+    needsHuman: number | null;
+  } | null>(null);
 
   const load = React.useCallback(async () => {
     setLoading(true);
@@ -794,6 +896,32 @@ export default function Cases({
       const res = await api.listCases({ limit: LIST_LIMIT });
       setCases(res.cases);
       setTotal(res.total);
+      if (res.total > res.cases.length) {
+        // Best effort, never blocking the list: a failed count falls back to the
+        // loaded-slice count, labelled as such. Needs human is the SAME rule as
+        // `needsHumanCase` — an active case whose status OR AI verdict is needs_human —
+        // counted with STRUCTURED filters (exact status + exact verdict), never the free
+        // text search, whose haystack also matches titles, summaries, entity values and
+        // assignees. The union is |status| + |active ∧ verdict| − |status ∧ verdict|
+        // (a needs_human status is always active), so each case counts once.
+        const count = (query: Record<string, string | number>) =>
+          api.listCases({ ...query, limit: 1 }).then((r) => (typeof r.total === 'number' ? r.total : null), () => null);
+        void Promise.all([
+          count({ status_group: 'active' }),
+          count({ status_group: 'terminal' }),
+          count({ status: 'needs_human' }),
+          count({ status_group: 'active', verdict: 'NEEDS_HUMAN' }),
+          count({ status: 'needs_human', verdict: 'NEEDS_HUMAN' }),
+        ]).then(([active, terminal, byStatus, byVerdict, both]) => {
+          const needsHuman =
+            byStatus !== null && byVerdict !== null && both !== null
+              ? Math.max(0, byStatus + byVerdict - both)
+              : null;
+          setServerCounts({ active, terminal, needsHuman });
+        });
+      } else {
+        setServerCounts(null);
+      }
     } catch (e) {
       setError(e);
     } finally {
@@ -920,6 +1048,33 @@ export default function Cases({
   const loadedScopeTitle = truncated
     ? `Among the ${cases.length.toLocaleString()} loaded cases (of ${total.toLocaleString()})`
     : `Among ${cases.length.toLocaleString()} case${cases.length === 1 ? '' : 's'}`;
+  // A truncated list: the lifecycle tiles show the exact server total (with how many of
+  // them the loaded list can show); the severity tiles count the loaded slice and say so.
+  const loadedNote = truncated ? `of ${cases.length.toLocaleString()} loaded` : undefined;
+  const lifecycleTile = (
+    loadedCount: number,
+    server: number | null | undefined,
+    noun: readonly [singular: string, plural: string],
+  ) =>
+    truncated && typeof server === 'number'
+      ? {
+          count: server,
+          note: `${loadedCount.toLocaleString()} loaded`,
+          title:
+            `${server.toLocaleString()} ${server === 1 ? noun[0] : noun[1]} in total; ` +
+            `${loadedCount.toLocaleString()} of them ${loadedCount === 1 ? 'is' : 'are'} among the ` +
+            `${cases.length.toLocaleString()} loaded cases this list filters`,
+        }
+      : { count: loadedCount, note: loadedNote, title: loadedScopeTitle };
+  const activeTile = lifecycleTile(counts.active, serverCounts?.active, ['active case', 'active cases']);
+  const terminalTile = lifecycleTile(counts.terminal, serverCounts?.terminal, [
+    'resolved or closed case',
+    'resolved or closed cases',
+  ]);
+  const needsHumanTile = lifecycleTile(counts.needsHuman, serverCounts?.needsHuman, [
+    'active case awaiting an analyst',
+    'active cases awaiting an analyst',
+  ]);
 
   // Drop any selection no longer visible so the bulk bar can't act on hidden rows.
   React.useEffect(() => {
@@ -984,19 +1139,28 @@ export default function Cases({
 
   // Perform the confirmed row-close. Posts the SAME `close` analyst action as the
   // bulk bar / CaseDetail close dialog — the backend's decide() adjudicates (#3).
-  const confirmClose = React.useCallback(async () => {
-    const target = closeTarget;
-    if (!target) return;
-    try {
-      await api.caseActionExec(target.case_id, {
-        action: 'close',
-        resolution: 'Closed by analyst',
-      });
-      await load();
-    } catch {
-      setBulkError(`Could not close ${target.case_id}.`);
-    }
-  }, [closeTarget, load]);
+  const confirmClose = React.useCallback(
+    async (input: BulkCloseInput) => {
+      const target = closeTarget;
+      if (!target) return;
+      setCloseTarget(null);
+      try {
+        // Round 12 (SPEC D15): the one-click row close records the outcome the analyst
+        // chose, declared, exactly like the case's own Close dialog (G1).
+        await api.caseActionExec(target.case_id, {
+          action: 'close',
+          disposition: input.disposition,
+          disposition_declared: true,
+          resolution: input.resolution || 'Closed by analyst',
+          ...(input.note ? { note: input.note } : {}),
+        });
+        await load();
+      } catch {
+        setBulkError(`Could not close ${target.case_id}.`);
+      }
+    },
+    [closeTarget, load],
+  );
 
   const setFilter = <K extends keyof CaseFilters>(key: K, value: CaseFilters[K]) =>
     setFilters((f) => ({ ...f, [key]: value }));
@@ -1050,7 +1214,7 @@ export default function Cases({
       width: '9.5rem',
       lockVisible: true,
       cell: (c) => (
-        <div className="flex items-center gap-1.5">
+        <div className="group/ask flex items-center gap-1.5">
           <CaseHoverCard case={c}>
             <button
               type="button"
@@ -1064,6 +1228,9 @@ export default function Cases({
             </button>
           </CaseHoverCard>
           <DemoBadge show={isDemoCase(c)} iconless className="px-1 py-0 text-2xs" />
+          {/* Round 12 WP-ASK: a new Workspace chat that asks the server's question about this case;
+              a case number in a custom format the question cannot name falls back to the id. */}
+          <AskAiChip kind="case" value={c.case_number || c.case_id} fallbackValue={c.case_id} />
         </div>
       ),
     },
@@ -1105,9 +1272,9 @@ export default function Cases({
       ),
     },
     {
-      // Owner cell — a compact monogram chip + the assignee name, or a muted
+      // Owner cell — the shared owner monogram + the assignee name, or a muted
       // "Unassigned". The name is case-derived (UNTRUSTED) so it renders as plain
-      // text; the monogram is a single derived character, decorative (`aria-hidden`).
+      // text; the monogram is decorative here (the name beside it is the text).
       id: 'assignee',
       header: 'Assignee',
       sortable: true,
@@ -1119,23 +1286,31 @@ export default function Cases({
         }
         return (
           <span className="flex items-center gap-1.5 text-sm text-foreground">
-            <span
-              className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-sunken text-2xs font-semibold uppercase text-muted-foreground"
-              aria-hidden
-            >
-              {name.charAt(0)}
-            </span>
+            <OwnerMonogram name={name} decorative />
             <span className="max-w-[7rem] truncate">{name}</span>
           </span>
         );
       },
     },
     {
+      // Round 12 (SPEC D15): the OUTCOME of record. Once an analyst classified the case
+      // it shows their disposition with an Analyst tag; an AI auto-close says so; until
+      // then the recorded disposition is shown as what it is — the value triage mapped
+      // from the AI verdict (AI tag), never presented as a person's call.
       id: 'disposition',
-      header: 'Disposition',
+      header: 'Outcome',
       sortable: true,
-      width: '8rem',
-      cell: (c) => <DispositionBadge disposition={c.disposition ?? null} />,
+      width: '11rem',
+      cell: (c) => {
+        const outcome = caseOutcome(c);
+        if (outcome.source !== 'pending') return <OutcomeBadge outcome={outcome} />;
+        return (
+          <span className="inline-flex items-center gap-1" data-outcome-source="pending">
+            <DispositionBadge disposition={c.disposition ?? null} />
+            <ProvenanceTag kind="ai" variant="icon" />
+          </span>
+        );
+      },
     },
     {
       id: 'alerts',
@@ -1258,15 +1433,23 @@ export default function Cases({
       id: 'entity',
       header: 'Entity',
       width: '11rem',
-      cell: (c) =>
-        c.entity ? (
-          <span className="text-sm text-foreground">
-            <span className="text-muted-foreground">{c.entity.type}:</span>{' '}
-            <InlineCode>{c.entity.value}</InlineCode>
-          </span>
-        ) : (
-          <span className="text-muted-foreground">{DASH}</span>
-        ),
+      cell: (c) => {
+        if (!c.entity) return <span className="text-muted-foreground">{DASH}</span>;
+        return (
+          // The value stays on one line (a long one truncates, whole in its title) so
+          // the cell is never squeezed into a letter-per-line column; the Ask AI chip
+          // shows beside it on hover or focus of the cell.
+          <div className="group/ask flex items-center gap-1.5">
+            <span className="flex min-w-0 items-center gap-1 whitespace-nowrap text-sm text-foreground">
+              <span className="text-muted-foreground">{c.entity.type}:</span>
+              <InlineCode className="max-w-[16rem] truncate break-normal" title={c.entity.value}>
+                {c.entity.value}
+              </InlineCode>
+            </span>
+            <AskAiChip type={c.entity.type} value={c.entity.value} />
+          </div>
+        );
+      },
     },
     {
       id: 'updated_at',
@@ -1298,6 +1481,7 @@ export default function Cases({
                 aria-label={`Close case ${c.case_id}`}
                 onClick={(e) => {
                   e.stopPropagation();
+                  closeOpenerRef.current = e.currentTarget;
                   setCloseTarget(c);
                 }}
               >
@@ -1424,39 +1608,43 @@ export default function Cases({
       >
         <SummaryTile
           label="Active"
-          count={counts.active}
+          count={activeTile.count}
+          note={activeTile.note}
           icon={Briefcase}
           tone="info"
           active={filters.status === ACTIVE}
           onClick={() => setFilter('status', filters.status === ACTIVE ? ANY : ACTIVE)}
-          title={loadedScopeTitle}
+          title={activeTile.title}
           testId="cases-summary-open"
         />
         <SummaryTile
           label="Terminal"
-          count={counts.terminal}
+          count={terminalTile.count}
+          note={terminalTile.note}
           icon={CheckCircle2}
           tone="success"
           active={filters.status === TERMINAL}
           onClick={() => setFilter('status', filters.status === TERMINAL ? ANY : TERMINAL)}
-          title={loadedScopeTitle}
+          title={terminalTile.title}
           testId="cases-summary-terminal"
         />
         <SummaryTile
           label="Needs human"
-          count={counts.needsHuman}
+          count={needsHumanTile.count}
+          note={needsHumanTile.note}
           icon={HelpCircle}
           tone="primary"
           active={filters.status === NEEDS_HUMAN}
           onClick={() =>
             setFilter('status', filters.status === NEEDS_HUMAN ? ANY : NEEDS_HUMAN)
           }
-          title={loadedScopeTitle}
+          title={needsHumanTile.title}
           testId="cases-summary-needs-human"
         />
         <SummaryTile
           label="Critical"
           count={counts.bySeverity.critical}
+          note={loadedNote}
           icon={AlertOctagon}
           tone="critical"
           active={filters.severity === 'critical'}
@@ -1469,6 +1657,7 @@ export default function Cases({
         <SummaryTile
           label="High"
           count={counts.bySeverity.high}
+          note={loadedNote}
           icon={AlertTriangle}
           tone="high"
           active={filters.severity === 'high'}
@@ -1479,6 +1668,7 @@ export default function Cases({
         <SummaryTile
           label="Medium"
           count={counts.bySeverity.medium}
+          note={loadedNote}
           icon={Square}
           tone="medium"
           active={filters.severity === 'medium'}
@@ -1491,6 +1681,7 @@ export default function Cases({
         <SummaryTile
           label="Low"
           count={counts.bySeverity.low}
+          note={loadedNote}
           icon={Circle}
           tone="low"
           active={filters.severity === 'low'}
@@ -1520,7 +1711,7 @@ export default function Cases({
             <Input
               value={filters.search}
               onChange={(e) => setFilter('search', e.target.value)}
-              placeholder="Search cases — ID, title, entity, rule, tags…"
+              placeholder="Search cases by ID, title, entity, rule or tag…"
               aria-label="Search cases"
               className="h-8 rounded-[4px] pl-9 text-xs"
             />
@@ -1791,10 +1982,14 @@ export default function Cases({
         count={selectedCases.length}
         busy={bulkBusy}
         onAcknowledge={() => void runBulk({ action: 'acknowledge' }, 'are being acknowledged')}
-        onClose={() => void runBulk({ action: 'close', resolution: 'Bulk-closed by analyst' }, 'are being closed')}
-        onResolve={(reason) =>
-          void runBulk({ action: 'resolve', reason: reason || 'Bulk-resolved by analyst' }, 'are being resolved')
-        }
+        onClose={() => {
+          captureBulkOpener();
+          setBulkTerminal('close');
+        }}
+        onResolve={() => {
+          captureBulkOpener();
+          setBulkTerminal('resolve');
+        }}
         onAssign={(assignee) =>
           void submitCaseJob('case_assign', { assignee }, `are being assigned to ${assignee}`)
         }
@@ -1807,6 +2002,9 @@ export default function Cases({
         }
         onReinvestigate={() => setReinvestConfirmOpen(true)}
         onClear={() => setSelected([])}
+        unavailableReason={
+          demoActive ? 'Bulk changes are off in Demo Mode. Open a case to change it.' : null
+        }
       />
 
       <CaseManagerHandoff target={handoffTarget} />
@@ -1814,20 +2012,37 @@ export default function Cases({
       {/* One-click row-close confirmation. Close is a REVERSIBLE lifecycle move, so
           this is a plain (non-destructive) confirm — it still posts through the
           analyst `close` action (server-side decide(), #3). */}
-      <ConfirmDialog
-        open={closeTarget !== null}
-        onOpenChange={(next) => {
-          if (!next) setCloseTarget(null);
+      <BulkCloseDialog
+        action={closeTarget !== null ? 'close' : null}
+        count={1}
+        verdict={closeTarget?.verdict ?? null}
+        currentDisposition={closeTarget?.disposition ?? null}
+        onCancel={() => setCloseTarget(null)}
+        onSubmit={(input) => {
+          void confirmClose(input);
         }}
-        title="Close this case?"
-        description={
-          closeTarget
-            ? `Case ${closeTarget.case_number || closeTarget.case_id} will be closed. This is an analyst action; the resolution is adjudicated server-side.`
-            : undefined
-        }
-        confirmLabel="Close case"
-        onConfirm={() => {
-          void confirmClose();
+        returnFocusTo={closeOpenerRef}
+      />
+
+      {/* Bulk Close / Resolve — the disposition is required on every terminal path. */}
+      <BulkCloseDialog
+        action={bulkTerminal}
+        count={selectedCases.length}
+        busy={bulkBusy}
+        returnFocusTo={bulkTerminalOpenerRef}
+        onCancel={() => setBulkTerminal(null)}
+        onSubmit={(input) => {
+          setBulkTerminal(null);
+          const { action, ...rest } = input;
+          void runBulk(
+            {
+              action,
+              ...rest,
+              ...(action === 'close' && !rest.resolution ? { resolution: 'Bulk-closed by analyst' } : {}),
+              ...(action === 'resolve' && !rest.reason ? { reason: 'Bulk-resolved by analyst' } : {}),
+            },
+            action === 'close' ? 'are being closed' : 'are being resolved',
+          );
         }}
       />
 
@@ -1883,6 +2098,8 @@ const BulkActionBar: React.FC<{
   onSetDisposition: (disposition: string) => void;
   onReinvestigate: () => void;
   onClear: () => void;
+  /** Why bulk changes cannot run right now (Demo Mode); disables the actions, keeps Clear. */
+  unavailableReason?: string | null;
 }> = ({
   count,
   busy,
@@ -1895,11 +2112,14 @@ const BulkActionBar: React.FC<{
   onSetDisposition,
   onReinvestigate,
   onClear,
+  unavailableReason = null,
 }) => {
+  const locked = busy || Boolean(unavailableReason);
   const [assignOpen, setAssignOpen] = React.useState(false);
   const [assignee, setAssignee] = React.useState('');
   const [tagOpen, setTagOpen] = React.useState(false);
   const [tag, setTag] = React.useState('');
+  const tagError = caseTagError(tag);
 
   React.useEffect(() => {
     if (count === 0) {
@@ -1949,6 +2169,11 @@ const BulkActionBar: React.FC<{
         <span className="inline-flex items-center rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
           {count} selected
         </span>
+        {unavailableReason ? (
+          <span role="note" data-testid="cases-bulk-demo-note" className="text-xs text-muted-foreground">
+            {unavailableReason}
+          </span>
+        ) : null}
 
         {/* cases:write tier — primary CTA of the bar: the single most common bulk
             action, so it gets the filled/primary treatment (matches the "N selected"
@@ -1956,7 +2181,7 @@ const BulkActionBar: React.FC<{
             (theme.css `--secondary` === `--muted` === `--surface-sunken`, all
             `--slate-3`) and read as a disabled/washed-out control next to the bordered
             `outline` buttons beside it. */}
-        <Button size="sm" variant="default" onClick={onAcknowledge} disabled={busy}>
+        <Button size="sm" variant="default" onClick={onAcknowledge} disabled={locked}>
           <Check className="mr-1.5 size-4" aria-hidden />
           Acknowledge
         </Button>
@@ -1965,7 +2190,7 @@ const BulkActionBar: React.FC<{
             status use "Set status → Escalated" below. */}
         <Popover open={assignOpen} onOpenChange={setAssignOpen}>
           <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={busy}>
+            <Button size="sm" variant="outline" disabled={locked}>
               <UserPlus className="mr-1.5 size-4" aria-hidden />
               Assign
             </Button>
@@ -2003,7 +2228,7 @@ const BulkActionBar: React.FC<{
         {/* Add tag (cases:write) */}
         <Popover open={tagOpen} onOpenChange={setTagOpen}>
           <PopoverTrigger asChild>
-            <Button size="sm" variant="outline" disabled={busy}>
+            <Button size="sm" variant="outline" disabled={locked}>
               <TagIcon className="mr-1.5 size-4" aria-hidden />
               Add tag
             </Button>
@@ -2022,11 +2247,19 @@ const BulkActionBar: React.FC<{
                 onChange={(e) => setTag(e.target.value)}
                 placeholder="e.g. needs-review"
                 aria-label="Tag to add to selected cases"
+                aria-invalid={tagError ? true : undefined}
+                aria-describedby={tagError ? 'bulk-tag-error' : undefined}
               />
+              {/* Refused as it is typed, never cut to fit. */}
+              {tagError ? (
+                <p id="bulk-tag-error" role="alert" className="text-xs font-medium text-critical-text">
+                  {tagError}
+                </p>
+              ) : null}
               <Button
                 size="sm"
                 className="w-full"
-                disabled={!tag.trim() || busy}
+                disabled={!tag.trim() || Boolean(tagError) || busy}
                 onClick={() => {
                   onAddTag(tag.trim());
                   setTagOpen(false);
@@ -2039,7 +2272,7 @@ const BulkActionBar: React.FC<{
         </Popover>
 
         {/* Set status (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={busy}>
+        <Select value="" onValueChange={(v) => v && onSetStatus(v)} disabled={locked}>
           <SelectTrigger className="h-8 w-[9.5rem]" aria-label="Set status for selected cases">
             <span className="inline-flex items-center text-sm">
               <SlidersHorizontal className="mr-1.5 size-4" aria-hidden />
@@ -2056,7 +2289,7 @@ const BulkActionBar: React.FC<{
         </Select>
 
         {/* Set disposition (cases:write) */}
-        <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={busy}>
+        <Select value="" onValueChange={(v) => v && onSetDisposition(v)} disabled={locked}>
           <SelectTrigger
             className="h-8 w-[10.5rem]"
             aria-label="Set disposition for selected cases"
@@ -2079,7 +2312,7 @@ const BulkActionBar: React.FC<{
             the single-case Reinvestigate button in CaseDetail, which is also ungated
             pending the tracked RBAC follow-up). Gated behind a ConfirmDialog by the
             caller since it spends LLM tokens per case (#6). */}
-        <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={busy}>
+        <Button size="sm" variant="outline" onClick={onReinvestigate} disabled={locked}>
           {busy ? (
             <RefreshCw className="mr-1.5 size-4 animate-spin" aria-hidden />
           ) : (
@@ -2090,11 +2323,11 @@ const BulkActionBar: React.FC<{
 
         {/* Close / resolve — cases:close. Hidden unless granted (RBAC-mirrored). */}
         <Can resource="cases" action="close">
-          <Button size="sm" variant="outline" onClick={() => onResolve('')} disabled={busy}>
+          <Button size="sm" variant="outline" onClick={() => onResolve('')} disabled={locked}>
             <Check className="mr-1.5 size-4" aria-hidden />
             Resolve
           </Button>
-          <Button size="sm" variant="destructive" onClick={onClose} disabled={busy}>
+          <Button size="sm" variant="destructive" onClick={onClose} disabled={locked}>
             <X className="mr-1.5 size-4" aria-hidden />
             Close
           </Button>

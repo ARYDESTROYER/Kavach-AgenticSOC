@@ -75,6 +75,15 @@ export interface KpiDelta {
   value: number;
   /** Optional pre-formatted label (e.g. "+12%"); falls back to |value|. */
   label?: string;
+  /**
+   * What the change is measured against ("vs previous 90 days"). When given, the chip
+   * holds only the signed figure, on one line that never wraps, and the comparison reads
+   * as plain muted words beside it, which drop under the numeral and wrap between words
+   * on a narrow tile. A whole "+87 vs previous 90 days" inside the chip wrapped the
+   * bordered chip itself onto two ragged lines (Round 12 screenshot tour). The chip's
+   * accessible name still carries both parts.
+   */
+  period?: string;
 }
 
 /**
@@ -104,13 +113,156 @@ const rollFormatOf = (format: ((n: number) => string) | undefined, n: number): s
   format ? format(n) : String(n);
 
 /**
- * The hero numeral's size class for a given final formatted string. Pure and exported
- * so the ladder's cut points are unit-testable without rendering a tile.
+ * The numeral size scale (`KpiTileProps.size`).
+ *  - `'default'` — the fixed type-scale steps (30 → 24 → 20px on the hero ladder).
+ *  - `'fluid'`   — the hero numeral grows with ITS OWN TILE, not the viewport: the numeral
+ *                  row is a size container and the rungs are `cqi` clamps (theme.css
+ *                  `.kpi-numeral-fluid*`), 25 / 20 / 15% of the row's width between a
+ *                  24 / 20 / 18px floor and a 44 / 35 / 29px cap. Measured Inter tabular
+ *                  figures run 0.626em a digit and 0.248em a comma, so each rung holds its
+ *                  ladder band (≤6, 7–8, 9+ characters including a `≥`) in the width it is
+ *                  sized from — at any viewport, with the nav pinned or not. Use it in a
+ *                  sized parent (a `KpiTileGrid` cell): a size container takes no width
+ *                  from its content.
  */
-export function numeralSize(text: string): string {
-  if (text.length <= HERO_SHRINK_AT) return 'text-4xl';
-  if (text.length <= HERO_ABBREVIATE_AT) return 'text-3xl';
-  return 'text-2xl';
+export type KpiNumeralScale = 'default' | 'fluid';
+
+/** The fluid ladder's three rungs (theme.css). Literal strings so Tailwind keeps them. */
+const FLUID_RUNGS = ['kpi-numeral-fluid', 'kpi-numeral-fluid-md', 'kpi-numeral-fluid-sm'] as const;
+/** The fixed hero ladder (30 → 24 → 20px), plus one fit-only step below it (18px). */
+const HERO_STEPS = ['text-4xl', 'text-3xl', 'text-2xl', 'text-xl'] as const;
+
+/** Which rung of the hero ladder a final display string (mark included) starts on. */
+function ladderRung(text: string): number {
+  return text.length <= HERO_SHRINK_AT ? 0 : text.length <= HERO_ABBREVIATE_AT ? 1 : 2;
+}
+
+/**
+ * The hero numeral's size class for a given final formatted string. Pure and exported
+ * so the ladder's cut points are unit-testable without rendering a tile. The cut points
+ * are the same on both scales; only the sizes differ. Pass the string AS DISPLAYED — a
+ * floor numeral is measured with its `≥` (the tile does this itself).
+ */
+export function numeralSize(text: string, scale: KpiNumeralScale = 'default'): string {
+  const rung = ladderRung(text);
+  return scale === 'fluid' ? FLUID_RUNGS[rung] : HERO_STEPS[rung];
+}
+
+/**
+ * Does the numeral not fit its row? Either its content is wider than its box (a grouped
+ * integer has no break opportunity, so it overflows rather than wraps) or it has wrapped
+ * onto a second line at a space. Both read 0 in jsdom, so tests see the ladder's choice.
+ */
+function numeralOverflows(el: HTMLElement): boolean {
+  if (el.scrollWidth > el.clientWidth + 1) return true;
+  const size = Number.parseFloat(window.getComputedStyle(el).fontSize);
+  return Number.isFinite(size) && size > 0 && el.offsetHeight > size * 1.6;
+}
+
+/**
+ * The FIT guard behind the ladder: how many steps below its starting size a numeral must
+ * go to fit the row it is actually in.
+ *
+ * The ladder picks a size from the string's length; that is an estimate, and a tile can be
+ * narrower than the one it was calibrated on (a pinned nav, a corner overlay, a chat
+ * column). So the numeral is MEASURED after layout and stepped down — never cut, never
+ * broken inside its digits — until it fits or the steps run out. It re-measures when the
+ * row resizes (a wider row starts again from the largest size) and when the numeral's
+ * text changes underneath React (the count-up writes digits frame by frame).
+ */
+function useNumeralFit(
+  ref: React.RefObject<HTMLElement | null>,
+  key: string,
+  maxStep: number,
+): number {
+  const [fit, setFit] = React.useState({ key, step: 0 });
+  // A new value or a new starting size starts again from the largest step.
+  const step = fit.key === key ? Math.min(fit.step, maxStep) : 0;
+  const stepRef = React.useRef(step);
+  stepRef.current = step;
+
+  // After the numeral renders at a size: one more step if it still does not fit. Each
+  // step is a synchronous re-render before paint, so a too-large frame is never shown.
+  React.useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && step < maxStep && numeralOverflows(el)) setFit({ key, step: step + 1 });
+  }, [ref, key, step, maxStep]);
+
+  React.useEffect(() => {
+    const el = ref.current;
+    const row = el?.parentElement;
+    if (!el || !row || maxStep === 0 || typeof window === 'undefined') return undefined;
+    let width = row.clientWidth;
+    let frame = 0;
+    const check = () => {
+      frame = 0;
+      const next = row.clientWidth;
+      if (next > width + 0.5) {
+        width = next;
+        setFit({ key, step: 0 });
+        return;
+      }
+      width = next;
+      if (stepRef.current < maxStep && numeralOverflows(el)) {
+        setFit({ key, step: stepRef.current + 1 });
+      }
+    };
+    const schedule = () => {
+      if (frame) return;
+      if (typeof window.requestAnimationFrame === 'function') frame = window.requestAnimationFrame(check);
+      else check();
+    };
+    const ro = typeof window.ResizeObserver === 'function' ? new window.ResizeObserver(schedule) : null;
+    ro?.observe(row);
+    const mo =
+      typeof window.MutationObserver === 'function' ? new window.MutationObserver(schedule) : null;
+    mo?.observe(el, { characterData: true, childList: true, subtree: true });
+    return () => {
+      ro?.disconnect();
+      mo?.disconnect();
+      if (frame && typeof window.cancelAnimationFrame === 'function') window.cancelAnimationFrame(frame);
+    };
+  }, [ref, key, maxStep]);
+
+  return step;
+}
+
+/**
+ * Column classes for a container-query grid of `count` tiles (see `KpiTileGrid`).
+ *
+ * The column count FOLLOWS THE TILE COUNT, so a grid never draws an empty track: three
+ * tiles make three equal columns, never three tiles in a six-track row. Below the width
+ * where every tile gets ≥10rem the grid steps down to a BALANCED count (six tiles go
+ * 6 → 3 → 2 → 1, five go 5 → 3 → 2 → 1, four go 4 → 2 → 1), so the rows stay as even as
+ * the count allows. Literal class strings, so Tailwind's compiler sees every one; the
+ * parent must be an `@container` (KpiTileGrid is).
+ */
+export function kpiGridColumns(count: number): string {
+  const n = Math.max(1, Math.floor(Number.isFinite(count) ? count : 1));
+  switch (n) {
+    case 1:
+      return 'grid-cols-1';
+    case 2:
+      return 'grid-cols-1 @[20rem]:grid-cols-2';
+    case 3:
+      return 'grid-cols-1 @[30rem]:grid-cols-3';
+    case 4:
+      return 'grid-cols-1 @[20rem]:grid-cols-2 @[40rem]:grid-cols-4';
+    case 5:
+      return 'grid-cols-1 @[20rem]:grid-cols-2 @[30rem]:grid-cols-3 @[50rem]:grid-cols-5';
+    case 6:
+      return 'grid-cols-1 @[20rem]:grid-cols-2 @[30rem]:grid-cols-3 @[60rem]:grid-cols-6';
+    case 7:
+    case 8:
+      return 'grid-cols-1 @[20rem]:grid-cols-2 @[40rem]:grid-cols-4';
+    case 9:
+      return 'grid-cols-1 @[20rem]:grid-cols-2 @[30rem]:grid-cols-3';
+    case 10:
+      return 'grid-cols-1 @[20rem]:grid-cols-2 @[50rem]:grid-cols-5';
+    default:
+      // 11+: at most six columns, still never more columns than tiles.
+      return 'grid-cols-1 @[20rem]:grid-cols-2 @[30rem]:grid-cols-3 @[60rem]:grid-cols-6';
+  }
 }
 
 export interface KpiTileProps {
@@ -161,9 +313,11 @@ export interface KpiTileProps {
   /** Optional trend delta shown next to the value. */
   delta?: KpiDelta;
   /**
-   * Optional SCALE CONTEXT rendered beside the value — the "out of what" half of a
-   * bare count (e.g. `13% of 154`, `1 of 2 verdicted`, or an em dash when the honest
-   * denominator is missing or the sample is truncated).
+   * Optional SCALE CONTEXT on its own line UNDER the numeral — the "out of what" half
+   * of a bare count (e.g. `13% of 154`, `1 of 2 verdicted`, or an em dash when the
+   * honest denominator is missing or the sample is truncated). It used to share the
+   * numeral's row, where flex shrank both and a 166px chat tile showed "≥…" and
+   * "in the returned p…"; on its own line it wraps and never takes width from the number.
    *
    * Deliberately NOT the `delta` slot: a delta carries `role="img"` plus a
    * judgement colour, and this is neither a comparison nor a judgement — it is the
@@ -186,8 +340,30 @@ export interface KpiTileProps {
    *               the hairline separators; the icon sits inline with the label.
    */
   variant?: 'default' | 'bar' | 'strip';
-  /** Compact command-surface rhythm for embedded telemetry bands. */
-  density?: 'default' | 'compact';
+  /**
+   * Rhythm of a `strip` tile.
+   *  - `'compact'`     — embedded telemetry bands (`px-3 py-2`).
+   *  - `'comfortable'` — a dashboard strip that heads a page: between compact and
+   *                      default (`px-4 py-3` at `xl`, `px-5 py-4` at `2xl`), with 13px
+   *                      hero label and context lines. Pair it with `size="fluid"`.
+   *  - `'default'`     — a strip that stands alone.
+   * Density changes padding and type only; never the cell count or divider rules.
+   */
+  density?: 'default' | 'compact' | 'comfortable';
+  /**
+   * The numeral size scale. `'fluid'` is the hero numeral that grows with ITS OWN TILE
+   * (the numeral row is a size container; the rungs are `cqi` clamps between a 24 / 20 /
+   * 18px floor and a 44 / 35 / 29px cap) instead of a fixed step; see `KpiNumeralScale`.
+   * Default `'default'`.
+   */
+  size?: KpiNumeralScale;
+  /**
+   * Whether a `countTo` change ROLLS (count-up) or simply shows the new value. Default
+   * `true`. Pass `false` for an automatic LIVE refresh: a dashboard's numerals roll on
+   * first load or a window change, never on a background tick (no motion that implies
+   * the operator did something).
+   */
+  roll?: boolean;
   /**
    * Numeral weight WITHIN the compact rhythm.
    *
@@ -385,11 +561,28 @@ function resolveDelta(delta: KpiDelta, goodDirection: KpiGoodDirection) {
   const directionWord = rising ? 'up' : 'down';
   // a11y: announce BOTH the direction and the judgement (never color-only).
   const judgement = improved === null ? '' : improved ? ', improved' : ', worse';
+  // The comparison (`period`) is spoken after the figure, as the tile shows it.
+  const period = delta.period?.trim();
+  const withPeriod = (figure: string) => (period ? `${figure} ${period}` : figure);
   const ariaLabel = flat
-    ? flatDeltaLabel(delta.label)
-    : `changed ${directionWord} by ${delta.label ?? Math.abs(delta.value)}${judgement}`;
+    ? withPeriod(flatDeltaLabel(delta.label))
+    : `changed ${directionWord} by ${withPeriod(String(delta.label ?? Math.abs(delta.value)))}${judgement}`;
 
   return { colorClass, chipClass, Arrow, ariaLabel };
+}
+
+const MONTH = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
+const DAY_MONTH = new RegExp(`\\b(\\d{1,2}) (${MONTH})\\b`, 'g');
+const MONTH_YEAR = new RegExp(`\\b(${MONTH}) (\\d{4})\\b`, 'g');
+
+/**
+ * A comparison's words with each date held together ("16 Apr", "Jul 2026" joined by a
+ * no-break space), so a narrow tile wraps "vs previous 90 days (16 Apr to 14 Jul 2026)"
+ * between dates, never inside one ("(16" / "Apr to …"). Display only: the words read
+ * and are announced the same.
+ */
+export function keepDatesTogether(text: string): string {
+  return text.replace(DAY_MONTH, '$1\u00a0$2').replace(MONTH_YEAR, '$1\u00a0$2');
 }
 
 /**
@@ -427,6 +620,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       goodDirection = 'up',
       variant = 'default',
       density = 'default',
+      size = 'default',
+      roll = true,
       numeral = 'default',
       onClick,
       ariaHasPopup,
@@ -450,7 +645,9 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     const bar = variant === 'bar';
     const strip = variant === 'strip';
     const compact = density === 'compact';
+    const comfortable = density === 'comfortable';
     const hero = numeral === 'hero';
+    const fluid = size === 'fluid';
 
     const deltaFacts = delta ? resolveDelta(delta, goodDirection) : null;
 
@@ -472,14 +669,6 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           : typeof value === 'number'
             ? String(value)
             : '';
-    const heroCompact =
-      hero &&
-      heroText.length > HERO_ABBREVIATE_AT &&
-      typeof formatCompact === 'function' &&
-      typeof countTo === 'number' &&
-      Number.isFinite(countTo);
-    const heroDisplayText = heroCompact ? formatCompact(countTo as number) : heroText;
-
     /*
      * Which of the bound grammar's two states applies. A bound qualifies a NUMBER, so
      * the floor mark only appears where a number was actually published; where the value
@@ -489,6 +678,61 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
      */
     const boundIsFloor =
       Boolean(bound) && typeof countTo === 'number' && Number.isFinite(countTo);
+    // The FLOOR mark is part of what is drawn, so the ladder counts it: "≥77,777" is seven
+    // characters wide, not six.
+    const markText = boundIsFloor ? BOUND_MARK : '';
+
+    // The ladder applies to hero numerals and to the fluid scale.
+    const laddered = hero || fluid;
+    const canCompact =
+      laddered &&
+      typeof formatCompact === 'function' &&
+      typeof countTo === 'number' &&
+      Number.isFinite(countTo);
+
+    /*
+     * The numeral's SIZE STEPS, largest first, and where the ladder starts on them. The fit
+     * guard (`useNumeralFit`) then walks further down from the start whenever the numeral
+     * does not fit the row it is actually in, and — once the sizes run out — abbreviates
+     * through `formatCompact` when one is offered, and KEEPS WALKING with the short form.
+     *
+     * One walk, two phases, each step measured:
+     *   phase 1 — the full value, from `ladderStart` to the smallest size;
+     *   phase 2 — the abbreviated value, from the rung its OWN length earns
+     *             (`compactStart`) to the smallest size.
+     * Phase 2 restarts at the short form's rung rather than staying at the smallest size,
+     * so a short form that fits large is shown large; and because every step is measured,
+     * one that does not fit there steps down again instead of being clipped (before, the
+     * short form jumped back to its rung with no steps left to take).
+     */
+    const sizeSteps: readonly string[] = fluid
+      ? FLUID_RUNGS
+      : strip
+        ? compact && !hero
+          ? ['text-2xl', 'text-xl', 'text-lg']
+          : HERO_STEPS
+        : ['text-3xl', 'text-2xl', 'text-xl'];
+    const lengthCompact = canCompact && markText.length + heroText.length > HERO_ABBREVIATE_AT;
+    const compactStart = canCompact ? ladderRung(markText + formatCompact!(countTo as number)) : 0;
+    const ladderStart = laddered ? (lengthCompact ? compactStart : ladderRung(markText + heroText)) : 0;
+    // Sizes the full value walks through, then (only when it may still abbreviate) the
+    // sizes the short form walks through.
+    const fullSteps = sizeSteps.length - ladderStart;
+    const compactSteps = canCompact && !lengthCompact ? sizeSteps.length - compactStart : 0;
+    const maxFitStep = fullSteps - 1 + compactSteps;
+    const numeralRef = React.useRef<HTMLSpanElement | null>(null);
+    const fitStep = useNumeralFit(
+      numeralRef,
+      `${sizeSteps[0]}|${markText}${heroText}|${ladderStart}`,
+      maxFitStep,
+    );
+    // Abbreviating is the LAST resort: by length (the ladder's own rule), or because even
+    // the smallest size did not fit this row (phase 2 of the walk above).
+    const fitCompact = compactSteps > 0 && fitStep >= fullSteps;
+    const heroCompact = lengthCompact || fitCompact;
+    const sizeClass = fitCompact
+      ? sizeSteps[compactStart + fitStep - fullSteps]
+      : sizeSteps[Math.min(ladderStart + fitStep, sizeSteps.length - 1)];
 
     // The rendered numeral: roll to `countTo` when it's a finite integer, else the
     // caller-supplied `value` (string or node) unchanged. The roll is the lazy motion.dev
@@ -501,11 +745,17 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     const rollFormat = heroCompact
       ? (formatCompact as (n: number) => string)
       : (format ?? ((n: number) => String(n)));
+    // `roll={false}` (a LIVE refresh) shows the new value as plain text: data on an
+    // automatic refresh never animates.
     const valueNode =
       typeof countTo === 'number' && Number.isFinite(countTo) ? (
-        <React.Suspense fallback={<CountUp value={countTo} format={rollFormat} as="span" />}>
-          <LazyAnimatedNumber value={countTo} format={rollFormat} />
-        </React.Suspense>
+        roll ? (
+          <React.Suspense fallback={<CountUp value={countTo} format={rollFormat} as="span" />}>
+            <LazyAnimatedNumber value={countTo} format={rollFormat} />
+          </React.Suspense>
+        ) : (
+          rollFormat(countTo)
+        )
       ) : (
         value
       );
@@ -575,6 +825,15 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           aria-hidden
         />
       ) : null;
+    /** The label row's reserve for the corner cluster: its width less the cell padding. */
+    const overlayReserve =
+      helpIsSibling && clickable && affordanceNode
+        ? 'pr-10'
+        : helpIsSibling
+          ? 'pr-6'
+          : clickable && affordanceNode
+            ? 'pr-4'
+            : null;
     /** Anything that must sit ON the cell but OUTSIDE the trigger button. */
     const cellOverlay =
       helpIsSibling || (clickable && affordanceNode) ? (
@@ -584,14 +843,15 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           className={cn(
             'pointer-events-none absolute right-2 z-10 flex items-center gap-0.5',
             /*
-             * HERO tiles carry the cluster on the NUMERAL row (32px up from the cell's
-             * bottom: the 8px padding, the 16px context line and its 6px gap, centred on the
-             * 30px numeral), not in the label's corner. The numeral is short and leaves the
-             * right of its row empty at every strip width; the label is the widest thing in
-             * the cell, and reserving 40px beside it wrapped "False Positive Rate" onto two
-             * lines at 1280px.
+             * The cluster sits in the LABEL row's corner on every tile, centred on the
+             * label's first line, and the label row reserves its width (below). It used to
+             * sit on a hero tile's NUMERAL row, where nothing reserved space for it: on
+             * hover, focus, and permanently on touch screens it covered the last digits of
+             * a long value ("≥77,777"). A label that wraps under the reserve is harmless —
+             * hero numerals bottom-align, so the row of numbers stays level — while a
+             * covered digit is a wrong number.
              */
-            hero ? 'bottom-8' : 'top-2',
+            hero ? (compact ? 'top-1' : comfortable ? 'top-2 2xl:top-3' : 'top-4') : 'top-2',
             /*
              * HERO tiles keep their chrome out of sight until it is wanted. A (?) and a ↗ on
              * every tile at rest is the most recognisable "generated dashboard" pattern — six
@@ -612,10 +872,11 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       ) : null;
 
     /*
-     * HERO context line: one line under the numeral, with a fixed precedence so exactly one
-     * thing ever occupies it — a STATE disclosure (`sub`: loading, unavailable, not
-     * measured) beats a conditional BOUND, which beats the plain scale CONTEXT. A bound
-     * shown here is visible text, so it no longer needs its `sr-only` twin below.
+     * HERO context line: under the numeral (it wraps, in a two-line slot), with a fixed
+     * precedence so exactly one thing ever occupies it — a STATE disclosure (`sub`:
+     * loading, unavailable, not measured) beats a conditional BOUND, which beats the
+     * plain scale CONTEXT. A bound shown here is visible text, so it no longer needs its
+     * `sr-only` twin below.
      */
     const heroLine = hero ? (sub ?? bound ?? context ?? null) : null;
     const boundShownInLine = hero && !sub && Boolean(bound);
@@ -623,25 +884,23 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     // Scale context ("N of M" / "P% of N" / an em dash). Muted, tabular, plain text —
     // no role, no accessible name, no judgement colour: it explains the numeral's
     // denominator, it does not compare periods.
+    //
+    // It sits on its OWN LINE under the numeral and WRAPS (Round 12). Sharing the
+    // numeral's row made flex shrink both, so a chat tile read "≥…" over "in the
+    // returned p…". Here it can never take width from the number, and nothing is cut:
+    // a long context simply takes a second line. 12px — content text, not a badge.
     const secondaryNode =
       secondary === undefined || secondary === null || secondary === '' ? null : (
         <span
-          // `min-w-0` + `truncate` (not a bare `whitespace-nowrap`): at the landing
-          // strip's 5-column breakpoint an unbounded context string ("12,345 of 48,901
-          // verdicted") is wider than the tile, and the tile's `overflow-hidden` used to
-          // clip it mid-word with no ellipsis. It now shrinks with an ellipsis, and a
-          // plain-text context carries its full value in `title`.
-          className={cn(
-            'mb-0.5 min-w-0 truncate font-mono font-medium tabular-nums text-muted-foreground',
-            strip && !compact ? 'text-xs' : 'text-2xs',
-          )}
-          title={typeof secondary === 'string' ? secondary : undefined}
+          className="mt-1 block min-w-0 break-words text-xs tabular-nums text-muted-foreground"
+          data-kpi-secondary=""
         >
           {secondary}
         </span>
       );
 
-    const deltaNode = deltaFacts ? (
+    const deltaPeriod = delta?.period?.trim() || null;
+    const deltaChip = deltaFacts ? (
       <span
         // `role="img"` makes `aria-label` a valid accessible name on this element (a
         // bare span maps to the generic role, where aria-label is prohibited/ignored —
@@ -649,29 +908,58 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         // ONLY reliable announcement of the trend direction + judgement (Round-5 §6.1).
         role="img"
         className={cn(
-          'mb-0.5 inline-flex items-center gap-0.5 text-xs font-semibold tabular-nums',
+          // `max-w-full` + a wrapping label: on a narrow tile the chip drops to its own
+          // line under the numeral (the row wraps), and a long label ("+3 vs last
+          // week") wraps inside the chip rather than pushing the numeral off the tile.
+          // With a separate `period` the chip holds only the signed figure and never
+          // wraps: the comparison words beside it do the wrapping.
+          'mb-0.5 inline-flex max-w-full items-center gap-0.5 text-left text-xs font-semibold tabular-nums',
+          deltaPeriod && 'shrink-0 whitespace-nowrap',
           deltaFacts.colorClass,
           strip && `rounded-sm border px-1.5 py-0.5 ${deltaFacts.chipClass}`,
         )}
         aria-label={deltaFacts.ariaLabel}
       >
-        {deltaFacts.Arrow ? <deltaFacts.Arrow className="h-3.5 w-3.5" aria-hidden /> : null}
-        <span aria-hidden>{delta!.label ?? Math.abs(delta!.value)}</span>
+        {deltaFacts.Arrow ? <deltaFacts.Arrow className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
+        <span aria-hidden className={cn('min-w-0', !deltaPeriod && 'break-words')}>
+          {delta!.label ?? Math.abs(delta!.value)}
+        </span>
       </span>
     ) : null;
+    // The comparison words: muted, not a chip, and their own flex item, so the numeral
+    // row puts them beside the chip when they fit and under it when they do not. A
+    // whitespace text node keeps the figure and the words apart in the text content (a
+    // flex container lays no box out for it).
+    const deltaNode =
+      deltaChip && deltaPeriod ? (
+        <>
+          {deltaChip}{' '}
+          <span
+            aria-hidden
+            data-kpi-delta-period=""
+            className="mb-0.5 min-w-0 break-words text-xs text-muted-foreground"
+          >
+            {keepDatesTogether(deltaPeriod)}
+          </span>
+        </>
+      ) : (
+        deltaChip
+      );
 
     // The in-place partition ("of which"): a real definition list so each band is a
     // label/value pair. Plain, muted text with no judgement colour — it explains what
     // the numeral is made of, it does not compare periods.
     const breakdownNode =
       breakdown && breakdown.length > 0 ? (
-        <dl className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 text-2xs">
+        // 12px: a stat's partition is content text, not a badge (ui-standard
+        // "Typography"); its values are numbers, so tabular sans rather than mono.
+        <dl className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 text-xs">
           {breakdown.map((row) => (
             <React.Fragment key={row.label}>
               <dt className="min-w-0 truncate text-muted-foreground" title={row.title}>
                 {row.label}
               </dt>
-              <dd className="font-mono font-medium tabular-nums text-foreground">{row.value}</dd>
+              <dd className="font-medium tabular-nums text-foreground">{row.value}</dd>
             </React.Fragment>
           ))}
         </dl>
@@ -680,16 +968,19 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     const inner = (
       <>
         {/* The corner overlay sits at the TOP-RIGHT, so only this row reserves space for
-            it. Reserving it on the whole trigger instead cost every sub-line ~40px and
-            ellipsized load-bearing captions such as the degraded open-stock line. */}
-        <div className={cn('flex items-start justify-between gap-3', cellOverlay && !hero && 'pr-10')}>
+            it — exactly its width: (?) 24px + ↗ 12px, or one of them. Reserving it on the
+            whole trigger instead cost every sub-line ~40px and ellipsized load-bearing
+            captions such as the degraded open-stock line; reserving it on the numeral row
+            cost the number its size. */}
+        <div className={cn('flex items-start justify-between gap-3', overlayReserve)}>
           <span
             className={cn(
               'inline-flex items-center gap-1',
               hero
                 ? // A quiet label ABOVE the number, in the case it was written: tracked
                   // capitals at 11px read as decoration and outweighed the data they named.
-                  'text-xs font-medium text-muted-foreground'
+                  // 13px on a comfortable (page-heading) strip, 12px on a compact one.
+                  cn(comfortable ? 'text-sm' : 'text-xs', 'font-medium text-muted-foreground')
                 : cn(
                     'font-semibold uppercase tracking-wide',
                     strip ? 'text-2xs text-muted-foreground' : 'text-xs text-muted-foreground',
@@ -717,24 +1008,24 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
           ) : null}
         </div>
-        {/* NO corner gutter here, deliberately — see the note above the label row for why
-            reserving one is expensive.
+        {/* NO corner gutter here, deliberately: the numeral row keeps its whole width, and
+            the corner cluster lives in the label row's corner, which reserves it.
 
-            All offsets below are from the CELL's top and were measured in a browser, not
-            derived. On the compact strip this row's BOX does start under the corner overlay
-            (the trigger's top padding is 8px; the overlay spans y 8→32). But the row is
-            `items-end`, so the only child that ever reaches the overlay's x-range — the
-            scale context, with its `mb-0.5` — sits at y 36→50: 4px BELOW the overlay, at
-            every strip width. A `pr-10` here therefore bought nothing, and cost the context
-            40px — enough to ellipsize "54 of 80 verdicted" at 1440px, recoverable only by
-            mouse-hovering the `title`, which is no recovery at all for touch or keyboard.
-
-            The one child that WOULD collide is a `delta` chip: its border box runs y 22→46
-            and, unlike text, it is visibly bordered. No `density="compact"` caller passes
-            one today. Re-measure before adding the first. */}
+            On a HERO tile the cluster is centred on the label's first line and ends above
+            this row at every density (compact y 4→28, the row starts at ≥28), so a long
+            value can never run under it. On a non-hero tile it spans y 8→32; the scale
+            context sits on its own line below this row, and a `delta` chip wraps under the
+            numeral when the row is short of width. The chat `kpi_group` passes deltas on
+            compact tiles but never `help`, so it has no overlay. Re-measure before
+            combining the two. */}
         <div
           className={cn(
-            'flex min-w-0 items-end gap-2',
+            // `flex-wrap`: the numeral takes the whole first line when it needs it, and a
+            // delta chip drops UNDER it instead of squeezing it.
+            'flex min-w-0 flex-wrap items-end gap-x-2 gap-y-1',
+            // The fluid rungs are `cqi` clamps: the ROW is their size container, so the
+            // numeral is sized from exactly the width it has to fit.
+            fluid && '@container',
             strip ? (compact ? 'mt-1' : 'mt-2') : 'mt-3',
             // …and the layout half: with the trigger a full-height flex column, `mt-auto`
             // drops this row to the bottom of every cell, so the numerals share a baseline
@@ -743,20 +1034,20 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           )}
         >
           <span
+            ref={numeralRef}
             className={cn(
-              'font-semibold leading-none tracking-tight tabular-nums',
-              // `min-w-0` and `truncate` TOGETHER, never either alone: without `min-w-0`
-              // a flex item refuses to shrink below its content and the tile's
-              // `overflow-hidden` clips the numeral with no ellipsis; without `truncate`
-              // the shrunk box lets the text paint over its own row-mates.
-              'min-w-0 truncate',
-              strip
-                ? compact
-                  ? hero
-                    ? numeralSize(heroDisplayText)
-                    : 'text-2xl'
-                  : 'text-4xl'
-                : 'text-3xl',
+              // Tracking comes from the size step (Inter's curve), so no `tracking-*` here.
+              'font-semibold leading-none tabular-nums',
+              // A numeral NEVER truncates and is NEVER broken inside its digits (Round 12).
+              // An ellipsis turned "19" into "1…", and an `overflow-wrap: break-word`
+              // split "≥77,777" into "≥77,77" over "7": both plausible wrong numbers.
+              // `break-normal` (also overriding any inherited `break-words`) leaves a
+              // grouped integer unbreakable (UAX #14), so a value that does not fit
+              // OVERFLOWS — and the fit guard measures exactly that and steps the size
+              // down (then abbreviates) until it fits. Only a value with a real space
+              // ("2h 14m") may still take a second line, and only after the smallest step.
+              'min-w-0 max-w-full break-normal',
+              sizeClass,
               hero
                 ? // HERO numerals are ink, and colour is a FLAG: only a critical tile that
                   // actually counts something turns red. A green "resolved" or a red zero
@@ -786,18 +1077,24 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           </span>
           {heroCompact ? <span className="sr-only">{heroText}</span> : null}
           {bound && !boundShownInLine ? <span className="sr-only">{bound}</span> : null}
-          {secondaryNode}
           {deltaNode}
         </div>
+        {secondaryNode}
         {sparkNode}
         {hero ? (
           heroLine ? (
             <span
-              // One line, ellipsized, with the full text reachable: as the trigger's text
-              // content it is part of the button's accessible name, and `title` serves the
-              // mouse. `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
-              className="mt-1.5 block min-w-0 truncate text-xs tabular-nums text-muted-foreground"
-              title={heroLine}
+              // The line WRAPS, never ellipsized (Round 12 final review): one line cut a
+              // bound's "lower bound" qualifier and 4-digit captions ("1,234 of 1,876
+              // verdicted") at ordinary widths, and a `title` is out of a touch user's
+              // reach. Every hero line reserves TWO lines (`min-h-[2lh]`), so a caption
+              // that wraps never lifts its numeral above its neighbours' (the numeral row
+              // is `mt-auto`). The text is also the trigger's accessible name.
+              // `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
+              className={cn(
+                'mt-1.5 block min-h-[2lh] min-w-0 whitespace-normal break-words tabular-nums text-muted-foreground',
+                comfortable ? 'text-sm' : 'text-xs',
+              )}
               // A data attribute, not a `kpi-*` test id: the strip's specs count every
               // `kpi-*` id inside it to pin the cell count at exactly six.
               data-kpi-line={sub ? 'state' : boundShownInLine ? 'bound' : 'context'}
@@ -817,8 +1114,12 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
                     // 1920px — the widths this console is actually used at. The tile has
                     // the room: the space under the caption was empty. Two lines is the
                     // ceiling, so a caption still cannot push the strip's rhythm around.
-                    'mt-1 line-clamp-2 font-mono text-2xs'
-                  : 'mt-1 truncate font-mono text-2xs'
+                    //
+                    // 12px sans, like every caption (ui-standard "Typography": 11px is for
+                    // badges, axis ticks and timestamps only; mono only for identifiers,
+                    // and these are words — "exact rates", "awaiting analyst review").
+                    'mt-1 line-clamp-2 text-xs'
+                  : 'mt-1 truncate text-xs'
                 : 'mt-2 text-xs',
               // The 4rem gutter exists ONLY to clear the absolutely-positioned strip
               // spark (bottom-4 right-4, w-14). Reserving it unconditionally cost every
@@ -853,11 +1154,11 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     // until something passes `breakdown` again. The compact strip's live density is the
     // `px-3 py-2` on `base` plus the value row's `mt-1`; these two are kept in step with
     // it so the partition path does not come back with a mismatched rhythm.
-    const padX = strip ? (compact ? 'px-3' : 'px-4') : 'px-4';
-    const padBottom = strip ? (compact ? 'pb-2' : 'pb-5') : 'pb-4';
+    const padX = strip ? (compact ? 'px-3' : comfortable ? 'px-3 xl:px-4 2xl:px-5' : 'px-4') : 'px-4';
+    const padBottom = strip ? (compact ? 'pb-2' : comfortable ? 'pb-3 2xl:pb-4' : 'pb-5') : 'pb-4';
     // The cell's minimum height belongs to whichever element IS the cell root, so a
     // wrapped tile does not add the partition's height on top of the tile floor.
-    const minH = strip ? (compact ? 'min-h-0' : 'min-h-28') : null;
+    const minH = strip ? (compact || comfortable ? 'min-h-0' : 'min-h-28') : null;
     /** Card chrome (default variant only). It follows the CELL ROOT, so a wrapped tile
      *  keeps its border/background around the partition instead of leaving it outside. */
     const chrome = strip ? null : 'rounded-lg border border-border bg-card';
@@ -870,7 +1171,11 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       strip
         ? compact
           ? 'bg-transparent px-3 py-2'
-          : 'bg-transparent px-4 py-5'
+          : comfortable
+            ? // Between compact and default: ~120px with a fluid numeral. Dense inside,
+              // generous between — the strip's neighbours supply the gutters.
+              'bg-transparent px-3 py-3 xl:px-4 2xl:px-5 2xl:py-4'
+            : 'bg-transparent px-4 py-5'
         : 'p-4',
       // The sibling below carries the tile's bottom padding instead.
       breakdownIsSibling && 'pb-0',
@@ -954,5 +1259,56 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
   },
 );
 KpiTile.displayName = 'KpiTile';
+
+export interface KpiTileGridProps extends React.HTMLAttributes<HTMLDivElement> {
+  /** How many tiles the grid holds — it decides the column count (`kpiGridColumns`). */
+  count: number;
+  /**
+   * `true` (default) draws the closed outer frame; `false` keeps only the inner
+   * hairlines, for a grid that already sits inside a framed card (no double frame).
+   */
+  framed?: boolean;
+  /** Classes for the outer `@container` wrapper (the `className` lands on the grid). */
+  containerClassName?: string;
+}
+
+/**
+ * A container-query grid of KPI tiles that never leaves an empty track.
+ *
+ * - Columns follow the tile COUNT (`kpiGridColumns`), balanced as the container narrows.
+ * - One hairline grammar at every column count: each cell draws its own bottom and
+ *   right rule, the grid overhangs its clip by 1px on those two sides, so the outermost
+ *   rules disappear under the frame and a ragged last row still reads as one closed box.
+ * - Rows stretch, so tiles in a row share one height (KpiTile fills its cell).
+ *
+ * Pass `role="list"` (and give each child `role="listitem"`) when the tiles are a list.
+ */
+export const KpiTileGrid = React.forwardRef<HTMLDivElement, KpiTileGridProps>(
+  function KpiTileGrid({ count, framed = true, containerClassName, className, children, ...rest }, ref) {
+    return (
+      <div className={cn('@container min-w-0', containerClassName)} data-kpi-grid-count={count}>
+        <div
+          className={cn('overflow-hidden', framed && 'rounded-md border border-border/70')}
+          // A data attribute, NOT a `kpi-*` test id: strip specs count every `kpi-*` id
+          // inside a strip to pin its cell count.
+          data-kpi-grid-frame={framed ? 'framed' : 'bare'}
+        >
+          <div
+            ref={ref}
+            className={cn(
+              '-mb-px -mr-px grid items-stretch',
+              kpiGridColumns(count),
+              '[&>*]:border-b [&>*]:border-r [&>*]:border-border/70',
+              className,
+            )}
+            {...rest}
+          >
+            {children}
+          </div>
+        </div>
+      </div>
+    );
+  },
+);
 
 export default KpiTile;

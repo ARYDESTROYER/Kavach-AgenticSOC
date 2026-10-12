@@ -264,6 +264,38 @@ def _parse_iso_ts(value: Any) -> float | None:
         return None
 
 
+def _coverage_start_ts(since: Any, buckets: dict[str, Any]) -> float | None:
+    """The earliest instant the RETAINED counters still describe (epoch seconds), or
+    ``None`` when nothing is known.
+
+    ``since`` is the first-ever observation and deliberately survives retention
+    pruning, so on its own it overstates coverage once the oldest hours have been
+    pruned. The floor is therefore bounded by the oldest hour the retained document
+    could still hold, derived from the NEWEST retained bucket (quiet, missing hours
+    never move it later). Every reader (the window sums, the hourly trend projection
+    and their consumers) uses this one rule."""
+    since_ts = _parse_iso_ts(since)
+    valid_hours = [hour for key in buckets if (hour := _safe_int(key)) is not None]
+    retention_floor_ts = (
+        (max(valid_hours) - _RETENTION_HOURS) * 3600.0 if valid_hours else None
+    )
+    if since_ts is None:
+        return retention_floor_ts
+    if retention_floor_ts is None:
+        return since_ts
+    return max(since_ts, retention_floor_ts)
+
+
+def _iso_ts(ts: float | None) -> str | None:
+    """An epoch-seconds instant as a UTC ISO string (``None`` passes through)."""
+    if ts is None:
+        return None
+    try:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 class NoiseCounterStore:
     """Durable per-hour raw-alert-by-severity counters, persisted as ONE KV document.
 
@@ -341,15 +373,21 @@ class NoiseCounterStore:
     ) -> dict[str, Any]:
         """Sum the counters over the trailing ``hours`` (``hours<=0`` → the WHOLE tally).
 
-        Returns ``{available, since, incomplete, ingested{band:int}, clustered{band:int},
-        suppressed, ignored}`` where:
+        Returns ``{available, since, coverage_start, incomplete, ingested{band:int},
+        clustered{band:int}, suppressed, ignored}`` where:
 
         * ``available`` — whether ANY real observation has been recorded (False → the
           counters are "warming up"; the endpoint reports null ingested + degrades to a
           case-only funnel);
         * ``since`` — the ISO time of the first recorded observation (None when none);
-        * ``incomplete`` — True when the requested window reaches BEFORE ``since`` (the
-          counters cover only part of it, so the reduction% is a partial view).
+        * ``coverage_start`` — the ISO time the RETAINED counters reach back to: ``since``
+          bounded by the 90-day retention floor (None when unavailable). Additive;
+        * ``incomplete`` — True when the requested window reaches BEFORE
+          ``coverage_start`` (the counters cover only part of it, so the reduction% is a
+          partial view). For the whole tally (``hours<=0``) it is True when retention has
+          pruned the oldest observations, so the tally no longer reaches back to
+          ``since``; whether the CALLER's own population predates ``coverage_start`` is
+          the caller's to compare (``engine.noise_counters.build_noise_reduction`` does).
 
         ``end_exclusive=True`` makes ``now`` an exact upper boundary. The default
         preserves the live dashboard behavior and includes the current hour.
@@ -452,35 +490,26 @@ class NoiseCounterStore:
                 agg["ignored"] += sub["ignored"]
 
         incomplete = False
-        if available and hours > 0:
-            since_ts = _parse_iso_ts(since)
-            valid_hours = [
-                hour for key in buckets if (hour := _safe_int(key)) is not None
-            ]
-            # ``since`` is intentionally the first-ever observation and survives
-            # retention pruning. Bound it by the oldest hour the current retained
-            # document could still cover; otherwise a long-running store would call
-            # a 121-day report complete after its first 31 days had been pruned from
-            # the 90-day ledger. Deriving the floor from the newest retained bucket
-            # avoids treating quiet (missing) hours as a later coverage start.
-            retention_floor_ts = (
-                (max(valid_hours) - _RETENTION_HOURS) * 3600.0
-                if valid_hours
-                else None
-            )
-            coverage_start_ts = since_ts
-            if retention_floor_ts is not None:
-                coverage_start_ts = (
-                    max(coverage_start_ts, retention_floor_ts)
-                    if coverage_start_ts is not None
-                    else retention_floor_ts
-                )
-            if coverage_start_ts is not None and coverage_start_ts > window_from_ts:
-                incomplete = True
+        # ``since`` is intentionally the first-ever observation and survives retention
+        # pruning. Coverage is bounded by the oldest hour the current retained document
+        # could still cover; otherwise a long-running store would call a 121-day report
+        # complete after its first 31 days had been pruned from the 90-day ledger.
+        coverage_start_ts = _coverage_start_ts(since, buckets) if available else None
+        if coverage_start_ts is not None:
+            if hours > 0:
+                incomplete = coverage_start_ts > window_from_ts
+            else:
+                # The whole tally reaches back to the first observation only while
+                # retention has pruned nothing; an all-time read of a store older than
+                # the retention period is a partial view and must say so (never
+                # "complete" just because no window start was given).
+                since_ts = _parse_iso_ts(since)
+                incomplete = since_ts is None or coverage_start_ts > since_ts
 
         return {
             "available": available,
             "since": since if available else None,
+            "coverage_start": _iso_ts(coverage_start_ts),
             "incomplete": incomplete,
             "ingested": ingested,
             "clustered": clustered,
@@ -506,9 +535,12 @@ class NoiseCounterStore:
         severity bands are summed into one integer, keyed by the epoch hour, so a
         consumer can re-bucket raw-alert volume onto arbitrary (whole-hour) trend
         buckets. Returns ``{"available": bool, "since": iso|None,
-        "hours": {epoch_hour:int -> int}}`` — ``available`` has exactly the
-        :meth:`read_window` semantics (False → warming up, the caller renders null,
-        never a fake 0). Never raises: a load glitch degrades to unavailable."""
+        "coverage_start": iso|None, "hours": {epoch_hour:int -> int}}`` —
+        ``available`` has exactly the :meth:`read_window` semantics (False → warming up,
+        the caller renders null, never a fake 0), and ``coverage_start`` is the same
+        retention-bounded floor :meth:`read_window` reports: a trend bucket that ends
+        at or before it was not measured (null, never 0). Never raises: a load glitch
+        degrades to unavailable."""
         moment = now or now_utc()
         doc = await self._load()
         since = doc.get("since")
@@ -535,6 +567,7 @@ class NoiseCounterStore:
         return {
             "available": available,
             "since": since if available else None,
+            "coverage_start": _iso_ts(_coverage_start_ts(since, buckets)) if available else None,
             "hours": out,
         }
 

@@ -177,8 +177,9 @@ describe('<DemoIndicator/>', () => {
     withProvider(<DemoIndicator />);
 
     const chip = await screen.findByTestId('demo-indicator');
-    // The visible label collapses below `lg`, so the accessible name must always be full.
-    expect(chip).toHaveAccessibleName('Demo mode active — synthetic data');
+    // The visible label folds away on a narrow top bar, so the accessible name must
+    // always be full (and plain: no em dash in user-facing copy).
+    expect(chip).toHaveAccessibleName('Demo mode active, synthetic data');
     // The chip itself is the only demo chrome — no full-width banner copy inline.
     expect(chip.textContent).not.toMatch(/simulated data/i);
 

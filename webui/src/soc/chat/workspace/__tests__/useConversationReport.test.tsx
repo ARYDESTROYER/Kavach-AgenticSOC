@@ -23,7 +23,7 @@ vi.mock('sonner', () => ({ toast: toastMock }));
 
 import { ApiError } from '@/lib/api';
 import type { Report, ReportItem } from '@/lib/types';
-import { REPORT_FULL_MESSAGE } from '../../report/report-sync';
+import { MAX_REPORT_ITEMS, REPORT_FULL_MESSAGE } from '../../report/report-sync';
 import { assistantItem } from '../../message/__tests__/fixtures';
 import { useConversationReport, type UseConversationReportOptions } from '../useConversationReport';
 
@@ -52,8 +52,15 @@ function report(items: ReportItem[], version = 3): Report {
   };
 }
 
-/** 40 items: m-1's block `kpis` plus 39 fillers. */
-const FULL = report([item('i-kpis', 'm-1', 'kpis'), ...Array.from({ length: 39 }, (_, n) => item(`i-${n}`, `m-f${n}`, 'b'))]);
+/**
+ * A full report at the shared item limit (`MAX_REPORT_ITEMS`, 60 since Round 12 SPEC D11):
+ * m-1's block `kpis` plus fillers. Derived from the limit, never a literal, so the
+ * fixture cannot drift from it again.
+ */
+const FULL = report([
+  item('i-kpis', 'm-1', 'kpis'),
+  ...Array.from({ length: MAX_REPORT_ITEMS - 1 }, (_, n) => item(`i-${n}`, `m-f${n}`, 'b')),
+]);
 
 function setup(extra: Partial<UseConversationReportOptions> = {}) {
   const props: UseConversationReportOptions = { conversationId: 'c-1', reportId: 'r-1', enabled: true, ...extra };
@@ -95,6 +102,7 @@ describe('useConversationReport', () => {
   });
 
   it('refuses a new add to a full report with its reason, but still removes an item in it', async () => {
+    expect(FULL.items).toHaveLength(MAX_REPORT_ITEMS);
     getReportMock.mockResolvedValue(FULL);
     patchReportMock.mockResolvedValue(report(FULL.items.slice(1), 4));
     const onRefused = vi.fn();
@@ -114,7 +122,7 @@ describe('useConversationReport', () => {
 
     await act(async () => binding.onToggleBlock('kpis'));
     expect(patchReportMock).toHaveBeenCalledWith('r-1', { expected_version: 3, remove_items: ['i-kpis'] });
-    expect(onRemoved).toHaveBeenCalledWith(39);
+    expect(onRemoved).toHaveBeenCalledWith(MAX_REPORT_ITEMS - 1);
     expect(result.current.full).toBe(false);
   });
 

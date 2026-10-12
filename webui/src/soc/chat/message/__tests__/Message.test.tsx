@@ -1,8 +1,8 @@
 /**
  * Message — the assistant turn's anatomy (chat revamp SPEC §10.3): the live run log and
  * its collapse, the meta row (lookups, time, usage, legacy and simulated wording), the
- * Sources disclosure and `[D1]` markers, the notice placement table (callout, Continue
- * chip, locally stopped wording, D1 said once), failed turns (Retry same request vs Ask
+ * Sources disclosure and `[D1]` markers, the notice placement table (callout, no
+ * Continue chip in Round 12, locally stopped wording, D1 said once), failed turns (Retry same request vs Ask
  * again), the action visibility rule (opacity, so older turns stay keyboard-reachable),
  * follow-ups on the latest turn only, the memory line gated on `memory:manage` (a
  * removal resolves its ids first), "Run again to save", the usage popover, per-turn
@@ -94,7 +94,7 @@ describe('Message — running', () => {
   it('tells the reader when the connection dropped and the answer is being checked', () => {
     renderMessage({ item: runningItem({ connection: 'recovering' }) });
     expect(screen.getByTestId('run-log-header')).toHaveTextContent(
-      'Connection lost — checking whether the answer was saved',
+      'Connection lost. Checking whether the answer was saved',
     );
   });
 });
@@ -251,7 +251,11 @@ describe('Message — completed', () => {
 
   it('labels product help and offers follow-ups on the latest turn only (origin follow_up)', () => {
     const item = assistantItem({
-      response: response({ answer_kind: 'product_help', follow_ups: ['How do I add a source?'] }),
+      response: response({
+        answer_kind: 'product_help',
+        follow_ups: ['How do I add a source?'],
+        steps: [step(1, { tool: 'app_help', label: 'Read the Help Center', query: null, coverage: null })],
+      }),
     });
     const { engine, unmount } = renderMessage({ item });
     expect(screen.getByText('Product help')).toBeInTheDocument();
@@ -305,7 +309,7 @@ describe('Message — notices and failures', () => {
     expect(screen.getByTestId('meta-row')).not.toHaveTextContent(/Failed/);
   });
 
-  it('keeps Partial on an older capped product answer the model wrote', () => {
+  it('never labels a capped answer Partial (a bounded-mode limit is said by its callout)', () => {
     renderMessage({
       latest: false,
       item: assistantItem({
@@ -316,9 +320,9 @@ describe('Message — notices and failures', () => {
         }),
       }),
     });
-    // The Continue chip belongs to the latest answer only: the outcome word is the signal.
-    expect(screen.queryByRole('button', { name: /Continue where this stopped/ })).toBeNull();
-    expect(screen.getByTestId('meta-row')).toHaveTextContent(/^Partial ·/);
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull();
+    expect(screen.getByRole('note', { name: 'Answer limit reached' })).toHaveTextContent('Reached this question’s limit.');
+    expect(screen.getByTestId('meta-row')).not.toHaveTextContent(/Partial/);
   });
 
   it('keeps Stopped and Failed on a billed product answer', () => {
@@ -357,14 +361,13 @@ describe('Message — notices and failures', () => {
     expect(screen.getByTestId('meta-row')).toHaveTextContent(/^Partial ·/);
   });
 
-  it('offers Continue on a capped answer instead of a callout', () => {
+  it('never offers Continue, even on the latest capped answer (Round 12: chat has no answer limits)', () => {
     const { engine } = renderMessage({
       item: assistantItem({ response: response({ notice: { kind: 'cap', message: 'Limit reached', retryable: false } }) }),
-      continueEstimate: 2400,
     });
-    expect(screen.queryByRole('note')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Continue where this stopped \(≈ \+2\.4k tokens\)/ }));
-    expect(engine.continueAnswer).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull();
+    expect(screen.queryByText(/tokens\)/)).toBeNull();
+    expect(engine.continueAnswer).not.toHaveBeenCalled();
   });
 
   it('says a locally stopped turn is saved later, and a D1 notice only once', () => {

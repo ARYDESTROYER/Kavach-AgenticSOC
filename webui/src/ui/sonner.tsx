@@ -17,11 +17,13 @@ function Toaster({ theme = 'system', ...props }: ToasterProps) {
     <SonnerToaster
       theme={theme}
       className="toaster group"
+      // Toasts are 10px (`--radius`, set on `[data-sonner-toaster]` in theme.css), like
+      // menus and popovers, with the detached-portal `shadow-overlay` elevation.
       toastOptions={{
         classNames: {
           toast:
             'group toast group-[.toaster]:bg-card group-[.toaster]:text-foreground ' +
-            'group-[.toaster]:border group-[.toaster]:border-border group-[.toaster]:shadow-elev2',
+            'group-[.toaster]:border group-[.toaster]:border-border group-[.toaster]:shadow-overlay',
           description: 'group-[.toast]:text-muted-foreground',
           actionButton:
             'group-[.toast]:bg-primary group-[.toast]:text-primary-foreground',

@@ -54,6 +54,8 @@ export interface HarnessProps extends Omit<ComposerProps, 'engine' | 'context'> 
   historySize?: ChatEngine['historySize'];
   /** `false` = the engine owns its history (case chat). Default true. */
   persist?: boolean;
+  /** The saved conversation on screen (null = a new chat). */
+  conversationId?: string | null;
   handleRef?: React.Ref<ComposerHandle>;
   /** Whether `send` reports success (the engine refuses while blocked). */
   sendResult?: boolean;
@@ -78,6 +80,7 @@ export function Harness(props: HarnessProps) {
     timeRange: initialTimeRange = null,
     historySize,
     persist = true,
+    conversationId = null,
     ...rest
   } = props;
   const [localDraft, setLocalDraft] = React.useState(props.draft ?? '');
@@ -97,7 +100,7 @@ export function Harness(props: HarnessProps) {
     running: null,
     busy,
     canStop: busy && canStop,
-    conversationId: null,
+    conversationId,
     persist,
     draft,
     setDraft,
@@ -136,6 +139,7 @@ export function Harness(props: HarnessProps) {
     askAgain: () => false,
     continueAnswer: () => false,
     reset: () => setDraft(''),
+    prependRestored: () => 0,
   };
 
   return (

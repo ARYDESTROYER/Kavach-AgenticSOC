@@ -17,6 +17,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from .. import __version__
+from ..auth.session_limits import (
+    REMEMBER_MAX_SECONDS,
+    effective_roles,
+    limits_for_username,
+    remember_idle_window_seconds,
+    remember_window_seconds,
+)
 from ..build_identity import build_identity_advisories, build_stamp
 from ..config import (
     CAPS_MINIMUMS,
@@ -42,7 +49,7 @@ from ..constants import (
 # historical underscore name here (tests, ``routes_rules`` and route code use them;
 # ``noqa: F401`` marks the re-export-only ones); the ``AppState``-reading ones are
 # thin wrappers further down this module.
-from ..engine.analyst_outcomes import CLASSIFIED_DISPOSITION_KEY
+from ..engine.analyst_outcomes import CLASSIFIED_DISPOSITION_KEY, standing_analyst_disposition
 from ..engine.case_cluster import WIDEN_LADDER as _WIDEN_LADDER  # noqa: F401
 from ..engine.case_cluster import cluster_for_case, entity_events_widening
 from ..engine.case_cluster import entity_field as _entity_field  # noqa: F401
@@ -54,6 +61,8 @@ from ..engine.case_cluster import scoped_entity_body as _scoped_entity_body  # n
 from ..engine.case_cluster import widen_windows as _widen_windows  # noqa: F401
 from ..engine.case_rationale import audit_get as _audit_get  # noqa: F401
 from ..engine.case_rationale import build_rationale as _build_rationale
+from ..engine.case_tags import CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT  # noqa: F401
+from ..engine.case_tags import CaseTagError, merge_case_tags
 from ..engine.correlation import cluster_from_events
 from ..engine.log_rows import browse_query, clamp_browse_limit, clamp_per_source_timeout
 from ..engine.log_rows import browse_truncated as _browse_truncated
@@ -61,7 +70,7 @@ from ..engine.log_rows import demo_browse_targets, fan_out, tenant_browse_target
 from ..engine.log_rows import log_message as _log_message  # noqa: F401
 from ..engine.log_rows import log_row as _log_row
 from ..engine.log_rows import source_can_browse as _source_can_browse
-from ..engine.metrics import compute_metrics, feedback_stats
+from ..engine.metrics import feedback_stats
 from ..engine.priority import advisory_bands
 from ..engine.source_health import coverage_rollup, cursor_millis, sources_health_rows
 from ..engine.source_health import (  # noqa: F401
@@ -117,6 +126,7 @@ from ..utils import (
     iso_now,
     new_id,
     now_utc,
+    parse_millis_strict,
     relative_to_millis,
     to_millis,
 )
@@ -125,7 +135,9 @@ from .deps import (
     _bearer,
     current_user,
     current_username,
+    evaluate_session,
     get_state,
+    live_session_limits,
     require_admin,
     require_fresh_auth,
     require_permission,
@@ -413,8 +425,9 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # encoded verbatim by the bus (the PRODUCER fences/escapes #9 at its own boundary).
 # --------------------------------------------------------------------------- #
 # Topics the UI may subscribe to. A single case-detail view may also request
-# 'cases:{case_id}' (exact-match topic) — allowed via the prefix below.
-_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent"})
+# 'cases:{case_id}' (exact-match topic) — allowed via the prefix below. ``chat``
+# (Round 12) carries only owner-targeted ``chat.turn`` frames (``realtime.publish_chat_turn``).
+_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat"})
 
 
 @router.get("/events")
@@ -453,6 +466,19 @@ async def realtime_events(
     ]
     if not allowed:
         allowed = list(_REALTIME_TOPICS)
+    # Round 12 (WP-CM): case topics carry case ids and lifecycle status (the live
+    # ``case.changed`` queue nudges and per-case rooms), so they are served only to a
+    # principal that may read cases. A no-op when auth or RBAC is off (``allows`` is
+    # then always true). Resolved WITHOUT the denial audit row ``_enforce`` writes:
+    # dropping an optional topic from a stream is not an access attempt.
+    if any(t == "cases" or t.startswith("cases:") for t in allowed):
+        from .deps import resolve_access
+
+        view = await resolve_access(request)
+        if not view.allows("cases", "read"):
+            allowed = [t for t in allowed if t != "cases" and not t.startswith("cases:")]
+            if not allowed:
+                return Response(status_code=204)
 
     user = current_user(request)
     username = getattr(user, "username", None) if user is not None else None
@@ -491,7 +517,10 @@ class SecretsUpdate(BaseModel):
 
 
 @router.get("/setup/status")
-async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def setup_status(
+    state: AppState = Depends(get_state),
+    request: Request = None,  # type: ignore[assignment]  # injected by FastAPI
+) -> dict[str, Any]:
     """PUBLIC first-run status. Carries both the legacy wizard fields AND the Wave-1
     OOBE fields (auth/RBAC/user-count) the login/setup screen needs before a session
     exists. ``needs_user`` is true only when auth is enabled and NO users exist yet
@@ -510,6 +539,10 @@ async def setup_status(state: AppState = Depends(get_state)) -> dict[str, Any]:
     )
     es_connected = await state.es.ping()
     return {
+        # Round 12 (Remember me): the sign-in page learns the policy here, so no new
+        # public path is needed. Nothing secret: an on/off flag, a duration, and
+        # whether THIS request's transport would refuse a remembered session.
+        "remember_me": _remember_me_status(state, request),
         "setup_complete": p.setup_complete,
         "needs_user": bool(auth_enabled and user_count == 0),
         "auth_enabled": auth_enabled,
@@ -1570,6 +1603,72 @@ def _reject_out_of_range_caps(body: Any) -> None:
         )
 
 
+def _reject_out_of_range_remember_me(body: Any) -> None:
+    """422 on an out-of-range or malformed ``session_policy.remember_me`` value that
+    arrived in a REQUEST BODY (Round 12; ``research/remember-me.md`` §4.1).
+
+    ``RememberMePolicy`` REPAIRS a stored document on load (clamping a duration into
+    1–24 h, dropping a malformed flag) so one bad number can never reset the whole
+    configuration. That repair is the wrong answer for a live edit: an administrator
+    who asks for a 30-minute remembered session must not silently get a 1-hour one.
+    Like :func:`_reject_out_of_range_caps` it inspects the BODY, never the merged
+    document, so an already-stored value stays loadable. The bounds are read off the
+    model, so this can never drift from what the loader enforces."""
+    if not isinstance(body, dict):
+        return
+    policy = body.get("session_policy")
+    if not isinstance(policy, dict):
+        return
+    rm = policy.get("remember_me")
+    if rm is None:
+        return
+    if not isinstance(rm, dict):
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid settings: session_policy.remember_me must be an object",
+        )
+    from ..config import RememberMePolicy
+
+    def _bad(field: str, expected: str, raw: Any) -> HTTPException:
+        return HTTPException(
+            status_code=422,
+            detail=(
+                f"Invalid settings: session_policy.remember_me.{field} must be "
+                f"{expected} (received {raw!r})"
+            ),
+        )
+
+    for flag in ("enabled", "allow_insecure_http"):
+        if flag in rm and not isinstance(rm[flag], bool):
+            raise _bad(flag, "true or false", rm[flag])
+    lo, hi = RememberMePolicy._DURATION_BOUNDS
+    if "duration_seconds" in rm:
+        raw = rm["duration_seconds"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or not lo <= raw <= hi:
+            raise _bad("duration_seconds", f"a whole number of seconds from {lo} to {hi}", raw)
+    ilo, ihi = RememberMePolicy._IDLE_BOUNDS
+    if "idle_seconds" in rm and rm["idle_seconds"] is not None:
+        raw = rm["idle_seconds"]
+        if isinstance(raw, bool) or not isinstance(raw, int) or not (
+            raw == 0 or ilo <= raw <= ihi
+        ):
+            raise _bad(
+                "idle_seconds",
+                f"null, 0 (off) or a whole number of seconds from {ilo} to {ihi}",
+                raw,
+            )
+    if "excluded_roles" in rm:
+        roles = rm["excluded_roles"]
+        if not isinstance(roles, list) or not all(isinstance(r, str) for r in roles):
+            raise _bad("excluded_roles", "a list of role names", roles)
+        if len(roles) > RememberMePolicy._MAX_ROLES:
+            raise _bad(
+                "excluded_roles",
+                f"at most {RememberMePolicy._MAX_ROLES} role names",
+                f"{len(roles)} names",
+            )
+
+
 @router.put("/settings")
 async def put_settings(
     body: dict[str, Any],
@@ -1615,6 +1714,7 @@ async def put_settings(
         # the check must see the REQUEST BODY, because `_clamp_caps` repairs the merged
         # document before any `ge=` constraint can fire. See `_reject_out_of_range_caps`.
         _reject_out_of_range_caps(body)
+        _reject_out_of_range_remember_me(body)
         old_prefs = current
         merged = _deep_update(current.model_dump(mode="json"), body)
         # Demo Mode is managed ONLY by the /api/demo/* endpoints — never via this path.
@@ -1733,6 +1833,9 @@ class ChatConversationPage(BaseModel):
     oldest_retained_at: str | None = None
     limit: int
     offset: int
+    # With ``?q=`` only (Round 12): the full-text search hit its read budget, so older
+    # messages of some conversations were not searched.
+    search_incomplete: bool = False
 
 
 @router.get(
@@ -1768,7 +1871,7 @@ async def list_chat_conversations(
             )
     except ChatHistoryUnavailable as exc:
         raise _chat_history_http(exc) from exc
-    return {
+    result = {
         "conversations": [item.model_dump(mode="json") for item in page.conversations],
         # ``total`` remains the retained/paginatable count for compatibility.
         "total": page.total,
@@ -1778,6 +1881,9 @@ async def list_chat_conversations(
         "limit": limit,
         "offset": offset,
     }
+    if q and q.strip():
+        result["search_incomplete"] = bool(getattr(page, "search_incomplete", False))
+    return result
 
 
 @router.get(
@@ -1902,7 +2008,7 @@ async def investigate(
     case = await state.pipeline.investigate_cluster(
         cluster, body.source_surface, state.execution_prefs, query_source=query_source
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 # --------------------------------------------------------------------------- #
@@ -2837,20 +2943,13 @@ async def playbook_update(
 # --------------------------------------------------------------------------- #
 @router.get("/metrics")
 async def metrics(window_hours: int = 24, state: AppState = Depends(get_state)) -> dict[str, Any]:
-    # Served through the shared short-TTL page cache (api/metrics_shared) so the
-    # Overview's LIVE 5s poll re-serves one scan instead of re-fetching 2000 full
-    # documents per refresh. Keyed by (store identity, limit) — Demo Mode's store
-    # swap self-invalidates, and the 2000-row limit keeps this response's
-    # truncation semantics byte-identical.
-    from .metrics_shared import fetch_case_page
+    # Round 12: exact store-wide headline counts (status / verdict / disposition
+    # aggregates) beside figures over the SAME shared all-time case population the
+    # posture rollups read, with a truncation marker for the latter. See
+    # ``routes_metrics.legacy_metrics_payload``. An unreadable store is a 503.
+    from . import routes_metrics
 
-    cases, total = await fetch_case_page(state.cases, 2000)
-    out = compute_metrics(cases, total_cases=total)
-    try:
-        out["cost"] = await state.usage_store.summary(window_hours=max(1, window_hours))
-    except Exception:  # noqa: BLE001 — cost is best-effort on the metrics view
-        out["cost"] = {}
-    return out
+    return await routes_metrics.legacy_metrics_payload(state, window_hours)
 
 
 @router.get("/feedback/stats")
@@ -2996,6 +3095,9 @@ async def demo_disable(
 class LoginBody(BaseModel):
     username: str
     password: str
+    # Round 12: "Remember me" (additive; the proxies forward arbitrary JSON). The
+    # server decides eligibility (``_remember_decision``) — a request is never a grant.
+    remember: bool = False
 
 
 def _resolved_role(state: AppState, user) -> str:
@@ -3013,9 +3115,245 @@ def _session_policy(state: AppState):
     return getattr(state.prefs, "session_policy", None)
 
 
+# --------------------------------------------------------------------------- #
+# Remember me (Round 12, SPEC D14). One cookie helper replaces the five copies:
+# a REMEMBERED sign-in gets a persistent cookie (Max-Age = the policy duration, the
+# JWT ``exp`` matches); every other sign-in gets a browser-session cookie (no
+# Max-Age) bounded by the server's idle/absolute limits. The cookie NAME is an
+# existing wire identifier and is unchanged (AGENTS.md naming contract).
+# --------------------------------------------------------------------------- #
+_SESSION_COOKIE = "tlsoc_token"
+
+# Revocations this session's own user asked for on this device (logout, "Sign out
+# this device"): /auth/me reports no reason for them.
+_DELIBERATE_SIGNOUTS = frozenset({"logout", "self_signout"})
+
+# Why a remember request was refused (or ``ok`` / ``not_requested``). Closed set.
+REMEMBER_REASONS = ("ok", "not_requested", "disabled", "role_excluded", "insecure_transport")
+
+
+def _set_session_cookie(
+    response: Response, state: AppState, token: str, *, remember_seconds: int = 0
+) -> None:
+    """Set the session cookie. ``remember_seconds > 0`` makes it persistent."""
+    kwargs: dict[str, Any] = {
+        "httponly": True,
+        "samesite": "lax",
+        "secure": bool(state.secrets.auth_cookie_secure),
+        "path": "/",
+    }
+    if remember_seconds > 0:
+        kwargs["max_age"] = int(remember_seconds)
+    response.set_cookie(_SESSION_COOKIE, token, **kwargs)
+
+
+def _clear_session_cookie(response: Response, state: AppState) -> None:
+    """Clear the session cookie with the SAME attributes it was set with."""
+    response.delete_cookie(
+        _SESSION_COOKIE,
+        path="/",
+        samesite="lax",
+        secure=bool(state.secrets.auth_cookie_secure),
+        httponly=True,
+    )
+
+
+def _host_is_loopback(host: str) -> bool:
+    """Whether a ``Host``-style value (optionally with a port) names this machine."""
+    import ipaddress
+
+    value = (host or "").strip().lower()
+    if not value:
+        return False
+    if value.startswith("["):  # [::1]:8080
+        end = value.find("]")
+        value = value[1:end] if end > 0 else value[1:]
+    elif value.count(":") == 1:  # host:port (a bare IPv6 address has several colons)
+        value = value.split(":", 1)[0]
+    value = value.rstrip(".")
+    if value == "localhost" or value.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+# Headers a reverse proxy adds when it forwards a request. Their presence means the
+# request did not come straight from a browser on this machine, whatever ``Host`` says.
+_FORWARDING_HEADERS = (
+    "forwarded",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-real-ip",
+)
+
+
+def _peer_is_loopback(request: Request) -> bool:
+    import ipaddress
+
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip().lower()
+    if not host:
+        return False
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _request_is_loopback(request: Request | None) -> bool:
+    """True only for a DIRECT local request: the TCP peer is a loopback address, the
+    ``Host`` header names this machine, and no reverse-proxy forwarding header is
+    present. A proxied request — even one whose ``Host`` was rewritten to
+    ``127.0.0.1`` by a proxy on the same host — never counts, because the browser
+    behind the proxy may be anywhere on the network (OWASP ASVS 3.3.1). The
+    development server's proxy (``./scripts/run-demo.sh``) forwards without these
+    headers, so a browser on the same machine keeps Remember me there."""
+    if request is None:
+        return False
+    if any(request.headers.get(name) for name in _FORWARDING_HEADERS):
+        return False
+    if not _peer_is_loopback(request):
+        return False
+    return _host_is_loopback(request.headers.get("host") or (request.url.hostname or ""))
+
+
+def _remember_insecure(state: AppState, request: Request | None) -> bool:
+    """Whether a persistent cookie would cross plain HTTP to a network origin: the
+    cookie is not ``Secure`` (``AUTH_COOKIE_SECURE`` off) and the request is not a
+    direct local one (see :func:`_request_is_loopback`). OWASP ASVS 3.3.1."""
+    if bool(getattr(state.secrets, "auth_cookie_secure", False)):
+        return False
+    return not _request_is_loopback(request)
+
+
+def _remember_policy(state: AppState):
+    return getattr(_session_policy(state), "remember_me", None)
+
+
+def _secure_cookies_configured(state: AppState) -> bool:
+    """Whether ``AUTH_COOKIE_SECURE`` was set explicitly (environment or ``.env``)
+    rather than left at its ``false`` default. The Session policy editor uses it to
+    say what is true ("AUTH_COOKIE_SECURE=false" versus "not set"); it describes the
+    shape of the configuration, never a secret value."""
+    fields_set = getattr(state.secrets, "model_fields_set", None) or set()
+    return "auth_cookie_secure" in fields_set
+
+
+def _remember_me_status(state: AppState, request: Request | None) -> dict[str, Any]:
+    """The PUBLIC ``/setup/status`` ``remember_me`` block.
+
+    Non-secret by construction: an on/off flag, the lifetime a new remembered
+    sign-in gets (the policy duration capped by the absolute lifetime), whether THIS
+    request's transport would refuse it, whether the session cookie is marked
+    ``Secure`` (observable on every ``Set-Cookie`` anyway — lets the sign-in page and
+    the Session policy editor tell "plain HTTP" from "HTTPS without secure cookies"),
+    whether ``AUTH_COOKIE_SECURE`` was set explicitly or left at its default
+    (``secure_cookies_configured``, a boolean about the configuration's shape),
+    how long a sign-in WITHOUT Remember me lasts (the token lifetime,
+    ``AUTH_TOKEN_HOURS``), and ``idle_seconds``: how long a remembered device may go
+    unused before it is signed out (0 when no inactivity limit is shorter than the
+    remembered lifetime), so the page never promises more than the server keeps."""
+    rm = _remember_policy(state)
+    enabled = bool(getattr(rm, "enabled", False))
+    duration = remember_window_seconds(_session_policy(state))
+    if not duration:
+        duration = int(getattr(rm, "duration_seconds", 0) or 0)
+    idle_seconds = remember_idle_window_seconds(_session_policy(state))
+    insecure_blocked = bool(
+        enabled
+        and not bool(getattr(rm, "allow_insecure_http", False))
+        and _remember_insecure(state, request)
+    )
+    standard = int(getattr(getattr(state, "auth", None), "token_seconds", 0) or 0)
+    return {
+        "enabled": enabled,
+        "duration_seconds": duration,
+        "idle_seconds": idle_seconds,
+        "insecure_blocked": insecure_blocked,
+        "secure_cookies": bool(getattr(state.secrets, "auth_cookie_secure", False)),
+        "secure_cookies_configured": _secure_cookies_configured(state),
+        "standard_session_seconds": standard,
+    }
+
+
+def _remember_decision(
+    state: AppState, request: Request | None, user: Any, requested: bool
+) -> tuple[int, str]:
+    """Server-side "Remember me" eligibility: ``(remember_seconds, reason)``.
+
+    ``remember_seconds`` is the remembered lifetime when granted (the policy
+    duration, capped by the standard absolute lifetime), else 0. Reasons, in
+    precedence order: ``not_requested``, ``disabled`` (policy off),
+    ``role_excluded`` (the account's stored role OR its effective role — every
+    principal is effectively ``super_admin`` while RBAC is off — is excluded), and
+    ``insecure_transport`` (see :func:`_remember_insecure`, unless the admin allowed
+    plain HTTP). ``ok`` when granted. MFA and step-up are never affected. The same
+    exclusion is re-checked on every request (``deps.live_session_limits``)."""
+    if not requested:
+        return (0, "not_requested")
+    rm = _remember_policy(state)
+    if rm is None or not bool(getattr(rm, "enabled", False)):
+        return (0, "disabled")
+    excluded = {
+        str(r).strip().lower() for r in (getattr(rm, "excluded_roles", None) or []) if str(r).strip()
+    }
+    if excluded:
+        roles = set(effective_roles(state.prefs, getattr(user, "role", "")))
+        roles.add(str(_resolved_role(state, user) or "").strip().lower())
+        if roles & excluded:
+            return (0, "role_excluded")
+    if not bool(getattr(rm, "allow_insecure_http", False)) and _remember_insecure(state, request):
+        return (0, "insecure_transport")
+    duration = min(REMEMBER_MAX_SECONDS, remember_window_seconds(_session_policy(state)))
+    if duration <= 0:
+        return (0, "disabled")
+    return (duration, "ok")
+
+
+def _duration_label(seconds: int) -> str:
+    """A compact audit label for a lifetime: ``24h`` / ``90m``."""
+    seconds = int(seconds or 0)
+    if seconds > 0 and seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    return f"{max(1, round(seconds / 60))}m"
+
+
+def _token_expires_iso(state: AppState, token: str) -> str:
+    """The ISO ``exp`` of a token this server just minted ("" when unknown)."""
+    try:
+        exp = int((state.auth.claims_of(token) or {}).get("exp", 0) or 0)
+    except (TypeError, ValueError):
+        return ""
+    if exp <= 0:
+        return ""
+    from datetime import datetime, timezone
+
+    try:
+        return datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _remember_fields(
+    state: AppState, token: str, remember_seconds: int, reason: str
+) -> dict[str, Any]:
+    """The additive ``remembered`` / ``remember_reason`` / ``session_expires_at``
+    fields every session-minting response carries."""
+    return {
+        "remembered": remember_seconds > 0,
+        "remember_reason": reason if reason in REMEMBER_REASONS else "disabled",
+        "session_expires_at": _token_expires_iso(state, token),
+    }
+
+
 async def _register_session(
     state: AppState, request: Request, token: str, *, mfa_method: str = "",
-    refresh_hash: str = "",
+    refresh_hash: str = "", remember_seconds: int = 0,
 ) -> str:
     """Session-create HOOK (Wave 3) — called at EVERY cookie-set site (login,
     mfa/verify, sso/callback). Decodes the freshly-minted token to read its ``sid``/
@@ -3035,19 +3373,33 @@ async def _register_session(
         username = str(claims.get("sub") or "")
         tv = int(claims.get("tv", 0) or 0)
         policy = _session_policy(state)
-        idle = int(getattr(policy, "idle_timeout", 0) or 0)
-        absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+        limits = limits_for_username(state, username)
+        remembered = int(remember_seconds or 0) > 0
+        if remembered:
+            # Stamp the REMEMBERED limits on the row (display + prune); the live
+            # policy stays authoritative in is_active().
+            absolute = int(remember_seconds)
+            idle = limits.remember_idle if 0 < limits.remember_idle <= absolute else absolute
+        else:
+            idle, absolute = limits.idle, limits.absolute
         meta = session_metadata(request)
         await sessions.create(
             sid=sid, username=username, token_version=tv,
             refresh_hash=refresh_hash or "",
             idle_timeout=idle, absolute_lifetime=absolute,
-            mfa_method=mfa_method or "", **meta,
+            mfa_method=mfa_method or "",
+            remember=remembered,
+            remember_seconds=int(remember_seconds or 0) if remembered else 0,
+            token_expires_at=_token_expires_iso(state, token),
+            **meta,
         )
         await _audit_session(
             state, "session_create", username, sid,
-            f"new session ({meta.get('client_type', '') or 'unknown'} "
-            f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})".strip(),
+            (
+                f"new session ({meta.get('client_type', '') or 'unknown'} "
+                f"{meta.get('ua_browser', '')}/{meta.get('ua_os', '')})"
+                + (f" remembered {_duration_label(remember_seconds)}" if remembered else "")
+            ).strip(),
         )
         # Best-effort new-device notification (a first session for this UA/device).
         try:
@@ -3098,18 +3450,24 @@ async def auth_login(
     auth = state.auth
     if not auth.is_enabled:
         raise HTTPException(status_code=400, detail="authentication is disabled")
-    token = auth.authenticate(body.username, body.password)
-    if not token:
+    # Constant-cost credential check (no token yet: the lifetime depends on the
+    # Remember-me decision below, which needs the verified principal's role).
+    user = auth.principal(body.username) if auth.check_password(
+        body.username, body.password
+    ) else None
+    if user is None:
         await state.control_audit.record(
             action_type=ActionType.AUTH_EVENT, surface="auth", actor=body.username or "",
             result_summary="login failed",
         )
         raise HTTPException(status_code=401, detail="invalid credentials")
-    user = auth.principal(body.username) or auth.verify(token)
     # --- MFA phase 1 (Wave 2 / F3): the password is correct, but the user has MFA
     # enabled (or its role is enforced). Do NOT mint a session cookie/token here —
     # return a SHORT-LIVED pending token the client exchanges at /auth/mfa/verify
-    # with a TOTP/recovery code. A user with mfa_enabled=False is UNAFFECTED. ---
+    # with a TOTP/recovery code. A user with mfa_enabled=False is UNAFFECTED.
+    # Round 12: the user's Remember-me REQUEST rides in the SIGNED pending token
+    # (``rm``); eligibility is decided when the session is minted. Remember me never
+    # skips the second factor. ---
     if auth.requires_mfa(user.username):
         # --- Mandated-enrollment phase 1 (additive): the account is REQUIRED to use
         # MFA (per-user ``mfa_required`` mandate or role enforce_for_roles) but has
@@ -3125,7 +3483,7 @@ async def auth_login(
             return {
                 "requires_mfa": True,
                 "mfa_enrollment_required": True,
-                "pending_token": auth.begin_mfa(user.username),
+                "pending_token": auth.begin_mfa(user.username, remember=body.remember),
             }
         await state.control_audit.record(
             action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
@@ -3133,8 +3491,15 @@ async def auth_login(
         )
         return {
             "requires_mfa": True,
-            "pending_token": auth.begin_mfa(user.username),
+            "pending_token": auth.begin_mfa(user.username, remember=body.remember),
         }
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, user, body.remember
+    )
+    minted = auth.mint_session(user.username, remember_seconds=remember_seconds)
+    if minted is None:  # pragma: no cover — the principal was verified above
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    token, _minted_user = minted
     # Best-effort: record the login timestamp (multi-user store only).
     try:
         await state.users.update(user.username, last_login_at=iso_now())
@@ -3142,15 +3507,16 @@ async def auth_login(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=user.username,
-        result_summary="login ok",
+        result_summary=(
+            f"login ok (remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else "login ok"
+        ),
     )
     # Wave 3: register the session (sid/tv from the token) with request metadata.
-    await _register_session(state, request, token, mfa_method="password")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method="password", remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -3159,28 +3525,110 @@ async def auth_login(
             "must_change_password": bool(user.must_change_password),
             "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
 @router.get("/auth/me")
-async def auth_me(request: Request, state: AppState = Depends(get_state)) -> dict[str, Any]:
+async def auth_me(
+    request: Request, response: Response, state: AppState = Depends(get_state)
+) -> dict[str, Any]:
+    """The session state the console boots from (PUBLIC).
+
+    Round 12: REGISTRY-AWARE. Beyond the JWT signature/``exp``/active-user check it
+    runs the same session-registry evaluation as every protected route (revocation,
+    per-user token version, idle and absolute limits — standard or remembered). When
+    the session has ended it answers ``authenticated: false`` with a ``reason``
+    (``revoked`` | ``idle_expired`` | ``absolute_expired`` | ``tv_mismatch``) and
+    clears the cookie, so the console lands on the sign-in page instead of a shell
+    where every call 401s. A session-store outage keeps trusting the JWT (as every
+    protected route does). A live session carries an additive ``session`` summary
+    ``{remember, expires_at, idle_expires_at}``."""
     auth = state.auth
     if not auth.is_enabled:
         return {"authenticated": True, "auth_enabled": False, "user": None}
-    token = request.cookies.get("tlsoc_token") or _bearer(request)
+    cookie_token = request.cookies.get(_SESSION_COOKIE)
+    token = cookie_token or _bearer(request)
     user = auth.verify(token) if token else None
+
+    def _ended(reason: str | None, lifetime: int | None = None,
+               remembered: bool | None = None) -> dict[str, Any]:
+        if cookie_token:
+            _clear_session_cookie(response, state)
+        out: dict[str, Any] = {"authenticated": False, "auth_enabled": True, "user": None}
+        if reason:
+            out["reason"] = reason
+        if lifetime:
+            out["lifetime_seconds"] = int(lifetime)
+        if remembered is not None:
+            out["remembered"] = bool(remembered)
+        return out
+
+    if user is None:
+        if not token:
+            return {"authenticated": False, "auth_enabled": True, "user": None}
+        expired = auth.expired_session_claims(token)
+        if expired is not None:
+            # A token this server signed whose own lifetime ran out: the session
+            # ended at its absolute limit (for a remembered sign-in, the policy
+            # duration — "signed out after 24 hours").
+            try:
+                lifetime = int(expired.get("exp", 0)) - int(expired.get("iat", 0))
+            except (TypeError, ValueError):
+                lifetime = 0
+            return _ended("absolute_expired", lifetime if lifetime > 0 else None,
+                          expired.get("rm") is True)
+        return _ended(None)
+    verdict = await evaluate_session(request, state, auth, user, token)
+    if verdict.reason is not None:
+        if verdict.reason == "revoked" and str(
+            (verdict.row or {}).get("revoke_reason") or ""
+        ) in _DELIBERATE_SIGNOUTS:
+            # A deliberate sign-out of this very session needs no explanation.
+            return _ended(None)
+        lifetime: int | None = None
+        row_remembered: bool | None = None
+        if verdict.row is not None and verdict.limits is not None:
+            idle, absolute = verdict.limits.for_row(verdict.row)
+            if verdict.reason == "absolute_expired":
+                lifetime = absolute or None
+            elif verdict.reason == "idle_expired":
+                lifetime = idle or None
+            row_remembered = bool(verdict.row.get("remember"))
+        return _ended(verdict.reason, lifetime, row_remembered)
+    session: dict[str, Any] = {"remember": bool(getattr(user, "remember", False))}
+    if verdict.row is not None and verdict.limits is not None:
+        from ..stores.sessions import SessionStore
+
+        expires_at, idle_expires_at = SessionStore.effective_expiry(
+            verdict.row, **verdict.limits.kwargs()
+        )
+        # Remembered only while the LIVE policy still remembers this principal
+        # (Remember me on, role not excluded).
+        remembered = bool(verdict.row.get("remember")) and verdict.limits.remember_enabled
+        session.update(
+            remember=remembered,
+            expires_at=expires_at,
+            idle_expires_at=idle_expires_at,
+        )
+        if cookie_token and bool(verdict.row.get("remember")) and not remembered:
+            # Remember me was turned off or this role was excluded after the sign-in:
+            # turn the persistent cookie into a browser-session cookie, so it no
+            # longer survives a browser restart (the server already judges the
+            # session by the standard limits).
+            _set_session_cookie(response, state, cookie_token)
+    else:
+        session["expires_at"] = _token_expires_iso(state, token or "")
     return {
-        "authenticated": user is not None,
+        "authenticated": True,
         "auth_enabled": True,
-        "user": (
-            {
-                "username": user.username,
-                "role": _resolved_role(state, user),
-                "must_change_password": bool(user.must_change_password),
-                "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
-            }
-            if user else None
-        ),
+        "user": {
+            "username": user.username,
+            "role": _resolved_role(state, user),
+            "must_change_password": bool(user.must_change_password),
+            "mfa_enabled": bool(getattr(user, "mfa_enabled", False)),
+        },
+        "session": session,
     }
 
 
@@ -3202,8 +3650,10 @@ async def auth_logout(
                     await _audit_session(state, "session_revoke", username, sid, "logout")
             except Exception:  # noqa: BLE001
                 pass
+            # A chat answer this session started stops with it (never raises).
+            await _stop_chat_turns(state, username, sid=sid)
     # Mirror the set_cookie attributes so the cookie is reliably cleared.
-    response.delete_cookie("tlsoc_token", samesite="lax", secure=state.secrets.auth_cookie_secure)
+    _clear_session_cookie(response, state)
     return {"ok": True}
 
 
@@ -3286,9 +3736,13 @@ async def list_my_sessions(request: Request, state: AppState = Depends(get_state
     principal = _require_session(state, request)
     rows = await state.sessions.list_for(principal.username)
     current_sid = getattr(principal, "sid", None)
+    limits = live_session_limits(state, principal)
     return {
         "sessions": [
-            {**state.sessions.public(r), "current": bool(current_sid and r.get("sid") == current_sid)}
+            {
+                **state.sessions.public(r, limits),
+                "current": bool(current_sid and r.get("sid") == current_sid),
+            }
             for r in rows
         ],
         "current_sid": current_sid or "",
@@ -3304,9 +3758,15 @@ async def revoke_my_session(
     row = await state.sessions.get(sid)
     if row is None or _norm_user(row.get("username", "")) != _norm_user(principal.username):
         raise HTTPException(status_code=404, detail="session not found")
-    ok = await state.sessions.revoke(sid, by=principal.username, reason="user_revoke")
+    # Round 12: signing out THIS device is a deliberate sign-out (like logout), so the
+    # sign-in page must not later say it was "ended from another device".
+    self_signout = bool(getattr(principal, "sid", None)) and principal.sid == sid
+    ok = await state.sessions.revoke(
+        sid, by=principal.username, reason="self_signout" if self_signout else "user_revoke"
+    )
     if ok:
         await _audit_session(state, "session_revoke", principal.username, sid, "self revoke")
+    await _stop_chat_turns(state, principal.username, sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
 
@@ -3322,6 +3782,8 @@ async def revoke_other_sessions(
     count = await state.sessions.revoke_others(
         principal.username, keep, by=principal.username,
     )
+    if keep:
+        await _stop_chat_turns(state, principal.username, except_sid=keep)
     await _audit_session(
         state, "session_revoke_others", principal.username, keep,
         f"revoked {count} other session(s)",
@@ -3356,6 +3818,7 @@ async def auth_refresh(
         username = str((row or {}).get("username") or "")
         await state.sessions.revoke_all(username, by="system", reason="refresh_reuse_detected")
         await state.refresh_sessions()
+        await _stop_chat_turns(state, username)
         await _audit_session(
             state, "refresh_reuse", username, str((row or {}).get("sid") or ""),
             "refresh-token reuse detected — all sessions revoked",
@@ -3369,15 +3832,26 @@ async def auth_refresh(
         raise HTTPException(status_code=401, detail={"code": "session_invalid", "reason": "unknown_refresh"})
     sid = str(row.get("sid") or "")
     username = str(row.get("username") or "")
-    # The session must still be usable (not revoked/expired) to rotate.
-    policy = _session_policy(state)
-    reason = state.sessions.is_active(
-        row, idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
-        absolute_lifetime=int(getattr(policy, "absolute_lifetime", 0) or 0),
-    )
+    # The session must still be usable (not revoked/expired) to rotate — judged by
+    # the limits that apply to THIS row (standard or remembered, Round 12) for the
+    # account's LIVE role (an excluded role is never remembered).
+    limits = limits_for_username(state, username)
+    reason = state.sessions.is_active(row, **limits.kwargs())
     if reason is not None:
         raise HTTPException(status_code=401, detail={"code": "session_expired", "reason": reason})
-    minted = state.auth.mint_session(username)
+    # A remembered session stays remembered, but rotation can never extend it past
+    # its absolute limit (created_at + the remembered duration).
+    remember_seconds = 0
+    if bool(row.get("remember")) and limits.remember_enabled:
+        from ..utils import parse_es_timestamp
+
+        created_dt = parse_es_timestamp(row.get("created_at"))
+        remaining = (
+            int(created_dt.timestamp() + limits.remember_absolute - now_utc().timestamp())
+            if created_dt is not None else limits.remember_absolute
+        )
+        remember_seconds = max(60, min(remaining, limits.remember_absolute))
+    minted = state.auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:
         raise HTTPException(status_code=401, detail={"code": "session_invalid", "reason": "inactive_user"})
     token, _principal = minted
@@ -3387,16 +3861,16 @@ async def auth_refresh(
     # the created_at anchor (absolute lifetime) while the access sid resolves.
     new_refresh = new_refresh_token()
     new_sid = str((state.auth.claims_of(token) or {}).get("sid") or "")
-    await state.sessions.rekey_and_rotate(
+    idle_for_row, _absolute_for_row = limits.for_row(row)
+    rotated = await state.sessions.rekey_and_rotate(
         sid, new_sid, hash_refresh(new_refresh),
-        idle_timeout=int(getattr(policy, "idle_timeout", 0) or 0),
+        idle_timeout=idle_for_row,
+        token_expires_at=_token_expires_iso(state, token),
     )
+    if rotated is not None:
+        _rebind_chat_turns(state, username, sid, new_sid, token)
     await _audit_session(state, "refresh_rotate", username, new_sid, f"rotated from {_short(sid)}")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
-    )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {"token": token, "refresh_token": new_refresh, "sid": new_sid}
 
 
@@ -3443,7 +3917,17 @@ async def admin_list_sessions(
 ) -> dict[str, Any]:
     """Every session across all users (admin console). UI-safe projection."""
     rows = await state.sessions.list_all()
-    return {"sessions": [state.sessions.public(r) for r in rows]}
+    # Each row is projected with ITS owner's live limits (an excluded role is never
+    # shown as remembered); one lookup per user.
+    by_user: dict[str, Any] = {}
+
+    def _limits(row: dict[str, Any]):
+        key = _norm_user(str(row.get("username") or ""))
+        if key not in by_user:
+            by_user[key] = limits_for_username(state, str(row.get("username") or ""))
+        return by_user[key]
+
+    return {"sessions": [state.sessions.public(r, _limits(r)) for r in rows]}
 
 
 @router.post("/admin/sessions/{sid}/revoke")
@@ -3461,6 +3945,7 @@ async def admin_revoke_session(
     if ok:
         await _audit_session(state, "session_admin_revoke", by, sid,
                              f"admin revoked session of {row.get('username', '')}")
+    await _stop_chat_turns(state, str(row.get("username") or ""), sid=sid)
     return {"ok": True, "revoked": bool(ok)}
 
 
@@ -3475,6 +3960,7 @@ async def admin_revoke_all(
     by = current_username(request)
     count = await state.sessions.revoke_all(username, by=by, reason="admin_revoke_all")
     await state.refresh_sessions()
+    await _stop_chat_turns(state, username)
     await _audit_session(state, "session_admin_revoke_all", by, "",
                          f"admin revoked all {count} session(s) for {username}")
     return {"ok": True, "revoked": count}
@@ -3482,6 +3968,38 @@ async def admin_revoke_all(
 
 def _norm_user(username: str) -> str:
     return (username or "").strip().lower()
+
+
+async def _stop_chat_turns(
+    state: AppState, username: str, *, sid: str | None = None, except_sid: str | None = None,
+) -> int:
+    """Stop the running chat answers whose session or account just ended (Round 12
+    final review, L1): ``routes_chat.stop_chat_turns_for``, imported lazily
+    (``routes_chat`` imports this module). Never raises."""
+    from .routes_chat import stop_chat_turns_for
+
+    return await stop_chat_turns_for(state, username, sid=sid, except_sid=except_sid)
+
+
+async def _recheck_chat_turns(state: AppState, username: str) -> int:
+    """Re-check the user's running chat answers after an account change (disabled,
+    role or custom roles changed) and stop those that lost their authority."""
+    from .routes_chat import recheck_chat_turns_for
+
+    return await recheck_chat_turns_for(state, username)
+
+
+def _rebind_chat_turns(state: AppState, username: str, old_sid: str, new_sid: str,
+                       token: str) -> int:
+    """A refresh re-keyed the session: its running chat answers follow the new sid
+    and the new access token's expiry (``routes_chat.rebind_chat_turns_for``)."""
+    from .routes_chat import rebind_chat_turns_for
+
+    try:
+        exp = float((state.auth.claims_of(token) or {}).get("exp") or 0) or None
+    except (TypeError, ValueError):
+        exp = None
+    return rebind_chat_turns_for(state, username, old_sid, new_sid, token_expires_at=exp)
 
 
 def _short(sid: str) -> str:
@@ -3855,7 +4373,13 @@ async def mfa_verify(
         )
         raise HTTPException(status_code=401, detail="invalid code")
     await state.refresh_users()
-    minted = auth.mint_session(username)
+    # Round 12: the Remember-me REQUEST comes only from the SIGNED pending token
+    # (never a body field), and eligibility is decided against the live policy now.
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, auth.principal(username),
+        auth.pending_remember(body.pending_token),
+    )
+    minted = auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:  # pragma: no cover — username verified above
         raise HTTPException(status_code=401, detail="invalid credentials")
     token, principal = minted
@@ -3865,15 +4389,16 @@ async def mfa_verify(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=f"mfa login ok ({method})",
+        result_summary=(
+            f"mfa login ok ({method}; remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else f"mfa login ok ({method})"
+        ),
     )
     # Wave 3: register the session from the freshly-minted token (carries sid/tv).
-    await _register_session(state, request, token, mfa_method=method)
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method=method, remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -3882,6 +4407,7 @@ async def mfa_verify(
             "must_change_password": bool(principal.must_change_password),
             "mfa_enabled": True,
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
@@ -4007,8 +4533,13 @@ async def mfa_enroll_confirm(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
         result_summary="mfa enabled (login-mandated enrollment)",
     )
-    # Mint the FULL session — the /auth/mfa/verify success tail.
-    minted = auth.mint_session(username)
+    # Mint the FULL session — the /auth/mfa/verify success tail (incl. the signed
+    # Remember-me request carried by the pending token, Round 12).
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, auth.principal(username),
+        auth.pending_remember(body.pending_token),
+    )
+    minted = auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:  # pragma: no cover — username verified above
         raise HTTPException(status_code=401, detail="invalid credentials")
     token, principal = minted
@@ -4018,14 +4549,16 @@ async def mfa_enroll_confirm(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary="mfa login ok (totp; enrolled at login)",
+        result_summary=(
+            "mfa login ok (totp; enrolled at login; remembered "
+            f"{_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else "mfa login ok (totp; enrolled at login)"
+        ),
     )
-    await _register_session(state, request, token, mfa_method="totp")
-    response.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method="totp", remember_seconds=remember_seconds
     )
+    _set_session_cookie(response, state, token, remember_seconds=remember_seconds)
     return {
         "token": token,
         "user": {
@@ -4034,6 +4567,7 @@ async def mfa_enroll_confirm(
             "must_change_password": bool(principal.must_change_password),
             "mfa_enabled": True,
         },
+        **_remember_fields(state, token, remember_seconds, remember_reason),
     }
 
 
@@ -4125,6 +4659,7 @@ async def sso_authorize(
     request: Request,
     response: Response,
     provider: str = Query(...),
+    remember: bool = False,  # query parameter (a plain default keeps direct calls safe)
     state: AppState = Depends(get_state),
 ) -> dict[str, Any]:
     """PUBLIC: build the IdP authorization URL. Stashes a single-use state+nonce in
@@ -4152,6 +4687,9 @@ async def sso_authorize(
         "nonce": nonce,
         "redirect_uri": redirect_uri,
         "expires_at": iso_now(),
+        # Round 12: the Remember-me REQUEST, bound server-side to this single-use
+        # state; eligibility is decided at the callback against the live policy.
+        "remember": bool(remember),
     })
     response.set_cookie(
         _OIDC_STATE_COOKIE, state_tok, max_age=600, httponly=True, samesite="lax",
@@ -4226,7 +4764,10 @@ async def sso_callback(
         )
         return _fail("user_not_provisioned")
     await state.refresh_users()
-    minted = state.auth.mint_session(username)
+    remember_seconds, remember_reason = _remember_decision(
+        state, request, state.auth.principal(username), rec.get("remember") is True
+    )
+    minted = state.auth.mint_session(username, remember_seconds=remember_seconds)
     if minted is None:
         return _fail("session_failed")
     token, _principal = minted
@@ -4236,16 +4777,23 @@ async def sso_callback(
         pass
     await state.control_audit.record(
         action_type=ActionType.AUTH_EVENT, surface="auth", actor=username,
-        result_summary=f"sso login ok ({provider_id})",
+        result_summary=(
+            f"sso login ok ({provider_id}; remembered {_duration_label(remember_seconds)})"
+            if remember_seconds > 0 else f"sso login ok ({provider_id})"
+        ),
     )
     # Wave 3: register the SSO session from the freshly-minted token (carries sid/tv).
-    await _register_session(state, request, token, mfa_method=f"sso:{provider_id}")
-    redirect = RedirectResponse(url="/", status_code=302)
-    redirect.set_cookie(
-        "tlsoc_token", token, httponly=True, samesite="lax",
-        secure=state.secrets.auth_cookie_secure,
-        max_age=state.secrets.auth_token_hours * 3600,
+    await _register_session(
+        state, request, token, mfa_method=f"sso:{provider_id}",
+        remember_seconds=remember_seconds,
     )
+    # A refused remember request is reported on the landing URL (a closed reason
+    # vocabulary, never free text) so the console can explain it once.
+    landing = "/"
+    if rec.get("remember") is True and remember_seconds <= 0:
+        landing = f"/?remember_refused={quote_plus(remember_reason)}"
+    redirect = RedirectResponse(url=landing, status_code=302)
+    _set_session_cookie(redirect, state, token, remember_seconds=remember_seconds)
     redirect.delete_cookie(_OIDC_STATE_COOKIE, path="/")  # one-time binding consumed (#38)
     return redirect
 
@@ -4639,6 +5187,10 @@ async def update_user(
         )
     updated = await state.users.update(username, **patch)
     await state.refresh_users()
+    if "role" in patch or "active" in patch:
+        # A disabled account's running chat answers stop now; a role change stops
+        # only those that relied on a grant the account no longer holds.
+        await _recheck_chat_turns(state, username)
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
         result_summary=f"updated user '{username}'",
@@ -4664,14 +5216,24 @@ async def delete_user(
     artifacts, _removed_jobs = await state.jobs.retire_actor(username, generation)
     await state.job_runner.delete_artifacts(artifacts)
     await state.users.delete(username)
+    # The account is gone from the synced view first (its token now fails every
+    # request, so no new chat turn can start), then its running chat answers stop and
+    # unwind before its chat material is purged, so none of them writes it back.
+    await state.refresh_users()
+    await _stop_chat_turns(state, username)
+    from ..stores.chat_feedback import feedback_store_for
+
+    real_chat = state.real_chat_conversations
     await state.auth.purge_user_side_state(
         username,
         inbox=state.real_inbox,
         notif_prefs=state.notif_prefs,
         user_prefs=state.user_prefs,
         custom_roles=state.custom_roles,
+        chat_conversations=real_chat,
+        chat_feedback=feedback_store_for(getattr(real_chat, "_kv", None) or state.kv),
+        reports=state.real_reports,
     )
-    await state.refresh_users()
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
         result_summary=f"deleted user '{username}'",
@@ -4775,7 +5337,7 @@ CASE_PAGE_LIMIT = 200
 CASE_RESULT_WINDOW = 10_000
 
 
-def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
+def _with_advisory_bands(case: Case, prefs: Preferences | None) -> Case:
     """Populate the five READ-TIME advisory band fields (severity/impact/urgency/
     priority) on a Case copy for the presentation surfaces (Round-7 W0.7).
 
@@ -4787,6 +5349,348 @@ def _with_advisory_bands(case: Case, prefs: Preferences) -> Case:
         return case.model_copy(update=advisory_bands(case, prefs))
     except Exception:  # noqa: BLE001 — advisory only; never break the endpoint
         return case
+
+
+def _case_view(case: Case, state: AppState) -> dict[str, Any]:
+    """The JSON every single-case MUTATION returns (Round 12 final review): the same
+    shape as ``GET /cases/{id}``, the stored case plus its read-time advisory bands
+    under ``execution_prefs``. A client that renders the response (the Case Manager
+    header after Acknowledge or Close) otherwise saw ``severity_band: null`` and fell
+    back to a risk-score band, so a source-asserted Critical case read as Info until a
+    reload. Display only: nothing here is stored or read by ``decide()`` (#3).
+
+    Fail-open like the read path: the mutation is already saved when this runs, so a
+    preference lookup that fails degrades to the prefs-free severity axis
+    (``advisory_bands(case, None)``) instead of reporting a saved action as an error."""
+    try:
+        prefs: Preferences | None = state.execution_prefs
+    except Exception:  # noqa: BLE001 — advisory only; never fail a saved mutation
+        prefs = None
+    return _with_advisory_bands(case, prefs).model_dump(mode="json")
+
+
+# --------------------------------------------------------------------------- #
+# Round 12 (WP-CM): the Case Manager queue's server-side search / owner / severity
+# filters and its Title A–Z order.
+#
+# The queue used to load the newest 200 cases and filter Active, search and status in
+# the BROWSER, so an open case older than the newest 200 was silently absent from the
+# Active queue and no search could find it. The lifecycle group, sort and paging were
+# already server-side; these four were not, because none of them is a push-down every
+# store can answer exactly: free-text search spans ten fields (two nested), the owner
+# match is case-insensitive, severity is a READ-TIME band (``engine.priority``, never
+# stored or mapped), and ``title`` is a text field no store can order by.
+#
+# They are therefore answered by ONE exact scan over the store's own ``scan_page``
+# (the same streaming read the exact aggregates use), with the lifecycle statuses
+# pushed down as its pre-filter and every predicate re-checked here. The total is the
+# true matching count over the whole corpus — never a page-bounded lower bound — and
+# a request that sends none of these parameters never reaches this path.
+# --------------------------------------------------------------------------- #
+CASE_QUEUE_SEARCH_MAX_CHARS = 200
+CASE_QUEUE_SEVERITIES: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
+# The AI verdict values (``constants.Verdict``) the queue's exact ``verdict`` filter
+# accepts — a STRUCTURED match on the stored field, never the free-text search, so a
+# title/summary/entity value that merely contains "needs_human" can never be counted.
+CASE_QUEUE_VERDICTS: tuple[str, ...] = ("FALSE_POSITIVE", "TRUE_POSITIVE", "NEEDS_HUMAN")
+CASE_QUEUE_SCAN_SORTS: tuple[str, ...] = ("title",)
+CASE_QUEUE_SCAN_PAGE = 1000
+# Round 12 final review (L1): the scan reads a PROJECTION, never whole case documents
+# (which carry evidence and can be tens of kB each). These are the stored fields its
+# predicates and sort keys read: the ten search fields, the filter inputs, every sort
+# key, the severity-band inputs (``engine.priority.severity_band_from_events``) and the
+# fields a ``Case`` requires, so a projected row validates exactly like the full one
+# for every field a predicate reads. A transfer hint (``scan_page`` ``fields``): a
+# store that ignores it returns whole documents, which is equally correct.
+CASE_QUEUE_SCAN_FIELDS: tuple[str, ...] = (
+    "case_id", "case_number", "title", "summary", "status", "verdict", "entity",
+    "entity_type", "source_name", "assignee", "source_surface", "cluster_signature",
+    "created_at", "updated_at", "risk_score", "severity_band", "trigger_reason",
+    "source_id",
+)
+# A scan page with at least this many rows has its predicate work (decoding, the
+# validation a window or severity filter needs) run in a worker thread, so a broad
+# search never stalls the event loop that also serves chat streams, SSE and ingest
+# (the dashboards' ``_OFFLOAD_AT`` idea, applied per page).
+CASE_QUEUE_OFFLOAD_AT = 200
+# How many cases of the requested page are fetched at once when the store has no
+# batch read (``get_many``).
+CASE_QUEUE_FETCH_CONCURRENCY = 16
+
+
+def _queue_value(row: Any, key: str) -> Any:
+    """Read ``key`` off a raw stored document or a :class:`Case` (enum → value)."""
+    value = row.get(key) if isinstance(row, dict) else getattr(row, key, None)
+    return getattr(value, "value", value)
+
+
+def _queue_entity(row: Any) -> tuple[str, str]:
+    entity = _queue_value(row, "entity")
+    if isinstance(entity, dict):
+        etype, evalue = entity.get("type"), entity.get("value")
+    else:
+        etype, evalue = getattr(entity, "type", None), getattr(entity, "value", None)
+    return str(etype or _queue_value(row, "entity_type") or ""), str(evalue or "")
+
+
+def _queue_search_terms(q: str | None) -> list[str]:
+    """Whitespace-separated, case-folded search terms (every term must match)."""
+    text = str(q or "").strip()[:CASE_QUEUE_SEARCH_MAX_CHARS]
+    return [t for t in text.casefold().split() if t]
+
+
+def _queue_search_haystack(row: Any) -> str:
+    """The ten fields the queue search has always matched, case-folded."""
+    etype, evalue = _queue_entity(row)
+    parts = [
+        _queue_value(row, "case_id"), _queue_value(row, "case_number"),
+        _queue_value(row, "title"), _queue_value(row, "summary"),
+        _queue_value(row, "status"), _queue_value(row, "verdict"),
+        etype, evalue, _queue_value(row, "source_name"), _queue_value(row, "assignee"),
+    ]
+    return " ".join(str(p) for p in parts if p not in (None, "")).casefold()
+
+
+def _queue_title(row: Any) -> str:
+    """The queue's display title chain (title → summary → number → id), case-folded."""
+    for key in ("title", "summary", "case_number", "case_id"):
+        value = _queue_value(row, key)
+        if value not in (None, ""):
+            return str(value).casefold()
+    return ""
+
+
+def _queue_score_band(score: float) -> str:
+    """The console's ONE severity ladder for a 0..100 number (``badges.severityBand``)."""
+    scaled = max(0.0, min(100.0, float(score)))
+    if scaled >= 74:
+        return "critical"
+    if scaled >= 48:
+        return "high"
+    if scaled >= 22:
+        return "medium"
+    return "info" if scaled < 8 else "low"
+
+
+def _queue_severity(case: Case) -> str:
+    """The band the queue row DISPLAYS: the read-time severity band, else the risk
+    band, else ``info`` — the same chain as the console's ``caseSeverity``."""
+    return _queue_band(getattr(case, "severity_band", ""), getattr(case, "risk_score", None))
+
+
+def _queue_band(band: Any, risk: Any) -> str:
+    raw = str(band or "").strip().lower()
+    aliases = {"crit": "critical", "med": "medium", "moderate": "medium",
+               "informational": "info", "none": "info"}
+    raw = aliases.get(raw, raw)
+    if raw in CASE_QUEUE_SEVERITIES:
+        return raw
+    if isinstance(risk, (int, float)) and not isinstance(risk, bool):
+        return _queue_score_band(risk)
+    return "info"
+
+
+def _queue_row_severity(case: Case, prefs: Preferences) -> str:
+    """The band the list response shows for ``case`` — exactly what
+    ``_queue_severity(_with_advisory_bands(case, prefs))`` returns (the advisory
+    severity axis replaces the stored band; a failed derivation leaves none, and the
+    risk band applies) — without deriving the impact, urgency and priority axes the
+    filter never reads."""
+    from ..engine.priority import severity_band_from_events
+
+    try:
+        band = severity_band_from_events(case, prefs).get("band")
+    except Exception:  # noqa: BLE001 — advisory only, as in ``advisory_bands``
+        band = None
+    return _queue_band(band, getattr(case, "risk_score", None))
+
+
+def _queue_sort_key(row: Any, field: str) -> tuple[Any, str]:
+    tiebreak = str(_queue_value(row, "case_id") or "")
+    if field == "title":
+        return (_queue_title(row), tiebreak)
+    if field == "risk_score":
+        risk = _queue_value(row, "risk_score")
+        number = float(risk) if isinstance(risk, (int, float)) and not isinstance(risk, bool) else -1.0
+        return (number, tiebreak)
+    millis = parse_millis_strict(_queue_value(row, field))
+    return (millis if millis is not None else -1, tiebreak)
+
+
+class _QueueDesc:
+    """A sort key in REVERSED order (``heapq`` keeps the smallest item on top)."""
+
+    __slots__ = ("key",)
+
+    def __init__(self, key: Any) -> None:
+        self.key = key
+
+    def __lt__(self, other: "_QueueDesc") -> bool:
+        return self.key > other.key
+
+
+def _queue_page_matches(
+    rows: list[Any],
+    *,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee_key: str,
+    verdict: str | None,
+    severity: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    prefs: Preferences,
+) -> list[tuple[Any, str]]:
+    """The ``(sort key, case id)`` of every row of one scan page that matches the
+    queue filters. Pure and synchronous, so a large page runs in a worker thread.
+    Only a row that a window or severity filter must judge is validated, and only
+    its projected fields."""
+    from ..stores.base import case_in_created_window
+
+    out: list[tuple[Any, str]] = []
+    for row in rows:
+        if statuses and str(_queue_value(row, "status") or "") not in statuses:
+            continue
+        if surface and str(_queue_value(row, "source_surface") or "") != surface:
+            continue
+        if entity and _queue_entity(row)[1] != entity:
+            continue
+        if assignee_key and str(_queue_value(row, "assignee") or "").strip().casefold() != assignee_key:
+            continue
+        if verdict and str(_queue_value(row, "verdict") or "").strip().upper() != verdict:
+            continue
+        if terms:
+            hay = _queue_search_haystack(row)
+            if not all(term in hay for term in terms):
+                continue
+        validated: Case | None = row if isinstance(row, Case) else None
+        if lo is not None or hi is not None:
+            validated = validated or Case.model_validate(row)
+            if not case_in_created_window(validated, lo, hi):
+                continue
+        if severity:
+            validated = validated or Case.model_validate(row)
+            if _queue_row_severity(validated, prefs) != severity:
+                continue
+        key = _queue_sort_key(row, sort_field)
+        out.append((key, key[1]))
+    return out
+
+
+async def _queue_cases_by_id(store: Any, case_ids: list[str]) -> dict[str, Case]:
+    """The full cases of one queue page, by id: the store's batch read when it has
+    one (``get_many``), else bounded concurrent ``get`` calls."""
+    import asyncio
+
+    batch = getattr(store, "get_many", None)
+    found: dict[str, Case] = {}
+    if callable(batch):
+        found = dict(await batch(case_ids))
+    missing = [cid for cid in case_ids if cid not in found]
+    if missing:
+        gate = asyncio.Semaphore(CASE_QUEUE_FETCH_CONCURRENCY)
+
+        async def one(case_id: str) -> tuple[str, Case | None]:
+            async with gate:
+                return case_id, await store.get(case_id)
+
+        for case_id, case in await asyncio.gather(*(one(cid) for cid in missing)):
+            if case is not None:
+                found[case_id] = case
+    return found
+
+
+async def _scan_case_queue(
+    state: AppState,
+    *,
+    statuses: tuple[str, ...] | None,
+    surface: str | None,
+    entity: str | None,
+    terms: list[str],
+    assignee: str,
+    severity: str | None,
+    lo: int | None,
+    hi: int | None,
+    sort_field: str,
+    sort_order: str,
+    limit: int,
+    offset: int,
+    verdict: str | None = None,
+) -> tuple[list[Case], int]:
+    """One exact pass over the case store for the queue filters → (page, total).
+
+    Bounded by design (Round 12 final review, L1): the scan reads only
+    :data:`CASE_QUEUE_SCAN_FIELDS` (a projection, never the evidence-bearing whole
+    documents), keeps only the ``offset + limit`` best ``(sort key, case id)`` pairs
+    while counting every match (memory is bounded by the page, not by the store),
+    runs each large page's predicate work in a worker thread, and finally reads the
+    requested page's full cases by id. The total stays the exact number of matching
+    cases over the whole store."""
+    import asyncio
+    import functools
+    import heapq
+
+    prefs = state.execution_prefs
+    assignee_key = assignee.casefold()
+    store = state.cases
+    descending = sort_order == "desc"
+    keep = max(0, offset + limit) if limit > 0 else 0
+    best: list[tuple[Any, str]] = []   # a heap: the WORST kept match on top
+    total = 0
+    cursor: Any = None
+    started = False
+    match = functools.partial(
+        _queue_page_matches, statuses=statuses, surface=surface, entity=entity,
+        terms=terms, assignee_key=assignee_key, verdict=verdict, severity=severity,
+        lo=lo, hi=hi, sort_field=sort_field, prefs=prefs,
+    )
+    try:
+        while not started or cursor is not None:
+            started = True
+            rows, cursor, _total, _consistency = await store.scan_page(
+                limit=CASE_QUEUE_SCAN_PAGE,
+                cursor=cursor,
+                raw=True,
+                statuses=list(statuses) if statuses else None,
+                fields=list(CASE_QUEUE_SCAN_FIELDS),
+            )
+            rows = list(rows)
+            if len(rows) >= CASE_QUEUE_OFFLOAD_AT:
+                matched = await asyncio.to_thread(match, rows)
+            else:
+                matched = match(rows)
+            total += len(matched)
+            for key, case_id in matched:
+                # The heap's top is the WORST kept match: for a descending order the
+                # smallest key, for an ascending one the largest (``_QueueDesc``).
+                item = (key if descending else _QueueDesc(key), case_id)
+                if len(best) < keep:
+                    heapq.heappush(best, item)
+                elif best and best[0][0] < item[0]:
+                    heapq.heapreplace(best, item)
+        page_items = sorted(
+            best, key=lambda item: item[0] if descending else item[0].key, reverse=descending,
+        )[offset: offset + limit] if limit > 0 else []
+        page_ids = [case_id for _key, case_id in page_items]
+        found = await _queue_cases_by_id(store, page_ids) if page_ids else {}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a partial scan must never pass as exact
+        if cursor is not None:
+            try:
+                await store.close_scan_cursor(cursor)
+            except Exception:  # noqa: BLE001
+                pass
+        logger.warning("case queue scan failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not search every case right now; try again.",
+        ) from exc
+    # A case removed between the scan and the page read is simply absent from the page.
+    return [found[case_id] for case_id in page_ids if case_id in found], total
 
 
 @router.get("/cases", response_model=CaseListResponse)
@@ -4804,6 +5708,14 @@ async def list_cases(
     sort_field: str | None = None,
     sort_order: str | None = None,
     status_group: str | None = None,
+    # Round 12 (WP-CM) — the Case Manager queue's server-side filters. Each is optional
+    # and additive: a request that sends none of them is answered exactly as before.
+    q: str | None = None,
+    assignee: str | None = None,
+    severity: str | None = None,
+    # Round 12 (WP-CM) — an exact AI-verdict filter (``CASE_QUEUE_VERDICTS``), so a
+    # "needs an analyst" count is a structured match rather than a text search.
+    verdict: str | None = None,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
 ) -> CaseListResponse | JSONResponse:
@@ -4839,7 +5751,34 @@ async def list_cases(
     # population instead of re-sorting one page of the newest rows in the browser. A
     # request that sends NONE of them takes byte-identical parameters into the store and
     # gets the byte-identical base envelope back.
-    extended = sort_field is not None or sort_order is not None or status_group is not None
+    search_terms = _queue_search_terms(q)
+    assignee_filter = str(assignee or "").strip()[:80]
+    severity_filter = str(severity or "").strip().lower() or None
+    if severity_filter and severity_filter not in CASE_QUEUE_SEVERITIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown severity '{severity_filter}'; "
+                f"expected one of {list(CASE_QUEUE_SEVERITIES)}"
+            ),
+        )
+    verdict_filter = str(verdict or "").strip().upper() or None
+    if verdict_filter and verdict_filter not in CASE_QUEUE_VERDICTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown verdict '{verdict_filter}'; "
+                f"expected one of {list(CASE_QUEUE_VERDICTS)}"
+            ),
+        )
+    queue_scan = bool(
+        search_terms or assignee_filter or severity_filter or verdict_filter
+        or sort_field in CASE_QUEUE_SCAN_SORTS
+    )
+    extended = (
+        sort_field is not None or sort_order is not None or status_group is not None
+        or queue_scan
+    )
 
     if status_group is not None:
         if status:
@@ -4864,7 +5803,9 @@ async def list_cases(
     # a presentation preference, and a deployment that cannot honour one should still
     # return the operator's cases. The echo below is what keeps that honest.
     applied_sort_field = (
-        sort_field if sort_field in CASE_SORT_FIELDS else CASE_SORT_FIELD_DEFAULT
+        sort_field
+        if sort_field in CASE_SORT_FIELDS or sort_field in CASE_QUEUE_SCAN_SORTS
+        else CASE_SORT_FIELD_DEFAULT
     )
     applied_sort_order = (
         sort_order if sort_order in CASE_SORT_ORDERS else CASE_SORT_ORDER_DEFAULT
@@ -4889,7 +5830,33 @@ async def list_cases(
         )
 
     window_total_exact: bool | None = None
-    if from_ or to or status_group:
+    if queue_scan:
+        from ..utils import relative_to_millis_strict
+        from ..stores.base import status_group_statuses, window_bounds_proven
+
+        lo = relative_to_millis_strict(from_) if from_ else None
+        hi = relative_to_millis_strict(to) if to else None
+        if from_ or to:
+            window_total_exact = window_bounds_proven(from_, to, lo, hi)
+        group_statuses = status_group_statuses(status_group)
+        scan_statuses = (str(status),) if status else group_statuses
+        cases, total = await _scan_case_queue(
+            state,
+            statuses=scan_statuses,
+            surface=surface,
+            entity=entity,
+            terms=search_terms,
+            assignee=assignee_filter,
+            severity=severity_filter,
+            verdict=verdict_filter,
+            lo=lo,
+            hi=hi,
+            sort_field=applied_sort_field,
+            sort_order=applied_sort_order,
+            limit=applied_limit,
+            offset=applied_offset,
+        )
+    elif from_ or to or status_group:
         # ``status_group`` is passed ONLY when one was asked for. ``list_window`` is a
         # non-abstract method a third-party repository MAY override, and unconditionally
         # handing an override a keyword it predates would break a deployment that never
@@ -4935,6 +5902,15 @@ async def list_cases(
             )
         )
     )
+    # Round 12 (WP-CM): echo the queue filters the server applied, only when asked.
+    if search_terms:
+        body["search_applied"] = " ".join(search_terms)
+    if assignee_filter:
+        body["assignee_applied"] = assignee_filter
+    if severity_filter:
+        body["severity_applied"] = severity_filter
+    if verdict_filter:
+        body["verdict_applied"] = verdict_filter
     return JSONResponse(body)
 
 
@@ -5049,7 +6025,15 @@ _CLOSE_ACTIONS = {"close", "confirm_fp", "resolve", "reopen"}
 # APPLYING the disposition and CLASSIFYING the case are two different things. Every
 # action here applies it; only :data:`_SELF_DECLARING_ACTIONS` — or an explicit
 # ``disposition_declared`` — classifies. See ``_perform_case_action``.
-_DISPOSITION_ACTIONS = {"set_disposition", "close"}
+#
+# ``resolve`` (Round 12, WP-CM / SPEC D15): resolving a case is a terminal move, and a
+# terminal move must be able to capture the investigative outcome. Before this, "Mark
+# resolved" (single and bulk) could only leave the triage-time disposition that
+# ``case_manager.apply()`` mapped from the model's verdict — for a NEEDS_HUMAN verdict
+# that is ``undetermined`` — which is exactly the "Undetermined after I resolved it as a
+# false positive" report. Same apply-vs-classify split as ``close``: the value is applied
+# when sent, and it CLASSIFIES only on an affirmative ``disposition_declared``.
+_DISPOSITION_ACTIONS = {"set_disposition", "close", "resolve"}
 
 # Actions whose VERB is itself the analyst's declaration, so they need no separate
 # intent flag. ``set_disposition`` exists for no other purpose than classifying a case
@@ -5068,13 +6052,27 @@ _SELF_DECLARING_ACTIONS = {"set_disposition"}
 # terminal status is only allowed via an explicit reopen.
 _TERMINAL = {CaseStatus.CLOSED, CaseStatus.RESOLVED}
 
+# The ONE forward move between terminal statuses: RESOLVED means "worked to
+# completion, pending final close", so the dedicated close verbs may take it to
+# CLOSED. Every other move out of a terminal status still needs ``reopen``; the
+# generic ``set_status`` can never reach CLOSED; CLOSED → RESOLVED stays blocked.
+# Analyst layer only (RBAC: both verbs already need ``cases:close``); never decide() (#3).
+_FINAL_CLOSE_ACTIONS = frozenset({"close", "confirm_fp"})
+
 
 def _guard_transition(action: str, current: CaseStatus, target: CaseStatus | None) -> None:
     """Reject illegal lifecycle moves (e.g. CLOSED→NEW without reopen). Allows
-    reopen explicitly out of a terminal status; allows same-status no-ops."""
+    reopen explicitly out of a terminal status, the final close of a RESOLVED case
+    through ``close``/``confirm_fp``, and same-status no-ops."""
     if target is None or target == current:
         return
-    # Moving OUT of a terminal status is only legal via reopen/deescalate→reopen.
+    if (
+        current == CaseStatus.RESOLVED
+        and target == CaseStatus.CLOSED
+        and action in _FINAL_CLOSE_ACTIONS
+    ):
+        return
+    # Moving OUT of a terminal status is otherwise only legal via reopen.
     if current in _TERMINAL and action not in ("reopen",):
         raise HTTPException(
             status_code=400,
@@ -5128,6 +6126,24 @@ def _grant_for_body(body: CaseAction) -> str:
     return _case_action_grant(body.action, target)
 
 
+# Case tag bounds: ``CASE_TAG_MAX_CHARS`` / ``CASE_TAG_MAX_COUNT`` live in
+# ``engine/case_tags.py`` (imported above) and the web console mirrors them in
+# ``webui/src/lib/tags.ts`` under the same names.
+def _merge_case_tags(existing: list[str], incoming: list[Any], *, replace: bool) -> list[str]:
+    """Trim and de-duplicate case tags; refuse (422) what the bounds refuse.
+
+    A NEW tag over 40 characters, or new tags that would take the case past 25, answer
+    422 with a detail that says why. Nothing is cut and nothing is dropped: a shortened
+    label is a different tag, and a tag left off silently is a change the analyst asked
+    for and did not get. A tag the case already carries passes unchanged.
+    ``replace`` takes ``incoming`` as the whole list (``/tags``); otherwise it is merged
+    after ``existing`` (a lifecycle action's additive tags)."""
+    try:
+        return merge_case_tags(existing, incoming, replace=replace)
+    except CaseTagError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/cases/{case_id}/action")
 async def case_action(
     case_id: str,
@@ -5172,6 +6188,10 @@ async def _perform_case_action(
         raise HTTPException(status_code=404, detail="Case not found")
     if body.action not in _ACTION_STATUS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
+    # Checked before anything changes, so a refused tag leaves the case untouched.
+    merged_tags = (
+        _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
+    )
 
     prev_status = case.status
 
@@ -5211,22 +6231,39 @@ async def _perform_case_action(
     # verb (``set_disposition``) or an affirmative ``disposition_declared`` says a human
     # chose it. Absent both, the case is applied-but-unlabelled, exactly as before this
     # path existed.
+    #
+    # One exception keeps the analyst's word final: an UNDECLARED value never replaces a
+    # disposition an analyst explicitly classified and the case still carries
+    # (``standing_analyst_disposition``). It may be the model-derived value read off the
+    # case before the analyst classified it and posted back, and applying it would turn
+    # the analyst's label into the model's while the classification entry still vouches
+    # for it. The lifecycle move itself still happens; only the echo is not applied.
     classified_disposition = ""
     if body.action == "set_disposition" and not body.disposition:
         raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
     if body.action in _DISPOSITION_ACTIONS and body.disposition:
         try:
-            case.disposition = Disposition(body.disposition)
+            requested = Disposition(body.disposition)
         except ValueError:
             raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
         if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
-            classified_disposition = case.disposition.value
+            case.disposition = requested
+            classified_disposition = requested.value
+        elif standing_analyst_disposition(case) is None:
+            case.disposition = requested
 
-    # confirm_fp records the FALSE_POSITIVE disposition (an analyst confirming an FP),
-    # overriding only an unset / UNDETERMINED auto-mapping — never a deliberate
-    # analyst classification.
-    if body.action == "confirm_fp" and case.disposition in (None, Disposition.UNDETERMINED):
-        case.disposition = Disposition.FALSE_POSITIVE
+    # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
+    # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
+    # therefore replaces every non-false-positive disposition, including the
+    # ``true_positive`` that ``case_manager.apply()`` mapped from a TRUE_POSITIVE verdict
+    # and any earlier analyst value, and keeps ``benign``, which is the analyst's
+    # false-positive-class refinement. Stamping the value on the history entry makes the
+    # entry self-describing, so ``caseOutcome``, the facts rail and
+    # ``analyst_confirmed_outcome`` all read the same false-positive class.
+    if body.action == "confirm_fp":
+        if case.disposition not in (Disposition.FALSE_POSITIVE, Disposition.BENIGN):
+            case.disposition = Disposition.FALSE_POSITIVE
+        classified_disposition = case.disposition.value
 
     # Apply the lifecycle status move (analyst layer — NOT decide()/#3).
     if target is not None:
@@ -5241,15 +6278,10 @@ async def _perform_case_action(
     # assignee → set the case owner when provided (non-empty).
     if body.assignee is not None:
         case.assignee = str(body.assignee).strip()[:80]
-    # tags → merge into the case's tags (trim, de-dupe, bounded — same tidy rules
-    # as the dedicated /tags route).
-    if body.tags is not None:
-        merged = list(case.tags)
-        for t in body.tags:
-            t = str(t).strip()[:40]
-            if t and t not in merged:
-                merged.append(t)
-        case.tags = merged[:25]
+    # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
+    # the dedicated /tags route, checked above by ``_merge_case_tags``).
+    if merged_tags is not None:
+        case.tags = merged_tags
 
     # Record the lifecycle transition on the append-only status timeline.
     if case.status != prev_status:
@@ -5358,7 +6390,7 @@ async def _perform_case_action(
             )
     except Exception as exc:  # noqa: BLE001 — notifications never affect the action
         logger.debug("lifecycle notification scheduling skipped for %s: %s", case_id, exc)
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 class BulkCaseAction(CaseAction):
@@ -5510,7 +6542,7 @@ async def case_feedback(
             await state.rag_service.index_resolved_case(case, note=body.comment)
         except Exception as exc:  # noqa: BLE001 — feedback must survive RAG outages
             logger.warning("Feedback RAG refresh failed for %s: %s", case_id, exc)
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.post("/cases/{case_id}/comment")
@@ -5538,7 +6570,7 @@ async def case_comment(
         action_type=ActionType.COLLAB, surface="case", actor=body.author or "analyst",
         case_id=case_id, result_summary="comment added",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.post("/cases/{case_id}/tags")
@@ -5557,20 +6589,16 @@ async def case_tags(
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    # De-dupe, trim, cap length/count — tags are operator labels, kept tidy.
-    seen: list[str] = []
-    for t in body.tags:
-        t = str(t).strip()[:40]
-        if t and t not in seen:
-            seen.append(t)
-    case.tags = seen[:25]
+    # De-dupe, trim and bound the count; a new tag over the length limit is refused,
+    # never cut (``_merge_case_tags``).
+    case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
     case.updated_at = iso_now()
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
         case_id=case_id, result_summary=f"tags set ({len(case.tags)})",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.post("/cases/{case_id}/assign")
@@ -5596,7 +6624,7 @@ async def case_assign(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
         case_id=case_id, result_summary=f"assigned to {case.assignee or '(unassigned)'}",
     )
-    return case.model_dump(mode="json")
+    return _case_view(case, state)
 
 
 @router.get("/cases/{case_id}/export")
@@ -5706,7 +6734,7 @@ async def case_investigate(
         cluster, case.source_surface, state.execution_prefs,
         force=True, query_source=query_source,
     )
-    return updated.model_dump(mode="json")
+    return _case_view(updated, state)
 
 
 class ReinvestigateRequest(BaseModel):
@@ -5773,7 +6801,7 @@ async def case_reinvestigate(
     updated = await state.pipeline.investigate_cluster(
         cluster, case.source_surface, prefs_eff, force=True, query_source=query_source
     )
-    return updated.model_dump(mode="json")
+    return _case_view(updated, state)
 
 
 class RunPlaybookRequest(BaseModel):
@@ -5827,7 +6855,7 @@ async def case_run_playbook(
         state.pipeline, cluster, case.source_surface, state.execution_prefs, body.playbook_id,
         query_source=query_source,
     )
-    return updated.model_dump(mode="json")
+    return _case_view(updated, state)
 
 
 @router.get("/cases/{case_id}/threat-context")

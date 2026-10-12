@@ -73,6 +73,8 @@ vi.mock('@/soc/chat/empty/EmptyState', async () => {
 import type { Case } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import { clearChatContextCache } from '@/soc/chat/useChatContext';
+import { resetTurnRunnerForTests } from '@/soc/chat/turn-runner';
+import { clearChatActivity } from '@/soc/chat-activity/activity';
 import { ChatTab } from '../CaseChatPanel';
 
 const encoder = new TextEncoder();
@@ -97,6 +99,10 @@ beforeEach(() => {
   controllers = [];
   contextFailures = 0;
   clearChatContextCache();
+  // Case transcripts outlive the tab for the session (SPEC D13): start each test clean.
+  resetTurnRunnerForTests();
+  clearChatActivity();
+  vi.stubGlobal('BroadcastChannel', undefined);
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -240,6 +246,50 @@ describe('ChatTab — the case-scoped chat', () => {
       expect(screen.getByRole('button', { name: action })).toHaveClass('shrink-0');
     }
     expect(screen.queryByRole('heading', { name: /case chat/i })).toBeNull();
+  });
+
+  it('keeps the transcript and model history across a tab switch (SPEC D13, G5)', async () => {
+    const first = await renderTab({ presentation: 'case-manager' });
+    fireEvent.click(screen.getByRole('button', { name: 'Summarize Case' }));
+    await settle();
+    await push(
+      { type: 'turn.start', turn_id: 't-1', conversation_id: null, model: 'm', stream_mode: 'steps', replayed: false, estimate: { prompt_tokens: 10 } },
+      { type: 'turn.done', response: { answer: 'Two hosts, one user, no lateral movement.', usage: { calls: 1, total_tokens: 400, cost: 0.001 } } },
+    );
+    expect(await screen.findByText('Two hosts, one user, no lateral movement.')).toBeInTheDocument();
+    // Radix Tabs unmounts the panel on a tab switch.
+    first.unmount();
+    await renderTab({ presentation: 'case-manager' });
+    expect(screen.getByText('Two hosts, one user, no lateral movement.')).toBeInTheDocument();
+    expect(screen.queryByTestId('empty-state')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Check IOCs' }));
+    await settle();
+    expect(streamBodies()[1]).toMatchObject({
+      message: 'Check IOCs',
+      history: [
+        { role: 'user', content: 'Summarize Case', origin: 'starter' },
+        { role: 'assistant', content: 'Two hosts, one user, no lateral movement.' },
+      ],
+    });
+  });
+
+  it('a turn still running when the tab is left keeps streaming and re-attaches on return', async () => {
+    const first = await renderTab({ presentation: 'case-manager' });
+    fireEvent.click(screen.getByRole('button', { name: 'Check IOCs' }));
+    await settle();
+    await push({ type: 'turn.start', turn_id: 't-2', conversation_id: null, model: 'm', stream_mode: 'steps', replayed: false, estimate: { prompt_tokens: 10 } });
+    first.unmount();
+    // The read goes on while nobody shows it (a disconnect is not a Stop).
+    await push({ type: 'step.start', step: { index: 1, kind: 'tool', label: 'Checking indicators', params: {} } });
+    await renderTab({ presentation: 'case-manager' });
+    const status = screen.getByRole('group', { name: 'AI analyst status' });
+    expect(status).toHaveTextContent('Working');
+    expect(screen.getByRole('log', { name: 'Case case-9 messages' })).toHaveAttribute('aria-busy', 'true');
+    await push({ type: 'turn.done', response: { answer: 'One indicator is known bad.', usage: { calls: 2, total_tokens: 800, cost: 0.002 } } });
+    expect(await screen.findByText('One indicator is known bad.')).toBeInTheDocument();
+    expect(status).toHaveTextContent('Ready');
+    // One stream, never re-sent.
+    expect(streamBodies()).toHaveLength(1);
   });
 
   it('has no accessibility violations in either presentation', async () => {

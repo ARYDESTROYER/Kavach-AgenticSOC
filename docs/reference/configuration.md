@@ -240,32 +240,86 @@ version ledger and rollback endpoints.
 
 ### Chat assistant bounds
 
-`chat_agent` bounds Workspace and Case Manager chat. Edit it under
+`chat_agent` controls Workspace and Case Manager chat. Edit it under
 **Settings → General → Chat assistant**. Unlike most blocks, an out-of-range or malformed
 stored value is clamped into its range (or replaced by the default) instead of rejected,
 so one bad knob can never reset the whole preferences document. None of these knobs can
 widen what chat may do; the assistant is read-only by construction.
 
+`limits_mode` decides whether the per-question limits apply at all:
+
+- `unlimited` (default): a question runs until the assistant answers or the user presses
+  Stop. `max_model_calls`, `max_tool_calls`, `turn_token_ceiling`,
+  `final_reserve_tokens`, `turn_timeout_s`, `final_max_tokens`, and `observation_chars`
+  are kept but not applied. Correctness guards still apply: an identical lookup is never
+  re-run in one question, three model steps without progress force a final answer, a
+  model call that stays silent for `model_step_timeout_s` is retried once, and a hidden
+  runaway fuse (200 model calls or 60 minutes per question) makes the assistant answer
+  from what it gathered. Each model step asks for the model's maximum output on a
+  streaming provider; a provider that answers in one blocking request (Azure OpenAI,
+  Bedrock, Vertex) gets 4,000 output tokens per step, and a longer answer continues in
+  further steps.
+- `bounded`: the behaviour before this build's chat changes (the earlier per-question
+  limits), with every knob below applied as a per-question limit.
+
+| Key | Default | Range | Applies in | Meaning |
+|---|---|---|---|---|
+| `limits_mode` | `unlimited` | `unlimited`, `bounded` | — | Whether the per-question limits apply |
+| `max_model_calls` | 5 | 1–12 | Bounded | Model calls per question, including the final answer |
+| `max_tool_calls` | 10 | 1–40 | Bounded | Lookups per question |
+| `turn_token_ceiling` | 60,000 | 4,000–1,000,000 | Bounded | Input plus output tokens across one question's model calls |
+| `final_reserve_tokens` | 12,000 | 1,000–200,000 | Bounded | Tokens always kept inside the ceiling for writing the answer |
+| `final_max_tokens` | 4,000 | 256–32,000 | Bounded | Output tokens for the final answer |
+| `observation_chars` | 6,000 | 1,500–60,000 | Bounded | Characters of aggregated lookup results sent to the model per step |
+| `turn_timeout_s` | 90 | 10–600 | Bounded | Wall-clock seconds per question; no new lookup starts after it, and a model call then gets at most the time left (at least 30 seconds) |
+| `max_parallel` | 4 | 1–8 | Both | Lookups run side by side in one step; in Bounded mode never more than `max_tool_calls` (applied at run time, the stored value is kept) |
+| `tool_timeout_s` | 15 | 1–120 | Both | Seconds one lookup may take; aggregate lookups (case counts and breakdowns, log statistics, metrics, and cost) get up to 10 minutes, never less than this value |
+| `model_step_timeout_s` | 300 | 5–900 | Both | Seconds one model call may stay silent before it counts as stalled and is retried once |
+| `max_concurrent_turns_per_user` | 4 | 1–10 | Both | Questions one user may run at once (Workspace and case chat together) |
+| `max_concurrent_turns_global` | 16 | 1–100 | Both | Questions one backend process runs at once |
+| `max_indicator_lookups` | 3 | 0–10 | Both | Third-party indicator lookups per question; 0 turns the lookup off |
+| `max_indicator_lookups_per_conversation` | 10 | 0–50 | Both | Third-party indicator lookups per conversation |
+| `chat_daily_cap_usd` | `null` | ≥ 0 | Both | Optional daily chat spending limit in US dollars (UTC day); `null` or 0 is off |
+| `default_stream_mode` | `steps` | `steps`, `text` | Both | Live mode for viewers who have not chosen one |
+| `allow_text_streaming` | `true` | — | Both | Allow answers to be typed out word by word |
+| `animated_brand` | `true` | — | Both | Turn a ring around the logo while chat works (a custom logo itself never moves) |
+| `internal_domains` | `[]` | ≤ 100 suffixes | Both | Domain suffixes never sent to enrichment providers |
+| `allow_email_lookup` | `false` | — | Both | Allow e-mail addresses to be sent to enrichment providers |
+| `chat_limits_version` | 1 | — | — | Internal marker of the one-time limits migration below |
+
+Chat is outside the AI budget (`budget`), both `budget.daily_usd` and
+`budget.monthly_usd`: a chat call is never blocked by either and its spend is not counted
+toward either. `chat_daily_cap_usd` is the only spending bound for chat; there is no
+monthly chat bound.
+
+**One-time migration.** A stored `chat_agent` block without `chat_limits_version` is
+migrated once when it is read. An explicit `limits_mode` is kept. Otherwise the block
+becomes `bounded` if any of the seven per-question knobs differs from its shipped
+default (5, 10, 60,000, 12,000, 4,000, 6,000, and 90 seconds) and `unlimited` if not.
+In a stored block, the old defaults of three knobs move to the new ones:
+`model_step_timeout_s` 30 → 300 (only when the block becomes `unlimited`),
+`max_concurrent_turns_per_user` 2 → 4, and `max_concurrent_turns_global` 8 → 16. Values
+an administrator chose are kept. The marker is then stamped, so a later choice is never
+re-decided.
+
+### Session policy and Remember me
+
+`session_policy` sets session lifetimes; edit it under **Settings → Security & access →
+Single sign-on & policy**. Its `remember_me` block controls the **Remember me** option on
+the sign-in page:
+
 | Key | Default | Range | Meaning |
 |---|---|---|---|
-| `max_model_calls` | 5 | 1–12 | Model calls per question, including the final answer |
-| `max_tool_calls` | 10 | 1–40 | Lookups per question |
-| `max_parallel` | 4 | 1–8 | Lookups run side by side in one step (never more than `max_tool_calls`) |
-| `turn_token_ceiling` | 60,000 | 4,000–1,000,000 | Input plus output tokens across one question's model calls |
-| `final_reserve_tokens` | 12,000 | 1,000–200,000 | Tokens always kept inside the ceiling for writing the answer |
-| `final_max_tokens` | 4,000 | 256–32,000 | Output tokens for the final answer |
-| `observation_chars` | 6,000 | 1,500–60,000 | Characters of aggregated lookup results sent to the model per step |
-| `tool_timeout_s` | 15 | 1–120 | Seconds one lookup may take |
-| `model_step_timeout_s` | 30 | 5–300 | Seconds one model call may take |
-| `turn_timeout_s` | 90 | 10–600 | Wall-clock seconds per question; no new lookup starts after it |
-| `max_concurrent_turns_per_user` | 2 | 1–10 | Questions one user may run at once |
-| `max_concurrent_turns_global` | 8 | 1–100 | Questions one backend process runs at once |
-| `max_indicator_lookups` | 3 | 0–10 | Third-party indicator lookups per question; 0 turns the lookup off |
-| `max_indicator_lookups_per_conversation` | 10 | 0–50 | Third-party indicator lookups per conversation |
-| `default_stream_mode` | `steps` | `steps`, `text` | Live mode for viewers who have not chosen one |
-| `allow_text_streaming` | `true` | — | Allow answers to be typed out word by word |
-| `internal_domains` | `[]` | ≤ 100 suffixes | Domain suffixes never sent to enrichment providers |
-| `allow_email_lookup` | `false` | — | Allow e-mail addresses to be sent to enrichment providers |
+| `remember_me.enabled` | `true` | — | Offer Remember me on the sign-in page; turning it off ends existing remembered sessions where an ordinary sign-in would (at the standard token lifetime, `AUTH_TOKEN_HOURS`) |
+| `remember_me.duration_seconds` | 86,400 | 3,600–86,400 | How long a remembered device stays signed in; the console offers 6, 12, and 24 hours. Never longer than `absolute_lifetime` |
+| `remember_me.idle_seconds` | `null` | 300–86,400 | Optional separate inactivity limit for remembered sessions; `null` uses `idle_timeout` |
+| `remember_me.excluded_roles` | `[]` | ≤ 50 roles | Roles that are never remembered |
+| `remember_me.allow_insecure_http` | `false` | — | Allow a persistent cookie on plain HTTP when secure cookies are off (not recommended) |
+
+Stored values are repaired, not rejected, but a settings write with an out-of-range or
+malformed `remember_me` value is refused with HTTP 422, so an administrator never gets a
+looser policy than the one requested. See
+[Security hardening](../operations/security.md#session-lifetimes).
 
 ### Discounted alert inference
 

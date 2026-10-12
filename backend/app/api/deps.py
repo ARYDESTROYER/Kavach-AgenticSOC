@@ -6,6 +6,7 @@ import posixpath
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, Request
@@ -128,22 +129,83 @@ _SESSION_REASON_CODE = {
 }
 
 
-async def _session_check(request: Request, state: AppState, auth, user, token: str | None) -> None:
-    """The Wave-3 async session-registry check (see :func:`require_auth`).
+def live_session_limits(state: AppState, user: Any):
+    """The live standard + remembered session limits for ``user`` (Round 12).
 
-    DENIES only on an explicit negative signal; an unknown sid is lazily registered
-    and allowed. Best-effort: a SessionStore I/O failure NEVER hard-denies a
+    Every registry evaluation builds its limits here (or through
+    :func:`app.auth.session_limits.limits_for_username`) so the call sites cannot
+    drift. ``user`` is the verified principal: its LIVE role is checked against
+    ``remember_me.excluded_roles`` on every evaluation, so excluding a role (or
+    promoting someone into an excluded role) takes effect on their next request —
+    a remembered row of an excluded principal is judged by the standard limits,
+    exactly as when Remember me is turned off. The standard access-token lifetime
+    caps such a row too, so it ends where an ordinary sign-in would."""
+    from ..auth.session_limits import limits_for_principal, standard_token_seconds
+
+    return limits_for_principal(
+        getattr(state, "prefs", None), getattr(user, "role", ""),
+        token_seconds=standard_token_seconds(state),
+    )
+
+
+@dataclass
+class SessionVerdict:
+    """The outcome of one session-registry evaluation (non-raising form).
+
+    ``reason`` is ``None`` when the session may be used, else one of the
+    :class:`~app.stores.sessions.SessionStore` rejection reasons (``revoked``,
+    ``tv_mismatch``, ``idle_expired``, ``absolute_expired``, ``unknown``). ``row``
+    is the registry row when one was read (for ``/auth/me``'s session summary)."""
+
+    reason: str | None = None
+    row: dict[str, Any] | None = None
+    limits: Any = None
+
+
+def _issued_before_prune_grace(claims: dict[str, Any] | None) -> bool:
+    """Whether a token was issued longer ago than the session registry keeps a
+    revoked/expired row (``stores.sessions._PRUNE_GRACE_SECONDS``)."""
+    from ..stores.sessions import _PRUNE_GRACE_SECONDS
+
+    try:
+        iat = int((claims or {}).get("iat", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    if iat <= 0:
+        return False
+    return (datetime.now(timezone.utc).timestamp() - iat) > _PRUNE_GRACE_SECONDS
+
+
+def _remember_seconds_from_claims(claims: dict[str, Any] | None) -> int:
+    """The lifetime a REMEMBERED token was minted with (``exp - iat``), else 0."""
+    if not isinstance(claims, dict) or claims.get("rm") is not True:
+        return 0
+    try:
+        return max(0, int(claims.get("exp", 0)) - int(claims.get("iat", 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def evaluate_session(
+    request: Request, state: AppState, auth, user, token: str | None
+) -> SessionVerdict:
+    """The Wave-3 async session-registry check, as a NON-RAISING verdict.
+
+    Shared by :func:`require_auth` (which raises on a reason) and ``GET /auth/me``
+    (which reports the reason and clears the cookie, Round 12 — so a revoked or
+    expired session lands on the sign-in page instead of a console where every call
+    401s). DENIES only on an explicit negative signal; an unknown sid is lazily
+    registered and allowed. Best-effort: a SessionStore I/O failure NEVER denies a
     validly-signed token (the JWT remains the root of trust) — it is logged and the
-    request proceeds, so a transient store glitch can't lock everyone out."""
+    request proceeds, so a transient store glitch can't lock everyone out. The one
+    exception is the closed factory boundary, which fails closed with a 503."""
     sessions = getattr(state, "sessions", None)
     if sessions is None:
-        return
+        return SessionVerdict()
     sid = getattr(user, "sid", None)
     if not sid:
-        return  # a token minted before sessions existed — never reject for it (#back-compat)
-    policy = getattr(getattr(state, "prefs", None), "session_policy", None)
-    idle = int(getattr(policy, "idle_timeout", 0) or 0)
-    absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+        return SessionVerdict()  # a token minted before sessions existed (#back-compat)
+    limits = live_session_limits(state, user)
     # Once the factory boundary closes, even an authenticated GET must be
     # read-only: the normal compatibility path touches known rows and lazily creates
     # unknown signed sessions. Validate one strict snapshot instead and fail closed
@@ -156,20 +218,14 @@ async def _session_check(request: Request, state: AppState, auth, user, token: s
                 sid=sid,
                 username=user.username,
                 token_version=stamped_tv,
-                idle_timeout=idle,
-                absolute_lifetime=absolute,
+                **limits.kwargs(),
             )
         except Exception as exc:  # storage uncertainty cannot cross reset boundary
             raise HTTPException(
                 status_code=503,
                 detail={"code": "session_registry_unavailable"},
             ) from exc
-        if reason is not None:
-            code = _SESSION_REASON_CODE.get(reason, "session_invalid")
-            raise HTTPException(
-                status_code=401, detail={"code": code, "reason": reason}
-            )
-        return
+        return SessionVerdict(reason=reason, limits=limits)
     try:
         row = await sessions.get(sid)
         # token_version (tv) check — a revoke-all bumps the user's tv so an old token
@@ -178,48 +234,87 @@ async def _session_check(request: Request, state: AppState, auth, user, token: s
         stamped_tv = int((claims or {}).get("tv", 0) or 0)
         current_tv = await sessions.token_version_for(user.username)
         if stamped_tv < current_tv:
-            raise HTTPException(
-                status_code=401, detail={"code": "reauth_required", "reason": "tv_mismatch"}
-            )
+            return SessionVerdict(reason="tv_mismatch", row=row, limits=limits)
         if row is None:
             # UNKNOWN sid on a validly-signed token → lazily register (first-seen) and
             # ALLOW. This keeps direct-mint tokens (auth tests, mint_session without a
-            # route hook) working. The JWT signature already vouched for it.
-            await _lazy_register(request, state, sessions, user, sid, stamped_tv, idle, absolute)
-            return
-        reason = sessions.is_active(row, idle_timeout=idle, absolute_lifetime=absolute)
+            # route hook) working. The JWT signature already vouched for it. A token
+            # minted by a "Remember me" sign-in (``rm``) registers as remembered so a
+            # failed registration write never silently changes its limits.
+            #
+            # Never for a token issued before the registry's prune grace: its row may
+            # have been revoked and then pruned, and re-registering it would resurrect
+            # a terminated session (ASVS 7.4.1). Current tokens never live that long
+            # (session_limits.MAX_SESSION_TOKEN_SECONDS); this guards tokens minted by
+            # an older build with a longer AUTH_TOKEN_HOURS.
+            if _issued_before_prune_grace(claims):
+                return SessionVerdict(reason="unknown", limits=limits)
+            row = await _lazy_register(request, state, sessions, user, sid, stamped_tv,
+                                       limits, claims)
+            return SessionVerdict(row=row, limits=limits)
+        reason = sessions.is_active(row, **limits.kwargs())
         if reason is not None:
-            code = _SESSION_REASON_CODE.get(reason, "session_invalid")
-            raise HTTPException(status_code=401, detail={"code": code, "reason": reason})
-        # Best-effort touch (only writes when >60s stale).
+            return SessionVerdict(reason=reason, row=row, limits=limits)
+        # Best-effort touch (only writes when >60s stale), sliding the idle window
+        # that applies to THIS row (remembered or standard).
         try:
+            idle, _absolute = limits.for_row(row)
             await sessions.touch(sid, idle_timeout=idle)
         except Exception:  # noqa: BLE001
             pass
+        return SessionVerdict(row=row, limits=limits)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001 — a store glitch must not lock everyone out
         import logging
 
         logging.getLogger("tlsoc.api.deps").warning("session check soft-failed: %s", exc)
+        return SessionVerdict(limits=limits)
+
+
+async def _session_check(request: Request, state: AppState, auth, user, token: str | None) -> None:
+    """The Wave-3 async session-registry check (see :func:`require_auth`): raise 401
+    on a negative :func:`evaluate_session` verdict."""
+    verdict = await evaluate_session(request, state, auth, user, token)
+    if verdict.reason is not None:
+        code = _SESSION_REASON_CODE.get(verdict.reason, "session_invalid")
+        raise HTTPException(status_code=401, detail={"code": code, "reason": verdict.reason})
 
 
 async def _lazy_register(request: Request, state: AppState, sessions, user, sid: str,
-                         tv: int, idle: int, absolute: int) -> None:
+                         tv: int, limits, claims: dict[str, Any] | None = None
+                         ) -> dict[str, Any] | None:
     """First-seen registration of an unknown-but-validly-signed sid. Records the
     session with best-effort request metadata + audits the create (#2). Never raises
-    into the caller."""
+    into the caller; returns the stored row (or ``None`` on failure)."""
     meta: dict[str, str] = session_metadata(request)
+    remember_seconds = _remember_seconds_from_claims(claims)
+    remembered = remember_seconds > 0
+    token_expires_at = ""
     try:
-        await sessions.create(
+        exp = int((claims or {}).get("exp", 0) or 0)
+        if exp > 0:
+            token_expires_at = datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        token_expires_at = ""
+    if remembered and limits.remember_enabled:
+        idle, absolute = limits.remember_idle, limits.remember_absolute
+    else:
+        idle, absolute = limits.idle, limits.absolute
+    try:
+        row = await sessions.create(
             sid=sid, username=user.username, token_version=int(tv),
             idle_timeout=idle, absolute_lifetime=absolute,
+            remember=remembered, remember_seconds=remember_seconds,
+            token_expires_at=token_expires_at,
             **meta,
         )
         await _audit_session(state, "session_register", user.username, sid,
-                             "lazy first-seen session registration")
+                             "lazy first-seen session registration"
+                             + (" (remembered)" if remembered else ""))
+        return row
     except Exception:  # noqa: BLE001
-        pass
+        return None
 
 
 def session_metadata(request: Request) -> dict[str, str]:
@@ -420,7 +515,15 @@ async def resolve_access(request: Request) -> AccessView:
     lifecycle, not an authorization decision. A 401 for an unauthenticated caller
     propagates when auth is on."""
     user = await require_auth(request)
-    state = get_state(request)
+    return await access_view_for(get_state(request), user)
+
+
+async def access_view_for(state: AppState, user: Any) -> AccessView:
+    """The RBAC view for an already-authenticated ``user`` (the core of
+    :func:`resolve_access`, without the request's auth gate). Used where no request
+    is present but the principal's LIVE grants must be re-resolved: a running chat
+    turn re-checks that it still holds the grants it was admitted with
+    (``routes_chat.turn_authority_lost``). Writes nothing."""
     auth = getattr(state, "auth", None)
     if auth is None or not auth.is_enabled:
         return AccessView(user=user, role="", unrestricted=True)  # auth off → allow all
@@ -824,8 +927,7 @@ def require_system_update_operator(window: int | None = None):
             ) from exc
 
         policy = getattr(getattr(state, "prefs", None), "session_policy", None)
-        idle = int(getattr(policy, "idle_timeout", 0) or 0)
-        absolute = int(getattr(policy, "absolute_lifetime", 0) or 0)
+        limits = live_session_limits(state, user)
         win = int(
             window
             if window is not None
@@ -867,9 +969,7 @@ def require_system_update_operator(window: int | None = None):
                 detail={"code": "reauth_required", "reason": "tv_mismatch"},
             )
         try:
-            reason = sessions.is_active(
-                row, idle_timeout=idle, absolute_lifetime=absolute
-            )
+            reason = sessions.is_active(row, **limits.kwargs())
             age = sessions.reauth_age_seconds(row)
         except Exception as exc:
             raise HTTPException(

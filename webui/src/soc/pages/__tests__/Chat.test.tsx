@@ -26,12 +26,14 @@ const { authState, savePromptMock } = vi.hoisted(() => ({
   authState: { denied: new Set<string>() },
   savePromptMock: vi.fn(),
 }));
-vi.mock('@/soc/auth', () => ({
-  useAuth: () => ({
+vi.mock('@/soc/auth', () => {
+  const auth = () => ({
     username: 'analyst',
     hasPermission: (resource: string, action: string) => !authState.denied.has(`${resource}:${action}`),
-  }),
-}));
+  });
+  // An answer reads the optional form (Round 12: "Add to case", report export author).
+  return { useAuth: auth, useOptionalAuth: auth };
+});
 
 vi.mock('@/soc/chat/composer/Composer', async () => {
   const React = await import('react');
@@ -109,7 +111,7 @@ vi.mock('@/soc/chat/shortcuts/ShortcutSheet', () => ({ ShortcutSheet: () => null
 
 const { exportConversationMock, toastMock } = vi.hoisted(() => ({
   exportConversationMock: vi.fn(),
-  toastMock: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }),
+  toastMock: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn(), loading: vi.fn() }),
 }));
 vi.mock('sonner', async (importOriginal) => ({ ...(await importOriginal<typeof import('sonner')>()), toast: toastMock }));
 vi.mock('@/soc/chat/report/export/conversation', () => ({ exportConversation: exportConversationMock }));
@@ -367,7 +369,9 @@ describe('Workspace Chat page', () => {
   it('owns a full-height frame that bleeds the shell inset, with one h1 and one visible New chat', async () => {
     renderChat();
     const frame = screen.getByTestId('workspace-chat-page');
-    expect(frame).toHaveClass('-my-6', 'h-[calc(100dvh-3.5rem)]', 'min-h-0', 'overflow-hidden');
+    // The whole shell inset (no canvas strips) and a clipped, never-scrollable frame.
+    expect(frame).toHaveClass('-mx-4', '-my-6', 'sm:-mx-6', 'w-auto', 'h-[calc(100dvh-3.5rem)]', 'min-h-0', 'overflow-clip');
+    expect(frame).not.toHaveClass('overflow-hidden');
     expect(frame).toHaveAttribute('data-rail', 'docked');
     const h1 = screen.getAllByRole('heading', { level: 1 });
     expect(h1).toHaveLength(1);
@@ -377,15 +381,46 @@ describe('Workspace Chat page', () => {
     expect(screen.getAllByRole('button', { name: 'New chat' })).toHaveLength(1);
   });
 
+  it('shares one lane between the transcript and the composer, sized by the viewer\'s width preference (D12)', async () => {
+    window.localStorage.removeItem('soc.chat.laneWidth');
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    const frame = screen.getByTestId('workspace-chat-page');
+    // Never chosen: Full width (operator ask 1, Round 12 final review), no cap at all.
+    expect(frame).toHaveAttribute('data-lane-width', 'full');
+    const section = screen.getByRole('region', { name: 'Conversation' });
+    // The conversation zone is the size container the gutter's cqi resolves against.
+    expect(section).toHaveClass('@container');
+    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('100%');
+    expect(section.style.getPropertyValue('--chat-gutter')).toBe('clamp(1rem, 2.5cqi, 2.5rem)');
+    // The composer column spans the lane (both edges), not the 48rem prose measure.
+    const composerCol = screen.getByTestId('composer').closest('.col-start-2') as HTMLElement;
+    expect(composerCol).toHaveClass('col-start-2', 'col-end-3');
+    expect(composerCol.className).not.toContain('max-w-[48rem]');
+    // Thread ⋯ → Width → Wide caps the lane at 88rem and is remembered.
+    await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    const width = await screen.findByRole('menuitem', { name: 'Width, currently Full width' });
+    await user.click(width);
+    const wide = await screen.findByRole('menuitemradio', { name: /^Wide/ });
+    act(() => wide.focus());
+    await user.keyboard('{Enter}');
+    await settle();
+    expect(frame).toHaveAttribute('data-lane-width', 'wide');
+    expect(section.style.getPropertyValue('--chat-lane-max')).toBe('88rem');
+    expect(window.localStorage.getItem('soc.chat.laneWidth')).toBe('wide');
+    window.localStorage.removeItem('soc.chat.laneWidth');
+  });
+
   it('restores the newest thread, marks it current, and switches threads', async () => {
     renderChat();
     expect(await screen.findByText('Newest sign-in review answer')).toBeInTheDocument();
-    const newest = screen.getByRole('button', { name: /^Newest sign-in review — .* · 2 messages$/ });
+    const newest = screen.getByRole('button', { name: /^Newest sign-in review, .* · 2 messages$/ });
     expect(newest).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'Newest sign-in review' })).toBeInTheDocument();
     expect(screen.getByTestId('conversation-total')).toHaveTextContent('2.1k tokens · $0.004');
 
-    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review — / }));
+    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review, / }));
     expect(await screen.findByText('Older endpoint review answer')).toBeInTheDocument();
     expect(screen.queryByText('Newest sign-in review answer')).toBeNull();
     expect(calls.some((call) => call.url === '/api/chat/conversations/c-older')).toBe(true);
@@ -428,7 +463,7 @@ describe('Workspace Chat page', () => {
     );
     expect(await screen.findByText('Yes: 1,284 failed logins.')).toBeInTheDocument();
     expect(screen.getByTestId('meta-row')).toHaveTextContent('1 lookup · 420 ms');
-    const row = await screen.findByRole('button', { name: /^Brute force review — / });
+    const row = await screen.findByRole('button', { name: /^Brute force review, / });
     expect(row).toHaveAttribute('aria-current', 'page');
     // The live transcript stays: the promoted thread is not re-fetched.
     expect(calls.some((call) => call.url === '/api/chat/conversations/c-new')).toBe(false);
@@ -448,7 +483,7 @@ describe('Workspace Chat page', () => {
       response: { answer: 'X answer', conversation_id: 'c-new', conversation_title: 'First question', message_id: 'c-new-a' },
     });
     expect(await screen.findByText('X answer')).toBeInTheDocument();
-    await screen.findByRole('button', { name: /^Older endpoint review — / });
+    await screen.findByRole('button', { name: /^Older endpoint review, / });
 
     // Hold the older thread's detail open, as on a slow backend.
     let release!: () => void;
@@ -463,7 +498,7 @@ describe('Workspace Chat page', () => {
         return scripted(input, init);
       }),
     );
-    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review — / }));
+    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review, / }));
     await settle();
     expect(screen.getByRole('heading', { level: 2, name: 'Older endpoint review' })).toBeInTheDocument();
     // The old thread's turns are gone (no Add to report on a message of another thread).
@@ -567,7 +602,12 @@ describe('Workspace Chat page', () => {
     details = { 'c-long': detailOf(rows[0]) };
     renderChat();
     await screen.findByText('Long thread answer');
-    expect(screen.getByText('Showing the latest 40 of 64 messages. Older messages were removed to stay within the storage limit.')).toBeInTheDocument();
+    // Only an older version removed messages (Round 12 removes none): the note says so.
+    expect(
+      screen.getByText(
+        'The first 24 messages of this conversation were removed by an older version of Agentic SOC. Messages are no longer removed.',
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId('answer-trimmed-hint')).toBeNull();
   });
 
@@ -577,7 +617,7 @@ describe('Workspace Chat page', () => {
     expect(await screen.findByText('Older endpoint review answer')).toBeInTheDocument();
     await waitFor(() => expect(document.querySelector('[data-highlighted="true"]')).not.toBeNull());
     expect(window.location.hash).toContain('conversationId=c-older');
-    fireEvent.click(screen.getByRole('button', { name: /^Newest sign-in review — / }));
+    fireEvent.click(screen.getByRole('button', { name: /^Newest sign-in review, / }));
     await screen.findByText('Newest sign-in review answer');
     expect(window.location.hash).toBe('#/chat');
   });
@@ -604,7 +644,7 @@ describe('Workspace Chat page', () => {
     expect(screen.getByRole('separator', { name: 'Resize report panel' })).toHaveAttribute('aria-valuenow', '360');
     expect(document.activeElement).toBe(composer);
     expect(screen.getByRole('button', { name: 'Add answer to report' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('button', { name: /Report · 1/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Report, 1 item added' })).toHaveAttribute('aria-pressed', 'true');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
@@ -677,7 +717,7 @@ describe('Workspace Chat page', () => {
     await waitFor(() =>
       expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/chat/conversations/c-older')).toBe(true),
     );
-    expect(screen.queryByRole('button', { name: /^Older endpoint review — / })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Older endpoint review, / })).toBeNull();
   });
 
   it('shows a failed /chat/context as a retryable error in the empty state and the composer', async () => {
@@ -718,18 +758,23 @@ describe('Workspace Chat page', () => {
     const [conversation, format, options] = exportConversationMock.mock.calls[0];
     expect(conversation).toMatchObject({ id: 'c-older', title: 'Older endpoint review' });
     expect(format).toBe('markdown');
-    expect(options).toEqual({ author: 'analyst' });
+    // The author, plus the PDF guidance hook the runner always passes (shown before a
+    // print dialog opens; unused for Markdown).
+    expect(options).toMatchObject({ author: 'analyst' });
+    expect(typeof options.onPrintOpening).toBe('function');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
     });
     expect(document.body).toHaveTextContent('Conversation exported as Markdown');
+    // Visible too, not only announced.
+    expect(toastMock.success).toHaveBeenLastCalledWith('Conversation exported as Markdown', expect.objectContaining({ id: 'conversation-export-c-older' }));
   });
 
   it('runs case-scoped without history, report or persistence', async () => {
     renderChat({ caseId: 'case-9' });
     expect(screen.getByTestId('workspace-chat-page')).toHaveAttribute('data-rail', 'none');
     expect(screen.getByRole('heading', { level: 2, name: 'Case case-9' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Report ·/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Report/ })).toBeNull();
     expect(screen.getByTestId('composer')).toHaveAttribute('data-variant', 'case');
     await send('Summarize this case');
     expect(streamCalls()[0].body).toMatchObject({ case_id: 'case-9', message: 'Summarize this case' });
@@ -770,7 +815,8 @@ describe('Workspace Chat page — accessibility', () => {
     await screen.findByText('Yes: 1,284 failed logins.');
     await axeClean(container);
 
-    fireEvent.click(screen.getByRole('button', { name: /Report · 0/ }));
+    // No count while nothing was added: never "Report · 0".
+    fireEvent.click(screen.getByRole('button', { name: 'Report' }));
     expect(await screen.findByTestId('report-panel')).toBeInTheDocument();
     await axeClean(container);
   }, 60_000);

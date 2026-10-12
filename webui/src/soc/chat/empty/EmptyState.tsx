@@ -3,7 +3,8 @@
  *
  * Top-aligned in the 48rem lane: one capability line, then a 2×3 grid of starters
  * (one column below 560 px of lane width, each card ≤ 64 px tall), then the "What can
- * the assistant access?" link that opens the access popover. A starter card is shown
+ * the assistant access?" link that opens the access popover and (Round 12) the "Browse
+ * the prompt library" link that opens the composer's prompt library. A starter card is shown
  * only when every tool it needs is allowed for this user, so a restricted role never
  * sees a card that would end in "Denied". Starter text is server-built from live
  * context (a case id, a source name) and renders as text (#9); clicking a card hands
@@ -15,13 +16,20 @@
  * States are explicit (UI standard): skeleton cards while `/chat/context` loads; one
  * honest line with Retry when it cannot be read (`error` with no context), instead of
  * skeletons that never resolve; nothing but the capability line when no starter is
- * allowed for this role.
+ * allowed for this role. While a promptbook runs (it may be waiting on another thread),
+ * the cards are paused with the composer's reason: one click would open a new thread,
+ * and the book would stop itself because another conversation is open.
  */
+import { useId, useSyncExternalStore } from 'react';
 import type { ChatContextInfo, ChatStarter } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
+import { Library } from 'lucide-react';
 import { AccessPopover, ContextUnavailable } from '../composer/AccessPopover';
 import { toolsAllowed } from '../composer/commands';
+import { openPromptLibrary } from '../composer/library-events';
+import { PROMPTBOOK_RUNNING_REASON } from '../composer/PromptRunner';
+import { getPromptbook, subscribePromptbook } from '../composer/promptbook-store';
 import { starterIcon } from './starter-icons';
 
 export interface EmptyStateProps {
@@ -44,6 +52,8 @@ export const CAPABILITY_LINE =
   'Ask about your data, build a quick report, or learn how this console works. Read-only.';
 const CASE_CAPABILITY_LINE = 'Ask about this case: what happened, the evidence and the decision. Read-only.';
 const ACCESS_LINK = 'What can the assistant access?';
+/** Round 12 prompt library (SPEC §3.1). */
+export const LIBRARY_LINK = 'Browse the prompt library';
 const MAX_STARTERS = 6;
 
 /** The starters this user can run: every tool allowed, at most six, server order. */
@@ -85,6 +95,9 @@ export function EmptyState({
   error = null,
   onRetry,
 }: EmptyStateProps) {
+  // The running promptbook lives outside any composer (it outlives a thread switch).
+  const book = useSyncExternalStore(subscribePromptbook, getPromptbook, getPromptbook);
+  const reasonId = useId();
   if (variant === 'case') {
     return (
       <div className={cn('flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2', className)}>
@@ -98,6 +111,8 @@ export function EmptyState({
   // A failed read with nothing cached is an error, not a load that never ends.
   const failed = context === null && Boolean(error);
   const loading = context === null && !failed;
+  const bookRunning = book?.status === 'running';
+  const paused = disabled || bookRunning;
 
   return (
     <section aria-label="Start a conversation" className={cn('@container w-full max-w-3xl pt-2', className)}>
@@ -111,14 +126,18 @@ export function EmptyState({
           ))}
         </div>
       ) : starters.length ? (
-        <ul aria-label="Suggested questions" className="mt-4 grid grid-cols-1 gap-2 @[560px]:grid-cols-2">
+        <ul
+          aria-label="Suggested questions"
+          aria-describedby={bookRunning ? reasonId : undefined}
+          className="mt-4 grid grid-cols-1 gap-2 @[560px]:grid-cols-2"
+        >
           {starters.map((starter) => {
             const Icon = starterIcon(starter.id);
             return (
               <li key={starter.id} className="min-w-0">
                 <button
                   type="button"
-                  disabled={disabled}
+                  disabled={paused}
                   onClick={() => onStarter(starter)}
                   data-starter={starter.id}
                   className={cn(
@@ -145,9 +164,25 @@ export function EmptyState({
           })}
         </ul>
       ) : null}
+      {bookRunning && starters.length > 0 && !failed && !loading ? (
+        <p id={reasonId} className="mt-2 text-xs text-muted-foreground">
+          {PROMPTBOOK_RUNNING_REASON}
+        </p>
+      ) : null}
       {failed ? null : (
-        <div className="mt-3">
+        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
           <AccessLink context={context} error={error} onRetry={onRetry} />
+          <button
+            type="button"
+            onClick={() => openPromptLibrary()}
+            className={cn(
+              'inline-flex items-center gap-1 rounded-sm text-xs text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline',
+              focusRing,
+            )}
+          >
+            <Library className="size-3.5" aria-hidden="true" />
+            {LIBRARY_LINK}
+          </button>
         </div>
       )}
     </section>

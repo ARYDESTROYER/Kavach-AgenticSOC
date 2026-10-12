@@ -38,6 +38,16 @@
  * `username`, `current-password`, `new-password`, and `one-time-code` for the MFA /
  * recovery-code inputs — and NONE of them block paste (no `onPaste` interception),
  * so a manager can paste secrets and no cognitive-function test is imposed.
+ *
+ * Remember me (Round 12, SPEC D14): a checkbox row in the password step (and in the
+ * identity step when single sign-on is offered) asks the server for a persistent,
+ * server-bounded session; the first check on a device opens a warning. After a
+ * successful remembered sign-in this device keeps the USERNAME (never the password —
+ * that is the browser password manager's job, helped by a hidden
+ * `autocomplete="username"` field in the password form and, in Chromium,
+ * `PasswordCredential`). A session that ended on its own is explained with a calm
+ * notice. The controls live in a LAZY chunk (`RememberMeControls`) loaded in parallel
+ * with the startup probes, so this first-paint page stays lean.
  */
 import * as React from 'react';
 import {
@@ -56,6 +66,7 @@ import {
 import { api, ApiError } from '@/lib/api';
 import type { LoginResult, SetupStatus, SsoProviderPublic } from '@/lib/types';
 import { useTheme } from '@/soc/theme';
+import { useOptionalAuth } from '@/soc/auth';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import {
@@ -80,6 +91,22 @@ import { setupAccount, type LoginBranding } from '@/soc/components/auth/login.ap
 import { MfaSetupCard } from '@/soc/components/MfaSetupCard';
 import { LoginAuthBackdrop } from '@/soc/components/auth/LoginAuthBackdrop';
 import { LoadingState } from '@/design-system';
+
+// Remember me (Round 12) — one lazy chunk for the controls and the device helpers.
+const loadRememberControls = () => import('@/soc/components/auth/RememberMeControls');
+const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
+type RememberUi = Awaited<ReturnType<typeof loadRememberControls>>;
+/** The quiet text-link buttons under a form ("Back to sign in", recovery codes). */
+const LINK_BUTTON =
+  'h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline';
+/** The username a previous remembered sign-in left on this device (not a secret). */
+function rememberedUsernameOnDevice(): string | null {
+  try {
+    return window.localStorage.getItem('soc.login.rememberedUsername')?.trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 export interface LoginProps {
   /** Called after a fully-successful login so the app can re-fetch the session. */
@@ -215,8 +242,24 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // the first paint so a first-run install doesn't flash 'signin' before 'setup'.
   const [statusResolved, setStatusResolved] = React.useState(false);
   const [mode, setMode] = React.useState<Mode>('signin');
-  const [signinStep, setSigninStep] = React.useState<SigninStep>('identity');
-  const [username, setUsername] = React.useState('');
+  // Remember me: a username remembered on THIS device opens the password step with
+  // the box pre-checked ("Use a different account" forgets it). The box is checked for
+  // ONE account (lower-cased): the one this device remembers, or the name the warning
+  // was accepted (or skipped) for. Any other name reads unchecked, also after Back, so
+  // its owner sees the warning too (a shared device).
+  const [rememberedUser, setRememberedUser] = React.useState(rememberedUsernameOnDevice);
+  const [signinStep, setSigninStep] = React.useState<SigninStep>(() =>
+    rememberedUser ? 'password' : 'identity',
+  );
+  const [username, setUsername] = React.useState(() => rememberedUser ?? '');
+  const [rememberFor, setRememberFor] = React.useState(() => rememberedUser?.toLowerCase());
+  // The sign-out notice is showing: the focused field is described by it.
+  const [noticeShown, setNoticeShown] = React.useState(false);
+  // Whether THIS attempt asked to be remembered / the minted session was remembered.
+  const rememberRequestedRef = React.useRef(false);
+  // The lazy Remember-me chunk: undefined while loading, null if it failed to load.
+  const [rememberUi, setRememberUi] = React.useState<RememberUi | null>();
+  const endedSession = useOptionalAuth()?.sessionEnded ?? null;
   const [displayName, setDisplayName] = React.useState('');
   const [password, setPassword] = React.useState('');
   const signinIdentityRef = React.useRef<HTMLInputElement>(null);
@@ -242,6 +285,10 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // failed-attempt count). Kept separate from `error` so the primary line stays the
   // backend/validation message and the count is visually subordinate.
   const [errorDetail, setErrorDetail] = React.useState<string | null>(null);
+  const clearError = () => {
+    setError(null);
+    setErrorDetail(null);
+  };
   const [busy, setBusy] = React.useState(false);
   // How many times sign-in has failed IN THIS BROWSER SESSION. This is an honest
   // client-side tally (the backend rate-limiter is per-IP and returns no count), used
@@ -292,6 +339,20 @@ export default function Login({ onAuthenticated }: LoginProps) {
     }
   }, []);
 
+  // Load the Remember-me chunk in parallel with the probes below; first paint waits
+  // for it (fail-safe) so the row and notice never pop in.
+  React.useEffect(() => {
+    let alive = true;
+    // Fail-safe: when the chunk cannot load, the page simply works without it.
+    loadRememberControls().then(
+      (ui) => alive && setRememberUi(ui),
+      () => alive && setRememberUi(null),
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Detect the first-run OOBE state once on mount.
   React.useEffect(() => {
     let alive = true;
@@ -300,7 +361,10 @@ export default function Login({ onAuthenticated }: LoginProps) {
         const s = await api.setup.status();
         if (!alive) return;
         setStatus(s);
-        if (s.needs_user) setMode('setup');
+        if (s.needs_user) {
+          setMode('setup');
+          setUsername(''); // never prefill the first-admin form with a remembered name
+        }
       } catch {
         /* fall back to normal sign-in */
       } finally {
@@ -364,13 +428,75 @@ export default function Login({ onAuthenticated }: LoginProps) {
     }
   }, []);
 
+  // Remember me availability (public /setup/status): shown only when advertised;
+  // the control itself explains why it is unavailable.
+  const rememberStatus = status?.auth_enabled === false ? undefined : status?.remember_me;
+  const userKey = username.trim().toLowerCase();
+  const rememberChecked = Boolean(
+    rememberStatus?.enabled && !rememberStatus.insecure_blocked && rememberFor === userKey,
+  );
+  // The account this device remembers is the one being signed in (not a name typed
+  // after going back), so its chip offers to forget the device.
+  const rememberedChip = rememberedUser?.toLowerCase() === userKey;
+  const RememberMeControl = rememberUi?.RememberMeControl;
+  const SessionEndNotice = rememberUi?.SessionEndNotice;
+  // The focused sign-in field is described by the sign-out notice while it shows.
+  const noticeId = noticeShown ? rememberUi?.SESSION_END_NOTICE_ID : undefined;
+  const rememberRow =
+    rememberStatus && RememberMeControl ? (
+      <RememberMeControl
+        status={rememberStatus}
+        checked={rememberChecked}
+        onCheckedChange={(on) => setRememberFor(on ? userKey : undefined)}
+        busy={busy}
+        username={username}
+        wordmark={wordmark}
+      />
+    ) : null;
+
+  // A SUCCESSFUL sign-in (password, MFA, or mandated enrollment) — never a failed
+  // one, so a typo or a probed name is never remembered.
+  const recordSuccessfulSignin = (res: LoginResult) => {
+    const opts = {
+      username,
+      requested: rememberRequestedRef.current,
+      password,
+      lifetimeSeconds: rememberStatus?.duration_seconds,
+    };
+    void loadRememberDevice().then((m) => m.afterSignIn(res, opts), () => undefined);
+  };
+
+  // "Back to sign in" from the second factor or a mandated enrollment: the identity step
+  // again (the Remember me box is checked only for the account it was confirmed for).
+  const backToSignIn = () => {
+    setMode('signin');
+    setSigninStep('identity');
+    setPendingToken('');
+    setPassword('');
+    clearError();
+  };
+
+  // "Use a different account": drop what this device keeps and start over.
+  const forgetThisDevice = () => {
+    void loadRememberDevice().then((m) => m.forgetDevice(), () => undefined);
+    setRememberedUser(null);
+    setRememberFor(undefined);
+    setUsername('');
+    setPassword('');
+    clearError();
+    setSigninStep('identity');
+    window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
+  };
+
   const startSso = async (providerId: string) => {
     if (ssoBusy) return;
     setSsoBusy(providerId);
-    setError(null);
-    setErrorDetail(null);
+    clearError();
     try {
-      const res = await api.auth.sso.authorize(providerId);
+      const res = await api.auth.sso.authorize(
+        providerId,
+        rememberChecked ? { remember: true } : undefined,
+      );
       window.location.assign(res.auth_url);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not start single sign-on.');
@@ -378,13 +504,15 @@ export default function Login({ onAuthenticated }: LoginProps) {
     }
   };
 
+  const firstPaintReady =
+    statusResolved && ssoResolved && brandingResolved && rememberUi !== undefined;
+
   const seededHint = Boolean(status?.seeded_default) && mode === 'signin';
 
   const continueSignin = (e?: React.FormEvent) => {
     e?.preventDefault();
     if (busy || username.trim().length === 0) return;
-    setError(null);
-    setErrorDetail(null);
+    clearError();
     setSigninStep('password');
     window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
   };
@@ -431,10 +559,14 @@ export default function Login({ onAuthenticated }: LoginProps) {
     e?.preventDefault();
     if (busy) return;
     setBusy(true);
-    setError(null);
-    setErrorDetail(null);
+    clearError();
+    rememberRequestedRef.current = rememberChecked;
     try {
-      const res: LoginResult = await api.auth.login(username.trim(), password);
+      const res: LoginResult = await api.auth.login(
+        username.trim(),
+        password,
+        rememberChecked ? { remember: true } : undefined,
+      );
       // MANDATED-BUT-UNENROLLED (branch FIRST — the response also carries
       // requires_mfa): the account must use MFA but has no factor yet, so a code
       // challenge is impossible. Walk the user through enrollment IN the login,
@@ -456,6 +588,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
         setBusy(false);
         return;
       }
+      recordSuccessfulSignin(res); // the session is minted
       if (res.user?.must_change_password) {
         // Keep the (now-validated) current password; ask for a new one.
         setNewPassword('');
@@ -498,6 +631,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
     setError(null);
     try {
       const res: LoginResult = await api.auth.mfa.verify(pendingToken, mfaCode.trim());
+      recordSuccessfulSignin(res);
       if (res.user?.must_change_password) {
         // Session minted, but the password is still flagged for change. The verify
         // route set the cookie, so we can change the password with the current one.
@@ -520,6 +654,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // /auth/mfa/verify success payload — finish exactly the way submitMfa does
   // (incl. the forced password change, which the fresh cookie lets us perform).
   const completeEnrollLogin = (res: LoginResult) => {
+    recordSuccessfulSignin(res);
     if (res.user?.must_change_password) {
       setNewPassword('');
       setConfirm('');
@@ -670,6 +805,13 @@ export default function Login({ onAuthenticated }: LoginProps) {
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0 pb-0 pt-9">
+              {!error && mode === 'signin' && SessionEndNotice ? (
+                <SessionEndNotice
+                  reason={endedSession?.reason}
+                  lifetimeSeconds={endedSession?.lifetimeSeconds}
+                  onShownChange={setNoticeShown}
+                />
+              ) : null}
               {error ? (
                 <Alert
                   id={mode === 'signin' ? 'login-error' : undefined}
@@ -818,15 +960,8 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                      onClick={() => {
-                        setMode('signin');
-                        setSigninStep('identity');
-                        setPendingToken('');
-                        setPassword('');
-                        setError(null);
-                        setErrorDetail(null);
-                      }}
+                      className={LINK_BUTTON}
+                      onClick={backToSignIn}
                     >
                       Back to sign in
                     </Button>
@@ -850,6 +985,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         placeholder="Enter your username"
                         disabled={busy}
                         required
+                        aria-describedby={noticeId}
                         /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the primary field of a focused dialog/login flow; behavior-preserving */
                         autoFocus
                       />
@@ -862,7 +998,24 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   </form>
                 ) : (
                   <form onSubmit={submitSignin} className="space-y-4" noValidate>
-                    <div className="flex min-h-8 items-center justify-between gap-3 text-sm">
+                    {/* Password managers pair a saved password with a username field
+                        in the SAME form (Chromium's two-step sign-in guidance), so the
+                        password step carries a hidden, non-tabbable copy. */}
+                    <input
+                      type="text"
+                      name="username"
+                      autoComplete="username"
+                      value={username.trim()}
+                      onChange={() => undefined}
+                      tabIndex={-1}
+                      aria-hidden="true"
+                      className="sr-only"
+                      data-login-hidden-username
+                    />
+                    <div
+                      className="flex min-h-8 items-center justify-between gap-3 text-sm"
+                      data-login-identity-chip={rememberedChip ? 'remembered' : 'typed'}
+                    >
                       <span className="min-w-0 truncate text-foreground">{username.trim()}</span>
                       <Button
                         type="button"
@@ -870,16 +1023,19 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         size="sm"
                         className="h-8 shrink-0 px-2 text-xs text-muted-foreground"
                         onClick={() => {
+                          if (rememberedChip) {
+                            forgetThisDevice();
+                            return;
+                          }
                           setSigninStep('identity');
                           setPassword('');
-                          setError(null);
-                          setErrorDetail(null);
+                          clearError();
                           window.setTimeout(() => signinIdentityRef.current?.focus(), 0);
                         }}
                         disabled={busy}
                       >
-                        <ArrowLeft className="h-3.5 w-3.5" aria-hidden />
-                        Back
+                        {rememberedChip ? null : <ArrowLeft className="h-3.5 w-3.5" aria-hidden />}
+                        {rememberedChip ? 'Use a different account' : 'Back'}
                       </Button>
                     </div>
                     <div className="space-y-2">
@@ -892,12 +1048,17 @@ export default function Login({ onAuthenticated }: LoginProps) {
                         autoComplete="current-password"
                         name="password"
                         placeholder="Enter your password"
-                        ariaDescribedBy={error ? 'login-error' : undefined}
+                        ariaDescribedBy={error ? 'login-error' : noticeId}
                         ariaInvalid={Boolean(error)}
                         disabled={busy}
                         required
+                        // A remembered username opens on this step: focus the field so
+                        // the browser's password manager can fill it.
+                        /* eslint-disable-next-line jsx-a11y/no-autofocus -- deliberate focus placement on the only field of the remembered sign-in step */
+                        autoFocus={Boolean(rememberedUser)}
                       />
                     </div>
+                    {rememberRow}
                     <ShineButton
                       type="submit"
                       className="h-12 w-full"
@@ -916,6 +1077,9 @@ export default function Login({ onAuthenticated }: LoginProps) {
               {/* The reference keeps identity providers below the credential path.
                   Providers stay explicitly named for assistive technology while the
                   visual controls remain compact and icon-led. */}
+              {mode === 'signin' && signinStep === 'identity' && ssoProviders.length > 0 && rememberRow ? (
+                <div className="mt-4">{rememberRow}</div>
+              ) : null}
               {mode === 'signin' && signinStep === 'identity' && ssoProviders.length > 0 ? (
                 <div
                   className="mt-6 grid gap-2"
@@ -969,8 +1133,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     onClick={() => {
                       setUsername('Admin');
                       setPassword('Admin@123');
-                      setError(null);
-                      setErrorDetail(null);
+                      clearError();
                       setSigninStep('password');
                       window.setTimeout(() => signinPasswordRef.current?.focus(), 0);
                     }}
@@ -1044,12 +1207,11 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      className={LINK_BUTTON}
                       onClick={() => {
                         setUseRecovery((v) => !v);
                         setMfaCode('');
-                        setError(null);
-                        setErrorDetail(null);
+                        clearError();
                         setShowRecoveryHelp(false);
                       }}
                       disabled={busy}
@@ -1059,15 +1221,10 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     <Button
                       type="button"
                       variant="link"
-                      className="h-auto p-0 text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                      className={LINK_BUTTON}
                       onClick={() => {
-                        setMode('signin');
-                        setSigninStep('identity');
+                        backToSignIn();
                         setMfaCode('');
-                        setPendingToken('');
-                        setPassword('');
-                        setError(null);
-                        setErrorDetail(null);
                         setShowRecoveryHelp(false);
                       }}
                       disabled={busy}
@@ -1167,7 +1324,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // operator's real login_layout/headline/illustration. All three probes fire on mount
   // in parallel, so this waits for the slowest one, not their sum. Each fails safe (its
   // flag flips on error too), so an unreachable backend still resolves to the fallback.
-  if (!statusResolved || !ssoResolved || !brandingResolved) {
+  if (!firstPaintReady) {
     return (
       <main className="login-auth-canvas min-h-[100dvh] px-5">
         <LoadingState

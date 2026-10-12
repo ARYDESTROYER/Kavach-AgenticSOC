@@ -36,9 +36,18 @@ export interface SegmentedControlProps<T extends string = string> {
   onValueChange: (value: T) => void;
   /** Accessible name for the group. */
   'aria-label'?: string;
+  /** Id(s) of the text that explains the choice (read after the group's name). */
+  'aria-describedby'?: string;
   size?: 'sm' | 'md';
   /** Equal-width segments filling the container. Default false. */
   fitted?: boolean;
+  /**
+   * Which arrow keys move the selection. `horizontal` (default): Left/Right, matching a
+   * single row. `both`: all four arrows move to the next/previous option, the radio-group
+   * pattern, for options wrapped into rows by a grid `className` (a row-only Down key
+   * would otherwise do nothing).
+   */
+  orientation?: 'horizontal' | 'both';
   disabled?: boolean;
   className?: string;
 }
@@ -49,6 +58,7 @@ export function SegmentedControl<T extends string = string>({
   onValueChange,
   size = 'md',
   fitted = false,
+  orientation = 'horizontal',
   disabled,
   className,
   ...rest
@@ -60,9 +70,11 @@ export function SegmentedControl<T extends string = string>({
       onValueChange={(v) => onValueChange(v as T)}
       disabled={disabled}
       aria-label={rest['aria-label']}
+      aria-describedby={rest['aria-describedby']}
       // Horizontal layout → Left/Right arrows move the roving selection (matching the
-      // visual order), not the default Up/Down.
-      orientation="horizontal"
+      // visual order), not the default Up/Down. `both` leaves Radix's orientation unset,
+      // so every arrow key moves next/previous (options wrapped into rows).
+      orientation={orientation === 'both' ? undefined : 'horizontal'}
       className={cn(
         // A quiet segmented rail: squared hairline boundary and no resting elevation.
         // The consumer className lands on this single RadioGroup element.
@@ -78,7 +90,7 @@ export function SegmentedControl<T extends string = string>({
           value={opt.value}
           disabled={disabled || opt.disabled}
           className={cn(
-            'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-[3px] font-medium transition-colors',
+            'inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-sm font-medium transition-colors',
             size === 'sm' ? 'h-6 px-2.5 text-xs' : 'h-7 px-3 text-sm',
             fitted && 'flex-1',
             'text-muted-foreground hover:text-foreground',

@@ -126,6 +126,92 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     the in-page report sync event is `agentic-soc:report-changed`, like the
     `agentic-soc-workspace-chat-history` BroadcastChannel. Neither is a released wire contract.
 
+
+### Round 12 amendments (SPEC A39+ has the full text)
+
+24. **Grouped columns and comparisons (SPEC A56, Round 12 §3.4).** `chart.kind` adds
+    `grouped_bar` (views `grouped_bar`, `hbar`, `table`): one column per period inside each
+    category slot, a slot announcement that ends with the change against the baseline, and a
+    "Change vs <period>" column in the sr-only table. Artifact kind `comparison` (periods in
+    chronological order, the latest the subject, the one before it the baseline) materialises
+    to a `kpi_group` with deltas, a `grouped_bar` and a delta `table`; its tile view reads the
+    absolute and relative change per metric. Deltas are computed in code
+    (`blocks.compare_values`, round-half-even on both sides). A change from a zero baseline
+    is "new", never ∞ or NaN; a figure on fewer than 20 cases carries a small-sample badge.
+25. **Calendar time axes (Round 12 §3.4, P0-5).** A time series may carry `x.labels` (the
+    server's period labels, such as "Mar 2026" or "W14 2026", clipped with `x.values` in the
+    storage form), `x.tz` (the IANA zone of the calendar maths, named on the axis) and
+    `allowed_rebin` (the coarser calendar buckets the client may re-bin to, finest first,
+    ≤ 200 points). `x.bucket` adds `1M`, `1q` and `1y`. The newest bucket is drawn lighter or
+    dashed with "(in progress)" while `last_in_progress`; a plain time axis keeps UTC labels.
+26. **Client interactions (SPEC A56, P0-8; amends v2 amendment 3).** All client-side and
+    read-only (never a re-query or a model call): **Group by** re-bins a calendar series to a
+    unit in `allowed_rebin`, exactly matching the server's buckets, and the table, Copy data,
+    the downloads, the caption and the file names follow the grouping ("grouped by month");
+    **zoom** on `line`/`area` (drag, click then Shift+click, or Shift+←/→ then Enter; "Reset
+    zoom"; a zoom is dropped when the view changes); **legend toggles** (at least one series
+    stays visible; totals and tooltips say when series are hidden); **Download PNG / SVG**
+    draws the chart as shown, in the card's theme, stating its grouping, zoom and hidden
+    series ("<label> (hidden)") on the image; **Full width** takes a block out of the
+    conversation lane to the conversation's gutters, offered only in a chat lane with room
+    to gain. Charts stay out of the entry chunk.
+27. **Infographic Brief and new templates (SPEC A49).** A `report` envelope may carry
+    `layout: "infographic"` (`document` is the default): a hero KPI row with sparklines and
+    explicit disclosures (caption, as-of, "Showing top N of M", "Downsampled for saved
+    history"), a 2-up chart grid and highlight callouts; print and static modes fall back to
+    a single column. `ReportTemplateName` adds `executive`, `monthly`, `infographic` and
+    `investigation_brief` (labelled advisory: `decide()` decides, #3). The Reports library
+    draws a saved infographic report as an infographic.
+28. **KPI groups on `KpiTileGrid` (SPEC A52).** `kpi_group` renders through
+    `KpiTileGrid count={items.length} framed={false}` inside its block card: one column per
+    figure up to the grid's balance, no double frame, numerals that never truncate (the
+    context line wraps under the number), and in print/static mode each delta on its own line
+    with tiles that are not buttons. This amends the §5.3 `kpi_group` renderer note
+    (container-query column counts).
+29. **Limits (§5.4).** `report_leaves` 40 → 60 (`MAX_REPORT_LEAVES`, matching the 60-item
+    report), `blocks_bytes_target` 40,000 → 400,000 and `blocks_bytes` 48,000 → 480,000 for
+    live turns (long answers are no longer truncated, SPEC A39/A40). The series-point
+    limits are unchanged: `MAX_POINTS` stays 200 per live series and the stored copy
+    stays at `STORED_SERIES_POINTS` 100.
+    Amendment 7's compact storage form now applies to the inline copy only: the full,
+    uncompacted response is stored in the exchange document and restored on read
+    (SPEC A50), so a reopened answer shows its full blocks; answers saved before Round 12
+    keep the compact form. A KPI item's `context` gets its own limit, `kpi_context` 100
+    (`MAX_KPI_CONTEXT`; it was the 60-character label limit): a comparison tile's context
+    is the baseline period's whole name and its figures ("previous 90 days (16 Apr to 14
+    Jul 2026): 54.5% · +3.9% · n < 20"), so a dated name is never cut mid-date on screen,
+    in an export's Context column or in the report digest.
+30. **Exports (Round 12 WP-REP; amends §7 and v2 amendment 9).** One flat export menu: PDF
+    (the browser print dialog, plus a one-click "Download PDF"), Word (`.docx`) and Excel
+    (`.xlsx`, a "Report" sheet then one sheet per table) generated client-side from the same
+    export AST with an in-repo store-only ZIP writer (no new dependency), then Markdown, HTML,
+    CSV and JSON. Defanging (default on) covers PDF, Word, Markdown, HTML and the Excel
+    "Report" sheet, never the Excel table sheets, CSV or JSON; spreadsheet and CSV cells that
+    look like formulas are neutralised. Log-derived text is escaped in Markdown so it cannot
+    become formatting or links. An export shows button-level progress, cannot start twice,
+    and reports a failure with Retry; download links are revoked only after the browser has
+    taken the file (`lib/download.ts`). Every format but JSON writes enum values in the
+    screen's words (Round 12 polish): severity, verdict and status in the badges' own labels
+    (`components/semantic-labels.ts`, read through `blocks/labels.ts` by the export walker,
+    CSV and Copy data), and entity, reputation, timeline and citation kinds as their views
+    name them, so a file says "Critical", "True positive", "On hold" and "IP address", never
+    `critical`, `true_positive`, `on_hold` or `ip`. A yes/no cell reads "Yes" or "No" in
+    every format but JSON, CSV and Copy data included (the `csvField`/`tsvField` encoders
+    stay primitive), and a query block's caption names its language as the screen does
+    ("ES|QL · Elastic · 12 hits", `queryCaption` and `QUERY_LANGUAGE_LABEL` in
+    `blocks/labels.ts`) while the code fence keeps the raw key as its syntax hint. JSON
+    keeps the stored keys, and the KPI table's Unit column in CSV keeps the unit key beside
+    the raw Value. A Word or print table
+    split by columns names each part "Columns 1–5 of 6", a single column "Column 6 of 6",
+    and every later part "(continued)" (`columnPartLabel`).
+31. **Line end labels sized to the chart (SPEC A62; amends the §6 `line`/`area` row).** The
+    selective end labels (2 to 4 series) reserve what their longest label needs, up to a
+    quarter of the chart's width and never fewer than 14 characters (`endLabelColumn` in
+    `charts/geometry.ts`), instead of a fixed 14: "Closed by an analyst" and "False-positive
+    rate" show whole on a wide chart. A label longer than that budget is clipped with "…" and
+    carries the whole label as its SVG `<title>`; the legend, tooltip and sr-only table always
+    name a series in full. Static and print mode (680 px) follow the same rule.
+
 ---
 
 ## 5. The answer-block schema
@@ -246,7 +332,7 @@ interface KpiItem {
   key: string; label: string;                 // label ≤ 60
   value: number | null; unit: ValueUnit;
   bound?: 'lower';                            // renders "≥"
-  context?: string;                           // "of 43 cases", ≤ 60
+  context?: string;                           // "of 43 cases", ≤ 100 (amendment 29)
   delta?: { value: number; period_label: string; good_direction: 'up' | 'down' | 'none' };  // value in the item's own unit; label "vs previous window" (amendment 22)
   semantic?: SemanticKey;                     // accent chip + SEMANTIC_ICON
   trend?: { points: Array<number | null>; window_label: string };  // ≤ 60 points
@@ -297,7 +383,7 @@ Renderers (all hand-built SVG, in the one lazy `ChartBlock` chunk):
 
 | kind | Geometry (dataviz + house rules) | Hover / focus | Keyboard | Notes |
 |---|---|---|---|---|
-| `bar` (columns) | ⅔-slot bars capped at 20–24 px; 2 px top radius, square at baseline; ticks from `niceStep`; solid `--border` hairlines; grouped when ≥ 2 series (gap between group members comes from geometry) | whole x-slot is the hit target; band highlight `muted-foreground/0.1`; portal tooltip lists every series, **value first** (bold, `tabular-nums`), label second, line-key swatch | figure = one tab stop; ←/→ slot, Home/End, Esc | `last_in_progress` draws at 0.6 opacity (house value that clears 3:1) |
+| `bar` (columns) | ⅔-slot bars capped at 20–24 px, in slots of at most six times their marks (a few buckets on a wide card draw a narrower plot centred in it, `barPlotFrame`; the image export does the same); 2 px top radius, square at baseline; ticks from `niceStep`; solid `--border` hairlines; grouped when ≥ 2 series (gap between group members comes from geometry) | whole x-slot is the hit target; band highlight `muted-foreground/0.1`; portal tooltip lists every series, **value first** (bold, `tabular-nums`), label second, line-key swatch | figure = one tab stop; ←/→ slot, Home/End, Esc | `last_in_progress` draws at 0.6 opacity (house value that clears 3:1) |
 | `hbar` | horizontal bars; labels left (truncate with an ellipsis; full label in tooltip and table); value at the bar tip in text tokens | the whole row is the hit target | ↑/↓ row, Home/End | for single-series ≤ 10 rows with no axis needed, render **`BarList`** (lighter, already accessible) |
 | `stacked_bar` | `CloseAttributionChart` stack: 1 px inset gap, top-segment radius, 2 px minimum segment, **hatched band for any `null` segment**, shares via `reconcilingShares()` | slot tooltip: total, then one row per segment top-to-bottom (zero rows kept so the structure never jumps) | ←/→ slot, ↑/↓ segment (announced) | legend required (≥ 2 series) |
 | `line` / `area` | 2 px lines with round join; end-dot r = 4 with 2 px ring (`token('card')`); `area` fill at about 12% opacity as a flat wash (not the old gradient); **gaps at `null`, never interpolated**; selective end labels for ≤ 4 series | vertical crosshair snapping to nearest x; one tooltip with **all** series at that x | ←/→ x, ↑/↓ series, Home/End | `reference` drawn as a solid muted rule with a plain-text label; time axis uses UTC labels with ≤ 5 regular-interval ticks (`pickXLabels` logic) |
@@ -543,7 +629,7 @@ These are the server clip limits; the client clamps the same values again.
 | donut segments | ≤ 6 | dataviz part-to-whole rule |
 | table | ≤ 12 cols × ≤ 200 rows; cell ≤ 500 chars | DOM and payload |
 | heatmap | ≤ 48 × 24 | legibility |
-| strings | title 120, label 60, caption 280, callout 600, markdown 12k | layout |
+| strings | title 120, label 60, KPI context 100, caption 280, callout 600, markdown 12k | layout |
 
 ### 5.5 Validation on both sides
 

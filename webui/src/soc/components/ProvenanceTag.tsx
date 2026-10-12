@@ -22,7 +22,7 @@
  * All copy here is a fixed, controlled label — it never renders UNTRUSTED log/source
  * text (#9).
  */
-import { Database, Bot, Binary, type LucideIcon } from 'lucide-react';
+import { Database, Bot, Binary, UserCheck, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { Provenance } from '@/lib/types';
 
@@ -43,7 +43,7 @@ interface ProvenanceKindMeta {
 }
 
 /**
- * The three provenance kinds. Colors are token-only (no raw hex) and chosen to be
+ * The provenance kinds. Colors are token-only (no raw hex) and chosen to be
  * mutually distinct while staying clear of the severity/verdict hues: `source` = the
  * blue-grey `info` data color, `ai` = the brand `primary` blue, `code` = neutral grey.
  */
@@ -68,6 +68,16 @@ const PROVENANCE_META: Record<Provenance, ProvenanceKindMeta> = {
     description: 'Deterministic (code-derived)',
     wrap: 'border-border bg-muted/60',
     icon: 'text-muted-foreground',
+  },
+  // Round 12 (SPEC D15): a value a HUMAN recorded — the analyst's classification of
+  // the case. Neutral strong outline + a person glyph, so it reads apart from the AI
+  // blue and the SIEM grey-blue without borrowing a severity or verdict hue.
+  analyst: {
+    Icon: UserCheck,
+    label: 'Analyst',
+    description: 'Analyst (recorded by a person)',
+    wrap: 'border-border-strong bg-secondary',
+    icon: 'text-foreground',
   },
 };
 

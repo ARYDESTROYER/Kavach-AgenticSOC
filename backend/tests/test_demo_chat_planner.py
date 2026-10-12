@@ -36,6 +36,12 @@ from app.engine.demo_chat import DEMO_STARTERS, classify, plan_turn, read_prompt
 from app.knowledge import render_app_docs
 from app.llm.providers import DemoMockProvider
 
+
+#: Round 12 (SPEC D11): "build/give/create … a report" asks the server to SAVE the report to
+#: Reports, so such an answer closes with this sentence instead of "The report below is ready
+#: to add to your Reports." (still used when no report was asked to be made).
+SAVED = "The full report is below, and it is being saved to your Reports."
+
 ALL_TOOLS = tuple(t.name for t in catalogue())
 
 
@@ -241,9 +247,10 @@ def test_product_reference_is_parsed_into_sections_targets_and_facts() -> None:
     ("How are we doing?", [("soc_metrics", {"kind": "posture"}), ("soc_metrics", {"kind": "trends"})]),
     ("Which hosts have the most alerts?", [("log_stats", {"group_by": ["host"], "top_n": 10,
                                                           "time_from": "now-7d"})]),
+    # Round 12 (SPEC D7): "today" is the calendar day in the operator timezone.
     ("Summarise today's true positives", [
-        ("search_cases", {"verdict": "TRUE_POSITIVE", "limit": 10, "window_hours": 24}),
-        ("soc_metrics", {"kind": "case_mix", "window_hours": 24})]),
+        ("search_cases", {"verdict": "TRUE_POSITIVE", "limit": 10, "window": "today"}),
+        ("soc_metrics", {"kind": "case_mix", "window": "today"})]),
     ("/shift-brief", [("shift_report", {}), ("soc_metrics", {"kind": "posture"}),
                       ("list_campaigns", {"status": "open", "limit": 5})]),
     ("Show the noise funnel", [("soc_metrics", {"kind": "noise_funnel"})]),
@@ -274,7 +281,8 @@ def test_a_single_call_uses_the_tool_action_form() -> None:
 
 def test_user_window_words_set_tool_windows_and_the_analyst_chip_wins_over_defaults() -> None:
     assert tools_of(plan_turn(prompt("top hosts in the last 3 days")))[0][1]["time_from"] == "now-3d"
-    assert tools_of(plan_turn(prompt("noise funnel this week")))[0][1]["window_hours"] == 168
+    # Round 12 (SPEC D7): "this week" is the calendar week, sent as the window token.
+    assert tools_of(plan_turn(prompt("noise funnel this week")))[0][1]["window"] == "this_week"
     # With an analyst-selected window the planner's own 7-day default is not applied.
     assert "time_from" not in tools_of(plan_turn(prompt("top hosts", window="last 6h")))[0][1]
 
@@ -420,7 +428,7 @@ def test_report_answers_keep_a_short_lead_and_close_after_their_notes() -> None:
     paragraphs = body.split("\n\n")
     assert paragraphs[0].startswith("**Active Risk Index 61**")
     assert paragraphs[1].startswith("Lookups that did not complete:\n- `soc_metrics` error")
-    assert paragraphs[-1] == "The report below is ready to add to your Reports." and len(paragraphs) == 3
+    assert paragraphs[-1] == SAVED and len(paragraphs) == 3
     assert "MTTA not measured yet" not in body             # the detail is in the report
     summary = header["blocks"][0]["sections"][0]["items"][0]["text"]
     assert summary.startswith("Active Risk Index 61")
@@ -431,8 +439,10 @@ def test_case_lines_and_pivots_name_cases_in_words_not_machine_titles() -> None:
     `dsingh`"; a title in another form is plain text; the id stays as the handle."""
     machine = {"case_id": "case-1", "title": "user:dsingh — identity_signin", "severity": "high",
                "verdict": "NEEDS_HUMAN", "risk_score": 64, "status": "escalated"}
-    assert demo_chat._case_line(machine) == ("`case-1` · identity signin on user `dsingh` — high, needs-human, "
-                                             "risk 64, escalated")
+    # Plain punctuation, and the verdict as the case badge words it (never an em dash or
+    # "needs-human", Round 12 final polish).
+    assert demo_chat._case_line(machine) == ("`case-1` · identity signin on user `dsingh` (high, needs human, "
+                                             "risk 64, escalated)")
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — demo_sqli_webshell, web_shell"}) == (
         "demo sqli webshell, web shell on IP `203.0.113.9`")
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — x"}, with_entity=False) == "x"
@@ -544,7 +554,10 @@ def test_change_requests_unsupported_data_and_memory_are_product_answers() -> No
          "text": "Close a case from its header once a disposition is chosen and the evidence is reviewed.",
          "console": []}],
         "console_targets": [{"id": "page:cases", "label": "Triage › Cases", "requires": None, "allowed": True}]}
-    assert tools_of(plan_turn(prompt("Close case-0042 now")))[0] == ("app_help", {"query": "how to Close now"})
+    # Round 12: a case action searches the Help Center by its product area (the
+    # question's own words, "how to Close now", match nothing useful).
+    assert tools_of(plan_turn(prompt("Close case-0042 now")))[0] == (
+        "app_help", {"query": "Case Manager Take Action single-case actions"})
     header, body = final_of(plan_turn(prompt("Close case-0042 now", [call("app_help", help_obs)])))
     assert body.startswith("I can't change that from chat") and "Do it in the console: **Triage › Cases**" in body
     assert header["answer_kind"] == "product_help" and header["console_links"] == ["page:cases"]
@@ -750,7 +763,8 @@ def test_report_requests_wrap_any_intent_in_the_template_sections() -> None:
                                   artifacts=LOG_STATS_ARTS)])
     header, body = final_of(plan_turn(msgs))
     (envelope,) = header["blocks"]
-    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report"
+    # Round 12 review: a named-template title names its subject (the case id typed).
+    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report: case-0042"
     sections = {s["heading"]: s["items"] for s in envelope["sections"]}
     assert list(sections) == ["Summary", "Evidence", "Timeline", "Decision", "Next steps"]
     assert sections["Summary"][0]["type"] == "markdown"
@@ -760,7 +774,7 @@ def test_report_requests_wrap_any_intent_in_the_template_sections() -> None:
     assert sections["Next steps"][0]["text"].startswith("1. Act on the recommendation recorded on the case.")
     assert "Reset credentials" not in json.dumps(envelope)   # case text stays in the narration
     assert "Recorded recommendation: Reset credentials." in body
-    assert body.endswith("The report below is ready to add to your Reports.")
+    assert body.endswith(SAVED)
     # Without listed sections the template's defaults apply (here: an IOC report).
     ioc = "Build an IOC report on 203.0.113.7"
     assert classify(ioc).intent == "hunt" and classify(ioc).report == "ioc"
@@ -853,14 +867,14 @@ def test_a_case_report_without_any_windowed_lookup_keeps_its_envelope() -> None:
     header, body = final_of(plan_turn(msgs))
     (envelope,) = header["blocks"]
     assert envelope["type"] == "report" and "subtitle" not in envelope       # blank subtitle left out
-    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report"
+    assert envelope["template"] == "investigation" and envelope["title"] == "Investigation report: case-0042"
     requests, dropped = parse_final_block_requests(header["blocks"])
     assert not dropped and requests[0].type == "report" and requests[0].invalid_items == 0
     # The Summary leaf is rebuilt from numbers and enums: no log or case value in the header.
     summary = envelope["sections"][0]["items"][0]["text"]
     assert summary.startswith("The case is a true positive at 90% confidence, risk 80/100, severity critical")
     assert "`" not in summary and "amy" not in summary and "lure" not in summary
-    assert body.endswith("The report below is ready to add to your Reports.")
+    assert body.endswith(SAVED)
 
 
 def test_case_scoped_report_requests_never_build_an_envelope() -> None:
@@ -1013,7 +1027,7 @@ def test_classifier_ordering_fixes(question: str, intent: str, extra: dict[str, 
     ("How many log events mention zzqq by user?",
      [("log_stats", {"contains": "zzqq", "group_by": ["user"], "top_n": 10})]),
     # A request for the logs of a window names no value: the window's events, unfiltered.
-    ("Show me the logs for today", [("search_logs", {"time_from": "now-24h"})]),
+    ("Show me the logs for today", [("search_logs", {"window": "today"})]),
     # The value ends where the request goes on; a trailing "please" is not searched.
     ("Search logs for mimikatz please", [("search_logs", {"contains": "mimikatz"})]),
     ("search logs for mimikatz, then summarise", [("search_logs", {"contains": "mimikatz"})]),
@@ -1144,11 +1158,11 @@ def test_a_log_search_with_matches_shows_the_matching_rows() -> None:
 
 
 def test_an_unfiltered_log_request_counts_the_window_without_a_match_phrase() -> None:
-    obs = {"window": "last 24h", "filters": {}, "total": 12, "sources": [{"name": "A", "status": "ok"}],
+    obs = {"window": "today", "filters": {}, "total": 12, "sources": [{"name": "A", "status": "ok"}],
            "top_values": {}}
-    msgs = prompt("Show me the logs for today", [call("search_logs", obs, inp={"time_from": "now-24h"})])
+    msgs = prompt("Show me the logs for today", [call("search_logs", obs, inp={"window": "today"})])
     _header, body = final_of(plan_turn(msgs))
-    assert body.startswith("**12 log events** in the last 24h (") and "match" not in body.split(".")[0]
+    assert body.startswith("**12 log events** today (") and "match" not in body.split(".")[0]
 
 
 def test_a_log_count_states_the_total_by_the_named_field() -> None:
@@ -1213,6 +1227,23 @@ def test_calls_over_the_parallel_bound_run_in_the_next_round_or_are_named() -> N
               [call("get_case", got, inp={"case_id": "case-7"})],
               [call("lookup_indicator", {"indicator": "192.0.2.5", "reputation_score": 70, "verdict": "suspicious"},
                     inp={"indicator": "192.0.2.5", "kind": "ip"})]]
+    # Round 12 (SPEC D1): chat has no per-question round cap, so one lookup at a time
+    # simply keeps going: the next round runs the next planned call.
+    assert tools_of(plan_turn(prompt(hunt, *rounds, max_parallel=1))) == [
+        ("search_logs", {"ip": "192.0.2.5", "time_from": "now-7d"})]
+
+
+def test_the_planners_own_round_bound_still_names_what_did_not_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The planner keeps a safety bound of its own (``MAX_PLAN_ROUNDS``): a plan cut by
+    it names the lookups that did not run instead of dropping them silently."""
+    monkeypatch.setattr(demo_chat, "MAX_PLAN_ROUNDS", 3)
+    hunt = "Hunt the source IP behind the newest SQL injection case"
+    sqli = {**CASES_OBS, "cases": [{"case_id": "case-7", "entity": "ip:192.0.2.5", "title": "sqli"}]}
+    got = {"case": {"case_id": "case-7", "entity": "ip:192.0.2.5", "title": "sqli", "verdict": "TRUE_POSITIVE"}}
+    rounds = [[call("search_cases", sqli, inp={"text": "sql", "sort_field": "created_at", "limit": 5})],
+              [call("get_case", got, inp={"case_id": "case-7"})],
+              [call("lookup_indicator", {"indicator": "192.0.2.5", "reputation_score": 70, "verdict": "suspicious"},
+                    inp={"indicator": "192.0.2.5", "kind": "ip"})]]
     _, body = final_of(plan_turn(prompt(hunt, *rounds, max_parallel=1)))
     assert ("Not run within this question's 3 lookup rounds (at most 1 lookup at a time here): log search and case "
             "search. Ask again to include them.") in body
@@ -1246,7 +1277,7 @@ def test_a_behaviour_hunt_says_how_it_chose_its_anchor_case() -> None:
 
 def test_wording_fixes() -> None:
     case = {"verdict": "NEEDS_HUMAN", "confidence": 0.88, "risk_score": 64, "severity": "high"}
-    assert demo_chat._case_facts(case) == "has a needs-human verdict at 88% confidence, risk 64/100, severity high"
+    assert demo_chat._case_facts(case) == "needs human review at 88% confidence, risk 64/100, severity high"
     assert demo_chat._case_facts({"risk_score": 5}) == "has no verdict yet, risk 5/100"
     # Risk and severity are separate axes: a low risk on a critical case names both.
     assert demo_chat._case_facts({"verdict": "TRUE_POSITIVE", "confidence": 0.93, "risk_score": 7,
@@ -1413,7 +1444,7 @@ def test_a_report_under_a_restricted_role_keeps_its_access_note_and_advice(quest
         "Not available to you in chat: SOC metrics (needs metrics:view), so this answer uses what you can read:",
         "**7 open cases**.",
         "Ask an administrator for access, or open the matching console page.",
-        "The report below is ready to add to your Reports."]
+        SAVED]
     summary = envelope["sections"][0]["items"][0]["text"]
     assert summary == "7 open cases. Not available to you in chat: SOC metrics (needs metrics:view)."
     assert "Ask an administrator" not in summary          # advice is for the analyst, not the report
@@ -1433,7 +1464,7 @@ def test_a_report_whose_main_lookups_failed_keeps_the_failure_lines() -> None:
     assert paragraphs[0].startswith("**98.4% noise reduction**")
     assert paragraphs[-2] == ("Lookups that did not complete:\n- `soc_metrics` error: The case store did not answer\n"
                               "- `soc_metrics` error: The case store did not answer")
-    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+    assert paragraphs[-1] == SAVED
 
 
 def test_the_ready_sentence_comes_after_the_window_note() -> None:
@@ -1445,7 +1476,7 @@ def test_the_ready_sentence_comes_after_the_window_note() -> None:
     _, body = final_of(plan_turn(msgs))
     paragraphs = body.split("\n\n")
     assert paragraphs[-2] == "Window: the last 1h you selected applies to the windowed lookups above."
-    assert paragraphs[-1] == "The report below is ready to add to your Reports."
+    assert paragraphs[-1] == SAVED
 
 
 def test_a_hunt_report_states_the_finding_once_and_leaves_the_advice_to_next_steps() -> None:
@@ -1504,7 +1535,7 @@ def test_a_behaviour_hunt_report_leads_with_what_the_hunt_found() -> None:
     assert found.endswith("It is quiet in the logs and every case carrying it has a false-positive verdict, so no "
                           "containment is needed.")
     assert "watch for a return" not in found.lower()
-    assert ready == "The report below is ready to add to your Reports."
+    assert ready == SAVED
     sections = {s["heading"]: s["items"] for s in header["blocks"][0]["sections"]}
     assert sections["Next steps"][-1]["text"].startswith("1. Watch for a return of the indicator.")
     # The subtitle names the sightings' window, not the anchoring case search's "all time".
@@ -1562,7 +1593,7 @@ def test_a_hunt_report_keeps_partial_coverage_in_its_prose_and_summary() -> None
     assert paragraphs[0].startswith("**`203.0.113.7` scores 80/100 (malicious)**")
     assert paragraphs[-2:] == [
         "Log search: only 1 of 3 sources answered, so the counts are partial; the total is a lower bound.",
-        "The report below is ready to add to your Reports."]
+        SAVED]
     summary = envelope["sections"][0]["items"][0]["text"]
     assert envelope["sections"][0]["heading"] == "Hypothesis"
     assert ("At least 4 log events matched it in the last 7d and 2 cases carry it as their entity, so it is still "
@@ -1579,7 +1610,7 @@ def test_a_hunt_report_keeps_partial_coverage_in_its_prose_and_summary() -> None
     header, body = final_of(plan_turn(msgs))
     assert body.split("\n\n")[-2:] == [
         "Log search: only 1 of 3 sources answered, so the counts are partial; the total is a lower bound.",
-        "The report below is ready to add to your Reports."]
+        SAVED]
     assert "Only 1 of 3 log sources answered" in header["blocks"][0]["sections"][0]["items"][0]["text"]
 
 
@@ -1592,7 +1623,7 @@ def test_a_top_hosts_report_states_partial_coverage_once_in_prose_and_in_its_sum
     # The lead (the log statistics sentence) already says it: the note is not added twice.
     assert body.count("only 1 of 3 sources answered, so the counts are partial") == 1
     assert body.count("total is a lower bound") == 1
-    assert body.endswith("The report below is ready to add to your Reports.")
+    assert body.endswith(SAVED)
     summary = envelope["sections"][0]["items"][0]["text"]
     assert summary == ("At least 77 log events in the last 7d. Only 1 of 3 log sources answered, so the counts "
                        "are partial.")

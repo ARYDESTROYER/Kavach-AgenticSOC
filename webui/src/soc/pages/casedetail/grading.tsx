@@ -11,6 +11,12 @@
  *   TRUE_POSITIVE  ↔ true_positive
  *   FALSE_POSITIVE ↔ { false_positive, benign }
  *   NEEDS_HUMAN    ↔ { suspicious, undetermined }
+ *   NEEDS_HUMAN    → { true_positive, false_positive, benign } = RESOLVED (Round 12, D15):
+ *                    the model handed the call to a person, so a concrete outcome settles
+ *                    that hand-off. It is NOT an agreement signal either way: it is never
+ *                    counted as the analyst overriding the AI, and never as agreeing with
+ *                    it (the model made no call to agree with), so it carries no
+ *                    assessment and the close posts no grade unless the analyst gave one
  *   duplicate      → no comparison (administrative outcome, not an agree/override signal)
  * A match reads "Matches AI verdict"; a mismatch reads "Overrides AI verdict (X → Y)"
  * and only THEN reveals an optional "What did the AI miss?" line. The 3 detailed quality
@@ -78,10 +84,10 @@ export type FeedbackOutcome = components['schemas']['FeedbackOutcome'];
  */
 export const OUTCOME_OPTIONS = [
   { value: 'unknown', text: 'Not stated' },
-  { value: 'true_positive', text: 'True positive — the alert was real' },
-  { value: 'false_positive', text: 'False positive — the alert was wrong' },
-  { value: 'true_negative', text: 'True negative — correctly quiet' },
-  { value: 'false_negative', text: 'False negative — the detection missed it' },
+  { value: 'true_positive', text: 'True positive: the alert was real' },
+  { value: 'false_positive', text: 'False positive: the alert was wrong' },
+  { value: 'true_negative', text: 'True negative: correctly quiet' },
+  { value: 'false_negative', text: 'False negative: the detection missed it' },
 ] as const satisfies ReadonlyArray<{ value: FeedbackOutcome; text: string }>;
 
 /** Fails to typecheck unless `T` is `never`. */
@@ -127,6 +133,9 @@ export interface GradingDraft {
 export type GradingAgreement =
   | { kind: 'match'; assessment: 'agree' }
   | { kind: 'override'; assessment: 'disagree'; fromLabel: string; toLabel: string }
+  // NEEDS_HUMAN settled with a concrete outcome: the AI deferred to a person. No
+  // assessment — neither a disagreement nor an "agree" the analyst never stated.
+  | { kind: 'resolved'; toLabel: string }
   | { kind: 'none' };
 
 /* -------------------------------------------------------------- pure logic --- */
@@ -169,6 +178,9 @@ const VERDICT_MATCH_DISPOSITIONS: Record<string, readonly string[]> = {
   NEEDS_HUMAN: ['suspicious', 'undetermined'],
 };
 
+/** Concrete outcomes that RESOLVE a NEEDS_HUMAN hand-off rather than override it. */
+const NEEDS_HUMAN_RESOLUTIONS: readonly string[] = ['true_positive', 'false_positive', 'benign'];
+
 function normVerdict(v?: string | null): string {
   return String(v ?? '')
     .trim()
@@ -200,6 +212,9 @@ export function deriveAgreement(
   const allowed = VERDICT_MATCH_DISPOSITIONS[v];
   if (!allowed) return { kind: 'none' };
   if (allowed.includes(d)) return { kind: 'match', assessment: 'agree' };
+  if (v === 'NEEDS_HUMAN' && NEEDS_HUMAN_RESOLUTIONS.includes(d)) {
+    return { kind: 'resolved', toLabel: humanizeToken(d) };
+  }
   return {
     kind: 'override',
     assessment: 'disagree',
@@ -212,17 +227,21 @@ export function deriveAgreement(
 export function agreementText(a: GradingAgreement): string | null {
   if (a.kind === 'match') return 'Matches AI verdict';
   if (a.kind === 'override') return `Overrides AI verdict (${a.fromLabel} → ${a.toLabel})`;
+  if (a.kind === 'resolved') return `Settles the AI's hand-off (Needs human → ${a.toLabel})`;
   return null;
 }
 
 /**
  * Convert a {@link GradingDraft} into the EXISTING backend `CaseFeedbackInput` shape.
  * Stars → 0..1 via {@link starsToScore}; only present/non-empty fields are included;
- * `assessment` defaults to `'agree'` (the field is required by the contract); the
- * optional `analyst` is passed through when provided.
+ * the optional `analyst` is passed through when provided. `assessment` is sent ONLY when
+ * the draft carries one (a derived match/override): it is never defaulted to `agree`,
+ * so a grade on a settled Needs-human hand-off cannot inflate the Agreement metric. The
+ * backend's own default (an empty assessment) applies when it is absent.
  */
 export function gradingToFeedbackInput(g: GradingDraft, analyst?: string): CaseFeedbackInput {
-  const body: CaseFeedbackInput = { assessment: g.assessment ?? 'agree' };
+  const body: CaseFeedbackInput = {};
+  if (g.assessment) body.assessment = g.assessment;
   const a = starsToScore(g.accuracy);
   const r = starsToScore(g.reasoning_quality);
   const ap = starsToScore(g.action_appropriateness);
@@ -313,7 +332,7 @@ export const OutcomeField: React.FC<{
       </Select>
       <p id={helpId} className="text-xs leading-relaxed text-muted-foreground">
         The confirmed outcome. This is the only part of a grade that becomes
-        analyst-confirmed ground truth — the stars and the agree/override signal do not
+        analyst-confirmed ground truth. The stars and the agree/override signal do not
         label the case.
       </p>
     </div>
@@ -350,7 +369,8 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
   // Keep the parent draft's derived `assessment` in sync with the current
   // verdict↔disposition diff so the close-time submit carries the right value. Guarded
   // to only fire on an actual change (terminates — never loops).
-  const derivedAssessment = agreement.kind === 'none' ? undefined : agreement.assessment;
+  const derivedAssessment =
+    agreement.kind === 'match' || agreement.kind === 'override' ? agreement.assessment : undefined;
   React.useEffect(() => {
     if (draft.assessment !== derivedAssessment) {
       onChange({ ...draft, assessment: derivedAssessment });
@@ -365,8 +385,11 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
   return (
     <div className={cn('space-y-3', className)}>
       {badgeText ? (
-        <Badge variant={isOverride ? 'warning' : 'success'} className="gap-1.5">
-          {isOverride ? <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
+        <Badge
+          variant={isOverride ? 'warning' : agreement.kind === 'resolved' ? 'info' : 'success'}
+          className="h-auto max-w-full gap-1.5 whitespace-normal py-0.5 text-left"
+        >
+          {isOverride ? <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden />}
           {badgeText}
         </Badge>
       ) : null}
@@ -412,7 +435,7 @@ export const GradingFields: React.FC<GradingFieldsProps> = ({
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="mt-3 space-y-2 rounded-md border border-border bg-muted/30 p-4">
-            <div className="mb-1 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+            <div className="mb-1 text-xs font-medium text-muted-foreground">
               Quality (optional)
             </div>
             <StarRow
@@ -508,9 +531,7 @@ export const GradingHistory: React.FC<GradingHistoryProps> = ({ feedback, classN
 
   return (
     <div className={className}>
-      <div className="mb-3 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
-        Previous gradings
-      </div>
+      <h4 className="mb-3 text-sm font-semibold text-foreground">Previous gradings</h4>
       <div className="space-y-2">
         {prior.map((f, i) => (
           <div key={i} className="rounded-md border border-border bg-muted/30 p-3">

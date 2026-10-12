@@ -48,7 +48,11 @@ import { RouterProvider } from '../router';
 import { TooltipProvider } from '@/ui/tooltip';
 import { CommandPalette } from '../components/CommandPalette';
 
-function renderPalette() {
+/**
+ * Render the open palette and wait for its lazy chat entries (a `React.lazy` chunk) to
+ * arrive, so that chunk always settles inside the test's own waiting, never after it.
+ */
+async function renderPalette() {
   const onNavigate = vi.fn();
   const onOpenChange = vi.fn();
   render(
@@ -66,6 +70,7 @@ function renderPalette() {
       </TooltipProvider>
     </ThemeProvider>,
   );
+  await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
   return { onNavigate, onOpenChange };
 }
 
@@ -95,14 +100,14 @@ beforeEach(() => {
 
 describe('CommandPalette — chat entries', () => {
   it('opens a fresh chat from "New chat"', async () => {
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     await waitFor(() => expect(item('action-new-chat')).toBeTruthy());
     fireEvent.click(item('action-new-chat')!);
     expect(onNavigate).toHaveBeenCalledWith('chat', { newChat: true });
   });
 
   it('offers "Search chats" and "Open Reports" in the discovery state (lazily)', async () => {
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
     expect(item('action-ask-ai')).toBeNull();
     fireEvent.click(item('action-open-reports')!);
@@ -112,7 +117,7 @@ describe('CommandPalette — chat entries', () => {
   });
 
   it('offers "Ask AI: <text>" last and opens a new chat with the question to prefill', async () => {
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     fireEvent.change(input, { target: { value: '  who logged in from 203.0.113.14?  ' } });
     await waitFor(() => expect(item('action-ask-ai')).toBeTruthy());
@@ -124,7 +129,7 @@ describe('CommandPalette — chat entries', () => {
   });
 
   it('caps the Ask AI question at 2,000 characters and ignores a one-character query', async () => {
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     fireEvent.change(input, { target: { value: 'x' } });
     await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
@@ -138,7 +143,7 @@ describe('CommandPalette — chat entries', () => {
 
   it('never makes "Ask AI" the default Enter when a page matches', async () => {
     const user = userEvent.setup();
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     await user.type(input, 'approvals');
     await waitFor(() => expect(item('action-ask-ai')).toBeTruthy());
@@ -151,7 +156,7 @@ describe('CommandPalette — chat entries', () => {
 
   it('keeps Enter on a typed page name going to that page, with the chat entries last', async () => {
     const user = userEvent.setup();
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     await user.type(input, 'approvals');
     await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
@@ -165,7 +170,7 @@ describe('CommandPalette — chat entries', () => {
 
   it('lets the rail "Reports" target answer a query naming it (no duplicate "Open Reports")', async () => {
     const user = userEvent.setup();
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     await user.type(input, 'reports');
     await waitFor(() => expect(item('action-search-chats')).toBeTruthy());
@@ -177,7 +182,7 @@ describe('CommandPalette — chat entries', () => {
 
   it('searches saved chats and reports only when asked, and opens a hit at its message', async () => {
     const user = userEvent.setup();
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     fireEvent.change(input, { target: { value: 'brute' } });
     await waitFor(() => expect(item('action-search-chats')).toHaveTextContent('Search chats for “brute”'));
@@ -195,7 +200,7 @@ describe('CommandPalette — chat entries', () => {
 
   it('opens a matching report', async () => {
     const user = userEvent.setup();
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     fireEvent.change(input, { target: { value: 'brute' } });
     await waitFor(() => expect(item('action-search-chats')).toBeTruthy());

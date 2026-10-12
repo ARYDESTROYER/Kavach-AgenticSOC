@@ -198,6 +198,54 @@ function resolvePreloadDependencies(
   return kept.length === 1 && kept[0] === filename ? [] : kept;
 }
 
+/** `'__CHUNK_LIST:<source path>__'` (either quote) in rendered, not yet minified code. */
+const CHUNK_LIST_MARK_RE = /(["'])__CHUNK_LIST:([A-Za-z0-9_./-]+)__\1/g;
+
+/**
+ * Lists, at build time, the chunks a lazy feature needs that first paint does not hold,
+ * so the shell can warm them with plain prefetch requests (soc/lazy-retry.ts
+ * `prefetchChunks`) instead of `import()`. A warm through `import()` enters every chunk
+ * it touches into the page's module map, and a fetch that fails there (a network blip)
+ * stays failed for the life of the page, for the warmed feature and for every other
+ * feature that shares its chunks (cmdk with Chat, the Settings metadata with Settings).
+ * A prefetch only fills the HTTP cache: when it fails, nothing remembers it.
+ *
+ * Each string literal `'__CHUNK_LIST:<path under webui/>__'` becomes a JSON string
+ * holding the paths, relative to the chunk that holds the literal, of the chunk built
+ * from that module and of its static imports, without the chunks the holder already
+ * loads. Names carry Rollup's hash placeholders here; Rollup puts the final hashes in
+ * after this hook. It runs before minification, and only the rest of the one line that
+ * holds the literal moves, so the source map is kept (`map: null`).
+ */
+function chunkListPlugin(): Plugin {
+  return {
+    name: 'chunk-list',
+    apply: 'build',
+    renderChunk(code, chunk, _options, meta) {
+      if (!code.includes('__CHUNK_LIST:')) return null;
+      const closure = (name: string, into = new Set<string>()): Set<string> => {
+        for (const dep of meta.chunks[name]?.imports ?? []) {
+          if (!into.has(dep)) {
+            into.add(dep);
+            closure(dep, into);
+          }
+        }
+        return into;
+      };
+      const held = closure(chunk.fileName).add(chunk.fileName);
+      const dir = path.posix.dirname(chunk.fileName);
+      const out = code.replace(CHUNK_LIST_MARK_RE, (_mark, _quote, source: string) => {
+        const id = path.resolve(__dirname, source);
+        const target = Object.values(meta.chunks).find((c) => c.facadeModuleId === id);
+        if (!target) this.error(`no chunk is built from ${source} (a __CHUNK_LIST mark names it)`);
+        const names = [target.fileName, ...closure(target.fileName)].filter((name) => !held.has(name));
+        return JSON.stringify(JSON.stringify(names.map((name) => path.posix.relative(dir, name))));
+      });
+      return { code: out, map: null };
+    },
+  };
+}
+
 function bundledDocumentationPlugin(): Plugin {
   return {
     name: 'tlsoc-bundled-documentation',
@@ -211,7 +259,13 @@ function bundledDocumentationPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [releaseManifestPlugin(), bundledDocumentationPlugin(), preloadClosurePlugin(), react()],
+  plugins: [
+    releaseManifestPlugin(),
+    bundledDocumentationPlugin(),
+    preloadClosurePlugin(),
+    chunkListPlugin(),
+    react(),
+  ],
   define: {
     __TLSOC_RELEASE_IDENTITY__: JSON.stringify(RELEASE_IDENTITY),
   },

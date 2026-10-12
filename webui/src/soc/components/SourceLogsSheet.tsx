@@ -26,6 +26,7 @@ import type { SourceInstance, SourceLogRow } from '@/lib/types';
 import { api } from '@/lib/api';
 import { DASH, formatTimestamp, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { logRowKeys, pruneExpandedKeys } from '@/lib/log-row-keys';
 
 import {
   Sheet,
@@ -102,6 +103,9 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
   const [liveTail, setLiveTail] = React.useState(false);
 
   const [rows, setRows] = React.useState<SourceLogRow[]>([]);
+  // One source can return the same event id more than once (Demo Mode's QRadar feed
+  // does), so rows are keyed by id and event time, numbering exact repeats.
+  const keys = React.useMemo(() => logRowKeys(rows), [rows]);
   const [mode, setMode] = React.useState('');
   const [count, setCount] = React.useState(0);
   // The server bound: browse is "the most recent N", never a complete result (no
@@ -132,12 +136,7 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
         setCount(typeof res.count === 'number' ? res.count : logs.length);
         setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
         setTruncated(Boolean(res.truncated));
-        setExpanded((prev) => {
-          const ids = new Set(logs.map((r) => r.id));
-          const next = new Set<string>();
-          for (const k of prev) if (ids.has(k)) next.add(k);
-          return next;
-        });
+        setExpanded((prev) => pruneExpandedKeys(prev, logs));
       } catch (e) {
         setError(e);
       } finally {
@@ -176,11 +175,11 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
     };
   }, [liveTail]);
 
-  const toggleExpand = React.useCallback((id: string) => {
+  const toggleExpand = React.useCallback((key: string) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }, []);
@@ -320,10 +319,11 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((r) => {
-                    const isOpen = expanded.has(r.id);
+                  {rows.map((r, index) => {
+                    const key = keys[index];
+                    const isOpen = expanded.has(key);
                     return (
-                      <React.Fragment key={r.id}>
+                      <React.Fragment key={key}>
                         <TableRow>
                           <TableCell className="font-mono text-xs">
                             {formatTimestamp(r.ts)}
@@ -364,7 +364,7 @@ const SourceLogsBody: React.FC<{ source: SourceInstance }> = ({ source }) => {
                                   : `Show raw event for ${r.id}`
                               }
                               aria-expanded={isOpen}
-                              onClick={() => toggleExpand(r.id)}
+                              onClick={() => toggleExpand(key)}
                             >
                               {isOpen ? (
                                 <ChevronUp className="h-4 w-4" aria-hidden />

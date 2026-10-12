@@ -265,13 +265,20 @@ describe('downloadText', () => {
     }
   });
 
-  it('clicks a temporary link and revokes the URL', () => {
-    const create = vi.fn(() => 'blob:x');
-    const revoke = vi.fn();
-    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    expect(downloadText('a.csv', 'text/csv', 'x')).toBe(true);
-    expect(click).toHaveBeenCalledTimes(1);
-    expect(revoke).toHaveBeenCalledWith('blob:x');
+  it('clicks a temporary link and revokes the URL later (Round 12 R4)', () => {
+    vi.useFakeTimers();
+    try {
+      const create = vi.fn(() => 'blob:x');
+      const revoke = vi.fn();
+      Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
+      const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+      expect(downloadText('a.csv', 'text/csv', 'x')).toBe(true);
+      expect(click).toHaveBeenCalledTimes(1);
+      expect(revoke).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(40_000);
+      expect(revoke).toHaveBeenCalledWith('blob:x');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { DASH, formatTimestamp } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import { logRowKeys, pruneExpandedKeys } from '@/lib/log-row-keys';
 import {
   fetchUnifiedLogs,
   type UnifiedLogRow,
@@ -74,12 +75,59 @@ import {
   TableCell,
 } from '@/ui/table';
 import { CodeBlock } from '@/soc/components/CodeBlock';
+import type { AskAiChipProps } from '@/soc/components/AskAiChip';
+import { useAuth } from '@/soc/auth';
+import { useRoute } from '@/soc/router';
+import type { AskEntityKind } from '@/soc/components/ask-ai';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { SeverityBadge } from '@/soc/components/badges';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { LoadingState } from '@/design-system';
+
+/**
+ * Round 12 WP-ASK: the "Ask AI" chip, loaded on demand so it never becomes a shared
+ * chunk every route's preload list (in the entry chunk) must name (see AskAiChip.tsx,
+ * "Loading"). The load starts when this module loads; the chip renders once it has
+ * arrived, and never if it cannot load (the chip is optional, so it fails soft).
+ */
+type AskAiChipModule = typeof import('@/soc/components/AskAiChip');
+let askAiChipModule: AskAiChipModule | null = null;
+const askAiChipLoad: Promise<AskAiChipModule | null> = import('@/soc/components/AskAiChip').then(
+  (loaded) => (askAiChipModule = loaded),
+  () => null,
+);
+/**
+ * A shell context, or null outside it. `useAuth` / `useRoute` read their context before
+ * they throw, so hook order is stable; the hook is looked up inside the guard too (a test
+ * double of the module may not export it).
+ */
+function useOptionalContext<T>(pick: () => () => T): T | null {
+  try {
+    return pick()();
+  } catch {
+    return null;
+  }
+}
+function AskAiChip(props: AskAiChipProps) {
+  const auth = useOptionalContext(() => useAuth);
+  const route = useOptionalContext(() => useRoute);
+  const [loaded, setLoaded] = React.useState(askAiChipModule);
+  React.useEffect(() => {
+    if (loaded) return undefined;
+    let live = true;
+    void askAiChipLoad.then((next) => {
+      if (live && next) setLoaded(next);
+    });
+    return () => {
+      live = false;
+    };
+  }, [loaded]);
+  return loaded ? (
+    <loaded.AskAiChip {...props} navigate={route?.navigate} hasPermission={auth?.hasPermission} />
+  ) : null;
+}
 
 /** Auto-refresh cadence for the "Live tail" switch (ms). */
 const LIVE_TAIL_INTERVAL_MS = 10_000;
@@ -271,6 +319,7 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
   onSourcesRef.current = onSources;
 
   const [rows, setRows] = React.useState<UnifiedLogRow[]>([]);
+  const keys = React.useMemo(() => logRowKeys(rows), [rows]);
   const [sources, setSources] = React.useState<UnifiedLogSourceStatus[]>([]);
   const [partial, setPartial] = React.useState(false);
   const [count, setCount] = React.useState(0);
@@ -311,14 +360,9 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
         setCount(typeof res.count === 'number' ? res.count : logs.length);
         setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
         setTruncated(Boolean(res.truncated));
-        // Prune expanded ids that scrolled out of the window (ids are per-source
-        // unique; a source_id prefix keeps two sources' identical ids distinct).
-        setExpanded((prev) => {
-          const ids = new Set(logs.map((r) => rowKey(r)));
-          const next = new Set<string>();
-          for (const k of prev) if (ids.has(k)) next.add(k);
-          return next;
-        });
+        // Prune expanded rows that scrolled out of the window (keys are source, id
+        // and event time, so a refresh keeps the analyst's open row open).
+        setExpanded((prev) => pruneExpandedKeys(prev, logs));
       } catch (e) {
         if (seq !== seqRef.current) return;
         setError(e);
@@ -507,7 +551,9 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
               }
             />
           ) : (
-            <div className="overflow-hidden rounded-lg border border-border">
+            // `@container/ulog`: the row detail below sizes itself to the visible width of
+            // the table's horizontal scroll area (`100cqi`), so it never lands off-screen.
+            <div className="@container/ulog overflow-hidden rounded-lg border border-border">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -521,8 +567,8 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((r) => {
-                    const key = rowKey(r);
+                  {rows.map((r, index) => {
+                    const key = keys[index];
                     const isOpen = expanded.has(key);
                     return (
                       <React.Fragment key={key}>
@@ -538,7 +584,15 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
                           </TableCell>
                           <TableCell className="font-mono text-xs">
                             {r.source_ip ? (
-                              <span className="break-all">{r.source_ip}</span>
+                              // An IPv4 address stays on one line so the Ask AI icon beside
+                              // it never squeezes it into a letter-per-line column; the
+                              // rule, host and user chips live in the row detail.
+                              <div className="group/ask flex items-center gap-1">
+                                <span className={cn('min-w-0', r.source_ip.length <= 15 ? 'whitespace-nowrap' : 'break-all')}>
+                                  {r.source_ip}
+                                </span>
+                                <AskAiChip kind="ip" value={r.source_ip} />
+                              </div>
                             ) : (
                               <span className="text-muted-foreground">{DASH}</span>
                             )}
@@ -586,13 +640,20 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
                         {isOpen ? (
                           <TableRow id={`ulog-raw-${key}`}>
                             <TableCell colSpan={7} className="bg-muted/30 p-2">
-                              {/* _raw is UNTRUSTED source data → fenced, never markup. */}
-                              <CodeBlock
-                                value={r._raw ?? {}}
-                                wrap
-                                maxHeightClassName="max-h-80"
-                                caption={`raw event · ${r.source_name || r.source_id}`}
-                              />
+                              {/* The detail stays in the visible part of the table's scroll
+                                  area: on a phone the table scrolls sideways and the row is
+                                  expanded from its far-right Raw button, so a full-width
+                                  detail would start off-screen. */}
+                              <div className={ROW_DETAIL} data-testid="ulog-row-detail">
+                                <RowEntities row={r} />
+                                {/* _raw is UNTRUSTED source data → fenced, never markup. */}
+                                <CodeBlock
+                                  value={r._raw ?? {}}
+                                  wrap
+                                  maxHeightClassName="max-h-80"
+                                  caption={`raw event · ${r.source_name || r.source_id}`}
+                                />
+                              </div>
                             </TableCell>
                           </TableRow>
                         ) : null}
@@ -615,12 +676,45 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
 };
 
 /**
- * A stable per-row key. Row `id` can collide across sources (two connectors may emit
- * the same event id), so we namespace by `source_id` to keep expansion state correct.
+ * A row's expanded detail: pinned to the left of the table's horizontal scroll area
+ * (`sticky`, 8 px in like the cell padding) and no wider than its visible width
+ * (`100cqi` of the `@container/ulog` wrapper, less both paddings).
  */
-function rowKey(r: UnifiedLogRow): string {
-  return `${r.source_id}::${r.id}`;
-}
+const ROW_DETAIL = 'sticky left-2 max-w-[calc(100cqi-1rem)]';
+
+/**
+ * The row's entities in its detail (Round 12 WP-ASK): source IP, host, user and rule,
+ * each with an "Ask AI" chip that opens a new chat asking the server's question about
+ * that value (a typed reference, never free text). Host and user have no table column,
+ * and the rule column is too narrow for a chip, so this is where those are asked about.
+ * Every value is UNTRUSTED source data (#9): a plain text node.
+ */
+const ROW_ENTITIES: ReadonlyArray<{ label: string; kind: AskEntityKind; pick: (r: UnifiedLogRow) => string | null }> = [
+  { label: 'Source IP', kind: 'ip', pick: (r) => r.source_ip },
+  { label: 'Host', kind: 'host', pick: (r) => r.host },
+  { label: 'User', kind: 'user', pick: (r) => r.user },
+  { label: 'Rule', kind: 'rule', pick: (r) => r.rule },
+];
+
+const RowEntities: React.FC<{ row: UnifiedLogRow }> = ({ row }) => {
+  const present = ROW_ENTITIES.map((entity) => ({ ...entity, value: entity.pick(row) })).filter(
+    (entity): entity is (typeof entity & { value: string }) => typeof entity.value === 'string' && entity.value.trim() !== '',
+  );
+  if (present.length === 0) return null;
+  return (
+    <dl className="mb-2 flex flex-wrap gap-x-6 gap-y-1 px-1 text-xs" data-testid="ulog-row-entities">
+      {present.map((entity) => (
+        <div key={entity.label} className="group/ask flex min-w-0 items-center gap-1.5">
+          <dt className="text-muted-foreground">{entity.label}</dt>
+          <dd className="flex min-w-0 items-center gap-1">
+            <span className="min-w-0 break-all font-mono text-foreground">{entity.value}</span>
+            <AskAiChip kind={entity.kind} value={entity.value} />
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+};
 
 /* -------------------------------------------------------------------------- */
 /* Standalone page (intended nav placement: top-level "Logs" under Triage)    */

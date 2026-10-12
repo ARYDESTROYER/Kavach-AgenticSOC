@@ -98,6 +98,39 @@ export function stackTotals(series: ReadonlyArray<ReadonlyArray<number | null>>,
 /** Approximate advance of one 11px tabular glyph. */
 export const CHAR_W = 6.6;
 const MINUTE_MS = 60_000;
+
+/* -------------------------------------------------------------------------- */
+/* Line end labels.                                                            */
+/* -------------------------------------------------------------------------- */
+/** End labels always get at least this many characters, however narrow the chart. */
+export const END_LABEL_MIN_CHARS = 14;
+/** The end-label column may take up to this share of the chart's width. */
+export const END_LABEL_WIDTH_SHARE = 0.25;
+/** The end-label column's padding: 8 px before the label, 6 px after it. */
+export const END_LABEL_PAD = 14;
+
+/**
+ * How many characters a line chart's end labels may use at `width` px: as many as fit in
+ * a quarter of the chart, never fewer than {@link END_LABEL_MIN_CHARS}. A label is clipped
+ * only beyond this budget, so a wide chart shows "Closed by an analyst" in full instead
+ * of a fixed 14-character "Closed by an …" (the legend and tooltip always name it in
+ * full).
+ */
+export function endLabelBudget(width: number): number {
+  const room = Number.isFinite(width) ? Math.floor((width * END_LABEL_WIDTH_SHARE - END_LABEL_PAD) / CHAR_W) : 0;
+  return Math.max(END_LABEL_MIN_CHARS, room);
+}
+
+/**
+ * The end-label column for `labels` at `width` px: the character budget, the characters
+ * the longest label actually uses within it, and the right padding that reserves them.
+ */
+export function endLabelColumn(width: number, labels: readonly string[]): { budget: number; chars: number; padRight: number } {
+  const budget = endLabelBudget(width);
+  const longest = labels.reduce((most, label) => Math.max(most, Array.from(label).length), 0);
+  const chars = Math.min(budget, longest);
+  return { budget, chars, padRight: Math.ceil(chars * CHAR_W) + END_LABEL_PAD };
+}
 /**
  * Candidate label intervals in minutes, smallest first: sub-hour steps for "last hour"
  * lookups at 1m/5m/15m buckets, then the hour/day/week ladder.
@@ -237,6 +270,28 @@ export function roundedRightPath(x: number, y: number, w: number, h: number, r =
 /** Column width for one slot: ⅔ of it, capped (house rule), at least 1px. */
 export function barWidth(slot: number, cap = BAR_MAX): number {
   return Math.max(1, Math.min(cap, Math.round((slot * 2) / 3)));
+}
+
+/**
+ * The least share of a bucket's slot its column (or group of columns) covers. A column is
+ * capped at {@link BAR_MAX}, so a wide card with few buckets drew hairline bars hundreds
+ * of pixels apart (two months across an 1,800 px lane, Round 12 tour 3). The slot is
+ * capped instead, at six times the bucket's marks.
+ */
+export const BAR_MIN_SLOT_FILL = 1 / 6;
+
+/**
+ * The plot frame a column chart draws in: the full `plotW` while its buckets fill it, and
+ * otherwise a narrower plot of `n` slots of at most `groupW / BAR_MIN_SLOT_FILL` each,
+ * centred in the same space (the y-axis ticks move with it, since they are drawn left of
+ * `x0`). `groupW` is the bucket's full mark width (one capped column, or a grouped set
+ * side by side). A chart with many buckets gets back exactly what it passed in.
+ */
+export function barPlotFrame(x0: number, plotW: number, n: number, groupW: number): { x0: number; plotW: number } {
+  const maxSlot = Math.ceil(Math.max(1, groupW) / BAR_MIN_SLOT_FILL);
+  const capped = Math.max(1, n) * maxSlot;
+  if (capped >= plotW) return { x0, plotW };
+  return { x0: Math.round(x0 + (plotW - capped) / 2), plotW: capped };
 }
 
 /* -------------------------------------------------------------------------- */

@@ -1,5 +1,6 @@
 /** Shared Console helpers for durable, self-scoped background jobs. */
 import { api, type BlobDownload } from '@/lib/api';
+import { downloadBlob } from '@/lib/download-blob';
 import { humanizeToken } from '@/lib/format';
 import type { BackgroundJob, BackgroundJobKind } from '@/lib/types';
 import type { NavOpts } from '@/soc/nav-types';
@@ -293,15 +294,10 @@ export function saveBlob(download: BlobDownload, fallbackFilename: string): stri
   if (!download.blob.size)
     throw new Error('The server returned an empty artifact. No file was saved.');
   const filename = artifactFilename(download.contentDisposition, fallbackFilename);
-  const url = URL.createObjectURL(download.blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  const revokeObjectUrl = URL.revokeObjectURL;
-  window.setTimeout(() => revokeObjectUrl(url), 0);
+  // The shared helper keeps the object URL alive after the click (revoking it at once can
+  // cancel the download in Safari and older Firefox).
+  if (!downloadBlob(filename, download.blob))
+    throw new Error('This browser could not start the download. No file was saved.');
   return filename;
 }
 

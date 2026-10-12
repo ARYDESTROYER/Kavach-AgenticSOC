@@ -179,15 +179,43 @@ const SORT_FIELD_LABELS: Record<string, string> = {
   risk_score: 'risk score',
 };
 
+/** Round 12 calendar window tokens (SPEC D7) as words. */
+const WINDOW_TOKEN_LABELS: Record<string, string> = {
+  all: 'all time',
+  today: 'today',
+  yesterday: 'yesterday',
+  this_week: 'this week',
+  last_week: 'last week',
+  this_month: 'this month',
+  last_month: 'last month',
+  this_quarter: 'this quarter',
+  last_quarter: 'last quarter',
+  ytd: 'year to date',
+  this_year: 'this year',
+  last_year: 'last year',
+};
+
+/** "this_week" → "this week", "now-90d" → "last 90 days", "all" → "all time"; else unchanged. */
+export function windowLabel(value: string): string {
+  const text = value.trim();
+  return WINDOW_TOKEN_LABELS[text.toLowerCase()] ?? relativeTimeLabel(text);
+}
+
+/** Enum-valued chips ("FALSE_POSITIVE", "NEEDS_HUMAN") read as words. */
+const ENUM_KEYS = new Set(['verdict', 'status', 'status_group', 'disposition', 'decided_by', 'closed_by']);
+
 /**
  * A chip value as text (booleans and nulls read as words, never as blanks). With its
  * `key`, the time window, relative times and sort fields read as words ("last 7 days",
- * "creation time") instead of query syntax ("now-7d", "created_at").
+ * "this week", "creation time") instead of query syntax ("now-7d", "this_week",
+ * "created_at"), and enum values read as words ("false positive").
  */
 export function paramValue(value: string | number | boolean | null, key?: string): string {
   if (value === null) return 'none';
   if (typeof value === 'boolean') return value ? 'yes' : 'no';
   if (typeof value === 'number') return key === 'window_hours' ? windowHoursLabel(value) : value.toLocaleString();
+  if (key === 'window') return windowLabel(value);
+  if (key && ENUM_KEYS.has(key) && /^[A-Za-z]+(?:_[A-Za-z]+)*$/.test(value)) return value.replace(/_/g, ' ').toLowerCase();
   if (key === 'time_from' || key === 'time_to') return relativeTimeLabel(value);
   if (key === 'sort_field') return SORT_FIELD_LABELS[value] ?? value.replace(/_/g, ' ');
   if (key === 'sort_order') return value === 'asc' ? 'oldest first' : value === 'desc' ? 'newest first' : value;

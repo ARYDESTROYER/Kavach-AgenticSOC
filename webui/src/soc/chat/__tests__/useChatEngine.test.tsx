@@ -10,6 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 
 import type { ChatConversation, ChatRequest } from '@/lib/types';
+import * as React from 'react';
+import { clearChatActivity, getChatActivity, onChatActivity, putChatActivity, type ChatActivitySettled } from '../../chat-activity/activity';
+import { resetTurnRunnerForTests } from '../turn-runner';
 import {
   CHAT_HISTORY_EXCHANGES,
   CONTINUE_PROMPT,
@@ -18,7 +21,6 @@ import {
   isUnsavedTurn,
   recoveryDelayMs,
   retriesWithSameKey,
-  recoveryWindowMs,
   replayHistorySize,
   useChatEngine,
   type ChatAssistantItem,
@@ -43,6 +45,14 @@ interface Recorded {
 
 let recorded: Recorded[] = [];
 let streams: StreamHandle[] = [];
+/** `GET /api/chat/turns/{id}/events?after=` re-attach streams (Round 12, SPEC D13). */
+interface EventStreamHandle {
+  url: string;
+  push: (event: unknown, seq?: number) => void;
+  close: () => void;
+  fail: () => void;
+}
+let eventStreams: EventStreamHandle[] = [];
 /** Override a route; return undefined to fall through to the defaults. */
 let override: ((call: Recorded) => Response | undefined) | null = null;
 let userPrefs: Record<string, unknown> = {};
@@ -67,9 +77,33 @@ function openStream(body: ChatRequest): Response {
   return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
 }
 
+function openEventStream(url: string): Response {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  eventStreams.push({
+    url,
+    push: (event, seq) =>
+      controller.enqueue(encoder.encode(`${JSON.stringify(seq === undefined ? event : { ...(event as object), seq })}\n`)),
+    close: () => controller.close(),
+    fail: () => controller.error(new TypeError('network down')),
+  });
+  return new Response(stream, { headers: { 'Content-Type': 'application/x-ndjson' } });
+}
+
 beforeEach(() => {
+  // Turns outlive their view (SPEC D13): every test starts with no runs and no activity.
+  resetTurnRunnerForTests();
+  clearChatActivity();
+  // Node's BroadcastChannel crosses test workers: keep this file's "history changed"
+  // signals away from the other suites' rails.
+  vi.stubGlobal('BroadcastChannel', undefined);
   recorded = [];
   streams = [];
+  eventStreams = [];
   override = null;
   userPrefs = {};
   window.localStorage.clear();
@@ -87,6 +121,7 @@ beforeEach(() => {
       if (call.url === '/api/prefs/user' && call.method === 'GET') return json(userPrefs);
       if (call.url === '/api/prefs/user' && call.method === 'PUT') return json({ ...userPrefs, ...call.body });
       if (call.url === '/api/chat/stream') return openStream(call.body as unknown as ChatRequest);
+      if (/^\/api\/chat\/turns\/[^/]+\/events\?/.test(call.url)) return openEventStream(call.url);
       if (/^\/api\/chat\/turns\/[^/]+\/cancel$/.test(call.url)) return json({ ok: true });
       throw new Error(`Unhandled request: ${call.method} ${call.url}`);
     }),
@@ -252,9 +287,10 @@ describe('useChatEngine — streaming a turn', () => {
   });
 
   it('surfaces a pre-stream HTTP failure with its friendly message', async () => {
+    // (429 `chat_busy` is not a failure any more: the turn waits for capacity, SPEC D6.)
     override = (call) =>
       call.url === '/api/chat/stream'
-        ? json({ detail: { code: 'chat_busy', message: 'Two answers are still running.' } }, 429)
+        ? json({ detail: { code: 'chat_unavailable', message: 'Chat is starting up; try again shortly.' } }, 503)
         : undefined;
     const { result } = await mountEngine();
     act(() => {
@@ -263,7 +299,7 @@ describe('useChatEngine — streaming a turn', () => {
     await settle();
     expect(assistant(result.current)).toMatchObject({
       status: 'error',
-      failure: { kind: 'http', status: 429, code: 'chat_busy', message: 'Two answers are still running.', retryable: true },
+      failure: { kind: 'http', status: 503, code: 'chat_unavailable', message: 'Chat is starting up; try again shortly.', retryable: true },
     });
     expect(result.current.busy).toBe(false);
   });
@@ -324,14 +360,67 @@ describe('useChatEngine — Stop and connection loss', () => {
     expect(result.current.busy).toBe(false);
   });
 
-  it('replays ONCE with the same key when the stream ends without turn.done', async () => {
+  it('re-attaches to the SAME turn (no second request) when the stream ends after turn.start', async () => {
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Will drop');
+    });
+    await settle();
+    await push(streams[0], start('turn-d'));
+    await act(async () => {
+      streams[0].close();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(streamCalls()).toHaveLength(1);
+    expect(eventStreams.map((entry) => entry.url)).toEqual(['/api/chat/turns/turn-d/events?after=0']);
+    expect(assistant(result.current).live?.connection).toBe('recovering');
+    expect(result.current.canStop).toBe(true);
+    await act(async () => {
+      eventStreams[0].push(start('turn-d'), 1);
+      eventStreams[0].push({ type: 'step.start', step: { index: 1, kind: 'tool', label: 'Searching logs', params: {} } }, 2);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(assistant(result.current).live).toMatchObject({ connection: 'open', steps: [{ index: 1 }] });
+    await act(async () => {
+      eventStreams[0].push(done({ answer: 'Saved answer', message_id: 'm9', conversation_id: 'c9' }), 3);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(assistant(result.current)).toMatchObject({ status: 'done', response: { answer: 'Saved answer' } });
+  });
+
+  it('resumes a dropped re-attach after the last seq it saw', async () => {
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Drops twice');
+    });
+    await settle();
+    await push(streams[0], start('turn-s'));
+    await act(async () => {
+      streams[0].close();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    await act(async () => {
+      eventStreams[0].push(start('turn-s'), 1);
+      eventStreams[0].push({ type: 'text.delta', text: 'Half ' }, 4);
+      eventStreams[0].close();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    expect(eventStreams[1]?.url).toBe('/api/chat/turns/turn-s/events?after=4');
+    await act(async () => {
+      eventStreams[1].push({ type: 'text.delta', text: 'done.' }, 5);
+      eventStreams[1].push(done({ answer: 'Half done.' }), 6);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(assistant(result.current).response?.answer).toBe('Half done.');
+  });
+
+  it('replays ONCE with the same key when the stream ends before turn.start', async () => {
     const { result } = await mountEngine();
     act(() => {
       result.current.send('Will drop');
     });
     await settle();
     const key = streams[0].body.idempotency_key;
-    await push(streams[0], start('turn-d'));
     await act(async () => {
       streams[0].close();
       await new Promise((resolve) => setTimeout(resolve, 30));
@@ -341,6 +430,35 @@ describe('useChatEngine — Stop and connection loss', () => {
     expect(assistant(result.current).live?.connection).toBe('recovering');
     await push(streams[1], start('turn-d', { replayed: true }), done({ answer: 'Saved answer', message_id: 'm9', conversation_id: 'c9' }));
     expect(assistant(result.current)).toMatchObject({ status: 'done', response: { answer: 'Saved answer' } });
+  });
+
+  it('re-attaches the running turn a 409 in-progress names', async () => {
+    let attempt = 0;
+    override = (call) => {
+      if (call.url !== '/api/chat/stream') return undefined;
+      attempt += 1;
+      if (attempt === 2) {
+        return json({ detail: { code: 'chat_request_in_progress', message: 'Still running', turn_id: 'turn-held' } }, 409);
+      }
+      return undefined;
+    };
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Lost before start');
+    });
+    await settle();
+    await act(async () => {
+      streams[0].close();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+    expect(attempt).toBe(2);
+    expect(eventStreams[0]?.url).toBe('/api/chat/turns/turn-held/events?after=0');
+    await act(async () => {
+      eventStreams[0].push(start('turn-held'), 1);
+      eventStreams[0].push(done({ answer: 'Held answer', message_id: 'mh', conversation_id: 'ch' }), 2);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(assistant(result.current).response?.answer).toBe('Held answer');
   });
 
   it('gives up after the one replay also drops', async () => {
@@ -942,6 +1060,8 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
   });
 
   it('adopts the started conversation when the connection is lost for good, not after turn.error', async () => {
+    // The turn cannot be re-attached (gone from the server's memory): one same-key replay.
+    override = (call) => (/\/events\?/.test(call.url) ? json({ detail: 'turn not found' }, 404) : undefined);
     const persisted = vi.fn();
     const { result } = await mountEngine({ onConversationPersisted: persisted });
     act(() => {
@@ -983,15 +1103,24 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
       streams[0].close();
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
-    await push(streams[1], start('turn-r2'), { type: 'step.start', step });
+    // The re-attach reads the ring from its start: its turn.start rebuilds the projection.
+    await act(async () => {
+      eventStreams[0].push(start('turn-r'), 1);
+      eventStreams[0].push({ type: 'step.start', step }, 2);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
     const live = assistant(result.current).live;
     expect(live?.steps).toHaveLength(1);
     expect(live?.usage).toBeNull();
-    await push(streams[1], { type: 'step.end', step: { index: 1, label: 'Searched logs', status: 'ok', summary: '2 rows' } });
+    await act(async () => {
+      eventStreams[0].push({ type: 'step.end', step: { index: 1, label: 'Searched logs', status: 'ok', summary: '2 rows' } }, 3);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
     expect(assistant(result.current).live?.steps[0]).toMatchObject({ status: 'ok' });
   });
 
   it('re-sends a pending Stop to the turn a recovery replay names', async () => {
+    override = (call) => (/\/events\?/.test(call.url) ? json({ detail: 'turn not found' }, 404) : undefined);
     const { result } = await mountEngine();
     act(() => {
       result.current.send('Stop me');
@@ -1038,7 +1167,57 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
     expect(assistant(result.current).response?.answer).toBe('Saved late');
   });
 
-  it('stops waiting once the turn\'s own limits have passed', async () => {
+  it('waits for capacity on 429 chat_busy and sends the same request again (SPEC D6)', async () => {
+    let attempt = 0;
+    override = (call) => {
+      if (call.url !== '/api/chat/stream') return undefined;
+      attempt += 1;
+      if (attempt <= 2) {
+        return json({ detail: { code: 'chat_busy', message: 'You already have the maximum number of chat answers running', retry_after: 0.25, scope: 'user', limit: 4 } }, 429);
+      }
+      return undefined;
+    };
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Fifth question');
+    });
+    await settle();
+    expect(assistant(result.current)).toMatchObject({ status: 'running', failure: null });
+    expect(assistant(result.current).live?.waiting).toBe(true);
+    expect(result.current.busy).toBe(true);
+    await settle(700);
+    expect(attempt).toBe(3);
+    const keys = recorded.filter((call) => call.url === '/api/chat/stream').map((call) => call.body?.idempotency_key);
+    expect(new Set(keys).size).toBe(1);
+    await push(streams[0], start('t-busy'));
+    expect(assistant(result.current).live?.waiting).toBe(false);
+    await push(streams[0], done({ answer: 'Answered after the wait', message_id: 'm-busy', conversation_id: 'c-busy' }));
+    expect(assistant(result.current).response?.answer).toBe('Answered after the wait');
+  });
+
+  it('Stop while waiting for capacity ends the question at once (nothing ran)', async () => {
+    override = (call) =>
+      call.url === '/api/chat/stream'
+        ? json({ detail: { code: 'chat_busy', message: 'Busy', retry_after: 5, scope: 'global' } }, 429)
+        : undefined;
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Busy question');
+    });
+    await settle();
+    expect(assistant(result.current).live?.waiting).toBe(true);
+    expect(result.current.canStop).toBe(true);
+    await act(async () => {
+      result.current.stop();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(assistant(result.current)).toMatchObject({ status: 'done', response: { notice: { kind: 'cancelled' } } });
+    expect(result.current.busy).toBe(false);
+    expect(recorded.some((call) => call.url.endsWith('/cancel'))).toBe(false);
+    expect(result.current.items[0]).toMatchObject({ kind: 'user', failed: true });
+  });
+
+  it('keeps waiting while the server says the turn still runs: turns have no time limit', async () => {
     const realNow = Date.now.bind(Date);
     let offset = 0;
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
@@ -1047,7 +1226,9 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
       override = (call) => {
         if (call.url !== '/api/chat/stream') return undefined;
         attempt += 1;
-        if (attempt >= 2) return json({ detail: { code: 'chat_request_in_progress', message: 'Still running' } }, 409);
+        if (attempt >= 2 && attempt <= 3) {
+          return json({ detail: { code: 'chat_request_in_progress', message: 'Still running', retry_after: 0.25 } }, 409);
+        }
         return undefined;
       };
       const { result } = await mountEngine({ turnBounds: { turn_timeout_s: 10, model_step_timeout_s: 5 } });
@@ -1055,31 +1236,52 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
         result.current.send('Very long turn');
       });
       await settle();
-      offset = recoveryWindowMs({ turn_timeout_s: 10, model_step_timeout_s: 5 }) + 1_000;
+      // Far past what the old per-turn timeout allowed.
+      offset = 3_600_000;
       await act(async () => {
         streams[0].close();
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 700));
       });
-      expect(attempt).toBe(2);
-      expect(assistant(result.current)).toMatchObject({
-        status: 'error',
-        failure: { kind: 'connection_lost', code: 'chat_request_in_progress', retryable: true },
-      });
+      expect(attempt).toBe(4);
+      expect(assistant(result.current).status).toBe('running');
+      await push(streams[1], start('t', { replayed: true }), done({ answer: 'Saved after an hour', message_id: 'm', conversation_id: 'c' }));
+      expect(assistant(result.current).response?.answer).toBe('Saved after an hour');
     } finally {
       nowSpy.mockRestore();
     }
   });
 
-  it('bounds recovery by the turn limits and the delay by the hint', () => {
-    expect(recoveryWindowMs({ turn_timeout_s: 90, model_step_timeout_s: 30 })).toBe(125_000);
-    expect(recoveryWindowMs(null)).toBe(125_000);
-    expect(recoveryWindowMs({ turn_timeout_s: -1, model_step_timeout_s: Number.NaN })).toBe(125_000);
-    expect(recoveryWindowMs({ turn_timeout_s: 300, model_step_timeout_s: 60 })).toBe(365_000);
+  it('bounds one re-check delay by the hint', () => {
     expect(recoveryDelayMs(0, null)).toBe(1_500);
     expect(recoveryDelayMs(9, null)).toBe(8_000);
     expect(recoveryDelayMs(0, 2)).toBe(2_000);
     expect(recoveryDelayMs(0, 0)).toBe(250);
     expect(recoveryDelayMs(0, 3_600)).toBe(15_000);
+  });
+
+  it('stops recovering when the server says the request was answered but not saved', async () => {
+    let attempt = 0;
+    const message = 'This request was answered but could not be saved. Ask again to start a new request.';
+    override = (call) => {
+      if (call.url !== '/api/chat/stream') return undefined;
+      attempt += 1;
+      if (attempt >= 2) return json({ detail: { code: 'chat_request_failed', message } }, 409);
+      return undefined;
+    };
+    const { result } = await mountEngine();
+    act(() => {
+      result.current.send('Saved?');
+    });
+    await settle();
+    await act(async () => {
+      streams[0].close();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+    expect(attempt).toBe(2);
+    expect(assistant(result.current)).toMatchObject({
+      status: 'error',
+      failure: { kind: 'http', status: 409, code: 'chat_request_failed', retryable: false, message },
+    });
   });
 
   it('marks an idempotency conflict as not retryable with the same key', async () => {
@@ -1095,7 +1297,7 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
     expect(assistant(result.current).failure).toMatchObject({ kind: 'http', status: 409, code: 'chat_idempotency_conflict', retryable: false });
   });
 
-  it('a different case resets the transcript and drops the running turn', async () => {
+  it('a different case shows its own transcript; case A\'s turn keeps running into case A', async () => {
     const { result, rerender } = await mountEngine({ caseId: 'case-a' });
     act(() => {
       result.current.send('About case A');
@@ -1109,15 +1311,34 @@ describe('useChatEngine — conversation adoption, stop and recovery edges', () 
     rerender({ caseId: 'case-b' });
     expect(result.current.items).toEqual([]);
     expect(result.current.busy).toBe(false);
-    await settle();
-    // Case A's stream was abandoned (its reader cancelled), so nothing can land here.
-    expect(() => streams[1].push(done({ answer: 'Late A answer' }))).toThrow();
+    // Case A's turn was not stopped: its late answer lands in case A's session, never here.
+    await push(streams[1], start('turn-a2'), done({ answer: 'Late A answer' }));
     expect(result.current.items).toEqual([]);
     act(() => {
       result.current.send('About case B');
     });
     await settle();
     expect(streams[2].body).toMatchObject({ case_id: 'case-b', history: [] });
+    await push(streams[2], start('turn-b'), done({ answer: 'B answer' }));
+    rerender({ caseId: 'case-a' });
+    await settle();
+    expect(result.current.items.map((item) => (item.kind === 'user' ? item.content : item.response?.answer))).toEqual([
+      'About case A',
+      'A answer',
+      'Still A',
+      'Late A answer',
+    ]);
+    act(() => {
+      result.current.send('Back on A');
+    });
+    await settle();
+    // Model history came back with the transcript.
+    expect(streams[3].body.history).toEqual([
+      { role: 'user', content: 'About case A', origin: 'user' },
+      { role: 'assistant', content: 'A answer' },
+      { role: 'user', content: 'Still A', origin: 'user' },
+      { role: 'assistant', content: 'Late A answer' },
+    ]);
   });
 
   it('Stop is a no-op on a blocking turn', async () => {
@@ -1328,6 +1549,269 @@ describe('useChatEngine — final-review regressions', () => {
     await settle();
     await push(streams[0], start(), done({ answer: 'a'.repeat(300), message_id: 'm1' }));
     expect(result.current.historySize).toEqual({ exchanges: 1, chars: 400 });
+  });
+});
+
+describe('useChatEngine — turns outlive their view (Round 12, SPEC D13)', () => {
+  const thread = (id: string, messages: ChatConversation['messages'] = []): ChatConversation => ({
+    id,
+    title: `Thread ${id}`,
+    created_at: '2026-10-10T10:00:00Z',
+    updated_at: '2026-10-10T10:00:00Z',
+    message_count: messages.length,
+    messages,
+  });
+  const activityOf = (scope: string) => getChatActivity().entries.find((entry) => entry.scope === scope) ?? null;
+
+  it('a case chat tells the other consoles about every answer it lists, not only its newest', async () => {
+    const shown: string[] = [];
+    const off = onChatActivity('shown', (turnId) => shown.push(turnId));
+    const { result, rerender } = await mountEngine({ caseId: 'case-s' });
+    act(() => {
+      result.current.send('First question');
+    });
+    await settle();
+    await push(streams[0], start('turn-s1'), done({ answer: 'First answer', turn_id: 'turn-s1' }));
+    act(() => {
+      result.current.send('Second question');
+    });
+    await settle();
+    await push(streams[1], start('turn-s2'), done({ answer: 'Second answer', turn_id: 'turn-s2' }));
+    expect(new Set(shown)).toEqual(new Set(['turn-s1', 'turn-s2']));
+    // Back on the case later (its transcript kept for the session): both are on screen again.
+    rerender({ caseId: 'case-other' });
+    shown.length = 0;
+    rerender({ caseId: 'case-s' });
+    await settle();
+    expect(new Set(shown)).toEqual(new Set(['turn-s1', 'turn-s2']));
+    off();
+  });
+
+  it('leaving mid-turn detaches (no abort); returning re-attaches live steps without duplicates and Stop works', async () => {
+    const first = await mountEngine({ conversation: thread('conv-a') });
+    act(() => {
+      first.result.current.send('Investigate host X over the last quarter');
+    });
+    await settle();
+    const step = { index: 1, kind: 'tool', tool: 'case_stats', label: 'Counting cases', params: {} };
+    await push(streams[0], start('turn-a', { conversation_id: 'conv-a' }), { type: 'step.start', step });
+    expect(activityOf('conv:conv-a')).toMatchObject({ status: 'running', turnId: 'turn-a', label: 'Counting cases' });
+    first.unmount();
+    // The read goes on: no cancel, no second request, and the run keeps its steps.
+    await push(streams[0], { type: 'step.end', step: { ...step, status: 'ok', summary: '412 cases' } }, { type: 'step.start', step: { ...step, index: 2, label: 'Writing the answer', kind: 'model', tool: null } });
+    expect(recorded.some((call) => call.url.endsWith('/cancel'))).toBe(false);
+    expect(activityOf('conv:conv-a')?.lookups).toBe(1);
+
+    const second = await mountEngine({ conversation: thread('conv-a') });
+    const items = second.result.current.items;
+    expect(items.map((item) => item.kind)).toEqual(['user', 'assistant']);
+    expect((items[0] as { content: string }).content).toBe('Investigate host X over the last quarter');
+    expect(assistant(second.result.current).live?.steps.map((s) => s.index)).toEqual([1, 2]);
+    expect(second.result.current.busy).toBe(true);
+    expect(second.result.current.canStop).toBe(true);
+    await act(async () => {
+      second.result.current.stop();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(recorded.filter((call) => call.url.endsWith('/cancel')).map((call) => call.url)).toEqual(['/api/chat/turns/turn-a/cancel']);
+    await push(streams[0], done({ answer: 'Stopped early.', message_id: 'm-a', conversation_id: 'conv-a', notice: { kind: 'cancelled', message: 'Stopped', retryable: false } }));
+    expect(assistant(second.result.current)).toMatchObject({ status: 'done', response: { answer: 'Stopped early.' } });
+    expect(second.result.current.busy).toBe(false);
+    expect(streamCalls()).toHaveLength(1);
+    // It was on screen when it finished: no unread mark.
+    expect(activityOf('conv:conv-a')).toBeNull();
+  });
+
+  it('an answer that lands while away is unread; reopening shows the saved copy once', async () => {
+    const first = await mountEngine({ conversation: thread('conv-b') });
+    act(() => {
+      first.result.current.send('Weekly hunt');
+    });
+    await settle();
+    const key = streams[0].body.idempotency_key as string;
+    await push(streams[0], start('turn-b', { conversation_id: 'conv-b' }));
+    first.unmount();
+    await push(streams[0], done({ answer: 'Nothing new.', message_id: 'm-b', conversation_id: 'conv-b' }));
+    expect(activityOf('conv:conv-b')).toMatchObject({ status: 'unread', title: 'Weekly hunt' });
+    const saved = thread('conv-b', [
+      { id: 'u-b', role: 'user', content: 'Weekly hunt', created_at: '2026-10-10T10:00:00Z', idempotency_key: key },
+      { id: 'm-b', role: 'assistant', content: 'Nothing new.', created_at: '2026-10-10T10:01:00Z', idempotency_key: key, response: { answer: 'Nothing new.', message_id: 'm-b' } },
+    ]);
+    const second = await mountEngine({ conversation: saved });
+    expect(second.result.current.items.map((item) => item.key)).toEqual(['u-b', 'm-b']);
+    // On screen now: read.
+    expect(activityOf('conv:conv-b')).toBeNull();
+  });
+
+  it('an unsaved answer that lands while away is shown once on return', async () => {
+    const first = await mountEngine({ conversation: thread('conv-c') });
+    act(() => {
+      first.result.current.send('Over budget?');
+    });
+    await settle();
+    await push(streams[0], start('turn-c', { conversation_id: 'conv-c' }));
+    first.unmount();
+    await push(streams[0], done({ answer: '', notice: { kind: 'budget', message: 'The daily budget is used up.', retryable: true }, usage: { calls: 0, total_tokens: 0, cost: 0 } }));
+    const second = await mountEngine({ conversation: thread('conv-c') });
+    expect(second.result.current.items.map((item) => item.kind)).toEqual(['user', 'assistant']);
+    expect(second.result.current.items[0]).toMatchObject({ failed: true });
+    expect(assistant(second.result.current).response?.notice?.kind).toBe('budget');
+    // Applied once: a third view finds nothing more.
+    const third = await mountEngine({ conversation: thread('conv-c') });
+    expect(third.result.current.items).toEqual([]);
+  });
+
+  it('busy is per conversation: another thread opens and sends while the first is answering', async () => {
+    const { result, rerender } = await mountEngine({ conversation: thread('conv-1') });
+    act(() => {
+      result.current.send('Long one');
+    });
+    await settle();
+    await push(streams[0], start('turn-1', { conversation_id: 'conv-1' }));
+    expect(result.current.busy).toBe(true);
+    rerender({ conversation: thread('conv-2') });
+    await settle();
+    expect(result.current.busy).toBe(false);
+    expect(result.current.items).toEqual([]);
+    act(() => {
+      expect(result.current.send('Quick one')).toBe(true);
+    });
+    await settle();
+    expect(streams[1].body).toMatchObject({ conversation_id: 'conv-2', message: 'Quick one' });
+    await push(streams[1], start('turn-2', { conversation_id: 'conv-2' }), done({ answer: 'Quick answer', message_id: 'm2', conversation_id: 'conv-2' }));
+    rerender({ conversation: thread('conv-1') });
+    await settle();
+    expect(result.current.busy).toBe(true);
+    expect(assistant(result.current).live?.turnId).toBe('turn-1');
+    await push(streams[0], done({ answer: 'Long answer', message_id: 'm1', conversation_id: 'conv-1' }));
+    expect(assistant(result.current).response?.answer).toBe('Long answer');
+  });
+
+  it('after a reload, opening a thread the server reports as running re-attaches through the event ring', async () => {
+    const persisted = vi.fn();
+    putChatActivity({
+      scope: 'conv:conv-r', kind: 'workspace', conversationId: 'conv-r', caseId: null, turnId: 'turn-r', requestKey: null,
+      title: 'Quarterly review', label: 'Thinking', lookups: 0, status: 'running', startedAt: Date.now(), source: 'server',
+    });
+    const { result } = await mountEngine({ conversation: thread('conv-r'), onConversationPersisted: persisted });
+    expect(eventStreams.map((entry) => entry.url)).toEqual(['/api/chat/turns/turn-r/events?after=0']);
+    expect(result.current.busy).toBe(true);
+    expect(activityOf('conv:conv-r')?.source).toBe('local');
+    await act(async () => {
+      eventStreams[0].push(start('turn-r', { conversation_id: 'conv-r' }), 1);
+      eventStreams[0].push({ type: 'step.start', step: { index: 1, kind: 'tool', label: 'Searching logs', params: {} } }, 2);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(result.current.items.map((item) => item.kind)).toEqual(['assistant']);
+    expect(assistant(result.current).live?.steps).toHaveLength(1);
+    await act(async () => {
+      eventStreams[0].push(done({ answer: 'Review done.', message_id: 'm-r', conversation_id: 'conv-r' }), 3);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    // The prompt was not known after the reload: the saved thread is loaded again.
+    expect(persisted).toHaveBeenCalledWith('conv-r', '', { rehydrate: true });
+    expect(streamCalls()).toHaveLength(0);
+  });
+
+  it('follows a running turn the server reports only after the thread restored (reload race)', async () => {
+    const { result } = await mountEngine({ conversation: thread('conv-late') });
+    expect(eventStreams).toHaveLength(0);
+    expect(result.current.busy).toBe(false);
+    // `GET /chat/turns/active` answers after the thread load.
+    await act(async () => {
+      putChatActivity({
+        scope: 'conv:conv-late', kind: 'workspace', conversationId: 'conv-late', caseId: null, turnId: 'turn-late', requestKey: null,
+        title: 'Late report', label: 'Thinking', lookups: 0, status: 'running', startedAt: Date.now(), source: 'server',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(eventStreams.map((entry) => entry.url)).toEqual(['/api/chat/turns/turn-late/events?after=0']);
+    expect(result.current.busy).toBe(true);
+    // A report for another thread is not followed here.
+    await act(async () => {
+      putChatActivity({
+        scope: 'conv:other', kind: 'workspace', conversationId: 'other', caseId: null, turnId: 'turn-other', requestKey: null,
+        title: '', label: null, lookups: 0, status: 'running', startedAt: Date.now(), source: 'server',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+    expect(eventStreams).toHaveLength(1);
+  });
+
+  it('a turn the server no longer knows after a reload is dropped and the thread reloaded', async () => {
+    const persisted = vi.fn();
+    override = (call) => (/\/events\?/.test(call.url) ? json({ detail: 'turn not found' }, 404) : undefined);
+    putChatActivity({
+      scope: 'conv:conv-g', kind: 'workspace', conversationId: 'conv-g', caseId: null, turnId: 'turn-g', requestKey: null,
+      title: '', label: null, lookups: 0, status: 'running', startedAt: Date.now(), source: 'server',
+    });
+    const { result } = await mountEngine({ conversation: thread('conv-g'), onConversationPersisted: persisted });
+    await settle();
+    expect(result.current.items).toEqual([]);
+    expect(result.current.busy).toBe(false);
+    expect(persisted).toHaveBeenCalledWith('conv-g', '', { rehydrate: true });
+    expect(activityOf('conv:conv-g')).toBeNull();
+  });
+
+  it('a new thread’s turn becomes `conv:<id>` at turn.start, so leaving the draft and opening the thread finds it', async () => {
+    const { result, rerender } = await mountEngine({ conversation: null, resetKey: 0 });
+    act(() => {
+      result.current.send('First question');
+    });
+    await settle();
+    await push(streams[0], start('turn-n', { conversation_id: 'conv-new' }));
+    expect(activityOf('conv:conv-new')).toMatchObject({ status: 'running', title: 'First question' });
+    // New chat: the draft view lets go; the answer keeps streaming.
+    rerender({ conversation: null, resetKey: 1 });
+    await settle();
+    expect(result.current.items).toEqual([]);
+    expect(result.current.busy).toBe(false);
+    // The rail opens the thread (empty: it is not saved yet).
+    rerender({ conversation: thread('conv-new'), resetKey: 1 });
+    await settle();
+    expect(result.current.items.map((item) => item.kind)).toEqual(['user', 'assistant']);
+    expect(result.current.busy).toBe(true);
+    await push(streams[0], done({ answer: 'First answer', message_id: 'm-n', conversation_id: 'conv-new' }));
+    expect(assistant(result.current).response?.answer).toBe('First answer');
+  });
+
+  it('a new thread whose turn.start and turn.done arrive in one chunk, on screen, simply ends (no toast, no unread mark)', async () => {
+    const settledEvents: ChatActivitySettled[] = [];
+    const off = onChatActivity('settled', (event) => settledEvents.push(event));
+    const persisted = vi.fn();
+    const { result } = await mountEngine({ conversation: null, onConversationPersisted: persisted });
+    act(() => {
+      result.current.send('How many cases are open?');
+    });
+    await settle();
+    // One read delivers both lines: the view has not re-registered `conv:conv-fast` yet.
+    await act(async () => {
+      streams[0].push(start('turn-fast', { conversation_id: 'conv-fast' }));
+      streams[0].push(done({ answer: '12 open cases.', message_id: 'm-fast', conversation_id: 'conv-fast', conversation_title: 'How many cases are open?' }));
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    });
+    expect(settledEvents).toMatchObject([{ outcome: 'done', viewed: true }]);
+    expect(activityOf('conv:conv-fast')).toBeNull();
+    expect(getChatActivity().entries).toEqual([]);
+    expect(assistant(result.current).response?.answer).toBe('12 open cases.');
+    expect(persisted).toHaveBeenCalledWith('conv-fast', 'How many cases are open?');
+    off();
+  });
+
+  it('a development double mount follows one stream', async () => {
+    const hook = renderHook((props: UseChatEngineOptions) => useChatEngine(props), {
+      initialProps: { conversation: thread('conv-s') },
+      wrapper: React.StrictMode,
+    });
+    await settle();
+    act(() => {
+      hook.result.current.send('Strict');
+    });
+    await settle();
+    expect(streamCalls()).toHaveLength(1);
+    await push(streams[0], start('turn-s', { conversation_id: 'conv-s' }), done({ answer: 'Once', message_id: 'm-s', conversation_id: 'conv-s' }));
+    expect(hook.result.current.items.filter((item) => item.kind === 'assistant')).toHaveLength(1);
+    expect(assistant(hook.result.current).response?.answer).toBe('Once');
   });
 });
 

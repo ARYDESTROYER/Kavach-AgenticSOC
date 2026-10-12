@@ -105,8 +105,9 @@ describe('CaseDetail footer — single CTA + unified Close-with-disposition', ()
     const closes = screen.getAllByRole('button', { name: /^close case/i });
     expect(closes).toHaveLength(1);
 
-    // An overflow "More" menu holds the rest instead of separate footer buttons.
-    expect(screen.getByRole('button', { name: /More actions/i })).toBeInTheDocument();
+    // Round 12: the header's "Take action" menu holds every other action (with shortcut
+    // hints) instead of separate footer buttons.
+    expect(screen.getByRole('button', { name: /^Take action/i })).toBeInTheDocument();
 
     // The confusing standalone "Confirm false positive" / "Set disposition" footer
     // buttons are gone (they live inside the merged close dialog now).
@@ -136,10 +137,8 @@ describe('CaseDetail footer — single CTA + unified Close-with-disposition', ()
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     expect(submit).toBeDisabled();
 
-    // Pick a disposition via its select (rendered first in the dialog), then submit.
-    const combos = within(dialog).getAllByRole('combobox');
-    fireEvent.click(combos[0]);
-    fireEvent.click(await screen.findByRole('option', { name: /False positive/i }));
+    // Pick a disposition (Round 12: a radio-card picker with definitions), then submit.
+    fireEvent.click(within(dialog).getByRole('radio', { name: /False positive/i }));
     await waitFor(() => expect(submit).not.toBeDisabled());
     fireEvent.click(submit);
 

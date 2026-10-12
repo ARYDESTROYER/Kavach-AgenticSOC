@@ -24,12 +24,15 @@ export const BASELINE_PATH = path.join(WEBUI_ROOT, 'scripts', 'grep-baseline.jso
 /**
  * The two guarded patterns. `text-\[<number>` matches an arbitrary numeric font size
  * (`text-[13px]`, `text-[0.8rem]`) but NOT calc/var arbitrary values or non-size
- * arbitraries. The hex pattern matches a 6-digit `#rrggbb` (word-bounded so it does not
- * fire mid-token). Both are matched per-line-occurrence (global).
+ * arbitraries. The hex pattern matches a 6-digit `#rrggbb` word-bounded on BOTH sides so
+ * it does not fire mid-token: a colour literal starts a token (`'#aabbcc'`,
+ * `bg-[#aabbcc]`, `fill="#aabbcc"`), while an identifier that merely contains `#` and six
+ * hex digits (the case reference `INC#000042`) is not a colour. Both are matched
+ * per-line-occurrence (global).
  */
 export const PATTERNS = {
   'arbitrary-text-size': /text-\[[0-9]/g,
-  'raw-hex-color': /#[0-9a-fA-F]{6}\b/g,
+  'raw-hex-color': /(?<![A-Za-z0-9_])#[0-9a-fA-F]{6}\b/g,
 };
 
 /** Recursively collect `.tsx` files under `dir`, returned as repo-relative posix paths. */

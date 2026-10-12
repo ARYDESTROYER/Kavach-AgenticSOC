@@ -8,8 +8,9 @@
  * it beside the trigger rather than inside it.
  *
  * A bare count answers "how many" but never "out of what". `secondary` supplies the
- * denominator beside the numeral ("13% of 154", "1 of 2 verdicted", or an em dash when
- * the honest denominator is missing).
+ * denominator on its own line UNDER the numeral ("13% of 154", "1 of 2 verdicted", or an
+ * em dash when the honest denominator is missing). Round 12 moved it there from the
+ * numeral's row, where flex shrank both and a chat tile read "≥…" / "in the returned p…".
  *
  * It is deliberately NOT the `delta` slot. A delta carries `role="img"` plus a
  * judgement colour (improved/worse); scale context is neither a comparison nor a
@@ -22,7 +23,7 @@ import { render, screen, within } from '@testing-library/react';
 import { KpiTile } from '../KpiTile';
 
 describe('KpiTile — secondary scale context', () => {
-  it('renders the context beside the value with NO role, name, or judgement colour', () => {
+  it('renders the context on its own line under the value with NO role, name, or judgement colour', () => {
     render(
       <KpiTile
         label="Open Cases"
@@ -40,9 +41,15 @@ describe('KpiTile — secondary scale context', () => {
     expect(within(tile).queryByRole('img')).toBeNull();
     expect(context).toHaveClass('text-muted-foreground', 'tabular-nums');
     expect(context.className).not.toMatch(/text-(success|critical)-text/);
-    // It sits in the VALUE row (baseline-aligned with the numeral), not in the sub.
-    expect(context.parentElement).toHaveClass('flex', 'items-end');
-    expect(within(context.parentElement as HTMLElement).getByText('20')).toBeInTheDocument();
+    // Round 12: it is a BLOCK line of its own, NOT a member of the numeral's flex row
+    // (that row is what shrank the numeral to "≥…"). It follows the row directly and is
+    // not the state caption (`sub`).
+    expect(context).toHaveClass('block');
+    const valueRow = tile.querySelector('.items-end') as HTMLElement;
+    expect(within(valueRow).getByText('20')).toBeInTheDocument();
+    expect(valueRow.contains(context)).toBe(false);
+    expect(valueRow.nextElementSibling).toBe(context);
+    expect(context.textContent).not.toContain('Every active lifecycle state');
   });
 
   it('renders an em dash verbatim when the caller has no honest denominator', () => {
@@ -80,12 +87,12 @@ describe('KpiTile — secondary scale context', () => {
     expect(within(tile).getByRole('img')).toHaveAccessibleName(/changed up by \+12%, improved/i);
   });
 
-  it('shrinks with an ellipsis instead of clipping mid-word in a narrow tile', () => {
-    // Regression: the strip's 5-column breakpoint leaves ~163px inside a tile, and the
-    // secondary used to be a bare `whitespace-nowrap` span in a flex row with no
-    // `min-w-0`. Inside the tile's `overflow-hidden` that hard-clipped a long context
-    // ("12,345 of 48,901 verdicted") mid-word with no ellipsis. It must now be
-    // shrinkable + truncating, and carry its full text in `title`.
+  it('wraps a long context onto another line instead of cutting it in a narrow tile', () => {
+    // History: the strip's 5-column breakpoint leaves ~163px inside a tile. The context
+    // was first a `whitespace-nowrap` span that the tile's `overflow-hidden` hard-clipped
+    // mid-word, then a `truncate` span that ellipsized it ("in the returned p…" in chat).
+    // Round 12: on its own line it simply WRAPS — every character stays visible, so no
+    // `title` fallback is needed and nothing depends on a mouse hover.
     render(
       <KpiTile
         label="False Positive Rate"
@@ -96,12 +103,9 @@ describe('KpiTile — secondary scale context', () => {
     );
     const tile = screen.getByTestId('kpi-false-positive-rate');
     const context = within(tile).getByText('12,345 of 48,901 verdicted');
-    // `truncate` = overflow-hidden + text-ellipsis + whitespace-nowrap.
-    expect(context).toHaveClass('min-w-0', 'truncate');
-    expect(context.className).not.toMatch(/(^|\s)whitespace-nowrap(\s|$)/);
-    expect(context).toHaveAttribute('title', '12,345 of 48,901 verdicted');
-    // A flex child only shrinks when the ROW can shrink below its content width.
-    expect(context.parentElement).toHaveClass('min-w-0');
+    expect(context).toHaveClass('min-w-0', 'break-words');
+    expect(context.className).not.toMatch(/(^|\s)(truncate|whitespace-nowrap|line-clamp-\d)(\s|$)/);
+    expect(context.textContent).toBe('12,345 of 48,901 verdicted');
   });
 
   it('keeps the pinned testid when a label is reworded but testId is passed', () => {

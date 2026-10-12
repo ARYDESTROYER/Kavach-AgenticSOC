@@ -1,6 +1,6 @@
 ---
 title: KPI glossary
-description: Exact definitions of the Overview and Analytics KPIs, including the Active Risk Index, risk score, false positive rate, MTTD, MTTA, MTTR, dwell, noise reduction stages, auto-closed cases, and AI spend.
+description: Exact definitions of the Overview and Analytics KPIs, including the Active Risk Index, risk score, AI-verdict false positive rate, MTTD, MTTA, MTTR, dwell, SLA attainment, noise reduction stages, auto-closed cases, and AI spend.
 ---
 
 # KPI glossary
@@ -27,6 +27,21 @@ ledger; none of them feeds the deterministic close or escalate decision.
   window; the real value is at least that large.
 - **Withheld.** A rate is withheld rather than shown when the window was not fully
   covered, because a partial ratio would look like a fact.
+- **Exact at any size.** A few figures are exact store-wide counts however many cases
+  the store holds, and they match what Workspace Chat reports for the same question:
+  the **Open Cases** stock, and the case counts on **Analytics → Metrics** (**Total
+  cases (all time)**, Needs human, Closed, open cases, and the counts by status,
+  verdict, and disposition).
+- **Exact up to 20,000 cases in the window.** Every other dashboard figure is computed
+  from the cases in its window, up to 20,000 of them. That covers every Overview figure
+  for the selected window (Total Cases, Total Critical, Resolved / Closed, Auto Closed,
+  the AI-verdict FP rate, and the rollups below them) and the heavier rollups behind
+  the dashboards (timing, verdict mix, ATT&CK coverage, auto-close health, agent
+  improvement, and similar). When a window holds more than 20,000 cases, typically
+  **All time** on a large store, only its newest 20,000 are analysed: a count then shows
+  as a lower bound (`≥`) and a rate is withheld, instead of a partial figure being shown
+  as complete. Chat's case counts have no such limit, so for a window that large the
+  chat figure is the exact one.
 
 ## Risk
 
@@ -73,12 +88,17 @@ Every case that **arrived** in the selected window, including cases an operator 
 under a "declared benign" rule policy. This is the denominator the other window tiles
 are shares of.
 
+On **Analytics → Metrics**, **Total cases (all time)** is a different figure: every
+case in the store, whatever the selected window, counted exactly at any store size. Its
+caption says "Every case in the store", or names the breakdown that could only be
+counted in part.
+
 ### Total Critical
 
 Cases in the top severity band of the window's arrivals, counted on the server from the
-severity roll-up over the whole window rather than from the rows the page loaded. The
-band is the top band the severity ladder declares, which is not always called
-"Critical".
+severity roll-up over the window rather than from the rows the page loaded (up to
+20,000 cases; see [How to read a KPI](#how-to-read-a-kpi)). The band is the top band the
+severity ladder declares, which is not always called "Critical".
 
 ### Open Cases
 
@@ -87,18 +107,25 @@ The cases that are open **right now**, whenever they arrived: `new`, `open`,
 so it is deliberately not filtered by the selected window and has no window
 denominator. Its drill-down therefore opens on an all-time list.
 
-### False Positive Rate
+### AI-verdict FP rate {#false-positive-rate}
 
-The share of **verdicted** cases in the window that the agent verdicted as false
-positive:
+The **AI-verdict FP rate** (called False Positive Rate before this release) is the share
+of **verdicted** cases in the window that the agent verdicted as false positive:
 
-`false positive rate = false-positive verdicts ÷ verdicted cases`
+`AI-verdict FP rate = false-positive verdicts ÷ verdicted cases`
 
-The denominator is verdicted cases, not every case in the window, so a window with few
-verdicts moves the number a long way on little evidence. Cases closed under an operator
-"declared benign" policy are excluded from both the numerator and the denominator,
-because no agent verdict exists for them. The tile's help states the sample behind the
-rate, for example "43 of 59 verdicted".
+It measures what the AI decided, not what an analyst later confirmed. The denominator
+is verdicted cases, not every case in the window, so a window with few verdicts moves
+the number a long way on little evidence. Cases closed under an operator "declared
+benign" policy are excluded from both the numerator and the denominator, because no
+agent verdict exists for them. The tile's help states the sample behind the rate, for
+example "43 of 59 verdicted".
+
+Its drill-down shows, beside the AI verdicts, how many of the same cases an analyst
+**confirmed as false positive**: graded feedback or an explicit classification by a
+person. A model verdict, a disposition derived from it, or a close without a recorded
+classification never counts as confirmed. The two figures are different judgements of
+the same cases, so they need not match.
 
 ### Resolved / Closed
 
@@ -137,7 +164,8 @@ not available when no case carries a first-event time.
 
 ### Respond
 
-The Overview **Respond** figure is the first **human** response: the first time an
+The Overview **Respond** figure, in the **Response time** card beside MTTD, is the
+first **human** response: the first time an
 analyst acknowledged the case, assigned it, or moved it to investigating, escalated, or
 on hold. An automatic close is never counted as a human response. It is the same clock
 as MTTA, not time to resolve.
@@ -159,6 +187,15 @@ The median (p50) time from case creation to the first active response (investiga
 escalated, on hold, resolved, or closed). Dwell is time to first response, not time to
 detect.
 
+### SLA attainment
+
+The share of SLA-scored cases in the window that met their response and resolution
+targets (set under **Settings → General → SLA, priority & suppression**). A case is
+scored when its priority, as shown on the case, has a configured target and it has a
+readable creation time. When no case in the window could be scored, attainment shows an
+em dash with the reason, for example "3 cases have no priority with an SLA target, so
+attainment was not measured", never 0%: 0% would claim that every scored case breached.
+
 ## Noise reduction funnel
 
 The **Noise Reduction** funnel shows how raw alert volume becomes a small number of
@@ -176,6 +213,11 @@ its share of the stage it came from.
 | Closed by human | Cases an analyst drove to a terminal state; a subset of Escalated, not a third split |
 | Closed by analyst policy | Cases closed by an operator "declared benign" declaration, with no model call; excluded from agent performance |
 
+Alerts ingested and After clustering come from durable hourly counters kept for 90 days.
+A window, or a trend bucket, that ends before the counters began or lies beyond their
+retention shows those two stages as not measured (never 0), and no overall reduction is
+given. A window the counters cover only in part says from when they count.
+
 Auto-cleared, analyst-policy closes, and Escalated partition the opened cases. The
 funnel does not mean every raw event received a model call: deterministic processing
 handles the broad event stream before a smaller set is admitted to investigation. See
@@ -187,8 +229,11 @@ AI spend comes from the usage ledger, which records every model call with its to
 and an estimated price. The **Cost** page breaks it down by model, role, surface, case,
 and time. By default a daily budget of **$10** applies, with a warning at 80% and
 `on_exceed: block`: past the limit, new investigations route to a human instead of
-calling a model. Workspace Chat shares this budget. Prices are estimates from the model
-catalog or an operator override; they do not replace the provider invoice. See
+calling a model. Workspace and Case Manager chat are outside this budget, daily and
+monthly: their spend is recorded in the ledger and shown on the Cost page, but it does
+not count against the budget and chat is never paused by it. An administrator can set a
+separate daily chat spending limit instead; it is chat's only spending limit. Prices are estimates from the model catalog or an operator
+override; they do not replace the provider invoice. See
 [Models and spend](../administration/models-spend.md).
 
 ## Related pages

@@ -9,7 +9,12 @@ export default {
     container: { center: true, padding: '1.5rem', screens: { '2xl': '1440px' } },
     extend: {
       colors: {
-        border: 'hsl(var(--border))',
+        /** The hairline. `max(<alpha-value>, --border-alpha-floor)`: identical to
+            `hsl(var(--border) / α)` everywhere (the floor defaults to 0), but under
+            `prefers-contrast: more` theme.css sets the floor to 1, so the alpha
+            variants that carry most borders (`border-border/70`, `divide-border/60`,
+            `[&>*]:border-border/70`) become full ≥3:1 structural lines too. */
+        border: 'hsl(var(--border) / max(<alpha-value>, var(--border-alpha-floor, 0)))',
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
         background: 'hsl(var(--background))',
@@ -101,21 +106,48 @@ export default {
       },
       /** The type scale (W0-A §2.3). Redefining what `xs`/`sm`/`base` resolve to
           upgrades the whole app with zero JSX churn (806/855 usages are xs/sm).
-          Line-heights are fixed rem on 4px multiples (snap to the 8px grid). */
+          Line-heights are fixed rem on 4px multiples (snap to the 8px grid).
+
+          Tracking is SIZE-SPECIFIC (Round 12, ui-standard "Typography"): each step
+          carries the value of Inter's published dynamic-metrics curve,
+          tracking(em) = −0.0223 + 0.185·e^(−0.1745·px), rounded to 1/1000 em —
+          slightly positive at 11px, zero at 12px, near zero for body, tighter as
+          text grows. Do not add `tracking-tight`/`tracking-wide` on top of a size
+          step; the step already carries the right value. Leading stays inverse
+          (looser body, tighter display). */
       fontSize: {
-        '2xs': ['0.6875rem', { lineHeight: '0.875rem', letterSpacing: '0.02em' }], // 11/14 — badges/timestamps only
-        xs: ['0.75rem', { lineHeight: '1rem', letterSpacing: '0.01em' }], // 12/16 — labels, table meta, chips
-        sm: ['0.8125rem', { lineHeight: '1.125rem' }], // 13/18 — dense table cells
-        base: ['0.875rem', { lineHeight: '1.25rem' }], // 14/20 — PRIMARY body/UI default
-        md: ['0.9375rem', { lineHeight: '1.375rem' }], // 15/22 — comfortable reading panels
-        lg: ['1rem', { lineHeight: '1.5rem' }], // 16/24 — long-form / card titles
-        xl: ['1.125rem', { lineHeight: '1.5rem', fontWeight: '600' }], // 18/24 — H3
-        '2xl': ['1.25rem', { lineHeight: '1.625rem', letterSpacing: '-0.01em', fontWeight: '600' }], // 20/26 — H2 page heading
-        '3xl': ['1.5rem', { lineHeight: '1.875rem', letterSpacing: '-0.015em', fontWeight: '650' }], // 24/30 — H1
-        '4xl': ['1.875rem', { lineHeight: '2.25rem', letterSpacing: '-0.02em', fontWeight: '650' }], // 30/36 — hero/display
-        display: ['2rem', { lineHeight: '2.5rem', letterSpacing: '-0.02em' }], // 32/40 — sparse identity/display headings
+        '2xs': ['0.6875rem', { lineHeight: '0.875rem', letterSpacing: '0.005em' }], // 11/14 — badges, axis ticks, timestamps ONLY
+        xs: ['0.75rem', { lineHeight: '1rem', letterSpacing: '0em' }], // 12/16 — labels, table meta, chips
+        sm: ['0.8125rem', { lineHeight: '1.125rem', letterSpacing: '-0.003em' }], // 13/18 — dense table cells
+        base: ['0.875rem', { lineHeight: '1.25rem', letterSpacing: '-0.006em' }], // 14/20 — PRIMARY body/UI default
+        md: ['0.9375rem', { lineHeight: '1.375rem', letterSpacing: '-0.009em' }], // 15/22 — comfortable reading panels
+        lg: ['1rem', { lineHeight: '1.5rem', letterSpacing: '-0.011em' }], // 16/24 — long-form / card titles
+        xl: ['1.125rem', { lineHeight: '1.5rem', letterSpacing: '-0.014em', fontWeight: '600' }], // 18/24 — H3
+        '2xl': ['1.25rem', { lineHeight: '1.625rem', letterSpacing: '-0.017em', fontWeight: '600' }], // 20/26 — H2 page heading
+        '3xl': ['1.5rem', { lineHeight: '1.875rem', letterSpacing: '-0.02em', fontWeight: '650' }], // 24/30 — H1
+        '4xl': ['1.875rem', { lineHeight: '2.25rem', letterSpacing: '-0.021em', fontWeight: '650' }], // 30/36 — hero/display
+        display: ['2rem', { lineHeight: '2.5rem', letterSpacing: '-0.022em' }], // 32/40 — sparse identity/display headings
       },
+      /** Ultrawide steps (Round 12, SYNTHESIS-ux §2.2). Appended AFTER the default
+          sm…2xl, so every existing breakpoint keeps its meaning and cascade order:
+          `3xl` is a 1920px desktop, `4xl` the ≥2200px macro-layout step. */
+      screens: {
+        '3xl': '1920px',
+        '4xl': '2200px',
+      },
+      /** CONCENTRIC radii (Round 12, ui-standard "Radii"), all anchored to the one
+          brandable `--radius` (10px by default): inner = outer − inset.
+            sm  6px — badges, chips, menu/list items, segments, tab triggers
+            md  8px — buttons, inputs, selects, segmented rails, cards
+            lg 10px — menus, popovers, hover cards, tooltips, toasts
+            xl 14px — dialogs, sheets (leading edge), the command palette
+          A 10px menu with a `p-1` (4px) inset holds 6px items. Bands, list rows,
+          tables, the KPI strip and split panes stay square (divider-led).
+          The xl step adds at most the anchor itself (`min(--radius, 4px)`), so the
+          brandable "Square" preset (`--radius: 0rem`) squares dialogs and sheets too,
+          exactly like the three steps below it, which clamp to 0. */
       borderRadius: {
+        xl: 'calc(var(--radius) + min(var(--radius), 4px))',
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
         sm: 'calc(var(--radius) - 4px)',
@@ -180,10 +212,21 @@ export default {
         fast: 'var(--motion-fast)',
         base: 'var(--motion-base)',
         slow: 'var(--motion-slow)',
+        /* Round 12 — the CSS halves of the spring vocabulary (variants.ts SPRING_UI /
+           SPRING_PANE). tailwindcss-animate maps these onto `animation-duration` too,
+           so `data-[state=open]:duration-ui` times a Radix enter. `press` is the 100ms
+           pointer-down feedback (Apple: feedback on the press, instantly). */
+        ui: 'var(--motion-ui, 300ms)',
+        pane: 'var(--motion-pane, 350ms)',
+        press: 'var(--motion-press, 100ms)',
       },
       transitionTimingFunction: {
         standard: 'var(--motion-ease-standard, cubic-bezier(0.2, 0, 0, 1))',
         premium: 'var(--motion-ease-premium, cubic-bezier(0.16, 1, 0.3, 1))',
+        /* A critically damped spring (bounce 0) sampled into CSS `linear()` where the
+           engine supports it (theme.css), else the calm standard curve. No overshoot:
+           bounce belongs only to a momentum release, which CSS never drives. */
+        spring: 'var(--motion-ease-spring, cubic-bezier(0.2, 0, 0, 1))',
       },
       keyframes: {
         'accordion-down': { from: { height: '0' }, to: { height: 'var(--radix-accordion-content-height)' } },
@@ -233,9 +276,15 @@ export default {
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
-        'fade-in': 'fade-in 0.24s cubic-bezier(0.16,1,0.3,1) both',
-        'rise-in': 'rise-in 0.24s cubic-bezier(0.16,1,0.3,1) both',
-        'scale-in': 'scale-in 0.2s cubic-bezier(0.16,1,0.3,1) both',
+        /* Entrance fills `backwards`, never `both` (Round 12 polish): the from-state holds
+           through a stagger delay, and once the entrance ends the element is back on its own
+           style, which equals the end keyframe. A `both`-filled finished opacity animation
+           stays in effect forever, and Chromium then treats the element as a backdrop root:
+           on the route wrapper it cut the sticky Overview band's blur off from the page,
+           so card text and chart bars read through the band (material-gate.test.ts). */
+        'fade-in': 'fade-in 0.24s cubic-bezier(0.16,1,0.3,1) backwards',
+        'rise-in': 'rise-in 0.24s cubic-bezier(0.16,1,0.3,1) backwards',
+        'scale-in': 'scale-in 0.2s cubic-bezier(0.16,1,0.3,1) backwards',
         'ribbon-grow': 'ribbon-grow 0.5s cubic-bezier(0.16,1,0.3,1) both',
         'bar-indeterminate': 'bar-indeterminate 1.1s ease-in-out infinite',
         'settings-highlight': 'settings-highlight 1.6s cubic-bezier(0.16,1,0.3,1) both',

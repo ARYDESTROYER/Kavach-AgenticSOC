@@ -8,8 +8,8 @@
  *  - HelpTip: the (?) trigger has a ≥24px hit target (WCAG 2.5.8).
  *  - LabeledSlider: the role="slider" thumb is named via `aria-labelledby` even
  *    when the label is a ReactNode.
- *  - TagInput: symmetric chip radius, ONE control-wide focus ring, and no spurious
- *    chip on blur-to-remove.
+ *  - TagInput: symmetric chip radius, ONE control-wide focus ring, and no chip from
+ *    pending text on any blur.
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -111,13 +111,17 @@ describe('TagInput — chip glitches + blur logic', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('DOES commit pending text when focus leaves the widget entirely', () => {
+  it('does NOT commit pending text when focus leaves the widget entirely (Round 12 polish)', () => {
+    // Leaving the field used to add the half-typed text as a tag, so a sentence typed
+    // into Tags was saved as one. Pending text now stays pending, with a visible hint.
     const onChange = vi.fn();
     render(<TagInput label="Tags" value={['existing']} onChange={onChange} />);
     const input = screen.getByRole('textbox');
     fireEvent.change(input, { target: { value: 'partial' } });
     fireEvent.blur(input, { relatedTarget: null });
-    expect(onChange).toHaveBeenCalledWith(['existing', 'partial']);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input).toHaveValue('partial');
+    expect(screen.getByTestId('tag-input-pending')).toHaveTextContent('Not added yet. Press Enter to add it.');
   });
 });
 

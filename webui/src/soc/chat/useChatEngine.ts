@@ -12,7 +12,7 @@
  *  - every request carries a client idempotency key; "Retry same request" resends the
  *    exact body with the SAME key and replaces the failed pair, "Ask again" sends the
  *    question with a NEW key (SPEC §6.4);
- *  - a generation counter drops anything that lands after New chat / a thread switch;
+ *  - a view shows only the run it is attached to: New chat / a thread switch detach it;
  *  - the per-thread draft is controlled by the host when it passes one.
  *
  * Revamp behaviour:
@@ -24,10 +24,14 @@
  *  - `turn.done` is the truth: the streamed state is replaced by its response;
  *  - Stop is server-authoritative (`POST /chat/turns/{id}/cancel`, then keep reading
  *    until `turn.done {notice: cancelled}`); a second Stop abandons the stream locally;
- *  - a stream that ends without `turn.done` / `turn.error` is "Connection lost —
- *    checking whether the answer was saved": a persisted turn is replayed ONCE with the
- *    same key (a 409 `chat_request_in_progress` is waited out for as long as the turn's
- *    own limits allow, see {@link recoveryWindowMs});
+ *  - the turn itself lives in the module-level runner (`turn-runner.ts`): leaving the
+ *    page or switching threads DETACHES this view and the answer keeps streaming;
+ *    returning re-attaches it (live steps, Stop) and a run that settled meanwhile is
+ *    applied once (Round 12, SPEC D13). `busy` is per conversation: other threads stay
+ *    open while one answer is being written;
+ *  - a stream that ends without `turn.done` / `turn.error` re-attaches to the same turn
+ *    (`GET /chat/turns/{id}/events`), else a persisted turn is replayed ONCE with the
+ *    same key; turns have no time limit, so recovery has no deadline (see the runner);
  *  - a persisted turn's conversation id is learnt from `turn.start`, so a draft whose
  *    first turn is force-stopped or loses its connection still joins its saved thread;
  *    a locally synthesised "Stopped" answer is shown but never enters model history;
@@ -41,41 +45,53 @@
  */
 import * as React from 'react';
 
-import { api, ApiError } from '@/lib/api';
+import { api } from '@/lib/api';
 import type {
   ChatContextBounds,
   ChatConversation,
+  ChatConversationMessage,
   ChatOrigin,
   ChatRequest,
-  ChatResponse,
   ChatScope,
-  ChatStep,
-  ChatStepStatus,
   ChatStreamMode,
   ChatTimeRange,
   ChatTurn,
-  TurnNotice,
-  TurnUsage,
 } from '@/lib/types';
-import {
-  DEFAULT_CHAT_BOUNDS,
-  apiErrorCode,
-  apiRetryAfterSeconds,
-  cancelChatTurn,
-  isStreamUnsupportedError,
-  postChat,
-  streamChat,
-} from './chat-api';
-import type { ChatStreamOutcome } from './ndjson';
-import {
-  CHAT_SCOPES,
-  CHAT_STREAM_MODES,
-  displayText,
-  type ChatStreamEvent,
-  type StepStartInfo,
-  type TurnErrorEvent,
-} from './stream-events';
+import { getChatActivity, setAnimatedBrand, showChatTurns, useChatActivity, viewChatActivity } from '../chat-activity/activity';
+import { CHAT_SCOPES, CHAT_STREAM_MODES, displayText } from './stream-events';
 import { REQUEST_TOPIC_RE } from './topic';
+import {
+  attachRun,
+  consumeRun,
+  findRun,
+  isUnsavedTurn,
+  reattachRun,
+  readCaseSession,
+  runAssistantItem,
+  runExchange,
+  settledUserItem,
+  startRun,
+  stopRun,
+  subscribeRun,
+  writeCaseSession,
+  type ChatAssistantItem,
+  type ChatTranscriptItem,
+  type ChatUserItem,
+  type HistoryEntry,
+  type TurnRun,
+} from './turn-runner';
+
+export { isUnsavedTurn, recoveryDelayMs } from './turn-runner';
+export type {
+  ChatAssistantItem,
+  ChatFailureKind,
+  ChatLiveStep,
+  ChatLiveStepProgress,
+  ChatLiveTurn,
+  ChatTranscriptItem,
+  ChatTurnFailure,
+  ChatUserItem,
+} from './turn-runner';
 
 /* -------------------------------------------------------------------------- */
 /* Constants.                                                                  */
@@ -87,141 +103,14 @@ export const CHAT_HISTORY_EXCHANGES = 12;
 export const CONTINUE_PROMPT = 'Continue where the previous answer stopped.';
 /** localStorage mirror of the viewer's live mode (first paint only). */
 export const STREAM_MODE_STORAGE_KEY = 'soc.chat.streamMode';
-/** Notice kinds that mean "the first model call never ran" (D1, SPEC §4.5). */
-const UNSAVED_NOTICE_KINDS = new Set(['budget', 'breaker', 'provider']);
-/** Re-check cadence while a lost turn still runs server-side (409 in progress). */
-const RECOVERY_BACKOFF_MS = [1500, 3000, 5000, 8000];
-/** Bounds on one re-check delay, whatever the server hints. */
-const RECOVERY_MIN_DELAY_MS = 250;
-const RECOVERY_MAX_DELAY_MS = 15_000;
-/** Slack past the turn's own limits before recovery gives up (the save, clock skew). */
-const RECOVERY_SLACK_MS = 5_000;
-
-/** The turn limits recovery waits out (`/chat/context.bounds`). */
-export type ChatTurnBounds = Pick<ChatContextBounds, 'turn_timeout_s' | 'model_step_timeout_s'>;
-
-const positiveSeconds = (value: unknown, fallback: number): number =>
-  typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 
 /**
- * How long after a turn started its saved answer may still appear: the turn timeout
- * plus one model call already in flight when it fired (SPEC §4.2), plus slack. A lost
- * stream is checked for its saved answer until then, never for a fixed retry count.
+ * The `/chat/context.bounds` the engine still reads: `animated_brand` (the brand ring,
+ * SPEC D13). The turn limits no longer bound recovery (turns have no time limit).
  */
-export function recoveryWindowMs(bounds?: Partial<ChatTurnBounds> | null): number {
-  const turn = positiveSeconds(bounds?.turn_timeout_s, DEFAULT_CHAT_BOUNDS.turn_timeout_s);
-  const step = positiveSeconds(bounds?.model_step_timeout_s, DEFAULT_CHAT_BOUNDS.model_step_timeout_s);
-  return (turn + step) * 1000 + RECOVERY_SLACK_MS;
-}
-
-/**
- * The delay before re-check `attempt` (0-based): the server's hint when it sent one,
- * else a backoff that settles at its last step; always within 0.25–15 s.
- */
-export function recoveryDelayMs(attempt: number, retryAfterSeconds: number | null): number {
-  const ms =
-    retryAfterSeconds !== null && Number.isFinite(retryAfterSeconds)
-      ? retryAfterSeconds * 1000
-      : RECOVERY_BACKOFF_MS[Math.min(Math.max(0, attempt), RECOVERY_BACKOFF_MS.length - 1)];
-  return Math.min(RECOVERY_MAX_DELAY_MS, Math.max(RECOVERY_MIN_DELAY_MS, ms));
-}
-
-/* -------------------------------------------------------------------------- */
-/* Transcript model.                                                           */
-/* -------------------------------------------------------------------------- */
-
-export interface ChatUserItem {
-  kind: 'user';
-  /** Stable React key (the persisted message id when restored). */
-  key: string;
-  /** Persisted message id, when known (restored turns). */
-  messageId: string | null;
-  /** The prompt as DISPLAY text (invisible, bidi and control characters stripped). */
-  content: string;
-  /**
-   * The exact prompt as sent / stored. Ask again and ↑-edit reuse it, so a lookalike
-   * character the server shows the model as a visible escape (SPEC §7.6) survives.
-   * Never render it directly; render `content`.
-   */
-  prompt: string;
-  origin: ChatOrigin;
-  /** ms epoch. */
-  at: number;
-  /** Idempotency key linking this prompt to its answer / error. */
-  requestKey: string | null;
-  /** The prompt did not produce a saved exchange: shown, but excluded from history. */
-  failed: boolean;
-}
-
-/** One run-log row while the turn is running. */
-export interface ChatLiveStep extends StepStartInfo {
-  status: 'running' | ChatStepStatus;
-  /** The final step from `step.end` (the truth once present). */
-  result: ChatStep | null;
-  /** ms epoch when the step started (client clock; display only). */
-  startedAt: number;
-}
-
-/** The running turn's live state (cleared when `turn.done` lands). */
-export interface ChatLiveTurn {
-  transport: 'stream' | 'blocking';
-  turnId: string | null;
-  model: string | null;
-  streamMode: ChatStreamMode;
-  /** A completed-key replay: `turn.done` follows without a model call. */
-  replayed: boolean;
-  /** `turn.start.estimate.prompt_tokens`. */
-  estimatePromptTokens: number;
-  steps: ChatLiveStep[];
-  /** Running totals from the latest `usage` event. */
-  usage: TurnUsage | null;
-  /** Streamed answer text so far (Live text mode). */
-  text: string;
-  /** Stop was requested; the server is finishing the in-flight call. */
-  stopping: boolean;
-  /** `recovering`: the stream dropped and the engine is checking for the saved answer. */
-  connection: 'open' | 'recovering';
-  startedAt: number;
-}
-
-export type ChatFailureKind = 'http' | 'turn_error' | 'connection_lost' | 'network' | 'unreadable';
-
-/** Why a turn produced no response. */
-export interface ChatTurnFailure {
-  kind: ChatFailureKind;
-  message: string;
-  /** `turn.error.code` or the HTTP `detail.code`. */
-  code: string | null;
-  /** HTTP status (0 = unreachable), when the failure was HTTP. */
-  status: number | null;
-  /** Offer "Retry same request". */
-  retryable: boolean;
-  notice: TurnNotice | null;
-}
-
-export interface ChatAssistantItem {
-  kind: 'assistant';
-  key: string;
-  /** Persisted assistant message id (reports reference it). */
-  messageId: string | null;
-  at: number;
-  requestKey: string | null;
-  status: 'running' | 'done' | 'error';
-  /** The truth once done: the normalised `turn.done` / `/chat` / saved response. */
-  response: ChatResponse | null;
-  /** Live state while running. */
-  live: ChatLiveTurn | null;
-  failure: ChatTurnFailure | null;
-  /** Restored from saved history: render collapsed, no live state. */
-  restored: boolean;
-  /** Effective provenance (never inferred from the current selectors). */
-  model: string | null;
-  source: string | null;
-  /** The exact request body (Retry same request resends it verbatim). */
-  request: ChatRequest | null;
-}
-
-export type ChatTranscriptItem = ChatUserItem | ChatAssistantItem;
+export type ChatTurnBounds = Pick<ChatContextBounds, 'turn_timeout_s' | 'model_step_timeout_s'> & {
+  animated_brand?: boolean;
+};
 
 /* -------------------------------------------------------------------------- */
 /* Pure helpers (exported for tests and hosts).                                */
@@ -231,16 +120,6 @@ export type ChatTranscriptItem = ChatUserItem | ChatAssistantItem;
 export function newIdempotencyKey(): string {
   if (typeof globalThis.crypto?.randomUUID === 'function') return `chat-${globalThis.crypto.randomUUID()}`;
   return `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 14)}`;
-}
-
-/**
- * D1 (SPEC §4.5): the first model call failed, nothing was billed or saved. Such a
- * turn shows its notice but never enters history, and Retry reuses its key.
- */
-export function isUnsavedTurn(response: ChatResponse): boolean {
-  const notice = response.notice;
-  if (!notice || !UNSAVED_NOTICE_KINDS.has(notice.kind)) return false;
-  return !response.message_id && (!response.usage || response.usage.calls === 0);
 }
 
 /** The last {@link CHAT_HISTORY_EXCHANGES} exchanges (oldest dropped first). */
@@ -285,75 +164,6 @@ export function replayHistorySize(history: readonly ChatTurn[]): ChatHistorySize
 
 const EMPTY_HISTORY_SIZE: ChatHistorySize = { exchanges: 0, chars: 0 };
 
-/** One model-history turn and the request it belongs to (a same-key retry replaces it). */
-interface HistoryEntry {
-  turn: ChatTurn;
-  requestKey: string | null;
-}
-
-function failureFromError(error: unknown, fallback: string): ChatTurnFailure {
-  if (error instanceof ApiError) {
-    const status = error.status;
-    const code = apiErrorCode(error);
-    return {
-      kind: status === 0 ? 'network' : 'http',
-      message: error.message || fallback,
-      code,
-      status,
-      // Busy, in-progress, rate-limited, unavailable and unreachable are transient. An
-      // idempotency conflict is not: the same key fails the same way every time, so the
-      // host offers Ask again (a new key) instead of Retry same request.
-      retryable:
-        code !== 'chat_idempotency_conflict' &&
-        (status === 0 || status === 409 || status === 429 || status === 502 || status === 503 || status === 504),
-      notice: null,
-    };
-  }
-  return {
-    kind: 'network',
-    message: error instanceof Error && error.message ? error.message : fallback,
-    code: null,
-    status: null,
-    retryable: true,
-    notice: null,
-  };
-}
-
-function failureFromTurnError(event: TurnErrorEvent): ChatTurnFailure {
-  return {
-    kind: 'turn_error',
-    message: event.message || event.notice?.message || 'The assistant could not answer.',
-    code: event.code,
-    status: null,
-    retryable: event.retryable,
-    notice: event.notice,
-  };
-}
-
-/**
- * What a turn looks like once Stop abandoned its stream locally. It is a local view,
- * not the server's record (which may differ, or not exist yet): no `message_id`, and
- * it never enters model history.
- */
-function stoppedResponse(live: ChatLiveTurn | null): ChatResponse {
-  const usage = live?.usage ?? null;
-  return {
-    answer: live?.text ?? '',
-    cost: usage?.cost ?? 0,
-    blocks: [],
-    steps: (live?.steps ?? []).flatMap((step) => (step.result ? [step.result] : [])),
-    usage,
-    citations: [],
-    console_links: [],
-    follow_ups: [],
-    answer_kind: 'conversation',
-    notice: { kind: 'cancelled', message: 'Stopped before the answer finished.', retryable: false },
-    stream_mode: live?.streamMode ?? null,
-    turn_id: live?.turnId ?? null,
-    message_id: null,
-  };
-}
-
 /**
  * The answer a restored Continue prompt at `userIndex` resumed: Continue is offered on
  * an answer and asks right after it, so it is the nearest saved answer before it.
@@ -379,8 +189,13 @@ const parseTime = (iso: string): number => {
 
 /** Transcript items for a saved conversation (restored turns render collapsed). */
 export function itemsFromConversation(conversation: ChatConversation): ChatTranscriptItem[] {
+  return itemsFromMessages(conversation.messages ?? []);
+}
+
+/** Transcript items for saved messages, oldest first (a conversation or an older page). */
+export function itemsFromMessages(messages: readonly ChatConversationMessage[]): ChatTranscriptItem[] {
   const items: ChatTranscriptItem[] = [];
-  for (const message of conversation.messages ?? []) {
+  for (const message of messages) {
     if (message.role === 'user') {
       items.push({
         kind: 'user',
@@ -420,6 +235,16 @@ export function itemsFromConversation(conversation: ChatConversation): ChatTrans
     });
   }
   return items;
+}
+
+/** A case session keeps settled exchanges only: a running pair belongs to its run. */
+function sessionItems(items: readonly ChatTranscriptItem[]): ChatTranscriptItem[] {
+  const running = new Set(
+    items.flatMap((item) => (item.kind === 'assistant' && item.status === 'running' && item.requestKey ? [item.requestKey] : [])),
+  );
+  return items.filter(
+    (item) => !(item.kind === 'assistant' && item.status === 'running') && !(item.kind === 'user' && item.requestKey && running.has(item.requestKey)),
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -506,6 +331,11 @@ export function useChatStreamMode(orgDefault?: ChatStreamMode | null): ChatStrea
 /* The hook.                                                                   */
 /* -------------------------------------------------------------------------- */
 
+export interface ConversationPersistedOptions {
+  /** Load the saved thread again (a turn re-attached after a reload, or lost). */
+  rehydrate?: boolean;
+}
+
 export interface UseChatEngineOptions {
   /** Case-scoped chat (Case Manager): `case_id` on every turn, never persisted. */
   caseId?: string | null;
@@ -530,11 +360,7 @@ export interface UseChatEngineOptions {
   textStreamingAvailable?: boolean;
   /** `/chat/context.bounds.default_stream_mode` (the org default). */
   orgDefaultStreamMode?: ChatStreamMode | null;
-  /**
-   * `/chat/context.bounds` (or just its turn limits): how long recovery waits for a
-   * lost turn's saved answer (see {@link recoveryWindowMs}). SPEC §4.2 defaults when
-   * omitted.
-   */
+  /** `/chat/context.bounds`: `animated_brand` drives the brand ring (SPEC D13). */
   turnBounds?: Partial<ChatTurnBounds> | null;
   /** `blocking` always uses `/api/chat` (no live steps, no Stop). Default `stream`. */
   transport?: 'stream' | 'blocking';
@@ -542,8 +368,8 @@ export interface UseChatEngineOptions {
    * A persisted turn landed in conversation `id` (first or later turn). `title` is the
    * server's, the prompt for a new thread, or '' when unknown for an existing one.
    */
-  onConversationPersisted?: (id: string, title: string) => void;
-  /** A turn started or settled (the history rail defers refreshes while busy). */
+  onConversationPersisted?: (id: string, title: string, options?: ConversationPersistedOptions) => void;
+  /** This conversation's turn started or settled (the history rail defers refreshes while busy). */
   onBusyChange?: (busy: boolean) => void;
   /** A turn finished (done or error): e.g. refetch `/chat/context`. */
   onTurnSettled?: (item: ChatAssistantItem) => void;
@@ -561,7 +387,6 @@ export interface ChatSendOptions {
    */
   topic?: string | null;
 }
-
 
 /**
  * Whether Retry may resend a SETTLED turn with its same key: a D1 unsaved failure
@@ -584,6 +409,7 @@ export interface ChatEngine {
   items: ChatTranscriptItem[];
   /** The in-flight assistant item, if any. */
   running: ChatAssistantItem | null;
+  /** THIS conversation (or case) has an answer being written. */
   busy: boolean;
   /** Stop is offered (a streaming turn is running). */
   canStop: boolean;
@@ -643,56 +469,21 @@ export interface ChatEngine {
   continueAnswer: (itemKey: string) => boolean;
   /** Start a fresh local transcript (New chat). Never stops a server turn. */
   reset: () => void;
+  /**
+   * Older saved messages of the open Workspace conversation (Round 12 paging, "Show
+   * earlier messages"): restored like the rest and placed above the transcript, oldest
+   * first; messages already shown are skipped. Returns how many messages were added (0
+   * when `conversationId` is not the open conversation). Model history is unchanged: a
+   * saved conversation's replay is the server's stored transcript.
+   */
+  prependRestored: (conversationId: string, messages: readonly ChatConversationMessage[]) => number;
 }
 
-/** Book-keeping for the one in-flight turn. */
-interface RunState {
-  key: string;
-  requestKey: string;
-  generation: number;
-  controller: AbortController;
-  transport: 'stream' | 'blocking';
-  turnId: string | null;
-  stopRequested: boolean;
-  cancelWhenStarted: boolean;
-  forcedStop: boolean;
-  /** The request asked for Workspace persistence. */
-  persisted: boolean;
-  /** The exact prompt (the rail's title fallback). */
-  prompt: string;
-  /** `turn.start.conversation_id`: where the server is saving this turn. */
-  conversationId: string | null;
-  /** ms epoch when the turn was sent (recovery's deadline is measured from here). */
-  startedAt: number;
-}
-
-let itemCounter = 0;
-const nextItemKey = (prefix: string) => {
-  itemCounter += 1;
-  return `${prefix}-${Date.now().toString(36)}-${itemCounter}`;
-};
-
-const sleep = (ms: number, signal: AbortSignal) =>
-  new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        resolve();
-      },
-      { once: true },
-    );
-  });
-
-type FrameHandle = { cancel: () => void };
-function scheduleFrame(callback: () => void): FrameHandle {
-  if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-    const id = window.requestAnimationFrame(callback);
-    return { cancel: () => window.cancelAnimationFrame(id) };
-  }
-  const id = setTimeout(callback, 16);
-  return { cancel: () => clearTimeout(id) };
+/** The view's hold on one run. */
+interface Attachment {
+  run: TurnRun;
+  release: () => void;
+  unsubscribe: () => void;
 }
 
 export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
@@ -716,20 +507,19 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
   const [scopes, setScopesState] = React.useState<ChatScope[]>([]);
   const [timeRange, setTimeRange] = React.useState<ChatTimeRange | null>(null);
   const [historySize, setHistorySize] = React.useState<ChatHistorySize>(EMPTY_HISTORY_SIZE);
+  /** The activity scope on screen (`conv:` / `draft:` / `case:`), registered as viewed. */
+  const [viewScope, setViewScope] = React.useState<string | null>(null);
   const streamPref = useChatStreamMode(orgDefaultStreamMode);
   const effectiveStreamMode: ChatStreamMode =
     streamPref.mode === 'text' && textStreamingAvailable ? 'text' : 'steps';
 
   // Refs mirror state so callbacks stay stable and never act on a stale render.
-  const generationRef = React.useRef(0);
   const historyRef = React.useRef<HistoryEntry[]>([]);
   const itemsRef = React.useRef<ChatTranscriptItem[]>([]);
-  const runRef = React.useRef<RunState | null>(null);
+  const attachedRef = React.useRef<Attachment | null>(null);
   const busyRef = React.useRef(false);
   const conversationIdRef = React.useRef<string | null>(conversation?.id ?? null);
   const streamSupportedRef = React.useRef(transport === 'stream');
-  const liveTextRef = React.useRef('');
-  const frameRef = React.useRef<FrameHandle | null>(null);
   const callbacksRef = React.useRef(options);
   callbacksRef.current = options;
   const settingsRef = React.useRef({ model, sourceId, scopes, timeRange, effectiveStreamMode, persist, caseId, blocked });
@@ -743,35 +533,41 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     streamSupportedRef.current = transport === 'stream';
   }, [transport]);
 
+  // The org's brand-ring switch, as `/chat/context` reports it (SPEC D13).
+  const animatedBrand = options.turnBounds?.animated_brand;
+  React.useEffect(() => {
+    if (typeof animatedBrand === 'boolean') setAnimatedBrand(animatedBrand);
+  }, [animatedBrand]);
+
+  /** A case chat keeps its transcript for the session (memory only; SPEC D13, G5). */
+  const saveCaseSession = React.useCallback(() => {
+    const id = settingsRef.current.caseId;
+    if (id) writeCaseSession(id, { items: sessionItems(itemsRef.current), history: historyRef.current });
+  }, []);
+
   // The ref is the authoritative transcript: updates are computed synchronously from
   // it (never inside a lazy state updater, which StrictMode may run twice) and React
   // state mirrors it for rendering.
-  const commitItems = React.useCallback((update: (prev: ChatTranscriptItem[]) => ChatTranscriptItem[]) => {
-    const next = update(itemsRef.current);
-    if (next === itemsRef.current) return;
-    itemsRef.current = next;
-    setItems(next);
-  }, []);
-
-  /** Model history is only ever replaced through here, so its size stays in step. */
-  const writeHistory = React.useCallback((next: HistoryEntry[]) => {
-    historyRef.current = next;
-    const size = replayHistorySize(next.map((entry) => entry.turn));
-    setHistorySize((prev) => (prev.exchanges === size.exchanges && prev.chars === size.chars ? prev : size));
-  }, []);
-
-  const updateAssistant = React.useCallback(
-    (key: string, update: (item: ChatAssistantItem) => ChatAssistantItem) => {
-      commitItems((prev) => prev.map((item) => (item.kind === 'assistant' && item.key === key ? update(item) : item)));
+  const commitItems = React.useCallback(
+    (update: (prev: ChatTranscriptItem[]) => ChatTranscriptItem[], save = true) => {
+      const next = update(itemsRef.current);
+      if (next === itemsRef.current) return;
+      itemsRef.current = next;
+      setItems(next);
+      if (save) saveCaseSession();
     },
-    [commitItems],
+    [saveCaseSession],
   );
 
-  const updateLive = React.useCallback(
-    (key: string, update: (live: ChatLiveTurn) => ChatLiveTurn) => {
-      updateAssistant(key, (item) => (item.live ? { ...item, live: update(item.live) } : item));
+  /** Model history is only ever replaced through here, so its size stays in step. */
+  const writeHistory = React.useCallback(
+    (next: HistoryEntry[], save = true) => {
+      historyRef.current = next;
+      const size = replayHistorySize(next.map((entry) => entry.turn));
+      setHistorySize((prev) => (prev.exchanges === size.exchanges && prev.chars === size.chars ? prev : size));
+      if (save) saveCaseSession();
     },
-    [updateAssistant],
+    [saveCaseSession],
   );
 
   const setBusyState = React.useCallback((value: boolean) => {
@@ -795,38 +591,220 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     setScopesState(out);
   }, []);
 
-  const cancelFrame = React.useCallback(() => {
-    frameRef.current?.cancel();
-    frameRef.current = null;
+  /** The scope on screen: the attached run's, else this case / thread. */
+  const refreshViewScope = React.useCallback(() => {
+    const run = attachedRef.current?.run;
+    const id = settingsRef.current.caseId;
+    setViewScope(run ? run.scope : id ? `case:${id}` : conversationIdRef.current ? `conv:${conversationIdRef.current}` : null);
   }, []);
 
-  /** Drop the in-flight turn locally (reset / unmount / thread switch). */
-  const abandonRun = React.useCallback(() => {
-    const run = runRef.current;
-    runRef.current = null;
-    cancelFrame();
-    run?.controller.abort();
-  }, [cancelFrame]);
+  React.useEffect(() => (viewScope ? viewChatActivity(viewScope) : undefined), [viewScope]);
+
+  // A case chat lists every answer this tab holds for the case, not only its newest:
+  // each one's turn is seen, so the analyst's other consoles drop exactly those marks
+  // and never another turn's (SPEC §7.2 decision 17). Told once per turn (the observer
+  // dedupes), and only while the tab is visible.
+  React.useEffect(() => {
+    if (!viewScope?.startsWith('case:') || typeof document === 'undefined') return undefined;
+    const turnIds = items.map((item) => (item.kind === 'assistant' && item.status !== 'running' ? (item.response?.turn_id ?? null) : null));
+    const tell = () => {
+      if (document.visibilityState !== 'hidden') showChatTurns(turnIds);
+    };
+    tell();
+    document.addEventListener('visibilitychange', tell);
+    return () => document.removeEventListener('visibilitychange', tell);
+  }, [items, viewScope]);
+
+  /** Stop viewing the attached run. The turn goes on (a disconnect is not a Stop). */
+  const detach = React.useCallback(() => {
+    const current = attachedRef.current;
+    attachedRef.current = null;
+    if (current) {
+      current.unsubscribe();
+      current.release();
+    }
+    setBusyState(false);
+  }, [setBusyState]);
+
+  /* ---------------------------------------------------------------- settle -- */
 
   /**
-   * Drop the transcript and any in-flight turn, and start the composer on the defaults
-   * (New chat, another case). The ONE fresh-draft reset: a New chat entered from a
-   * draft saved this session (the host's `conversation` stays `null`, so only
+   * A turn persisted into `id`, or started there (`turn.start` named it; a draft
+   * whose first turn is force-stopped or loses its connection still joins its saved
+   * thread). The server title is unknown there: a new thread is titled from its first
+   * prompt (as the server does); an existing one keeps its title ('').
+   */
+  const adoptConversation = React.useCallback((id: string, title: string, rehydrate: boolean) => {
+    conversationIdRef.current = id;
+    setConversationId(id);
+    const persisted = callbacksRef.current.onConversationPersisted;
+    if (rehydrate) persisted?.(id, title, { rehydrate: true });
+    else persisted?.(id, title);
+  }, []);
+
+  const adoptStartedConversation = React.useCallback(
+    (run: TurnRun) => {
+      const id = run.conversationId;
+      if (!id || !run.persisted || !settingsRef.current.persist) return;
+      adoptConversation(id, conversationIdRef.current === id ? '' : run.request?.message ?? '', false);
+    },
+    [adoptConversation],
+  );
+
+  /** Apply a settled run to this transcript, once. */
+  const applySettled = React.useCallback(
+    (run: TurnRun) => {
+      consumeRun(run);
+      if (run.streamUnsupported) streamSupportedRef.current = false;
+      if (run.state === 'lost') {
+        // The turn could not be followed (a reload long after it ended): show what
+        // the server saved instead.
+        commitItems((prev) => prev.filter((item) => item.key !== run.assistantKey));
+        const id = run.conversationId;
+        if (id && run.kind === 'workspace') adoptConversation(id, '', true);
+        return;
+      }
+      const settled = runAssistantItem(run);
+      const user = settledUserItem(run);
+      commitItems((prev) =>
+        prev.map((item) => {
+          // The saved question's id (Round 12 WP-FIX1): a hit or link to it finds it here.
+          if (item.kind === 'user' && user && item.requestKey === run.requestKey) {
+            return { ...item, failed: user.failed, messageId: item.messageId ?? user.messageId };
+          }
+          return item.key === run.assistantKey ? { ...settled, at: item.at } : item;
+        }),
+      );
+      if (run.state === 'done') {
+        const response = run.response;
+        if (response && !isUnsavedTurn(response)) {
+          // Keyed by the request: a same-key retry ("Run again to save") replaces this
+          // exchange instead of sending it to the model twice.
+          writeHistory([...historyRef.current.filter((entry) => entry.requestKey !== run.requestKey), ...runExchange(run)]);
+          // An answer delivered with a `not_saved` notice and no message id was never
+          // stored: `turn.start` may have named a conversation that was never created
+          // (a new thread), and adopting it would make the next turn 404.
+          const neverSaved = response.notice?.kind === 'not_saved' && !response.message_id;
+          const savedId =
+            settingsRef.current.persist && !neverSaved ? response.conversation_id || (run.persisted ? run.conversationId : null) : null;
+          if (savedId) {
+            // Without a server title, only a NEW thread is titled from its prompt. A
+            // turn followed after a reload reloads the thread for its saved prompt.
+            const fallback = conversationIdRef.current === savedId ? '' : run.request?.message ?? '';
+            adoptConversation(savedId, response.conversation_title?.trim() || fallback, !run.request);
+          }
+        }
+      } else if (run.state === 'stopped' || run.failure?.kind !== 'turn_error') {
+        // A stop or a lost connection after `turn.start` may have been saved
+        // server-side; a `turn.error` saved nothing.
+        adoptStartedConversation(run);
+      }
+      callbacksRef.current.onTurnSettled?.(settled);
+    },
+    [adoptConversation, adoptStartedConversation, commitItems, writeHistory],
+  );
+
+  const onRunChange = React.useCallback(
+    (run: TurnRun) => {
+      if (attachedRef.current?.run !== run) return;
+      if (run.state === 'running') {
+        commitItems((prev) =>
+          prev.map((item) => (item.kind === 'assistant' && item.key === run.assistantKey && item.live !== run.live ? { ...item, live: run.live } : item)),
+        );
+        // A new thread's run became `conv:<id>`.
+        refreshViewScope();
+        return;
+      }
+      applySettled(run);
+      detach();
+      refreshViewScope();
+    },
+    [applySettled, commitItems, detach, refreshViewScope],
+  );
+
+  const attach = React.useCallback(
+    (run: TurnRun) => {
+      detach();
+      const release = attachRun(run);
+      const unsubscribe = subscribeRun(run, () => onRunChange(run));
+      attachedRef.current = { run, release, unsubscribe };
+      setBusyState(run.state === 'running');
+      refreshViewScope();
+      onRunChange(run);
+    },
+    [detach, onRunChange, refreshViewScope, setBusyState],
+  );
+
+  /**
+   * Show `run` in this transcript: a running turn joins it live (its prompt and run
+   * log, with Stop); one that settled while nobody watched is applied once, unless the
+   * restored history already holds it (the saved answer is the truth).
+   */
+  const adopt = React.useCallback(
+    (run: TurnRun) => {
+      if (run.state === 'running') {
+        commitItems((prev) => [
+          ...prev.filter((item) => item.key !== run.assistantKey && (!run.requestKey || item.requestKey !== run.requestKey)),
+          ...(run.userItem ? [run.userItem] : []),
+          runAssistantItem(run),
+        ]);
+        attach(run);
+        return;
+      }
+      if (run.consumed) return;
+      consumeRun(run);
+      const known = !!run.requestKey && itemsRef.current.some((item) => item.requestKey === run.requestKey);
+      if (known || run.state === 'lost') return;
+      const user = settledUserItem(run);
+      commitItems((prev) => [...prev, ...(user ? [user] : []), runAssistantItem(run)]);
+      const exchange = runExchange(run);
+      if (exchange.length) writeHistory([...historyRef.current, ...exchange]);
+    },
+    [attach, commitItems, writeHistory],
+  );
+
+  /** Re-attach a turn another tab or the server reports for `scope` (after a reload). */
+  const adoptReported = React.useCallback(
+    (scope: string, kind: 'workspace' | 'case') => {
+      const local = findRun(scope);
+      if (local) {
+        adopt(local);
+        return;
+      }
+      const entry = getChatActivity().entries.find((item) => item.scope === scope);
+      if (!entry || entry.status !== 'running' || !entry.turnId || entry.source === 'local') return;
+      const run = reattachRun({
+        scope,
+        kind,
+        turnId: entry.turnId,
+        conversationId: entry.conversationId,
+        caseId: entry.caseId,
+        title: entry.title,
+        startedAt: entry.startedAt,
+      });
+      if (run) adopt(run);
+    },
+    [adopt],
+  );
+
+  /**
+   * Drop the transcript and stop viewing any turn, and start the composer on the
+   * defaults (New chat, another case). The ONE fresh-draft reset: a New chat entered
+   * from a draft saved this session (the host's `conversation` stays `null`, so only
    * `resetKey` moves) must match one entered from a reopened thread (SPEC A36).
    */
   const resetTranscript = React.useCallback(() => {
-    generationRef.current += 1;
-    abandonRun();
-    writeHistory([]);
+    detach();
+    writeHistory([], false);
     conversationIdRef.current = null;
     setConversationId(null);
-    commitItems(() => []);
-    setBusyState(false);
+    commitItems(() => [], false);
     setModel(null);
     setSourceId(null);
     setScopesState([]);
     setTimeRange(null);
-  }, [abandonRun, commitItems, setBusyState, writeHistory]);
+    refreshViewScope();
+  }, [commitItems, detach, refreshViewScope, writeHistory]);
 
   // A deliberate New-chat transition from the host (see `resetKey`).
   const resetKeyRef = React.useRef(options.resetKey);
@@ -836,15 +814,20 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     resetTranscript();
   }, [options.resetKey, resetTranscript]);
 
-  // Another case in a reused host (a CaseDetail sheet that is not keyed per case):
-  // case A's transcript and history must never be sent with case B's id, and a turn
-  // still running for A must not settle into B's view.
-  const caseIdRef = React.useRef(caseId);
+  // Case chat: restore this case's session transcript (tab switches and re-opens keep
+  // it), and follow a turn still running for it. A reused host that changes case never
+  // shows case A's transcript or turn under case B.
   React.useEffect(() => {
-    if (caseIdRef.current === caseId) return;
-    caseIdRef.current = caseId;
+    if (!caseId) return;
+    const session = readCaseSession(caseId);
     resetTranscript();
-  }, [caseId, resetTranscript]);
+    if (session) {
+      writeHistory(session.history, false);
+      commitItems(() => session.items, false);
+    }
+    adoptReported(`case:${caseId}`, 'case');
+    refreshViewScope();
+  }, [adoptReported, caseId, commitItems, refreshViewScope, resetTranscript, writeHistory]);
 
   // Hydrate from the host's saved conversation. Identity-keyed: the host keeps the
   // same object while a just-persisted thread stays live, so no re-hydration flash.
@@ -854,9 +837,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
       resetTranscript();
       return;
     }
-    generationRef.current += 1;
-    abandonRun();
-    setBusyState(false);
+    detach();
     const restored = itemsFromConversation(conversation);
     writeHistory(
       (conversation.messages ?? []).map(({ role, content, idempotency_key, origin }) => ({
@@ -879,7 +860,23 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     setSourceId(null);
     setScopesState([]);
     setTimeRange(conversation.time_range ?? null);
-  }, [conversation, abandonRun, commitItems, resetTranscript, setBusyState, writeHistory]);
+    // A turn still running in this thread (this tab's, another tab's or one the server
+    // reports after a reload) joins the transcript live.
+    adoptReported(`conv:${conversation.id}`, 'workspace');
+    refreshViewScope();
+  }, [conversation, adoptReported, commitItems, detach, refreshViewScope, resetTranscript, writeHistory]);
+
+  // A turn another tab or the server reports for the scope on screen joins it live, also
+  // when that report lands after the thread restored (a reload: `GET /chat/turns/active`
+  // and the thread load race; the runner then follows it as this tab's own, parked run).
+  const reportedTurn = useChatActivity((snapshot) => {
+    const entry = viewScope ? snapshot.entries.find((item) => item.scope === viewScope) : undefined;
+    return entry?.status === 'running' ? entry.turnId : null;
+  });
+  React.useEffect(() => {
+    if (!reportedTurn || !viewScope || attachedRef.current) return;
+    adoptReported(viewScope, viewScope.startsWith('case:') ? 'case' : 'workspace');
+  }, [adoptReported, reportedTurn, viewScope]);
 
   React.useEffect(() => {
     callbacksRef.current.onBusyChange?.(busy);
@@ -887,445 +884,58 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
 
   React.useEffect(
     () => () => {
-      // Unmount: stop reading (a disconnect is not a Stop; the server turn completes
-      // and persists) and release the host's busy guard.
-      generationRef.current += 1;
-      abandonRun();
+      // Unmount: stop viewing (a disconnect is not a Stop; the turn goes on, the
+      // navigation glyph shows it, and returning re-attaches) and release the host's
+      // busy guard.
+      const current = attachedRef.current;
+      attachedRef.current = null;
+      if (current) {
+        current.unsubscribe();
+        current.release();
+      }
+      busyRef.current = false;
       callbacksRef.current.onBusyChange?.(false);
     },
-    [abandonRun],
-  );
-
-  /* ---------------------------------------------------------------- settle -- */
-
-  const finishRun = React.useCallback(
-    (run: RunState) => {
-      if (runRef.current === run) runRef.current = null;
-      cancelFrame();
-      if (generationRef.current === run.generation) setBusyState(false);
-    },
-    [cancelFrame, setBusyState],
-  );
-
-  const settleDone = React.useCallback(
-    (run: RunState, response: ChatResponse) => {
-      if (generationRef.current !== run.generation) return;
-      const unsaved = isUnsavedTurn(response);
-      const current = findItem(itemsRef.current, run.key);
-      const userContent = current?.request?.message ?? '';
-      const userOrigin: ChatOrigin = current?.request?.origin ?? 'user';
-      const settled: ChatAssistantItem | null = current
-        ? {
-            ...current,
-            status: 'done',
-            response,
-            live: null,
-            failure: null,
-            messageId: response.message_id ?? null,
-            model: response.effective_model?.trim() || current.request?.model || null,
-            source:
-              response.effective_source_name?.trim() ||
-              response.effective_source_id?.trim() ||
-              current.request?.source_id ||
-              null,
-          }
-        : null;
-      commitItems((prev) =>
-        prev.map((item) => {
-          if (item.kind === 'user' && item.requestKey === run.requestKey) return { ...item, failed: unsaved };
-          return settled && item.key === run.key ? settled : item;
-        }),
-      );
-      if (!unsaved) {
-        // Keyed by the request: a same-key retry ("Run again to save") replaces this
-        // exchange instead of sending it to the model twice.
-        writeHistory([
-          ...historyRef.current.filter((entry) => entry.requestKey !== run.requestKey),
-          // The prompt's author travels with it: client history counts as
-          // user-authored only when it says so (SPEC §4.8.2).
-          { turn: { role: 'user', content: userContent, origin: userOrigin }, requestKey: run.requestKey },
-          { turn: { role: 'assistant', content: response.answer }, requestKey: run.requestKey },
-        ]);
-        // An answer delivered with a `not_saved` notice and no message id was never
-        // stored: `turn.start` may have named a conversation that was never created (a
-        // new thread), and adopting it would make the next turn 404. Nothing is promoted.
-        const neverSaved = response.notice?.kind === 'not_saved' && !response.message_id;
-        const savedId = settingsRef.current.persist && !neverSaved
-          ? response.conversation_id || (run.persisted ? run.conversationId : null)
-          : null;
-        if (savedId) {
-          // Without a server title, only a NEW thread is titled from its prompt.
-          const fallbackTitle = conversationIdRef.current === savedId ? '' : userContent;
-          conversationIdRef.current = savedId;
-          setConversationId(savedId);
-          callbacksRef.current.onConversationPersisted?.(savedId, response.conversation_title?.trim() || fallbackTitle);
-        }
-      }
-      finishRun(run);
-      if (settled) callbacksRef.current.onTurnSettled?.(settled);
-    },
-    [commitItems, finishRun, writeHistory],
-  );
-
-  /**
-   * The turn settled without the server's `turn.done`, but `turn.start` named the
-   * conversation the server is saving it into (a draft's first turn creates it). Join
-   * that thread, so the next message continues it instead of starting a second one and
-   * the rail shows the saved turn on its refresh.
-   */
-  const adoptStartedConversation = React.useCallback((run: RunState) => {
-    const id = run.conversationId;
-    if (!id || !run.persisted || !settingsRef.current.persist) return;
-    // The server title is unknown here: a new thread is titled from its first prompt
-    // (as the server does); an existing one keeps its title ('').
-    const title = conversationIdRef.current === id ? '' : run.prompt;
-    conversationIdRef.current = id;
-    setConversationId(id);
-    callbacksRef.current.onConversationPersisted?.(id, title);
-  }, []);
-
-  const settleError = React.useCallback(
-    (run: RunState, failure: ChatTurnFailure) => {
-      if (generationRef.current !== run.generation) return;
-      const current = findItem(itemsRef.current, run.key);
-      const settled: ChatAssistantItem | null = current
-        ? { ...current, status: 'error', failure, live: null, response: null }
-        : null;
-      commitItems((prev) =>
-        prev.map((item) => {
-          if (item.kind === 'user' && item.requestKey === run.requestKey) return { ...item, failed: true };
-          return settled && item.key === run.key ? settled : item;
-        }),
-      );
-      // Neither the failed prompt nor the transport error enters model history. A
-      // `turn.error` saved nothing; any other failure after `turn.start` (a lost
-      // connection, an unconfirmed replay) may have been saved server-side.
-      if (failure.kind !== 'turn_error') adoptStartedConversation(run);
-      finishRun(run);
-      if (settled) callbacksRef.current.onTurnSettled?.(settled);
-    },
-    [adoptStartedConversation, commitItems, finishRun],
-  );
-
-  /**
-   * Stop abandoned the stream: keep what arrived, labelled Stopped. It is a local view,
-   * not the server's record, so it stays OUT of model history (the prompt is marked
-   * excluded); the server's stored version is the truth on the next hydration.
-   */
-  const settleStopped = React.useCallback(
-    (run: RunState) => {
-      if (generationRef.current !== run.generation) return;
-      const current = findItem(itemsRef.current, run.key);
-      const live = current?.live ?? null;
-      const response = stoppedResponse(live ? { ...live, text: liveTextRef.current } : null);
-      const settled: ChatAssistantItem | null = current
-        ? { ...current, status: 'done', response, live: null, failure: null, messageId: null }
-        : null;
-      commitItems((prev) =>
-        prev.map((item) => {
-          if (item.kind === 'user' && item.requestKey === run.requestKey) return { ...item, failed: true };
-          return settled && item.key === run.key ? settled : item;
-        }),
-      );
-      adoptStartedConversation(run);
-      finishRun(run);
-      if (settled) callbacksRef.current.onTurnSettled?.(settled);
-    },
-    [adoptStartedConversation, commitItems, finishRun],
-  );
-
-  /* ---------------------------------------------------------------- events -- */
-
-  const flushText = React.useCallback(
-    (run: RunState) => {
-      frameRef.current = null;
-      if (runRef.current !== run || generationRef.current !== run.generation) return;
-      const text = liveTextRef.current;
-      updateLive(run.key, (live) => (live.text === text ? live : { ...live, text }));
-    },
-    [updateLive],
-  );
-
-  const handleEvent = React.useCallback(
-    (run: RunState, event: ChatStreamEvent) => {
-      if (runRef.current !== run || generationRef.current !== run.generation) return;
-      switch (event.type) {
-        case 'turn.start': {
-          const previousTurnId = run.turnId;
-          run.turnId = event.turn_id;
-          if (event.conversation_id) run.conversationId = event.conversation_id;
-          // A Stop asked before the turn was named, or before a recovery replay named
-          // a different turn, is sent to the turn that is actually running now.
-          if (run.cancelWhenStarted || (run.stopRequested && previousTurnId !== null && previousTurnId !== event.turn_id)) {
-            run.cancelWhenStarted = false;
-            void cancelChatTurn(event.turn_id);
-          }
-          // Every stream starts its own projection: a recovery replay must not keep
-          // the dropped attempt's steps, usage or text (a step with the same index would
-          // otherwise be ignored as a duplicate and stay "running").
-          liveTextRef.current = '';
-          cancelFrame();
-          updateLive(run.key, (live) => ({
-            ...live,
-            turnId: event.turn_id,
-            model: event.model,
-            streamMode: event.stream_mode,
-            replayed: event.replayed,
-            estimatePromptTokens: event.estimate.prompt_tokens,
-            steps: [],
-            usage: null,
-            text: '',
-            connection: 'open',
-          }));
-          return;
-        }
-        case 'step.start': {
-          const step = event.step;
-          updateLive(run.key, (live) => {
-            const existing = live.steps.find((s) => s.index === step.index);
-            if (existing) return live;
-            const steps = [...live.steps, { ...step, status: 'running' as const, result: null, startedAt: Date.now() }];
-            steps.sort((a, b) => a.index - b.index);
-            return { ...live, steps };
-          });
-          return;
-        }
-        case 'step.end': {
-          const result = event.step;
-          updateLive(run.key, (live) => {
-            const index = live.steps.findIndex((s) => s.index === result.index);
-            const merged: ChatLiveStep = {
-              index: result.index,
-              ordinal: result.ordinal ?? null,
-              kind: result.kind,
-              tool: result.tool ?? null,
-              label: result.label,
-              params: result.params,
-              group: result.group ?? null,
-              status: result.status,
-              result,
-              startedAt: index >= 0 ? live.steps[index].startedAt : Date.now(),
-            };
-            const steps = index >= 0 ? live.steps.map((s, i) => (i === index ? merged : s)) : [...live.steps, merged];
-            steps.sort((a, b) => a.index - b.index);
-            return { ...live, steps };
-          });
-          return;
-        }
-        case 'usage':
-          updateLive(run.key, (live) => ({ ...live, usage: event.totals }));
-          return;
-        case 'text.delta':
-          liveTextRef.current += event.text;
-          if (!frameRef.current) frameRef.current = scheduleFrame(() => flushText(run));
-          return;
-        case 'text.reset':
-          liveTextRef.current = '';
-          cancelFrame();
-          updateLive(run.key, (live) => ({ ...live, text: '' }));
-          return;
-        default:
-          // `ping` keeps the connection alive; terminal events settle in runTurn.
-          return;
-      }
-    },
-    [cancelFrame, flushText, updateLive],
+    [],
   );
 
   /* ------------------------------------------------------------------ turn -- */
 
-  const runTurn = React.useCallback(
-    async (run: RunState, request: ChatRequest) => {
-      const signal = run.controller.signal;
-      const stale = () => generationRef.current !== run.generation || runRef.current !== run;
-
-      const blockingTurn = async () => {
-        run.transport = 'blocking';
-        updateLive(run.key, (live) => ({ ...live, transport: 'blocking' }));
-        const response = await postChat(request, signal);
-        if (stale()) return;
-        settleDone(run, response);
-      };
-
-      try {
-        if (run.transport === 'blocking') {
-          await blockingTurn();
-          return;
-        }
-        const body: ChatRequest = { ...request, stream_mode: settingsRef.current.effectiveStreamMode };
-        let recovering = false;
-        let waits = 0;
-        for (;;) {
-          let outcome: ChatStreamOutcome;
-          try {
-            outcome = await streamChat(body, { signal, onEvent: (event) => handleEvent(run, event) });
-          } catch (error) {
-            // While recovering, the server may still be running the turn (up to its own
-            // timeout plus one in-flight model call): wait out a 409
-            // `chat_request_in_progress` until then, never for a fixed retry count.
-            if (
-              recovering &&
-              !signal.aborted &&
-              error instanceof ApiError &&
-              error.status === 409 &&
-              apiErrorCode(error) === 'chat_request_in_progress'
-            ) {
-              const deadline = run.startedAt + recoveryWindowMs(callbacksRef.current.turnBounds);
-              const remaining = deadline - Date.now();
-              if (remaining > 0) {
-                await sleep(Math.min(remaining, recoveryDelayMs(waits, apiRetryAfterSeconds(error))), signal);
-                waits += 1;
-                if (stale()) return;
-                continue;
-              }
-              settleError(run, {
-                kind: 'connection_lost',
-                message:
-                  'Connection lost and the request is still running on the server. Retry to check for the saved answer.',
-                code: 'chat_request_in_progress',
-                status: 409,
-                retryable: true,
-                notice: null,
-              });
-              return;
-            }
-            throw error;
-          }
-          if (stale() && !(outcome.status === 'aborted' && run.forcedStop)) return;
-          if (outcome.status === 'done') {
-            settleDone(run, outcome.event.response);
-            return;
-          }
-          if (outcome.status === 'error') {
-            settleError(run, failureFromTurnError(outcome.event));
-            return;
-          }
-          if (outcome.status === 'aborted') {
-            if (run.forcedStop) settleStopped(run);
-            return;
-          }
-          // Ended without turn.done / turn.error. A persisted turn is idempotent
-          // server-side (completed-key replay), so check for the saved answer ONCE.
-          if (!recovering && request.persist_conversation && request.idempotency_key) {
-            recovering = true;
-            liveTextRef.current = '';
-            cancelFrame();
-            updateLive(run.key, (live) => ({ ...live, connection: 'recovering', text: '' }));
-            continue;
-          }
-          settleError(run, {
-            kind: 'connection_lost',
-            message: recovering
-              ? 'Connection lost and the saved answer could not be confirmed. Retry to check again.'
-              : 'Connection lost before the answer arrived.',
-            code: null,
-            status: null,
-            retryable: true,
-            notice: null,
-          });
-          return;
-        }
-      } catch (error) {
-        if (signal.aborted || stale()) {
-          if (run.forcedStop) settleStopped(run);
-          return;
-        }
-        if (run.transport === 'stream' && isStreamUnsupportedError(error)) {
-          // An older backend without /chat/stream: use blocking /chat from now on.
-          streamSupportedRef.current = false;
-          try {
-            await blockingTurn();
-          } catch (fallbackError) {
-            if (signal.aborted || stale()) return;
-            settleError(run, failureFromError(fallbackError, 'Unexpected error contacting the assistant.'));
-          }
-          return;
-        }
-        settleError(run, failureFromError(error, 'Unexpected error contacting the assistant.'));
-      }
-    },
-    [cancelFrame, handleEvent, settleDone, settleError, settleStopped, updateLive],
-  );
-
   /** Start one turn for `request`, optionally replacing a failed pair (same key). */
   const startTurn = React.useCallback(
     (request: ChatRequest, origin: ChatOrigin, replaceRequestKey: string | null): boolean => {
-      if (busyRef.current || runRef.current) return false;
+      if (busyRef.current) return false;
+      const s = settingsRef.current;
       const requestKey = request.idempotency_key ?? newIdempotencyKey();
-      const now = Date.now();
-      const assistantKey = nextItemKey('assistant');
-      const run: RunState = {
-        key: assistantKey,
-        requestKey,
-        generation: generationRef.current,
-        controller: new AbortController(),
-        transport: streamSupportedRef.current ? 'stream' : 'blocking',
-        turnId: null,
-        stopRequested: false,
-        cancelWhenStarted: false,
-        forcedStop: false,
-        persisted: request.persist_conversation === true,
-        prompt: request.message,
-        conversationId: null,
-        startedAt: now,
-      };
-      runRef.current = run;
-      liveTextRef.current = '';
-      cancelFrame();
-      const userItem: ChatUserItem = {
-        kind: 'user',
-        key: nextItemKey('user'),
-        messageId: null,
-        content: displayText(request.message, 0, { multiline: true }),
-        prompt: request.message,
-        origin,
-        at: now,
-        requestKey,
-        failed: false,
-      };
-      const assistantItem: ChatAssistantItem = {
-        kind: 'assistant',
-        key: assistantKey,
-        messageId: null,
-        at: now,
-        requestKey,
-        status: 'running',
-        response: null,
-        live: {
-          transport: run.transport,
-          turnId: null,
-          model: request.model ?? null,
-          streamMode: settingsRef.current.effectiveStreamMode,
-          replayed: false,
-          estimatePromptTokens: 0,
-          steps: [],
-          usage: null,
-          text: '',
-          stopping: false,
-          connection: 'open',
-          startedAt: now,
-        },
-        failure: null,
-        restored: false,
-        model: request.model ?? null,
-        source: request.source_id ?? null,
+      const scope = s.caseId
+        ? `case:${s.caseId}`
+        : conversationIdRef.current
+          ? `conv:${conversationIdRef.current}`
+          : `draft:${requestKey}`;
+      if (findRun(scope)?.state === 'running') return false;
+      const run = startRun({
+        scope,
+        kind: s.caseId ? 'case' : 'workspace',
+        caseId: s.caseId,
         request: { ...request, idempotency_key: requestKey },
-      };
+        origin,
+        transport: streamSupportedRef.current ? 'stream' : 'blocking',
+        streamMode: s.effectiveStreamMode,
+      });
       commitItems((prev) => [
         ...prev.filter((item) => !replaceRequestKey || item.requestKey !== replaceRequestKey),
-        userItem,
-        assistantItem,
+        ...(run.userItem ? [run.userItem] : []),
+        runAssistantItem(run),
       ]);
       // The replaced pair leaves model history with the transcript (a retried
       // `not_saved` answer had entered it); its retry settles back in as one exchange.
       if (replaceRequestKey && historyRef.current.some((entry) => entry.requestKey === replaceRequestKey)) {
         writeHistory(historyRef.current.filter((entry) => entry.requestKey !== replaceRequestKey));
       }
-      setBusyState(true);
-      void runTurn(run, { ...request, idempotency_key: requestKey });
+      attach(run);
       return true;
     },
-    [cancelFrame, commitItems, runTurn, setBusyState, writeHistory],
+    [attach, commitItems, writeHistory],
   );
 
   const buildRequest = React.useCallback((message: string, origin: ChatOrigin, continueOf: string | null, topic: string | null): ChatRequest => {
@@ -1355,7 +965,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     (text?: string, sendOptions: ChatSendOptions = {}): boolean => {
       const fromDraft = text === undefined;
       const message = (fromDraft ? draftRef.current : text).trim();
-      if (!message || busyRef.current || runRef.current || settingsRef.current.blocked) return false;
+      if (!message || busyRef.current || settingsRef.current.blocked) return false;
       const origin = sendOptions.origin ?? 'user';
       const request = buildRequest(message, origin, sendOptions.continueOf ?? null, sendOptions.topic ?? null);
       const started = startTurn(request, origin, null);
@@ -1365,7 +975,6 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     },
     [buildRequest, setDraft, startTurn],
   );
-
 
   const askAgain = React.useCallback(
     (itemKey: string): boolean => {
@@ -1419,28 +1028,24 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     [send],
   );
 
-  const stop = React.useCallback(
-    (stopOptions: { force?: boolean } = {}) => {
-      const run = runRef.current;
-      // A blocking `/chat` turn cannot be stopped (`canStop` is false): aborting the
-      // fetch would only hide an answer the server still bills and saves.
-      if (!run || run.transport === 'blocking') return;
-      if (stopOptions.force || run.stopRequested) {
-        // Abandon the stream locally. The server still finishes (and, after a Stop,
-        // saves the stopped turn); the next history refresh shows what it kept.
-        run.forcedStop = true;
-        run.controller.abort();
-        return;
-      }
-      run.stopRequested = true;
-      updateLive(run.key, (live) => ({ ...live, stopping: true }));
-      if (run.turnId) void cancelChatTurn(run.turnId);
-      else run.cancelWhenStarted = true;
-    },
-    [updateLive],
-  );
+  const stop = React.useCallback((stopOptions: { force?: boolean } = {}) => {
+    // A blocking `/chat` turn cannot be stopped (`canStop` is false): aborting the
+    // fetch would only hide an answer the server still bills and saves.
+    const run = attachedRef.current?.run;
+    if (run) stopRun(run, stopOptions.force === true);
+  }, []);
 
-  const reset = resetTranscript;
+  const prependRestored = React.useCallback(
+    (id: string, messages: readonly ChatConversationMessage[]): number => {
+      if (!id || conversationIdRef.current !== id || !messages.length) return 0;
+      const known = new Set(itemsRef.current.map((item) => item.key));
+      const older = itemsFromMessages(messages).filter((item) => !known.has(item.key));
+      if (!older.length) return 0;
+      commitItems((prev) => [...older, ...prev]);
+      return older.length;
+    },
+    [commitItems],
+  );
 
   const running = React.useMemo(
     () => items.find((item): item is ChatAssistantItem => item.kind === 'assistant' && item.status === 'running') ?? null,
@@ -1481,6 +1086,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     retry,
     askAgain,
     continueAnswer,
-    reset,
+    reset: resetTranscript,
+    prependRestored,
   };
 }

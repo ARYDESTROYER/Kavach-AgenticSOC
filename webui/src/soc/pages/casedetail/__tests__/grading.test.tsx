@@ -31,7 +31,7 @@ import {
 /* --------------------------------------------------------- 1. derive map --- */
 
 // Explicit oracle (NOT computed from the same map the SUT uses).
-const EXPECT: Record<string, Record<string, 'match' | 'override' | 'none'>> = {
+const EXPECT: Record<string, Record<string, 'match' | 'override' | 'resolved' | 'none'>> = {
   TRUE_POSITIVE: {
     true_positive: 'match',
     false_positive: 'override',
@@ -48,10 +48,12 @@ const EXPECT: Record<string, Record<string, 'match' | 'override' | 'none'>> = {
     duplicate: 'none',
     undetermined: 'override',
   },
+  // Round 12 (D15): a concrete outcome RESOLVES the NEEDS_HUMAN hand-off; it is never
+  // an override (agent-effectiveness must not count it as a disagreement).
   NEEDS_HUMAN: {
-    true_positive: 'override',
-    false_positive: 'override',
-    benign: 'override',
+    true_positive: 'resolved',
+    false_positive: 'resolved',
+    benign: 'resolved',
     suspicious: 'match',
     duplicate: 'none',
     undetermined: 'match',
@@ -77,6 +79,13 @@ describe('deriveAgreement — the full 3×6 map', () => {
       kind: 'override',
       assessment: 'disagree',
     });
+  });
+
+  it('settles a NEEDS_HUMAN hand-off with NO assessment: neither disagree nor an unstated agree', () => {
+    const a = deriveAgreement('NEEDS_HUMAN', 'false_positive');
+    expect(a).toEqual({ kind: 'resolved', toLabel: 'False positive' });
+    expect(a).not.toHaveProperty('assessment');
+    expect(agreementText(a)).toBe("Settles the AI's hand-off (Needs human → False positive)");
   });
 
   it('is none when verdict OR disposition is missing (hide badge)', () => {
@@ -182,10 +191,12 @@ describe('gradingToFeedbackInput — shape-parity with CaseFeedbackInput', () =>
     });
   });
 
-  it('defaults assessment to "agree" and omits unset fields on an empty draft', () => {
+  it('never defaults assessment to "agree": an empty draft posts no fields at all', () => {
+    // A defaulted "agree" made every settled Needs-human close count toward Agreement.
     const body = gradingToFeedbackInput(emptyGradingDraft());
-    expect(body).toEqual({ assessment: 'agree' });
-    expect(Object.keys(body)).toEqual(['assessment']);
+    expect(body).toEqual({});
+    expect(gradingToFeedbackInput({ assessment: 'agree' })).toEqual({ assessment: 'agree' });
+    expect(gradingToFeedbackInput({ assessment: 'disagree' })).toEqual({ assessment: 'disagree' });
   });
 
   it('drops zero-star / zero-time / whitespace-only / absent-analyst fields', () => {
@@ -196,7 +207,7 @@ describe('gradingToFeedbackInput — shape-parity with CaseFeedbackInput', () =>
       time_saved_minutes: 0,
       comment: '   ',
     });
-    expect(body).toEqual({ assessment: 'agree' });
+    expect(body).toEqual({});
   });
 
   it('starsToScore maps the 1-5 ladder (0/undefined → undefined)', () => {
@@ -316,11 +327,10 @@ describe('the confirmed-outcome control (G1 — Channel A)', () => {
 
   it('reaches the wire body once chosen', () => {
     expect(gradingToFeedbackInput({ actual_outcome: 'false_negative' })).toEqual({
-      assessment: 'agree',
       actual_outcome: 'false_negative',
     });
     // …and an unstated outcome still posts nothing, so the backend default applies.
-    expect(gradingToFeedbackInput({})).toEqual({ assessment: 'agree' });
+    expect(gradingToFeedbackInput({})).toEqual({});
   });
 
   it('says out loud that the grade itself is not a label', () => {

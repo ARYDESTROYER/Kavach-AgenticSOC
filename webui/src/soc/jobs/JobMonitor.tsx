@@ -1,4 +1,8 @@
-/** Global durable-job observer: SSE nudge + polling fallback + terminal toasts. */
+/**
+ * Global durable-job observer: SSE nudge + polling fallback + terminal toasts. Its one
+ * stream also carries the caller's own chat turns (topic `chat`), which it hands to the
+ * chat activity observer (`relayChatFrame`) without reading them.
+ */
 import * as React from 'react';
 import { toast } from 'sonner';
 
@@ -6,7 +10,8 @@ import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/errorMessage';
 import { humanizeToken } from '@/lib/format';
 import type { BackgroundJob } from '@/lib/types';
-import { useEventStream } from '@/lib/useEventStream';
+import { useEventStream, type StreamEvent } from '@/lib/useEventStream';
+import { relayChatFrame } from '@/soc/chat-activity/store';
 import type { Navigate } from '@/soc/router';
 import {
   announceJobsChanged,
@@ -24,6 +29,7 @@ const POLL_MS_LIVE = 60_000;
 const LIST_LIMIT = 100;
 const SEEN_LIMIT = 200;
 const PENDING_LIMIT = 100;
+const STREAM_TOPICS = ['jobs', 'chat'];
 
 function seenStorageKey(actor?: string | null): string {
   return `agentic-soc.jobs.terminal-toasts:${String(actor || 'default')
@@ -215,11 +221,20 @@ export function JobMonitor({ actor, onNavigate }: { actor?: string | null; onNav
     return () => window.removeEventListener(JOB_ACCEPTED_EVENT, onAccepted);
   }, [actor, refresh]);
 
-  const onEvent = React.useCallback(() => {
-    if (typeof document !== 'undefined' && document.hidden) return;
-    void refresh();
-  }, [refresh]);
-  const { live } = useEventStream(['jobs'], { enabled: true, onEvent });
+  const onEvent = React.useCallback(
+    (event: StreamEvent) => {
+      // The chat activity observer takes the `chat.turn` and `chat.read` frames (and an
+      // `overflow`); a chat frame is no reason to list jobs again.
+      relayChatFrame(event);
+      if (event.type.startsWith('chat.') || (typeof document !== 'undefined' && document.hidden)) return;
+      void refresh();
+    },
+    [refresh],
+  );
+  // This one shell stream also carries the caller's own chat turns (topic `chat`, SPEC
+  // D13), so the working indicator hears about a turn started on another device or
+  // browser without opening a second connection.
+  const { live } = useEventStream(STREAM_TOPICS, { enabled: true, onEvent });
 
   React.useEffect(() => {
     mountedRef.current = true;

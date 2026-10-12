@@ -35,6 +35,7 @@ import {
   parseRef,
   parseTimestamp,
   QUERY_LANGUAGES,
+  REPORT_LAYOUTS,
   REPORT_TEMPLATES,
   REPUTATION_VERDICTS,
   SEVERITY_KEYS,
@@ -50,7 +51,7 @@ import { INVISIBLE_TEXT_CLASS, INVISIBLE_TEXT_RANGES, displayText } from '@/soc/
 import { DOC_LINK_RE, isDocLink } from '@/soc/chat/display';
 import { ADDITIVE_UNITS, SHARE_TOLERANCE, chartKindFits, switchableViews } from '@/soc/chat/blocks/views';
 import type { ChartBlock, ChartKind, ValueUnit } from '@/soc/chat/blocks/schema';
-import { parseInternalRef } from '@/soc/chat/blocks/schema';
+import { parseBlock, parseInternalRef } from '@/soc/chat/blocks/schema';
 import { pageHash } from '@/soc/router';
 import type { NavOpts } from '@/soc/nav-types';
 import { isSafeCaseResultStatus } from '@/soc/case-result-route';
@@ -85,6 +86,7 @@ describe('answer-blocks contract', () => {
     ['time_buckets', TIME_BUCKETS],
     ['good_directions', GOOD_DIRECTIONS],
     ['report_templates', REPORT_TEMPLATES],
+    ['report_layouts', REPORT_LAYOUTS],
     ['nav_statuses', NAV_STATUSES],
   ] as const)('pins %s (ordered)', (key, values) => {
     expect([...values]).toEqual(c[key]);
@@ -258,5 +260,23 @@ describe('answer-blocks contract', () => {
     }
     expect(displayText('\ue000 0 \u{1bca4} \u{e1000} \u{1d172}', 0)).toBe('\ue000 0 \u{1bca4} \u{e1000} \u{1d172}');
     expect(INVISIBLE_TEXT_CLASS).toContain('\\u{e0000}-\\u{e0fff}');
+  });
+
+  it('keeps a calendar month bucket a month (1M is never lowered into the 1m minute)', () => {
+    const chart = (bucket: string) =>
+      parseBlock({
+        id: 'b1',
+        type: 'chart',
+        title: 'Cases by month',
+        provenance: 'code',
+        kind: 'line',
+        unit: 'count',
+        x: { kind: 'time', bucket, values: ['2026-08-01T00:00:00Z', '2026-09-01T00:00:00Z'] },
+        series: [{ key: 'cases', label: 'Cases', values: [3, 4] }],
+      }) as ChartBlock;
+    expect(chart('1M').x.bucket).toBe('1M');
+    expect(chart('1m').x.bucket).toBe('1m');
+    expect(chart('1Q').x.bucket).toBe('1q');
+    expect(chart('1D').x.bucket).toBe('1d');
   });
 });

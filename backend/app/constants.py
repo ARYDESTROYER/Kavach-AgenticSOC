@@ -294,7 +294,7 @@ REPORTS_INDEX_KEY = "index"
 REPORT_ID_PREFIX = "rpt-"
 REPORT_ITEM_ID_PREFIX = "rpti-"
 MAX_REPORTS_PER_USER = 100
-MAX_REPORT_ITEMS = 40
+MAX_REPORT_ITEMS = 60  # Round 12 (SPEC D11): monthly/executive reports from chat
 MAX_REPORT_DOC_BYTES = 512_000
 MAX_REPORT_TITLE_CHARS = 120
 MAX_REPORT_NOTE_CHARS = 500
@@ -771,6 +771,14 @@ VERDICT_KEYS = (
 # pass can treat fenced content as untrusted DATA without restructuring.
 UNTRUSTED_OPEN = "<<<UNTRUSTED_LOG_DATA>>>"
 UNTRUSTED_CLOSE = "<<<END_UNTRUSTED_LOG_DATA>>>"
+# Round 12 (SPEC D4): the running conversation summary that replaces older chat
+# exchanges. It is model-written from earlier answers and lookups (tainted content),
+# so it is UNTRUSTED: these markers wrap an ordinary UNTRUSTED fence, and the single
+# marker normaliser (``agents.prompts.neutralise_markers``) rewrites any forged copy of
+# either marker found inside a log value, a memory entry, a case comment or the
+# summary itself.
+CONVERSATION_SUMMARY_OPEN = "<<<CONVERSATION_SUMMARY>>>"
+CONVERSATION_SUMMARY_CLOSE = "<<<END_CONVERSATION_SUMMARY>>>"
 
 
 # --------------------------------------------------------------------------- #

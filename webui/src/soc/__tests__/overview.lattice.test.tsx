@@ -386,7 +386,9 @@ describe('Overview — the command lattice', () => {
     // The timing pair sits BETWEEN the two case surfaces because it is the middle cell of
     // row 2 (snapshots · timing · queue) rather than a full-width row below them. DOM
     // order still equals visual order — the grid lays the three cells out left to right
-    // and no `order-*` utility is used — so reading and focus order stay truthful.
+    // and no `order-*` utility is used — so reading and focus order stay truthful. (From
+    // 1920px the band is two columns read in order: snapshots over timing on the left,
+    // the queue spanning both on the right.)
     const band = [strip, funnel, attribution, snapshots, timing, queue];
     for (let i = 0; i < band.length - 1; i += 1) {
       expect(follows(band[i], band[i + 1])).toBe(true);
@@ -403,6 +405,13 @@ describe('Overview — the command lattice', () => {
     // The burndown rail was retired to Analytics → Posture ("Closure vs arrival"); it
     // must not have crept back onto the landing surface as a seventh band.
     expect(screen.queryByRole('region', { name: /Cases burndown/i })).toBeNull();
+
+    // Let the strip's lazy numerals finish upgrading before the test ends: a suspended
+    // chunk resolving after the last assertion printed React's act() warning (stderr).
+    await waitFor(
+      () => expect(within(strip).queryAllByTestId('count-up')).toHaveLength(0),
+      { timeout: 5000 },
+    );
   });
 
   // ---------------------------------------------------------------- GROUP B --

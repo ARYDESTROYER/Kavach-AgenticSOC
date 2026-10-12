@@ -10,6 +10,7 @@ import {
   TextPref,
 } from '../primitives';
 import { Button } from '@/ui/button';
+import { materialBar } from '@/lib/ui-recipes';
 
 describe('Settings form composition visual standard', () => {
   it('keeps section context and actions in one flat heading band', () => {
@@ -43,10 +44,26 @@ describe('Settings form composition visual standard', () => {
     );
 
     const nav = screen.getByRole('navigation', { name: 'Settings sections' });
-    const tocBand = nav.parentElement as HTMLElement;
+    const tocBand = nav.closest('.material-surface') as HTMLElement;
+    expect(tocBand).not.toBeNull();
     expect(tocBand.className).toContain('border-y');
-    expect(tocBand.className).toContain('bg-background/95');
-    expect(tocBand.className).not.toMatch(/rounded|shadow|bg-card|backdrop/);
+    // Sticky chrome wears the ONE Console material (it turns solid under reduced
+    // transparency / increased contrast), never a page-local translucent fill: every
+    // recipe token, and no other `bg-*/NN` fill beside the recipe's.
+    for (const token of materialBar.split(/\s+/).filter(Boolean)) expect(tocBand).toHaveClass(token);
+    expect(tocBand.className.split(/\s+/).filter((c) => /(^|:)bg-[a-z-]+\/(\d+|\[[\d.]+\])$/.test(c))).toEqual(
+      materialBar.split(/\s+/).filter((c) => /(^|:)bg-[a-z-]+\/(\d+|\[[\d.]+\])$/.test(c)),
+    );
+    expect(tocBand.className).not.toMatch(/rounded|shadow|bg-card/);
+    // Pinned FLUSH under the top bar (no slit for scrolled content to show through), and
+    // its top hairline gives way to the top bar's once content scrolls beneath it.
+    expect(tocBand.className).toContain('top-[var(--header-h)]');
+    expect(tocBand.className).not.toMatch(/top-\[calc\(/);
+    expect(tocBand.className).toContain('data-[scrolled=true]:border-t-transparent');
+    // The horizontal scroll is an inner row, so the material's scroll-edge fade (which
+    // hangs below the bar) is never clipped or scrolled.
+    expect(tocBand.className).not.toMatch(/overflow-/);
+    expect(nav.parentElement?.className).toContain('overflow-x-auto');
     expect(container.querySelectorAll('h2')).toHaveLength(1);
   });
 

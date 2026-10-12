@@ -11,6 +11,20 @@
  * Each section is a labelled `role="group"`, not a `<section aria-labelledby>`: a named
  * section is a region LANDMARK, and a transcript of Briefs would flood the landmark list
  * (and fail axe `landmark-unique` whenever two Briefs share a section heading).
+ *
+ * `staticMode` (print / static export, Round 12 WP-REP R6): the contents list is plain
+ * text — no toggle and no jump buttons, which a printed page cannot use (and which the
+ * old print stylesheet hid, leaving an empty "1. 2. 3." list).
+ *
+ * Templates and layouts (Round 12 SPEC §3.4, D11): the Brief names its template beside the
+ * provenance chips ("Monthly SOC report"); an executive summary or a monthly report opens
+ * with its first section's summary as the lead; the `infographic` layout (or template)
+ * draws the hero KPI row, the highlights and the 2-up chart grid (`InfographicView`).
+ *
+ * In both layouts a section whose first card is titled like the section ("AI cost" over a
+ * card titled "AI cost") does not say it twice: the card's title stays and takes the
+ * heading's place, and the heading is kept for assistive tech and the contents jump
+ * (`headingRepeatsLeaf`, the same rule the exports follow).
  */
 import * as React from 'react';
 import { ChevronDown } from 'lucide-react';
@@ -20,8 +34,36 @@ import { focusRing } from '@/lib/ui-recipes';
 import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 
 import { sectionAnchorId, useBlocks } from '../context';
-import { formatUtc } from '../format';
-import type { LeafBlock, ReportBlock } from '../schema';
+import { INVESTIGATION_BRIEF_ADVISORY, formatUtc } from '../format';
+import type { LeafBlock, ReportBlock, ReportLayout, ReportTemplate } from '../schema';
+import { headingRepeatsLeaf } from '../report-headings';
+import { InfographicView } from './InfographicView';
+
+/** A template's name on the Brief (the Reports library's `TEMPLATE_LABEL` words). */
+export const TEMPLATE_NAME: Readonly<Record<ReportTemplate, string>> = {
+  investigation: 'Investigation',
+  hunt: 'Threat hunt',
+  ioc: 'Indicator report',
+  shift: 'Shift handoff',
+  posture: 'Posture review',
+  custom: 'Custom',
+  executive: 'Executive summary',
+  monthly: 'Monthly SOC report',
+  infographic: 'Infographic',
+  investigation_brief: 'Investigation brief',
+};
+
+// The investigation brief's label (P1-3, #3) lives with the pure format helpers, so the
+// report document and every static export (export/walker.ts) print the same words.
+export { INVESTIGATION_BRIEF_ADVISORY } from '../format';
+
+/** Templates whose first section summary is the lead (an executive reads it first). */
+const LEAD_TEMPLATES: ReadonlyArray<ReportTemplate> = ['executive', 'monthly', 'investigation_brief'];
+
+/** The layout a Brief is drawn in: its own, else the infographic template's, else a document. */
+export function reportLayout(block: ReportBlock): ReportLayout {
+  return block.layout ?? (block.template === 'infographic' ? 'infographic' : 'document');
+}
 
 /** Leaf counts by provenance: measured = code or source; AI-stated = ai. */
 export function provenanceSummary(block: ReportBlock): { measured: number; ai: number } {
@@ -49,11 +91,15 @@ export interface ReportViewProps {
   block: ReportBlock;
   blockIndex: number;
   renderLeaf: (leaf: LeafBlock, key: string) => React.ReactNode;
+  /** Print / static export: a plain-text contents list, nothing interactive. */
+  staticMode?: boolean;
 }
 
-export function ReportView({ block, blockIndex, renderLeaf }: ReportViewProps) {
+export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }: ReportViewProps) {
   const { domId } = useBlocks();
+  const layout = reportLayout(block);
   const [tocOpen, setTocOpen] = React.useState(block.sections.length > 3);
+  const lead = block.template !== undefined && LEAD_TEMPLATES.includes(block.template);
   const rawId = React.useId();
   const tocId = `toc-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const prov = provenanceSummary(block);
@@ -66,9 +112,17 @@ export function ReportView({ block, blockIndex, renderLeaf }: ReportViewProps) {
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-3" data-testid="block-report">
+    <div className="flex min-w-0 flex-col gap-3" data-testid="block-report" data-layout={layout} data-template={block.template}>
       {block.subtitle ? <p className="text-sm text-muted-foreground">{block.subtitle}</p> : null}
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="report-provenance">
+        {block.template && block.template !== 'custom' ? (
+          <>
+            <span className="rounded-sm border border-border/70 px-1.5 py-0.5 font-medium text-foreground" data-testid="report-template">
+              {TEMPLATE_NAME[block.template]}
+            </span>
+            <span aria-hidden>·</span>
+          </>
+        ) : null}
         <span className="inline-flex items-center gap-1">
           <ProvenanceTag kind="code" variant="icon" />
           {prov.measured} measured
@@ -79,8 +133,27 @@ export function ReportView({ block, blockIndex, renderLeaf }: ReportViewProps) {
           {prov.ai} AI-stated
         </span>
       </div>
+      {block.template === 'investigation_brief' ? (
+        // Round 12 P1-3 (#3): a brief recommends; the case decision is the policy's.
+        <p className="text-xs font-medium text-foreground" data-testid="report-advisory">
+          {INVESTIGATION_BRIEF_ADVISORY}
+        </p>
+      ) : null}
 
-      {block.sections.length > 1 ? (
+      {layout === 'infographic' ? (
+        <InfographicView block={block} blockIndex={blockIndex} renderLeaf={renderLeaf} staticMode={staticMode} />
+      ) : null}
+
+      {layout === 'infographic' ? null : block.sections.length > 1 && staticMode ? (
+        <div className="rounded-md border border-border/70 px-3 py-1.5 text-xs" data-testid="report-toc-static">
+          <p className="font-medium text-foreground">Contents ({block.sections.length} sections)</p>
+          <ol className="mt-0.5 list-decimal space-y-0.5 pl-5 text-foreground">
+            {block.sections.map((s) => (
+              <li key={s.id}>{s.heading}</li>
+            ))}
+          </ol>
+        </div>
+      ) : block.sections.length > 1 ? (
         <div className="rounded-md border border-border/70">
           <button
             type="button"
@@ -104,14 +177,31 @@ export function ReportView({ block, blockIndex, renderLeaf }: ReportViewProps) {
         </div>
       ) : null}
 
-      {block.sections.map((s, si) => {
+      {layout === 'infographic' ? null : block.sections.map((s, si) => {
         const headingId = sectionAnchorId(domId, blockIndex, si);
+        // "AI cost" over a card titled "AI cost": the card's title says it.
+        const repeats = headingRepeatsLeaf(s.heading, s.blocks, s.summary);
         return (
           <div key={s.id} role="group" aria-labelledby={headingId} className="flex min-w-0 flex-col gap-2">
-            <h5 id={headingId} tabIndex={-1} className="scroll-mt-16 text-sm font-semibold text-foreground outline-none">
+            <h5
+              id={headingId}
+              tabIndex={staticMode ? undefined : -1}
+              className={cn('scroll-mt-16 text-sm font-semibold text-foreground outline-none', repeats && 'sr-only')}
+              data-repeats-leaf={repeats || undefined}
+            >
               {s.heading}
             </h5>
-            {s.summary ? <p className="whitespace-pre-line break-words text-sm text-muted-foreground">{s.summary}</p> : null}
+            {s.summary ? (
+              <p
+                className={cn(
+                  'whitespace-pre-line break-words',
+                  lead && si === 0 ? 'text-md text-foreground' : 'text-sm text-muted-foreground',
+                )}
+                data-testid={lead && si === 0 ? 'report-lead' : undefined}
+              >
+                {s.summary}
+              </p>
+            ) : null}
             {s.blocks.map((leaf, li) => (
               <React.Fragment key={`${leaf.id}-${li}`}>{renderLeaf(leaf, `${si}-${li}`)}</React.Fragment>
             ))}

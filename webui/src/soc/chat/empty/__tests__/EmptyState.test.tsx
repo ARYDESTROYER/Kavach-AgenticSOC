@@ -4,12 +4,14 @@
  * starter to the host, static geometry while the context loads, the access link, the
  * compact case variant, hostile text rendered as text (#9), and axe.
  */
-import { describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import type { ChatStarter } from '@/lib/types';
 import { makeContext } from '../../composer/__tests__/fixtures';
+import { PROMPTBOOK_RUNNING_REASON } from '../../composer/PromptRunner';
+import { beginPromptbook, endPromptbook, resetPromptbookForTests } from '../../composer/promptbook-store';
 import { CAPABILITY_LINE, EmptyState, visibleStarters } from '../EmptyState';
 import { STARTER_ICONS, starterIcon } from '../starter-icons';
 
@@ -41,6 +43,8 @@ describe('visibleStarters', () => {
 });
 
 describe('EmptyState', () => {
+  afterEach(() => resetPromptbookForTests());
+
   it('shows the capability line and the six starters with icons, and sends the clicked one', async () => {
     const onStarter = vi.fn();
     const user = userEvent.setup();
@@ -110,6 +114,31 @@ describe('EmptyState', () => {
     for (const card of screen.getAllByRole('button', { name: /Investigate|Hunt|Posture|Shift|Explain|Learn/ })) {
       expect(card).toBeDisabled();
     }
+  });
+
+  it('pauses the cards with the composer\'s reason while a promptbook runs in another thread', async () => {
+    const onStarter = vi.fn();
+    const user = userEvent.setup();
+    // The book runs in c-1 while the analyst looks at a new chat (its step still answering).
+    act(() => {
+      beginPromptbook('Weekly review', ['Count open cases.', 'List the top rules.', 'Summarise.'], 'c-1');
+    });
+    const { container } = render(<EmptyState context={makeContext({ starters: STARTERS })} onStarter={onStarter} />);
+    const list = screen.getByRole('list', { name: 'Suggested questions' });
+    expect(list).toHaveAccessibleDescription(PROMPTBOOK_RUNNING_REASON);
+    expect(screen.getByText(PROMPTBOOK_RUNNING_REASON)).toBeInTheDocument();
+    for (const card of within(list).getAllByRole('button')) expect(card).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: /Shift brief/ }));
+    // One click would open a new thread and the book would stop itself: nothing is sent.
+    expect(onStarter).not.toHaveBeenCalled();
+    expect(await axe(container)).toHaveNoViolations();
+    // The book ends: the cards are back, without the reason.
+    act(() => endPromptbook('done', 'Finished all 3 steps.'));
+    for (const card of within(list).getAllByRole('button')) expect(card).toBeEnabled();
+    expect(screen.queryByText(PROMPTBOOK_RUNNING_REASON)).toBeNull();
+    expect(list).not.toHaveAttribute('aria-describedby');
+    await user.click(screen.getByRole('button', { name: /Shift brief/ }));
+    expect(onStarter).toHaveBeenCalledWith(STARTERS[3]);
   });
 
   it('opens the access popover from the link', async () => {

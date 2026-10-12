@@ -39,6 +39,50 @@ revoke sessions for another user.
 Use short access lifetimes appropriate to the environment. Session continuity also
 depends on the selected state store and a stable JWT secret.
 
+A sign-in without **Remember me** uses a browser-session cookie: it usually ends when
+the browser closes, and the server's idle and absolute limits apply in any case. Its
+token lasts `AUTH_TOKEN_HOURS` (default 12 hours; a value above 144 hours is reduced to
+144, for bearer-token API clients too). When a session ends on its own, the
+sign-in page says why: after a period of inactivity, after the time limit, because it
+was ended from another device or by an administrator, or because all of the account's
+sessions were signed out.
+
+## Remember me
+
+The sign-in page offers **Remember me**. Checking it shows a warning first ("Keep this
+device signed in?", with **Cancel** focused): anyone who can open this browser can use
+the console as that user, without a password, until the remembered time runs out. After
+**Keep me signed in**:
+
+- the session survives browser restarts for the remembered duration (6, 12, or 24
+  hours; 24 by default and at most), and never longer than the **Absolute lifetime**;
+- the standard **Idle timeout** still applies, unless the administrator sets a separate
+  inactivity limit for remembered devices;
+- the username is remembered on this device, and the browser's own password manager may
+  offer to save the password. Agentic SOC never stores the password. **Use a different
+  account** on the sign-in page, or **Forget this device** under **Settings → Account →
+  Sessions & activity**, removes the remembered username;
+- two-factor authentication is still required at every sign-in, and sensitive actions
+  still ask for the password.
+
+Administrators configure it in the **Remember me** group of the session policy under
+**Settings → Security & access → Single sign-on & policy**: turn it off, choose how long
+devices stay signed in, add a separate inactivity limit, list roles that are never
+remembered, and, only when secure cookies are off, allow it on plain HTTP (not
+recommended). Changes apply to live sessions on their next request.
+
+Remember me needs HTTPS with `AUTH_COOKIE_SECURE=true`, unless an administrator allowed
+it on plain HTTP (`session_policy.remember_me.allow_insecure_http`, not recommended).
+Until secure cookies are on, and while that setting is off, the checkbox is shown
+disabled with the reason, except on a direct request from the server itself. It is
+hidden only when authentication is disabled. A remembered session shows a
+**Remembered** badge and its expiry under **Settings → Account → Sessions & activity**
+and in the administrator's session list.
+
+See [Security hardening](../operations/security.md#session-lifetimes) for the full
+session-lifetime table, the transport rules for reverse proxies, and the documented
+deviations from NIST SP 800-63B-4.
+
 ## MFA
 
 TOTP setup returns a secret and recovery codes once. Store recovery codes outside the

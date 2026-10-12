@@ -319,8 +319,9 @@ History replay: one exchange = one user + assistant pair. Keep the last 12 excha
 `role=user` messages. Assistant prose is replayed as `role=assistant` through
 `fence_block(answer, source="prior_answer")` inside the existing UNTRUSTED fence (no new
 delimiter), followed by an engine-written lookup digest built from the stored steps
-("Lookups m3: log_stats(source=wazuh-prod, from=now-24h, group_by=source.ip) → 1,284 events; …",
-≤ 600 chars, values untrusted) and the ids of that message's stored blocks (`m3.b1 hbar "…"`), so
+("Lookups m3: step 2 log_stats(source=wazuh-prod, from=now-24h, group_by=source.ip) → 1,284
+events; …", ≤ 600 chars plus the `step N` prefixes (A60), values untrusted) and the ids of that
+message's stored blocks (`m3.b1 hbar "…"`), so
 follow-ups such as "now chart that by host" or "same for last 7 days" reuse exact filters or switch
 views without a new lookup.
 
@@ -708,7 +709,8 @@ fallback, never throw; G10 interactions limited to BLOCKS.md amendment 3.
 | report envelope | `report` | — (structural; leaves materialised individually) |
 
 `stacked_bar` and `donut` are offered only where the values add up (A15). Series order is
-deterministic (descending total, ties by label) so colours are stable;
+deterministic (descending total, ties by label; a severity, verdict, status or priority
+breakdown keeps its canonical order, Round 12 SPEC §7.2 decision 27) so colours are stable;
 `--chart-1..7` with `--chart-8` for "Other". Model-requested `top_n`/`title` are clamped and
 display-sanitised. An artifact with no rows, points or items materialises no block, and a KPI row
 that only restates an entity card of the same call is left out (A34).
@@ -846,7 +848,8 @@ class Report(BaseModel):
 
 Storage: one KV document per report (`reports:<user-hash>:<report-id>`, ≤ 512 kB, `items_json` and
 `summary_json` as opaque strings) plus one small per-user index document (ids, titles, template,
-conversation_id, item count, updated_at; ≤ 100 reports), all under strict CAS. Delete is a strict
+conversation_id, source_conversation_id (Round 12 final review), item count, updated_at; ≤ 100
+reports), all under strict CAS. Delete is a strict
 tombstone put followed by index removal. `AppState.reports` is demo-switchable (DemoStack.reports
 over the demo KV, purged on disable) and the namespace is covered by factory reset. Reports
 survive conversation deletion or eviction; the source link then reads "Conversation no longer
@@ -907,6 +910,9 @@ Sheet. The report panel opens as a split (default 360 px, keyboard-resizable 320
 persisted per viewer) only if the conversation keeps ≥ C_min — collapsing the rail to the strip
 first if that achieves it — otherwise as an overlay Sheet. Blocks widen to min(64rem,
 conversation width); prose stays ≤ 48rem.
+
+**Superseded in Round 12 by A52** (one lane, two edges; the width preference; new
+reference widths). The text below is the revamp's original geometry.
 
 Reference widths (nav 240 / 64; the split counts its 9 px separator handle, A24): 1280 →
 conversation 727 (panel overlay) / 903 (split with rail strip 750); 1440 → split with rail strip
@@ -1451,8 +1457,15 @@ a billed one.
 `report_summary_timeout`, one `abandoned` UsageDoc).
 (g) The dry-run total is the prompt estimate plus `min(max_tokens, 400)` expected output tokens.
 (h) An item's `scope.window` prefers the block caption's effective window, then the step's window
-chip, then the conversation's `time_range`.
-(i) Reports are purged only by the factory reset tier, like chat history.
+chip, then the conversation's `time_range`. Round 12: each covered block contributes its own
+window (caption, else its step's input read back in caption words), each listed once; a whole
+Brief covers every section leaf; text no lookup produced (a "Next steps" section) covers the
+whole answer; then the window the Brief recorded for its turn. A step input the window grammar
+cannot read (a display-form range cut short, any other text) names no window and is never shown.
+(i) Reports, like chat history, are purged by the factory reset tier and when their owner's
+account is deleted (Round 12 final review: `AuthService.purge_user_side_state` clears the
+user's conversations, answer ratings and reports, so a new account with the same name starts
+empty).
 (j) Content writes (adds and growing PATCHes) keep `SUMMARY_RESERVE_BYTES` (16 kB) free inside
 the 512 kB document, so they are refused (409 `report_full`, `reason: "size"`) at about 496 kB
 and writing a billed summary never fails on size; a shrinking PATCH is always accepted.
@@ -1799,3 +1812,418 @@ fields, apart from the top `notice`.
   citation snippets are plain text and a section is cited once.
 - **History rail.** The rail requests 60 rows so up to ten pinned conversations never fall off
   the first page (§7.5 pins are exempt from the 50-conversation eviction).
+
+### Round 12 amendments (A39+)
+
+Round 12 (`docs/research/2026-10-round12/SPEC.md`, decisions D1–D17) changed the chat in
+ways that override parts of this document. Each override is recorded here; where an
+amendment and an earlier section disagree, the amendment wins.
+
+**A39 — Limits mode: correctness guards, not caps (§4.2, A2, A38 "Reservation lease";
+Round 12 D1, D2).** `ChatAgentConfig.limits_mode: "unlimited" | "bounded"`, default
+`unlimited`. In `unlimited` the per-question knobs (`max_model_calls`, `max_tool_calls`,
+`turn_token_ceiling`, `final_reserve_tokens`, `turn_timeout_s`, `final_max_tokens`,
+`observation_chars` as a hard cap) are kept but not applied, and the `cap` notice is never
+produced. A turn ends when the model writes its final answer or the analyst presses Stop.
+Guards end only pathological loops: (a) an identical `(tool, canonical params)` call is not
+re-executed ("Already ran as tN in this question; reuse its results"; a lookup that failed
+may be asked for once more before it counts as a repeat); (b) three consecutive model steps
+that add no artifact and request no new lookup force one final-answer step with the
+`stopped_repeating` notice; (c) `model_step_timeout_s` (default 300 s, range 5–900) is a
+stall timeout: a stalled call is abandoned, ledgered, and retried once, and a second stall
+ends the answer with the `partial` notice "The AI provider stopped responding…"; (d) a hidden
+fuse of 200 model calls or 3,600 s per question forces one final-answer step that
+synthesises what was gathered, with the quiet run-log row "Wrapped up after a very long
+investigation" (no Partial chip, no Continue chip); a lookup queued after the fuse is
+skipped ("Wrapped up before this lookup ran"). One model reply may schedule at most 40
+lookups; the rest are skipped steps the model may ask for again. `bounded` keeps the
+pre-Round-12 behaviour and knobs exactly; in `bounded` mode a model call gets at most the
+question's remaining time, never less than 30 s (the bounded per-call timeout), and
+`max_parallel` is limited to `max_tool_calls` at run time only (`effective_parallel`; the
+stored value is never rewritten, so a mode round trip is lossless). A one-time
+`chat_limits_version` migration (version 1) moves a stored block to `unlimited` unless one
+of the seven knobs differs from its pre-Round-12 default (5, 10, 60,000, 12,000, 4,000,
+6,000, 90 s), keeps an explicit `limits_mode`, and moves stored old defaults of
+`model_step_timeout_s` (30 → 300, `unlimited` only), `max_concurrent_turns_per_user`
+(2 → 4) and `max_concurrent_turns_global` (8 → 16). The reservation lease of A38 is
+replaced: a Workspace reservation is owned for 10 minutes and renewed every 60 s by a
+heartbeat while the turn runs (`routes_chat.turn_lease_seconds`), so a turn of any length
+keeps its key and a crashed process's lease still expires.
+
+**A40 — Output length and continuation (§4.2, A2; D3).** In `unlimited` mode every model
+step asks for the model catalogue's maximum output, but only on a provider that streams; a
+provider answering in one blocking request (Azure OpenAI, Bedrock, Vertex, an entry-point
+client) gets 4,000 output tokens per step (or the model's own larger setting) so the
+request finishes inside its client read timeout (`chat.chat_step_output_tokens(...,
+blocking=...)`, also what `/api/chat/context` reports as `max_output_tokens`). On
+`finish_reason == "length"` the engine runs a continuation step through the same gateway
+path, stitches the body, keeps streaming without `text.reset`, emits `text.continued
+{part}` and the quiet run-log row "Continued the answer (part N)", and counts the steps in
+`ChatResponse.continued`. Three continuation steps that each add fewer than 50 characters
+end the answer with the `partial` notice (a true failure only). After the A39 fuse at most
+10 more continuation parts are allowed. Bounded mode keeps the A2 budget.
+
+**A41 — Stop (§6.3; D2).** In `unlimited` mode Stop abandons the in-flight model call at
+once: the gateway ledgers it with failure class `abandoned` and a real estimated cost
+(#6), the call is never retried or continued, and what it had written is kept as the
+stopped answer. A summary call in flight is abandoned the same way. In `bounded` mode the
+§6.3 rule stands: the in-flight call finishes and is recorded, and no new step starts.
+
+**A42 — Context window instead of caps; `/compact` (§4.2, §7.5; D4).** Cross-turn: once
+the replayed history passes 35% of the model's context window (32,000 tokens assumed for an
+unknown model), the older exchanges are folded into a running conversation summary (one
+gateway call, `surface="chat"`, down to 20% of the window, keeping the 2 newest exchanges
+verbatim). The summary is bounded (about 5% of the window in characters, 12,000–48,000;
+at most 4,000 output tokens), stored on the conversation (`s-` document,
+`summary_covers_through`), injected inside a new `CONVERSATION_SUMMARY` UNTRUSTED fence,
+and its values are treated by the taint ledger like prior-answer values (#9). The turn
+reports `ChatResponse.compacted` and the quiet `compacted` notice ("Earlier messages were
+summarised to keep going"). Intra-turn: when the projected prompt passes 60% of the window,
+older observations become their artifact-manifest lines, and the new read-only tool
+`recall_observation(ref)` returns the stored (aggregate, fenced, shrunk) observation, never
+raw log rows (#7); per-observation budgets scale with the window. `/compact` (a saved
+Workspace conversation in `unlimited` mode only; text after it is not sent) forces a
+summary and answers "Summarised N earlier exchanges. The conversation continues from the
+summary." ("exchange" for one; `chat._COMPACT_DONE`); in `bounded` mode or a stateless turn
+it explains why nothing was summarised. The engine never reads or writes the conversation
+store: the route passes `summary_text`/`summary_covers_through` in and persists the new
+summary from the turn outcome. Known limitation: no route returns the summary text, so the
+console shows only the run-log row.
+
+**A43 — Chat and the daily AI budget (§8, §10.3, A35; D5).** Chat is outside the AI
+budget, both its daily and its monthly ceiling (`budget.daily_usd`, `budget.monthly_usd`).
+`llm/gateway.BUDGET_EXEMPT_SURFACES = ("chat",)`: a `role=chat` call on
+`surface="chat"` is never blocked by the budget gate, and chat spend is excluded from what
+the gate measures for every other call, in the daily and the rolling 30-day monthly
+window alike (`engine/budget.BudgetService._window_spend`; `GET /api/budget/status`
+reports today's share apart as `excluded_today`). Every chat call still goes through the
+one gateway and writes one UsageDoc (#6). Report summaries (`surface="report"`) are not
+exempt. Chat's only spending bound is the daily cap below; there is no monthly chat
+bound. The optional
+`chat_agent.chat_daily_cap_usd` (default `null`; 0 or `null` is off) is enforced by the
+engine before each model call against today's chat-surface spend (UTC day) plus calls in
+flight (`_ChatSpendInFlight`, process-local): a blocked first call is answered with the
+`budget` notice "Today's chat spending limit has been reached, so no answer was generated."
+(a product question still gets the $0 Help Center answer of A35), and a continuation refused
+mid-answer ends the visible answer with "Today's chat spending limit was reached, so this
+answer stops here." (`chat_budget_cut`; `budget_cut` is the same sentence for an older
+configuration's AI budget). The A35 composer copy is replaced: the one budget alert
+describes what happens to automatic investigations ("It limits automatic investigations,
+not chat."; "Automatic investigations are paused until it resets, so new cases wait for an
+analyst."), and chat keeps answering. `budget_state` in `/chat/context` still reports the
+AI budget (`reached` or `approaching` on either the daily or the monthly window,
+`routes_chat._budget_state`); the client uses it only to describe automatic
+investigations, never to block Send.
+
+**A44 — Concurrency (§4.2; D6).** Defaults rise to 4 questions per user and 16 per backend.
+A refusal is `429 chat_busy` with `Retry-After` and a body `{code, message, retry_after: 5,
+scope: "user" | "global", limit}`. The web client's turn runner shows "Waiting for another
+answer to finish" and re-sends the same request with backoff at the server's `retry_after`
+for up to 5 minutes, then fails with Retry; Stop while waiting simply ends it. A same-key
+retry is resolved before concurrency admission, so it can never be refused as busy.
+
+**A45 — Time windows (§3.1, A38 "Time precedence"; D7, D7a).** `TimeRange.MAX_SPAN_DAYS`
+(90) no longer applies to chat; `CHAT_LIMITS.time_range_max_days` is `null`, and the scope
+chip accepts `{"from": "all"}`. Every aggregate tool accepts all time, `now-N[d|w|M|y]`,
+calendar tokens (`today` … `last_year`, `ytd`), named months/quarters/years and ISO ranges,
+resolved in `SlaPolicy.timezone` (labels name the zone) by `engine/time_windows.py`. A
+relative window broken down by a calendar unit is aligned to whole periods before counting
+("last 6 months (since May 2026)", the current period flagged in progress). The 720-hour
+and 90-day clamps are removed for aggregate tools. A chip still clamps a wider
+model-requested window; a tool window wholly outside the chip is refused with
+`OUTSIDE_SELECTED_RANGE` (the step's result names it; the model is told to say so) instead
+of silently falling back to the chip; an "All time" chip never clamps. `log_stats` accepts
+calendar intervals `1w`, `1M`, `1q`, `1y`.
+
+**A46 — Exact aggregates (§5.3; D8).** No sample is presented as exact in chat. The new
+`case_stats` tool (on `engine/case_aggregate.aggregate_cases`) counts and groups every case
+(≤ 2 of verdict, status, status_group, severity, priority, rule, assignee, source, surface,
+disposition, mitre_tactic, mitre_technique, decided_by, closed_by; calendar buckets; metrics
+from count to open_now; `compare` with up to 4 periods; a long per-call budget of 600 s that
+Stop still cancels; `step.progress` "Counted N of M cases…"). `search_cases` totals and the
+case-derived `soc_metrics` kinds use the same aggregator; `cost_usage` uses the usage
+aggregate. A store failure mid-scan is `exact: false` with the counted share. Dashboards
+read exact store-wide counts (the `/api/metrics` headline counts and the Open Cases
+stock); every window figure, the Overview's window tiles included, and the heavier
+rollups are exact up to 20,000 cases per rollup scope and analyse the newest 20,000 of a
+larger scope with an explicit truncation marker (`store_total` = cases in the scope,
+`fetched` = cases analysed; counts shown as lower bounds, rates withheld); chat
+aggregates have no such bound (Round 12 SPEC §7.2 decision 1). Unknown tool inputs are refused visibly (no silent `extra="ignore"` drop).
+
+**A47 — Routing honesty (§4.3, A34; D9).** `unsupported: true` in the final header is
+honoured only when no data tool ran; otherwise the answer carries the new `limited` notice
+("Answered with what chat can read; part of the question is outside its lookups.") and
+`answer_kind` follows the model's own value. The "Product help" label is shown only for a
+`product_help` answer where no data tool ran. The `unsupported` body names a console link
+only when one resolved ("Chat has no lookup for this data yet." otherwise).
+
+**A48 — Clarify and zero-result suggestions (§3.1, §10.3; D10).** A final variant
+`clarify: {question (≤ 200), options (≤ 4, each ≤ 80), allow_custom}` asks instead of
+guessing when no reasonable default exists (`ChatResponse.clarify`). Option picks are sent
+with `origin: "clarify"`, in the `follow_up` taint class (#9); the conversation's status is
+`needs_input` until answered, and the card offers "Something else…" when `allow_custom`.
+Zero-match observations carry engine-built `suggestions[]`, rendered as one-click chips
+("Nothing matched. Widen the search:").
+
+**A49 — Reports from chat (§9; D11).** The final header may carry `report: {title,
+template}`. After the message persists, the server (never the model) creates the report
+from the persisted message through the server-resolved add path
+(`routes_reports.save_answer_as_report`) and returns `ChatResponse.saved_report {id, title,
+items, skipped}`; a save that could not happen returns `saved_report_error`
+(`report_limit`, `report_unavailable`, `report_empty`), recorded on the stored answer, and
+`POST /api/reports/from-answer` retries it idempotently per answer. No report is created from
+a stopped or failed answer (notice kinds `cancelled`, `partial`, `timeout`, `budget`,
+`provider`, `breaker`), and case-scoped turns never create one. `POST
+/api/reports/from-conversation` saves a whole conversation, one section per answer. Templates
+add `executive`, `monthly`, `infographic` and `investigation_brief`; item and leaf limits
+rise to 60 (`MAX_REPORT_ITEMS`, `MAX_REPORT_LEAVES`). A whole answer keeps all of its text:
+one that does not fit `MAX_SECTION_BLOCKS` continues in further `section` items titled
+"(continued)" with source block id `#<n>` (removing the first removes the rest). Report
+titles from a header are display-sanitised and cut at 80 characters.
+
+**A50 — Storage: full text, no removal (§7.5, A22, A32).** Every Workspace exchange also
+gets its own `x-<hash>` document (one opaque `chat_exchange_json` string: the full question,
+the full answer and the uncompacted stored response); the partition row keeps a bounded
+inline copy (12,000 / 24,000 characters, the A22 compact presentation) marked
+`exchange_saved`, and reads restore the full message. No message is removed: past the
+256 kB inline budget the oldest exchange-backed messages shrink to previews; past 140
+messages the oldest pairs move to `a-<hash>` archive pages until 100 remain inline.
+`GET /chat/conversations/{id}` returns the newest 100 messages with `earlier_message_count`;
+`…/messages?before=` pages older ones. Other new documents in the same namespace: the
+summary `s-`, step observations `o-`/`oi-` (a per-user ring of 100 answers, 24,000
+characters per step), and a per-owner live-state `v-` document (lease heartbeat, `status`,
+`unread`), all with fixed `chat_`-prefixed fields holding one opaque string, so the
+Elasticsearch config-index mapping stays bounded. The A32 rollback notes gain: an earlier
+build shows only inline copies (answers over 24,000 characters end there; archived messages
+are not shown), keeps every message it reads, and trims only conversations it answers in to
+its own 100-message window. Answer ratings use a new `chat_feedback` namespace (one opaque
+document per user, at most 500 ratings).
+
+**A51 — Turn lifecycle, rejoin and the working indicator (§6.4, §10.8; D13).** The client
+no longer aborts a turn when its view unmounts: a module-level turn runner (lazy chat chunk)
+detaches and re-attaches. `GET /api/chat/turns/active` lists the owner's running turns;
+`GET /api/chat/turns/{turn_id}/events?after=<seq>` replays the bounded per-turn event ring
+(text deltas coalesced, `usage` and `step.progress` latest only, at most 2,000 entries and,
+since the PR #131 review, at most 1,000,000 characters of answer text in 250,000 deltas, the
+oldest text dropped first and a rejoin from before it sent one `text.reset` in its place, see
+the Round 12 SPEC §7.3; `seq` = non-ping line count on a from-start stream) and tails it live;
+a finished turn stays readable for 300 s. Owner-only `chat.turn` frames (`started`, `progress`, `finished`,
+`failed`, `needs_input`) go out on the `chat` topic, never to anonymous subscribers (the
+client polls `turns/active` every 5 s while auth is off). Turns, rings and Stop are bound to
+the owner's account generation (`503 chat_account_unavailable` when it cannot be read). The
+§6.4 recovery window derived from `turn_timeout_s` is removed: a broken stream re-attaches to
+the same turn id, a persisted Workspace turn without one is re-sent once with the same key,
+and a case turn is never re-sent (A4). Conversation summaries carry `status` (`idle`,
+`running`, `needs_input`, `failed`) and `unread` (`POST …/read` clears it); a brand-new
+thread is listed as a temporary running row. A tiny entry-safe activity store drives an
+animated glyph on the Chat nav item (ring running, accent dot unread, amber needs input, red
+failed; reduced motion: a still ring and the word "Working"), an optional brand ring
+(`chat_agent.animated_brand`, default on; a white-label logo never moves), history-row
+statuses, a tab-title prefix (● running, ✓ unread) and one "Answer ready" toast when chat is
+off screen. The registry and ring are process-local (single replica).
+
+**A52 — Layout: one lane, two edges (§10.1, §10.1a, A24; D12).** Replaces the five-track
+48rem/64rem breakout. Lane = min(conversation − 2·gutter, cap), gutter `clamp(1rem, 2.5cqi,
+2.5rem)`, cap from the viewer's width preference: Comfortable 64rem, Wide 88rem (default),
+Full (no cap), set in the thread ⋯ menu ("Width") and stored in localStorage and
+`UserPrefs.misc.chat_lane_width`. Prose (and notices, the run log, `markdown` and `callout`
+blocks) ≤ 48rem on the lane's left edge; framed blocks span the lane and hang into the
+gutter by their padding so card text starts on the prose edge; the user bubble aligns to
+the lane's right edge; composer, follow-ups and a meta row under blocks span the lane. The
+24px side strips are gone; the frame is `overflow-clip` with a relative scroll lane, and the
+geometry observer survives StrictMode. The thread ⋯ menu is Rename, Pin conversation,
+Export conversation, Save conversation as report, Width, Delete; the Report toggle shows its
+count only when > 0. Measured reference widths (Wide, both themes; frame = viewport − nav):
+390 → conversation 390, lane 338; 1280 with nav and rail open → 776 / 717; 1280 all
+collapsed → 1168 / 1090 (prose 768); 1440 all collapsed → 1328 / 1242; 1440 collapsed with
+the report open → 959 / 891; 1920 all collapsed → 1808 / 1408 (Comfortable 1024, Full
+1708); 2560 all collapsed → 2448 / 1408 (Full 2348). Conversation widths with panels: 1280 /
+nav 240 → 775 (report as overlay); 1280 / nav 64 → 951, 798 with the report split (rail
+strip); 1440 / nav 64 with the report → 742 (rail docked + split); 1440 / nav 240 with the
+report → 782 (rail strip + split); 1920 with the report → 1046 (nav 240) / 1222 (nav 64).
+
+**A53 — The composer meter (§8, A35; D5).** The ring beside the `≈ 1.2k` estimate is
+context-window use (the next request ÷ `context_window`), not today's spend. In
+`unlimited` mode its card says long conversations are summarised automatically near the
+limit and there is no hard cap, and drops the per-question rows; `bounded` keeps the
+per-question limit and the whole-question projection. The daily budget moved into the card
+as its own section with a bar and the note "Automatic investigations count against this
+budget. Chat is recorded in the cost ledger but is not paused by it." The `/chat/context`
+response adds `limits_mode` and `timezone`.
+
+**A54 — Step inspector and visible escapes (§3.3, §10.3; P1-1).** `ChatStep` adds
+`observation_ref` and `progress {done, total?, unit}`. `GET
+/api/chat/conversations/{id}/messages/{message_id}/steps/{index}` returns the stored
+observation the model saw (aggregates only, `untrusted: true`, `truncated` when cut to its
+storage bound) for the owner's 100 most recent answers (404 `step_not_found`,
+`step_observation_unavailable`, `step_observation_expired`). A step's `untrusted_params`
+and `query` are written with `models.visible_display_text` / `display_params(visible=True)`:
+every invisible, bidi, tag or control character and lone surrogate becomes a visible
+`\uXXXX` escape instead of being deleted, so "admin" + ZWSP never reads as "admin"; the
+inspector's "What the model saw" half uses the same escapes. "Retry step" sends
+`origin: "retry_step"` and "Explain this step" a follow-up; both are in the `follow_up` taint
+class and never quote a parameter value.
+
+**A55 — Answer-level features (§10.3, §10.4, §10.4a).** Answer ratings (`POST
+/api/chat/feedback`; up/down, reason `wrong|incomplete|slow|other`, comment ≤ 1,000; audited
+without the comment; never used for training; aggregates in `soc_metrics` and `GET
+/api/chat/feedback/summary`). "Add to case" posts a plain-text snapshot (question, answer,
+cited sources; `@mentions` defanged; charts stay in chat) as the analyst's own case-thread
+comment through the existing collaboration route after a confirming dialog (`cases:comment`;
+never status, verdict or disposition, #3; Workspace history never receives case turns, #5).
+The prompt library adds `ChatPrompt.category` and `favorite`, read-only starter prompts in
+code, `{name}` placeholders filled by the composer in one pass, and promptbooks (a saved
+prompt whose id starts `book-`, 2–10 steps separated by a `---` line, within the 2,000-character
+text limit) run as consecutive turns with a step counter and Stop; no new store or endpoint.
+Long answers get a contents list (≥ 4 headings) and "Jump to end" (≥ 3,000 characters);
+Ctrl/⌘+Shift+C copies the latest answer. The "Continue where this stopped" chip of §6.3 and
+every limit-driven "Partial" label are removed (the `continue` origin stays on the wire for
+older clients); the meta row's outcome word "Partial" is kept for a true failure only.
+
+**A56 — Blocks (BLOCKS amendments 24–30).** `chart.kind` adds `grouped_bar`; artifact kind
+`comparison` materialises to `kpi_group` with deltas, `grouped_bar` and a delta `table`;
+time series gain `x.labels`, `x.tz` and `allowed_rebin`; the Brief adds `layout:
+"infographic"`; bucket tokens add `1M`, `1q`, `1y`; per-message limits rise (`report_leaves`
+40 → 60, `blocks_bytes` 48,000 → 480,000). The series-point limits are unchanged:
+`MAX_POINTS` stays 200 per live series and the stored copy stays at
+`STORED_SERIES_POINTS` 100. Δ% on a zero baseline is "new". Client
+interactions (Group by, zoom, legend toggles, PNG/SVG download, Full width) are client-side
+and read-only.
+
+**A57 — "Ask AI" entity chips (§10.7, A7, A28, A33; WP-ASK).** A chip beside an IP, host,
+user, hash, domain, URL, e-mail address, rule or case id in Cases, Logs and Case Manager
+navigates to a NEW Workspace chat with a typed reference `NavOpts.entity {kind, value}` held
+in memory only (never in the URL). The chat page resolves it with `POST
+/api/chat/entity-question` (strict per-kind grammar; 422 for a value without a question;
+writes nothing, calls no model) and sends the server-worded question with
+`origin: "starter"`; nothing is prefilled in the composer. Because the origin is not
+`user`, the value never authorises a third-party indicator lookup by itself, and the engine
+renders the question about "the <kind> in the reference below" with the value in its own
+UNTRUSTED fence (`source=entity_ref`) in the live turn and every replay (#9). The command
+palette's free-text "Ask AI" still only prefills a fresh composer (A26). From inside a case
+the chip opens the Workspace chat, never the case chat (#5).
+
+**A58 — Screen context fence (§4.4; diagnosis T7).** The on-screen context block is fenced
+whole with `fence_block` (the same #9 treatment) instead of `fence()`'s 600-character cut,
+so a selection or query default longer than 600 characters is no longer lost.
+
+**A59 — Bundle (§10.10).** Round 12 adds this entry-chunk code (measured, as recorded
+beside `PRE_REVAMP_ENTRY_BYTES`): Remember me in the Login page, `auth` and the api client
+(WP-AUTH); the per-viewer preference writes (`patchMisc`, reduced transparency) in
+`prefs.tsx` and the chat activity glyph in `NavSidebar.tsx`; the chat activity store with
+its glyph and tab title (WP-ACT, the only new entry code the Round 12 SPEC §6 planned); and the design
+foundations (WP-DS: the ui recipes, `design-system/transparency.ts`, overlay origins).
+Everything else (turn runner, chat views, activity effects, charts) stays lazy. At the end
+of the round the command palette body and the Settings section metadata left the entry as
+lazy chunks without removing any feature. The entry baseline was rebased after WP-GEN-A and
+again after the final review's first-paint fixes: the number lives in `PRE_REVAMP_ENTRY_BYTES`
+(`webui/src/soc/__tests__/bundle-first-paint.test.ts`), and its value and rationale are
+recorded in one place, the "Entry bundle" item of the Round 12 SPEC §7.3. Byte figures
+are not repeated here.
+
+**A60 — Lookup digest step numbers (§4.3; Round 12 WP-GEN-A).** Each lookup in the replayed
+digest carries the run-log number the console shows for that step: "Lookups m3: step 2
+log_stats(…) → …; step 5 log_stats(…) → …". Model steps and lookups are numbered together in
+the run log, so the numbers have gaps and model steps are not listed. The number lets a step
+inspector follow-up ("Explain step 5 …", "Run step 5 … again") name exactly one lookup when an
+answer ran several rounds of the same tool. A stored step without a number (an older record)
+is listed without one, and a follow-up that names it is matched by label and position, never
+guessed when that is ambiguous. In bounded mode the 600-character digest bound is measured
+without the `step N` prefixes, so the numbers never cost a lookup its place; unlimited mode
+does not bound the digest. The values stay untrusted: a summary that imitates a numbered
+lookup makes the step ambiguous rather than choosing it.
+
+**A61 — The scope chip's presets and hint, and older messages in the transcript (§3.1,
+§7.5, §10.4, A22, A36; Round 12 WP-FIX1).** Supersedes the two copy strings A36 records and
+the 100-message window note of §7.5 and A22.
+- **Presets.** The time presets are **Auto**, **1h**, **24h**, **7d**, **30d**, **90d**,
+  **6mo** (`now-6M`), **12mo** (`now-12M`) and **All time** (`{"from": "all"}`), in a
+  three-column grid that every arrow key moves through. **Auto** is the default (no
+  range); its radio is named "Auto (default windows, no outer limit)". The chip's
+  accessible name starts with its visible text (WCAG 2.5.3, label in name), then says
+  what a short range means: "Scope: All sources · Auto (default windows, no outer
+  limit). Change source and time range", "… · 7d (last 7 days). …", "… · All time. …"
+  (`scopeChipName` in `chat/composer/format.ts`). **24h** is an explicit
+  `now-24h` outer limit, never shown for the default; a stored `now-24h` or `now-1d`
+  reopens as 24h and `now-1y` as 12mo. The chip reads "<source> · <range>": the source
+  truncates and the range never does. There is no custom range on the chip.
+- **Hint.** The default's hint is no longer "Last 24 hours, unless your question names
+  another window." It reads "No outer limit. Without a window in your question, case
+  counts, case searches and ATT&CK coverage cover all time; log, metric, cost and audit
+  lookups and the shift brief cover the last 24 hours. Agent improvement always compares
+  fixed periods." A chosen range reads "<range>. Lookups without a window in your
+  question use this range, except …. Questions can narrow it, not widen it." (All time:
+  "… cover all time, except …. A question can still name a shorter window."), where the
+  exceptions are the shift brief (at most 7 days; named only when the range can be longer)
+  and agent improvement (fixed periods). The prompt's window table names the same
+  exceptions.
+- **Older messages.** Nothing is removed from a conversation, so the transcript no longer
+  shows "Conversations keep their newest 100 messages", and "Older messages were removed
+  to stay within the storage limit" is replaced by a line shown only above a conversation
+  an older version actually shortened: "The first N messages of this conversation were
+  removed by an older version of Agentic SOC. Messages are no longer removed." A reopened
+  conversation opens on its newest 100 messages with **Show earlier messages · N more**
+  above the first message; each press reads the 50 before them through
+  `GET /api/chat/conversations/{id}/messages?before=<first shown id>&limit=50` (full text;
+  a page never splits a question from its answer) and places them above the reader
+  without moving what they are reading. The control keeps focus through loading, shows an
+  error with **Retry** (a 404 shows **Reopen conversation**, which re-reads the
+  conversation, instead of a Retry that would repeat the same read), and gives way to
+  **Start of the conversation**. A search hit or link to an older message reads back in
+  pages of 100 until it is on screen, waiting for a load already running; when a page
+  fails, the request is kept (never treated as "not in this conversation"), a toast and
+  the control say so in the same words with the same action, and Retry resumes the
+  read-back. A 404 there resolves the read-back as `missing`, so the toast too says
+  "Earlier messages could not be found." and offers **Reopen conversation**; a fresh read
+  of the conversation seeks a request still pending again in the new copy. A toast action
+  acts only on the conversation read it was raised for and only while its request is
+  still pending (a late click after switching or after the read-back resumed does
+  nothing). A question asked in this session
+  takes its saved id from `ChatResponse.user_message_id`, so a hit on it never reads older
+  history. Export and report methodology read the whole conversation.
+
+**A62 — Full width by default, unseen questions, and a clarify pick's question (§10.1, §10.3,
+§10.8, A51, A52, A55; Round 12 final review).** Amends A52's default and adds to A51 and A55
+without rewriting them (Round 12 SPEC §7.2 decisions 18 to 20).
+- **Width.** The default conversation width is **Full width** (no cap; `DEFAULT_LANE_WIDTH =
+  'full'`), not Wide 88rem: with every rail collapsed the lane fills the conversation minus its
+  gutters (1440 → 1242 px, 1920 → 1708, 2560 → 2348). Comfortable 64rem and Wide 88rem stay in
+  the thread ⋯ menu → **Width** in that order, each hint on one line of the 15rem menu: Full
+  width's reads "Fills the space (default)", Wide's "Up to about 1,400 px, centred",
+  Comfortable's "Up to about 1,000 px". A stored choice (localStorage `soc.chat.laneWidth` or
+  `UserPrefs.misc.chat_lane_width`) is kept. Prose, notices, the run log and the `markdown`
+  and `callout` blocks keep the 48rem measure on the lane's left edge; framed blocks, the
+  meta row under blocks, follow-ups, the composer and the user bubble span to the right edge.
+  A52's measured Wide widths remain the Wide reference.
+- **Questions.** A `needs_input` conversation marks the navigation (glyph and text) and takes
+  the landing only while its question has not been seen: once the analyst has looked at it,
+  the history row keeps "Needs input" and nothing else does. `preferredThread` is running →
+  unread (an unread answer, or a question not yet seen) → newest.
+- **Add to case.** The snapshot quotes an answer to a clarify pick (`origin: "clarify"`) as
+  the clarified question plus the pick ("Show me the trend → Cases"), chained across
+  clarifies, with the clarify card's question standing in when the clarified question is not
+  on screen. Step questions from the run log keep quoting the question exactly as sent.
+- **Line end labels** (BLOCKS amendment 31): sized to the longest label up to a quarter of the
+  chart's width, never fewer than 14 characters, and clipped only beyond that with the whole
+  label as their hover title.
+
+**A63 — Read sync, command replies and turn authority (§3.2, §6.4, A42, A51; Round 12 SPEC
+§7.2 decisions 17, 21 and 22).** Adds to A42 and A51 without rewriting them.
+- **Read sync.** `POST …/read` and `POST /api/chat/turns/{turn_id}/seen` (204, stores nothing,
+  any well-formed turn id) publish an owner-only, unretained `chat.read` frame on topic
+  `chat`: `{conversation_id}` for a conversation read, `{turn_id}` plus `conversation_id` or
+  `case_id` for a turn whose outcome is on screen. The turn's conversation or case is named
+  only from the caller's own record while the server keeps the finished turn (5 minutes);
+  after that, or for an id that is not the caller's, the frame names the turn alone. The
+  console listens on the job stream (`topics=chat,jobs`) and drops exactly the named turn's
+  mark and toast (never another turn's in the same chat); a conversation read drops that
+  conversation's mark. A Case Manager chat posts `…/seen` for every answer its transcript
+  lists, not only its newest.
+- **Command replies.** `ChatResponse.command` (`"compact"`, lenient, null otherwise) marks a
+  reply to `/compact`; its `usage` is always present (zero when no model call ran); it gets
+  no `effective_source_*`, and it is never replayed, folded into a summary or saved by
+  `from-conversation`. The stream contract lists the value under `commands`.
+- **Turn authority.** The rule of Round 12 SPEC §7.2 decision 22: a turn acts only while the
+  session, token, account generation and grants it was admitted with last; the stop ends
+  the stream with a non-retryable `turn.error` (`internal`), and `POST /api/chat` answers
+  `401 session_invalid` (reason `session_ended`) or `403 chat_access_changed`.

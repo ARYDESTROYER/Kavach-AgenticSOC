@@ -128,10 +128,14 @@ describe("Console route visual standard", () => {
     expect(chat).toContain("<ChatWorkspace");
     expect(chat).not.toContain("<PageHeader");
     expect(chat).not.toContain("<PageContainer");
-    // The frame bleeds the shell's vertical inset: `-my-6` is the matched pair of
-    // CONTENT_INSET's `py-6` (pinned above), and the height is the viewport minus the
-    // 3.5rem top bar, so the document never scrolls.
-    expect(frame).toContain('className="-my-6 flex h-[calc(100dvh-3.5rem)] min-h-0 min-w-0 overflow-hidden bg-background"');
+    // The frame bleeds the shell's WHOLE inset: `-mx-4 -my-6 sm:-mx-6` with `w-auto` is the
+    // matched pair of CONTENT_INSET's `px-4 py-6 sm:px-6` (pinned above), so no canvas
+    // strip shows beside the chat (Round 12, diagnosis/layout.md (h)), and the height is
+    // the viewport minus the 3.5rem top bar, so the document never scrolls. `overflow-clip`
+    // (never `hidden`): a clipped frame cannot be scrolled by a focus() or a contents jump.
+    expect(frame).toContain(
+      'className="-mx-4 -my-6 flex h-[calc(100dvh-3.5rem)] w-auto min-h-0 min-w-0 overflow-clip bg-background sm:-mx-6"',
+    );
     expect(frame).toContain('<h1 className="sr-only">Chat</h1>');
     expect(history).toContain('aria-label="Chat history"');
   });

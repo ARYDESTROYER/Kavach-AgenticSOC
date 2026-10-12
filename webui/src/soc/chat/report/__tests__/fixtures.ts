@@ -135,6 +135,39 @@ export function sampleReport(overrides: Partial<Report> = {}): Report {
   };
 }
 
+/**
+ * A monthly calendar chart cut in Asia/Kolkata (Round 12 WP-BLK wire form): local month
+ * starts are 18:30 UTC the day before, the first month is partial ("from 12 Sep") and the
+ * current month is still filling. A download must read "Sep 2026", never the UTC
+ * instant "2026-08-31 18:30 UTC" (which reads as August).
+ */
+export function calendarChartRaw(): Record<string, unknown> {
+  return {
+    id: 'monthly-cases',
+    type: 'chart',
+    kind: 'bar',
+    title: 'Cases opened per month',
+    provenance: 'code',
+    artifact_kind: 'series',
+    allowed_views: ['line', 'area', 'bar', 'table'],
+    unit: 'count',
+    last_in_progress: true,
+    x: {
+      kind: 'time',
+      values: ['2026-08-31T18:30:00Z', '2026-09-30T18:30:00Z'],
+      labels: ['Sep 2026 (from 12 Sep)', 'Oct 2026'],
+      bucket: '1M',
+      tz: 'Asia/Kolkata',
+    },
+    series: [{ key: 'cases', label: 'Cases', values: [2, 72] }],
+  };
+}
+
+/** A report holding only the calendar chart. */
+export function calendarReport(): Report {
+  return sampleReport({ items: [item('it-cal', calendarChartRaw())], summary: null });
+}
+
 export function sampleConversation(): ChatConversation {
   return {
     id: 'conv-1',

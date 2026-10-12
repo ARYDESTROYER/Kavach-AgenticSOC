@@ -228,7 +228,8 @@ async def test_log_stats_heatmap_and_invalid_group() -> None:
     assert heat and heat[0].data["y"] and len(heat[0].data["cells"]) == len(heat[0].data["y"])
     assert_artifacts_render(out)
     bad = await LogStatsTool().run(ctx, group_by=["password"])
-    assert not bad.ok and bad.error == "Invalid input: check group_by"
+    assert not bad.ok and bad.error.startswith("Invalid input: check group_by (one of 'ip', 'user'")
+    assert "password" not in bad.error  # the rejected value is never echoed
 
 
 async def test_exact_multi_source_counts_stay_exact_when_top_values_merge() -> None:

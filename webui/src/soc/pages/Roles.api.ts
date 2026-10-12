@@ -160,12 +160,16 @@ export const RESOURCE_ACTIONS: Record<string, string[]> = {
 /** Stable, readable ordering of resources for the editor grid + matrix viewer. */
 export const RESOURCE_ORDER: string[] = Object.keys(RESOURCE_ACTIONS);
 
-/** Human-readable labels for the six built-in roles (UI copy; falls back to raw). */
+/**
+ * Human-readable labels for the six built-in roles (UI copy; falls back to raw). The
+ * ONE label map: the Users page, the Roles page and the session policy all read it.
+ * Display only: the role ids stay as stored.
+ */
 export const ROLE_LABELS: Record<string, string> = {
   super_admin: 'Super admin',
   soc_manager: 'SOC manager',
-  analyst_tier2: 'Analyst — Tier 2',
-  analyst_tier1: 'Analyst — Tier 1',
+  analyst_tier2: 'Analyst Tier 2',
+  analyst_tier1: 'Analyst Tier 1',
   responder: 'Responder',
   auditor: 'Auditor',
 };

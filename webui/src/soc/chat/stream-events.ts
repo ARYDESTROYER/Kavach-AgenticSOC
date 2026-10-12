@@ -18,6 +18,7 @@
  */
 import type {
   ChatAnswerKind,
+  ChatCommand,
   ChatBudgetState,
   ChatCitation,
   ChatCitationKind,
@@ -149,6 +150,10 @@ export const CHAT_STREAM_EVENT_TYPES = [
   'turn.done',
   'turn.error',
   'ping',
+  // Round 12 (SPEC §3.3): a long lookup's progress, and a quiet "the answer was
+  // continued" marker (the text keeps streaming; no `text.reset`).
+  'step.progress',
+  'text.continued',
 ] as const;
 export type ChatStreamEventType = (typeof CHAT_STREAM_EVENT_TYPES)[number];
 export const TERMINAL_EVENT_TYPES = ['turn.done', 'turn.error'] as const;
@@ -177,6 +182,8 @@ export const CHAT_ORIGINS = [
   'starter',
   'command',
   'continue',
+  'clarify',
+  'retry_step',
 ] as const satisfies readonly ChatOrigin[];
 export const CHAT_STEP_KINDS = ['tool', 'model'] as const satisfies readonly ChatStepKind[];
 export const CHAT_STEP_STATUSES = [
@@ -194,6 +201,7 @@ export const CHAT_ANSWER_KINDS = [
   'mixed',
   'conversation',
 ] as const satisfies readonly ChatAnswerKind[];
+export const CHAT_COMMANDS = ['compact'] as const satisfies readonly ChatCommand[];
 export const TURN_NOTICE_KINDS = [
   'partial',
   'cap',
@@ -205,6 +213,9 @@ export const TURN_NOTICE_KINDS = [
   'cancelled',
   'unsupported',
   'not_saved',
+  'limited',
+  'stopped_repeating',
+  'compacted',
 ] as const satisfies readonly TurnNoticeKind[];
 export const CHAT_CITATION_KINDS = [
   'doc',
@@ -226,6 +237,10 @@ export const REPORT_TEMPLATES = [
   'shift',
   'posture',
   'custom',
+  'executive',
+  'monthly',
+  'infographic',
+  'investigation_brief',
 ] as const satisfies readonly ReportTemplateName[];
 export const REPORT_ITEM_KINDS = ['block', 'section'] as const satisfies readonly ReportItemKind[];
 /**
@@ -258,8 +273,9 @@ export const CHAT_LIMITS = {
   chat_prompts: 50,
   chat_prompt_title_chars: 60,
   chat_prompt_text_chars: 2000,
-  time_range_max_days: 90,
-  report_items: 40,
+  /** Round 12 (SPEC D7a): chat windows have no span limit. */
+  time_range_max_days: null,
+  report_items: 60,
   report_note_chars: 500,
   report_title_chars: 120,
 } as const;
@@ -323,6 +339,21 @@ export interface TurnErrorEvent {
 export interface PingEvent {
   type: 'ping';
 }
+/** Round 12: progress of a running step (an exact aggregate scan). */
+export interface StepProgressEvent {
+  type: 'step.progress';
+  index: number;
+  done: number;
+  /** `null` when the store cannot say up front. */
+  total: number | null;
+  /** Engine noun such as "cases". */
+  unit: string;
+}
+/** Round 12: the answer was cut at the output limit and continues as `part` (≥ 2). */
+export interface TextContinuedEvent {
+  type: 'text.continued';
+  part: number;
+}
 
 export type ChatStreamEvent =
   | TurnStartEvent
@@ -333,7 +364,9 @@ export type ChatStreamEvent =
   | TextResetEvent
   | TurnDoneEvent
   | TurnErrorEvent
-  | PingEvent;
+  | PingEvent
+  | StepProgressEvent
+  | TextContinuedEvent;
 
 /* Type guards. */
 export const isTurnStart = (e: ChatStreamEvent): e is TurnStartEvent => e.type === 'turn.start';
@@ -345,6 +378,8 @@ export const isTextReset = (e: ChatStreamEvent): e is TextResetEvent => e.type =
 export const isTurnDone = (e: ChatStreamEvent): e is TurnDoneEvent => e.type === 'turn.done';
 export const isTurnError = (e: ChatStreamEvent): e is TurnErrorEvent => e.type === 'turn.error';
 export const isPing = (e: ChatStreamEvent): e is PingEvent => e.type === 'ping';
+export const isStepProgress = (e: ChatStreamEvent): e is StepProgressEvent => e.type === 'step.progress';
+export const isTextContinued = (e: ChatStreamEvent): e is TextContinuedEvent => e.type === 'text.continued';
 /** `turn.done` or `turn.error`: the stream's last line. */
 export const isTerminalEvent = (e: ChatStreamEvent): e is TurnDoneEvent | TurnErrorEvent =>
   e.type === 'turn.done' || e.type === 'turn.error';
@@ -498,7 +533,24 @@ export function normaliseChatStep(raw: unknown): ChatStep | null {
     sources: stringList(raw.sources, 20, 120),
     usage: normaliseStepUsage(raw.usage),
     group: count(raw.group, null),
+    ...normaliseStepExtras(raw),
   };
+}
+
+/** Round 12 (SPEC §3.1): the step inspector key and a long lookup's progress, when valid. */
+function normaliseStepExtras(raw: Obj): Pick<ChatStep, 'observation_ref' | 'progress'> {
+  const out: Pick<ChatStep, 'observation_ref' | 'progress'> = {};
+  if (typeof raw.observation_ref === 'string' && raw.observation_ref.length > 0 && raw.observation_ref.length <= 200) {
+    out.observation_ref = raw.observation_ref;
+  }
+  if (isObj(raw.progress)) {
+    out.progress = {
+      done: count(raw.progress.done, 0),
+      total: count(raw.progress.total, null),
+      unit: displayText(raw.progress.unit, 40),
+    };
+  }
+  return out;
 }
 
 export function normaliseNotice(raw: unknown): TurnNotice | null {
@@ -662,13 +714,71 @@ export function normaliseChatResponse(raw: unknown): ChatResponse | null {
   out.stream_mode = enumOr(raw.stream_mode, CHAT_STREAM_MODES, null);
   out.turn_id = optId(raw.turn_id);
   out.message_id = optId(raw.message_id);
+  // Round 12 (WP-FIX1): the saved question's id, so a live question is findable on screen.
+  out.user_message_id = optId(raw.user_message_id);
   out.memory_proposal = normaliseMemoryProposal(raw.memory_proposal);
   // Case turns: the thread-save outcome travels apart from the top notice (SPEC A25),
   // so a partial or denied case answer can still say it was not saved.
   out.case_saved = typeof raw.case_saved === 'boolean' ? raw.case_saved : null;
   out.case_save_notice = normaliseNotice(raw.case_save_notice);
   out.cost = out.usage ? out.usage.cost : amount(raw.cost, 0);
+  // Round 12 (SPEC §3.1, D3, D4, D10, D11).
+  out.clarify = normaliseClarify(raw.clarify);
+  out.saved_report = normaliseSavedReport(raw.saved_report);
+  out.saved_report_error = normaliseReportSaveError(raw.saved_report_error);
+  out.continued = count(raw.continued, 0);
+  out.compacted = raw.compacted === true;
+  // Round 12 (final review): a reply to `/compact` is a note, not an answer.
+  out.command = enumOr(raw.command, CHAT_COMMANDS, null);
   return out;
+}
+
+/** Bounds of a clarifying question (SPEC §3.1): ≤ 200 chars, ≤ 4 options of ≤ 80. */
+export const CLARIFY_LIMITS = { question_chars: 200, options: 4, option_chars: 80 } as const;
+
+/**
+ * A clarifying question (SPEC D10), or `null`. The question and the options are
+ * MODEL-authored and may echo log values (#9): display-sanitised here and rendered as
+ * text nodes; a pick is sent with `origin: "clarify"`. Options are deduplicated.
+ */
+export function normaliseClarify(raw: unknown): ChatResponse['clarify'] {
+  if (!isObj(raw) || typeof raw.question !== 'string') return null;
+  const question = displayText(raw.question, CLARIFY_LIMITS.question_chars);
+  if (!question) return null;
+  const options: string[] = [];
+  if (Array.isArray(raw.options)) {
+    for (const option of raw.options) {
+      // Strings only, like the backend's validator (a number is not an option).
+      const text = typeof option === 'string' ? displayText(option, CLARIFY_LIMITS.option_chars) : '';
+      if (text && !options.includes(text)) options.push(text);
+      if (options.length >= CLARIFY_LIMITS.options) break;
+    }
+  }
+  return { question, options, allow_custom: raw.allow_custom !== false };
+}
+
+/**
+ * The report the server saved from this answer (SPEC D11), or `null` without a valid
+ * id. The title came from the model's header (#9: taint-ruled text, shown as text).
+ */
+export function normaliseSavedReport(raw: unknown): ChatResponse['saved_report'] {
+  if (!isObj(raw) || typeof raw.id !== 'string' || !SAFE_ID_RE.test(raw.id)) return null;
+  return {
+    id: raw.id,
+    title: displayText(raw.title, 200),
+    items: count(raw.items, 0),
+    skipped: count(raw.skipped, 0),
+  };
+}
+
+const REPORT_SAVE_ERROR_CODES = ['report_limit', 'report_unavailable', 'report_empty'] as const;
+
+/** Why the report an answer asked for was not saved (a server template), or `null`. */
+export function normaliseReportSaveError(raw: unknown): ChatResponse['saved_report_error'] {
+  if (!isObj(raw)) return null;
+  const code = enumOr(raw.code, REPORT_SAVE_ERROR_CODES, null);
+  if (code === null) return null;
+  return { code, message: displayText(raw.message, 300), retryable: raw.retryable === true };
 }
 
 function normaliseStepStart(raw: unknown): StepStartInfo | null {
@@ -740,6 +850,21 @@ function toEvent(payload: Obj): ChatStreamEvent | null {
       };
     case 'ping':
       return { type: 'ping' };
+    case 'step.progress': {
+      const index = count(payload.index, null);
+      if (index === null) return null;
+      return {
+        type: 'step.progress',
+        index,
+        done: count(payload.done, 0),
+        total: count(payload.total, null),
+        unit: displayText(payload.unit, 40),
+      };
+    }
+    case 'text.continued': {
+      const part = count(payload.part, null);
+      return part !== null && part >= 2 ? { type: 'text.continued', part } : null;
+    }
     default:
       return null;
   }

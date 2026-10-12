@@ -44,11 +44,40 @@ export interface AuthUser {
   locale?: string;
 }
 
+/**
+ * Why a session ended (Round 12, GET /api/auth/me `reason`). The server reports it
+ * once, clears the cookie, and the sign-in page explains it calmly.
+ */
+export type SessionEndReason =
+  | 'revoked'
+  | 'idle_expired'
+  | 'absolute_expired'
+  | 'tv_mismatch'
+  | (string & {});
+
+/** The live session summary on an authenticated GET /api/auth/me (Round 12). */
+export interface AuthSessionSummary {
+  /** True when this session came from a "Remember me" sign-in. */
+  remember: boolean;
+  /** When the server will end the session regardless of activity (ISO). */
+  expires_at?: string;
+  /** When the session ends if it stays idle (ISO; moves with activity). */
+  idle_expires_at?: string;
+}
+
 /** GET /api/auth/me — describes whether auth is on and the session state. */
 export interface AuthMe {
   authenticated: boolean;
   auth_enabled: boolean;
   user: AuthUser | null;
+  /** Present when the presented session has ended (registry-aware, Round 12). */
+  reason?: SessionEndReason;
+  /** The limit that ended it, in seconds (e.g. 86400 → "after 24 hours"). */
+  lifetime_seconds?: number;
+  /** Whether the ended session had been remembered. */
+  remembered?: boolean;
+  /** The live session summary (authenticated only). */
+  session?: AuthSessionSummary;
 }
 
 // --------------------------------------------------------------------------- //
@@ -142,6 +171,30 @@ export interface Session {
   /** The client kind (e.g. "web"/"api"/"cli") + the MFA method used at sign-in. */
   client_type?: string | null;
   mfa_method?: string | null;
+  /**
+   * True for a "Remember me" sign-in (Round 12) that is still live and still
+   * remembered under the current policy; false once the session has ended.
+   */
+  remember?: boolean;
+  /** The remembered lifetime granted at sign-in, in seconds (0 when not remembered). */
+  remember_seconds?: number;
+  /**
+   * The earliest moment the server ends this session if it is not used again: the
+   * earlier of the inactivity deadline and the hard limit (ISO, live policy). In the
+   * past for a session that has ended.
+   */
+  expires_at?: string | null;
+  /** When inactivity ends it (moves with each request; ISO, live policy). */
+  effective_idle_expires_at?: string | null;
+  /** The hard limit activity never extends (ISO, live policy). */
+  effective_absolute_expires_at?: string | null;
+  /**
+   * Whether the session can still be used under the live policy (the same check
+   * every request runs). Absent from older backends.
+   */
+  active?: boolean;
+  /** Why an ended session ended (empty while active). */
+  ended_reason?: '' | 'revoked' | 'idle_expired' | 'absolute_expired' | string;
   [key: string]: unknown;
 }
 
@@ -173,7 +226,26 @@ export interface SessionPolicy {
   notify_on_new_device?: boolean;
   /** Email the user when one of their sessions is terminated. */
   notify_on_terminate?: boolean;
+  /** The "Remember me" sign-in policy (Round 12). */
+  remember_me?: RememberMePolicy;
   [key: string]: unknown;
+}
+
+/**
+ * Preferences.session_policy.remember_me (Round 12, SPEC §3.1). Durations are in
+ * SECONDS. The server repairs out-of-range values (1 h .. 24 h).
+ */
+export interface RememberMePolicy {
+  /** Offer "Remember me" on the sign-in page (default true). */
+  enabled?: boolean;
+  /** How long a remembered device stays signed in (3600..86400, default 86400). */
+  duration_seconds?: number;
+  /** Optional inactivity limit for remembered sessions; null = none. */
+  idle_seconds?: number | null;
+  /** Roles that are never remembered. */
+  excluded_roles?: string[];
+  /** Allow a remembered session on a plain-HTTP console (not recommended). */
+  allow_insecure_http?: boolean;
 }
 
 /**
@@ -239,6 +311,45 @@ export interface LoginResult {
   mfa_enrollment_required?: boolean;
   /** A short-lived half-auth token to exchange at /api/auth/mfa/verify. */
   pending_token?: string;
+  /** Round 12: whether this sign-in was remembered (persistent, bounded cookie). */
+  remembered?: boolean;
+  /** Why a remember request was or was not granted. */
+  remember_reason?: RememberReason;
+  /** When the new session's token expires (ISO). */
+  session_expires_at?: string;
+}
+
+/** The server's Remember-me decision (Round 12). */
+export type RememberReason =
+  | 'ok'
+  | 'not_requested'
+  | 'disabled'
+  | 'role_excluded'
+  | 'insecure_transport'
+  | (string & {});
+
+/** GET /api/setup/status `remember_me` — the public sign-in policy (Round 12). */
+export interface RememberMeStatus {
+  enabled: boolean;
+  /** The lifetime a new remembered sign-in gets (the policy duration, capped by the absolute lifetime). */
+  duration_seconds: number;
+  /**
+   * How long a remembered device may go unused before it is signed out (seconds);
+   * 0 or absent when no inactivity limit is shorter than `duration_seconds`.
+   */
+  idle_seconds?: number;
+  /** True when THIS console's transport would refuse a remembered session. */
+  insecure_blocked: boolean;
+  /** Whether the session cookie is marked Secure (AUTH_COOKIE_SECURE); never a secret. */
+  secure_cookies?: boolean;
+  /**
+   * Whether AUTH_COOKIE_SECURE was set explicitly rather than left at its `false`
+   * default, so the console can say "AUTH_COOKIE_SECURE=false" or "not set" truthfully.
+   * Absent from an older server; never a value.
+   */
+  secure_cookies_configured?: boolean;
+  /** How long a sign-in WITHOUT Remember me lasts (the token lifetime, AUTH_TOKEN_HOURS). */
+  standard_session_seconds?: number;
 }
 
 // --------------------------------------------------------------------------- //
@@ -1060,6 +1171,8 @@ export function configuredSsoById(configured: ConfiguredStatus): SsoClientSecret
 
 export interface SetupStatus {
   setup_complete: boolean;
+  /** Round 12: the public "Remember me" policy for the sign-in page. */
+  remember_me?: RememberMeStatus;
   // Wave-1 OOBE + auth fields (additive).
   needs_user?: boolean;
   auth_enabled?: boolean;
@@ -2611,6 +2724,14 @@ export interface CasesResponse {
    * this to stop asking rather than to discover the ceiling as an error.
    */
   max_offset?: number | null;
+  /**
+   * Round 12 (WP-CM): the queue filters the server applied, echoed only when the
+   * request sent them (`q`, `assignee`, `severity`). The search echo is the normalised,
+   * case-folded term list joined by single spaces.
+   */
+  search_applied?: string | null;
+  assignee_applied?: string | null;
+  severity_applied?: string | null;
   /** The multi-status lifecycle group that was applied, if any. */
   status_group_applied?: string | null;
 }
@@ -2869,11 +2990,32 @@ export interface ChatConversationSummary {
   total_tokens?: number | null;
   total_cost?: number | null;
   usage_turns?: number | null;
+  /** Round 12 (SPEC D13): live state for the history rail and the nav indicator. */
+  status?: ChatConversationStatus;
+  /** An answer arrived that the owner has not opened yet. */
+  unread?: boolean;
 }
+
+export type ChatConversationStatus = 'idle' | 'running' | 'needs_input' | 'failed';
 
 /** Full per-user Workspace conversation returned when a rail row is opened. */
 export interface ChatConversation extends ChatConversationSummary {
   messages: ChatConversationMessage[];
+  /** Round 12 (SPEC D4): newest message id folded into the stored conversation summary. */
+  summary_covers_through?: string | null;
+  /**
+   * Round 12 (WP-API): older messages not in `messages` (the read returns the newest
+   * window). Read them with `GET chat/conversations/{id}/messages?before=<first id>`.
+   */
+  earlier_message_count?: number;
+}
+
+/** `GET /api/chat/conversations/{id}/messages` (Round 12): oldest first, full text. */
+export interface ChatMessagePage {
+  conversation_id: string;
+  messages: ChatConversationMessage[];
+  /** Older messages still before this page (0 = the page starts the conversation). */
+  earlier_message_count: number;
 }
 
 export interface ChatConversationsResponse {
@@ -2886,6 +3028,8 @@ export interface ChatConversationsResponse {
   oldest_retained_at?: string | null;
   limit?: number;
   offset?: number;
+  /** With `?q=` only (Round 12): the search hit its read budget; older messages of some conversations were not searched. */
+  search_incomplete?: boolean;
 }
 
 export interface ChatTable {
@@ -2961,12 +3105,91 @@ export interface ChatResponse {
   turn_id?: string | null;
   /** The persisted assistant message id (reports reference it). */
   message_id?: string | null;
+  /**
+   * The persisted id of the question this answer replies to, when saved (Round 12
+   * WP-FIX1): a live question carries it like a restored one, so a search hit or link
+   * to it is found on screen. Never stored on the answer.
+   */
+  user_message_id?: string | null;
   /** A model-proposed memory change awaiting human confirmation (`memory:manage`). */
   memory_proposal?: MemoryProposal | null;
   /** Case turns only: whether the answer reached the case thread (null = not a case turn). */
   case_saved?: boolean | null;
   /** The `not_saved` notice whenever `case_saved` is false, whatever the top notice is. */
   case_save_notice?: TurnNotice | null;
+  /** Round 12 (SPEC D10): a clarifying question instead of a guess. Model text: render as text. */
+  clarify?: ChatClarify | null;
+  /** Round 12 (SPEC D11): the report the server saved from this answer. */
+  saved_report?: ChatSavedReport | null;
+  /** Round 12 (WP-API): the report the answer asked for could not be saved (the answer is saved). */
+  saved_report_error?: ChatReportSaveError | null;
+  /** Round 12 (SPEC D3): continuation steps used for the final answer. */
+  continued?: number;
+  /** Round 12 (SPEC D4): earlier context was summarised in this turn. */
+  compacted?: boolean;
+  /**
+   * Round 12 (final review): the chat command this turn replied to (`/compact`), or null
+   * for an answer. A command reply is a quiet note: no source, no answer actions, and
+   * real usage (zero when no model call ran).
+   */
+  command?: ChatCommand | null;
+}
+
+/** Round 12 (SPEC §3.1). Options are model-authored: render as untrusted text (#9). */
+export interface ChatClarify {
+  /** ≤ 200 characters. */
+  question: string;
+  /** ≤ 4 options, each ≤ 80 characters. */
+  options: string[];
+  allow_custom: boolean;
+}
+
+/** Round 12 (SPEC D11): created by the server from the persisted message. */
+export interface ChatSavedReport {
+  id: string;
+  title: string;
+  items: number;
+  /** Sections of the answer that did not fit the report's item or size limit. */
+  skipped?: number;
+}
+
+/** Round 12 (WP-API): why the report a chat answer asked for was not saved. `message` is a server template. */
+export interface ChatReportSaveError {
+  code: 'report_limit' | 'report_unavailable' | 'report_empty';
+  message: string;
+  /** The same save may work later (offer "Save as report"). */
+  retryable: boolean;
+  /**
+   * What the answer's header asked for (server-side: `POST /api/reports/from-answer`
+   * reads them from the stored answer). Model-derived; the console never shows them.
+   */
+  title?: string | null;
+  template?: ReportTemplateName | null;
+}
+
+/** `GET /api/chat/turns/active` (SPEC D13). `label` is an engine template. */
+export interface ChatActiveTurn {
+  turn_id: string;
+  conversation_id?: string | null;
+  case_id?: string | null;
+  started_at: string;
+  label: string;
+  lookups: number;
+  tokens: number;
+  status: 'running' | 'needs_input';
+}
+
+export type ChatFeedbackRating = 'up' | 'down';
+export type ChatFeedbackReason = 'wrong' | 'incomplete' | 'slow' | 'other';
+
+/** `POST /api/chat/feedback` (SPEC §3.2). Stored and audited; never used for training. */
+export interface ChatFeedbackRequest {
+  conversation_id: string;
+  message_id: string;
+  rating: ChatFeedbackRating;
+  reason?: ChatFeedbackReason | null;
+  /** ≤ 1000 characters. */
+  comment?: string;
 }
 
 // --------------------------------------------------------------------------- //
@@ -2978,11 +3201,20 @@ export interface ChatResponse {
 // --------------------------------------------------------------------------- //
 export type ChatStreamMode = 'steps' | 'text';
 export type ChatScope = 'logs' | 'cases' | 'metrics' | 'intel' | 'docs' | 'platform';
-export type ChatOrigin = 'user' | 'follow_up' | 'starter' | 'command' | 'continue';
+export type ChatOrigin =
+  | 'user'
+  | 'follow_up'
+  | 'starter'
+  | 'command'
+  | 'continue'
+  | 'clarify'
+  | 'retry_step';
 export type ChatStepKind = 'tool' | 'model';
 export type ChatStepStatus = 'ok' | 'error' | 'denied' | 'timeout' | 'skipped' | 'cancelled';
 export type ChatStepBasis = 'exact' | 'newest_n' | 'sample' | 'cached';
 export type ChatAnswerKind = 'data' | 'product_help' | 'mixed' | 'conversation';
+/** Round 12 (final review): the chat commands a reply can answer (`ChatResponse.command`). */
+export type ChatCommand = 'compact';
 export type TurnNoticeKind =
   | 'partial'
   | 'cap'
@@ -2993,17 +3225,34 @@ export type TurnNoticeKind =
   | 'timeout'
   | 'cancelled'
   | 'unsupported'
-  | 'not_saved';
+  | 'not_saved'
+  | 'limited'
+  | 'stopped_repeating'
+  | 'compacted';
 export type ChatCitationKind = 'doc' | 'case' | 'knowledge' | 'mitre' | 'query';
 export type MemoryProposalOp = 'add' | 'remove';
 export type ChatBudgetState = 'ok' | 'approaching' | 'reached';
 export type TextStreamingReason = 'disabled_by_admin' | 'model_does_not_stream';
-export type ReportTemplateName = 'investigation' | 'hunt' | 'ioc' | 'shift' | 'posture' | 'custom';
+export type ReportTemplateName =
+  | 'investigation'
+  | 'hunt'
+  | 'ioc'
+  | 'shift'
+  | 'posture'
+  | 'custom'
+  | 'executive'
+  | 'monthly'
+  | 'infographic'
+  | 'investigation_brief';
 export type ReportItemKind = 'block' | 'section';
 
 /**
  * The composer time window (backend `TimeRange`). Each bound is `now`,
- * `now-<n>[m|h|d|w]` or ISO-8601; `from < to`; at most 90 days (else HTTP 422).
+ * `now-<n>[m|h|d|w|M|y]` (lower-case `m` is minutes, `M` months, `y` years, so `now-6M`
+ * is six months) or ISO-8601, and `from` may also be `"all"` (`{ from: 'all' }`, the
+ * "All time" chip, which never clamps); `from < to` (else HTTP 422). Round 12 (SPEC
+ * D7a): chat scope windows have no span limit. No range at all is the composer's
+ * **Auto** default: no outer limit, each lookup's own default.
  * Named `ChatTimeRange` to stay distinct from `TimeRangePicker`'s own `TimeRange`.
  */
 export interface ChatTimeRange {
@@ -3106,6 +3355,18 @@ export interface ChatStep {
   usage?: StepUsage | null;
   /** Steps sharing a group ran in one parallel batch. */
   group?: number | null;
+  /** Round 12: owner-scoped key for the step inspector. */
+  observation_ref?: string | null;
+  /** Round 12: progress of a long aggregate scan. */
+  progress?: ChatStepProgress | null;
+}
+
+/** Round 12 (SPEC §3.1). `total` is null when the store cannot say up front. */
+export interface ChatStepProgress {
+  done: number;
+  total?: number | null;
+  /** Display noun ("cases"). */
+  unit: string;
 }
 
 /** A cited source, referenced by id in the answer (SPEC §3.5). */
@@ -3200,6 +3461,8 @@ export interface ChatContextBounds {
   max_indicator_lookups: number;
   default_stream_mode: ChatStreamMode;
   allow_text_streaming: boolean;
+  /** Round 12 (SPEC D13): animate the brand ring while chat works (`ChatAgentConfig.animated_brand`). */
+  animated_brand?: boolean;
 }
 
 /** Effective per-million rates (present only with `models:read`). */
@@ -3244,6 +3507,10 @@ export interface ChatContextInfo {
   remaining?: number | null;
   /** §10.5 empty-state starters (server-built; Demo and production share the shape). */
   starters?: ChatStarter[];
+  /** Round 12 (SPEC D1): chat limits mode. */
+  limits_mode?: 'unlimited' | 'bounded';
+  /** Round 12 (SPEC D7): operator timezone for calendar windows and buckets. */
+  timezone?: string;
 }
 
 /** One empty-state starter card. Shown only if every tool in `tools` is allowed. */
@@ -3283,7 +3550,27 @@ export interface ChatAgentConfig {
   /** Domain suffixes never sent to third-party enrichment. */
   internal_domains: string[];
   allow_email_lookup: boolean;
+  /** Round 12 (SPEC D13): the turning ring around the console logo while chat works (default on). */
+  animated_brand?: boolean;
+  /**
+   * Round 12 (SPEC D1): `unlimited` (default) — the per-question knobs above
+   * (`max_model_calls`, `max_tool_calls`, `turn_token_ceiling`, `final_reserve_tokens`,
+   * `turn_timeout_s`, `final_max_tokens`, `observation_chars`) do not apply and a
+   * question runs until it answers or the analyst presses Stop (the engine's loop
+   * guards still apply); `bounded` keeps those knobs as caps.
+   */
+  limits_mode?: ChatLimitsMode;
+  /**
+   * Round 12 (SPEC D5): optional daily chat spending limit in US dollars; `null` / absent
+   * = off (the default). The daily AI budget never pauses chat.
+   */
+  chat_daily_cap_usd?: number | null;
+  /** Round 12: internal marker of the chat limits migration the block adopted (pass through). */
+  chat_limits_version?: number;
 }
+
+/** `ChatAgentConfig.limits_mode` (Round 12 SPEC D1). */
+export type ChatLimitsMode = 'unlimited' | 'bounded';
 
 /** Declaration-merges the chat agent bounds onto `Preferences`. */
 export interface Preferences {
@@ -3295,9 +3582,14 @@ export interface ChatPrompt {
   id: string;
   /** ≤ 60 characters. */
   title: string;
-  /** ≤ 2000 characters. */
+  /** ≤ 2000 characters. `{name}` placeholders are filled in before sending (Round 12). */
   text: string;
+  /** Round 12 prompt library category. */
+  category?: ChatPromptCategory | null;
+  favorite?: boolean;
 }
+
+export type ChatPromptCategory = 'triage' | 'hunt' | 'ioc' | 'posture' | 'reporting' | 'app_help';
 
 /** `PATCH /api/chat/conversations/{id}`: at least one of `title` / `pinned`. */
 export interface ChatConversationUpdateRequest {
@@ -3406,7 +3698,14 @@ export interface ReportListEntry {
   id: string;
   title: string;
   template: ReportTemplateName;
+  /** The conversation whose draft this report is (at most one per conversation). */
   conversation_id?: string | null;
+  /**
+   * The conversation the report came from: the one conversation all its items name, else
+   * the draft's. Reports saved from an answer or a whole conversation carry only this.
+   * Absent on rows written before it existed.
+   */
+  source_conversation_id?: string | null;
   item_count: number;
   created_at?: string | null;
   updated_at: string;
@@ -3561,8 +3860,12 @@ export interface Branding {
 export interface FeedbackStats {
   graded_cases: number;
   feedback_count: number;
-  /** 0..1 fraction of cases where the analyst agreed with the agent. */
-  agreement_rate: number;
+  /** 0..1 agreement over grades that carry an assessment (agree/partial/disagree).
+   *  `null` when graded cases exist but none carries an agreement signal (a grade on
+   *  a settled Needs-human hand-off compares nothing) — render it as not measured. */
+  agreement_rate: number | null;
+  /** How many grades carry an agreement signal (the agreement denominator). */
+  agreement_signals?: number;
   /** 0..1 averages of the per-case quality scores. */
   avg_accuracy: number;
   avg_reasoning_quality: number;
@@ -3712,6 +4015,22 @@ export interface Metrics {
    * headline and is never presented as zero or as retrieval quality.
    */
   retrieval_history?: RetrievalHistoryMetrics;
+  /**
+   * Round 12 (additive). `total_cases`, `open_cases`, `needs_human_cases`,
+   * `closed_cases`, `by_status`, `by_verdict` and `by_disposition` are exact store-wide
+   * counts when `counts_exact` is true; when false, `counts_note` says which could not
+   * be counted (those fall back to the analysed cases).
+   */
+  counts_exact?: boolean;
+  counts_note?: string;
+  /**
+   * Round 12 (additive). Every other figure (average risk, active risk index, MTTR,
+   * cases per day, burndown, timing trend, usage, feedback) is computed over the newest
+   * `fetched` of `store_total` cases; `truncated` is true when that is not every case.
+   */
+  truncated?: boolean;
+  store_total?: number;
+  fetched?: number;
   /** Compact cost summary (shares the UsageSummary shape; fields optional). */
   cost: Partial<UsageSummary> & Record<string, unknown>;
   window_hours?: number;
@@ -4167,7 +4486,7 @@ export interface AgentImprovementEvidence {
 // math). The ONE shared provenance vocabulary consumed by `ProvenanceTag` + the
 // `DataTableColumn.provenance` header tag + the per-cell severity provenance.
 // --------------------------------------------------------------------------- //
-export type Provenance = 'source' | 'ai' | 'code';
+export type Provenance = 'source' | 'ai' | 'code' | 'analyst';
 
 // --------------------------------------------------------------------------- //
 // Noise-Reduction funnel (Round-7 ★) — GET /api/metrics/noise-reduction?window_hours=.
@@ -4241,7 +4560,16 @@ export interface NoiseReduction {
     available: boolean;
     /** When the counters began accumulating (ISO), or null when unavailable. */
     since: string | null;
-    /** True while counters are still warming up (partial coverage of the window). */
+    /**
+     * When the RETAINED counters start covering (ISO): `since` bounded by the 90-day
+     * retention floor. Additive (Round 12); absent from older servers.
+     */
+    coverage_start?: string | null;
+    /**
+     * True when the alert stages do not cover the whole window: the counters started
+     * (or retention now starts) inside it, or a counted case predates them. Alert-based
+     * reductions are then withheld or flagged as partial coverage.
+     */
     incomplete: boolean;
   };
   cases_meta: {

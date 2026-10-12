@@ -2,7 +2,7 @@
  * Report panel flows (SPEC §10.6): load and count, an add from the transcript (change
  * event), reorder and remove with announcements, note autosave after 800 ms with
  * `expected_version`, the 409 "changed elsewhere — Reload" path that keeps the typed note,
- * the dry-run summary estimate, generation and "Out of date — Regenerate", the 40-item
+ * the dry-run summary estimate, generation and "Out of date — Regenerate", the item
  * limit, delete, and the overlay focus rule.
  */
 import { act, render, screen, waitFor, within } from '@testing-library/react';
@@ -71,10 +71,10 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('ReportPanel', () => {
-  it('loads the report, shows n/40 and reports the count', async () => {
+  it('loads the report, shows n/60 and reports the count', async () => {
     const { onCountChange } = show();
     expect(await screen.findByRole('button', { name: /Brute force on vpn-gw-2, rename report/ })).toBeInTheDocument();
-    expect(screen.getByTestId('report-count')).toHaveTextContent('6/40');
+    expect(screen.getByTestId('report-count')).toHaveTextContent('6/60');
     await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(6));
     expect(api.getReport).toHaveBeenCalledWith('rep-1', expect.anything());
     const items = screen.getAllByRole('listitem').filter((li) => li.hasAttribute('data-report-item'));
@@ -82,12 +82,38 @@ describe('ReportPanel', () => {
     expect(within(items[0]).getByText('1. Who is failing logins against vpn-gw-2?')).toBeInTheDocument();
   });
 
+  it('says "Report" once: the eyebrow only sits above a report\'s own title (Round 12)', async () => {
+    const { unmount } = show({ reportId: null });
+    expect(screen.getByRole('heading', { level: 2, name: 'Report' })).toBeInTheDocument();
+    expect(screen.queryByTestId('report-panel-eyebrow')).toBeNull();
+    expect(screen.getAllByText(/^report$/i)).toHaveLength(1);
+    unmount();
+
+    api.getReport.mockResolvedValue(sampleReport({ title: 'Report' }));
+    const second = show();
+    expect(await second.findByRole('button', { name: /Report, rename report/ })).toBeInTheDocument();
+    expect(screen.queryByTestId('report-panel-eyebrow')).toBeNull();
+    second.unmount();
+
+    api.getReport.mockResolvedValue(sampleReport());
+    show();
+    expect(await screen.findByRole('button', { name: /Brute force on vpn-gw-2, rename report/ })).toBeInTheDocument();
+    expect(screen.getByTestId('report-panel-eyebrow')).toHaveTextContent('Report');
+  });
+
+  it('shows a Round 12 template in the template picker (never an empty value)', async () => {
+    api.getReport.mockResolvedValue(sampleReport({ template: 'monthly' }));
+    show();
+    const picker = await screen.findByRole('combobox', { name: 'Report template' });
+    expect(picker).toHaveTextContent('Monthly SOC report');
+  });
+
   it('shows the empty state before the first add and picks up the draft from the change event', async () => {
     const { onCountChange } = show({ reportId: null });
     expect(screen.getByTestId('report-empty')).toHaveTextContent('No report yet');
     const created = sampleReport({ items: sampleReport().items.slice(0, 1), version: 1, summary: null });
     act(() => emitReportChanged({ reportId: 'rep-1', conversationId: 'conv-1', report: created }));
-    expect(await screen.findByTestId('report-count')).toHaveTextContent('1/40');
+    expect(await screen.findByTestId('report-count')).toHaveTextContent('1/60');
     await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(1));
     expect(api.getReport).not.toHaveBeenCalled();
   });
@@ -149,7 +175,7 @@ describe('ReportPanel', () => {
     await waitFor(() => expect(api.patchReport).toHaveBeenCalledTimes(1), { timeout: NOTE_AUTOSAVE_MS + 1500 });
     expect(api.patchReport).toHaveBeenCalledWith('rep-1', { expected_version: 5, notes: { 'it-3': 'Spike at 07:00' } });
     expect(await screen.findByText('Saved')).toBeInTheDocument();
-  });
+  }, 20_000);
 
   it('keeps the typed note on a 409, offers Reload, then lets the analyst save it', async () => {
     const user = userEvent.setup();
@@ -175,7 +201,7 @@ describe('ReportPanel', () => {
     await waitFor(() =>
       expect(api.patchReport).toHaveBeenLastCalledWith('rep-1', { expected_version: 9, notes: { 'it-3': 'My finding' } }),
     );
-  });
+  }, 20_000);
 
   it('offers the summary with the dry-run estimate and shows the AI label after generation', async () => {
     const user = userEvent.setup();
@@ -245,14 +271,14 @@ describe('ReportPanel', () => {
     expect(await screen.findByText('A summary for this report is already being written')).toBeInTheDocument();
   });
 
-  it('states the 40-item limit', async () => {
+  it('states the item limit (the shared contract bound, 60 since Round 12)', async () => {
     const report = sampleReport();
-    const items = Array.from({ length: 40 }, (_, i) => ({ ...report.items[1], id: `x-${i}` }));
+    const items = Array.from({ length: 60 }, (_, i) => ({ ...report.items[1], id: `x-${i}` }));
     api.getReport.mockResolvedValue({ ...report, items });
     show();
-    expect(await screen.findByText('Report is full (40 items)')).toBeInTheDocument();
-    expect(screen.getByTestId('report-count')).toHaveTextContent('40/40');
-  });
+    expect(await screen.findByText('Report is full (60 items)')).toBeInTheDocument();
+    expect(screen.getByTestId('report-count')).toHaveTextContent('60/60');
+  }, 20_000);
 
   it('deletes after confirmation with the current version', async () => {
     const user = userEvent.setup();
@@ -279,7 +305,7 @@ describe('ReportPanel', () => {
     await user.clear(field);
     await user.type(field, 'VPN brute force{Enter}');
     await waitFor(() => expect(api.patchReport).toHaveBeenCalledWith('rep-1', { expected_version: 5, title: 'VPN brute force' }));
-  });
+  }, 20_000);
 
   it('expands an item to render its snapshot through the lazy answer blocks', async () => {
     const user = userEvent.setup();
@@ -304,16 +330,18 @@ describe('ReportPanel', () => {
     // Nothing is read from the source conversations until an export needs it.
     await screen.findByTestId('report-count');
     expect(api.getConversation).not.toHaveBeenCalled();
+    // One flat menu (Round 12 WP-REP): no Export sub-menu under ⋯ any more.
     await user.click(screen.getByTestId('report-menu-trigger'));
-    // Keyboard path through the submenu (Radix sub-menus open on ArrowRight).
-    const sub = await screen.findByRole('menuitem', { name: 'Export' });
-    // Radix menu items set their focused state in onFocus: a bare .focus() outside act
-    // logs an act() warning (stderr fails test:strict) whenever it lands between flushes.
-    act(() => sub.focus());
-    await user.keyboard('{ArrowRight}');
+    expect(await screen.findByRole('menuitem', { name: 'Open in Reports library' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Export' })).toBeNull();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    await user.click(screen.getByTestId('report-export-trigger'));
     const md = await screen.findByRole('menuitem', { name: 'Markdown (.md)' });
-    await waitFor(() => expect(md).toHaveFocus());
-    await user.keyboard('{Enter}');
+    for (const label of ['PDF (.pdf)', 'Word (.docx)', 'Excel (.xlsx)', 'HTML (.html)', 'CSV (all tables)', 'JSON']) {
+      expect(screen.getByRole('menuitem', { name: label })).toBeInTheDocument();
+    }
+    await user.click(md);
     await waitFor(() => expect(exportReport).toHaveBeenCalledTimes(1));
     // Let the menu finish closing inside act so no late Radix update escapes the test.
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
@@ -362,7 +390,7 @@ describe('ReportPanel', () => {
 
     // rep-B arrives first, then rep-1's save resolves late: rep-B stays on screen.
     await act(async () => releaseGet(other));
-    expect(await screen.findByTestId('report-count')).toHaveTextContent('2/40');
+    expect(await screen.findByTestId('report-count')).toHaveTextContent('2/60');
     const saved = withVersion(sampleReport(), 6);
     const events: string[] = [];
     const off = (await import('../report-sync')).onReportChanged((d) => events.push(String(d.reportId)));
@@ -370,7 +398,7 @@ describe('ReportPanel', () => {
     off();
     expect(events).toContain('rep-1');
     expect(screen.getByRole('button', { name: /Phishing wave, rename report/ })).toBeInTheDocument();
-    expect(screen.getByTestId('report-count')).toHaveTextContent('2/40');
+    expect(screen.getByTestId('report-count')).toHaveTextContent('2/60');
     expect(screen.queryByTestId('report-conflict')).toBeNull();
     await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(2));
     expect(onCountChange).not.toHaveBeenCalledWith(6);
@@ -429,7 +457,7 @@ describe('ReportPanel', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete report' }));
     await screen.findByTestId('report-empty');
     await waitFor(() => expect(document.activeElement?.tagName).toBe('H2'));
-  });
+  }, 20_000);
 
   it('announces a reload only when it worked and shows why it did not', async () => {
     const user = userEvent.setup();

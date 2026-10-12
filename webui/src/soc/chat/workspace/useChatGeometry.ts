@@ -10,9 +10,16 @@
  *   if the conversation keeps ≥ C_min — collapsing the docked rail to the strip first
  *   when that is enough — otherwise an overlay Sheet.
  *
- * Reference widths (SPEC §10.1): 1280/nav 240 → frame 992: rail docked, conversation
- * 727, panel overlay; 1280/nav 64 → frame 1168: strip + split, conversation 750;
- * 1440/nav 64 → frame 1328: docked + split, conversation 694.
+ * Reference widths (Round 12: the frame bleeds the shell's whole inset, so frame =
+ * viewport − nav): 1280/nav 240 → frame 1040: rail docked, conversation 775, panel
+ * overlay; 1280/nav 64 → frame 1216: strip + split, conversation 798; 1440/nav 64 →
+ * frame 1376: docked + split, conversation 742; 1920/nav 64 → frame 1856, rail as a
+ * strip, panel closed: conversation 1807.
+ *
+ * The frame is measured by a ResizeObserver created in an EFFECT keyed on the frame
+ * node (not in the ref callback), so React StrictMode's simulated unmount/remount in
+ * development re-creates it instead of leaving the geometry frozen at its first width
+ * (diagnosis/layout.md (g)).
  */
 import * as React from 'react';
 
@@ -126,27 +133,27 @@ export function useChatGeometry(panelOpen: boolean): UseChatGeometry {
     const stored = readStorage(PANEL_WIDTH_KEY);
     return stored === null || stored.trim() === '' ? PANEL_DEFAULT : clampPanelWidth(Number(stored));
   });
-  const observerRef = React.useRef<ResizeObserver | null>(null);
+  const [node, setNode] = React.useState<HTMLElement | null>(null);
+  // A stable ref callback that only records the node; the observer lives in the effect.
+  const frameRef = React.useCallback<React.RefCallback<HTMLElement>>((el) => setNode(el), []);
 
-  const frameRef = React.useCallback<React.RefCallback<HTMLElement>>((node) => {
-    observerRef.current?.disconnect();
-    observerRef.current = null;
-    if (!node) return;
+  // Layout effect: the first measurement lands before paint (no roomy-default flash).
+  // Keyed on the node, so every mount — including StrictMode's second one — observes.
+  React.useLayoutEffect(() => {
+    if (!node) return undefined;
     const measure = (width?: number) => {
       const next = Math.round(width ?? node.getBoundingClientRect().width);
       setFrameWidth((current) => (current === next ? current : next));
     };
     measure();
-    if (typeof ResizeObserver !== 'function') return;
+    if (typeof ResizeObserver !== 'function') return undefined;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[entries.length - 1];
       measure(entry?.contentRect?.width);
     });
     observer.observe(node);
-    observerRef.current = observer;
-  }, []);
-
-  React.useEffect(() => () => observerRef.current?.disconnect(), []);
+    return () => observer.disconnect();
+  }, [node]);
 
   const setRailCollapsed = React.useCallback((collapsed: boolean) => {
     setRailCollapsedState(collapsed);

@@ -28,11 +28,11 @@ describe('compact icon-control target standard', () => {
     fireEvent.change(input, { target: { value: 'cloud' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    const remove = screen.getByRole('button', { name: 'Remove tag cloud' });
-    expect(remove).toHaveClass('min-h-6', 'min-w-6');
-    expect(remove.querySelector('svg')).toHaveClass('size-3');
+    // The shared TagInput (Round 12 polish): chips name their remove button "Remove {tag}".
+    const remove = screen.getByRole('button', { name: 'Remove cloud' });
+    expect(remove).toHaveClass('min-h-6', 'min-w-6', '[&_svg]:size-3');
     fireEvent.click(remove);
-    expect(screen.queryByRole('button', { name: 'Remove tag cloud' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove cloud' })).toBeNull();
   });
 
   it('keeps threat-intel tag removal labelled and at least 24px', () => {
@@ -41,10 +41,9 @@ describe('compact icon-control target standard', () => {
     fireEvent.change(input, { target: { value: 'campaign' } });
     fireEvent.keyDown(input, { key: 'Enter' });
 
-    const remove = screen.getByRole('button', { name: 'Remove tag campaign' });
-    expect(remove).toHaveClass('min-h-6', 'min-w-6');
-    expect(remove.querySelector('svg')).toHaveClass('size-3');
+    const remove = screen.getByRole('button', { name: 'Remove campaign' });
+    expect(remove).toHaveClass('min-h-6', 'min-w-6', '[&_svg]:size-3');
     fireEvent.click(remove);
-    expect(screen.queryByRole('button', { name: 'Remove tag campaign' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove campaign' })).toBeNull();
   });
 });

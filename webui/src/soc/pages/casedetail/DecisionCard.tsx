@@ -91,7 +91,7 @@ function precedentSignal(c: Case): PrecedentSignalView | null {
 /** One label/value pair inside the decision-inputs grid. `value` is controlled text. */
 const Fact: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div className="rounded-md border border-border bg-card px-2.5 py-2">
-    <div className="text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+    <div className="text-xs font-medium text-muted-foreground">
       {label}
     </div>
     <div className="mt-0.5 truncate font-mono text-sm text-foreground">{value}</div>
@@ -159,9 +159,11 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
           <h3 className="text-sm font-semibold tracking-tight text-foreground">Deterministic decision</h3>
           <p className="text-xs text-muted-foreground">The close / escalate authority (#3)</p>
         </div>
-        <Badge variant="success" className="gap-1">
+        {/* Routing authority, not the closer: a person may still have closed the case
+            (shown under "Decided by"), so the badge never reads as a contradiction. */}
+        <Badge variant="success" className="gap-1" title="The deterministic case policy routed this case">
           <Lock className="h-3 w-3" />
-          case_manager
+          Routed by <span className="font-mono">case_manager</span>
         </Badge>
         {escalate ? (
           <Badge variant="high" className="gap-1">
@@ -225,7 +227,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
 
       <p className="mt-3 text-xs text-muted-foreground">
         The close / escalate decision is made by deterministic code against the operator-
-        configured auto-close policy — never by raw model output.
+        configured auto-close policy, never by raw model output.
       </p>
 
       {/* --------------------------------------- the exact decide() inputs */}
@@ -245,7 +247,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
       {/* ---------------------------------- the matched AutoClosePolicy clause */}
       {clause ? (
         <div className="mt-3 rounded-lg border border-border bg-card p-3">
-          <div className="mb-1.5 flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-widest text-muted-foreground">
+          <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
             <GitBranch className="h-3 w-3" />
             Policy clause evaluated
           </div>

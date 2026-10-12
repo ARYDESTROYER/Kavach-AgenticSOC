@@ -44,6 +44,103 @@ Rate limiting is optional and process-local. It is not a replacement for an ingr
 gateway or provider quota. CSRF support requires a client token exchange that the 0.1
 web UI does not automatically complete; test it before enabling.
 
+## Session lifetimes
+
+This table is the documented record of session limits and of the deliberate
+deviations from NIST SP 800-63B-4 (OWASP ASVS 5.0 requirement 7.1.1). Administrators
+change the values in **Settings → Security & access → Single sign-on & policy**
+(the Token & session policy group). The server's
+session registry always decides; a browser cookie's own expiry is never relied on.
+
+| | Sign-in without Remember me | Sign-in with Remember me |
+|---|---|---|
+| Cookie | Browser-session cookie (no `Max-Age`), `HttpOnly`, `SameSite=Lax`, `Secure` when `AUTH_COOKIE_SECURE=true` | Persistent cookie, `Max-Age` equal to the remembered lifetime, same attributes |
+| Token lifetime | `AUTH_TOKEN_HOURS` (default 12 hours; values above 144 hours are reduced to 144 with a startup warning) | The remembered lifetime |
+| Absolute limit | **Absolute lifetime** (default 30 days), bounded in practice by the token lifetime | The remembered duration (6, 12 or 24 hours; default and maximum 24), but never longer than the **Absolute lifetime**; counted from sign-in, and refreshing never extends it |
+| Inactivity limit | **Idle timeout** (default 12 hours) | The **Idle timeout**, unless the administrator sets a separate remembered inactivity limit (5 minutes to 24 hours) |
+| Ends when the browser closes | Usually; browsers that restore tabs can keep session cookies, so the server limits still apply | No, until a limit above ends it or the session is revoked |
+| Two-factor authentication | Required at every sign-in when enrolled or mandated | Same. Remember me never skips the second factor |
+| Sensitive actions (step-up) | Re-enter the password after the re-auth window (default 10 minutes) | Same |
+| Revocation | Signing out, revoking a session, or signing out everywhere ends it on the next request | Same |
+| Concurrent sessions | Not limited; each device has its own row in **Settings → Account → Sessions & activity**. The Expires column shows the earlier of the inactivity and absolute limits; a session that has already ended reads "Ended (inactive)" or "Ended (time limit)" | Same, with a "Remembered" badge while the session is live |
+
+**Deviation 1: persistence.** NIST SP 800-63B-4 §5.1 says session secrets SHOULD NOT
+be persistent and that "remember my browser" features must not replace
+authentication. Remember me keeps an already authenticated session alive across
+browser restarts for at most 24 hours, the AAL2 overall reauthentication ceiling; it
+never replaces the next sign-in, never skips two-factor authentication, and never
+bypasses step-up. It is opt-in per sign-in, preceded by a shared-device warning, and
+controlled by the administrator: it can be turned off, shortened to 6 or 12 hours,
+given its own inactivity limit, or refused for chosen roles.
+
+**Deviation 2: inactivity.** NIST SP 800-63B-4 says the AAL2 inactivity timeout SHOULD
+be no more than 1 hour. The default **Idle timeout** is 12 hours, and it applies to
+remembered sessions too, so that a remembered device stays signed in through a
+working day. An administrator who needs the NIST value sets the Idle timeout (or the
+separate remembered inactivity limit) to 60 minutes or less. A remembered session is
+never allowed a longer inactivity or absolute limit than ordinary sign-ins unless the
+administrator sets a remembered inactivity limit explicitly, so an upgrade never
+weakens a stricter policy that was already configured.
+
+**Policy changes apply to live sessions.** Limits are recomputed from the current
+policy on every request. Shortening the remembered duration ends older remembered
+sessions on their next request. Turning Remember me off, excluding a role, or
+promoting someone into an excluded role ends their remembered sessions where an
+ordinary sign-in would, from the next request: a session older than the standard
+token lifetime (`AUTH_TOKEN_HOURS`, 12 hours by default) ends at once, a younger one
+ends when it reaches that age, and a separate remembered inactivity limit keeps
+applying when it is shorter than the **Idle timeout**. The console turns their cookie
+into a browser-session cookie the next time it loads. Out-of-range values sent to the
+settings API are refused (HTTP 422), never silently adjusted.
+
+**Running chat answers end with their authority.** A chat answer can run for a long
+time, so it is checked again before every model call and every set of lookups: when
+the session that started it was revoked or has expired, the account was disabled,
+deleted or replaced, or a role change removed access the answer was using, it stops
+there and saves nothing. Signing out, revoking a session, signing out everywhere,
+disabling or deleting an account and changing its roles also stop the affected answers
+at once, without waiting for the next check.
+
+**Transport.** A persistent cookie is only issued when it cannot cross plain HTTP:
+
+- Behind TLS, set `AUTH_COOKIE_SECURE=true`. Until it is set, Remember me stays off
+  even on an HTTPS console (the sign-in page says it is not available on this
+  connection, and the Session policy editor explains why).
+- Without secure cookies, Remember me is offered only on what looks like a direct
+  request from the server itself: the connection comes from the same machine, the
+  host name is `localhost` or a loopback address, and the request carries no
+  forwarding header (`Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`,
+  `X-Forwarded-Proto` or `X-Real-IP`). The server can recognise a reverse proxy only
+  by those headers. A proxy on the same machine that sends none of them (for
+  example, a plain nginx `proxy_pass http://127.0.0.1:8088;`) looks exactly like a
+  local browser, so people who reach the console through it from the network would
+  get a long-lived cookie over plain HTTP. If you put your own reverse proxy on the
+  backend's host, make it send `X-Forwarded-For` (nginx:
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`, as the bundled
+  web container already does), or serve the console over HTTPS and set
+  `AUTH_COOKIE_SECURE=true`. Docker deployments are not affected: the backend
+  container never sees the proxy's connection as coming from its own loopback
+  address.
+- An administrator may allow it on plain HTTP anyway ("Allow on plain HTTP", not
+  recommended); the switch is shown only while secure cookies are off.
+
+**Shared devices.** Do not use Remember me on shared, public or kiosk computers. Sign
+out when done. The warning is shown to everyone who checks the box, except the person
+this browser already remembers. A remembered username is kept in the browser (not a
+credential) and can be removed with "Use a different account" on the sign-in page or
+"Forget this device" in **Settings → Account → Sessions & activity**.
+The password is never stored by Agentic SOC; only the browser's own password manager
+may offer to save it.
+
+**Revoked sessions stay revoked.** Every session token expires before the registry
+forgets a revoked session (7 days), and the server never re-registers a token issued
+before that window, so a revoked session cannot come back.
+
+**Changed in this release.** A sign-in without Remember me now uses a browser-session
+cookie instead of a 12-hour persistent cookie. API clients that send a bearer token are
+unaffected by the cookie change, but every token, theirs included, now lasts at most
+144 hours: a larger `AUTH_TOKEN_HOURS` is reduced to 144 with a startup warning.
+
 ## Untrusted data and AI
 
 Log-derived, source-derived, and user-influenceable values are untrusted. Agentic SOC fences

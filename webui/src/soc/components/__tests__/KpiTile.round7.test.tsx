@@ -3,21 +3,49 @@
  * `helpLabel`). Existing call sites (no new props) are unaffected — covered by
  * KpiTile.test.tsx + KpiTile.delta-neutral.test.tsx, which stay green.
  */
-import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { beforeAll, describe, it, expect } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { KpiTile } from '../KpiTile';
 
+/**
+ * The rolling numeral has two renderers: the CSS `<CountUp>` (`data-testid="count-up"`)
+ * is the Suspense fallback until the lazy motion.dev spring (`AnimatedNumber`) loads, and
+ * `React.lazy` keeps the loaded spring for every later tile in this file. Which one is on
+ * screen at first paint is therefore a race with that chunk, so these tests assert the
+ * numeral's TEXT on whichever renderer is showing, then wait for the spring to replace
+ * the fallback (inside `waitFor`, so the lazy load settles within the test, not after
+ * it) and assert the same text again: the upgrade never changes what the tile says.
+ */
+async function springLoaded(): Promise<void> {
+  await waitFor(() => expect(screen.queryByTestId('count-up')).toBeNull());
+}
+
 describe('KpiTile round-7 props', () => {
-  it('countTo renders a rolling numeral (static first mount = the target), overriding `value`', () => {
-    render(<KpiTile label="Open" value="0" countTo={7} />);
-    // The count-up numeral wins over the placeholder `value`.
-    expect(screen.getByTestId('count-up')).toHaveTextContent('7');
-    expect(screen.queryByText('0')).toBeNull();
+  // Load the spring module before the first tile, so `springLoaded` waits on React.lazy
+  // only, never on a cold worker loading motion.dev (which could outlast waitFor's one
+  // second on a busy machine).
+  beforeAll(async () => {
+    await import('../motion/AnimatedNumber');
   });
 
-  it('countTo runs through `format`', () => {
+  it('countTo renders a rolling numeral (static first mount = the target), overriding `value`', async () => {
+    render(<KpiTile label="Open" value="0" countTo={7} />);
+    const tile = screen.getByTestId('kpi-open');
+    // The count-up numeral wins over the placeholder `value`, from the first paint on.
+    expect(tile).toHaveTextContent('7');
+    expect(within(tile).queryByText('0')).toBeNull();
+    await springLoaded();
+    expect(tile).toHaveTextContent('7');
+    expect(within(tile).queryByText('0')).toBeNull();
+  });
+
+  it('countTo runs through `format`', async () => {
     render(<KpiTile label="Events" value="—" countTo={2048} format={(n) => n.toLocaleString('en-US')} />);
-    expect(screen.getByTestId('count-up')).toHaveTextContent('2,048');
+    const tile = screen.getByTestId('kpi-events');
+    expect(tile).toHaveTextContent('2,048');
+    await springLoaded();
+    expect(tile).toHaveTextContent('2,048');
+    expect(within(tile).queryByText('2048')).toBeNull();
   });
 
   it('renders an inline HelpTip on a NON-clickable tile', () => {

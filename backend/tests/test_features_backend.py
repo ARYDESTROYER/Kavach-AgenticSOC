@@ -98,7 +98,7 @@ def test_agent_tools_default_to_the_context_window_and_discover_names_it(client,
     assert r.status_code == 200
     body = r.json()
     step = next(s for s in body["steps"] if s["tool"] == "search_logs")
-    assert "last 7d" in step["summary"]
+    assert "last 7 days" in step["summary"]
     assert body["discover"]["time_from"] == "now-7d" and body["discover"]["time_to"] == "now"
     # The chip outranks the screen context, and clamps a wider tool window into itself.
     mock_provider.push("chat", json.dumps({"action": "tool", "tool": "search_logs",
@@ -108,7 +108,7 @@ def test_agent_tools_default_to_the_context_window_and_discover_names_it(client,
                                         "time_range": {"from": "now-2d", "to": "now"}})
     body2 = r2.json()
     step2 = next(s for s in body2["steps"] if s["tool"] == "search_logs")
-    assert "last 2d" in step2["summary"]
+    assert "last 2 days" in step2["summary"]
     assert body2["discover"]["time_from"] == "now-2d"
     # A malformed screen window is ignored (24 h), never a failed turn.
     mock_provider.push("chat", json.dumps({"action": "tool", "tool": "search_logs",
@@ -118,7 +118,7 @@ def test_agent_tools_default_to_the_context_window_and_discover_names_it(client,
                                         "context": {"time_range": {"from": "yesterday-ish"}}})
     assert r3.status_code == 200
     step3 = next(s for s in r3.json()["steps"] if s["tool"] == "search_logs")
-    assert "last 24h" in step3["summary"]
+    assert "last 24 hours" in step3["summary"]
 
 
 # ---------- Feature 3: trigger reason ----------

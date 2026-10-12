@@ -111,6 +111,8 @@ async function findTrendCard(): Promise<HTMLElement> {
 
 describe('Overview — hover trendlines', () => {
   beforeEach(() => {
+    // Deeper analytics remembers its open state per browser (Round 12): start folded.
+    localStorage.removeItem('soc.overview.deeperOpen');
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
     getMetricsMock.mockReset();

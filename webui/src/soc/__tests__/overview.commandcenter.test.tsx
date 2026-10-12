@@ -108,6 +108,8 @@ const NOISE: NoiseReduction = {
 
 describe('Overview — Cyber Defence Center', () => {
   beforeEach(() => {
+    // Deeper analytics remembers its open state per browser (Round 12): start folded.
+    localStorage.removeItem('soc.overview.deeperOpen');
     fetchPostureMock.mockReset();
     listCasesMock.mockReset();
     getMetricsMock.mockReset();

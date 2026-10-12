@@ -25,6 +25,7 @@ it does **not** replace the established implementation layers:
 | `data.table` / `DataTable` | Bounded record table with sort, selection, and paging. |
 | `feedback.empty-state` / `EmptyState` | Compact shaped no-data or inline-failure state. |
 | `settings.section` / `SettingsCard` | Divider-led settings section without nested cards. |
+| `surface.material-bar` / `MaterialBar`, `useScrollEdge`, `useScrollEdgeRef` | The one translucent material for sticky chrome, with the scroll-edge fade shown only while content is scrolled beneath; solid under reduced transparency or increased contrast. |
 | `DESIGN_SYSTEM_CATALOG` | JSON-safe inventory of tokens, components, source assets, and accessibility contracts. |
 
 Source geometry lives under `assets/` as plain data. The marks are original Console
@@ -40,9 +41,12 @@ second implementation.
 
 - Resting page content is border-first. `Card` has no shadow by default; reserve
   `elevation="sm"` for a genuinely detached surface.
-- Tabs and value segments share a 36px outer rail, compact 32px/28px items, a
-  `rounded-md` outer boundary, and `rounded-[3px]` active controls. They do not use
-  pill chrome or active shadows.
+- Tabs and value segments share a 36px outer rail, compact 32px/28px items, an 8px
+  (`rounded-md`) rail and concentric 6px (`rounded-sm`) active targets. They do not use
+  pill chrome or active shadows. Radii are one concentric scale on `--radius`: 6px
+  items and segments, 8px controls and rails, 10px menus and popovers, 14px dialogs
+  and sheets (see [`docs/development/ui-standard.md` → Foundations](../../../docs/development/ui-standard.md#foundations)).
+  Never an arbitrary `rounded-[3px]`/`rounded-[4px]`.
 - `ControlBar` and `FilterBar` are the only routine page-level control bands.
   Their default variants are flat hairline sections rather than cards.
 - `DataTable` owns its one bounded hairline surface. Do not put it inside another

@@ -88,3 +88,30 @@ describe('Security SSO group→role map', () => {
     expect(await screen.findByLabelText('Enable single sign-on')).toBeInTheDocument();
   });
 });
+
+describe('Security SSO add buttons', () => {
+  it('names each provider as its maker writes it, never the lower-case type id', () => {
+    renderSso();
+    for (const name of ['Add Google', 'Add Microsoft', 'Add generic OIDC']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('button', { name: /^Add (google|microsoft)$/ })).toBeNull();
+  });
+
+  it('adds a provider of the type the button names', () => {
+    const update = vi.fn();
+    render(
+      <TooltipProvider>
+        <SecuritySsoInner
+          prefs={{ sso: { enabled: true, providers: [] }, session_policy: {} } as any}
+          update={update}
+          configured={{}}
+        />
+      </TooltipProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add Microsoft' }));
+    const sso = update.mock.calls.at(-1)?.[0]?.sso;
+    expect(sso.providers).toHaveLength(1);
+    expect(sso.providers[0]).toMatchObject({ type: 'microsoft', display_name: 'Microsoft' });
+  });
+});

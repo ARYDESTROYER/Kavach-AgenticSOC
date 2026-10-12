@@ -66,11 +66,16 @@ def encode(claims: dict[str, Any], secret: str, *, expires_in_s: int) -> str:
     return f"{header_b64}.{payload_b64}.{signature_b64}"
 
 
-def decode(token: str, secret: str) -> dict[str, Any]:
+def decode(token: str, secret: str, *, verify_exp: bool = True) -> dict[str, Any]:
     """Verify ``token`` and return its claims, or raise :class:`TokenError`.
 
     Verification covers: structural well-formedness, the ``HS256`` algorithm, a
     constant-time signature check, and the ``exp`` expiry claim.
+
+    ``verify_exp=False`` skips ONLY the expiry comparison (the signature and every
+    structural check still apply, and ``exp`` must still be present). It exists so
+    the server can explain an ended session (``/auth/me`` "signed out after 24
+    hours"); a caller must never treat such claims as an authenticated principal.
     """
     if not isinstance(token, str):
         raise TokenError("token must be a string")
@@ -109,7 +114,7 @@ def decode(token: str, secret: str) -> dict[str, Any]:
     exp = payload.get("exp")
     if not isinstance(exp, (int, float)):
         raise TokenError("missing or invalid exp claim")
-    if int(time.time()) >= int(exp):
+    if verify_exp and int(time.time()) >= int(exp):
         raise TokenError("token expired")
 
     return payload

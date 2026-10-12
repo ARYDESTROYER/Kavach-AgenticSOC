@@ -66,6 +66,17 @@ describe('NumberField', () => {
     expect(onChange).toHaveBeenCalledWith(7);
   });
 
+  it('steps by stepperStep when given, while typed values keep the finer step', () => {
+    const { onChange } = renderField({ value: 5, min: 0, max: 100, step: 0.01, stepperStep: 1 });
+    fireEvent.click(screen.getByLabelText('Increase'));
+    expect(onChange).toHaveBeenLastCalledWith(6);
+    const input = screen.getByLabelText('Window');
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: '7.25' } });
+    fireEvent.blur(input);
+    expect(onChange).toHaveBeenLastCalledWith(7.25);
+  });
+
   it('shows a reset affordance (≥24px target) that restores the default value', () => {
     const { onChange } = renderField({ defaultValue: 5, value: 8 });
     const reset = screen.getByRole('button', { name: /reset/i });

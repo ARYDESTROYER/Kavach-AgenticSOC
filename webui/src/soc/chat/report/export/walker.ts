@@ -17,13 +17,42 @@
  *     is not content and is never rewritten.
  *   - The only external URL a document may carry is an ATT&CK technique page CONSTRUCTED
  *     from a validated technique id (BLOCKS.md `mitre`), never a URL from data.
+ *   - Enum values are written in the words the screen shows (`blocks/labels.ts`, the
+ *     badges' own labels): "True positive", "Needs human", "Critical", "Escalated",
+ *     "IP address", "Alert", "Runbook", and "Yes"/"No" for a yes/no cell. Every format
+ *     built on these nodes (Markdown, HTML, Word, Excel) therefore matches the screen;
+ *     only the JSON export keeps the raw values.
  */
 import { maybeDefang } from '@/lib/defang';
 
-import { formatUtc, formatValue, plainDocTitle, truncationNote, unitLabel } from '../../blocks/format';
+import {
+  INVESTIGATION_BRIEF_ADVISORY,
+  INVESTIGATION_BRIEF_ADVISORY_NOTE,
+  IN_PROGRESS_SUFFIX,
+  formatDelta,
+  formatUtc,
+  formatValue,
+  hasCalendarLabels,
+  plainDocTitle,
+  truncationNote,
+  unitLabel,
+} from '../../blocks/format';
+import { blockTabular } from '../../blocks/export-helpers';
+import {
+  CITATION_KIND_LABEL,
+  ENTITY_KIND_LABEL,
+  REPUTATION_LABEL,
+  TIMELINE_KIND_LABEL,
+  booleanText,
+  queryCaption,
+  semanticColumn,
+  semanticText,
+} from '../../blocks/labels';
+import { verdictLabel } from '@/soc/components/semantic-labels';
 import { VIEW_LABEL, honestBlock } from '../../blocks/views';
-import type { AnswerBlock, Cell, ColumnType, LeafBlock, TableBlock, ToneKey } from '../../blocks/schema';
+import type { AnswerBlock, Cell, ColumnType, KpiItem, LeafBlock, TableBlock, ToneKey, ValueUnit } from '../../blocks/schema';
 import { AI_AUTHORED_TYPES, isDocRef, isExpiredBlock } from '../../blocks/schema';
+import { headingRepeatsLeaf } from '../../blocks/report-headings';
 import { parseChatMarkdown, type MdBlock } from '../../ChatMarkdown';
 import { navLabel } from '@/soc/nav';
 import {
@@ -53,6 +82,16 @@ export type Line = Run[];
 
 export interface TableNode {
   k: 'table';
+  /**
+   * What the table shows (the block's title, plain text): spreadsheet sheet names and
+   * table captions in the Office exports. Content, so defanged with the toggle.
+   */
+  label?: string;
+  /**
+   * A caption that belongs to the table (a chart's kind and unit): Markdown writes it as
+   * a line under the table, HTML as `<caption>`, Word as a caption paragraph.
+   */
+  caption?: string;
   head: string[];
   /** Right-aligned numeric columns. */
   numeric: boolean[];
@@ -61,6 +100,13 @@ export interface TableNode {
   rows: string[][];
   /** Per-cell override of `code` (a key/value table whose rows differ in trust). */
   cellCode?: boolean[][];
+  /**
+   * The raw NUMBER behind each cell where there is one (else `null`, use the text), so a
+   * spreadsheet export keeps numbers numeric instead of their formatted text.
+   */
+  values?: Array<Array<number | null>>;
+  /** The unit of each column's raw numbers (a spreadsheet number format), when known. */
+  units?: Array<ValueUnit | null>;
 }
 
 export type DocNode =
@@ -119,6 +165,8 @@ class Walker {
   readonly out: DocNode[] = [];
   private readonly on: boolean;
   readonly screen: boolean;
+  /** The title of the block being walked (each table node carries it as its label). */
+  label: string | null = null;
 
   constructor(options: WalkOptions) {
     this.on = options.defang !== false;
@@ -142,6 +190,11 @@ class Walker {
     if (text) this.push({ k: 'para', line: [{ text: this.f(text) }], muted });
   }
 
+  /** The investigation brief's advisory label (engine text: never defanged). */
+  advisory(): void {
+    this.push({ k: 'callout', tone: 'info', label: INVESTIGATION_BRIEF_ADVISORY, text: INVESTIGATION_BRIEF_ADVISORY_NOTE });
+  }
+
   table(
     head: string[],
     rows: Cell[][],
@@ -149,19 +202,30 @@ class Walker {
     code: boolean[],
     format?: (cell: Cell, col: number) => string,
     cellCode?: boolean[][],
+    extra: { raw?: Array<Array<number | null>>; caption?: string; units?: Array<ValueUnit | null> } = {},
   ): void {
     const cellText = (cell: Cell, col: number): string => {
       if (format) return format(cell, col);
       if (cell === null) return '—';
       return typeof cell === 'number' ? formatValue(cell, 'count') : String(cell);
     };
+    const values =
+      extra.raw ??
+      rows.map((row) => head.map((_, i) => {
+        const cell = row[i] ?? null;
+        return typeof cell === 'number' && Number.isFinite(cell) ? cell : null;
+      }));
     this.push({
       k: 'table',
+      ...(this.label ? { label: this.f(this.label) } : {}),
+      ...(extra.caption ? { caption: extra.caption } : {}),
       head: head.map((h) => this.f(h)),
       numeric,
       code,
       rows: rows.map((row) => head.map((_, i) => this.f(cellText(row[i] ?? null, i)))),
       ...(cellCode ? { cellCode } : {}),
+      values,
+      ...(extra.units ? { units: extra.units } : {}),
     });
   }
 
@@ -202,7 +266,11 @@ class Walker {
     if (block.provenance === 'ai' && !AI_AUTHORED_TYPES.includes(block.type) && block.type !== 'guide' && block.type !== 'citations') {
       this.para('Values stated by the model, not measured.', true);
     }
+    const outer = this.label;
+    // A Brief's leaves set their own label; the Brief itself labels nothing.
+    this.label = block.type === 'report' ? null : blockTitle(block);
     this.body(block, level);
+    this.label = outer;
     const notes: string[] = [];
     if (block.truncated) notes.push(truncationNote(shown(block), block.total));
     if (block.downsampled_for_storage) notes.push('Downsampled for saved history');
@@ -212,33 +280,63 @@ class Walker {
 
   private body(block: AnswerBlock, level: number): void {
     switch (block.type) {
-      case 'kpi_group':
+      case 'kpi_group': {
+        // The change column appears only when a figure carries one (the tile's delta
+        // chip, in the same words), so a paper or file copy says what the screen says.
+        const changes = block.items.some((it) => it.delta);
+        const head = changes ? ['Metric', 'Value', 'Change', 'Context'] : ['Metric', 'Value', 'Context'];
         this.table(
-          ['Metric', 'Value', 'Context'],
+          head,
           block.items.map((it) => [
             it.label,
             `${it.bound === 'lower' && it.value !== null ? '≥ ' : ''}${formatValue(it.value, it.unit)}`,
+            ...(changes ? [kpiChange(it)] : []),
             it.context ?? null,
           ]),
-          [false, true, false],
-          [false, false, false],
+          head.map((_, i) => i === 1),
+          head.map(() => false),
           (cell) => (cell === null ? '' : String(cell)),
+          undefined,
+          {
+            // An exact count stays a number in a spreadsheet; a lower bound ("≥ 19") and a
+            // figure with its own unit ("45%", "$1.20", "2.1 s") stay as their text.
+            raw: block.items.map((it) =>
+              head.map((_, i) =>
+                i === 1 && it.bound !== 'lower' && it.unit === 'count' && typeof it.value === 'number' && Number.isFinite(it.value) ? it.value : null,
+              ),
+            ),
+          },
         );
         return;
+      }
       case 'chart': {
-        const head = [block.x.label ?? (block.x.kind === 'time' ? 'Time (UTC)' : 'Category'), ...block.series.map((s) => s.label)];
-        const rows: Cell[][] = block.x.values.map((x, i) => [
-          block.x.kind === 'time' ? formatUtc(x) : x,
-          ...block.series.map((s) => s.values[i] ?? null),
-        ]);
+        // The rows are the shared projection the CSV, the "Show table" view and the
+        // print table read (`blockTabular`), so a download says what the screen says: a
+        // calendar axis reads as its period labels in the operator zone ("Period
+        // (Asia/Kolkata)", "Sep 2026 (from 12 Sep)", the current period marked "(in
+        // progress)"), never as raw UTC bucket starts. Only a plain time axis differs:
+        // the CSV keeps its machine-readable instants, a document shows them readable in
+        // UTC, the still-filling bucket marked as the chart marks it.
+        const tab = blockTabular(block);
+        if (!tab) return;
+        const plainTime = block.x.kind === 'time' && !hasCalendarLabels(block.x);
+        const last = block.x.values.length - 1;
+        const head = tab.columns.map((c) => c.label);
+        const rows: Cell[][] = plainTime
+          ? tab.rows.map((row, i) => [
+              `${formatUtc(block.x.values[i])}${block.last_in_progress && i === last ? IN_PROGRESS_SUFFIX : ''}`,
+              ...row.slice(1),
+            ])
+          : tab.rows;
         this.table(
           head,
           rows,
           head.map((_, i) => i > 0),
           head.map((_, i) => i === 0 && block.untrusted),
           (cell, col) => (col === 0 ? (cell === null ? '—' : String(cell)) : formatValue(typeof cell === 'number' ? cell : null, block.unit)),
+          undefined,
+          { caption: `Chart: ${VIEW_LABEL[block.kind].toLowerCase()}, unit: ${unitLabel(block.unit)}.`, units: head.map((_, i) => (i > 0 ? block.unit : null)) },
         );
-        this.push({ k: 'meta', text: `Chart: ${VIEW_LABEL[block.kind].toLowerCase()}, unit: ${unitLabel(block.unit)}.` });
         return;
       }
       case 'heatmap': {
@@ -249,8 +347,9 @@ class Walker {
           head.map((_, i) => i > 0),
           head.map((_, i) => i === 0 && block.untrusted),
           (cell, col) => (col === 0 ? String(cell ?? '—') : formatValue(typeof cell === 'number' ? cell : null, block.unit)),
+          undefined,
+          { caption: `Heatmap, unit: ${unitLabel(block.unit)}.`, units: head.map((_, i) => (i > 0 ? block.unit : null)) },
         );
-        this.push({ k: 'meta', text: `Heatmap, unit: ${unitLabel(block.unit)}.` });
         return;
       }
       case 'table':
@@ -259,26 +358,29 @@ class Walker {
       case 'case_list':
         this.table(
           ['Case', 'Title', 'Severity', 'Verdict', 'Status', 'Risk', 'Created (UTC)'],
+          // The badge words the case list shows ("Critical", "True positive", "Escalated").
           block.items.map((it) => [
             it.case_id,
             it.title,
-            it.severity ?? null,
-            it.verdict ?? null,
-            it.status ?? null,
+            it.severity ? semanticText('severity', it.severity) : null,
+            it.verdict ? semanticText('verdict', it.verdict) : null,
+            it.status ? semanticText('status', it.status) : null,
             it.risk ?? null,
             it.created_at ? formatUtc(it.created_at) : null,
           ]),
           [false, false, false, false, false, true, false],
           [true, block.untrusted, false, false, false, false, false],
           (cell, col) => (cell === null ? '—' : col === 5 && typeof cell === 'number' ? formatValue(cell, 'score') : String(cell)),
+          undefined,
+          { units: [null, null, null, null, null, 'score', null] },
         );
         return;
       case 'timeline':
         this.list(
           false,
           block.events.map((e) => {
-            const line: Line = [{ text: `${formatUtc(e.at)} — ` }, { text: e.label, code: block.untrusted }];
-            if (e.kind) line.push({ text: ` (${e.kind})` });
+            const line: Line = [{ text: `${formatUtc(e.at)}: ` }, { text: e.label, code: block.untrusted }];
+            if (e.kind) line.push({ text: ` (${TIMELINE_KIND_LABEL[e.kind]})` });
             if (e.detail) line.push({ text: ': ' }, { text: e.detail, code: block.untrusted });
             return line;
           }),
@@ -292,19 +394,20 @@ class Walker {
           rows.push([label, value]);
           trust.push([false, code]);
         };
-        add('Kind', block.entity.kind);
+        add('Kind', ENTITY_KIND_LABEL[block.entity.kind]);
         add('Value', block.entity.value, true);
         if (block.risk !== undefined) add('Risk', block.risk === null ? null : formatValue(block.risk, 'score'));
-        if (block.verdict) add('Verdict', block.verdict);
+        if (block.verdict) add('Verdict', verdictLabel(block.verdict));
         if (block.first_seen) add('First seen', formatUtc(block.first_seen));
         if (block.last_seen) add('Last seen', formatUtc(block.last_seen));
         for (const f of block.facts) add(f.label, f.value, f.untrusted || block.untrusted);
         for (const c of block.counts) add(c.label, formatValue(c.value, c.unit));
         this.table(['Field', 'Value'], rows, [false, false], [false, false], (cell) => (cell === null ? '—' : String(cell)), trust);
         if (block.reputation.length) {
+          this.label = `${blockTitle(block)}: reputation`;
           this.table(
             ['Provider', 'Verdict', 'Score', 'Detail'],
-            block.reputation.map((r) => [r.provider, r.verdict, r.score ?? null, r.detail ?? null]),
+            block.reputation.map((r) => [r.provider, REPUTATION_LABEL[r.verdict], r.score ?? null, r.detail ?? null]),
             [false, false, true, false],
             [false, false, false, true],
             (cell) => (cell === null ? '—' : String(cell)),
@@ -314,7 +417,7 @@ class Walker {
           this.para('Related cases:', true);
           this.list(
             false,
-            block.related_cases.map((c) => [{ text: c.case_id, code: true }, { text: ' — ' }, { text: c.title, code: block.untrusted }]),
+            block.related_cases.map((c) => [{ text: c.case_id, code: true }, { text: ': ' }, { text: c.title, code: block.untrusted }]),
           );
         }
         return;
@@ -340,20 +443,20 @@ class Walker {
         }
         return;
       }
-      case 'query': {
-        const parts = [block.language.toUpperCase()];
-        if (block.source_name) parts.push(block.source_name);
-        if (typeof block.hits === 'number') parts.push(`${formatValue(block.hits, 'count')} hits`);
-        this.push({ k: 'code', lang: block.language, text: this.f(block.query), caption: this.f(parts.join(' · ')) });
+      case 'query':
+        // The caption names the language as the screen does ("ES|QL · Elastic · 12 hits");
+        // the fence keeps the raw key (`esql`) as its syntax hint.
+        this.push({ k: 'code', lang: block.language, text: this.f(block.query), caption: this.f(queryCaption(block)) });
         return;
-      }
       case 'citations':
         this.list(
           true,
           block.items.map((it) => {
             const line: Line = [{ text: it.label, code: it.kind === 'log' || it.kind === 'knowledge' }];
-            line.push({ text: ` (${it.kind})` });
-            if (it.ref && isDocRef(it.ref)) line.push({ text: ` — Help Center ${it.ref.doc}` });
+            // The kind in the words the citation list shows ("Runbook", "ATT&CK", "Help Center").
+            const kind = CITATION_KIND_LABEL[it.kind];
+            const doc = it.ref && isDocRef(it.ref) ? it.ref.doc : null;
+            line.push({ text: ` (${doc ? (it.kind === 'docs' ? `${kind} ${doc}` : `${kind}, Help Center ${doc}`) : kind})` });
             if (it.snippet) line.push({ text: ': ' }, { text: it.snippet, code: it.kind === 'log' || it.kind === 'knowledge' });
             return line;
           }),
@@ -365,7 +468,7 @@ class Walker {
           false,
           block.links.map((l) => [
             { text: isDocRef(l.ref) ? plainDocTitle(l.label) : l.label },
-            { text: isDocRef(l.ref) ? ` — Help Center ${l.ref.doc}` : ` — open ${navLabel(l.ref.page)} in the console` },
+            { text: isDocRef(l.ref) ? ` (Help Center ${l.ref.doc})` : ` (open ${navLabel(l.ref.page)} in the console)` },
           ]),
         );
         return;
@@ -378,10 +481,15 @@ class Walker {
           scope.push(`Generated ${formatUtc(block.scope.generated_at)}`);
           this.push({ k: 'meta', text: this.f(scope.join(' · ')) });
         }
+        // P1-3 (#3): a brief recommends; the case decision is the policy's.
+        if (block.template === 'investigation_brief') this.advisory();
         for (const section of block.sections) {
           this.heading(level + 1, section.heading);
           if (section.summary) this.para(section.summary);
-          for (const leaf of section.blocks) this.block(leaf as LeafBlock, level + 2);
+          // "AI cost" over a card titled "AI cost": the section heading says it once
+          // (the screen's rule, `headingRepeatsLeaf`), so the card's title is left out.
+          const repeats = headingRepeatsLeaf(section.heading, section.blocks, section.summary);
+          section.blocks.forEach((leaf, li) => this.block(leaf as LeafBlock, level + 2, !(repeats && li === 0)));
         }
         return;
       default:
@@ -402,12 +510,25 @@ class Walker {
           if (column?.type === 'risk') return formatValue(cell, 'score');
           return formatValue(cell, column?.unit ?? 'count');
         }
-        if (typeof cell === 'boolean') return cell ? 'true' : 'false';
+        if (typeof cell === 'boolean') return booleanText(cell);
         if (column?.type === 'time') return formatUtc(cell);
-        return cell;
+        // A severity, verdict or status value reads as its badge does on screen.
+        const semantic = semanticColumn(column?.type);
+        return semantic ? semanticText(semantic, cell) : cell;
       },
+      undefined,
+      { units: block.columns.map((c) => (c.type === 'risk' ? 'score' : NUMERIC_TYPES.includes(c.type) ? c.unit ?? 'count' : null)) },
     );
   }
+}
+
+/** A KPI's change in the tile's own words ("+6 vs previous window", "no change …"). */
+function kpiChange(it: KpiItem): string | null {
+  const d = it.delta;
+  if (!d) return null;
+  if (d.value === 0) return `no change ${d.period_label}`.trim();
+  const sign = d.value > 0 ? '+' : '−';
+  return `${sign}${formatDelta(Math.abs(d.value), it.unit)} ${d.period_label}`.trim();
 }
 
 function shown(block: AnswerBlock): number {
@@ -442,6 +563,13 @@ const utc = (iso: string | null | undefined): string => formatUtc(iso ?? undefin
 
 /** The header block: title, then engine-written metadata lines. */
 export function headerNodes(doc: ReportDoc, w: Walker): void {
+  headerLines(doc, w);
+  // P1-3 (#3): a saved or exported investigation brief keeps its advisory label on
+  // screen (the library draws this header), in Print and in every file export.
+  if (doc.template === 'investigation_brief') w.advisory();
+}
+
+function headerLines(doc: ReportDoc, w: Walker): void {
   w.heading(1, doc.title);
   const first: string[] = [w.screen ? `Updated ${utc(doc.updatedAt)}` : `Generated ${utc(doc.generatedAt)}`];
   if (doc.author) first.push(`Author: ${doc.author}`);

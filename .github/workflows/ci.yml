@@ -536,6 +536,10 @@ jobs:
           TLSOC_BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           export TLSOC_BUILD_DATE
           npm run build
+      - name: Check the first-paint bundle on the built output
+        env:
+          REQUIRE_DIST_BUILD: "1"
+        run: npx vitest run src/soc/__tests__/bundle-first-paint.test.ts
       - name: Upload Web UI production bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

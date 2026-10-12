@@ -14,8 +14,14 @@
  *    outline is h1 Chat → h2 thread title → h3 turns (SPEC §10.1a).
  *  - Inline rename returns focus to the row it replaced.
  *  - Row menu: Rename (inline), Pin/Unpin, Open report (when the thread has one),
- *    Export ▸, Delete (disabled for the thread a turn is running in).
+ *    Export ▸, Delete (disabled for a thread a turn is running in).
  *  - Footer: the retention note when history was truncated or ≥ 45 threads exist.
+ *  - Live statuses (Round 12, SPEC D13): a small turning ring replaces the time while
+ *    an answer is being written; a dot before the time marks an unread answer (accent),
+ *    a question waiting on the analyst (amber) or a failed answer (red), and the row's
+ *    name says so. Rows are never disabled by a running turn: answers keep streaming
+ *    while another thread is open. The collapsed strip's "Show history" carries a dot
+ *    while a thread that is not on screen is working or has news.
  *
  * History truth is fail-closed: a read failure is an explicit retryable error, never
  * the calm "No previous conversations" state. Titles and snippets are display text.
@@ -53,6 +59,8 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
 import { LoadingState } from '@/design-system/loading';
+import { ActivityGlyph } from '@/soc/chat-activity/glyph';
+import { isChatActivityViewed, useChatActivity } from '@/soc/chat-activity/activity';
 import { IconButton, type IconButtonProps } from '@/soc/components/IconButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { UNTITLED_CONVERSATION } from '../chat-api';
@@ -171,9 +179,25 @@ export function HintedIconButton({
   );
 }
 
+/** A row's live state, most important first (the server's, overlaid with this tab's). */
+export function rowActivity(conversation: ChatConversationSummary): 'running' | 'needs_input' | 'failed' | 'unread' | null {
+  if (conversation.status === 'running' || conversation.status === 'needs_input' || conversation.status === 'failed') {
+    return conversation.status;
+  }
+  return conversation.unread ? 'unread' : null;
+}
+
+const ROW_STATUS_TEXT = {
+  running: 'answering',
+  needs_input: 'needs your input',
+  failed: 'answer failed',
+  unread: 'new answer',
+} as const;
+
 function rowName(conversation: ChatConversationSummary): string {
   const count = conversation.message_count;
-  return `${conversation.title || UNTITLED_CONVERSATION} — ${formatTimestamp(conversation.updated_at)} · ${count} ${count === 1 ? 'message' : 'messages'}`;
+  const status = rowActivity(conversation);
+  return `${conversation.title || UNTITLED_CONVERSATION}${status ? `, ${ROW_STATUS_TEXT[status]}` : ''}, ${formatTimestamp(conversation.updated_at)} · ${count} ${count === 1 ? 'message' : 'messages'}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -182,7 +206,7 @@ function rowName(conversation: ChatConversationSummary): string {
 
 interface RowActions {
   activeId: string | null | undefined;
-  /** A turn is running: selection is refused and the active thread cannot be deleted. */
+  /** The open thread's turn is running: it cannot be deleted (other rows stay open). */
   busy: boolean;
   onSelect: (conversation: ChatConversationSummary) => void;
   onRename: (conversation: ChatConversationSummary, title: string) => void;
@@ -246,9 +270,7 @@ function RenameField({
 
 function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: ChatConversationSummary; actions: RowActions; onRename: () => void; tabIndex: number }) {
   const title = conversation.title || UNTITLED_CONVERSATION;
-  const deleteLocked = actions.busy && actions.activeId === conversation.id;
-  // Selection is refused while a turn runs, so another thread's report cannot open yet.
-  const reportLocked = actions.busy && actions.activeId !== conversation.id;
+  const deleteLocked = (actions.busy && actions.activeId === conversation.id) || conversation.status === 'running';
   // Rename replaces the row (and this trigger) with a field that takes focus. It starts
   // only once the menu has closed: Radix runs an item's onSelect synchronously while the
   // menu's focus trap is still active, which would pull focus back out of the field.
@@ -289,9 +311,9 @@ function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: 
           {conversation.pinned ? 'Unpin' : 'Pin'}
         </DropdownMenuItem>
         {conversation.report_id && actions.onOpenReport ? (
-          <DropdownMenuItem disabled={reportLocked} onSelect={() => actions.onOpenReport?.(conversation)}>
+          <DropdownMenuItem onSelect={() => actions.onOpenReport?.(conversation)}>
             <FileText aria-hidden />
-            {reportLocked ? 'Open report (answer in progress)' : 'Open report'}
+            Open report
           </DropdownMenuItem>
         ) : null}
         {actions.onExport ? (
@@ -370,7 +392,7 @@ export function HistoryRail({
   className,
   ...actions
 }: HistoryRailProps) {
-  const { activeId, busy } = actions;
+  const { activeId } = actions;
   const [renamingId, setRenamingId] = React.useState<string | null>(null);
   const [focusIndex, setFocusIndex] = React.useState<number | null>(null);
   /** A row to focus once it renders again (after an inline rename ends). */
@@ -387,15 +409,12 @@ export function HistoryRail({
   const groups = React.useMemo(() => groupConversations(conversations), [conversations]);
   const ordered = React.useMemo(() => groups.flatMap((group) => group.conversations), [groups]);
   const activeIndex = ordered.findIndex((row) => row.id === activeId);
-  const rowDisabled = (index: number) => busy && ordered[index]?.id !== activeId;
-  // The one tab stop: the last focused row while it still exists and is enabled, else
-  // the active row, else the first row. A deleted row or a shorter list never leaves
-  // the history without a tab stop.
+  // The one tab stop: the last focused row while it still exists, else the active row,
+  // else the first row. A deleted row or a shorter list never leaves the history
+  // without a tab stop.
   const tabStop = (() => {
-    if (focusIndex !== null && focusIndex < ordered.length && !rowDisabled(focusIndex)) return focusIndex;
-    if (activeIndex >= 0) return activeIndex;
-    const firstEnabled = ordered.findIndex((_, index) => !rowDisabled(index));
-    return firstEnabled >= 0 ? firstEnabled : 0;
+    if (focusIndex !== null && focusIndex < ordered.length) return focusIndex;
+    return activeIndex >= 0 ? activeIndex : 0;
   })();
   const tabIndexFor = (index: number) => (index === tabStop ? 0 : -1);
 
@@ -445,7 +464,6 @@ export function HistoryRail({
                 size="sm"
                 className="h-8 flex-1 justify-start gap-2"
                 onClick={onNewChat}
-                disabled={busy}
                 aria-keyshortcuts={shortcuts?.newChat}
               >
                 <Plus aria-hidden />
@@ -481,7 +499,7 @@ export function HistoryRail({
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Chat history" aria-busy={loading || search.searching}>
         {searching ? (
-          <SearchResults search={search} busy={busy} headingPrefix={headingPrefix} />
+          <SearchResults search={search} headingPrefix={headingPrefix} />
         ) : (
           <>
             {loading && conversations.length === 0 ? (
@@ -516,6 +534,7 @@ export function HistoryRail({
                         const index = ordered.indexOf(conversation);
                         const active = conversation.id === activeId;
                         const tabIndex = tabIndexFor(index);
+                        const status = rowActivity(conversation);
                         if (renamingId === conversation.id) {
                           return (
                             <li key={conversation.id}>
@@ -541,7 +560,7 @@ export function HistoryRail({
                                   tabIndex={tabIndex}
                                   aria-current={active ? 'page' : undefined}
                                   aria-label={rowName(conversation)}
-                                  disabled={busy && !active}
+                                  data-status={status ?? undefined}
                                   onFocus={() => setFocusIndex(index)}
                                   onClick={() => actions.onSelect(conversation)}
                                   className={cn(
@@ -558,18 +577,30 @@ export function HistoryRail({
                                   <span
                                     // Hidden whenever the ⋯ trigger shows: on hover, on focus,
                                     // and while its menu is open (focus is then in the portalled
-                                    // menu and the pointer may have left the row).
-                                    className="min-w-7 shrink-0 text-right text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible group-has-[[data-state=open]]/row:invisible"
+                                    // menu and the pointer may have left the row). A running
+                                    // answer shows its ring in the time's place; a dot marks
+                                    // news before the time.
+                                    className="inline-flex min-w-7 shrink-0 items-center justify-end gap-1.5 text-right text-2xs tabular-nums text-muted-foreground group-focus-within/row:invisible group-hover/row:invisible group-has-[[data-state=open]]/row:invisible"
                                     aria-hidden
                                   >
-                                    {shortAge(conversation.updated_at)}
+                                    {status === 'running' ? (
+                                      <ActivityGlyph status="running" />
+                                    ) : (
+                                      <>
+                                        <ActivityGlyph status={status} className="size-1.5" />
+                                        {shortAge(conversation.updated_at)}
+                                      </>
+                                    )}
                                   </span>
                                 </button>
                               </TooltipTrigger>
                               {/* The full title (rows truncate) and the exact date (SPEC §10.2). */}
                               <TooltipContent side="right" className="max-w-xs break-words">
                                 <span className="block font-medium">{conversation.title || UNTITLED_CONVERSATION}</span>
-                                <span className="block text-muted-foreground">{formatTimestamp(conversation.updated_at)}</span>
+                                <span className="block text-muted-foreground">
+                                  {status ? `${ROW_STATUS_TEXT[status].replace(/^./, (c) => c.toUpperCase())} · ` : ''}
+                                  {formatTimestamp(conversation.updated_at)}
+                                </span>
                               </TooltipContent>
                             </Tooltip>
                             <RowMenu
@@ -616,7 +647,7 @@ export function distinctSnippet(title: string, snippet: string | null | undefine
   return snippet;
 }
 
-function SearchResults({ search, busy, headingPrefix }: { search: HistoryRailSearch; busy: boolean; headingPrefix: string }) {
+function SearchResults({ search, headingPrefix }: { search: HistoryRailSearch; headingPrefix: string }) {
   const results = search.results;
   const headingId = `${headingPrefix}-results`;
   return (
@@ -643,9 +674,8 @@ function SearchResults({ search, busy, headingPrefix }: { search: HistoryRailSea
             <li key={hit.id}>
               <button
                 type="button"
-                disabled={busy}
                 onClick={() => search.openHit(hit)}
-                aria-label={`${title}${snippet ? ` — ${snippet}` : ''}`}
+                aria-label={`${title}${snippet ? `: ${snippet}` : ''}`}
                 className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60"
               >
                 <span className="block truncate text-sm text-foreground">{title}</span>
@@ -667,12 +697,18 @@ export interface HistoryStripProps {
   onNewChat: () => void;
   onSearch: () => void;
   onExpand: () => void;
-  busy: boolean;
+  /** Kept for the host's wiring; New chat stays available while an answer is written. */
+  busy?: boolean;
   shortcuts?: { newChat?: string; toggle?: string };
 }
 
-/** The collapsed rail: New chat, Search, Expand (SPEC §10.1). */
-export function HistoryStrip({ onNewChat, onSearch, onExpand, busy, shortcuts }: HistoryStripProps) {
+/**
+ * The collapsed rail: New chat, Search, Expand (SPEC §10.1). "Show history" carries a
+ * dot while a thread that is not on screen is working or has news (SPEC D13).
+ */
+export function HistoryStrip({ onNewChat, onSearch, onExpand, shortcuts }: HistoryStripProps) {
+  const { entries } = useChatActivity();
+  const elsewhere = entries.find((entry) => entry.kind === 'workspace' && !entry.seen && !isChatActivityViewed(entry.scope));
   return (
     <nav className="flex h-full flex-col items-center gap-1 py-3" aria-label="Chat history">
       <HintedIconButton
@@ -680,7 +716,6 @@ export function HistoryStrip({ onNewChat, onSearch, onExpand, busy, shortcuts }:
         hint={SHORTCUT_HINT_KEYS.newChat}
         tooltipSide="right"
         onClick={onNewChat}
-        disabled={busy}
         aria-keyshortcuts={shortcuts?.newChat}
       >
         <Plus aria-hidden />
@@ -694,8 +729,11 @@ export function HistoryStrip({ onNewChat, onSearch, onExpand, busy, shortcuts }:
         tooltipSide="right"
         onClick={onExpand}
         aria-keyshortcuts={shortcuts?.toggle}
+        aria-description={elsewhere ? (elsewhere.status === 'running' ? 'An answer is being written in another chat' : 'Another chat has news') : undefined}
+        className="relative"
       >
         <PanelLeftOpen aria-hidden />
+        <ActivityGlyph status={elsewhere?.status ?? null} className="chat-activity-badge" />
       </HintedIconButton>
     </nav>
   );

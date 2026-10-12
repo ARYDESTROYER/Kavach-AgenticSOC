@@ -158,10 +158,50 @@ async def prefs_user_put(
     body: UserPrefsPatchBody, request: Request, state: AppState = Depends(get_state)
 ) -> dict[str, Any]:
     """Patch the caller's PERSONAL prefs (theme, pins, last-list-state, …). Only the
-    provided fields change. NOT admin-gated — every user edits only their own bucket."""
+    provided fields change. NOT admin-gated — every user edits only their own bucket.
+
+    A change to the saved chat prompts (the Round 12 prompt library) writes one
+    append-only audit row (#2) with counts only — never a prompt's title or text."""
     uid = _prefs_user_id(request, state)
+    before = (await state.user_prefs.get(uid)).chat_prompts if body.chat_prompts is not None else None
     updated = await state.user_prefs.patch(uid, **body.model_dump(exclude_none=True))
+    if before is not None:
+        changes = chat_prompt_changes(before, updated.chat_prompts)
+        if changes is not None:
+            try:
+                await state.control_audit.record(
+                    action_type=ActionType.USER_MGMT, surface="chat",
+                    actor=current_username(request) or "default",
+                    result_summary=(
+                        f"chat prompt library updated: added={changes['added']} "
+                        f"edited={changes['edited']} removed={changes['removed']} "
+                        f"favorites_changed={changes['favorites']} "
+                        f"reordered={'yes' if changes['reordered'] else 'no'} total={changes['total']}"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 -- the saved prompts stand; the row is best effort
+                logger.warning("chat prompt library audit failed (%s)", type(exc).__name__)
     return updated.model_dump(mode="json")
+
+
+def chat_prompt_changes(before: list[ChatPrompt], after: list[ChatPrompt]) -> dict[str, Any] | None:
+    """How the saved chat prompts changed, as counts (``None`` when nothing did):
+    prompts added, edited (title, text or category), removed, favorites toggled,
+    and whether the order changed. Ids are compared; no text is returned."""
+    old = {prompt.id: prompt for prompt in before}
+    new = {prompt.id: prompt for prompt in after}
+    added = sum(1 for pid in new if pid not in old)
+    removed = sum(1 for pid in old if pid not in new)
+    edited = sum(
+        1 for pid, prompt in new.items() if pid in old
+        and (old[pid].title, old[pid].text, old[pid].category) != (prompt.title, prompt.text, prompt.category)
+    )
+    favorites = sum(1 for pid, prompt in new.items() if pid in old and old[pid].favorite != prompt.favorite)
+    reordered = [p.id for p in before if p.id in new] != [p.id for p in after if p.id in old]
+    if not (added or removed or edited or favorites or reordered):
+        return None
+    return {"added": added, "edited": edited, "removed": removed, "favorites": favorites,
+            "reordered": reordered, "total": len(after)}
 
 
 @router.get("/prefs/org", response_model=CustomizationConfig)

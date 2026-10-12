@@ -1,23 +1,31 @@
 /**
- * TokenMeter — the composer's "≈ 1.2k" next-request estimate, the budget ring, and
- * their shared hover card (SPEC §8 item 1).
+ * TokenMeter — the composer's "≈ 1.2k" next-request estimate, the context-window ring,
+ * and their shared hover card (SPEC §8 item 1; Round 12 diagnosis/layout.md (f2)).
  *
  * The estimate is (system + history + draft) chars ÷ `chars_per_token` × calibration,
  * labelled "≈" because it is an estimate. The calibration is the server's actual ÷
  * estimate of the WHOLE first prompt of this conversation's last turn, so it applies
  * to every part (the server's system and history figures are plain chars ÷ 4), and
- * the card says so ("Calibrated ×1.5"). The card breaks the figure down and projects
- * the whole turn ("up to ≈ M" = min(ceiling, N × max_model_calls + max_tool_calls ×
- * observation_chars ÷ cpt)). Money appears only when the context carries it: the
- * projected cost range needs `rates` (`models:read`), today's spend needs
- * `spent_today` (`cost:view`). Per-turn amounts use the transcript's grammar
- * ("$0.002"), budget amounts two decimals ("$4.20 of $10.00"). Demo pricing is
- * marked simulated.
+ * the card says so ("Calibrated ×1.5").
  *
- * The card opens on mouse hover and on click, tap or Enter on the estimate button (a
- * Popover: a Radix HoverCard cancels the tap on touch screens). It never takes focus.
- * Its content is supplementary: the button's accessible name already carries the
- * estimate, and the ring is its own meter.
+ * The ring beside it is CONTEXT-WINDOW use: that same estimate ÷ `context_window`
+ * from `/api/chat/context` ("12%", "<1%"). It used to be today's AI spend, which read
+ * "0%" next to the estimate and looked like an empty context. In unlimited mode (SPEC D1)
+ * the card explains that long conversations are summarised automatically near the limit
+ * and that there is no hard cap; bounded mode keeps the per-question ceiling and the
+ * whole-question projection ("up to ≈ M").
+ *
+ * The daily AI budget moved INTO the card (its own section with a bar): under SPEC D5 it
+ * counts automatic investigations, and chat is metered but never paused by it. Money
+ * appears only when the context carries it: the cost needs `rates` (`models:read`),
+ * today's spend needs `spent_today` (`cost:view`). Per-turn amounts use the
+ * transcript's grammar ("$0.002"), budget amounts two decimals ("$4.20 of $10.00").
+ * Demo pricing is marked simulated.
+ *
+ * The card opens on mouse hover (over the estimate or the ring) and on click, tap or
+ * Enter on the estimate button (a Popover: a Radix HoverCard cancels the tap on touch
+ * screens). It never takes focus. Its content is supplementary: the button's accessible
+ * name carries the estimate and the ring is its own meter.
  */
 import * as React from 'react';
 import type { ChatContextInfo } from '@/lib/types';
@@ -26,10 +34,15 @@ import { focusRing } from '@/lib/ui-recipes';
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from '@/ui/popover';
 import { CHAT_HISTORY_EXCHANGES } from '../useChatEngine';
 import { projectTurnMaxTokens } from '../display';
-import { BudgetRing } from './BudgetRing';
+import { BudgetBar, ContextRing } from './BudgetRing';
 import {
   budgetMeterValue,
+  budgetNote,
   calibratedNextRequest,
+  chatUnlimited,
+  contextMeterValue,
+  contextNote,
+  formatContextPercent,
   formatExactTokens,
   formatFactor,
   formatMoney,
@@ -48,12 +61,12 @@ export interface TokenMeterProps {
   draft: string;
   /** This conversation's recorded totals (thread summary), when the host knows them. */
   conversationTotals?: ConversationTotals | null;
-  /** Show the budget ring (the compact Case Manager composer shows the estimate only). */
+  /** Show the context ring (the compact Case Manager composer shows the estimate only). */
   showRing?: boolean;
   className?: string;
 }
 
-function Row({ label, value, sub }: { label: React.ReactNode; value: React.ReactNode; sub?: React.ReactNode }) {
+function Row({ label, value, sub }: { label: React.ReactNode; value: React.ReactNode; sub?: boolean }) {
   return (
     <>
       <dt className={cn('text-muted-foreground', sub && 'pl-3')}>{label}</dt>
@@ -62,24 +75,27 @@ function Row({ label, value, sub }: { label: React.ReactNode; value: React.React
   );
 }
 
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <p className="mb-1.5 text-xs font-medium text-foreground">{children}</p>;
+}
+
 export function TokenMeter({ context, draft, conversationTotals, showRing = true, className }: TokenMeterProps) {
   const [open, setOpen] = React.useState(false);
   const cpt = context.chars_per_token;
+  const unlimited = chatUnlimited(context);
   const next = calibratedNextRequest(context, draft);
-  const turnMax = projectTurnMaxTokens(next.total, context.bounds, cpt);
-  const cost = projectedCostRange(context, next.total, turnMax);
-  const ring = showRing ? budgetMeterValue(context) : null;
-  const contextWindow = context.context_window;
-  const windowShare = contextWindow && contextWindow > 0 ? next.total / contextWindow : null;
+  // Bounded mode only: unlimited questions have no whole-turn ceiling to project to.
+  const turnMax = unlimited ? null : projectTurnMaxTokens(next.total, context.bounds, cpt);
+  const cost = projectedCostRange(context, next.total, turnMax ?? next.total);
+  const contextValue = contextMeterValue(context, next.total);
+  const ring = showRing ? contextValue : null;
   const exchanges = context.history_exchanges || CHAT_HISTORY_EXCHANGES;
   const simulated = context.simulated === true;
   const spend = context.spent_today;
   const limit = context.budget?.enabled ? context.budget.daily_limit : null;
-  // The shared-budget note only when a budget is actually in force: an enabled budget
-  // (models:read), or a non-ok state for a viewer who cannot see the budget itself.
-  // `budget_state` is always a string ('ok' when no budget is enabled), never a test.
-  const budgetInForce =
-    context.budget?.enabled === true || (!context.budget && !!context.budget_state && context.budget_state !== 'ok');
+  const budgetValue = budgetMeterValue(context);
+  const budgetLine = budgetNote(context);
+  const showBudget = typeof spend === 'number' || budgetLine !== null;
 
   const openTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -145,7 +161,7 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
               ≈ {formatTokenCount(next.total)}
             </button>
           </PopoverTrigger>
-          {ring ? <BudgetRing value={ring} /> : null}
+          {ring ? <ContextRing value={ring} /> : null}
         </div>
       </PopoverAnchor>
       <PopoverContent
@@ -157,11 +173,28 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
         onPointerEnter={hoverIn}
         onPointerLeave={hoverOut}
       >
-        <p id={titleId} className="mb-2 font-medium text-foreground">
-          Token estimate
+        <p id={titleId} className="sr-only">
+          Context and usage
         </p>
+
+        {contextValue ? (
+          <div role="group" aria-label="Context window" className="mb-3" data-testid="meter-context">
+            <SectionTitle>Context window</SectionTitle>
+            <p className="tabular-nums text-foreground">
+              {formatContextPercent(contextValue.percent)} used
+              <span className="text-muted-foreground">
+                {` · ≈ ${formatTokenCount(contextValue.used)} of ${formatTokenCount(contextValue.window)} tokens`}
+              </span>
+            </p>
+            <p className="mt-1 text-2xs leading-relaxed text-muted-foreground" data-testid="meter-context-note">
+              {contextNote(context)}
+            </p>
+          </div>
+        ) : null}
+
+        <SectionTitle>Next request</SectionTitle>
         <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
-          <Row label="Next request" value={`≈ ${formatExactTokens(next.total)}`} />
+          <Row label="Estimate" value={`≈ ${formatExactTokens(next.total)}`} />
           <Row sub label="System and tools" value={formatExactTokens(next.system)} />
           <Row
             sub
@@ -169,28 +202,23 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
             value={formatExactTokens(next.history)}
           />
           <Row sub label="Your draft" value={formatExactTokens(next.draft)} />
-          {next.factor !== 1 ? (
-            <Row sub label="Calibrated to this conversation" value={formatFactor(next.factor)} />
-          ) : null}
-          <Row label="Whole question" value={`up to ≈ ${formatExactTokens(turnMax)}`} />
+          {next.factor !== 1 ? <Row sub label="Calibrated to this conversation" value={formatFactor(next.factor)} /> : null}
+          {turnMax !== null ? <Row label="Whole question" value={`up to ≈ ${formatExactTokens(turnMax)}`} /> : null}
           {cost ? (
-            <Row
-              sub
-              label={simulated ? 'Projected cost (simulated)' : 'Projected cost'}
-              value={`≈ ${formatTurnCost(cost.low)}–${formatTurnCost(cost.high)}`}
-            />
+            turnMax !== null ? (
+              <Row
+                sub
+                label={simulated ? 'Projected cost (simulated)' : 'Projected cost'}
+                value={`≈ ${formatTurnCost(cost.low)}–${formatTurnCost(cost.high)}`}
+              />
+            ) : (
+              <Row
+                label={simulated ? 'Cost of the next step (simulated)' : 'Cost of the next step'}
+                value={`≈ ${formatTurnCost(cost.low)}`}
+              />
+            )
           ) : null}
-          {contextWindow ? (
-            <Row
-              label="Context window"
-              value={
-                windowShare !== null && windowShare >= 0.5
-                  ? `${Math.round(windowShare * 100)}% of ${formatTokenCount(contextWindow)}`
-                  : formatTokenCount(contextWindow)
-              }
-            />
-          ) : null}
-          <Row label="Per-question limit" value={formatExactTokens(context.bounds.turn_token_ceiling)} />
+          {!unlimited ? <Row label="Per-question limit" value={formatExactTokens(context.bounds.turn_token_ceiling)} /> : null}
           {conversationTotals && (conversationTotals.tokens !== null || conversationTotals.cost !== null) ? (
             <Row
               label="This conversation"
@@ -202,19 +230,23 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
                 .join(' · ')}
             />
           ) : null}
-          {typeof spend === 'number' ? (
-            <Row
-              label={simulated ? "Today's AI spend (simulated)" : "Today's AI spend"}
-              value={typeof limit === 'number' && limit > 0 ? `${formatMoney(spend)} of ${formatMoney(limit)}` : formatMoney(spend)}
-            />
-          ) : null}
         </dl>
-        <p className="mt-2 text-2xs text-muted-foreground">Older exchanges are not sent.</p>
-        {budgetInForce ? (
-          <p className="mt-1 text-2xs text-muted-foreground">
-            Chat shares this budget with automatic investigations; at the limit new investigations route to Needs
-            human.
-          </p>
+        {!contextValue ? <p className="mt-2 text-2xs text-muted-foreground">{contextNote(context)}</p> : null}
+
+        {showBudget ? (
+          <div role="group" aria-label="Daily AI budget" className="mt-3 border-t border-border pt-2.5" data-testid="meter-budget">
+            <SectionTitle>Daily AI budget</SectionTitle>
+            {typeof spend === 'number' ? (
+              <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
+                <Row
+                  label={simulated ? 'Spent today (simulated)' : 'Spent today'}
+                  value={typeof limit === 'number' && limit > 0 ? `${formatMoney(spend)} of ${formatMoney(limit)}` : formatMoney(spend)}
+                />
+              </dl>
+            ) : null}
+            {budgetValue ? <BudgetBar value={budgetValue} className="mt-1.5" /> : null}
+            {budgetLine ? <p className="mt-1.5 text-2xs leading-relaxed text-muted-foreground">{budgetLine}</p> : null}
+          </div>
         ) : null}
       </PopoverContent>
     </Popover>

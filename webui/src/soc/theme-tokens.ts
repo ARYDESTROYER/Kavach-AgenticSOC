@@ -194,8 +194,8 @@ export function clearTokens(names: Iterable<string>, target?: HTMLElement | null
  * Material-pack token deltas. The 'quiet' pack is the IDENTITY, so selecting it
  * renders byte-for-byte like the pre-wave UI. Crucially, 'quiet' DOES NOT set
  * `--glass-opacity`: that token has DIFFERENT per-theme defaults in theme.css
- * (0.82 light / 0.78 dark), so force-writing one value inline would override the
- * dark stylesheet's 0.78 and subtly darken the chrome. By omitting it, 'quiet'
+ * (0.97 in both today), so force-writing one value inline would override a later
+ * per-theme change and subtly change the chrome. By omitting it, 'quiet'
  * lets the stylesheet's per-theme value win (see `applyMaterial`, which actively
  * removes any stale inline override). `--glow-strength`/`--grid-opacity` ARE
  * theme-agnostic (both 0 in either theme), so writing them inline is harmless.
@@ -209,8 +209,11 @@ export const MATERIAL_PACKS: Record<Material, Record<string, string>> = {
     '--grid-opacity': '0',
   },
   command: {
-    // Slightly more translucent chrome + a faint glow + a whisper grid overlay.
-    '--glass-opacity': '0.64',
+    // Slightly more translucent chrome + a faint glow + a whisper grid overlay. The glass
+    // stays at 0.94: the backdrop blur cannot be relied on over routed content (see
+    // lib/material-recipes.ts), so the fill alone keeps text under the top bar from
+    // reading through (about 1.13:1). The old 0.64 let card text show at about 2:1.
+    '--glass-opacity': '0.94',
     '--glow-strength': '0.45',
     '--grid-opacity': '0.05',
   },
@@ -224,7 +227,7 @@ export function resolveMaterial(material?: string | null): Material {
 /**
  * Apply a material pack's chrome tokens (allow-listed via applyTokens). The 'quiet'
  * pack first REMOVES any inline `--glass-opacity` so the stylesheet's per-theme
- * default (0.82 light / 0.78 dark) applies — 'quiet' is then byte-identical to the
+ * default (0.97 in both themes) applies — 'quiet' is then byte-identical to the
  * pre-wave look in BOTH themes. Only 'command' writes an explicit glass opacity.
  */
 export function applyMaterial(material: Material, target?: HTMLElement | null): void {

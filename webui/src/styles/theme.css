@@ -113,7 +113,11 @@
        pack raises these via theme.tsx; consumers (GlassSurface, shell) read them
        so 'quiet' renders identically to the pre-wave UI. */
     --glass-tint: var(--slate-2);  /* the surface tint a glass panel blurs over   */
-    --glass-opacity: 0.82;         /* fill opacity of a glass panel (0..1)         */
+    /* Fill opacity of a glass panel (0..1). 0.97, not the old 0.82: the top bar is the
+       Console's own material and the fill alone has to hide what scrolls under it (the
+       backdrop blur cannot be relied on, see lib/material-recipes.ts), so 0.82 let card
+       text read through the top bar. */
+    --glass-opacity: 0.97;
     --glow-strength: 0;            /* 0 = no glow (quiet); command raises it       */
     --grid-opacity: 0;             /* 0 = no command-grid overlay (quiet)          */
 
@@ -158,6 +162,15 @@
        ease-out). Formalised as a token so `ease-premium` in Tailwind + the fade/rise/
        scale keyframes all read from ONE place. */
     --motion-ease-premium: cubic-bezier(0.16, 1, 0.3, 1);
+    /* Round 12 — the CSS halves of the ONE spring vocabulary (motion/variants.ts).
+       `--motion-ui` / `--motion-pane` mirror SPRING_UI (0.3s) and SPRING_PANE (0.35s);
+       `--motion-press` is the 100ms pointer-down feedback. `--motion-ease-spring` is a
+       critically damped (bounce 0) response; engines with CSS `linear()` get the sampled
+       curve from the @supports block below, everyone else the calm standard curve. */
+    --motion-ui: 300ms;
+    --motion-pane: 350ms;
+    --motion-press: 100ms;
+    --motion-ease-spring: cubic-bezier(0.2, 0, 0, 1);
   }
 
   .dark {
@@ -225,7 +238,7 @@
     --accent2: 243 78% 78%;              /* #a09bf3 — the :root indigo, lifted for the navy ground */
     /* Material-pack chrome (quiet defaults; command raises via theme.tsx). */
     --glass-tint: var(--slate-1);
-    --glass-opacity: 0.96;
+    --glass-opacity: 0.97;
     --glow-strength: 0;
     --grid-opacity: 0;
 
@@ -267,6 +280,9 @@
     color: hsl(var(--foreground));
     font-size: 0.875rem; /* 14px — the primary UI/body default (DESIGN_STANDARD §2.2) */
     line-height: 1.25rem; /* 20px */
+    /* Inter's dynamic-metrics value at 14px (the `base` step in tailwind.config.js), so
+       unsized body text tracks like the sized steps around it. */
+    letter-spacing: -0.006em;
     font-variant-numeric: tabular-nums;
     /* Inter disambiguation on body + tables: 0/O, 1/l/I. `ss01`/`cv01`/`zero` are
        the Inter stylistic sets; `calt` keeps contextual ligatures. */
@@ -287,6 +303,21 @@
   samp,
   .font-mono {
     font-feature-settings: 'calt' 0;
+  }
+  /* Round 12 — overlays scale FROM THEIR TRIGGER (Apple spatial consistency). Every
+     Radix popper (menu, popover, hover card, tooltip, a popper-positioned select) wraps
+     its content in `[data-radix-popper-content-wrapper]` and publishes the
+     anchor-relative origin on it as `--radix-popper-transform-origin`, so ONE rule
+     points the content's zoom at the control that opened it — no per-primitive class
+     in the entry bundle. Base layer: a utility `origin-*` on a consumer still wins. */
+  [data-radix-popper-content-wrapper] > * {
+    transform-origin: var(--radix-popper-transform-origin);
+  }
+  /* Toasts are 10px (`--radius`), like menus and popovers: sonner reads its corner from
+     `--border-radius`, which it declares at zero specificity (`:where(...)`), so this
+     wins without an inline style in the entry bundle (ui/sonner.tsx). */
+  [data-sonner-toaster] {
+    --border-radius: var(--radius);
   }
 }
 
@@ -516,8 +547,10 @@
       transform var(--motion-fast) var(--motion-ease-standard),
       box-shadow var(--motion-fast) var(--motion-ease-standard);
   }
+  /* Round 12 — press feedback is INSTANT (Apple "Response"): 100ms ease-out on the way
+     down, so the control answers on pointer-down rather than on release. */
   .press-scale {
-    transition: transform var(--motion-fast) var(--motion-ease-standard);
+    transition: transform var(--motion-press, 100ms) ease-out;
   }
   @media (prefers-reduced-motion: no-preference) {
     .hover-lift:hover {
@@ -527,6 +560,94 @@
     .press-scale:active {
       transform: scale(0.97);
     }
+  }
+}
+
+@layer utilities {
+  /* ------------------------------------------------------------------------ *
+   * Round 12 — the ONE translucent material (ui-standard "Materials").        *
+   *                                                                          *
+   * Reserved for FLOATING CHROME: the top bar (GlassSurface), sticky page/    *
+   * control/filter bars, the sticky case header. Never behind data: tables,  *
+   * charts, transcripts and evidence sit on an opaque canvas or card, and    *
+   * menus, popovers and dialogs are SOLID (`bg-popover` / `bg-card`) so a     *
+   * surface opened from a bar never stacks translucent on translucent.       *
+   * The fill/blur utilities come from the `materialBar` / `materialThick`    *
+   * recipes (lib/ui-recipes.ts); this marker class carries the scroll-edge   *
+   * fade and every accessibility fallback below.                             *
+   * ------------------------------------------------------------------------ */
+  /* The marker deliberately sets NO `position`: every material is sticky or fixed
+     chrome, which is already a containing block for the fade below, and a
+     `position: relative` here would race the `sticky` utility in the cascade.
+
+     Scroll-edge effect instead of a hard rule: a soft fade below the bar, shown only
+     while content is actually scrolled underneath (`useScrollEdge` sets the flag).
+     The fade is the bar's OWN colour (`--material-solid`: `--background` for
+     `materialBar`, `--popover` for `materialThick`), so a thick sheet header never trails
+     a darker page-coloured band over the card content beneath it. It starts at the bar's
+     own fill (0.97, lib/material-recipes.ts) so there is no seam where the bar ends, and
+     runs 16px: text rising toward the bar dissolves into it instead of being cut by an
+     edge it can still be read across. */
+  .material-surface[data-scrolled='true']::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    top: 100%;
+    height: 16px;
+    pointer-events: none;
+    background: linear-gradient(
+      to bottom,
+      hsl(var(--material-solid, var(--background)) / 0.97),
+      hsl(var(--material-solid, var(--background)) / 0)
+    );
+  }
+  /* No light-on-light stacking, structurally: a material nested inside another
+     material (or inside the glass top bar) is painted solid.
+
+     Every solid fallback paints the material's OWN opaque token, `--material-solid`:
+     unset (→ `--background`) for `materialBar`, `--popover` for `materialThick`
+     (lib/ui-recipes.ts). Painting a thick pane with `--background` would turn it a
+     different, darker colour than the sheet or palette it belongs to. */
+  .material-surface .material-surface,
+  .glass-surface .material-surface {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background-color: hsl(var(--material-solid, var(--background))) !important;
+  }
+
+  /* ------------------------------------------------------------------------ *
+   * Round 12 — the FLUID hero numeral (KpiTile `size="fluid"`).              *
+   * Sized from ITS OWN TILE, not the viewport: the numeral row is a size     *
+   * container (`@container`) and each rung is a `cqi` clamp, so the number   *
+   * grows with the width it has to fit — the same at 1280 with the nav       *
+   * pinned as at 1600 in a narrow column. Calibrated on MEASURED Inter       *
+   * tabular figures (0.626em a digit, 0.248em a comma, `≥` 0.626em): a rung   *
+   * holds its ladder band — ≤6, 7–8 and 9+ characters, the floor mark        *
+   * included — in the row width it is sized from:                            *
+   *   25cqi × 3.9em ≈ 98% · 20cqi × 4.7em ≈ 94% · 15cqi × 6.2em ≈ 93%         *
+   * Floors keep it legible in a narrow tile (the fit guard in KpiTile steps   *
+   * down further, or abbreviates, if even the floor does not fit); caps keep *
+   * an ultrawide tile from shouting. The plain `font-size` before each clamp *
+   * is the fallback for an engine without container units. Tracking follows *
+   * Inter's curve for the size band; leading is 1 (a numeral is one line).   *
+   * ------------------------------------------------------------------------ */
+  .kpi-numeral-fluid {
+    font-size: 1.875rem;
+    font-size: clamp(1.5rem, 25cqi, 2.75rem);
+    line-height: 1;
+    letter-spacing: -0.021em;
+  }
+  .kpi-numeral-fluid-md {
+    font-size: 1.5rem;
+    font-size: clamp(1.25rem, 20cqi, 2.2rem);
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+  .kpi-numeral-fluid-sm {
+    font-size: 1.25rem;
+    font-size: clamp(1.125rem, 15cqi, 1.8333rem);
+    line-height: 1;
+    letter-spacing: -0.018em;
   }
 }
 
@@ -1389,5 +1510,269 @@ select:-webkit-autofill:focus {
   .glass-surface {
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
+  }
+}
+
+/* ------------------------------------------------------------------------- *
+ * Round 12 — Apple-aligned accessibility fallbacks (ui-standard "Materials", *
+ * "Motion" and "Accessibility"). Three independent signals, each honoured:   *
+ *   prefers-reduced-motion       → overlays cross-fade instead of scaling or  *
+ *                                  sliding (no vestibular motion, still a cue)*
+ *   prefers-reduced-transparency → every material becomes solid              *
+ *   prefers-contrast: more       → solid materials, defined borders, stronger *
+ *                                  secondary text                            *
+ * plus `data-transparency="reduced"` on <html>, the in-app override for       *
+ * browsers that never report reduced transparency (Safari, Firefox).         *
+ * ------------------------------------------------------------------------- */
+
+/* The critically damped spring as CSS `linear()` (Motion's `bounce: 0`): sampled
+   x(t) = 1 − (1 + ωt)·e^(−ωt) with ω = 8 over the animation's duration. Engines
+   without `linear()` keep the standard curve declared in :root. */
+@supports (transition-timing-function: linear(0, 1)) {
+  :root {
+    --motion-ease-spring: linear(
+      0, 0.062, 0.191, 0.337, 0.475, 0.594, 0.692, 0.769, 0.829, 0.874, 0.908,
+      0.934, 0.952, 0.966, 0.976, 0.983, 0.988, 0.991, 0.994, 0.996, 1
+    );
+  }
+}
+
+/* Reduced motion means a GENTLER cue, not none: Radix overlays (menus, popovers,
+   tooltips, selects, dialogs, sheets) swap their scale/slide keyframes for a short
+   opacity-only cross-fade. Swapping the keyframes (rather than zeroing the
+   `--tw-enter-*` variables) matters: the keyframes REPLACE `transform`, so an
+   opacity-only keyframe leaves every element's own resting transform — a dialog's
+   −50% centring — untouched. The selectors match the VARIANT classes Radix
+   primitives actually carry (`data-[state=open]:animate-in`, never a bare
+   `animate-in`) and pick the keyframe by the live `data-state`, because an overlay
+   wears both its enter and exit classes at all times. Attribute specificity beats
+   the global `*` reset above, for these elements only. */
+@keyframes console-reduced-enter {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes console-reduced-exit {
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [class*='animate-in']:not([data-state='closed']) {
+    animation-name: console-reduced-enter !important;
+  }
+  [data-state='closed'][class*='animate-out'] {
+    animation-name: console-reduced-exit !important;
+  }
+  [class*='animate-in']:not([data-state='closed']),
+  [data-state='closed'][class*='animate-out'] {
+    animation-duration: 150ms !important;
+    animation-timing-function: ease-out !important;
+  }
+}
+
+/* Reduced transparency: the material is painted with its own solid token. */
+@media (prefers-reduced-transparency: reduce) {
+  .material-surface {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background-color: hsl(var(--material-solid, var(--background))) !important;
+  }
+}
+
+:root[data-transparency='reduced'] {
+  --glass-opacity: 1 !important;
+  --glow-strength: 0 !important;
+  --grid-opacity: 0 !important;
+}
+:root[data-transparency='reduced'] .glass-surface,
+:root[data-transparency='reduced'] .material-surface {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+:root[data-transparency='reduced'] .material-surface {
+  background-color: hsl(var(--material-solid, var(--background))) !important;
+}
+
+/* Increased contrast: hairlines become ≥3:1 structural lines, secondary text gets
+   darker (light) / brighter (dark), and every material turns solid with a real
+   bottom rule instead of the scroll-edge fade. Ratios are measured by
+   src/design-system/__tests__/foundations.test.ts against the theme card AND page
+   background.
+
+   `--border-alpha-floor: 1` is what reaches the HAIRLINE UTILITIES: the dominant
+   borders are alpha variants (`border-border/70`, `/60`, `/80`, `divide-border/70`,
+   `[&>*]:border-border/70`), which Tailwind would otherwise bake into
+   `hsl(var(--border) / 0.7)` and leave below 3:1. The `border` colour is declared as
+   `hsl(var(--border) / max(<alpha-value>, var(--border-alpha-floor, 0)))`
+   (tailwind.config.js), so the floor lifts every alpha variant to the full structural
+   line here and changes nothing anywhere else. */
+@media (prefers-contrast: more) {
+  :root {
+    --border: var(--border-strong);
+    --border-alpha-floor: 1;
+    --muted-foreground: 220 14% 30%;
+    /* Secondary text must never end up WEAKER than muted text (slate-11 is 6.1:1). */
+    --secondary-foreground: 220 18% 22%;
+    --glass-opacity: 1 !important;
+  }
+  .dark {
+    --border: var(--border-strong);
+    --border-alpha-floor: 1;
+    --muted-foreground: var(--slate-11);
+    --secondary-foreground: var(--slate-12);
+    --glass-opacity: 1 !important;
+  }
+  /* The identity canvas re-declares its own neutrals (`--border`, `--input`,
+     `--muted-foreground` and the `--login-*` input tokens), so the :root overrides
+     above never reach it. Its increased-contrast values, MEASURED against the slab
+     and the canvas (foundations.test.ts): borders and the input edge ≥3:1, secondary
+     text ≥7:1, the faint tile guides visibly stronger. */
+  .login-auth-canvas {
+    --login-text-subtle: #4a4842;
+    --login-text-muted: #5f5c55;
+    --login-guide: rgb(0 0 0 / 12%);
+    --login-input-border: rgb(0 0 0 / 55%);
+    --muted-foreground: 43 6% 28%;
+    --border: 0 0% 48%;
+    --border-strong: 0 0% 40%;
+    --input: 0 0% 45%;
+  }
+  .dark .login-auth-canvas {
+    --login-text-subtle: #c4c4cc;
+    --login-text-muted: #a1a1aa;
+    --login-guide: rgb(255 255 255 / 14%);
+    --login-input-border: rgb(255 255 255 / 50%);
+    --muted-foreground: 240 5% 78%;
+    --border: 0 0% 45%;
+    --border-strong: 0 0% 55%;
+    --input: 0 0% 55%;
+  }
+  .glass-surface,
+  .material-surface {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    border-bottom: 1px solid hsl(var(--border-strong)) !important;
+  }
+  .material-surface {
+    background-color: hsl(var(--material-solid, var(--background))) !important;
+  }
+  .material-surface::after {
+    display: none !important;
+  }
+}
+
+/* ---- Printing a console page (Round 12, WP-OV) ---------------------------------------
+   Ctrl/Cmd+P on any console route prints the page's CONTENT, not the console around it:
+   the primary navigation, the top bar, the skip link and toasts are hidden; sticky and
+   translucent bars print as plain flow; and the shell's viewport-locked heights and
+   horizontal clips are released so a dashboard or a long list is not cut to one screen.
+   Colours print as shown (`print-color-adjust: exact`) so a dark-theme page stays
+   legible on paper instead of losing its background under light text.
+
+   The report print path (`#agentic-soc-report-print`) carries its own stylesheet, which
+   hides every other child of <body>; nothing here targets it or competes with it. */
+@media print {
+  html,
+  body {
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: hsl(var(--background)) !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  /* Console chrome: navigation (and the frame that reserves its width beside <main>),
+     the top bar (the header beside <main>), the skip link, toasts. */
+  [data-testid='desktop-navigation-frame'],
+  aside[aria-label='Primary navigation'],
+  header:has(~ #socMain),
+  a[href='#socMain'],
+  [data-sonner-toaster] {
+    display: none !important;
+  }
+  /* The shell: viewport-locked heights and horizontal clips released. */
+  .min-h-dvh,
+  .h-dvh,
+  #socMain,
+  #socMain > * {
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  /* Floating chrome prints in flow, on no material. */
+  .material-surface,
+  .glass-surface,
+  .sticky {
+    position: static !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .material-surface::after {
+    display: none !important;
+  }
+  /* Entrance motion would otherwise freeze mid-fade in the printout. */
+  .animate-rise-in,
+  .animate-fade-in {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  #socMain tr,
+  #socMain li,
+  #socMain [data-testid='kpi-strip'] {
+    break-inside: avoid;
+  }
+  /* The Human vs AI chart measures its box on screen and draws an SVG of exactly that
+     size; scripts do not run between the print reflow and the printout, so the SVG keeps
+     its on-screen size on paper. Three things keep it whole there (MEASURED in a real A4
+     PDF): the figure is laid out IN FLOW so the box takes the drawn chart's full height —
+     axis, baseline and ticks included — instead of clipping it to a shorter print box
+     (that printed a top gridline over a floating partial bar); `flex: none` stops the
+     box's on-screen `flex-1` basis from shrinking it back under the SVG; and the card is
+     kept on one page inside a plain block band (a monolithic SVG pushed across a page
+     inside the band's grid painted over the next band). Wider than the paper column, the
+     chart SCALES down to it (Round 12 final review): the SVG carries a viewBox of its
+     drawn size, so `max-width: 100%` with `height: auto` keeps every bucket on paper,
+     the newest included. `max-width`, not `width`, so a narrow chart is never enlarged.
+     The sideways clip stays only as a backstop. */
+  #socMain [data-testid='human-vs-ai-figure'] > svg {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+  #socMain [data-testid='human-vs-ai-chart'] {
+    flex: none !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow-x: clip !important;
+    overflow-y: visible !important;
+  }
+  #socMain [data-testid='human-vs-ai-figure'] {
+    position: relative !important;
+    inset: auto !important;
+  }
+  #socMain [data-testid='human-vs-ai'] {
+    break-inside: avoid;
+  }
+  #socMain [aria-labelledby='overview-band-flow'] > div {
+    display: block !important;
+  }
+  #socMain [aria-labelledby='overview-band-flow'] > div > * + * {
+    margin-top: 2rem;
+  }
+  /* Latest cases: on screen the list is laid out OUT of flow (absolute, over a rem floor)
+     so its length can never drive the band's height. Paper has no such loop, and a box
+     split across a page break let the rows spill past it over the next band's heading
+     (MEASURED in a real A4 PDF from 1920). On paper the list is in flow, the box takes
+     its height, and the header and its rows stay on one page. */
+  #socMain [data-testid='latest-cases-box'] {
+    min-height: 0 !important;
+  }
+  #socMain [data-testid='latest-cases-box'] > ul {
+    position: static !important;
+  }
+  #socMain section[aria-label='Latest cases'] {
+    break-inside: avoid;
   }
 }

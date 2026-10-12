@@ -21,6 +21,7 @@ export const ALL_TOOLS: ChatToolInfo[] = [
   tool('search_logs', 'logs', ['sources:read'], 'Searched logs'),
   tool('log_stats', 'logs', ['sources:read'], 'Counted log events'),
   tool('search_cases', 'cases', ['cases:read'], 'Searched cases'),
+  tool('case_stats', 'cases', ['cases:read'], 'Counted cases'),
   tool('get_case', 'cases', ['cases:read'], 'Read a case'),
   tool('shift_report', 'cases', ['cases:read'], 'Built a shift snapshot'),
   tool('soc_metrics', 'metrics', ['metrics:view'], 'Read SOC metrics'),

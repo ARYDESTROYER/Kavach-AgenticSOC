@@ -32,9 +32,8 @@ import type {
   ColumnType,
   TableBlock,
   TableColumn,
-  ValueUnit,
 } from './schema';
-import { CHART_KINDS, LIMITS } from './schema';
+import { ADDITIVE_UNITS, CHART_KINDS, LIMITS } from './schema';
 
 export const VIEW_LABEL: Readonly<Record<BlockView, string>> = {
   bar: 'Columns',
@@ -45,6 +44,7 @@ export const VIEW_LABEL: Readonly<Record<BlockView, string>> = {
   donut: 'Donut',
   sparkline: 'Sparkline',
   funnel: 'Funnel',
+  grouped_bar: 'Grouped columns',
   kpi_group: 'Tiles',
   table: 'Table',
   heatmap: 'Heatmap',
@@ -66,7 +66,7 @@ export function canShowTable(block: AnswerBlock): boolean {
 }
 
 /** Units whose values sum to a meaningful total (a stack height, a donut centre). */
-export const ADDITIVE_UNITS: readonly ValueUnit[] = ['count', 'tokens', 'bytes', 'usd'];
+export { ADDITIVE_UNITS };
 
 /** How far a set of percentage parts may drift from 100 (rounding at the source). */
 export const SHARE_TOLERANCE = 0.5;

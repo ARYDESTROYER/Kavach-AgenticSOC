@@ -10,6 +10,11 @@
  * shared message components in their compact presentation; the composer is the
  * compact `case` variant. Case Manager keeps its one-line status and its quick actions.
  *
+ * Round 12 (SPEC D13): the case's transcript and model history live in the turn
+ * runner's session store (memory only, last 20 cases), so switching to another tab or
+ * reopening the case keeps them, and a turn still running when the analyst leaves keeps
+ * streaming and re-attaches here (its glyph shows on the Case Manager navigation item).
+ *
  * #9: every model- or log-derived string renders as text (shared components).
  * #3: chat is advisory; it never decides or mutates the case.
  */
@@ -21,14 +26,13 @@ import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { useAuth } from '@/soc/auth';
 import { Composer, type ComposerHandle } from '@/soc/chat/composer/Composer';
-import { withClientHistory } from '@/soc/chat/composer/format';
 import { EmptyState } from '@/soc/chat/empty/EmptyState';
 import { CONTENT_COL, LANE_GRID } from '@/soc/chat/message/lane';
 import { Transcript } from '@/soc/chat/message/Transcript';
-import { useTurnAnnouncer } from '@/soc/chat/message/useTurnAnnouncer';
+import { announcedLookupBound, useTurnAnnouncer } from '@/soc/chat/message/useTurnAnnouncer';
 import { useChatContext } from '@/soc/chat/useChatContext';
-import { CONTINUE_PROMPT, useChatEngine } from '@/soc/chat/useChatEngine';
-import { estimateNextRequest } from '@/soc/chat/display';
+import { useChatEngine } from '@/soc/chat/useChatEngine';
+import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 
 const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
   'Summarize Case': ClipboardList,
@@ -75,27 +79,13 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
     turnBounds: ctx?.bounds ?? null,
   });
   React.useEffect(() => setModel(engine.model), [engine.model]);
-  useTurnAnnouncer(engine, ctx?.bounds.max_tool_calls ?? null);
+  // A lookup limit is spoken only in `bounded` mode (chat is unlimited by default, D1).
+  useTurnAnnouncer(engine, announcedLookupBound(ctx));
   const composerRef = React.useRef<ComposerHandle>(null);
   const busy = engine.busy;
   const focusComposer = React.useCallback(() => composerRef.current?.focus(), []);
   // A quick action is disabled (and a starter replaced) while the turn runs: focus
   // moves to the composer instead of dropping to <body> (SPEC §10.9).
-  // "Continue where this stopped (≈ +N tokens)": calibrated on every part, exactly
-  // like the composer meter and Workspace Chat (SPEC §10.3).
-  // The history part is the engine's own (case history travels with the request).
-  const historySize = engine.historySize;
-  const continueEstimate = React.useMemo(() => {
-    if (!ctx) return null;
-    const withHistory = withClientHistory(ctx, historySize);
-    return estimateNextRequest({
-      staticPromptTokens: withHistory.static_prompt_tokens,
-      historyTokens: withHistory.history_tokens,
-      draft: CONTINUE_PROMPT,
-      charsPerToken: withHistory.chars_per_token,
-      calibration: withHistory.calibration ?? null,
-    }).total;
-  }, [ctx, historySize]);
   const send = (prompt: string) => {
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };
@@ -111,7 +101,11 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
         aria-label="AI analyst status"
         className="flex min-h-7 shrink-0 items-center gap-2 border-b border-border pb-2 text-xs text-muted-foreground"
       >
-        <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', busy ? 'bg-primary' : 'bg-success')} aria-hidden />
+        {busy ? (
+          <ActivityGlyph status="running" className="size-3" />
+        ) : (
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" aria-hidden />
+        )}
         <span className="min-w-0 truncate">
           Scoped to <span className="font-mono text-foreground">{caseId}</span>
         </span>
@@ -123,7 +117,6 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
         compact
         label={`Case ${caseId} messages`}
         onFocusComposer={focusComposer}
-        continueEstimate={continueEstimate}
         empty={
           <EmptyState
             context={ctx}

@@ -429,6 +429,20 @@ class AppState:
         return self._real_inbox
 
     @property
+    def real_chat_conversations(self):
+        """The REAL Workspace history store, whatever Demo Mode shows (a deleted
+        account's history is purged from it, Round 12 final review L1)."""
+        return self._real_chat_conversations
+
+    @property
+    def real_reports(self):
+        """The REAL report store (None while the reports package is unavailable)."""
+        store = getattr(self, "_real_reports", None)
+        if store is None:
+            store = self._real_reports = self._build_reports(self._kv)
+        return store
+
+    @property
     def jobs(self):
         return self._jobs
 
@@ -800,6 +814,9 @@ class AppState:
             "runbooks": getattr(self, "runbooks", None),
             "playbooks": getattr(self, "playbooks", None),
             "rule_versions": getattr(self, "rule_versions", None),
+            # Round 12 (P1-4): the caller's chat answer ratings, over the ACTIVE chat
+            # KV (the demo stack's in Demo Mode), read as aggregates only.
+            "chat_feedback": self._chat_feedback_store(),
             "scopes": frozenset(getattr(body, "scopes", None) or ()),
             "source_id": source_id or None,
         }
@@ -808,6 +825,16 @@ class AppState:
                 prefs=prefs, query_source_for=self.active_source_for_id,
             ))
         return ChatToolContext(**fields)
+
+    def _chat_feedback_store(self):
+        """The chat feedback store over the ACTIVE chat KV (Round 12, P1-4), or None
+        when it cannot be built (the tool then reports it as not measured)."""
+        try:
+            from .stores.chat_feedback import feedback_store_for
+
+            return feedback_store_for(getattr(self.chat_conversations, "_kv", None) or self.kv)
+        except Exception:  # noqa: BLE001 -- a missing store never fails a chat turn
+            return None
 
     @property
     def rag_service(self):

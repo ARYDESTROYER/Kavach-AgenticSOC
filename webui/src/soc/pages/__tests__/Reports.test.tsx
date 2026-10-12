@@ -39,6 +39,7 @@ import { RouterProvider } from '../../router';
 import Reports from '../Reports';
 import { clearSourceTurnCache } from '@/soc/chat/report/useSourceTurns';
 import { sampleConversation, sampleReport } from '@/soc/chat/report/__tests__/fixtures';
+import { SCREEN_DOC_ID, screenPrintCss } from '@/soc/chat/report/print-fallback';
 
 const ROWS: ReportListEntry[] = [
   { id: 'rep-1', title: 'Brute force on vpn-gw-2', template: 'investigation', conversation_id: 'conv-1', item_count: 6, updated_at: '2026-10-08T13:40:00Z', version: 5 },
@@ -102,17 +103,31 @@ describe('Reports library', () => {
     expect(navigate).toHaveBeenLastCalledWith('chat', { conversationId: 'conv-1' });
   });
 
+  it('links a report saved from an answer or a conversation to its source conversation', async () => {
+    api.listReports.mockResolvedValue([
+      // Saved from chat: not that conversation's draft, but it came from it.
+      { ...ROWS[1], id: 'rep-4', title: 'Lifetime performance', conversation_id: null, source_conversation_id: 'conv-1' },
+      // Items from several conversations (or none): no single source.
+      { ...ROWS[1], id: 'rep-5', title: 'Mixed', conversation_id: null, source_conversation_id: null },
+    ]);
+    const user = userEvent.setup();
+    show();
+    const table = await screen.findByRole('table', { name: 'Reports' });
+    const link = await within(table).findByRole('button', { name: 'Open the source conversation of Lifetime performance: VPN brute force' });
+    expect(link).toHaveTextContent('VPN brute force');
+    const mixed = within(table).getByRole('button', { name: 'Mixed' }).closest('tr')!;
+    expect(within(mixed).getByText('—')).toBeInTheDocument();
+    await user.click(link);
+    expect(navigate).toHaveBeenLastCalledWith('chat', { conversationId: 'conv-1' });
+  });
+
   it('exports a list row with the same source facts as the document view', async () => {
     const user = userEvent.setup();
     show();
-    await user.click(await screen.findByRole('button', { name: 'Actions for Brute force on vpn-gw-2' }));
-    // Keyboard path through the submenu (Radix sub-menus open on ArrowRight).
-    const sub = await screen.findByRole('menuitem', { name: 'Export' });
-    act(() => sub.focus());
-    await user.keyboard('{ArrowRight}');
+    // A flat Export menu per row (Round 12 WP-REP: no sub-menu under ⋯).
+    await user.click(await screen.findByRole('button', { name: 'Export Brute force on vpn-gw-2' }));
     const md = await screen.findByRole('menuitem', { name: 'Markdown (.md)' });
-    await waitFor(() => expect(md).toHaveFocus());
-    await user.keyboard('{Enter}');
+    await user.click(md);
     await waitFor(() => expect(exportReport).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     expect(api.getConversation).toHaveBeenCalledWith('conv-1');
@@ -173,6 +188,25 @@ describe('Reports library', () => {
     expect(api.getReport).toHaveBeenCalledWith('rep-1', expect.anything());
   });
 
+  it('follows browser Back and Forward between a report and the list', async () => {
+    window.location.hash = '#/reports?reportId=rep-1';
+    show();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
+    const go = (hash: string) =>
+      act(() => {
+        window.location.hash = hash;
+        window.dispatchEvent(new HashChangeEvent('hashchange'));
+      });
+    // Back: the URL is the list, so the page is the list (never the stale document).
+    go('#/reports');
+    expect(await screen.findByRole('table', { name: 'Reports' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Reports' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download PDF' })).toBeNull();
+    // Forward: the document again.
+    go('#/reports?reportId=rep-1');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
+  });
+
   it('says so when the report no longer exists', async () => {
     api.getReport.mockRejectedValue(new ApiError(404, 'Report not found.', { detail: { code: 'report_not_found' } }));
     show({ reportId: 'rep-9' });
@@ -182,12 +216,12 @@ describe('Reports library', () => {
   it('exports from the document view with the defang toggle', async () => {
     const user = userEvent.setup();
     show({ reportId: 'rep-1' });
-    await user.click(await screen.findByRole('button', { name: /Export/ }));
+    await user.click(await screen.findByTestId('report-export-trigger'));
     const menu = await screen.findByRole('menu');
     expect(within(menu).getByRole('menuitemcheckbox', { name: /Defang indicators/ })).toHaveAttribute('aria-checked', 'true');
     await user.click(within(menu).getByRole('menuitem', { name: 'Markdown (.md)' }));
     await waitFor(() => expect(exportReport).toHaveBeenCalledWith(expect.objectContaining({ id: 'rep-1' }), 'markdown', expect.objectContaining({ defang: true, author: 'ana' })));
-    expect(announce).toHaveBeenCalledWith('Markdown downloaded');
+    await waitFor(() => expect(announce).toHaveBeenCalledWith('Markdown downloaded'));
   });
 
   it('renames and deletes from the list with the row version', async () => {
@@ -207,5 +241,90 @@ describe('Reports library', () => {
     await user.click(await screen.findByRole('button', { name: 'Delete report' }));
     await waitFor(() => expect(api.deleteReport).toHaveBeenCalledWith('rep-2', 2));
     expect(announce).toHaveBeenCalledWith('Report deleted');
+  });
+
+  it('offers a visible Download PDF on the document view (R5/R17)', async () => {
+    const user = userEvent.setup();
+    exportReport.mockResolvedValueOnce({ ok: true, message: 'Print dialog opened. Choose Save as PDF.' });
+    show({ reportId: 'rep-1' });
+    await user.click(await screen.findByRole('button', { name: 'Download PDF' }));
+    await waitFor(() => expect(exportReport).toHaveBeenCalledWith(expect.objectContaining({ id: 'rep-1' }), 'print', expect.objectContaining({ defang: true })));
+  });
+
+  it('prints the report, not the console, on Ctrl/Cmd+P from the document view (R12)', async () => {
+    document.title = 'Agentic SOC';
+    show({ reportId: 'rep-1' });
+    await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' });
+    const rootId = 'agentic-soc-report-print';
+    // The print code and the static renderer preload on mount; beforeprint then mounts
+    // the report's print root synchronously.
+    await waitFor(
+      () => {
+        act(() => {
+          window.dispatchEvent(new Event('beforeprint'));
+        });
+        expect(document.getElementById(rootId)).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+    const root = document.getElementById(rootId)!;
+    expect(root).toHaveTextContent('Brute force on vpn-gw-2');
+    expect(root).toHaveTextContent('Methodology & limitations');
+    expect(document.title).toMatch(/^agentic-soc-report-brute-force-on-vpn-gw-2-\d{8}-\d{4}Z$/);
+    act(() => {
+      window.dispatchEvent(new Event('afterprint'));
+    });
+    await waitFor(() => expect(document.getElementById(rootId)).toBeNull(), { timeout: 4000 });
+    expect(document.title).toBe('Agentic SOC');
+  }, 15_000);
+
+  it('falls back to printing the on-screen document when no print root mounted (R12)', async () => {
+    show({ reportId: 'rep-1' });
+    await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' });
+    const doc = document.getElementById(SCREEN_DOC_ID)!;
+    expect(doc).not.toBeNull();
+    expect(doc).toHaveTextContent('Methodology & limitations');
+    // The paper copy keeps the title (the page header is not printed by the fallback).
+    expect(within(doc).getByTestId('report-print-title')).toHaveTextContent('Brute force on vpn-gw-2');
+    expect(within(doc).getByTestId('report-print-title')).toHaveAttribute('aria-hidden', 'true');
+    // The fallback stylesheet is on the page while the view is open, and stands down
+    // whenever the report's own print root is mounted.
+    const css = Array.from(document.querySelectorAll('style')).map((st) => st.textContent ?? '').find((t) => t.includes(SCREEN_DOC_ID));
+    expect(css).toBe(screenPrintCss());
+    expect(css).toContain('@media print');
+    expect(css).toContain(`body:not(:has(> #agentic-soc-report-print))`);
+    expect(css).toContain(`*:not(:has(#${SCREEN_DOC_ID})):not(#${SCREEN_DOC_ID}):not(#${SCREEN_DOC_ID} *) { display: none !important; }`);
+    expect(css).toContain('--background:240 20% 99%;');
+    // Screen-only actions inside the document never reach paper.
+    for (const button of Array.from(doc.querySelectorAll('button'))) {
+      if (/Open source conversation/.test(button.textContent ?? '')) expect(button).toHaveAttribute('data-print-hide');
+    }
+  });
+
+  it('keeps focus on the Export trigger after a successful Retry, never on <body>', async () => {
+    const user = userEvent.setup();
+    exportReport.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({ ok: true, message: 'HTML downloaded' });
+    show({ reportId: 'rep-1' });
+    await user.click(await screen.findByTestId('report-export-trigger'));
+    await user.click(await screen.findByRole('menuitem', { name: 'HTML (.html)' }));
+    const note = await screen.findByTestId('report-export-error');
+    await user.click(within(note).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(exportReport).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId('report-export-error')).toBeNull());
+    expect(document.activeElement).toBe(screen.getByTestId('report-export-trigger'));
+  });
+
+  it('names the report whose row export failed', async () => {
+    const user = userEvent.setup();
+    exportReport.mockRejectedValueOnce(new Error('boom'));
+    show();
+    await user.click(await screen.findByRole('button', { name: 'Export Night shift handoff' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Markdown (.md)' }));
+    const note = await screen.findByTestId('report-export-error');
+    expect(note).toHaveTextContent('Night shift handoff: The report could not be exported. Try again.');
+    exportReport.mockResolvedValueOnce({ ok: true, message: 'Markdown downloaded' });
+    await user.click(within(note).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByTestId('report-export-error')).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Export Night shift handoff' }));
   });
 });

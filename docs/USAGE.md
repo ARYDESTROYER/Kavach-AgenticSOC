@@ -69,21 +69,33 @@ item a signed-in user's role can't reach; with auth off, everything shows.
 
 ### Cyber Defence Center dashboard
 
-**Overview → Dashboard** is the shift landing page. One time-range control scopes
-the five primary KPIs: **Open Cases**, **Critical / High**, **Escalated to Human**,
-**False Positive Rate**, and **Auto-resolved**. Open Cases includes all non-terminal
-statuses (`new`, `open`, `needs_human`, `investigating`, `escalated`, `on_hold`).
-Critical / High spans both open and resolved cases in the window and states the
-split as `N open + M resolved`; it never silently drops an unknown lifecycle.
-False Positive Rate shows the selected-window rate only — it carries no
-period-over-period percentage chip.
+**Overview → Dashboard** is the shift landing page; the Help Center's Analyst overview
+page is its user guide. One time-range control scopes the six operational KPIs:
+**Total Cases**, **Total Critical**, **Open Cases**, **AI-verdict FP rate** (called
+False Positive Rate before Round 12), **Resolved / Closed**, and **Auto Closed**. Open
+Cases includes all non-terminal statuses (`new`, `open`, `needs_human`,
+`investigating`, `escalated`, `on_hold`) and is a stock read now, so it is not filtered
+by the window. Total Critical counts the top band the severity ladder declares in the
+window's arrivals. The AI-verdict FP rate is the share of the window's verdicted cases
+that the AI verdicted false positive; its drill-down adds how many of the same cases an
+analyst confirmed as false positive, and it carries no period-over-period chip. Auto
+Closed is a subset of Resolved / Closed, not an independent total. The tiles carry a
+numeral and a label and no standing caption; numerals never truncate.
+
+Exactness: the Open Cases stock is an exact store-wide count at any size (as are the
+case totals on **Analytics → Metrics**). Every window tile is computed from the
+window's cases up to 20,000 cases; a larger window, typically all time on a large
+store, is analysed over its newest 20,000 (`window_covered: false`), its counts marked
+as lower bounds with `≥` and its rates withheld. Chat's case counts are exact at any
+size, so for a window that large they differ from the tiles.
 
 Hovering or keyboard-focusing a landing metric reveals its recent trendline for the
 same window (`GET /api/metrics/trends` zero-filled case-cohort buckets, the per-day
 timing series, or the spend ledger series). Each hover card names the exact series
 it draws and its bucketing; a metric with no measured series shows a quiet "No trend
-data yet" line, and the combined Critical / High tile deliberately has no trendline
-because no per-severity series exists.
+data yet" line. Total Critical deliberately has no trendline because no per-severity
+series exists, and the Open Cases stock has none because no open-count-over-time series
+exists.
 
 `GET /api/metrics/trends?window_hours=24` (`metrics:view`) is the hover-trendline
 feed: `window_hours` clamps to 1..720 and the UTC-aligned, zero-filled buckets follow
@@ -91,23 +103,32 @@ a fixed width ladder (≤24 h → 60 min, ≤72 h → 180, ≤168 h → 360, els
 newest bucket partial. Per bucket it reports new/closed/auto-closed/FP/needs-human/
 escalated case counts, an `fp_rate` (null when no verdicted case), and raw `alerts`
 from the durable noise counters (null while they warm up); a
-`truncated`/`store_total`/`fetched` marker keeps a partial (newest-5000) tally
-honest. Like the other dashboard rollups it is served from a shared short-TTL (~5 s)
-case-page cache, so the LIVE fan-out costs one store scan per refresh window.
+`truncated`/`store_total`/`fetched` marker keeps a window holding more than 20,000
+cases honest. Like the other dashboard rollups it is served from the shared short-TTL
+(~5 s) case population cache (newest first, up to 20,000 cases per window), so the
+LIVE fan-out costs one store scan per refresh window.
 
-False Positive Rate and Auto-resolved use the server posture rollup for the exact
-selected range. A range change keeps the last successful posture snapshot mounted —
-explicitly marked by the tiles' `Loading …` sub-line — while the superseded request
-is cancelled and the new window loads, so the dashboard never blanks. Only a
-response whose echoed window still matches the selector is accepted; a slower
-earlier request cannot repaint those tiles beneath a new range.
+The AI-verdict FP rate, Resolved / Closed and Auto Closed use the server posture rollup
+for the exact selected range. A range change keeps the last successful posture
+snapshot mounted while the superseded request is cancelled and the new window loads,
+so the dashboard never blanks; only a first load, with nothing yet to show, says
+`Loading …` on the tiles. Only a response whose echoed window still matches the
+selector is accepted; a slower earlier request cannot repaint those tiles beneath a new
+range.
 
-The next row uses the available height for the stacked open/resolved severity
-rings, the MTTD / first-human-response pair, and exactly five **Latest Cases**.
-Hovering or keyboard-focusing a latest row reveals bounded case detail without
-changing the selection. Open/Resolved controls drill into their lifecycle scopes;
-the combined Critical/High tile opens the selected-window case list without applying
-one misleading single-severity filter.
+Below the strip the page has two titled bands. **Alert flow** holds the Noise
+Reduction ribbon and Human vs AI. **Cases and response** holds the Open cases and Cases
+resolved severity rings, **Response time** (MTTD paired with Respond, the first human
+action), and exactly five **Latest cases**; hovering or keyboard-focusing a latest row
+reveals bounded case detail without changing the selection. On very wide screens the
+two bands sit side by side. **Deeper analytics** is one disclosure below them:
+**Efficiency and cost** (MTTA, MTTR, dwell, and LLM spend for the window) and **What's
+driving volume** (ingest coverage, case volume, workload, outcomes, top signatures, and
+top entities). While closed it summarises what it holds, and whether it is open is
+remembered for each user on every device. Each KPI tile opens a drill-down whose
+action (**Open in Cases**, or **Open in Analytics** for the AI-verdict FP rate) applies
+the matching scope; Total Critical's opens the window's cases filtered to the top
+severity band.
 
 The **Noise Reduction** ribbon presents alerts ingested → after clustering → cases
 opened → {auto-cleared by AI | escalated | closed by human}, with the six text labels
@@ -475,8 +496,9 @@ cohort; use job counts, case history, and Audit for exact accountability.
 - **disposition** (what the case turned out to be): `true_positive`,
   `false_positive`, `benign`, `suspicious`, `duplicate`, `undetermined` (the default
   for cases that predate the taxonomy). Set it explicitly with the `set_disposition`
-  action or by supplying `disposition` on a `close`; `confirm_fp` also stamps
-  `false_positive` when the disposition is still undetermined. Note that
+  action or by supplying `disposition` on a `close`; `confirm_fp` is its own
+  classification and records `false_positive` (it keeps `benign`, the
+  false-positive-class refinement), replacing any other value. Note that
   `case_manager.apply()` may already have derived a disposition from the model's
   verdict, so a stored disposition is not by itself an analyst statement — see
   `disposition_declared` below.
@@ -507,8 +529,8 @@ noted below):
 
 | action | resulting status | meaning |
 |---|---|---|
-| `close` | `closed` | analyst closes the case |
-| `confirm_fp` | `closed` | analyst confirms a false positive (sets disposition `false_positive` if still undetermined) |
+| `close` | `closed` | analyst closes the case (also the final close of a `resolved` case) |
+| `confirm_fp` | `closed` | analyst confirms a false positive: records disposition `false_positive` as the analyst's classification, replacing any other value (an existing `benign` is kept) |
 | `resolve` | `resolved` | worked to completion, pending final close |
 | `reopen` | `open` | reopen a closed/resolved case |
 | `escalate` | `escalated` | mark the case Escalated for analyst action |
@@ -538,6 +560,11 @@ tuner's independent-outcome population):
   rejects it without a disposition, so no flag is needed.
 - `close` records the classification only when `disposition_declared` is `true`.
   Omit it and the close still honours the disposition; it simply records no label.
+- `confirm_fp` is self-declaring too: it always records the false-positive class.
+- An undeclared disposition never replaces one an analyst explicitly classified and
+  the case still carries. It may be the model's value read off the case earlier, so
+  the lifecycle move goes ahead and the analyst's classification stays. Send
+  `disposition_declared: true` (or use `set_disposition`) to change a classification.
 
 The Console sets it from the close dialog's picker `onChange` only, and that picker
 opens **empty** rather than pre-filled from the case, so the "a disposition is
@@ -546,8 +573,11 @@ beneath the picker as read-only context. The gate is on intent, not on the value
 differing: an analyst who reviews a case and affirmatively re-states the model's own
 conclusion has confirmed it, and labelling only disagreements would bias every
 downstream false-positive rate. A **transition guard** rejects illegal moves — e.g. leaving a
-terminal status (`closed` / `resolved`) is only legal via `reopen` (a `400`
-otherwise). Every action sets `decision_by=analyst`, stamps `updated_at`, appends
+terminal status (`closed` / `resolved`) is only legal via `reopen`, with one forward
+exception: a `resolved` case (worked to completion, pending final close) takes its final
+close through `close` or `confirm_fp`. Any other move out of a terminal status, including
+`closed` → `resolved`, returns a `400`; `set_disposition` changes no status, so it stays
+legal on both. Every action sets `decision_by=analyst`, stamps `updated_at`, appends
 an entry to the case **history** + `status_history`, and is audited. A `close` /
 `confirm_fp` also indexes the resolved case (entity, rules, verdict, risk, note,
 trigger reason) into the **resolved-case RAG baseline** when `rag.enabled` +
@@ -639,19 +669,28 @@ model call goes through the single gateway and cost ledger (#6).
   CSV/JSON download, Copy query, and **Open in Logs** / **Open in Cases** when an exact
   filter exists.
 - **History** is per user on the selected state backend: newest first, searchable by
-  content, pinnable (10 pins exempt from the 50-conversation limit), up to 100 messages
-  each, exportable as Markdown, HTML, or PDF. New chats enter history only after the first
-  answer is saved.
-- **Reports** collect blocks or whole answers into owner-scoped documents with notes, an
-  AI summary (one metered call; dry-run estimate first), and Markdown/HTML/PDF/CSV/JSON
-  exports with indicators defanged by default (`/api/reports*`).
+  content, pinnable (10 pins exempt from the 50-conversation limit), exportable as
+  Markdown, HTML, or PDF. Since Round 12 every question and answer is stored in full and
+  no message is removed; a reopened conversation opens on its newest 100 messages, and
+  **Show earlier messages** pages the older ones in, 50 at a time. A new
+  chat appears as a running row as soon as its first question starts.
+- **Reports** collect blocks or whole answers into owner-scoped documents (60 items)
+  with notes, an AI summary (one metered call; dry-run estimate first), and PDF, Word,
+  Excel, Markdown, HTML, CSV and JSON exports with indicators defanged by default
+  (`/api/reports*`). An answer that asks for a report ("Create a monthly SOC report for
+  September", `/report monthly`) is saved to the Reports library by the server.
 - **Product questions** are answered from the bundled Help Center with `D*` citations,
   and at $0 from the Help Center alone when no model can run.
 - **Bounds** (`Preferences.chat_agent`, edited under **Settings → General → Chat
-  assistant**): 5 model calls, 10 lookups (4 at once), 60,000 tokens, and 90 s per
-  question; 2 concurrent questions per user; 3 indicator lookups per question and 10 per
-  conversation. Indicators reach enrichment providers only when they came from the
-  analyst's own words or this question's results, never private or internal values.
+  assistant**): by default (`limits_mode: unlimited`, Round 12) a question has no
+  per-question cap and runs until it answers or the analyst presses Stop, guarded by
+  loop guards (no repeated lookup, a no-progress stop, a stall retry, a hidden runaway
+  fuse); `bounded` restores 5 model calls, 10 lookups, 60,000 tokens and 90 s per
+  question. 4 concurrent questions per user and 16 per backend; 3 indicator lookups per
+  question and 10 per conversation. Chat is outside the daily and monthly AI budget (still
+  metered); an optional daily chat spending limit is its only spending bound. Indicators reach enrichment providers
+  only when they came from the analyst's own words or this question's results, never
+  private or internal values.
 
 Durable Workspace sends carry an 8–128 character `idempotency_key`. Retrying an
 ambiguous turn with the same key returns the committed result (or `409
@@ -1540,8 +1579,9 @@ enrichment evidence) and the case-detail **Threat** tab (§12).
 
 `GET /api/mitre/coverage` tallies **per-tactic** MITRE ATT&CK technique coverage
 from your case load against the bundled **697-technique** corpus
-(`backend/app/threat/mitre_techniques.json`) — up to the most-recent 5000 cases
-(a `truncated` flag marks the tally as a lower bound when the store holds more).
+(`backend/app/threat/mitre_techniques.json`) — up to the most-recent 20,000 cases of
+the window (a `truncated` flag marks the tally as a lower bound when the window holds
+more).
 `window_hours=0` (the default) covers every fetched case; a positive value
 time-bounds it to cases created within that window. Forged/invalid technique ids
 on a case are dropped, never surfaced (#9).
@@ -1744,6 +1784,16 @@ pricing table otherwise. The gate is a **pure pre-flight check**: when a call
 would exceed budget it routes the investigation to `NEEDS_HUMAN` rather than
 silently degrading or dropping the alert — it never overrides `decide()`, it only
 gates *whether* the LLM is called at all.
+
+The gate bounds the pipeline: investigations, standup, scans, and report summaries.
+**Since Round 12, Workspace and Case Manager chat are outside both its daily and its
+monthly ceilings**: a chat call is never blocked by the gate and its spend is not
+counted toward either ceiling, so `GET /api/budget/status` reports the enforced figures
+without chat and states chat's share for today separately. Chat's only spending bound
+is the optional daily `chat_agent.chat_daily_cap_usd` (**Settings → General → Chat
+assistant → Daily chat spending limit**), which is **off by default**; there is no
+monthly chat bound. Every chat call is still metered through the one gateway and
+written to the usage ledger (#6).
 
 ---
 
@@ -2404,8 +2454,10 @@ sources: four source-native alerts (Splunk, QRadar, Wazuh, and Entra) plus four
 syslog events that produce at least one Agentic SOC correlation detection. The
 response attributes records, native alerts, and system detections per source.
 
-**While demo is engaged** the app shell shows an amber **Demo banner** with *Reset*
-and *Exit & clear*; demo rows carry a `SAMPLE` badge; cost tiles read "(simulated)";
+**While demo is engaged** the top bar shows one amber **Demo mode** chip whose popover
+offers *Reset* and *Exit & clear* and notes that platform health checks are muted (the
+health indicator leaves the bar while demo runs; a backend outage still shows); demo
+rows carry a `SAMPLE` badge; cost tiles read "(simulated)";
 the Sources UI disables real connector controls; and outbound notification tests are
 refused. Other organization/admin settings remain live and should be left unchanged
 during a presentation. FALSE_POSITIVE still runs through the **real** `decide()`
@@ -3016,8 +3068,10 @@ auto-forwarded to the configured investigator role.
   busy sources from each consuming the full allowance. Cap-deferred candidates
   **drain** on a later tick once headroom frees, and investigations run sequentially
   so provider load stays predictable. Direct push-ingest uses the same configured
-  gate for its own request. The **daily USD budget is the one GLOBAL bound** across
-  every source — the per-tick cap only smooths *when* spend happens, not the ceiling.
+  gate for its own request. The **daily USD budget is the one spend bound for the
+  pipeline** (investigations, standup, scans, report summaries) across every source —
+  the per-tick cap only smooths *when* spend happens, not the ceiling. Workspace and
+  Case Manager chat are outside that budget (see the backstop below).
 
 ### The autopilot dial
 
@@ -3044,6 +3098,11 @@ everything by default" from turning into "spend everything." Crossing the ceilin
 stops the provider call before it is made; an operator can explicitly select
 warning-only mode. A budget-blocked investigation fails safe to `NEEDS_HUMAN`
 (#3/#4) — never a silent drop or close.
+
+The backstop bounds the pipeline (investigations, standup, scans, report summaries).
+**Workspace and Case Manager chat are outside its daily and monthly ceilings** (Round
+12): their only bound is the optional daily `chat_agent.chat_daily_cap_usd`, which is
+**off by default**. A deployment that wants chat spend capped must set it; see §22.
 
 ### What's ON by default now, and what's still opt-in
 

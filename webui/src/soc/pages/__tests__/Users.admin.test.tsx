@@ -144,7 +144,7 @@ describe('Users admin page', () => {
       fireEvent.click(screen.getByRole('button', { name: /manage roles for alice/i }));
 
       const baseRole = await screen.findByRole('combobox', { name: /base role/i });
-      await waitFor(() => expect(baseRole).toHaveTextContent('Analyst — Tier 1'));
+      await waitFor(() => expect(baseRole).toHaveTextContent('Analyst Tier 1'));
 
       const emitted = errorSpy.mock.calls.flat().map(String).join('\n');
       expect(emitted).not.toContain('uncontrolled to controlled');

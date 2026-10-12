@@ -85,6 +85,11 @@ class CaseLifecycleParams(_CaseIds):
     reason: str = Field(default="", max_length=1000)
     resolution: str | None = Field(default=None, max_length=4000)
     disposition: str | None = Field(default=None, max_length=80)
+    # Round 12 (WP-CM / SPEC §3.2): a bulk Close or Resolve carries the analyst's chosen
+    # disposition. ``True`` ONLY when a human operated the disposition picker for this
+    # submission — the same ground-truth intent flag as the single-case action (G1); it
+    # is forwarded verbatim to ``_perform_case_action``, which applies-vs-classifies.
+    disposition_declared: bool = False
     status: CaseStatus | None = None
 
     @model_validator(mode="after")
@@ -320,14 +325,18 @@ async def _fresh_fields(
     if not sid or tv < 0:
         raise HTTPException(401, detail={"code": "reauth_required"})
     policy = state.prefs.session_policy
+    # Standard + remembered limits for the actor's live role (Round 12, one builder
+    # for every site; an excluded role is never remembered).
+    from ..auth.session_limits import limits_for_username
+
+    username = current_username(request)
     try:
         expires_at = await state.sessions.strict_deferred_authority_expires_at(
             sid=sid,
-            username=current_username(request),
+            username=username,
             token_version=tv,
-            idle_timeout=int(policy.idle_timeout or 0),
-            absolute_lifetime=int(policy.absolute_lifetime or 0),
             sudo_window=int(policy.sudo_reauth_window or 600),
+            **limits_for_username(state, username).kwargs(),
         )
     except Exception as exc:
         raise HTTPException(503, detail="session authority registry unavailable") from exc

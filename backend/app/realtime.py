@@ -5,7 +5,9 @@ A single, in-memory ``EventBus`` is the server->client push spine for the live U
 * in-app notifications (#8 — :class:`app.models.InAppNotification`),
 * case activity / collaboration (#4 — :class:`app.models.CaseActivity`,
   status changes, comments, assignments), and
-* agent investigation steps (#12 — :class:`app.models.TraceSpan` projections).
+* agent investigation steps (#12 — :class:`app.models.TraceSpan` projections), and
+* the caller's own chat turns (Round 12 — owner-only ``chat.turn`` frames, see
+  :func:`publish_chat_turn`).
 
 Design goals (all enforced here, no network needed to exercise them):
 
@@ -92,6 +94,9 @@ AGENT_STEP_EVENT = "agent.step"      # investigator/pipeline progress, room case
 CASE_ACTIVITY_EVENT = "case.activity"  # case collaboration timeline, room cases:{id}
 INAPP_EVENT = "inapp"                # in-app notifications, topics notifications/inbox
 JOB_EVENT = "job"                    # durable background-job progress, topic jobs
+CHAT_TURN_EVENT = "chat.turn"        # the caller's own chat turn lifecycle, topic chat
+CHAT_READ_EVENT = "chat.read"        # the caller read a conversation's answer, topic chat
+CASE_CHANGED_EVENT = "case.changed"  # a case was saved (created or updated), topic cases
 OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
 
 SSE_EVENT_TYPES: frozenset[str] = frozenset({
@@ -99,8 +104,17 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
     CASE_ACTIVITY_EVENT,
     INAPP_EVENT,
     JOB_EVENT,
+    CHAT_TURN_EVENT,
+    CHAT_READ_EVENT,
+    CASE_CHANGED_EVENT,
     OVERFLOW_EVENT,
 })
+
+# The topic chat turn frames are published on (``GET /api/events?topics=chat``).
+CHAT_TOPIC = "chat"
+
+# The topic case-save frames are published on (``GET /api/events?topics=cases``).
+CASES_TOPIC = "cases"
 
 
 # --------------------------------------------------------------------------- #
@@ -446,6 +460,87 @@ class EventBus:
         for sub_id in list(self._subscribers):
             self._unregister(sub_id)
         self._history.clear()
+
+
+def publish_chat_turn(
+    bus: "EventBus", owner: str | None, payload: Any, *, retain: bool = False,
+) -> str | None:
+    """Publish one ``chat.turn`` frame (Round 12 SPEC D13, §3.2) to its OWNER only.
+
+    A chat turn belongs to one principal: the frame is always TARGETED with
+    ``audience = {owner}`` and never broadcast, so no other user and no anonymous
+    subscriber (auth disabled) ever receives it; with auth disabled the client polls
+    ``GET /api/chat/turns/active`` instead. ``payload`` carries ids, counts and an
+    engine label only (never prompt, answer or log text). Frames are NOT retained in
+    the topic's replay ring by default: the audience is a username, which can be
+    deleted and created again, and a new account must never replay its
+    predecessor's frames (the same rule as the Jobs and Inbox frames); a client that
+    missed frames reconciles through ``GET /api/chat/turns/active``. Returns the event
+    id, or ``None`` when there is no owner to address (nothing is published)."""
+    name = str(owner or "").strip().lower()
+    if not name:
+        return None
+    return bus.publish(CHAT_TOPIC, CHAT_TURN_EVENT, payload, audience=[name], retain=retain)
+
+
+def publish_chat_read(
+    bus: "EventBus", owner: str | None, conversation_id: str | None = None, *,
+    turn_id: str | None = None, case_id: str | None = None,
+) -> str | None:
+    """Publish one ``chat.read`` frame (Round 12 SPEC D13, §3.2) to its OWNER only.
+
+    The owner has the conversation's newest answer on screen somewhere (another tab,
+    device or browser posted ``…/read``), or one turn's outcome (an answer, a question or
+    a failure, in a Workspace or a Case Manager chat: ``POST /chat/turns/{id}/seen``), so
+    every other console of theirs drops the mark it may hold for it. Targeted like
+    ``chat.turn`` (never broadcast, never to an anonymous subscriber) and never retained,
+    for the same reason. The payload carries ids only (``conversation_id``, plus
+    ``turn_id`` and ``case_id`` for a turn), never a title, prompt or answer. Returns the
+    event id, or ``None`` when there is no owner or nothing to name (nothing is
+    published)."""
+    name = str(owner or "").strip().lower()
+    payload: dict[str, str] = {}
+    if turn_id:
+        payload["turn_id"] = str(turn_id)
+    if conversation_id:
+        payload["conversation_id"] = str(conversation_id)
+    if case_id:
+        payload["case_id"] = str(case_id)
+    if not name or not payload:
+        return None
+    return bus.publish(CHAT_TOPIC, CHAT_READ_EVENT, payload, audience=[name], retain=False)
+
+
+def publish_case_changed(
+    case: Any, *, created: bool = False, bus: "EventBus | None" = None,
+) -> str | None:
+    """Publish one ``case.changed`` frame on the ``cases`` topic after a case was saved.
+
+    Round 12 (WP-CM): the Case Manager queue refreshes live instead of waiting for a
+    manual reload. The frame is a NUDGE only: the console refetches the authoritative
+    page, it never renders the payload. The payload therefore carries identifiers, the
+    lifecycle status and timestamps ONLY — never a title, summary, entity, evidence or
+    any log-derived text (#7/#9) — and nothing here decides anything (#3).
+
+    Called by the bundled case repositories immediately after a successful write, so
+    every save path (pipeline, ingest, analyst actions, bulk jobs, demo) is covered by
+    one producer. FIRE-AND-FORGET: any failure is swallowed so a realtime problem can
+    never fail a case write. Returns the event id, or ``None`` when nothing was sent."""
+    try:
+        case_id = str(getattr(case, "case_id", "") or "").strip()
+        if not case_id:
+            return None
+        status = getattr(case, "status", None)
+        status = getattr(status, "value", status)
+        payload = {
+            "case_id": case_id,
+            "status": str(status or ""),
+            "updated_at": str(getattr(case, "updated_at", "") or ""),
+            "created": bool(created),
+        }
+        return (bus or get_event_bus()).publish(CASES_TOPIC, CASE_CHANGED_EVENT, payload)
+    except Exception:  # noqa: BLE001 — realtime is advisory; a save must never fail on it
+        return None
 
 
 def _encode(data: Any) -> str:

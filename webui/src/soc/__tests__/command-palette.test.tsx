@@ -48,7 +48,11 @@ import { RouterProvider } from '../router';
 import { TooltipProvider } from '@/ui/tooltip';
 import { CommandPalette } from '../components/CommandPalette';
 
-function renderPalette(onNavigate = vi.fn()) {
+/**
+ * Render the open palette and wait for its lazy chat entries (a `React.lazy` chunk) to
+ * arrive, so that chunk always settles inside the test's own waiting, never after it.
+ */
+async function renderPalette(onNavigate = vi.fn()) {
   const utils = render(
     <ThemeProvider>
       <TooltipProvider>
@@ -64,6 +68,9 @@ function renderPalette(onNavigate = vi.fn()) {
       </TooltipProvider>
     </ThemeProvider>,
   );
+  await waitFor(() =>
+    expect(document.querySelector('[cmdk-item][data-value="action-search-chats"]')).toBeTruthy(),
+  );
   return { onNavigate, ...utils };
 }
 
@@ -75,7 +82,7 @@ describe('CommandPalette (W7c)', () => {
   });
 
   it('opens and lists nav targets + quick actions', async () => {
-    renderPalette();
+    await renderPalette();
     // The dialog input renders.
     await waitFor(() =>
       expect(
@@ -92,7 +99,7 @@ describe('CommandPalette (W7c)', () => {
   });
 
   it('progressively reveals Settings section jump targets after a query (Round-5 Sett-C)', async () => {
-    renderPalette();
+    await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     expect(document.querySelector('[cmdk-item][data-value="set-general"]')).toBeNull();
     fireEvent.change(input, { target: { value: 'Data scope' } });
@@ -119,7 +126,7 @@ describe('CommandPalette (W7c)', () => {
       sources: [{ type: 'source', id: 'src-1', label: 'Prod Elastic', source_type: 'elasticsearch' }],
       nav: [],
     });
-    renderPalette();
+    await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     fireEvent.change(input, { target: { value: 'brute' } });
 
@@ -131,7 +138,7 @@ describe('CommandPalette (W7c)', () => {
   });
 
   it('routes a selected nav target through onNavigate', async () => {
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     // Target the RAIL nav "Cases" item explicitly by its cmdk value (`nav-cases`) — a
     // Settings section also renders a "Cases" label now, so a bare text match is ambiguous.
     await waitFor(() =>
@@ -143,7 +150,7 @@ describe('CommandPalette (W7c)', () => {
   });
 
   it('routes a Settings section jump through onNavigate with a section opt', async () => {
-    const { onNavigate } = renderPalette();
+    const { onNavigate } = await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
     fireEvent.change(input, { target: { value: 'Data scope' } });
     await waitFor(() =>
@@ -156,7 +163,7 @@ describe('CommandPalette (W7c)', () => {
   });
 
   it('keeps the blank state concise and reveals child destinations only when searched', async () => {
-    renderPalette();
+    await renderPalette();
     const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
 
     expect(document.querySelector('[cmdk-item][data-value="nav-metrics"]')).toBeTruthy();
@@ -167,5 +174,24 @@ describe('CommandPalette (W7c)', () => {
     await waitFor(() =>
       expect(document.querySelector('[cmdk-item][data-value="navc-metrics-cost"]')).toBeTruthy(),
     );
+  });
+});
+
+describe('CommandPalette — quick actions group', () => {
+  beforeEach(() => {
+    searchMock.mockReset();
+    searchMock.mockResolvedValue({ query: '', cases: [], sources: [], nav: [] });
+    window.localStorage.clear();
+  });
+
+  it('shows no empty "Actions" heading when no quick action matches the query', async () => {
+    await renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    const headings = () => Array.from(document.querySelectorAll('[cmdk-group-heading]')).map((el) => el.textContent);
+    expect(headings()).toContain('Actions');
+    fireEvent.change(input, { target: { value: 'cases' } });
+    await waitFor(() => expect(headings()).not.toContain('Actions'));
+    fireEvent.change(input, { target: { value: 'theme' } });
+    await waitFor(() => expect(headings()).toContain('Actions'));
   });
 });

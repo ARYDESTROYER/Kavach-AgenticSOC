@@ -3,16 +3,22 @@
 It implements exactly the query/aggregation shapes the suite emits (see
 ``querybuilder.py``): bool(filter/must/should/must_not), term/terms/range/ids/
 exists/match/match_all, sort, size/from, and the standup aggregations
-(terms/cardinality/value_count/date_histogram). It is NOT a general ES emulator;
-it is a faithful stand-in for the structures this codebase actually issues.
+(terms/cardinality/value_count/date_histogram with calendar intervals in a
+``time_zone``) plus the ``composite`` aggregation the exact case aggregate push-down
+pages through. It deliberately does NOT compute metric aggregations (``sum``/``avg``):
+callers detect their absence and fall back to an exact scan (``stores/usage``). It is
+NOT a general ES emulator; it is a faithful stand-in for the structures this codebase
+actually issues.
 """
 
 from __future__ import annotations
 
 import copy
 import fnmatch
+import functools
 import re
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 from ..constants import AUDIT_INDEX, USAGE_INDEX
 from ..utils import coerce_float, dotted_get, new_id, parse_es_timestamp
@@ -26,6 +32,20 @@ _WHOLLY_NUMERIC = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
 
 
 def _to_comparable(value: Any) -> float | None:
+    """See :func:`_to_comparable_uncached`; strings are memoised (a pure function of
+    the string), which keeps repeated range/sort/histogram scans over the same
+    in-memory documents fast."""
+    if isinstance(value, str):
+        return _str_comparable(value)
+    return _to_comparable_uncached(value)
+
+
+@functools.lru_cache(maxsize=262_144)
+def _str_comparable(value: str) -> float | None:
+    return _to_comparable_uncached(value)
+
+
+def _to_comparable_uncached(value: Any) -> float | None:
     """Best-effort conversion of a field value to a sortable/range-comparable
     number (timestamps become epoch millis), or ``None`` for "cannot be placed on
     the axis at all".
@@ -126,8 +146,12 @@ class InMemoryESClient(BaseESClient):
         del keep_alive
         pit_id = f"fake-state-pit:{new_id()}"
         # Deep-copy the source payloads: case documents are mutable, so retaining
-        # references would not model Elasticsearch PIT snapshot semantics.
-        self._state_pits[pit_id] = copy.deepcopy(self._all_hits(index))
+        # references would not model Elasticsearch PIT snapshot semantics. The
+        # type-preserving tree copy is several times faster than ``copy.deepcopy`` on
+        # these JSON-shaped documents (full-population scans open one per scan).
+        self._state_pits[pit_id] = [
+            (idx, did, _tree_copy(src)) for idx, did, src in self._all_hits(index)
+        ]
         return pit_id
 
     async def close_state_pit(self, pit_id: str) -> None:
@@ -387,12 +411,13 @@ class InMemoryESClient(BaseESClient):
         frm = int(body.get("from", 0) or 0)
         size = int(body.get("size", 10))
         window = matched[frm: frm + size] if size > 0 else []
+        projector = _source_projector(body.get("_source"))
         hits = [
             {
                 "_index": idx,
                 "_id": did,
                 "_score": None,
-                "_source": src,
+                "_source": projector(src) if projector is not None and isinstance(src, dict) else src,
                 "sort": _sort_values(did, src, _normalise_sort(sort)) if sort else None,
             }
             for (idx, did, src) in window
@@ -404,6 +429,90 @@ class InMemoryESClient(BaseESClient):
         if aggs:
             result["aggregations"] = _aggregate(aggs, [src for (_i, _d, src) in matched])
         return result
+
+
+def _project_source(src: Any, spec: Any) -> Any:
+    """Elasticsearch ``_source`` filtering for a hit: a field list (or one field, or
+    ``{"includes": [...], "excludes": [...]}``) returns only the matching fields
+    (wildcards and dotted paths into objects allowed). Boolean and absent specs return
+    the document unchanged, as before (callers asking for ``_source: false`` never read
+    it)."""
+    projector = _source_projector(spec)
+    return src if projector is None or not isinstance(src, dict) else projector(src)
+
+
+def _source_projector(spec: Any) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+    """:func:`_project_source` compiled once for a search (``None``: the identity), so
+    a projected full-population scan does not re-parse the spec for every hit."""
+    if spec is None or isinstance(spec, bool):
+        return None
+    if isinstance(spec, str):
+        includes, excludes = [spec], []
+    elif isinstance(spec, (list, tuple)):
+        includes, excludes = [str(x) for x in spec], []
+    elif isinstance(spec, dict):
+        raw_in = spec.get("includes", spec.get("include"))
+        raw_ex = spec.get("excludes", spec.get("exclude"))
+        includes = [raw_in] if isinstance(raw_in, str) else [str(x) for x in raw_in or []]
+        excludes = [raw_ex] if isinstance(raw_ex, str) else [str(x) for x in raw_ex or []]
+    else:
+        return None
+
+    # Literal patterns are matched by set membership and only wildcard ones through
+    # ``fnmatch``, with exactly the semantics of matching every pattern with ``fnmatch``.
+    in_exact, in_wild = _split_patterns(includes)
+    ex_exact, ex_wild = _split_patterns(excludes)
+    # ``pat.startswith(path + ".")`` for some include ⇔ ``path`` is one of the dotted
+    # prefixes of an include; a leading ``*`` may match below any object.
+    in_prefixes = {pat[:i] for pat in includes for i, ch in enumerate(pat) if ch == "."}
+    star_prefix = any(pat.startswith("*") for pat in includes)
+
+    def matched(path: str, exact: set[str], wild: list[str]) -> bool:
+        return path in exact or any(fnmatch.fnmatchcase(path, pat) for pat in wild)
+
+    def pick(node: dict[str, Any], prefix: str) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for key, value in node.items():
+            path = f"{prefix}{key}"
+            if (ex_exact or ex_wild) and matched(path, ex_exact, ex_wild):
+                continue
+            if not includes or matched(path, in_exact, in_wild):
+                out[key] = _tree_copy(value)
+            elif isinstance(value, dict) and (star_prefix or path in in_prefixes):
+                inner = pick(value, path + ".")
+                if inner:
+                    out[key] = inner
+        return out
+
+    return lambda src: pick(src, "")
+
+
+_GLOB_CHARS = frozenset("*?[")
+
+
+def _split_patterns(patterns: list[str]) -> tuple[set[str], list[str]]:
+    """``(literal patterns, wildcard patterns)``: a literal ``fnmatch`` pattern matches
+    exactly itself, so it is checked by set membership."""
+    exact = {pat for pat in patterns if not (_GLOB_CHARS & set(pat))}
+    return exact, [pat for pat in patterns if pat not in exact]
+
+
+_ATOMIC_TYPES = (str, int, float, bool, type(None))
+
+
+def _tree_copy(value: Any) -> Any:
+    """A deep copy of a JSON-shaped document (dict/list/tuple/scalars) that preserves
+    every type; anything exotic falls back to :func:`copy.deepcopy`."""
+    kind = type(value)
+    if kind is dict:
+        return {k: (v if type(v) in _ATOMIC_TYPES else _tree_copy(v)) for k, v in value.items()}
+    if kind is list:
+        return [v if type(v) in _ATOMIC_TYPES else _tree_copy(v) for v in value]
+    if kind in _ATOMIC_TYPES:
+        return value
+    if kind is tuple:
+        return tuple(_tree_copy(v) for v in value)
+    return copy.deepcopy(value)
 
 
 # --------------------------------------------------------------------------- #
@@ -592,25 +701,163 @@ def _aggregate(aggs: dict[str, Any], sources: list[dict[str, Any]]) -> dict[str,
         elif "date_histogram" in body:
             dh = body["date_histogram"]
             field = dh["field"]
-            interval_ms = _interval_to_ms(dh.get("fixed_interval", dh.get("calendar_interval", "1h")))
+            keyer = _histogram_keyer(dh)
             buckets_map: dict[int, int] = {}
             for src in sources:
                 ts = _to_comparable(dotted_get(src, field))
                 if ts is None:
                     continue
-                bucket = int(ts // interval_ms) * interval_ms
+                bucket = keyer(ts)
                 buckets_map[bucket] = buckets_map.get(bucket, 0) + 1
             out[name] = {
                 "buckets": [
                     {"key": k, "doc_count": c} for k, c in sorted(buckets_map.items())
                 ]
             }
+        elif "composite" in body:
+            out[name] = _composite(body, sources)
+    return out
+
+
+# Elasticsearch ``calendar_interval`` spellings → the calendar unit they bucket by.
+# Calendar intervals only accept ONE unit (``1M``, never ``2M``); anything else falls
+# through to fixed-width arithmetic, exactly as before.
+_CALENDAR_UNITS = {
+    "minute": "minute", "1m": "minute",
+    "hour": "hour", "1h": "hour",
+    "day": "day", "1d": "day",
+    "week": "week", "1w": "week",
+    "month": "month", "1M": "month",
+    "quarter": "quarter", "1q": "quarter",
+    "year": "year", "1y": "year",
+}
+
+
+def _histogram_keyer(dh: dict[str, Any]) -> Any:
+    """``epoch millis → bucket key (epoch millis of the bucket start)`` for one
+    ``date_histogram`` spec.
+
+    ``calendar_interval`` buckets are whole calendar periods in ``time_zone`` (default
+    UTC; ISO weeks start on Monday, as in Elasticsearch), so a month bucket starts on
+    the 1st at local midnight. The previous fake parsed ``"1M"`` as one HOUR and
+    ``"month"``/``"week"`` as the one-hour fallback, silently returning hourly buckets
+    for every calendar request (Round 12 diagnosis E8). ``fixed_interval`` keeps its
+    fixed-width UTC arithmetic."""
+    calendar = dh.get("calendar_interval")
+    if calendar is not None and str(calendar) in _CALENDAR_UNITS:
+        unit = _CALENDAR_UNITS[str(calendar)]
+        if unit == "minute":
+            return lambda ts: int(ts // 60_000) * 60_000
+        from ..engine.time_windows import period_start, zone_for
+
+        zone, _name = zone_for(dh.get("time_zone") or "UTC")
+
+        def calendar_key(ts: float) -> int:
+            instant = datetime.fromtimestamp(ts / 1000.0, tz=timezone.utc)
+            return int(period_start(instant, unit, zone).timestamp() * 1000)
+
+        return calendar_key
+    interval_ms = _interval_to_ms(str(dh.get("fixed_interval", calendar or "1h")))
+    return lambda ts: int(ts // interval_ms) * interval_ms
+
+
+def _composite_values(src: dict[str, Any], spec: dict[str, Any]) -> list[Any] | None:
+    """The value list one composite SOURCE yields for one document (``None`` = the
+    document produces no bucket for this source)."""
+    if "terms" in spec:
+        terms = spec["terms"]
+        raw = dotted_get(src, terms["field"])
+        values = raw if isinstance(raw, list) else ([] if raw is None else [raw])
+        keys: list[Any] = []
+        for value in values:
+            if value is None:
+                continue
+            key = value if isinstance(value, (bool, int, float)) else str(value)
+            if key not in keys:
+                keys.append(key)
+        if keys:
+            return keys
+        return [None] if terms.get("missing_bucket") else None
+    if "date_histogram" in spec:
+        dh = spec["date_histogram"]
+        ts = _to_comparable(dotted_get(src, dh["field"]))
+        if ts is None:
+            return [None] if dh.get("missing_bucket") else None
+        return [_histogram_keyer(dh)(ts)]
+    raise ValueError(f"unsupported composite source {spec!r}")
+
+
+def _composite_order(value: Any) -> tuple:
+    # Elasticsearch's default ``missing_order`` for an ascending source is FIRST.
+    if value is None:
+        return (0, 0, "")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (1, float(value), "")
+    return (2, 0, str(value))
+
+
+def _composite(body: dict[str, Any], sources: list[dict[str, Any]]) -> dict[str, Any]:
+    """A faithful-enough ``composite`` aggregation: terms + date_histogram sources,
+    ``missing_bucket``, ``size``, ``after`` paging and an ``after_key`` (present whenever
+    the page holds buckets, as in Elasticsearch). A multi-valued field emits one bucket
+    combination per distinct value; each document counts once per combination.
+    Sub-aggregations run per bucket through the same evaluator."""
+    comp = body["composite"]
+    size = int(comp.get("size", 10))
+    spec_sources: list[tuple[str, dict[str, Any]]] = []
+    for item in comp.get("sources") or []:
+        (name, spec), = item.items()
+        spec_sources.append((name, spec))
+    members: dict[tuple, list[dict[str, Any]]] = {}
+    for src in sources:
+        per_source: list[list[Any]] = []
+        skip = False
+        for _name, spec in spec_sources:
+            values = _composite_values(src, spec)
+            if values is None:
+                skip = True
+                break
+            per_source.append(values)
+        if skip:
+            continue
+        combos: list[tuple] = [()]
+        for values in per_source:
+            combos = [combo + (value,) for combo in combos for value in values]
+        for combo in dict.fromkeys(combos):
+            members.setdefault(combo, []).append(src)
+    ordered = sorted(members, key=lambda k: tuple(_composite_order(v) for v in k))
+    after = comp.get("after")
+    if isinstance(after, dict):
+        marker = tuple(_composite_order(after.get(name)) for name, _ in spec_sources)
+        ordered = [k for k in ordered if tuple(_composite_order(v) for v in k) > marker]
+    page = ordered[: max(0, size)]
+    sub_aggs = body.get("aggs") or body.get("aggregations")
+    buckets = []
+    for combo in page:
+        bucket: dict[str, Any] = {
+            "key": {name: value for (name, _spec), value in zip(spec_sources, combo)},
+            "doc_count": len(members[combo]),
+        }
+        if sub_aggs:
+            bucket.update(_aggregate(sub_aggs, members[combo]))
+        buckets.append(bucket)
+    out: dict[str, Any] = {"buckets": buckets}
+    if buckets:
+        out["after_key"] = dict(buckets[-1]["key"])
     return out
 
 
 def _interval_to_ms(interval: str) -> int:
+    """Fixed-width interval in millis (``ms``/``s``/``m``/``h``/``d``); an unreadable
+    spelling keeps the historical one-hour fallback."""
+    text = str(interval).strip()
+    if text.endswith("ms"):
+        try:
+            return max(1, int(text[:-2]))
+        except ValueError:
+            return 3_600_000
     units = {"s": 1000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}
     try:
-        return int(interval[:-1]) * units.get(interval[-1], 3_600_000)
+        return max(1, int(text[:-1]) * units.get(text[-1], 3_600_000))
     except (ValueError, IndexError):
         return 3_600_000

@@ -6,20 +6,26 @@
  *   - List: every report the analyst built from chat answers — title, template, items,
  *     source conversation, last update — with search, open, rename, export and delete.
  *     Reports are never evicted; at 100 a new one is refused (the chat says so).
- *   - Document: the SAME renderer the exports use (`ReportDocument`), with the export
- *     menu and a link back to each item's source conversation
- *     (`navigate('chat', {conversationId, messageId})`). A deleted or evicted conversation
- *     reads "Conversation no longer available"; the report itself is unaffected.
+ *   - Document: the SAME renderer the exports use (`ReportDocument`), with a visible
+ *     "Download PDF", the flat Export menu and a link back to each item's source
+ *     conversation (`navigate('chat', {conversationId, messageId})`). A deleted or
+ *     evicted conversation reads "Conversation no longer available"; the report itself
+ *     is unaffected. Ctrl/Cmd+P on this page prints the REPORT (a `beforeprint` listener
+ *     mounts the same print root synchronously), never the console around it.
+ *
+ * Exports run through one guarded runner (`useReportExport`): progress on the button,
+ * one file per pick, a toast with the file name, and an inline error with Retry.
  *
  * Every string is plain text (#9); report data is re-validated before it renders. Every
  * write carries the report's `expected_version`.
  */
 import * as React from 'react';
-import { ArrowLeft, Download, FileText, MessageSquare, MoreHorizontal, Pencil, Search, Trash2 } from 'lucide-react';
+import { ArrowLeft, FileText, MessageSquare, MoreHorizontal, Pencil, Search, Trash2 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { CONSOLE_RELEASE_IDENTITY } from '@/lib/release';
+import { exportFileStem } from '@/lib/download';
 import type { Report, ReportListEntry } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -29,9 +35,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
@@ -47,12 +50,14 @@ import { LoadingState } from '@/design-system';
 import { deleteReport, getReport, listConversations, listReports, patchReport } from '../chat-api';
 import { displayText } from '../stream-events';
 import { formatUtc } from '../blocks/format';
-import { ExportMenuItems, useDefangPreference } from './ExportMenu';
+import { DownloadPdfButton, ExportErrorNote, ExportMenu, useDefangPreference } from './ExportMenu';
 import { ReportDocument } from './ReportDocument';
-import { SOURCE_UNAVAILABLE, TEMPLATE_LABEL, buildReportDoc, type DocItem } from './model';
+import { SOURCE_UNAVAILABLE, TEMPLATE_LABEL, buildReportDoc, type DocItem, type ReportDoc } from './model';
 import { emitReportChanged, isVersionConflict, onReportChanged, reportErrorMessage } from './report-sync';
-import { loadReportSourceContext, useSourceTurns } from './useSourceTurns';
-import type { ReportExportFormat, ReportExportOptions } from './export/run';
+import { useSourceTurns } from './useSourceTurns';
+import { useReportExport } from './useReportExport';
+import type { ReportExportFormat } from './export/formats';
+import { SCREEN_DOC_ID, screenPrintCss } from './print-fallback';
 
 const MENU_TRIGGER = cn(
   'inline-flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -61,10 +66,54 @@ const MENU_TRIGGER = cn(
 
 const ORIGIN = 'reports-page';
 
-/** The exporters load on first use (their own lazy chunk). */
-async function runExport(report: Report, format: ReportExportFormat, defang: boolean, extra: ReportExportOptions) {
-  const { exportReport } = await import('./export/run');
-  return exportReport(report, format, { ...extra, defang });
+
+type PrintModule = typeof import('./export/print');
+type BlockCardComponent = import('./export/print').BlockCardComponent;
+type BlockCardModule = typeof import('../blocks/BlockCard');
+
+/**
+ * Ctrl/Cmd+P on the document view (R12): the browser prints whatever is on screen —
+ * the console chrome, dark, cropped to the scroll container. While this view is open a
+ * `beforeprint` listener mounts the report's print root SYNCHRONOUSLY (the print code
+ * and the static block renderer are preloaded on mount), so the dialog shows the
+ * report itself. A print our own Download PDF started is left alone.
+ */
+function usePrintShortcut(buildDoc: () => ReportDoc | null, defang: boolean) {
+  const modules = React.useRef<{ print: PrintModule; blocks: BlockCardModule } | null>(null);
+  const build = React.useRef(buildDoc);
+  build.current = buildDoc;
+  const options = React.useRef({ defang });
+  options.current = { defang };
+  React.useEffect(() => {
+    let alive = true;
+    Promise.all([import('./export/print'), import('../blocks/BlockCard')])
+      .then(([print, blocks]) => {
+        if (alive) modules.current = { print, blocks };
+      })
+      .catch(() => undefined);
+    let cleanup: (() => void) | null = null;
+    const before = () => {
+      const loaded = modules.current;
+      if (!loaded || loaded.print.printRootMounted()) return;
+      const doc = build.current();
+      if (!doc) return;
+      try {
+        cleanup = loaded.print.mountPrintRoot(doc, loaded.blocks.BlockCard as BlockCardComponent, {
+          defang: options.current.defang,
+          // The dialog suggests `<title>.pdf`: the export file name, stamped now.
+          documentTitle: exportFileStem('report', doc.title),
+        });
+      } catch {
+        cleanup = null;
+      }
+    };
+    window.addEventListener('beforeprint', before);
+    return () => {
+      alive = false;
+      window.removeEventListener('beforeprint', before);
+      cleanup?.();
+    };
+  }, []);
 }
 
 /**
@@ -142,6 +191,10 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
   const [notice, setNotice] = React.useState<string | null>(null);
   const [defang, setDefang] = useDefangPreference();
   const sources = useSourceTurns(report);
+  const exports = useReportExport({ author: username });
+  // Focus returns to the control that started an export when its error note goes away.
+  const pdfRef = React.useRef<HTMLButtonElement>(null);
+  const exportRef = React.useRef<HTMLButtonElement>(null);
 
   const load = React.useCallback(
     async (signal?: AbortSignal) => {
@@ -228,17 +281,28 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
     }
   };
 
-  const doExport = async (format: ReportExportFormat, on: boolean) => {
+  // The export reads the same source context the view loaded (cached per version), and
+  // waits for it when the view is still reading — never an incomplete methodology.
+  const doExport = (format: ReportExportFormat, on: boolean) => {
     if (!report) return;
-    const outcome = await runExport(report, format, on, {
-      author: username,
-      sourceTurns: sources.turns,
-      conversationTitles: sources.titles,
-      conversationStatus: sources.status,
-    });
-    announce(outcome.message);
-    setNotice(outcome.ok ? null : outcome.message);
+    setNotice(null);
+    void exports.run(report.id, report, format, on);
   };
+
+  // Ctrl/Cmd+P prints the report (an export-time document: generated now, not "updated").
+  usePrintShortcut(
+    () =>
+      report
+        ? buildReportDoc(report, {
+            author: username,
+            appVersion: CONSOLE_RELEASE_IDENTITY.version,
+            sourceTurns: sources.turns,
+            conversationTitles: sources.titles,
+            conversationStatus: sources.status,
+          })
+        : null,
+    defang,
+  );
 
   const back = (
     <Button variant="ghost" size="sm" onClick={onBack}>
@@ -267,19 +331,20 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
     );
   }
 
+  const busy = exports.exporting(report.id);
   const actions = (
-    <div className="flex items-center gap-1">
+    <div className="flex flex-wrap items-center gap-1">
       {back}
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="sm">
-            <Download aria-hidden /> Export
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-60">
-          <ExportMenuItems onExport={(f, d) => void doExport(f, d)} defang={defang} onDefangChange={setDefang} />
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <DownloadPdfButton buttonRef={pdfRef} busy={busy} onClick={() => doExport('print', defang)} />
+      <ExportMenu
+        triggerRef={exportRef}
+        busy={busy}
+        onOpen={() => exports.warm(report)}
+        onExport={doExport}
+        defang={defang}
+        onDefangChange={setDefang}
+        testId="report-export-trigger"
+      />
       <DropdownMenu>
         <DropdownMenuTrigger aria-label="More report actions" className={MENU_TRIGGER}>
           <MoreHorizontal className="size-4" aria-hidden />
@@ -315,7 +380,22 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
         actions={actions}
       />
       {notice ? <p className="text-sm text-critical-text">{notice}</p> : null}
-      <div className="mx-auto w-full max-w-5xl">
+      {exports.error && exports.error.reportId === report.id ? (
+        <ExportErrorNote
+          error={exports.error}
+          onRetry={exports.retry}
+          onDismiss={exports.dismissError}
+          returnFocus={() => (exports.error?.format === 'print' ? pdfRef.current : exportRef.current)}
+        />
+      ) : null}
+      {/* Ctrl/Cmd+P fallback: prints this document, never the console (R12). */}
+      <style>{screenPrintCss()}</style>
+      <div className="mx-auto w-full max-w-5xl" id={SCREEN_DOC_ID}>
+        {/* The page header is not printed by the fallback: paper keeps the title (a copy
+            of the page heading, so it is hidden from assistive technology). */}
+        <p aria-hidden="true" className="hidden pb-2 text-xl font-semibold text-foreground print:block" data-testid="report-print-title">
+          {report.title}
+        </p>
         <ReportDocument
           doc={doc}
           mode="screen"
@@ -378,6 +458,9 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
   const [notice, setNotice] = React.useState<string | null>(null);
   const [defang, setDefang] = useDefangPreference();
   const [conversations, setConversations] = React.useState<ConversationIndex | null>(null);
+  const exports = useReportExport({ author: username });
+  // Each row's Export trigger: focus returns there when its error note goes away.
+  const triggers = React.useRef(new Map<string, HTMLButtonElement>());
 
   const load = React.useCallback(async (signal?: AbortSignal) => {
     setError(null);
@@ -445,22 +528,11 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
     void load();
   };
 
-  const doExport = async (entry: ReportListEntry, format: ReportExportFormat, on: boolean) => {
-    try {
-      const report = await getReport(entry.id);
-      // The same methodology as the document view: read the source turns first.
-      const sources = format === 'json' ? null : await loadReportSourceContext(report);
-      const outcome = await runExport(report, format, on, {
-        author: username,
-        sourceTurns: sources?.turns ?? null,
-        conversationTitles: sources?.titles ?? null,
-        conversationStatus: sources?.status ?? null,
-      });
-      announce(outcome.message);
-      setNotice(outcome.ok ? null : outcome.message);
-    } catch (err) {
-      setNotice(reportErrorMessage(err, 'The report could not be exported.'));
-    }
+  // The row holds a summary: read the report first, then the same methodology as the
+  // document view (the source context is cached per report version).
+  const doExport = (entry: ReportListEntry, format: ReportExportFormat, on: boolean) => {
+    setNotice(null);
+    void exports.run(entry.id, () => getReport(entry.id), format, on, { title: entry.title });
   };
 
   const columns: DataTableColumn<ReportListEntry>[] = [
@@ -497,8 +569,11 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
       id: 'conversation',
       header: 'Source conversation',
       cell: (r) => {
-        if (!r.conversation_id) return <span className="text-muted-foreground">—</span>;
-        const known = conversations?.titles.get(r.conversation_id);
+        // A draft's own conversation, else the one its items came from (a report saved
+        // from an answer or a whole conversation is not that conversation's draft).
+        const sourceId = r.conversation_id ?? r.source_conversation_id ?? null;
+        if (!sourceId) return <span className="text-muted-foreground">—</span>;
+        const known = conversations?.titles.get(sourceId);
         if (!known && conversations?.complete) return <span className="text-muted-foreground">{SOURCE_UNAVAILABLE}</span>;
         // A report started from a conversation is titled after it: never print the same
         // sentence twice side by side; the link (and its accessible name) still names it.
@@ -506,7 +581,7 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
         return (
           <button
             type="button"
-            onClick={() => navigate('chat', { conversationId: r.conversation_id ?? undefined })}
+            onClick={() => navigate('chat', { conversationId: sourceId })}
             className={cn(
               'inline-flex max-w-[12rem] items-center gap-1 rounded-sm text-primary hover:underline 2xl:max-w-[16rem]',
               focusRing,
@@ -535,6 +610,20 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
       align: 'right',
       lockVisible: true,
       cell: (r) => (
+        <div className="flex items-center justify-end gap-0.5">
+        <ExportMenu
+          triggerRef={(el) => {
+            if (el) triggers.current.set(r.id, el);
+            else triggers.current.delete(r.id);
+          }}
+          variant="icon"
+          label={`Export ${r.title}`}
+          busy={exports.exporting(r.id)}
+          onOpen={() => exports.warm(null)}
+          onExport={(f, d) => doExport(r, f, d)}
+          defang={defang}
+          onDefangChange={setDefang}
+        />
         <DropdownMenu>
           <DropdownMenuTrigger aria-label={`Actions for ${r.title}`} className={MENU_TRIGGER}>
             <MoreHorizontal className="size-4" aria-hidden />
@@ -548,15 +637,6 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
               <Pencil className="size-3.5" aria-hidden />
               Rename
             </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <Download className="size-3.5" aria-hidden />
-                Export
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent className="w-60">
-                <ExportMenuItems onExport={(f, d) => void doExport(r, f, d)} defang={defang} onDefangChange={setDefang} />
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
             <DropdownMenuSeparator />
             <DropdownMenuItem className="text-critical-text focus:text-critical-text" onSelect={() => setDeleting(r)}>
               <Trash2 className="size-3.5" aria-hidden />
@@ -564,6 +644,7 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
       ),
     },
   ];
@@ -599,6 +680,15 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
             </span>
           </div>
           {notice ? <p className="text-sm text-critical-text">{notice}</p> : null}
+          {exports.error ? (
+            <ExportErrorNote
+              error={exports.error}
+              onRetry={exports.retry}
+              onDismiss={exports.dismissError}
+              showTitle
+              returnFocus={() => (exports.error ? triggers.current.get(exports.error.reportId) : null)}
+            />
+          ) : null}
           <DataTable
             columns={columns}
             rows={visible}

@@ -18,6 +18,25 @@
  *
  * Long transcripts: each card is `content-visibility: auto` with an intrinsic size, so
  * off-screen charts skip layout and paint but stay in the accessibility tree.
+ *
+ * Static mode (print and static exports, Round 12 WP-REP R6/R7/R13): no menu, no Add to
+ * report, no provenance glyph (its "01/10" icon read as a stray control on paper; an AI
+ * block still says "Values stated by the model"), no `content-visibility` (a skipped
+ * subtree can print blank), a title that wraps instead of truncating, and every control
+ * that could still render is marked `data-print-hide`.
+ *
+ * Round 12 chart and block upgrades (WP-BLK, SYNTHESIS-chat P0-6/P0-8), all client-side
+ * and read-only (never a re-query, never a model call):
+ *   - "Group by" re-bins a calendar series into a coarser unit the server allowed; the
+ *     table, Copy data and the downloads follow the grouping shown, and the caption, the
+ *     image subtitle and the CSV / image file names say "grouped by month" (the server's
+ *     title still names its own bucket);
+ *   - Download PNG / SVG draws the chart AS SHOWN (grouping, zoom, hidden series) in the
+ *     card's theme (`charts/export-image.ts`);
+ *   - Full width takes a card out of the conversation lane to the conversation's gutters
+ *     (`renderers/full-bleed.ts`), offered only inside a chat lane with room to gain;
+ *   - a comparison's tile view reads absolute and relative change per metric
+ *     (`renderers/ComparisonView.tsx`).
  */
 import * as React from 'react';
 import {
@@ -28,6 +47,7 @@ import {
   ExternalLink,
   FileCheck2,
   FilePlus2,
+  ImageDown,
   Maximize2,
   MoreHorizontal,
   Table2,
@@ -36,6 +56,7 @@ import {
 
 import { cn } from '@/lib/cn';
 import { copyText } from '@/lib/clipboard';
+import { UTF8_BOM } from '@/lib/download';
 import { focusRing } from '@/lib/ui-recipes';
 import {
   DropdownMenu,
@@ -57,10 +78,15 @@ import { navLabel } from '@/soc/nav';
 
 import { BlockBoundary } from './BlockBoundary';
 import { ChartBlockView } from './charts/ChartBlockView';
+import { ChartViewContext, type ChartView } from './charts/export-context';
+import { downloadChartPng, downloadChartSvg } from './charts/export-image';
+import { RebinControl } from './charts/RebinControl';
+import { rebinChart, rebinChoices } from './charts/rebin';
 import { BlocksContext, leafAnchorKey, useBlocks } from './context';
 import { blockTabular, downloadText, toCSV, toJSON, toTSV } from './export-helpers';
 import { captionStatesCount, fileStamp, formatUtc, slug, truncationNote } from './format';
 import { CaseListView } from './renderers/CaseListView';
+import { ComparisonTiles } from './renderers/ComparisonView';
 import { EntityView } from './renderers/EntityView';
 import { HeatmapView } from './renderers/HeatmapView';
 import { KpiGroupView } from './renderers/KpiGroupView';
@@ -69,7 +95,8 @@ import { ReportView, reportScopeLine } from './renderers/ReportView';
 import { CalloutView, CitationsView, GuideView, MarkdownView, QueryView } from './renderers/SimpleViews';
 import { TableView } from './renderers/TableView';
 import { TimelineView } from './renderers/TimelineView';
-import type { AnswerBlock, BlockView, InternalRef, LeafBlock } from './schema';
+import { useFullBleed } from './renderers/full-bleed';
+import type { AnswerBlock, BlockView, InternalRef, LeafBlock, TimeBucket } from './schema';
 import { AI_AUTHORED_TYPES, blockView } from './schema';
 import { VIEW_LABEL, canShowTable, honestBlock, switchableViews, tableBlockOf, viewAs } from './views';
 
@@ -196,6 +223,8 @@ export interface BlockBodyProps {
   staticMode?: boolean;
   /** A leaf inside a report section. */
   nested?: boolean;
+  /** The card dropped its frame for a host that frames it (see {@link BlockCardProps.bare}). */
+  bare?: boolean;
   /** `"<section>-<leaf>"` for a report leaf (see `leafAnchorKey`). */
   leafKey?: string;
 }
@@ -208,9 +237,14 @@ export function BlockBody({
   expanded = false,
   staticMode = false,
   nested = false,
+  bare = false,
   leafKey,
 }: BlockBodyProps) {
   const { compact, citationOwner } = useBlocks();
+  // The body sits inside the card's own frame (border + 0.75rem padding) only in a
+  // top-level card. A report leaf, a bare card and the expanded sheet have no frame
+  // around the body, so KPI tiles draw their own closed frame there (KpiGroupView).
+  const inCardFrame = !nested && !bare && !expanded;
   if (showTable) {
     const t = tableBlockOf(block);
     if (t) return <TableView block={t} title={title} paged={expanded} staticMode={staticMode} />;
@@ -219,7 +253,12 @@ export function BlockBody({
     case 'markdown':
       return <MarkdownView block={block} />;
     case 'kpi_group':
-      return <KpiGroupView items={block.items} idPrefix={`chat-${index}`} />;
+      // A period comparison's tiles read absolute AND relative change (Round 12 P0-6),
+      // and follow the same host-frame rule as any other KPI group.
+      if (block.artifact_kind === 'comparison') {
+        return <ComparisonTiles items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} framed={!inCardFrame} />;
+      }
+      return <KpiGroupView items={block.items} idPrefix={`chat-${index}`} staticMode={staticMode} framed={!inCardFrame} />;
     case 'chart':
       return <ChartBlockView block={block} title={title} compact={compact} expanded={expanded} staticMode={staticMode} />;
     case 'heatmap':
@@ -231,7 +270,16 @@ export function BlockBody({
     case 'timeline':
       return <TimelineView block={block} />;
     case 'entity':
-      return <EntityView block={block} idPrefix={`chat-${index}`} framed={nested} />;
+      return (
+        <EntityView
+          block={block}
+          idPrefix={`chat-${index}`}
+          framed={nested}
+          // Its count tiles: framed by the entity's own frame (a leaf) or the card's.
+          countsFramed={!nested && !inCardFrame}
+          staticMode={staticMode}
+        />
+      );
     case 'mitre':
       return <MitreView block={block} title={title} />;
     case 'query':
@@ -250,6 +298,7 @@ export function BlockBody({
         <ReportView
           block={block}
           blockIndex={index}
+          staticMode={staticMode}
           renderLeaf={(leaf: LeafBlock, key: string) => (
             // One boundary per leaf: a leaf that cannot render degrades alone (G9).
             <BlockBoundary key={key} id={leaf.id} fallbackText={leaf.fallback_text}>
@@ -294,6 +343,10 @@ export interface BlockCardProps {
 }
 
 const HEADINGS = { 4: 'h4', 5: 'h5', 6: 'h6' } as const;
+
+/** Blocks that may break out of the conversation lane ("Full width"). */
+const BLEED_TYPES: ReadonlyArray<AnswerBlock['type']> = ['chart', 'table', 'heatmap', 'timeline', 'case_list', 'kpi_group', 'mitre', 'report'];
+const BUCKET_NAME: Partial<Record<TimeBucket, string>> = { '1h': 'hour', '1d': 'day', '1w': 'week', '1M': 'month', '1q': 'quarter', '1y': 'year' };
 
 /**
  * A block's Add to report toggle. ONE stable name (an APG toggle must not also flip its
@@ -380,18 +433,29 @@ export function BlockCard({
   const [showTable, setShowTable] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
   const [defangCopy, setDefangCopy] = React.useState(true);
+  // Round 12 (P0-8): the client-side grouping, the chart as shown (for its image), and
+  // the full-width breakout. All display only; the block's data never changes.
+  const [rebin, setRebin] = React.useState<TimeBucket | null>(null);
+  const figureRef = React.useRef<HTMLElement>(null);
+  const chartView = React.useRef<ChartView | null>(null);
+  const bleed = useFullBleed(figureRef, !nested && !staticMode && !bare && !ctx.compact && BLEED_TYPES.includes(block.type));
+  const rebinOptions = React.useMemo(() => (block.type === 'chart' && !staticMode ? rebinChoices(block) : []), [block, staticMode]);
+  const grouped = React.useMemo(
+    () => (block.type === 'chart' && rebin && rebinOptions.includes(rebin) ? rebinChart(block, rebin) : block),
+    [block, rebin, rebinOptions],
+  );
 
   // Bare blocks: prose and notes carry no chrome of their own.
   if (block.type === 'markdown' || block.type === 'callout') {
     return (
-      <div className="min-w-0 [contain-intrinsic-size:auto_80px] [content-visibility:auto]" data-block-type={block.type}>
+      <div className={cn('min-w-0', !staticMode && '[contain-intrinsic-size:auto_80px] [content-visibility:auto]')} data-block-type={block.type}>
         <BlockBody block={block} title={blockTitle(block)} index={index} nested={nested} leafKey={leafKey} staticMode={staticMode} />
       </div>
     );
   }
 
   // Charts are always drawn in a kind their data can honestly support (views.ts).
-  const displayed = view ? viewAs(block, view) : honestBlock(block);
+  const displayed = view ? viewAs(grouped, view) : honestBlock(grouped);
   const title = blockTitle(block);
   const isBrief = block.type === 'report';
   const Heading = HEADINGS[headingLevel];
@@ -402,7 +466,10 @@ export function BlockCard({
   const stepQuery = block.from_step && queryForStep ? queryForStep(block.from_step) : null;
   const query = block.type === 'query' ? block.query : stepQuery || null;
   const openTarget = openTargetFor(block);
-  const stamp = () => `agentic-soc-${slug(title)}-${fileStamp()}Z`;
+  // A client-side grouping is named wherever the grouped numbers go: the caption, the
+  // image subtitle and the file names (the server's title still names its own bucket).
+  const groupedBy = block.type === 'chart' && rebin && rebin !== rebinOptions[0] && rebinOptions.includes(rebin) ? BUCKET_NAME[rebin] ?? null : null;
+  const stamp = (grouping: string | null = null) => `agentic-soc-${slug(title)}${grouping ? `-by-${slug(grouping)}` : ''}-${fileStamp()}Z`;
 
   // "Showing top 5 of 20" under the body, unless the caption above already says it.
   const shown = block.truncated ? shownCount(block) : 0;
@@ -413,6 +480,7 @@ export function BlockCard({
   if (block.type === 'report') captionParts.push(reportScopeLine(block));
   if (block.caption) captionParts.push(block.caption);
   if (block.as_of) captionParts.push(`as of ${formatUtc(block.as_of)}`);
+  const viewCaption = groupedBy ? [...captionParts, `grouped by ${groupedBy}`] : captionParts;
 
   const onCopyData = () => {
     if (!tabular) return;
@@ -420,13 +488,29 @@ export function BlockCard({
       announce(ok ? `Copied ${tabular.rows.length} rows${defangCopy ? ', indicators defanged' : ''}` : 'Copy failed');
     });
   };
+  const onDownloadImage = async (format: 'png' | 'svg') => {
+    if (displayed.type !== 'chart') return;
+    // The chart as SHOWN: its grouping, its zoom and the series its legend shows.
+    const shownView = chartView.current;
+    const req = {
+      block: shownView?.block ?? displayed,
+      hidden: shownView?.hidden,
+      title,
+      subtitle: captionParts.join(' · ') || undefined,
+      grouping: groupedBy ?? undefined,
+      zoom: shownView?.zoom ?? null,
+      host: figureRef.current,
+    };
+    const ok = format === 'svg' ? downloadChartSvg(req) : await downloadChartPng(req);
+    announce(ok ? `${format.toUpperCase()} downloaded` : 'Could not create the image');
+  };
   const onCopyQuery = () => {
     if (!query) return;
     void copyText(query).then((ok) => announce(ok ? 'Query copied' : 'Copy failed'));
   };
 
   const menu = (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => (open ? bleed.check() : undefined)}>
       <DropdownMenuTrigger
         aria-label={`More actions for ${title}`}
         className={cn('inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}
@@ -439,6 +523,18 @@ export function BlockCard({
           <Maximize2 className="size-3.5" aria-hidden />
           Expand
         </DropdownMenuItem>
+        {bleed.available || bleed.on ? (
+          <DropdownMenuCheckboxItem
+            checked={bleed.on}
+            onCheckedChange={() => {
+              bleed.toggle();
+              announce(bleed.on ? 'Back to the conversation width' : 'Showing full width');
+            }}
+            data-testid="block-full-width"
+          >
+            Full width
+          </DropdownMenuCheckboxItem>
+        ) : null}
         {views.length >= 2 ? (
           <>
             <DropdownMenuSeparator />
@@ -486,11 +582,24 @@ export function BlockCard({
             </DropdownMenuCheckboxItem>
             <DropdownMenuItem
               onSelect={() => {
-                if (downloadText(`${stamp()}.csv`, 'text/csv;charset=utf-8', toCSV(tabular))) announce('CSV downloaded');
+                // The BOM makes Excel read the file as UTF-8 (Round 12 WP-REP R15).
+                if (downloadText(`${stamp(groupedBy)}.csv`, 'text/csv;charset=utf-8', `${UTF8_BOM}${toCSV(tabular)}`)) announce('CSV downloaded');
               }}
             >
               <Download className="size-3.5" aria-hidden />
               Download CSV
+            </DropdownMenuItem>
+          </>
+        ) : null}
+        {displayed.type === 'chart' && !showTable ? (
+          <>
+            <DropdownMenuItem onSelect={() => void onDownloadImage('png')}>
+              <ImageDown className="size-3.5" aria-hidden />
+              Download PNG
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void onDownloadImage('svg')}>
+              <ImageDown className="size-3.5" aria-hidden />
+              Download SVG
             </DropdownMenuItem>
           </>
         ) : null}
@@ -522,10 +631,14 @@ export function BlockCard({
 
   return (
     <figure
+      ref={figureRef}
       aria-labelledby={isBrief ? `${eyebrowId} ${titleId}` : titleId}
       data-block-type={block.type}
+      data-full-bleed={bleed.on || undefined}
+      style={bleed.style}
       className={cn(
-        'min-w-0 [contain-intrinsic-size:auto_320px] [content-visibility:auto]',
+        'min-w-0',
+        !staticMode && '[contain-intrinsic-size:auto_320px] [content-visibility:auto]',
         nested || bare ? 'pt-1' : 'rounded-lg border border-border/70 px-3 pb-3 pt-2',
       )}
     >
@@ -537,22 +650,28 @@ export function BlockCard({
               Brief
             </p>
           ) : null}
-          <Heading id={titleId} className="truncate text-sm font-semibold text-foreground" title={title}>
+          <Heading
+            id={titleId}
+            className={cn('text-sm font-semibold text-foreground', staticMode ? 'break-words' : 'truncate')}
+            title={staticMode ? undefined : title}
+          >
             {titleNode(block, title)}
           </Heading>
-          {captionParts.length ? (
+          {viewCaption.length ? (
             <p className="break-words text-xs text-muted-foreground" data-testid="block-caption">
-              {captionParts.join(' · ')}
+              {viewCaption.join(' · ')}
             </p>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
-          <ProvenanceTag kind={block.provenance} variant="icon" className="px-1" />
-          {showAddToReport && onAddToReport ? (
-            <BlockReportToggle title={title} inReport={inReport} disabledReason={addDisabledReason} onToggle={onAddToReport} />
-          ) : null}
-          {staticMode ? null : menu}
-        </div>
+        {staticMode ? null : (
+          <div className="flex shrink-0 items-center gap-0.5" data-print-hide>
+            <ProvenanceTag kind={block.provenance} variant="icon" className="px-1" />
+            {showAddToReport && onAddToReport ? (
+              <BlockReportToggle title={title} inReport={inReport} disabledReason={addDisabledReason} onToggle={onAddToReport} />
+            ) : null}
+            {menu}
+          </div>
+        )}
       </figcaption>
 
       {block.provenance === 'ai' && isDataBlock(block) ? (
@@ -561,15 +680,30 @@ export function BlockCard({
         </p>
       ) : null}
 
-      <BlockBody
-        block={displayed}
-        title={title}
-        index={index}
-        showTable={showTable}
-        nested={nested}
-        leafKey={leafKey}
-        staticMode={staticMode}
-      />
+      {rebinOptions.length ? (
+        <RebinControl
+          choices={rebinOptions}
+          value={rebin && rebinOptions.includes(rebin) ? rebin : rebinOptions[0]}
+          onChange={(b) => {
+            setRebin(b === rebinOptions[0] ? null : b);
+            announce(`Grouped by ${BUCKET_NAME[b] ?? b}`);
+          }}
+          title={title}
+        />
+      ) : null}
+
+      <ChartViewContext.Provider value={chartView}>
+        <BlockBody
+          block={displayed}
+          title={title}
+          index={index}
+          showTable={showTable}
+          nested={nested}
+          bare={bare}
+          leafKey={leafKey}
+          staticMode={staticMode}
+        />
+      </ChartViewContext.Provider>
 
       {truncNote || block.downsampled_for_storage ? (
         <p className="mt-1.5 text-xs text-muted-foreground" data-testid="block-truncation">
@@ -584,7 +718,7 @@ export function BlockCard({
           <SheetContent side="right" size="full" className="max-w-[min(98vw,1400px)] overflow-y-auto">
             <SheetHeader>
               <SheetTitle>{title}</SheetTitle>
-              <SheetDescription>{captionParts.join(' · ') || 'Expanded view'}</SheetDescription>
+              <SheetDescription>{viewCaption.join(' · ') || 'Expanded view'}</SheetDescription>
             </SheetHeader>
             <div className="min-w-0 px-6 pb-6">
               <BlocksContext.Provider value={expandedCtx}>

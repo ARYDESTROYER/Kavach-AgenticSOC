@@ -125,6 +125,29 @@ describe('StageTimeline', () => {
     expect(screen.queryByRole('heading', { name: 'Decide' })).toBeNull();
   });
 
+  it('renders untrusted input evidence as ONE fenced block whose header carries label and marker (CM-8)', () => {
+    const { container } = render(
+      <StageTimeline
+        presentation="case-manager"
+        data={data([
+          stage({
+            kind: 'input',
+            label: 'Alert received',
+            headline: '3 alerts from IBM QRadar SIEM',
+            steps: [{ kind: 'evidence', label: 'evidence', body: '**Impossible** travel for pnair', trusted: false }],
+          }),
+        ])}
+      />,
+    );
+    const step = container.querySelector('[data-story-step="untrusted"]') as HTMLElement;
+    expect(step).toBeTruthy();
+    // Fenced: the markdown is shown verbatim, never rendered.
+    expect(step).toHaveTextContent('**Impossible** travel for pnair');
+    expect(step).toHaveTextContent('Untrusted source data');
+    // No box-in-a-box: the wrapper itself carries no border or sunken surface.
+    expect(step.className).not.toMatch(/\bborder\b|bg-surface-sunken/);
+  });
+
   it('opens an exact, accessible risk derivation with values, weights, contributions, and formula', async () => {
     const { container } = render(
       <StageTimeline

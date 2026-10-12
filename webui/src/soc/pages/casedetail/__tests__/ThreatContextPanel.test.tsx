@@ -153,6 +153,7 @@ describe('ThreatContextPanel — error state (#33)', () => {
 
 describe('ThreatContextPanel — Case Manager presentation', () => {
   it('leads with the MITRE and IOC cards while honoring backend-real score/sources and numeric asset fields', () => {
+    // Round 12 (CM-8): flat, divider-led sections (no card-in-card); every field kept.
     const { container } = render(
       <ThreatContextPanel
         c={CASE}
@@ -168,27 +169,29 @@ describe('ThreatContextPanel — Case Manager presentation', () => {
       '[data-case-panel="threat-context"][data-presentation="case-manager"]',
     );
     expect(panel).not.toBeNull();
+    expect(panel).toHaveClass('divide-y');
+    const mitre = screen.getByTestId('threat-mitre');
+    expect(within(mitre).getByRole('heading', { name: /MITRE ATT&CK techniques/i })).toBeInTheDocument();
+    const ioc = screen.getByTestId('threat-ioc');
+    expect(within(ioc).getByRole('heading', { name: 'Indicator reputation' })).toBeInTheDocument();
+    // No nested cards: the technique and indicator lists are divider-led rows.
+    for (const section of [mitre, ioc]) {
+      expect(section.querySelector('.rounded-\\[8px\\], .rounded-\\[4px\\], .rounded-md.border')).toBeNull();
+    }
+    // MITRE leads the IOC section in reading order.
+    expect(mitre.compareDocumentPosition(ioc) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    const mitreHeading = screen.getByRole('heading', { name: /MITRE ATT&CK® Mapping/i });
-    const iocHeading = screen.getByRole('heading', { name: 'IOC Reputation' });
-    const leadGrid = mitreHeading.closest('.grid');
-    expect(leadGrid).not.toBeNull();
-    expect(leadGrid).toHaveClass('md:grid-cols-2');
-    expect(leadGrid).toContainElement(iocHeading);
+    expect(within(mitre).getByText('T1078')).toBeInTheDocument();
+    expect(within(mitre).getByText('Valid Accounts')).toBeInTheDocument();
+    expect(within(mitre).getByText('T1530')).toBeInTheDocument();
+    expect(within(mitre).getByText('Data from Cloud Storage Object')).toBeInTheDocument();
+    expect(within(mitre).getByText('T1090')).toBeInTheDocument();
+    expect(within(mitre).getByText('Proxy')).toBeInTheDocument();
 
-    expect(screen.getByText('T1078')).toBeInTheDocument();
-    expect(screen.getByText('Valid Accounts')).toBeInTheDocument();
-    expect(screen.getByText('T1530')).toBeInTheDocument();
-    expect(screen.getByText('Data from Cloud Storage Object')).toBeInTheDocument();
-    expect(screen.getByText('T1090')).toBeInTheDocument();
-    expect(screen.getByText('Proxy')).toBeInTheDocument();
-
-    const iocCard = iocHeading.closest('.rounded-\\[8px\\]');
-    expect(iocCard).not.toBeNull();
-    expect(within(iocCard as HTMLElement).getByText('198.51.100.45')).toBeInTheDocument();
-    expect(within(iocCard as HTMLElement).getByText('AbuseIPDB')).toBeInTheDocument();
-    expect(within(iocCard as HTMLElement).getByText('100%')).toBeInTheDocument();
-    expect(within(iocCard as HTMLElement).getByText('Malicious')).toBeInTheDocument();
+    expect(within(ioc).getByText('198.51.100.45')).toBeInTheDocument();
+    expect(within(ioc).getByText('AbuseIPDB')).toBeInTheDocument();
+    expect(within(ioc).getByText('100%')).toBeInTheDocument();
+    expect(within(ioc).getByText('Malicious')).toBeInTheDocument();
 
     const criticalityRow = screen.getByText('Criticality').parentElement;
     expect(criticalityRow).not.toBeNull();

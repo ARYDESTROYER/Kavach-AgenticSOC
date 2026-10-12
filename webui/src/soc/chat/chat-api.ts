@@ -24,10 +24,16 @@ import type {
   ChatConversationSummary,
   ChatConversationsResponse,
   ChatConversationUpdateRequest,
+  ChatFeedbackRating,
+  ChatFeedbackReason,
+  ChatFeedbackRequest,
+  ChatMessagePage,
   ChatRates,
   ChatPrompt,
+  ChatPromptCategory,
   ChatRequest,
   ChatResponse,
+  ChatSavedReport,
   ChatScope,
   ChatStarter,
   ChatTimeRange,
@@ -54,10 +60,12 @@ import {
   TEXT_STREAMING_REASONS,
   displayText,
   normaliseChatResponse,
+  normaliseSavedReport,
   normaliseTurnUsage,
   type ChatStreamEvent,
 } from './stream-events';
 import { CONSOLE_TOPIC_RE } from './topic';
+import { mergeScopeWindow } from './report/windows';
 
 /* -------------------------------------------------------------------------- */
 /* Lenient field helpers.                                                      */
@@ -239,12 +247,16 @@ function normaliseTool(raw: unknown): ChatToolInfo | null {
 function normaliseBounds(raw: unknown): ChatContextBounds {
   const src = isObj(raw) ? raw : {};
   const out: ChatContextBounds = { ...DEFAULT_CHAT_BOUNDS };
-  for (const key of Object.keys(DEFAULT_CHAT_BOUNDS) as Array<keyof ChatContextBounds>) {
+  for (const key of Object.keys(DEFAULT_CHAT_BOUNDS) as Array<Exclude<keyof ChatContextBounds, 'animated_brand'>>) {
     const value = src[key];
     if (key === 'default_stream_mode') out.default_stream_mode = enumOr(value, CHAT_STREAM_MODES, 'steps');
     else if (key === 'allow_text_streaming') out.allow_text_streaming = value !== false;
     else if (typeof value === 'number' && Number.isInteger(value) && value > 0) out[key] = value;
   }
+  // Round 12 (SPEC D13): the brand-ring switch, both ways (a browser that once saw it off
+  // keeps that in storage until the server says it is on again); absent on an older
+  // backend, which leaves the browser's last-known value alone.
+  if (typeof src.animated_brand === 'boolean') out.animated_brand = src.animated_brand;
   return out;
 }
 
@@ -315,7 +327,7 @@ export function normaliseChatContext(raw: unknown): ChatContextInfo {
       if (starters.length >= CHAT_STARTER_LIMITS.starters) break;
     }
   }
-  return {
+  const out: ChatContextInfo = {
     model: optText(src.model, 120),
     context_window: optCount(src.context_window),
     max_output_tokens: count(src.max_output_tokens, 0),
@@ -338,6 +350,12 @@ export function normaliseChatContext(raw: unknown): ChatContextInfo {
     remaining,
     starters,
   };
+  // Round 12 (SPEC §3.1, D1/D7): the limits mode drives the composer meter's context note
+  // (unlimited: summarised near the limit, no hard cap); absent on an older backend.
+  if (src.limits_mode === 'unlimited' || src.limits_mode === 'bounded') out.limits_mode = src.limits_mode;
+  const timezone = optText(src.timezone, 64);
+  if (timezone) out.timezone = timezone;
+  return out;
 }
 
 export interface ChatContextQuery {
@@ -412,17 +430,25 @@ export const SAVED_PROMPT_LIMITS = {
   text_chars: CHAT_LIMITS.chat_prompt_text_chars,
 } as const;
 
+/** Backend `CHAT_PROMPT_CATEGORIES` (Round 12 prompt library, SPEC §3.1). */
+export const SAVED_PROMPT_CATEGORIES: readonly ChatPromptCategory[] = ['triage', 'hunt', 'ioc', 'posture', 'reporting', 'app_help'];
+
 /**
  * One saved prompt shaped the way the backend repairs it (`_repair_chat_prompts`):
  * multiline text clamped to 2,000, a single-line title clamped to 60 (derived from
- * the text when blank), `null` when the id or text is unusable.
+ * the text when blank), `null` when the id or text is unusable. Round 12 keeps a known
+ * `category` and `favorite: true` (anything else is dropped, like the backend does).
  */
 function normaliseSavedPrompt(raw: unknown): ChatPrompt | null {
   if (!isObj(raw) || typeof raw.id !== 'string' || !SAVED_PROMPT_ID_RE.test(raw.id)) return null;
   const body = text(raw.text, SAVED_PROMPT_LIMITS.text_chars, true).trim();
   if (!body) return null;
   const title = text(raw.title, SAVED_PROMPT_LIMITS.title_chars) || text(body, SAVED_PROMPT_LIMITS.title_chars);
-  return { id: raw.id, title, text: body };
+  const prompt: ChatPrompt = { id: raw.id, title, text: body };
+  const category = enumOr<ChatPromptCategory, null>(raw.category, SAVED_PROMPT_CATEGORIES, null);
+  if (category) prompt.category = category;
+  if (raw.favorite === true) prompt.favorite = true;
+  return prompt;
 }
 
 /** The stored list, de-duplicated by id and bounded to 50 (render as text, #9). */
@@ -502,6 +528,7 @@ export async function deleteSavedPrompt(promptId: string): Promise<ChatPrompt[]>
 
 /** The rail's fallback title for a row whose stored title is unusable. */
 export const UNTITLED_CONVERSATION = 'Untitled conversation';
+const CONVERSATION_STATUSES = ['idle', 'running', 'needs_input', 'failed'] as const;
 
 /** A summary row (or a search hit), display-sanitised; `null` when it has no usable id. */
 export function normaliseConversationSummary(raw: unknown): ChatConversationSearchHit | null {
@@ -531,6 +558,10 @@ export function normaliseConversationSummary(raw: unknown): ChatConversationSear
     total_cost: amount(raw.total_cost),
     usage_turns: optCount(raw.usage_turns),
   };
+  // Round 12 (SPEC D13): the row's live state for the history rail and the nav glyph.
+  const status = enumOr(raw.status, CONVERSATION_STATUSES, null);
+  if (status) out.status = status;
+  if (raw.unread === true) out.unread = true;
   if (isObj(raw.match)) {
     const snippet = text(raw.match.snippet, 160);
     if (snippet) out.match = { message_id: safeId(raw.match.message_id), snippet };
@@ -618,7 +649,114 @@ export function normaliseConversation(raw: unknown): ChatConversation | null {
   }
   const { match: _match, ...rest } = summary;
   void _match;
-  return { ...rest, messages };
+  const out: ChatConversation = { ...rest, messages };
+  // Round 12: the read returns the newest window; older messages are paged in.
+  const earlier = optCount(raw.earlier_message_count);
+  if (earlier) out.earlier_message_count = earlier;
+  return out;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Older messages (Round 12: a long conversation is read a page at a time).    */
+/* -------------------------------------------------------------------------- */
+
+/** Messages the transcript's "Show earlier messages" loads at a time. */
+export const EARLIER_PAGE_SIZE = 50;
+/** The server's page maximum (`MAX_MESSAGE_PAGE`): whole-conversation reads use it. */
+export const MAX_MESSAGE_PAGE = 100;
+
+/** A page of older messages, oldest first, with how many are still older. */
+export function normaliseMessagePage(raw: unknown): ChatMessagePage {
+  const src = isObj(raw) ? raw : {};
+  const messages: ChatConversationMessage[] = [];
+  if (Array.isArray(src.messages)) {
+    for (const item of src.messages) {
+      const message = normaliseConversationMessage(item);
+      if (message && !messages.some((m) => m.id === message.id)) messages.push(message);
+    }
+  }
+  return {
+    conversation_id: safeId(src.conversation_id) ?? '',
+    messages,
+    earlier_message_count: count(src.earlier_message_count, 0),
+  };
+}
+
+/**
+ * `GET /api/chat/conversations/{id}/messages?before=&limit=`: up to `limit` messages
+ * immediately before message `before` (the newest ones without it), oldest first and
+ * restored to their full text. Owner-scoped: another user's conversation is a 404.
+ */
+export async function getConversationMessages(
+  conversationId: string,
+  query: { before?: string | null; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<ChatMessagePage> {
+  const limit = Math.min(MAX_MESSAGE_PAGE, Math.max(1, Math.trunc(query.limit ?? EARLIER_PAGE_SIZE)));
+  const before = isSafeChatId(query.before) ? query.before : undefined;
+  const raw = await request<unknown>('GET', `chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+    query: { before, limit },
+    signal,
+  });
+  return normaliseMessagePage(raw);
+}
+
+/**
+ * Prepend older pages to `conversation` until `done(messages)` says stop or the
+ * conversation's first message is reached. A page that brings nothing new (a store
+ * that changed under the read) ends the walk instead of looping.
+ */
+async function readBack(
+  conversation: ChatConversation,
+  done: (messages: readonly ChatConversationMessage[]) => boolean,
+  signal?: AbortSignal,
+): Promise<ChatConversation> {
+  let messages = conversation.messages;
+  let earlier = conversation.earlier_message_count ?? 0;
+  while (earlier > 0 && messages.length && !done(messages)) {
+    const page = await getConversationMessages(
+      conversation.id,
+      { before: messages[0].id, limit: MAX_MESSAGE_PAGE },
+      signal,
+    );
+    const known = new Set(messages.map((m) => m.id));
+    const older = page.messages.filter((m) => !known.has(m.id));
+    if (!older.length) break;
+    messages = [...older, ...messages];
+    const progressed = page.earlier_message_count < earlier;
+    earlier = page.earlier_message_count;
+    if (!progressed) break;
+  }
+  const out: ChatConversation = { ...conversation, messages };
+  if (earlier > 0) out.earlier_message_count = earlier;
+  else delete out.earlier_message_count;
+  return out;
+}
+
+/**
+ * The WHOLE conversation (every message, full text): the newest window, then every
+ * older page. Exports use this, so a long conversation is never cut to its newest
+ * messages.
+ */
+export async function getFullConversation(conversationId: string, signal?: AbortSignal): Promise<ChatConversation> {
+  return readBack(await getConversation(conversationId, signal), () => false, signal);
+}
+
+/**
+ * The conversation read back far enough to hold every message in `wanted` (or all of
+ * it): a report's methodology names answers that may be older than the newest window.
+ */
+export async function getConversationCovering(
+  conversationId: string,
+  wanted: ReadonlySet<string>,
+  signal?: AbortSignal,
+): Promise<ChatConversation> {
+  const first = await getConversation(conversationId, signal);
+  if (!wanted.size) return first;
+  return readBack(first, (messages) => {
+    const have = new Set(messages.map((m) => m.id));
+    return Array.from(wanted).every((id) => have.has(id));
+  }, signal);
 }
 
 export interface ListConversationsQuery {
@@ -686,6 +824,7 @@ export function normaliseReportListEntry(raw: unknown): ReportListEntry | null {
     title: text(raw.title, CHAT_LIMITS.report_title_chars) || 'Untitled report',
     template: enumOr<ReportTemplateName, ReportTemplateName>(raw.template, REPORT_TEMPLATES, 'custom'),
     conversation_id: safeId(raw.conversation_id),
+    source_conversation_id: safeId(raw.source_conversation_id),
     item_count: count(raw.item_count, 0),
     created_at: optStr(raw.created_at),
     updated_at: str(raw.updated_at),
@@ -714,7 +853,9 @@ function normaliseReportItem(raw: unknown): ReportItem | null {
       block_id: typeof blockId === 'string' && BLOCK_ID_RE.test(blockId) ? blockId : null,
     },
     scope: {
-      window: optText(scope.window, 80),
+      // Every distinct window the item's blocks state, joined with "; " (ReportItemScope);
+      // a report saved before the server merged them states each window once here too.
+      window: mergeScopeWindow(optText(scope.window, 280)),
       sources: strings(scope.sources, 20, () => true).map((s) => text(s, 120)).filter(Boolean),
       generated_by: optText(scope.generated_by, 120),
       app_version: optText(scope.app_version, 40),
@@ -813,6 +954,22 @@ export async function deleteReport(reportId: string, expectedVersion: number): P
   });
 }
 
+/**
+ * `POST /api/reports/from-answer` — "Save as report" for one Workspace answer whose
+ * header-requested report could not be saved (Round 12 D11). Idempotent PER ANSWER on
+ * the server (a second click or a click after a reload returns the same report), saved
+ * with the title and template the answer asked for (read server-side from the stored
+ * answer), and recorded on the answer so a reopened thread shows the saved line.
+ */
+export async function saveAnswerAsReport(conversationId: string, messageId: string): Promise<ChatSavedReport> {
+  const raw = await request<unknown>('POST', 'reports/from-answer', {
+    body: { conversation_id: conversationId, message_id: messageId },
+  });
+  const saved = normaliseSavedReport(raw);
+  if (!saved) throw new Error('The report could not be read.');
+  return saved;
+}
+
 /** What `POST /api/reports/add` returns, read leniently. */
 export interface ReportAddResult {
   report: Report;
@@ -881,4 +1038,208 @@ export async function generateReportSummary(
   const summary =
     report?.summary ?? normaliseReportSummary(isObj(raw) && isObj(raw.summary) ? raw.summary : raw);
   return { report, summary };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Round 12 answer-level features (SPEC §3.2, WP-FEAT-A).                      */
+/* -------------------------------------------------------------------------- */
+
+export const CHAT_FEEDBACK_REASONS = ['wrong', 'incomplete', 'slow', 'other'] as const satisfies readonly ChatFeedbackReason[];
+/** `ChatFeedbackRequest.comment` bound (backend `max_length`). */
+export const CHAT_FEEDBACK_COMMENT_CHARS = 1000;
+
+/** One of the caller's stored ratings (`GET /api/chat/feedback`). */
+export interface ChatFeedbackEntry {
+  conversation_id: string;
+  message_id: string;
+  rating: ChatFeedbackRating;
+  reason: ChatFeedbackReason | null;
+  /** The analyst's own words (shown back to them as text). */
+  comment: string;
+  updated_at: string;
+}
+
+function normaliseFeedbackEntry(raw: unknown): ChatFeedbackEntry | null {
+  if (!isObj(raw)) return null;
+  const conversationId = safeId(raw.conversation_id);
+  const messageId = safeId(raw.message_id);
+  const rating = enumOr(raw.rating, ['up', 'down'] as const, null);
+  if (!conversationId || !messageId || rating === null) return null;
+  return {
+    conversation_id: conversationId,
+    message_id: messageId,
+    rating,
+    reason: enumOr(raw.reason, CHAT_FEEDBACK_REASONS, null),
+    comment: text(raw.comment, CHAT_FEEDBACK_COMMENT_CHARS, true),
+    updated_at: str(raw.updated_at).slice(0, 40),
+  };
+}
+
+/**
+ * `POST /api/chat/feedback` (204): rate one of the caller's own Workspace answers.
+ * Rating the same answer again replaces the earlier rating. Stored and audited, never
+ * used to train a model.
+ */
+export async function postChatFeedback(body: ChatFeedbackRequest): Promise<void> {
+  const payload: ChatFeedbackRequest = {
+    conversation_id: body.conversation_id,
+    message_id: body.message_id,
+    rating: body.rating,
+  };
+  if (body.reason) payload.reason = body.reason;
+  const comment = typeof body.comment === 'string' ? Array.from(body.comment.trim()).slice(0, CHAT_FEEDBACK_COMMENT_CHARS).join('') : '';
+  if (comment) payload.comment = comment;
+  await request<unknown>('POST', 'chat/feedback', { body: payload });
+}
+
+/** `GET /api/chat/feedback?conversation_id=`: the caller's ratings of one conversation. */
+export async function listChatFeedback(conversationId: string, signal?: AbortSignal): Promise<ChatFeedbackEntry[]> {
+  const raw = await request<unknown>('GET', 'chat/feedback', { query: { conversation_id: conversationId }, signal });
+  const rows = isObj(raw) && Array.isArray(raw.feedback) ? raw.feedback : [];
+  const out: ChatFeedbackEntry[] = [];
+  for (const row of rows) {
+    const entry = normaliseFeedbackEntry(row);
+    if (entry && entry.conversation_id === conversationId) out.push(entry);
+    if (out.length >= 500) break;
+  }
+  return out;
+}
+
+/** An engine-built next lookup for a zero-match result (SPEC D10). `label` is an engine template. */
+export interface ChatZeroSuggestion {
+  label: string;
+  tool: string | null;
+}
+
+/** `GET …/steps/{index}`: what the model saw for one lookup (#7 aggregates; #9 untrusted). */
+export interface ChatStepObservation {
+  conversation_id: string;
+  message_id: string;
+  index: number;
+  tool: string | null;
+  status: string | null;
+  label: string;
+  /** The engine's one-line result summary. */
+  summary: string | null;
+  /**
+   * The stored observation exactly as the model saw it (aggregate JSON). Every value
+   * may be log- or model-derived: render it ONLY as text (a code block), never as markup.
+   */
+  observation: Record<string, unknown>;
+  /** Model- or log-derived input values (untrusted, shown as text). */
+  params: Record<string, string>;
+  /** The stored copy was shortened structurally to fit its storage bound. */
+  truncated: boolean;
+  stored_at: string | null;
+  /** Engine-built widen-the-search suggestions of a zero-match result. */
+  suggestions: ChatZeroSuggestion[];
+}
+
+/** Engine-built zero-match suggestions of an observation (at most 4). */
+export function observationSuggestions(observation: unknown): ChatZeroSuggestion[] {
+  if (!isObj(observation) || !Array.isArray(observation.suggestions)) return [];
+  const out: ChatZeroSuggestion[] = [];
+  for (const raw of observation.suggestions) {
+    if (!isObj(raw)) continue;
+    const label = text(raw.label, 60);
+    if (!label || out.some((s) => s.label === label)) continue;
+    out.push({ label, tool: typeof raw.tool === 'string' && TOOL_NAME_RE.test(raw.tool) ? raw.tool : null });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+/** The step inspector's read (`GET /api/chat/conversations/{id}/messages/{mid}/steps/{index}`). */
+export async function getStepObservation(
+  conversationId: string,
+  messageId: string,
+  index: number,
+  signal?: AbortSignal,
+): Promise<ChatStepObservation> {
+  const raw = await request<unknown>(
+    'GET',
+    `chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/steps/${Math.trunc(index)}`,
+    { signal },
+  );
+  if (!isObj(raw)) throw new ApiError(502, 'This lookup could not be read.', raw);
+  const observation = isObj(raw.observation) ? raw.observation : {};
+  const params: Record<string, string> = {};
+  if (isObj(raw.params)) {
+    for (const [key, value] of Object.entries(raw.params)) {
+      if (Object.keys(params).length >= CHAT_LIMITS.step_params) break;
+      if (/^[A-Za-z0-9_.:-]{1,40}$/.test(key) && typeof value === 'string') params[key] = text(value, 200);
+    }
+  }
+  return {
+    conversation_id: conversationId,
+    message_id: messageId,
+    index: count(raw.index, index),
+    tool: typeof raw.tool === 'string' && TOOL_NAME_RE.test(raw.tool) ? raw.tool : null,
+    status: optText(raw.status, 20),
+    label: text(raw.label, CHAT_LIMITS.step_label_chars),
+    summary: optText(raw.summary, CHAT_LIMITS.step_summary_chars),
+    observation,
+    params,
+    truncated: raw.truncated === true,
+    stored_at: optStr(raw.stored_at, 40),
+    suggestions: observationSuggestions(observation),
+  };
+}
+
+/** One row of the "Add to case" picker (plain display data, #9). */
+export interface CasePickerEntry {
+  case_id: string;
+  /** The human-facing id (template number, else the raw id). */
+  display_id: string;
+  /** The queue's title chain (title → summary → number → id). */
+  title: string;
+  status: string | null;
+  severity: string | null;
+}
+
+const CASE_ID_RE = /^[A-Za-z0-9_.:@ /-]{1,128}$/;
+
+function normaliseCasePickerEntry(raw: unknown): CasePickerEntry | null {
+  if (!isObj(raw) || typeof raw.case_id !== 'string' || !CASE_ID_RE.test(raw.case_id)) return null;
+  const number = text(raw.case_number, 80);
+  const title = text(raw.title, 160) || text(raw.summary, 160) || number || raw.case_id;
+  return {
+    case_id: raw.case_id,
+    display_id: number || raw.case_id,
+    title,
+    status: optText(raw.status, 40),
+    severity: optText(raw.severity, 20),
+  };
+}
+
+/** `GET /api/cases?q=` (newest first, at most `limit`): the "Add to case" picker. */
+export async function searchCasesForPicker(query: string, signal?: AbortSignal, limit = 8): Promise<CasePickerEntry[]> {
+  const q = Array.from(query.trim()).slice(0, 120).join('');
+  const raw = await request<unknown>('GET', 'cases', {
+    query: { q: q || undefined, limit, sort_field: 'created_at', sort_order: 'desc' },
+    signal,
+  });
+  const rows = isObj(raw) && Array.isArray(raw.cases) ? raw.cases : [];
+  const out: CasePickerEntry[] = [];
+  for (const row of rows) {
+    const entry = normaliseCasePickerEntry(row);
+    if (entry && !out.some((e) => e.case_id === entry.case_id)) out.push(entry);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** The case thread's body bound (`routes_cases_collab._BODY_MAX`). */
+export const CASE_COMMENT_MAX_CHARS = 8000;
+
+/**
+ * `POST /api/cases/{id}/thread` as the analyst's OWN comment (`author_type: human`,
+ * `cases:comment`). Posting never reads or changes the case's status, verdict or
+ * disposition (#3). Returns the new message id when the server names one.
+ */
+export async function postCaseComment(caseId: string, body: string): Promise<{ id: string | null }> {
+  const raw = await request<unknown>('POST', `cases/${encodeURIComponent(caseId)}/thread`, {
+    body: { body, author_type: 'human', kind: 'comment' },
+  });
+  return { id: isObj(raw) ? safeId(raw.id) : null };
 }

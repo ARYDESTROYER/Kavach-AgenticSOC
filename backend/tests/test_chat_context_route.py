@@ -202,7 +202,7 @@ async def test_cases_read_only_principal_gets_no_money_fields(app_state: AppStat
     assert info.spent_today is None and info.remaining is None
     assert info.budget_state == "ok"                              # tokens + state only
     allowed = {t.name for t in info.tools if t.allowed}
-    assert allowed <= {"mitre_lookup", "app_help", "search_cases", "get_case", "shift_report",
+    assert allowed <= {"mitre_lookup", "app_help", "search_cases", "case_stats", "get_case", "shift_report",
                        "list_campaigns", "explain_decision", "app_status"}
     assert "search_logs" not in allowed and "cost_usage" not in allowed
 
@@ -380,7 +380,7 @@ async def test_build_chat_tool_context_real_and_demo(app_state: AppState) -> Non
     request = _request(app_state)
     real = await app_state.build_chat_tool_context(request, body)
     assert real.user == "default" and real.case_id == "case-9" and real.demo_active is False
-    assert real.scopes == frozenset({"logs", "cases"}) and real.time_range.label() == "last 7d"
+    assert real.scopes == frozenset({"logs", "cases"}) and real.time_range.label() == "last 7 days"
     assert real.grants == frozenset(chat_grant_pairs())                 # auth off: all granted
     assert real.cases is app_state.cases and real.budget_gate is app_state.budget_gate
     assert callable(real.enrich) and real.cluster_for_case is not None

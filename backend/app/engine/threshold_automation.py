@@ -4,7 +4,7 @@ After the deterministic ``case_manager.decide()`` + save, an operator-configured
 of :class:`app.config.AutomationRule` is evaluated against the case. A matching rule
 fires ONE action:
 
-* ``tag``            — append a tag to the case (SAFE, applied directly + audited).
+* ``tag``            — add the rule's tags to the case (SAFE, applied directly + audited).
 * ``recommend``      — attach a NON-BINDING recommendation comment (SAFE).
 * ``notify``         — schedule a fire-and-forget notification (SAFE; existing path).
 * ``run_playbook``   — QUEUE a re-investigation with a playbook forced as context
@@ -36,6 +36,7 @@ from ..config import AutomationRule, Preferences
 from ..constants import ActionType, CaseStatus, Verdict
 from ..models import Case, Proposal
 from ..utils import iso_now, now_utc
+from .case_tags import CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT, automation_tags, tag_too_long
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..audit.audit_log import AuditLogger
@@ -254,11 +255,25 @@ class ThresholdAutomation:
         mutated = False
 
         if action.action == "tag":
-            tag = str(payload.get("tag") or payload.get("value") or "").strip()[:40]
-            if tag and tag not in case.tags:
-                case.tags = [*case.tags, tag][:25]
-                mutated = True
-            detail = f"tag={tag or '(empty)'}"
+            # The Rule editor saves ``tags`` (a list); an API-written rule may carry one
+            # ``tag``/``value``. Each tag is added whole or not at all: one over the
+            # length bound, or one that would take the case past the count bound, is
+            # left off and the record says so (``engine/case_tags.py``), never cut.
+            wanted = automation_tags(payload)
+            not_added: list[str] = []
+            for tag in wanted:
+                if tag in case.tags:
+                    continue
+                if tag_too_long(tag):
+                    not_added.append(f'"{tag}" is longer than {CASE_TAG_MAX_CHARS} characters')
+                elif len(case.tags) >= CASE_TAG_MAX_COUNT:
+                    not_added.append(f'"{tag}", the case already has {CASE_TAG_MAX_COUNT} tags')
+                else:
+                    case.tags = [*case.tags, tag]
+                    mutated = True
+            detail = f"tag={', '.join(wanted) or '(empty)'}"
+            if not_added:
+                detail += f". Not added: {'; '.join(not_added)}."
 
         elif action.action == "recommend":
             text = str(payload.get("text") or payload.get("recommendation") or "").strip()[:1000]

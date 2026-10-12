@@ -6,9 +6,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BAR_MAX,
   areaPath,
+  barPlotFrame,
   barWidth,
   donutArcs,
+  endLabelBudget,
+  endLabelColumn,
   extent,
   intensityStep,
   lastMeasured,
@@ -149,6 +153,33 @@ describe('paths', () => {
   });
 });
 
+describe('barPlotFrame (few buckets on a wide card)', () => {
+  it('centres a narrower plot when two buckets would leave hairline bars far apart', () => {
+    // Tour 3: two months across the 1,808 px lane drew two 22 px bars ~850 px apart.
+    const frame = barPlotFrame(30, 1760, 2, BAR_MAX);
+    expect(frame.plotW).toBe(2 * 132);
+    expect(frame.x0).toBe(30 + (1760 - 264) / 2);
+    // The bars still use the house width, now a sixth of their slot or more.
+    expect(barWidth(frame.plotW / 2)).toBe(BAR_MAX);
+    expect(BAR_MAX / (frame.plotW / 2)).toBeGreaterThanOrEqual(1 / 6);
+  });
+
+  it('gives a grouped bucket room for every member', () => {
+    const groupW = 2 * BAR_MAX + 2;
+    const frame = barPlotFrame(30, 1000, 2, groupW);
+    expect(frame.plotW).toBe(2 * Math.ceil(groupW * 6));
+    expect(frame.x0).toBe(Math.round(30 + (1000 - frame.plotW) / 2));
+  });
+
+  it('leaves a chart whose buckets already fill the card exactly as it was', () => {
+    expect(barPlotFrame(30, 1000, 24, BAR_MAX)).toEqual({ x0: 30, plotW: 1000 });
+    expect(barPlotFrame(30, 520, 5, BAR_MAX)).toEqual({ x0: 30, plotW: 520 });
+    // At the cap exactly, nothing moves either.
+    expect(barPlotFrame(30, 264, 2, BAR_MAX)).toEqual({ x0: 30, plotW: 264 });
+    expect(barPlotFrame(30, 400, 0, BAR_MAX).plotW).toBe(132);
+  });
+});
+
 describe('reconcilingShares', () => {
   it('sums to exactly 100 (largest remainder)', () => {
     const s = reconcilingShares([1, 1, 1], 3)!;
@@ -208,5 +239,26 @@ describe('intensityStep', () => {
     expect(intensityStep(1, 100)).toBeCloseTo(0.18);
     expect(intensityStep(100, 100)).toBe(1);
     expect(intensityStep(5, 0)).toBe(0);
+  });
+});
+
+describe('endLabelBudget / endLabelColumn (line end labels)', () => {
+  it('lets end labels use a quarter of the chart, never fewer than 14 characters', () => {
+    expect(endLabelBudget(338)).toBe(14);
+    expect(endLabelBudget(560)).toBe(19);
+    expect(endLabelBudget(680)).toBe(23);
+    expect(endLabelBudget(1242)).toBe(44);
+    expect(endLabelBudget(Number.NaN)).toBe(14);
+  });
+
+  it('reserves what the longest label needs within that budget', () => {
+    // A wide chart reserves the whole longest label, not a fixed 14 characters.
+    expect(endLabelColumn(1242, ['Opened', 'Closed by an analyst'])).toEqual({ budget: 44, chars: 20, padRight: 146 });
+    // Short labels reserve only their own width.
+    expect(endLabelColumn(1242, ['p50', 'p90'])).toEqual({ budget: 44, chars: 3, padRight: 34 });
+    // A narrow chart caps the column at the budget (the label is clipped there).
+    expect(endLabelColumn(338, ['Closed by an analyst'])).toEqual({ budget: 14, chars: 14, padRight: 107 });
+    // Characters, not UTF-16 units.
+    expect(endLabelColumn(560, ['\u{1F512} Locked']).chars).toBe(8);
   });
 });

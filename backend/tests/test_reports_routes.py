@@ -81,7 +81,7 @@ def chart_block(block_id: str = "b1") -> dict[str, Any]:
     return {
         "id": block_id, "type": "chart", "kind": "hbar", "unit": "count", "provenance": "source",
         "artifact_kind": "categories", "allowed_views": ["hbar", "bar", "table"], "from_step": 1,
-        "title": "Top source IPs", "caption": "exact · last 24h",
+        "title": "Top source IPs", "caption": "1,284 events · exact · last 24 hours",
         "x": {"kind": "category", "values": ["10.0.0.1", "10.0.0.2", "10.0.0.3"]},
         "series": [{"key": "count", "label": "Events", "values": [40, 25, 5]}],
     }
@@ -202,7 +202,7 @@ async def test_add_block_creates_the_draft_and_returns_report_and_item_id():
         # Scope is captured server-side at add time.
         # The tool's effective window comes from the engine-written caption.
         assert item["scope"] == {
-            "window": "last 24h", "sources": ["wazuh-prod"], "generated_by": "claude-test",
+            "window": "last 24 hours", "sources": ["wazuh-prod"], "generated_by": "claude-test",
             "app_version": __version__, "demo": False,
         }
 
@@ -212,10 +212,11 @@ async def test_add_block_creates_the_draft_and_returns_report_and_item_id():
         assert again["report"]["version"] == 2
 
         # A report leaf is addable by its id too, into the same draft. With no caption
-        # window, the producing step's window chip is the scope.
+        # window, the window the producing step asked for is the scope, in the words a
+        # caption would use (never the raw "now-24h" input).
         leaf = (await add(h.client, cid, mid, block_id="b4")).json()
         assert leaf["report"]["id"] == report["id"] and leaf["report"]["items"][1]["block"]["type"] == "callout"
-        assert leaf["report"]["items"][1]["scope"]["window"] == "now-24h → now"
+        assert leaf["report"]["items"][1]["scope"]["window"] == "last 24 hours"
 
         listed = (await h.client.get("/api/reports")).json()
         assert [r["id"] for r in listed["reports"]] == [report["id"]]
@@ -254,7 +255,7 @@ async def test_whole_answer_is_added_as_a_section():
             "text": "Three IPs account for most failures.",
         }
         assert [b["id"] for b in section["blocks"][1:]] == ["b1", "b2", "b3"]
-        assert item["scope"]["window"] == "last 24h"
+        assert item["scope"]["window"] == "last 24 hours"
 
 
 async def test_section_of_a_truncated_answer_says_truncated():
@@ -265,6 +266,74 @@ async def test_section_of_a_truncated_answer_says_truncated():
         assert section["truncated"] is True
         cid2, mid2 = await seed_answer(h.state, blocks=[table_block()])
         assert (await add(h.client, cid2, mid2)).json()["report"]["items"][0]["block"]["truncated"] is False
+
+
+def _section_text(items: list[dict[str, Any]]) -> str:
+    return "\n\n".join(
+        b["text"] for item in items for b in item["block"]["blocks"] if b.get("type") == "markdown"
+    )
+
+
+async def test_a_long_whole_answer_keeps_all_of_its_text():
+    """Round 12: answers are not truncated, so "Add to report" for a whole answer
+    keeps every paragraph. An answer longer than one section continues in
+    "(continued)" sections; removing the first section removes them all."""
+    answer = "\n\n".join(f"Paragraph {i}: " + "finding detail " * 60 for i in range(60))
+    assert len(answer) > 50_000
+    blocks = [chart_block(f"c{i}") for i in range(10)]
+    async with harness() as h:
+        cid, mid = await seed_answer(h.state, answer=answer, blocks=blocks)
+        resp = await add(h.client, cid, mid)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        items = body["report"]["items"]
+        assert len(items) >= 2 and all(i["kind"] == "section" for i in items)
+        assert body["item_id"] == items[0]["id"] and items[0]["source"]["block_id"] is None
+        assert [i["source"]["block_id"] for i in items[1:]] == [f"#{n}" for n in range(2, len(items) + 1)]
+        assert items[0]["block"]["title"] == "Who is brute forcing us?"
+        assert all(i["block"]["title"] == "Who is brute forcing us? (continued)" for i in items[1:])
+        assert all(i["block"]["truncated"] is False for i in items)
+        # Every paragraph, in order, and every block once.
+        assert _section_text(items).split() == answer.split()
+        assert "Paragraph 59" in _section_text(items)
+        ids = [b["id"] for i in items for b in i["block"]["blocks"] if b["type"] != "markdown"]
+        assert ids == [f"c{i}" for i in range(10)]
+        rows = await audit_rows(h.state)
+        assert any(f"parts={len(items)}" in r["result_summary"] for r in rows)
+
+        # Idempotent: adding the same answer again adds nothing.
+        again = (await add(h.client, cid, mid)).json()
+        assert again["added"] is False and len(again["report"]["items"]) == len(items)
+
+        # Removing the whole answer (its first section) removes the continuations too.
+        report = again["report"]
+        removed = await h.client.patch(f"/api/reports/{report['id']}", json={
+            "expected_version": report["version"], "remove_items": [items[0]["id"]],
+        })
+        assert removed.status_code == 200, removed.text
+        assert removed.json()["items"] == []
+
+
+async def test_a_long_whole_answer_that_does_not_fit_says_truncated():
+    """When the report has room for only part of a long answer, the part that fits is
+    added and its last section is marked truncated (the cut is visible)."""
+    answer = "\n\n".join(f"Paragraph {i}: " + "finding detail " * 60 for i in range(60))
+    blocks = [chart_block(f"c{i}") for i in range(10)]
+    async with harness() as h:
+        cid, mid = await seed_answer(h.state, answer=answer, blocks=blocks)
+        first = (await add(h.client, cid, mid, block_id="c0")).json()["report"]
+        store = routes_reports._store(h.state)
+        for i in range(MAX_REPORT_ITEMS - 2):
+            await store.add_item("", ReportItem.model_validate({
+                "id": new_item_id(), "kind": "block", "block": chart_block(),
+                "source": {"conversation_id": cid, "message_id": f"m{i}", "block_id": "b1"},
+            }), report_id=first["id"])
+        resp = await add(h.client, cid, mid)
+        assert resp.status_code == 200, resp.text
+        items = resp.json()["report"]["items"]
+        assert len(items) == MAX_REPORT_ITEMS
+        assert items[-1]["kind"] == "section" and items[-1]["source"]["block_id"] is None
+        assert items[-1]["block"]["truncated"] is True
 
 
 def test_an_unreadable_presentation_with_blocks_is_refused_not_degraded():
@@ -377,7 +446,9 @@ async def test_chat_history_outage_is_503_on_add_and_create(monkeypatch):
         async def down(*_a: Any, **_k: Any):
             raise ChatHistoryUnavailable("kv down")
 
-        monkeypatch.setattr(h.state.chat_conversations, "get", down)
+        # Every chat-history read path (the exchange read, the existence check).
+        for name in ("get", "get_exchange", "exists"):
+            monkeypatch.setattr(h.state.chat_conversations, name, down)
         for resp in (await add(h.client, cid, mid, block_id="b1"),
                      await h.client.post("/api/reports", json={"conversation_id": cid})):
             assert resp.status_code == 503
@@ -385,7 +456,7 @@ async def test_chat_history_outage_is_503_on_add_and_create(monkeypatch):
         assert (await h.client.get("/api/reports")).json()["reports"] == []
 
 
-async def test_report_full_at_forty_items_is_409():
+async def test_report_full_at_sixty_items_is_409():
     async with harness() as h:
         cid, mid = await seed_answer(h.state)
         first = (await add(h.client, cid, mid, block_id="b1")).json()["report"]
@@ -398,7 +469,7 @@ async def test_report_full_at_forty_items_is_409():
         resp = await add(h.client, cid, mid, block_id="b2")
         assert resp.status_code == 409
         assert resp.json()["detail"] == {
-            "code": "report_full", "message": "Report is full (40 items).", "reason": "items",
+            "code": "report_full", "message": f"Report is full ({MAX_REPORT_ITEMS} items).", "reason": "items",
         }
 
 

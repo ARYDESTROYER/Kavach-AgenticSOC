@@ -1,7 +1,8 @@
 /**
- * Options ⋯ (SPEC §10.4): Model, "Type out answers", Saved prompts and Keyboard
- * shortcuts in one Radix menu; the compact Case Manager composer shows Model and
- * Type out answers only.
+ * Options ⋯ (SPEC §10.4): Model, "Type out answers", Prompts and Keyboard shortcuts in
+ * one Radix menu; the compact Case Manager composer shows Model and Type out answers
+ * only. Prompts (Round 12 prompt library) lists the analyst's favorites (else their
+ * first saved prompts), Save current prompt and the Prompt library.
  *
  * "Type out answers" is the D2 live-mode preference (`engine.streamMode`): a
  * `menuitemcheckbox` drawn as a switch, with the exact helper copy, and disabled with
@@ -10,7 +11,7 @@
  */
 import * as React from 'react';
 import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
-import { Bookmark, BookmarkPlus, Cpu, Ellipsis, Keyboard, ListChecks, X } from 'lucide-react';
+import { Bookmark, BookmarkPlus, Cpu, Ellipsis, Keyboard, Library, ListOrdered, Star, X } from 'lucide-react';
 import type { ChatContextInfo, ChatPrompt, ChatStreamMode } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
@@ -35,6 +36,10 @@ import { displayText } from '../stream-events';
 import { chipRemove, chipStatic } from './chip';
 import type { CatalogState, ModelOption } from './useComposerCatalog';
 import type { SavedPromptsController } from './SavedPrompts';
+import { isPromptbook, orderPrompts } from './prompt-library';
+
+/** How many of the analyst's prompts the Prompts submenu lists. */
+const MENU_PROMPTS = 8;
 
 /** The exact helper copy (SPEC §10.4). */
 export const TYPE_OUT_HELPER =
@@ -68,8 +73,14 @@ export interface ComposerOptionsProps {
   draft?: string;
   onUsePrompt?: (prompt: ChatPrompt) => void;
   onSaveCurrent?: () => void;
-  onManagePrompts?: () => void;
+  /** Open the prompt library. */
+  onOpenLibrary?: () => void;
   onOpenShortcuts?: () => void;
+  /**
+   * The menu closed: by default focus returns to ⋯. The composer prevents that when a
+   * chosen prompt opened its values card (focus belongs in the card) or filled the field.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
 export function ComposerOptions(props: ComposerOptionsProps) {
@@ -89,8 +100,9 @@ export function ComposerOptions(props: ComposerOptionsProps) {
     draft = '',
     onUsePrompt,
     onSaveCurrent,
-    onManagePrompts,
+    onOpenLibrary,
     onOpenShortcuts,
+    onCloseAutoFocus,
   } = props;
   const typeOutReason = typeOutUnavailableReason(context);
   const typeOutOn = streamMode === 'text' && !typeOutReason;
@@ -126,7 +138,7 @@ export function ComposerOptions(props: ComposerOptionsProps) {
         </TooltipTrigger>
         <TooltipContent>Options</TooltipContent>
       </Tooltip>
-      <DropdownMenuContent side="top" align="end" className="w-72">
+      <DropdownMenuContent side="top" align="end" className="w-72" onCloseAutoFocus={onCloseAutoFocus}>
         {canChooseModel ? (
           <DropdownMenuSub>
             <DropdownMenuSubTrigger>
@@ -217,7 +229,7 @@ export function ComposerOptions(props: ComposerOptionsProps) {
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
                 <Bookmark className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                <span className="flex-1">Saved prompts</span>
+                <span className="flex-1">Prompts</span>
               </DropdownMenuSubTrigger>
               <DropdownMenuSubContent className="max-h-80 w-72 overflow-y-auto">
                 {prompts?.state === 'loading' ? <DropdownMenuItem disabled>Loading…</DropdownMenuItem> : null}
@@ -227,19 +239,39 @@ export function ComposerOptions(props: ComposerOptionsProps) {
                 {prompts?.state === 'ready' && prompts.prompts.length === 0 ? (
                   <DropdownMenuItem disabled>No saved prompts yet</DropdownMenuItem>
                 ) : null}
-                {prompts?.prompts.map((prompt) => (
-                  <DropdownMenuItem key={prompt.id} onSelect={() => onUsePrompt?.(prompt)}>
-                    <span className="min-w-0 flex-1 truncate">{prompt.title}</span>
-                  </DropdownMenuItem>
-                ))}
+                {(() => {
+                  const list = orderPrompts(prompts?.prompts ?? []);
+                  const favorites = list.filter((p) => p.favorite);
+                  const shown = (favorites.length ? favorites : list).slice(0, MENU_PROMPTS);
+                  if (!shown.length) return null;
+                  return (
+                    <>
+                      <DropdownMenuLabel className="text-2xs font-medium text-muted-foreground">
+                        {favorites.length ? 'Favorites' : 'Your prompts'}
+                      </DropdownMenuLabel>
+                      {shown.map((prompt) => (
+                        <DropdownMenuItem key={prompt.id} onSelect={() => onUsePrompt?.(prompt)}>
+                          {isPromptbook(prompt) ? (
+                            <ListOrdered aria-hidden="true" />
+                          ) : prompt.favorite ? (
+                            <Star aria-hidden="true" />
+                          ) : (
+                            <Bookmark aria-hidden="true" />
+                          )}
+                          <span className="min-w-0 flex-1 truncate">{prompt.title}</span>
+                        </DropdownMenuItem>
+                      ))}
+                    </>
+                  );
+                })()}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem disabled={!draft.trim()} onSelect={() => onSaveCurrent?.()}>
                   <BookmarkPlus aria-hidden="true" />
                   Save current prompt
                 </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => onManagePrompts?.()}>
-                  <ListChecks aria-hidden="true" />
-                  Manage saved prompts…
+                <DropdownMenuItem onSelect={() => onOpenLibrary?.()}>
+                  <Library aria-hidden="true" />
+                  Prompt library…
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>

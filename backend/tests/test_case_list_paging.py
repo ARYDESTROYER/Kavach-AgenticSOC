@@ -250,9 +250,10 @@ def test_sort_reaches_both_the_windowed_and_the_unwindowed_store_call(recorder, 
 @pytest.mark.parametrize(
     "rejected",
     [
-        # A mapped ``text`` field: real Elasticsearch refuses to sort on one without
-        # fielddata, so this would be a 400 from the cluster surfacing as a 500 here.
-        "title",
+        # ``title`` is no longer here (Round 12, WP-CM): it is a mapped ``text`` field no
+        # store can order by, so the Case Manager's Title A–Z order is answered by the
+        # route's exact queue scan and STILL never reaches a store as a sort key —
+        # ``test_round12_case_manager.py::test_title_sort_never_reaches_a_store_sort``.
         # A field the SQL repository does not recognise, which it answers in created_at
         # order without saying so.
         "confidence",

@@ -29,6 +29,7 @@ import type {
 import { LIMITS, isExpiredBlock, leafBlocks, legacyTableBlock, parseBlocks } from '../blocks/schema';
 import type { AnswerBlock, DroppedBlock, KpiItem, LeafBlock } from '../blocks/schema';
 import { displayText } from '../stream-events';
+import { mergeWindows } from './windows';
 
 /* -------------------------------------------------------------------------- */
 /* Vocabulary.                                                                 */
@@ -41,10 +42,29 @@ export const TEMPLATE_LABEL: Readonly<Record<ReportTemplateName, string>> = {
   shift: 'Shift handoff',
   posture: 'Posture review',
   custom: 'Custom',
+  executive: 'Executive summary',
+  monthly: 'Monthly SOC report',
+  infographic: 'Infographic',
+  investigation_brief: 'Investigation brief',
 };
 
-/** The order the template picker offers. */
-export const TEMPLATE_ORDER: readonly ReportTemplateName[] = ['investigation', 'hunt', 'ioc', 'shift', 'posture', 'custom'];
+/**
+ * The order the template picker offers: every template (Round 12 D11 added executive,
+ * monthly, infographic and investigation brief), so a report made from any of them
+ * shows its template in the picker instead of an empty value.
+ */
+export const TEMPLATE_ORDER: readonly ReportTemplateName[] = [
+  'investigation',
+  'investigation_brief',
+  'hunt',
+  'ioc',
+  'shift',
+  'posture',
+  'executive',
+  'monthly',
+  'infographic',
+  'custom',
+];
 
 /** A block type's human name when the block has no title of its own. */
 export const BLOCK_TYPE_LABEL: Readonly<Record<AnswerBlock['type'], string>> = {
@@ -233,6 +253,12 @@ export interface ReportDoc {
   /** Source conversations: id plus the title when known. */
   conversations: Array<{ id: string; title: string | null }>;
   windows: string[];
+  /**
+   * An item's stored scope listed only the windows that fit its bound and "and N
+   * more" (`routes_reports._join_windows`): `windows` names the ones listed, and the
+   * methodology says that some items answered over more.
+   */
+  windowsElided?: boolean;
   sources: string[];
   models: string[];
   demo: boolean;
@@ -313,6 +339,16 @@ export function itemBlocks(item: ReportItem): {
   };
 }
 
+/** The trailing "and 2 more" the backend adds to a scope over its bound (`_join_windows`). */
+const MORE_WINDOWS_RE = /^and \d+ more$/;
+
+/** An item scope's windows ("last 90 days; all time; and 2 more"), the count left out. */
+function scopeWindows(window: string | null | undefined): { windows: string[]; elided: boolean } {
+  const parts = (window ?? '').split('; ');
+  const windows = parts.filter((part) => !MORE_WINDOWS_RE.test(part.trim()));
+  return { windows, elided: windows.length !== parts.length };
+}
+
 /** Build the document of a report. Pure and deterministic for the same inputs. */
 export function buildReportDoc(report: Report, options: BuildOptions = {}): ReportDoc {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
@@ -358,7 +394,13 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
     updatedAt: isoOr(report.updated_at, generatedAt),
     appVersion: options.appVersion ?? (uniq(report.items.map((i) => i.scope.app_version))[0] || null),
     conversations: conversationIds.map((id) => ({ id, title: options.conversationTitles?.get(id) ?? null })),
-    windows: uniq(items.map((i) => i.scope.window)),
+    // An item's scope lists each window its blocks state ("last 90 days; all time"): the
+    // header names each window once, however many items share it. A scope over its bound
+    // ends "; and 2 more", which is a count, never a window (see `windowsElided`).
+    // Each window once across items too ("all time (since 28 Sep 2026)", never also
+    // "all time" and "all time (since 12 Oct 2026)"; `report/windows.ts`).
+    windows: mergeWindows(uniq(items.flatMap((i) => scopeWindows(i.scope.window).windows))),
+    windowsElided: items.some((i) => scopeWindows(i.scope.window).elided),
     sources: uniq([...items.flatMap((i) => i.scope.sources ?? []), ...items.flatMap((i) => (i.turn?.steps ?? []).flatMap((s) => s.sources ?? []))]),
     models: uniq([...items.map((i) => i.scope.generated_by), ...items.map((i) => i.turn?.model)]),
     demo: items.some((i) => i.scope.demo === true),
@@ -386,7 +428,10 @@ const PROMPT_EXPORT_CHARS = 8_000;
  * (the legacy `table` when no block carries it). Turns that failed or were stopped keep
  * their notice as a callout; a prompt with no saved answer (a failed or stopped send)
  * still appears, with a "No answer was saved" callout, so the export never drops what
- * the analyst asked.
+ * the analyst asked. A reply to a chat command (`/compact`, `response.command`) is a
+ * note about the chat, not an answer: it and the command that asked for it are left
+ * out, exactly as "Save conversation as report" leaves them out on the server, so the
+ * export never shows the note as an AI answer or counts it in the Methodology.
  */
 export function buildConversationDoc(conversation: ChatConversation, options: BuildOptions = {}): ReportDoc {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
@@ -420,6 +465,8 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
     const question = pending;
     pending = null;
     const response = message.response ?? null;
+    // A command reply is not an answer; its prompt (the command) goes with it.
+    if (response?.command) return;
     const raw: unknown[] = [];
     const answer = response?.answer ?? message.content;
     if (typeof answer === 'string' && answer.trim()) raw.push({ id: 'answer', type: 'markdown', provenance: 'ai', text: answer });
@@ -478,11 +525,30 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
   return doc;
 }
 
-/** "last 24h" for `now-24h → now`, else "<from> → <to>". */
+/** Every spelling of the "All time" chip's `from` the server accepts (`TimeRange`). */
+const ALL_TIME_FROM = new Set(['all', 'all_time', 'all time', 'lifetime']);
+
+/**
+ * A conversation's scope window in words: "last 24h" for `now-24h → now`; "all time"
+ * for the All time chip (`from: "all"`); calendar months and years the way the server's
+ * `TimeRange.label()` says them ("last 6 months", "last 12 months", "past year"), never
+ * a raw `now-6M`; else "<from> → <to>".
+ */
 export function timeRangeLabel(from: string, to?: string | null): string {
-  const rel = /^now-(\d{1,5})([mhdw])$/.exec(from);
-  if (rel && (!to || to === 'now')) return `last ${rel[1]}${rel[2]}`;
-  return `${from} → ${to || 'now'}`;
+  const end = to || 'now';
+  if (ALL_TIME_FROM.has(from.trim().toLowerCase())) return end === 'now' ? 'all time' : `all time → ${end}`;
+  if (end === 'now') {
+    const rel = /^now-(\d{1,5})([mhdw])$/.exec(from);
+    if (rel) return `last ${rel[1]}${rel[2]}`;
+    // `M` is months (a lower-case `m` above is minutes); `y` (or `Y`) is years.
+    const cal = /^now-(\d{1,4})([MyY])$/.exec(from);
+    if (cal) {
+      const amount = Number(cal[1]);
+      const unit = cal[2] === 'M' ? 'month' : 'year';
+      return amount === 1 ? `past ${unit}` : `last ${amount.toLocaleString('en-US')} ${unit}s`;
+    }
+  }
+  return `${from} → ${end}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -699,6 +765,7 @@ export function buildMethodology(
 
   // Windows and sources.
   if (doc.windows.length) lines.push(`Time windows: ${doc.windows.join('; ')}.`);
+  if (doc.windowsElided) lines.push('Some sections cover more time windows than are listed here; each block states its own window.');
   if (doc.sources.length) lines.push(`Sources queried: ${doc.sources.slice(0, 12).join(', ')}${doc.sources.length > 12 ? ', …' : ''}.`);
 
   // Tokens and cost.

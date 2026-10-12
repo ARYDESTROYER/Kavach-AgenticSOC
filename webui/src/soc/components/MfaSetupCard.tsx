@@ -44,6 +44,7 @@ import {
 } from 'lucide-react';
 import { api, ApiError } from '@/lib/api';
 import { copyText } from '@/lib/clipboard';
+import { downloadBlob } from '@/lib/download-blob';
 import type { LoginResult, MfaSetupResult } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Checkbox } from '@/ui/checkbox';
@@ -273,12 +274,7 @@ export function MfaSetupCard({
       [`Agentic SOC — two-factor recovery codes\n\n${enroll.recovery_codes.join('\n')}\n`],
       { type: 'text/plain' },
     );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'agentic-soc-recovery-codes.txt';
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBlob('agentic-soc-recovery-codes.txt', blob);
   };
 
   const body = (
