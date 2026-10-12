@@ -25,6 +25,8 @@
 
 import { cn } from '@/lib/cn';
 
+import { columnPartLabel } from '../format';
+
 export interface FallbackRow {
   key: string;
   header: string;
@@ -210,7 +212,7 @@ export function DataTableFallback({
       return (
         <div className={cn('mt-2 space-y-2', className)} data-testid={testId} data-chunks={layout.chunks.length}>
           <p className="pb-1 text-left text-xs text-muted-foreground">{caption}</p>
-          {layout.chunks.map((chunk) => (
+          {layout.chunks.map((chunk, k) => (
             <StaticTable
               key={chunk[0]}
               rowHeader={rowHeader}
@@ -218,7 +220,7 @@ export function DataTableFallback({
               shown={chunk}
               rows={rows}
               widths={layout.widths}
-              caption={`Columns ${chunk[0] + 1}–${chunk[chunk.length - 1] + 1} of ${columns.length}`}
+              caption={columnPartLabel(chunk[0] + 1, chunk[chunk.length - 1] + 1, columns.length, k > 0)}
               className="mt-0"
             />
           ))}

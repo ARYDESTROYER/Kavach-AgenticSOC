@@ -478,6 +478,17 @@ export function captionStatesCount(caption: string | null | undefined, shown: nu
   return new RegExp(`(^|\\D)${figure(shown)} of ${figure(total)}(\\D|$)`, 'i').test(caption.replace(/,/g, ''));
 }
 
+/**
+ * The note over one part of a table split by columns to fit the page (the Word export
+ * and print): "Columns 1–5 of 6", a single column "Column 6 of 6", and "(continued)" on
+ * every part after the first. The numbers count the columns after the row label, which
+ * every part repeats.
+ */
+export function columnPartLabel(first: number, last: number, total: number, continued = false): string {
+  const range = first === last ? `Column ${num(first, 0)}` : `Columns ${num(first, 0)}–${num(last, 0)}`;
+  return `${range} of ${num(total, 0)}${continued ? ' (continued)' : ''}`;
+}
+
 /** "top 10 of 1,240" style disclosure for a truncated block (G4). */
 export function truncationNote(shown: number, total: number | null): string {
   if (total !== null && total > shown) return `Showing top ${num(shown, 0)} of ${num(total, 0)}`;

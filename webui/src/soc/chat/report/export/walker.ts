@@ -17,6 +17,11 @@
  *     is not content and is never rewritten.
  *   - The only external URL a document may carry is an ATT&CK technique page CONSTRUCTED
  *     from a validated technique id (BLOCKS.md `mitre`), never a URL from data.
+ *   - Enum values are written in the words the screen shows (`blocks/labels.ts`, the
+ *     badges' own labels): "True positive", "Needs human", "Critical", "Escalated",
+ *     "IP address", "Alert", "Runbook", and "Yes"/"No" for a yes/no cell. Every format
+ *     built on these nodes (Markdown, HTML, Word, Excel) therefore matches the screen;
+ *     only the JSON export keeps the raw values.
  */
 import { maybeDefang } from '@/lib/defang';
 
@@ -33,6 +38,16 @@ import {
   unitLabel,
 } from '../../blocks/format';
 import { blockTabular } from '../../blocks/export-helpers';
+import {
+  CITATION_KIND_LABEL,
+  ENTITY_KIND_LABEL,
+  REPUTATION_LABEL,
+  TIMELINE_KIND_LABEL,
+  booleanText,
+  semanticColumn,
+  semanticText,
+} from '../../blocks/labels';
+import { verdictLabel } from '@/soc/components/semantic-labels';
 import { VIEW_LABEL, honestBlock } from '../../blocks/views';
 import type { AnswerBlock, Cell, ColumnType, KpiItem, LeafBlock, TableBlock, ToneKey, ValueUnit } from '../../blocks/schema';
 import { AI_AUTHORED_TYPES, isDocRef, isExpiredBlock } from '../../blocks/schema';
@@ -342,12 +357,13 @@ class Walker {
       case 'case_list':
         this.table(
           ['Case', 'Title', 'Severity', 'Verdict', 'Status', 'Risk', 'Created (UTC)'],
+          // The badge words the case list shows ("Critical", "True positive", "Escalated").
           block.items.map((it) => [
             it.case_id,
             it.title,
-            it.severity ?? null,
-            it.verdict ?? null,
-            it.status ?? null,
+            it.severity ? semanticText('severity', it.severity) : null,
+            it.verdict ? semanticText('verdict', it.verdict) : null,
+            it.status ? semanticText('status', it.status) : null,
             it.risk ?? null,
             it.created_at ? formatUtc(it.created_at) : null,
           ]),
@@ -363,7 +379,7 @@ class Walker {
           false,
           block.events.map((e) => {
             const line: Line = [{ text: `${formatUtc(e.at)}: ` }, { text: e.label, code: block.untrusted }];
-            if (e.kind) line.push({ text: ` (${e.kind})` });
+            if (e.kind) line.push({ text: ` (${TIMELINE_KIND_LABEL[e.kind]})` });
             if (e.detail) line.push({ text: ': ' }, { text: e.detail, code: block.untrusted });
             return line;
           }),
@@ -377,10 +393,10 @@ class Walker {
           rows.push([label, value]);
           trust.push([false, code]);
         };
-        add('Kind', block.entity.kind);
+        add('Kind', ENTITY_KIND_LABEL[block.entity.kind]);
         add('Value', block.entity.value, true);
         if (block.risk !== undefined) add('Risk', block.risk === null ? null : formatValue(block.risk, 'score'));
-        if (block.verdict) add('Verdict', block.verdict);
+        if (block.verdict) add('Verdict', verdictLabel(block.verdict));
         if (block.first_seen) add('First seen', formatUtc(block.first_seen));
         if (block.last_seen) add('Last seen', formatUtc(block.last_seen));
         for (const f of block.facts) add(f.label, f.value, f.untrusted || block.untrusted);
@@ -390,7 +406,7 @@ class Walker {
           this.label = `${blockTitle(block)}: reputation`;
           this.table(
             ['Provider', 'Verdict', 'Score', 'Detail'],
-            block.reputation.map((r) => [r.provider, r.verdict, r.score ?? null, r.detail ?? null]),
+            block.reputation.map((r) => [r.provider, REPUTATION_LABEL[r.verdict], r.score ?? null, r.detail ?? null]),
             [false, false, true, false],
             [false, false, false, true],
             (cell) => (cell === null ? '—' : String(cell)),
@@ -438,8 +454,10 @@ class Walker {
           true,
           block.items.map((it) => {
             const line: Line = [{ text: it.label, code: it.kind === 'log' || it.kind === 'knowledge' }];
-            const doc = it.ref && isDocRef(it.ref) ? `, Help Center ${it.ref.doc}` : '';
-            line.push({ text: ` (${it.kind}${doc})` });
+            // The kind in the words the citation list shows ("Runbook", "ATT&CK", "Help Center").
+            const kind = CITATION_KIND_LABEL[it.kind];
+            const doc = it.ref && isDocRef(it.ref) ? it.ref.doc : null;
+            line.push({ text: ` (${doc ? (it.kind === 'docs' ? `${kind} ${doc}` : `${kind}, Help Center ${doc}`) : kind})` });
             if (it.snippet) line.push({ text: ': ' }, { text: it.snippet, code: it.kind === 'log' || it.kind === 'knowledge' });
             return line;
           }),
@@ -493,9 +511,11 @@ class Walker {
           if (column?.type === 'risk') return formatValue(cell, 'score');
           return formatValue(cell, column?.unit ?? 'count');
         }
-        if (typeof cell === 'boolean') return cell ? 'true' : 'false';
+        if (typeof cell === 'boolean') return booleanText(cell);
         if (column?.type === 'time') return formatUtc(cell);
-        return cell;
+        // A severity, verdict or status value reads as its badge does on screen.
+        const semantic = semanticColumn(column?.type);
+        return semantic ? semanticText(semantic, cell) : cell;
       },
       undefined,
       { units: block.columns.map((c) => (c.type === 'risk' ? 'score' : NUMERIC_TYPES.includes(c.type) ? c.unit ?? 'count' : null)) },

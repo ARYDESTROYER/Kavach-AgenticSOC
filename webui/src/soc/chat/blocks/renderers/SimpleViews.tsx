@@ -28,6 +28,7 @@ import { Markdown } from '@/soc/components/Markdown';
 
 import { RefLink, citationAnchorId, useBlocks } from '../context';
 import { formatValue, plainDocTitle } from '../format';
+import { CITATION_KIND_LABEL } from '../labels';
 import { calloutTitle } from '../report-headings';
 import type { CalloutBlock, CitationsBlock, GuideBlock, MarkdownBlock, QueryBlock, ToneKey } from '../schema';
 import { EXPIRED_TEXT, FALLBACK_TEXT, isDocRef } from '../schema';
@@ -92,16 +93,6 @@ export function CalloutView({ block }: { block: CalloutBlock }) {
   );
 }
 
-const CITE_KIND: Record<CitationsBlock['items'][number]['kind'], string> = {
-  runbook: 'Runbook',
-  mitre: 'ATT&CK',
-  case: 'Case',
-  docs: 'Help Center',
-  memory: 'Memory',
-  knowledge: 'Knowledge',
-  log: 'Log',
-};
-
 export function CitationsView({ block, anchored = true }: { block: CitationsBlock; anchored?: boolean }) {
   const { domId } = useBlocks();
   // A repeated `n` anchors only its first item, so no DOM id is ever minted twice.
@@ -116,7 +107,7 @@ export function CitationsView({ block, anchored = true }: { block: CitationsBloc
           <li key={`${it.n}-${i}`} id={anchor ? citationAnchorId(domId, it.n) : undefined} className="flex min-w-0 gap-2 scroll-mt-16">
             <span className="w-6 shrink-0 text-right tabular-nums text-muted-foreground">[{it.n}]</span>
             <div className="min-w-0 flex-1">
-              <span className="mr-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{CITE_KIND[it.kind]}</span>
+              <span className="mr-1.5 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{CITATION_KIND_LABEL[it.kind]}</span>
               {it.ref && !fenced ? (
                 <RefLink refValue={it.ref}>{it.label}</RefLink>
               ) : (

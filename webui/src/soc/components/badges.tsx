@@ -26,6 +26,7 @@ import {
   type ScoreBand,
 } from './palette';
 import { ProvenanceTag } from './ProvenanceTag';
+import { SEVERITY_LABEL, statusLabel, verdictLabel, type SeverityBand } from './semantic-labels';
 import {
   canonicalVerdict,
   confidencePercent,
@@ -74,8 +75,8 @@ function tokenVariant(name: string): Variant {
 // --------------------------------------------------------------------------- //
 // Severity — accepts a number (0..100 or a 1..4/1..5 bucket) or a string label
 // ("critical"/"high"/"medium"/"low"/"info"). Normalises to one severity band.
+// The band words live in `semantic-labels.ts`, shared with the report exports.
 // --------------------------------------------------------------------------- //
-type SeverityBand = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 /** Normalise a numeric severity into a band via the ONE 0-100 ladder (palette.ts
  *  scoreBand: 0-21 low / 22-47 medium / 48-73 high / 74-100 critical). A value at
@@ -140,14 +141,6 @@ const SEVERITY_VARIANT: Record<SeverityBand, Variant> = {
   medium: tokenVariant(SEVERITY_COLOR.medium),
   low: tokenVariant(SEVERITY_COLOR.low),
   info: tokenVariant(SEVERITY_COLOR.info),
-};
-
-const SEVERITY_LABEL: Record<SeverityBand, string> = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-  info: 'Info',
 };
 
 export interface SeverityBadgeProps {
@@ -218,14 +211,8 @@ function statusVariant(status: string): Variant {
   }
 }
 
-/** Human-facing label for a status. The legacy NEEDS_HUMAN alias renders as a
- *  clearer "Open · awaiting analyst" per the F8 taxonomy. */
-function statusLabel(status: string): string {
-  const t = status.trim().toLowerCase();
-  if (t === 'needs_human') return 'Open · awaiting analyst';
-  if (t === 'on_hold') return 'On hold';
-  return humanizeToken(status);
-}
+// The status words (`statusLabel`: the legacy NEEDS_HUMAN alias reads "Open · awaiting
+// analyst" per the F8 taxonomy) live in `semantic-labels.ts`, shared with the exports.
 
 /** Normalise a status string to a SEMANTIC_ICON key (§6.1 non-color signaling). */
 function statusIconKey(status: string): string {
@@ -333,7 +320,7 @@ export function VerdictBadge({ verdict, className, icon = true }: VerdictBadgePr
   return (
     <Badge variant={verdictVariant(verdict)} className={className}>
       <SemanticGlyph iconKey={verdictIconKey(verdict)} show={icon} />
-      {humanizeToken(verdict)}
+      {verdictLabel(verdict)}
     </Badge>
   );
 }

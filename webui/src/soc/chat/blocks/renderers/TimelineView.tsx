@@ -13,6 +13,7 @@ import { SEMANTIC_ICON, token } from '@/soc/components/palette';
 
 import { RefLink } from '../context';
 import { instantOf, utcDateKey, utcDay, utcHm } from '../format';
+import { TIMELINE_KIND_LABEL } from '../labels';
 import type { TimelineBlock, TimelineKind } from '../schema';
 
 const KIND_ICON: Record<TimelineKind, LucideIcon> = {
@@ -21,14 +22,6 @@ const KIND_ICON: Record<TimelineKind, LucideIcon> = {
   case: Briefcase,
   action: Play,
   note: StickyNote,
-};
-
-const KIND_LABEL: Record<TimelineKind, string> = {
-  alert: 'Alert',
-  detection: 'Detection',
-  case: 'Case',
-  action: 'Action',
-  note: 'Note',
 };
 
 const STRIP_BUCKETS = 24;
@@ -89,7 +82,7 @@ export function TimelineView({ block }: { block: TimelineBlock }) {
               </span>
               <div className="min-w-0">
                 <p className={cn('break-words text-sm text-foreground', block.untrusted && 'font-mono text-xs')}>
-                  {ev.kind ? <span className="sr-only">{KIND_LABEL[ev.kind]}: </span> : null}
+                  {ev.kind ? <span className="sr-only">{TIMELINE_KIND_LABEL[ev.kind]}: </span> : null}
                   {ev.label}
                   {ev.ref ? (
                     <>

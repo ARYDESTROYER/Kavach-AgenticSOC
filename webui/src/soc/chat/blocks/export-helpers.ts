@@ -14,10 +14,18 @@
  *   - `null` is an empty field (G3: not measured is not 0).
  *   - IOCs are defanged by default for the clipboard (`hxxp`, `[.]`, `[@]`); never in the
  *     live UI and never in JSON.
+ *   - Enum values read as the screen reads them (`labels.ts`, the badges' own words):
+ *     "True positive", "Needs human", "Critical", "Escalated", "IP address", "Alert",
+ *     never `true_positive`. The projection keeps the stored KEYS of severity, verdict
+ *     and status columns (the "Show table" view draws those as badges) and marks the
+ *     column `semantic`, so CSV and Copy data write the badge's words. The KPI table's
+ *     Unit column stays the unit key: it is the machine-readable partner of the raw
+ *     numeric Value. Only JSON keeps every raw value.
  */
 import { csvField, tsvField } from '@/lib/csv';
 import { defang } from '@/lib/defang';
 import { IN_PROGRESS_SUFFIX, formatUtc, formatValue, hasCalendarLabels, xAxisHeader, xPositionLabel } from './format';
+import { CITATION_KIND_LABEL, ENTITY_KIND_LABEL, REPUTATION_LABEL, TIMELINE_KIND_LABEL, semanticColumn, semanticText, type SemanticColumn } from './labels';
 import type { AnswerBlock, Cell, ChartBlock, ColumnType, KpiGroupBlock, TableBlock, ValueUnit } from './schema';
 import { leafBlocks } from './schema';
 
@@ -32,6 +40,11 @@ export interface TabularColumn {
   label: string;
   /** Numeric columns are written raw (never defused, never defanged). */
   numeric: boolean;
+  /**
+   * A severity, verdict or status column: its cells are the stored keys, written to a
+   * file in the words the screen's badge shows ({@link semanticText}).
+   */
+  semantic?: SemanticColumn;
 }
 
 export interface Tabular {
@@ -41,6 +54,7 @@ export interface Tabular {
 
 const TEXT = (label: string): TabularColumn => ({ label, numeric: false });
 const NUM = (label: string): TabularColumn => ({ label, numeric: true });
+const SEMANTIC = (label: string, semantic: SemanticColumn): TabularColumn => ({ label, numeric: false, semantic });
 
 function seriesTable(block: ChartBlock): Tabular {
   // A calendar axis (Round 12) reads as its period labels in the operator zone ("Mar
@@ -60,7 +74,10 @@ const NUMERIC_COLUMN_TYPES: readonly ColumnType[] = ['number', 'risk'];
 
 function tableTable(block: TableBlock): Tabular {
   return {
-    columns: block.columns.map((c) => ({ label: c.label, numeric: NUMERIC_COLUMN_TYPES.includes(c.type) })),
+    columns: block.columns.map((c) => {
+      const semantic = semanticColumn(c.type);
+      return { label: c.label, numeric: NUMERIC_COLUMN_TYPES.includes(c.type), ...(semantic ? { semantic } : {}) };
+    }),
     rows: block.rows.map((row) => row.map((cell) => cell)),
   };
 }
@@ -114,7 +131,15 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
       return kpiTabular(block);
     case 'case_list':
       return {
-        columns: [TEXT('Case'), TEXT('Title'), TEXT('Severity'), TEXT('Verdict'), TEXT('Status'), NUM('Risk'), TEXT('Created (UTC)')],
+        columns: [
+          TEXT('Case'),
+          TEXT('Title'),
+          SEMANTIC('Severity', 'severity'),
+          SEMANTIC('Verdict', 'verdict'),
+          SEMANTIC('Status', 'status'),
+          NUM('Risk'),
+          TEXT('Created (UTC)'),
+        ],
         rows: block.items.map((it) => [
           it.case_id,
           it.title,
@@ -128,7 +153,7 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
     case 'timeline':
       return {
         columns: [TEXT('Time (UTC)'), TEXT('Event'), TEXT('Kind'), TEXT('Detail')],
-        rows: block.events.map((e) => [formatUtc(e.at), e.label, e.kind ?? null, e.detail ?? null]),
+        rows: block.events.map((e) => [formatUtc(e.at), e.label, e.kind ? TIMELINE_KIND_LABEL[e.kind] : null, e.detail ?? null]),
       };
     case 'mitre':
       return {
@@ -139,19 +164,19 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
       return {
         columns: [TEXT('Field'), TEXT('Value')],
         rows: [
-          ['Kind', block.entity.kind],
+          ['Kind', ENTITY_KIND_LABEL[block.entity.kind]],
           ['Value', block.entity.value],
           ...block.facts.map((f): Cell[] => [f.label, f.value]),
           ...block.reputation.map((r): Cell[] => [
             `Reputation: ${r.provider}`,
-            r.score === undefined || r.score === null ? r.verdict : `${r.verdict} (${r.score})`,
+            r.score === undefined || r.score === null ? REPUTATION_LABEL[r.verdict] : `${REPUTATION_LABEL[r.verdict]} (${r.score})`,
           ]),
         ],
       };
     case 'citations':
       return {
         columns: [NUM('#'), TEXT('Kind'), TEXT('Source')],
-        rows: block.items.map((it) => [it.n, it.kind, it.label]),
+        rows: block.items.map((it) => [it.n, CITATION_KIND_LABEL[it.kind], it.label]),
       };
     default:
       return null;
@@ -163,6 +188,11 @@ export interface EncodeOptions {
   defang?: boolean;
 }
 
+/** A cell in the words the screen shows: a severity/verdict/status key as its badge's label. */
+function displayCell(cell: Cell, col: TabularColumn): Cell {
+  return col.semantic && typeof cell === 'string' ? semanticText(col.semantic, cell) : cell;
+}
+
 function encode(tab: Tabular, field: (c: Cell) => string, sep: string, options: EncodeOptions): string {
   const fang = (cell: Cell, numeric: boolean): Cell =>
     options.defang && !numeric && typeof cell === 'string' ? defang(cell) : cell;
@@ -170,7 +200,7 @@ function encode(tab: Tabular, field: (c: Cell) => string, sep: string, options: 
   const body = tab.rows.map((row) =>
     tab.columns
       .map((col, i) => {
-        const cell = row[i] ?? null;
+        const cell = displayCell(row[i] ?? null, col);
         // A non-numeric cell in a numeric column (a legacy string) is still text and is
         // defused like any other string; a number anywhere is written raw.
         return field(fang(cell, col.numeric && typeof cell === 'number'));

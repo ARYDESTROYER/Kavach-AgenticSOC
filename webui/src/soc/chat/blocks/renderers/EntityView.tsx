@@ -24,19 +24,9 @@ import { isPageId } from '@/soc/nav';
 
 import { CaseHoverArm, CaseLink, RefLink } from '../context';
 import { formatUtc } from '../format';
+import { ENTITY_KIND_LABEL, REPUTATION_LABEL } from '../labels';
 import type { EntityBlock, ReputationVerdict } from '../schema';
 import { KpiGroupView } from './KpiGroupView';
-
-const KIND_LABEL: Record<EntityBlock['entity']['kind'], string> = {
-  ip: 'IP address',
-  domain: 'Domain',
-  url: 'URL',
-  hash: 'File hash',
-  host: 'Host',
-  user: 'User',
-  email: 'E-mail',
-  process: 'Process',
-};
 
 /**
  * Reputation verdicts on the shared glyph vocabulary: malicious → the critical glyph,
@@ -44,10 +34,10 @@ const KIND_LABEL: Record<EntityBlock['entity']['kind'], string> = {
  * "clean" is a lookup result, not a safety guarantee), unknown → muted.
  */
 const REPUTATION: Record<ReputationVerdict, { label: string; icon: string; cls: string }> = {
-  malicious: { label: 'Malicious', icon: 'critical', cls: 'border-critical/40 bg-critical/10 text-critical-text' },
-  suspicious: { label: 'Suspicious', icon: 'high', cls: 'border-high/40 bg-high/10 text-high-text' },
-  clean: { label: 'Clean', icon: 'info', cls: 'border-info/40 bg-info/10 text-info-text' },
-  unknown: { label: 'Unknown', icon: 'undetermined', cls: 'border-border bg-muted/50 text-muted-foreground' },
+  malicious: { label: REPUTATION_LABEL.malicious, icon: 'critical', cls: 'border-critical/40 bg-critical/10 text-critical-text' },
+  suspicious: { label: REPUTATION_LABEL.suspicious, icon: 'high', cls: 'border-high/40 bg-high/10 text-high-text' },
+  clean: { label: REPUTATION_LABEL.clean, icon: 'info', cls: 'border-info/40 bg-info/10 text-info-text' },
+  unknown: { label: REPUTATION_LABEL.unknown, icon: 'undetermined', cls: 'border-border bg-muted/50 text-muted-foreground' },
 };
 
 function CopyValue({ value }: { value: string }) {
@@ -104,7 +94,7 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
           <div>
             <div className="flex items-center gap-2">
               <Badge variant="outline" className="shrink-0 text-2xs">
-                {KIND_LABEL[block.entity.kind]}
+                {ENTITY_KIND_LABEL[block.entity.kind]}
               </Badge>
               {block.verdict ? <VerdictBadge verdict={block.verdict} /> : null}
             </div>

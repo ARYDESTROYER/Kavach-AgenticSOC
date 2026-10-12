@@ -22,6 +22,7 @@
  * a relationship target.
  */
 import type { MdAlign, MdBlock, MdInline } from '../../ChatMarkdown';
+import { columnPartLabel } from '../../blocks/format';
 import type { ToneKey } from '../../blocks/schema';
 import { maybeDefang } from '@/lib/defang';
 import type { ReportDoc } from '../model';
@@ -185,7 +186,7 @@ class DocxWriter {
     chunks.forEach((cols, k) => {
       if (chunks.length > 1) {
         // Which columns this part holds; the paragraph also keeps Word from merging the parts.
-        const label = `Columns ${cols[1]}–${cols[cols.length - 1]} of ${head.length - 1}${k > 0 ? ' (continued)' : ''}`;
+        const label = columnPartLabel(cols[1], cols[cols.length - 1], head.length - 1, k > 0);
         this.body.push(para(run(label), { style: 'Meta', keepNext: true }));
       }
       const widths = columnWidths(cols.map((i) => plain[i]));
