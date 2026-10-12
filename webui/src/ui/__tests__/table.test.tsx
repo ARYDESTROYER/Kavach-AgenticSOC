@@ -1,6 +1,6 @@
 /**
  * TableHeader — a sticky header is floating chrome and wears the ONE material
- * (`materialBar`: ≥0.80 fill + blur, solid under reduced transparency / increased
+ * (`materialBar`: 0.97 fill + blur, solid under reduced transparency / increased
  * contrast), while the non-sticky default keeps its translucent wash
  * (round-6 ui-theme #55). The original bug was an unconditional `bg-surface/50` whose
  * translucent rule won the cascade over the sticky fill; that rule must still never
@@ -29,7 +29,7 @@ describe('TableHeader — sticky background opacity', () => {
     const thead = container.querySelector('thead')!;
     const tokens = classTokens(thead);
     expect(tokens).toContain('material-surface');
-    expect(tokens).toContain('bg-background/85');
+    expect(tokens).toContain('bg-background/[0.97]');
     expect(tokens).toContain('sticky');
     expect(tokens).not.toContain('bg-surface/50');
   });

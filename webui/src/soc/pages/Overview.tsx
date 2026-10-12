@@ -4057,7 +4057,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                           sub="First human action, e.g. assignment or acknowledgement · same clock as MTTA"
                           block={respondBlock}
                           dotClass="bg-success"
-                          help="Mean time to respond — the first active human response (investigating / escalated / assignment / ack)."
+                          help="Mean time to respond: the first active human response (investigating / escalated / assignment / ack)."
                         />
                       </MetricHoverTrend>
                     </div>

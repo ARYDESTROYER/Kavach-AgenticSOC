@@ -709,7 +709,8 @@ fallback, never throw; G10 interactions limited to BLOCKS.md amendment 3.
 | report envelope | `report` | — (structural; leaves materialised individually) |
 
 `stacked_bar` and `donut` are offered only where the values add up (A15). Series order is
-deterministic (descending total, ties by label) so colours are stable;
+deterministic (descending total, ties by label; a severity, verdict, status or priority
+breakdown keeps its canonical order, Round 12 SPEC §7.2 decision 27) so colours are stable;
 `--chart-1..7` with `--chart-8` for "Other". Model-requested `top_n`/`title` are clamped and
 display-sanitised. An artifact with no rows, points or items materialises no block, and a KPI row
 that only restates an entity card of the same call is left out (A34).

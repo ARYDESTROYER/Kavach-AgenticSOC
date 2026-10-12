@@ -167,6 +167,74 @@ export function visibleJson(value: unknown): string {
   return visibleText(text);
 }
 
+/** A run of at least this many `null` points is shown as one "null × N" entry. */
+const NULL_RUN = 3;
+/** An object of plain values this short sits on one line in the compact view. */
+const INLINE_OBJECT_CHARS = 100;
+/** The compact view is offered only for a result this long that it shortens by a quarter. */
+const COMPACT_MIN_LINES = 16;
+const lineCount = (text: string): number => text.split('\n').length;
+
+const isScalar = (v: unknown): boolean =>
+  v === null || typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string';
+
+function scalarJson(v: unknown): string {
+  return JSON.stringify(v) ?? 'null';
+}
+
+/** A list of plain values on one line, each run of not-measured points counted once. */
+function inlineArray(items: unknown[]): string {
+  const parts: string[] = [];
+  for (let i = 0; i < items.length; ) {
+    if (items[i] === null) {
+      let end = i;
+      while (end < items.length && items[end] === null) end += 1;
+      if (end - i >= NULL_RUN) {
+        parts.push(`null × ${end - i} (not measured)`);
+        i = end;
+        continue;
+      }
+    }
+    parts.push(scalarJson(items[i]));
+    i += 1;
+  }
+  return `[${parts.join(', ')}]`;
+}
+
+function compactValue(value: unknown, indent: string): string {
+  const inner = `${indent}  `;
+  if (Array.isArray(value)) {
+    if (!value.length) return '[]';
+    if (value.every(isScalar)) return inlineArray(value);
+    return `[\n${value.map((v) => inner + compactValue(v, inner)).join(',\n')}\n${indent}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined);
+    if (!entries.length) return '{}';
+    if (entries.every(([, v]) => isScalar(v))) {
+      const line = `{ ${entries.map(([k, v]) => `${scalarJson(k)}: ${scalarJson(v)}`).join(', ')} }`;
+      if (line.length <= INLINE_OBJECT_CHARS) return line;
+    }
+    return `{\n${entries.map(([k, v]) => `${inner}${scalarJson(k)}: ${compactValue(v, inner)}`).join(',\n')}\n${indent}}`;
+  }
+  return scalarJson(value);
+}
+
+/**
+ * The stored observation as a compact READING view: a list of plain values sits on one
+ * line, a run of not-measured points reads "null × 30 (not measured)" instead of thirty
+ * lines of `null`, and a short object of plain values sits on one line. Every value is
+ * still there, with the same escapes as {@link visibleJson}; the exact JSON stays one
+ * click away and is what Copy takes.
+ */
+export function compactJson(value: unknown): string {
+  try {
+    return visibleText(compactValue(value, ''));
+  } catch {
+    return '';
+  }
+}
+
 /** Why the stored result cannot be shown, from the route's error code. */
 export function observationErrorMessage(code: string | null): string {
   switch (code) {
@@ -241,6 +309,58 @@ export function observationTokensLine(observation: Record<string, unknown>, trun
 
 /** The line under a stored copy that was cut to fit storage (the model read all of it). */
 export const OBSERVATION_TRUNCATED_NOTE = 'Shortened to fit storage. The model saw the full result; this copy is cut.';
+
+/**
+ * "What the model saw": the compact view first (long runs of not-measured points
+ * counted, short lists on one line), with a toggle to the exact stored JSON. Copy always
+ * takes the exact JSON, so nothing read in the compact view is ever pasted as data.
+ */
+function ObservationView({ observation }: { observation: Record<string, unknown> }) {
+  const exactText = React.useMemo(() => visibleJson(observation), [observation]);
+  const compactText = React.useMemo(() => compactJson(observation), [observation]);
+  // A short result reads fine as it is: no second view to choose between.
+  const canCompact =
+    compactText !== '' &&
+    lineCount(exactText) >= COMPACT_MIN_LINES &&
+    lineCount(compactText) <= lineCount(exactText) * 0.75;
+  const [exact, setExact] = React.useState(false);
+  const blockId = React.useId();
+  const showExact = exact || !canCompact;
+  return (
+    <div className="space-y-1.5">
+      {canCompact ? (
+        // Above the result, so the reader knows which view this is before reading it.
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+          <p className="text-xs text-muted-foreground" data-testid="step-inspector-view-note">
+            {exact
+              ? 'The exact JSON the lookup stored.'
+              : 'Compact view: runs of null (not measured) are counted. Copy takes the exact result.'}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-7 px-2"
+            aria-controls={blockId}
+            onClick={() => setExact((value) => !value)}
+          >
+            {exact ? 'Show compact view' : 'Show exact result'}
+          </Button>
+        </div>
+      ) : null}
+      <CodeBlock
+        id={blockId}
+        value={showExact ? exactText : compactText}
+        copyValue={exactText}
+        caption="Stored result · untrusted text"
+        wrap
+        maxHeightClassName="max-h-[50dvh]"
+        data-testid="step-inspector-observation"
+        data-view={showExact ? 'exact' : 'compact'}
+      />
+    </div>
+  );
+}
 
 export function StepInspector({
   step,
@@ -439,13 +559,7 @@ export function StepInspector({
                   </div>
                 ) : (
                   <>
-                    <CodeBlock
-                      value={visibleJson(load.data.observation)}
-                      caption="Stored result · untrusted text"
-                      wrap
-                      maxHeightClassName="max-h-[50dvh]"
-                      data-testid="step-inspector-observation"
-                    />
+                    <ObservationView observation={load.data.observation} />
                     {load.data.truncated ? (
                       <p className="text-xs text-muted-foreground" data-testid="step-inspector-truncated">
                         {OBSERVATION_TRUNCATED_NOTE}

@@ -2454,8 +2454,10 @@ sources: four source-native alerts (Splunk, QRadar, Wazuh, and Entra) plus four
 syslog events that produce at least one Agentic SOC correlation detection. The
 response attributes records, native alerts, and system detections per source.
 
-**While demo is engaged** the app shell shows an amber **Demo banner** with *Reset*
-and *Exit & clear*; demo rows carry a `SAMPLE` badge; cost tiles read "(simulated)";
+**While demo is engaged** the top bar shows one amber **Demo mode** chip whose popover
+offers *Reset* and *Exit & clear* and notes that platform health checks are muted (the
+health indicator leaves the bar while demo runs; a backend outage still shows); demo
+rows carry a `SAMPLE` badge; cost tiles read "(simulated)";
 the Sources UI disables real connector controls; and outbound notification tests are
 refused. Other organization/admin settings remain live and should be left unchanged
 during a presentation. FALSE_POSITIVE still runs through the **real** `decide()`

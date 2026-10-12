@@ -1972,7 +1972,7 @@ export function KpiDrilldownPanel({
                   : ''}
                 {`It cannot carry ${dropped
                   .map((k) => CONTEXT_LABEL[k])
-                  .join(', ')} — reapply ${dropped.length === 1 ? 'it' : 'them'} there.`}
+                  .join(', ')}. Reapply ${dropped.length === 1 ? 'it' : 'them'} there.`}
               </p>
             ) : null}
             <div className="flex shrink-0 items-center gap-2">

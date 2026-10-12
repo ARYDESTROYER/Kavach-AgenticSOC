@@ -559,7 +559,7 @@ export const InvestigationPanel: React.FC<InvestigationPanelProps> = ({
         <ZoneHeader
           icon={ShieldCheck}
           title="Decision"
-          subtitle="The deterministic close / escalate authority — never raw model output."
+          subtitle="The deterministic close / escalate authority, never raw model output."
         />
         <DecisionCard c={c} rationale={rationale} timeline={timeline} />
       </section>

@@ -48,6 +48,7 @@ import { api } from '@/lib/api';
 import type { BackgroundJobKind, Case, CaseActionInput, SavedView } from '@/lib/types';
 import { Can, useCan } from '@/soc/components/Can';
 import { humanizeAge, humanizeToken, DASH } from '@/lib/format';
+import { caseTagError } from '@/lib/tags';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
@@ -1714,7 +1715,7 @@ export default function Cases({
             <Input
               value={filters.search}
               onChange={(e) => setFilter('search', e.target.value)}
-              placeholder="Search cases — ID, title, entity, rule, tags…"
+              placeholder="Search cases by ID, title, entity, rule or tag…"
               aria-label="Search cases"
               className="h-8 rounded-[4px] pl-9 text-xs"
             />
@@ -2122,6 +2123,7 @@ const BulkActionBar: React.FC<{
   const [assignee, setAssignee] = React.useState('');
   const [tagOpen, setTagOpen] = React.useState(false);
   const [tag, setTag] = React.useState('');
+  const tagError = caseTagError(tag);
 
   React.useEffect(() => {
     if (count === 0) {
@@ -2249,11 +2251,19 @@ const BulkActionBar: React.FC<{
                 onChange={(e) => setTag(e.target.value)}
                 placeholder="e.g. needs-review"
                 aria-label="Tag to add to selected cases"
+                aria-invalid={tagError ? true : undefined}
+                aria-describedby={tagError ? 'bulk-tag-error' : undefined}
               />
+              {/* Refused as it is typed, never cut to fit. */}
+              {tagError ? (
+                <p id="bulk-tag-error" role="alert" className="text-xs font-medium text-critical-text">
+                  {tagError}
+                </p>
+              ) : null}
               <Button
                 size="sm"
                 className="w-full"
-                disabled={!tag.trim() || busy}
+                disabled={!tag.trim() || Boolean(tagError) || busy}
                 onClick={() => {
                   onAddTag(tag.trim());
                   setTagOpen(false);

@@ -29,7 +29,9 @@
  * - A tile with a validated `ref` is a keyboard button that navigates; there is no hover
  *   card in the transcript.
  * - A delta reads in the change's own terms: percentage points for a rate, plain points
- *   for a score (`formatDelta`).
+ *   for a score (`formatDelta`). The chip holds only the signed figure, on one line; the
+ *   comparison ("vs previous 90 days") is plain muted words beside it that drop under
+ *   the numeral and wrap between words on a narrow tile (`kpiDelta`).
  * - The strip is a list of tiles (one item per figure). BLOCKS.md asks for a `<dl>`, but
  *   `KpiTile` owns its label/value markup and has no `dt`/`dd` mode; a list keeps the
  *   grouping and count without reading every label twice.
@@ -37,7 +39,7 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
-import { KpiTile, KpiTileGrid, type KpiAccent } from '@/soc/components/KpiTile';
+import { KpiTile, KpiTileGrid, type KpiAccent, type KpiDelta } from '@/soc/components/KpiTile';
 import { RiskGauge } from '@/soc/components/RiskGauge';
 import { SEMANTIC_ICON, token } from '@/soc/components/palette';
 
@@ -84,13 +86,20 @@ function valueNode(item: KpiItem): React.ReactNode {
   );
 }
 
-function deltaLabel(item: KpiItem): string {
+/**
+ * A KPI's change as the tile shows it: the signed figure in the chip ("+87", or "no
+ * change" for a zero, which has no direction), and the comparison ("vs previous 90
+ * days") as the chip's `period`, plain words beside it. Kept apart so the chip never
+ * wraps; the words are the same ones the report export writes (export/walker.ts).
+ */
+export function kpiDelta(item: KpiItem): KpiDelta | undefined {
   const d = item.delta;
-  if (!d) return '';
+  if (!d) return undefined;
+  const period = d.period_label.trim() || undefined;
   // A zero change has no direction: say so in words (no "0" with an arrow).
-  if (d.value === 0) return `no change ${d.period_label}`.trim();
+  if (d.value === 0) return { value: 0, label: 'no change', period };
   const sign = d.value > 0 ? '+' : d.value < 0 ? '−' : '';
-  return `${sign}${formatDelta(Math.abs(d.value), item.unit)} ${d.period_label}`;
+  return { value: d.value, label: `${sign}${formatDelta(Math.abs(d.value), item.unit)}`, period };
 }
 
 /**
@@ -130,7 +139,7 @@ export function KpiItemCell({ item, testId, staticMode = false }: { item: KpiIte
         // The caption ("not windowed", "of 1 queried") is prose: the sans muted caption
         // style (browser-QA D7), on its own wrapping line under the numeral.
         secondary={item.context ? <span className="font-sans font-normal">{item.context}</span> : undefined}
-        delta={item.delta ? { value: item.delta.value, label: deltaLabel(item) } : undefined}
+        delta={kpiDelta(item)}
         goodDirection={item.delta?.good_direction ?? 'none'}
         // Paper has nothing to press: a static tile is never a button.
         onClick={ref && !staticMode ? () => navigate(ref) : undefined}

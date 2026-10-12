@@ -362,7 +362,7 @@ class Walker {
         this.list(
           false,
           block.events.map((e) => {
-            const line: Line = [{ text: `${formatUtc(e.at)} — ` }, { text: e.label, code: block.untrusted }];
+            const line: Line = [{ text: `${formatUtc(e.at)}: ` }, { text: e.label, code: block.untrusted }];
             if (e.kind) line.push({ text: ` (${e.kind})` });
             if (e.detail) line.push({ text: ': ' }, { text: e.detail, code: block.untrusted });
             return line;
@@ -400,7 +400,7 @@ class Walker {
           this.para('Related cases:', true);
           this.list(
             false,
-            block.related_cases.map((c) => [{ text: c.case_id, code: true }, { text: ' — ' }, { text: c.title, code: block.untrusted }]),
+            block.related_cases.map((c) => [{ text: c.case_id, code: true }, { text: ': ' }, { text: c.title, code: block.untrusted }]),
           );
         }
         return;
@@ -438,8 +438,8 @@ class Walker {
           true,
           block.items.map((it) => {
             const line: Line = [{ text: it.label, code: it.kind === 'log' || it.kind === 'knowledge' }];
-            line.push({ text: ` (${it.kind})` });
-            if (it.ref && isDocRef(it.ref)) line.push({ text: ` — Help Center ${it.ref.doc}` });
+            const doc = it.ref && isDocRef(it.ref) ? `, Help Center ${it.ref.doc}` : '';
+            line.push({ text: ` (${it.kind}${doc})` });
             if (it.snippet) line.push({ text: ': ' }, { text: it.snippet, code: it.kind === 'log' || it.kind === 'knowledge' });
             return line;
           }),
@@ -451,7 +451,7 @@ class Walker {
           false,
           block.links.map((l) => [
             { text: isDocRef(l.ref) ? plainDocTitle(l.label) : l.label },
-            { text: isDocRef(l.ref) ? ` — Help Center ${l.ref.doc}` : ` — open ${navLabel(l.ref.page)} in the console` },
+            { text: isDocRef(l.ref) ? ` (Help Center ${l.ref.doc})` : ` (open ${navLabel(l.ref.page)} in the console)` },
           ]),
         );
         return;

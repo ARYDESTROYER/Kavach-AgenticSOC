@@ -439,8 +439,10 @@ def test_case_lines_and_pivots_name_cases_in_words_not_machine_titles() -> None:
     `dsingh`"; a title in another form is plain text; the id stays as the handle."""
     machine = {"case_id": "case-1", "title": "user:dsingh — identity_signin", "severity": "high",
                "verdict": "NEEDS_HUMAN", "risk_score": 64, "status": "escalated"}
-    assert demo_chat._case_line(machine) == ("`case-1` · identity signin on user `dsingh` — high, needs-human, "
-                                             "risk 64, escalated")
+    # Plain punctuation, and the verdict as the case badge words it (never an em dash or
+    # "needs-human", Round 12 final polish).
+    assert demo_chat._case_line(machine) == ("`case-1` · identity signin on user `dsingh` (high, needs human, "
+                                             "risk 64, escalated)")
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — demo_sqli_webshell, web_shell"}) == (
         "demo sqli webshell, web shell on IP `203.0.113.9`")
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — x"}, with_entity=False) == "x"
@@ -1275,7 +1277,7 @@ def test_a_behaviour_hunt_says_how_it_chose_its_anchor_case() -> None:
 
 def test_wording_fixes() -> None:
     case = {"verdict": "NEEDS_HUMAN", "confidence": 0.88, "risk_score": 64, "severity": "high"}
-    assert demo_chat._case_facts(case) == "has a needs-human verdict at 88% confidence, risk 64/100, severity high"
+    assert demo_chat._case_facts(case) == "needs human review at 88% confidence, risk 64/100, severity high"
     assert demo_chat._case_facts({"risk_score": 5}) == "has no verdict yet, risk 5/100"
     # Risk and severity are separate axes: a low risk on a critical case names both.
     assert demo_chat._case_facts({"verdict": "TRUE_POSITIVE", "confidence": 0.93, "risk_score": 7,

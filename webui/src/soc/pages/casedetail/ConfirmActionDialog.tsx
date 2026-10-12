@@ -57,13 +57,14 @@ import {
   dispositionWords,
   outcomeAgreement,
 } from '@/soc/components/outcome';
+import { TagInput, focusTagInput } from '@/soc/components/TagInput';
+import { CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT } from '@/lib/tags';
 
 import {
   type ActionDef,
   DURABLE_CONTEXT_NOTE,
   PRIORITY_OPTIONS,
   RESOLUTION_OPTIONS,
-  TagInput,
 } from './shared';
 import { DispositionPicker, focusDispositionPicker } from './DispositionPicker';
 import { GradingSection, type GradingDraft } from './grading';
@@ -109,6 +110,12 @@ export interface ConfirmActionDialogProps {
   onTagsChange: (v: string[]) => void;
   tagDraft: string;
   onTagDraftChange: (v: string) => void;
+  /**
+   * The tags already on the case. A case holds at most `CASE_TAG_MAX_COUNT` and the
+   * server refuses (422) new tags past that, so Tags stops at the room the case has
+   * left and says why. Omitted: no cap here (the server still refuses).
+   */
+  caseTags?: readonly unknown[] | null;
   disposition: string;
   onDispositionChange: (v: string) => void;
   /**
@@ -164,6 +171,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
   onTagsChange,
   tagDraft,
   onTagDraftChange,
+  caseTags,
   disposition,
   onDispositionChange,
   currentDisposition,
@@ -183,12 +191,18 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
     openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
   }
   const [reconcileDismissed, setReconcileDismissed] = React.useState(false);
+  // A submit found text in Tags that was typed but not added. It is never added (or
+  // cut) on the analyst's behalf: the submit stops and the field asks them to press
+  // Enter to add it, or clear it.
+  const [tagsBlocked, setTagsBlocked] = React.useState(false);
+  const tagInputRef = React.useRef<HTMLInputElement | null>(null);
   React.useEffect(() => {
     if (pending) return;
     // The captured opener is NOT released here: Radix fires `onCloseAutoFocus` from a
     // timeout after the content unmounts, i.e. after this effect, and it still needs the
     // opener. `restoreFocus` releases it.
     setReconcileDismissed(false);
+    setTagsBlocked(false);
   }, [pending]);
 
   // Which actions carry the note into DURABLE, AGENT-VISIBLE context. The backend
@@ -214,6 +228,40 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
     implied !== disposition;
   const canSubmit = !acting && !(hasDisposition && !disposition);
   const offerNext = Boolean(pending && onSubmitAndNext && isTerminalAction(pending));
+  const hasTags = Boolean(pending?.fields.includes('tags'));
+  // Room for new tags: a case holds at most CASE_TAG_MAX_COUNT. A tag the case already
+  // carries takes no room (the server keeps one copy), so it does not count here.
+  const existingTags = React.useMemo(
+    () =>
+      Array.isArray(caseTags)
+        ? caseTags.filter((t): t is string => typeof t === 'string' && t.trim() !== '').map((t) => t.trim())
+        : null,
+    [caseTags],
+  );
+  const tagRoom = existingTags ? Math.max(0, CASE_TAG_MAX_COUNT - existingTags.length) : null;
+  const tagMax =
+    existingTags && tagRoom !== null
+      ? tagRoom + tags.filter((t) => existingTags.includes(t.trim())).length
+      : undefined;
+  const tagsFull = tagMax !== undefined && tags.length >= tagMax;
+  const tagsFullNote =
+    !tagsFull || !existingTags
+      ? undefined
+      : tagRoom === 0
+        ? `A case can hold up to ${CASE_TAG_MAX_COUNT} tags, and this one has ${existingTags.length}. Remove one in the case header to add another here.`
+        : `That makes ${CASE_TAG_MAX_COUNT} tags on this case, the most it can hold.`;
+
+  /**
+   * False (and points at Tags) while Tags holds text that was typed but not added. The
+   * whole field, message included, is scrolled into view: at common laptop heights it
+   * sits at the bottom of the scroll area, where a plain focus left the message hidden.
+   */
+  const tagsSettled = (): boolean => {
+    if (!hasTags || !tagDraft.trim()) return true;
+    setTagsBlocked(true);
+    focusTagInput(tagInputRef.current);
+    return false;
+  };
 
   // Which submit closed the dialog (null: cancelled or dismissed). Reset on every open.
   const submitRef = React.useRef<'submit' | 'next' | null>(null);
@@ -364,16 +412,25 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
                   </div>
                 ) : null}
 
-                {pending.fields.includes('tags') ? (
-                  <div className="space-y-1.5">
-                    <Label className="text-xs">Tags (optional)</Label>
-                    <TagInput
-                      tags={tags}
-                      draft={tagDraft}
-                      onDraftChange={onTagDraftChange}
-                      onTagsChange={onTagsChange}
-                    />
-                  </div>
+                {hasTags ? (
+                  <TagInput
+                    ref={tagInputRef}
+                    label="Tags (optional)"
+                    labelClassName="text-xs"
+                    placeholder="Add a tag…"
+                    value={tags}
+                    onChange={onTagsChange}
+                    inputValue={tagDraft}
+                    onInputValueChange={(text) => {
+                      onTagDraftChange(text);
+                      setTagsBlocked(false);
+                    }}
+                    pendingBlocked={tagsBlocked}
+                    maxLength={CASE_TAG_MAX_CHARS}
+                    max={tagMax}
+                    description={tagsFullNote}
+                    disabled={acting}
+                  />
                 ) : null}
 
                 {pending.fields.includes('assignee') ? (
@@ -481,6 +538,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
                 <Button
                   variant="outline"
                   onClick={() => {
+                    if (!tagsSettled()) return;
                     submitRef.current = 'submit';
                     onSubmit();
                   }}
@@ -491,6 +549,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
                 </Button>
                 <Button
                   onClick={() => {
+                    if (!tagsSettled()) return;
                     submitRef.current = 'next';
                     onSubmitAndNext?.();
                   }}
@@ -504,6 +563,7 @@ export const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
               <Button
                 variant={pending.variant === 'outline' ? 'default' : pending.variant}
                 onClick={() => {
+                  if (!tagsSettled()) return;
                   submitRef.current = 'submit';
                   onSubmit();
                 }}

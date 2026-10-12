@@ -210,7 +210,7 @@ export function useConversationReport({
         callbacksRef.current.onRemoved?.(next.items.length);
       } catch (error) {
         if (generation !== generationRef.current) return;
-        toast.error(isVersionConflict(error) ? 'This report changed elsewhere. It was reloaded — try again.' : reportErrorMessage(error));
+        toast.error(isVersionConflict(error) ? 'This report changed elsewhere. It was reloaded, so try again.' : reportErrorMessage(error));
         if (isVersionConflict(error)) void load(report.id);
       } finally {
         pendingRef.current = false;

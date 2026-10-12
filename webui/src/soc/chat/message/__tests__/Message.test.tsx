@@ -94,7 +94,7 @@ describe('Message — running', () => {
   it('tells the reader when the connection dropped and the answer is being checked', () => {
     renderMessage({ item: runningItem({ connection: 'recovering' }) });
     expect(screen.getByTestId('run-log-header')).toHaveTextContent(
-      'Connection lost — checking whether the answer was saved',
+      'Connection lost. Checking whether the answer was saved',
     );
   });
 });

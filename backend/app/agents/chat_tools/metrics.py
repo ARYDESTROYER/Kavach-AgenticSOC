@@ -32,9 +32,13 @@ any window, by role/model/surface and by calendar bucket), and, only for a calle
 also holds ``models:read`` (the meter rule of SPEC §8), the budget status. Demo Mode
 costs are synthetic and labelled so.
 
-Every number is labelled with the window it was COMPUTED over (G4); a case-store
-outage is reported as "not measured", never as zero cases (G3). Metrics are engine
-numbers and framework enums (#3-safe, advisory).
+A relative window of days, weeks, months or years is counted as whole periods of its
+own unit by every kind that counts cases and by ``cost_usage``
+(:func:`common.whole_periods`, Round 12 SPEC §7.2 decision 28), so the posture tiles,
+the noise funnel, a series and a breakdown of "the last 90 days" in one answer all count
+from the same midnight. Every number is labelled with the window it was COMPUTED over
+(G4); a case-store outage is reported as "not measured", never as zero cases (G3).
+Metrics are engine numbers and framework enums (#3-safe, advisory).
 """
 
 from __future__ import annotations
@@ -67,6 +71,7 @@ from .common import (
     resolve_window,
     text,
     window_input,
+    whole_periods,
     window_label,
 )
 from .periods import (
@@ -82,6 +87,7 @@ from ..blocks import compare_values
 from .stats import (
     AGGREGATE_TOOL_TIMEOUT_S,
     bucket_axis,
+    canonical_rank,
     coarsened_note,
     comparison_basis,
     counted_share,
@@ -121,11 +127,26 @@ _BUCKET_ALIASES = {
 }
 _BUCKET_ENUM = {"hour": "1h", "day": "1d", "week": "1w", "month": "1M", "quarter": "1q", "year": "1y"}
 _SEVERITIES = ("critical", "high", "medium", "low", "info")
+
+
+def _canonical_items(counts: dict[str, int], field: str) -> list[tuple[str, int]]:
+    """``counts`` in ``field``'s canonical order (Critical, High…; the lifecycle; the
+    verdicts), a value outside it after the known ones, by volume."""
+    items = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return sorted(items, key=lambda kv: canonical_rank(field, None if kv[0] in ("none", "unknown") else kv[0]) or 0)
+
+
 # Kinds measured over every case by the exact aggregator (and the ones ``compare`` and
 # ``bucket`` apply to). The others read the shared case page.
 AGGREGATE_KINDS = frozenset({"posture", "trends", "case_mix", "timing"})
 # Aggregate kinds drawn as a calendar series (their window is aligned to the unit).
 _BUCKETED_KINDS = frozenset({"trends", "timing"})
+# Kinds that count cases created in the window: a relative window is counted as whole
+# periods of its own unit (``common.whole_periods``), like every case and cost lookup.
+# ``auto_close_health`` and ``agent_improvement`` compare fixed spans with the span
+# before them and keep the window as resolved.
+_WHOLE_PERIOD_KINDS = frozenset({"posture", "trends", "case_mix", "timing", "noise_funnel", "mitre_coverage",
+                                 "feedback"})
 # Kinds computed ONLY from the case store: an outage fails them rather than
 # publishing figures over zero rows (G3). ``noise_funnel`` keeps its counter stages
 # and nulls its case stages instead.
@@ -160,7 +181,11 @@ class MetricWindow:
     ``hours`` is the whole-hour span counted back from ``end`` (the instant passed as
     the engine's ``now``; ``0`` = all time, the engine's unbounded window); ``now`` is
     the real measurement instant (open cases, SLA clocks). Round 12: no 30-day cap,
-    so ``capped`` is always False (kept for readers)."""
+    so ``capped`` is always False (kept for readers). ``exact_start`` is set for a
+    window aligned to whole periods (:func:`common.whole_periods`), which starts at a
+    local midnight or the first of a month rather than a whole number of hours back:
+    its cases are counted from that instant (:func:`cohort`) and its hourly counters
+    from the hour it falls in (:attr:`counter_hours`)."""
 
     hours: int
     end: datetime
@@ -172,10 +197,21 @@ class MetricWindow:
     clamped: bool
     all_time: bool = False
     window: Window | None = None
+    exact_start: datetime | None = None
 
     @property
     def start(self) -> datetime:
+        if self.exact_start is not None:
+            return self.exact_start
         return self.end - timedelta(hours=self.hours)
+
+    @property
+    def counter_hours(self) -> int:
+        """The ``hours`` an hourly counter read takes so that its first hour is the one
+        :attr:`start` falls in (the counters cannot be cut finer than an hour)."""
+        if self.exact_start is None or self.all_time:
+            return self.hours
+        return max(1, int(self.end.timestamp() // 3600) - int(self.start.timestamp() // 3600))
 
     @property
     def relabelled(self) -> bool:
@@ -217,6 +253,13 @@ def metric_window(window: Window, now: datetime) -> MetricWindow:
     span = (window.end - window.start).total_seconds() / 3600
     hours = max(1, math.floor(span + 1e-6))
     end = window.end
+    if window.aligned_to and not window.clamped:
+        # Whole periods from a local midnight or the first of a month: counted from
+        # that exact instant, under the window's own label (never "last 2,144 hours").
+        return MetricWindow(
+            hours=hours, end=end, now=now, trailing=trailing, label=window.label,
+            requested=window.label, capped=False, clamped=False, window=window, exact_start=window.start,
+        )
     start = end - timedelta(hours=hours)
     if abs((start - window.start).total_seconds()) < 1:
         label = window.label
@@ -232,6 +275,24 @@ def metric_window(window: Window, now: datetime) -> MetricWindow:
         hours=hours, end=end, now=now, trailing=trailing, label=label,
         requested=window.label, capped=False, clamped=window.clamped, window=window,
     )
+
+
+def cohort(cases: list[Any], mw: MetricWindow) -> list[Any]:
+    """The cases ``mw`` covers, by creation time, under the engine's own membership rule
+    (``engine.metrics._window_filter``: ``start <= created <= end``, an unreadable
+    creation time in no bounded window). A window aligned to whole periods is counted
+    from its exact start; every other one ``hours`` back from its end."""
+    from ...engine.metrics import _created_dt, _window_filter
+
+    if mw.exact_start is None:
+        return _window_filter(cases, window_hours=mw.hours, now=mw.end)
+    lo, hi = mw.exact_start.timestamp(), mw.end.timestamp()
+    out = []
+    for case in cases:
+        created = _created_dt(case)
+        if created is not None and lo <= created.timestamp() <= hi:
+            out.append(case)
+    return out
 
 
 def _bounded(cases: list[Any], mw: MetricWindow) -> tuple[list[Any], int]:
@@ -544,6 +605,10 @@ class SocMetricsTool(ChatTool):
                                 minutes_ok=False)
         if isinstance(window, str):
             return ToolOutcome.failure(window)
+        if args.kind in _WHOLE_PERIOD_KINDS:
+            # One start for every lookup of this window in the answer (the posture tiles,
+            # the funnel and a case_stats breakdown of "last 90 days" count the same days).
+            window = whole_periods(window)
         compare = args.compare_spec()
         if compare is not None and args.kind not in AGGREGATE_KINDS:
             return ToolOutcome.failure(COMPARE_KINDS_NOTE)
@@ -620,21 +685,21 @@ class SocMetricsTool(ChatTool):
         """The two stock figures that are not case counts, from the shared case page:
         the Active Risk Index (active cases now) and SLA attainment of the window's
         cohort, with how much of the store the page covered."""
-        from ...engine.metrics import _window_filter, compute_metrics, quality_metrics, sla_metrics
+        from ...engine.metrics import compute_metrics, quality_metrics, sla_metrics
 
         cases, store_total, load_ok = await load_case_page(ctx)
         if not load_ok:
             return {"available": False}
         overall = compute_metrics(cases, total_cases=store_total)
         bounded, _dropped = _bounded(cases, mw)
-        cohort = _window_filter(bounded, window_hours=mw.hours, now=mw.end)
+        members = cohort(bounded, mw)
         # ``prefs`` so SLA scores the derived priority, exactly like the posture route.
-        sla = sla_metrics(cohort, getattr(ctx.prefs, "sla", None), now=mw.now, prefs=ctx.prefs)
+        sla = sla_metrics(members, getattr(ctx.prefs, "sla", None), now=mw.now, prefs=ctx.prefs)
         return {
             "available": True,
             "active_risk_index": finite(overall.get("active_risk_index")),
             "active_cases": overall.get("active_risk_case_count"),
-            "escalation_rate": finite(quality_metrics(cohort).get("escalation_rate")),
+            "escalation_rate": finite(quality_metrics(members).get("escalation_rate")),
             "sla": {k: sla.get(k) for k in ("enabled", "evaluated", "response_breached", "resolve_breached",
                                             "attainment_pct")},
             "page_note": _page_note(cases, store_total),
@@ -683,7 +748,7 @@ class SocMetricsTool(ChatTool):
                      total=main.total, window=caption),
             Artifact(id="a2", kind="categories", title="Cases by severity", title_trusted=True,
                      data=categories([(group_label("severity", b), sev.get(b, 0)) for b in _SEVERITIES],
-                                     dimension="severity"),
+                                     dimension="Severity", ordered=True),
                      provenance="code", total=main.total, window=caption),
         ]
         observation: dict[str, Any] = {
@@ -902,7 +967,7 @@ class SocMetricsTool(ChatTool):
         if ctx.noise is None or axis is None or not hasattr(ctx.noise, "read_hourly_ingested"):
             return None
         try:
-            counters = await ctx.noise.read_hourly_ingested(mw.hours, now=mw.end)
+            counters = await ctx.noise.read_hourly_ingested(mw.counter_hours, now=mw.end)
         except Exception as exc:  # noqa: BLE001 — degrade to no alert series
             logger.info("trend counters unavailable: %s", exc)
             return None
@@ -970,10 +1035,12 @@ class SocMetricsTool(ChatTool):
                 kpi("active_risk_index", "Active Risk Index", extras.get("active_risk_index"), "score", display="gauge"),
             ]}, provenance="code", window=caption),
             Artifact(id="a2", kind="categories", title="Cases by verdict", title_trusted=True,
-                     data=categories([(group_label("verdict", None if k == "none" else k), v) for k, v in by_verdict.items()],
-                                     dimension="verdict"), provenance="code", window=caption),
+                     data=categories([(group_label("verdict", None if k == "none" else k), v)
+                                      for k, v in _canonical_items(by_verdict, "verdict")],
+                                     dimension="Verdict", ordered=True), provenance="code", window=caption),
             Artifact(id="a3", kind="categories", title="Cases by status", title_trusted=True,
-                     data=categories([(group_label("status", k), v) for k, v in by_status.items()], dimension="status"),
+                     data=categories([(group_label("status", k), v) for k, v in _canonical_items(by_status, "status")],
+                                     dimension="Status", ordered=True),
                      provenance="code", window=caption),
             Artifact(id="a4", kind="categories", title="Cases by disposition", title_trusted=True,
                      data=categories([(group_label("disposition", None if k == "none" else k), v) for k, v in by_disp.items()],
@@ -1121,11 +1188,21 @@ class SocMetricsTool(ChatTool):
         if ctx.noise is not None:
             try:
                 # A past range is the exact ``[end - hours, end)``; a trailing one keeps
-                # the dashboard's "include the current hour" read; all time is 0.
-                counters = await ctx.noise.read_window(hours, now=mw.end, end_exclusive=not mw.trailing)
+                # the dashboard's "include the current hour" read; all time is 0. A
+                # window of whole days or months reads from the hour its start is in.
+                counters = await ctx.noise.read_window(mw.counter_hours, now=mw.end, end_exclusive=not mw.trailing)
             except Exception as exc:  # noqa: BLE001 — case-only funnel
                 logger.info("noise counters unavailable: %s", exc)
         bounded, dropped = _bounded(cases, mw)
+        if mw.exact_start is not None:
+            # Whole days or months: the case stages count from the window's own start
+            # (the same cases as the posture tiles and case_stats), so the engine's
+            # hour-based filter below keeps every one of them; the cases read but
+            # outside that start leave the population total too.
+            members = cohort(bounded, mw)
+            dropped += len(bounded) - len(members)
+            bounded = members
+            hours = max(1, math.ceil((mw.end - mw.exact_start).total_seconds() / 3600))
         n = build_noise_reduction(
             bounded, counters, window_hours=hours, store_total=max(len(bounded), store_total - dropped),
             fetched_count=len(bounded), prefs=ctx.prefs, generated_at=iso_now(), now=mw.end,
@@ -1265,7 +1342,6 @@ class SocMetricsTool(ChatTool):
 
     # -- MITRE coverage (page) --------------------------------------------- #
     async def _mitre_coverage(self, ctx, args, mw: MetricWindow, cases, store_total, load_ok) -> ToolOutcome:
-        from ...engine.metrics import _window_filter
         from ...engine.mitre_coverage import compute_mitre_coverage
 
         all_time = mw.all_time or (args.window is None and args.window_hours is None and ctx.default_range is None)
@@ -1273,7 +1349,7 @@ class SocMetricsTool(ChatTool):
             scoped = cases
         else:
             bounded, _dropped = _bounded(cases, mw)
-            scoped = _window_filter(bounded, window_hours=mw.hours, now=mw.end)
+            scoped = cohort(bounded, mw)
         cov = compute_mitre_coverage(scoped, store_total=store_total, fetched_count=len(cases))
         by_tactic = cov.get("by_tactic") or {}
         techniques: dict[str, dict[str, Any]] = {}
@@ -1429,10 +1505,10 @@ class SocMetricsTool(ChatTool):
 
     # -- feedback (page) --------------------------------------------------- #
     async def _feedback(self, ctx, args, mw: MetricWindow, cases, store_total, load_ok) -> ToolOutcome:
-        from ...engine.metrics import _window_filter, feedback_stats
+        from ...engine.metrics import feedback_stats
 
         bounded, _dropped = _bounded(cases, mw)
-        windowed = _window_filter(bounded, window_hours=mw.hours, now=mw.end)
+        windowed = cohort(bounded, mw)
         fb = feedback_stats(windowed)
         dist = fb.get("outcome_distribution") or {}
         graded = int(fb.get("graded_cases") or 0)
@@ -1617,7 +1693,9 @@ class CostUsageTool(ChatTool):
                 return ToolOutcome.failure("Comparisons need the full usage ledger, which is not available here")
             return await self._legacy(ctx, args, window, ref)
         # The spend total, the series per period and the compared periods cover ONE
-        # window, aligned to whole periods of the series' unit (so they add up).
+        # window, as whole periods of its own unit (so they add up, and AI cost counts
+        # the same days as every case lookup of the window in the answer).
+        window = whole_periods(window)
         bucket = args.bucket if args.bucket != "auto" else _auto_bucket(window)
         window, bucket, planned = plan_bucket(window, bucket, explicit=args.bucket != "auto")
         periods = resolve_periods(ctx, window, args.compare, now=ref, minutes_ok=False)

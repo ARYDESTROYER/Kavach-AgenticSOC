@@ -747,6 +747,116 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
     question again, and a hash that names a key the page owns yields a new opts object, so
     a pasted link to the conversation the opts still name (Chat cleared its link with
     `replaceState`) is applied.
+27. **Severity, verdict, status and priority breakdowns keep their canonical order**
+    (final polish; amends chat-revamp §7.3 "descending total"). A breakdown by severity
+    reads Critical, High, Medium, Low, Info; by verdict True positive, False positive,
+    Needs human; by status the lifecycle (New … Closed); by priority P1 … P4, in every
+    chart, legend, table, comparison, export and report, whatever each value's volume
+    (`stats.CANONICAL_ORDER`). When a `top_n` or the series bound applies, the busiest
+    values are kept and then shown in that order (`blocks._busiest_kept`: categories by
+    value, series by total, "Other" last and kept only under the series bound), so "Top 2
+    of 4" of Critical 5, High 6, Medium 2, Low 35 shows High and Low. A severity or verdict series carries its
+    palette key (`series[].semantic`, already in the block contract), so Critical is drawn
+    in the critical colour, never a categorical green; a case with no verdict is
+    `undetermined` (the neutral ink). Status series carry none: that axis shares a colour
+    between states (resolved and closed, awaiting analyst and on hold). Artifact data marks
+    a canonical order with `ordered: true`, which materialisation keeps, and a stored block
+    re-rendered in another view keeps its order. The web renderer uses semantic colours
+    for a chart only when every series but "Other" is semantic and no two share a colour;
+    otherwise the whole chart keeps the categorical palette. No contract or schema change.
+28. **One start per window in an answer** (final polish; amends `align_window` and P0-5's
+    "N whole periods of the breakdown"). The start of a relative window depends on the
+    window alone, never on how one lookup breaks it down (`time_windows.align_whole_periods`,
+    `common.whole_periods`): a span of days or weeks of two days or more counts whole days
+    from local midnight ("last 90 days (since 15 Jul 2026)", today and the 89 days before
+    it), a span of months or years of two months or more counts whole months ("last 6 months
+    (since May 2026)"); a span of hours, a single day or month, minutes, calendar periods,
+    ranges and all time are counted exactly as resolved. Every case, metric and cost lookup
+    applies it, bucketed or not: `case_stats` (headline, groups, series), `soc_metrics`
+    posture, trends, case mix, timing, noise funnel, MITRE coverage and feedback (their
+    page cohorts from the exact start, the hourly alert counters from the hour it falls
+    in), `cost_usage` and `search_cases`, so the headline, the series, the severity and rule
+    breakdowns, the posture tiles and the funnel of one answer count the same cases under
+    one stated start and compare with one previous period (the same span before it, cut at
+    the same point: "16 Apr – 14 Jul 2026 08:02"). A breakdown whose periods the start is not
+    a boundary of opens with the part of its first period inside the window ("Jul 2026 (from
+    15 Jul)", "W38 2026 (from 15 Sep)", "Q4 2025 (from 1 Nov)"), so "last 12 months" by
+    quarter is twelve months in five bars rather than nine and a half in four, and "last 24
+    hours" by hour is 25 bars, the first cut at the minute the window starts.
+    `auto_close_health` and `agent_improvement` compare fixed spans and keep the window as
+    resolved; the log tools align only calendar intervals, as before.
+29. **A report states each window once** (final polish). An item scope and the report
+    header merge the labels one answer gives one window: "all time (since 28 Sep 2026)",
+    "all time" and "all time (since 12 Oct 2026)" read "all time (since 28 Sep 2026)", from
+    the earliest data; "last 90 days" with "last 90 days (since 15 Jul 2026)" reads the
+    dated one; two different starts of one relative window keep the shared phrase only; a
+    comparison of a window that is also stated reads inside it, "last 90 days (since 15 Jul
+    2026), compared with 16 Apr – 14 Jul 2026 08:02", never the phrase twice
+    (`routes_reports._merge_windows`, mirrored on read by `chat/report/windows.ts` so
+    reports saved earlier read the same).
+30. **A storyline case can be Critical with a low risk score, by design** (final polish,
+    demo data). Severity is the source's own rating; risk is the deterministic cluster
+    score of `engine/risk.py` (volume, velocity, reputation, diversity, asset criticality),
+    two separate axes that the console names side by side. A Demo Mode storyline alert is
+    one native detection per source (count 1, one rule, no velocity), Demo Mode runs with
+    external enrichment off and the storyline indicators are documentation addresses the
+    enrichment tool skips, so reputation and asset context are 0: the formula gives about
+    7 (the syslog burst of four events about 33). That is what the product computes for one
+    uncorroborated native alert, so the demo seed keeps it rather than inventing inputs;
+    `risk.py` and `decide()` are unchanged (#3). The seeded history cases carry the risk of
+    their templates (for example 64 for a high identity case), which is why the two sit
+    side by side in the queue.
+31. **The top bar compacts by its own width; one chip says "Demo mode"** (final polish,
+    shell). The bar is a size container (`@container/topbar`, `TOP_BAR_TIERS`): the
+    current page name has priority and never wraps or squeezes on a desktop bar (it took
+    "A... / W..." at 1440 with the rail pinned); the search field shrinks first and is an
+    icon below 46rem of bar; chips go icon-only below 62rem with a tooltip and their full
+    accessible name; the product name leaves the breadcrumb below 72rem; below 40rem
+    appearance, the account menu and a source notice move into the Console controls sheet,
+    while the notification bell stays in the bar at every desktop width (its unread, jobs
+    and health marks showed nowhere when it moved). Width tiers cannot know which chips
+    are present (a source notice, "Enable updates", a store outage and a long name squeezed
+    the field to 26px at 1280 with the rail pinned), so the bar also measures itself
+    (`useTopBarFold`): while the field would get under 11rem, labels fold one at a time,
+    product name, account name, source, update, health, Demo mode, and the field reads by
+    its own width (full placeholder from 19rem, "Search…" from 9.5rem, else its icon).
+    While demo mutes platform health, the health pill leaves the bar (it
+    used to read "Demo mode" beside the demo chip) and the demo chip's popover says health
+    checks are muted and is the one polite announcer. ui-standard "Navigation".
+32. **The material hides what is beneath with its fill** (final polish; amends
+    SYNTHESIS-ux §1.4 rule 1, "≥ 0.80"). The bars and the top bar are 0.97 (thick panes
+    0.98) in every engine, the scroll-edge fade starts at the same 0.97, and the
+    'command' material pack's glass is 0.94: in Chromium the backdrop blur does not reach
+    routed content, so at 0.80 chart labels and card text read through the sticky
+    Overview header. Text beneath now differs from the bar by at most about 1.07:1 in both
+    themes (measured in `foundations.test.ts`). Reduce transparency stays fully opaque.
+33. **A KPI change reads as a one-line chip plus words** (final polish, chat blocks). The
+    chip holds only the signed figure ("+87", "no change") and never wraps; the comparison
+    ("vs previous 90 days") is plain muted text beside it that drops under the numeral and
+    wraps between words on a narrow tile (`KpiDelta.period`). The words and the export's
+    text are unchanged; the chip's accessible name still carries both.
+34. **A tag is never added on the analyst's behalf, and never cut** (final polish, Case
+    Manager). The shared `TagInput` adds a chip only on Enter or a comma: blur no longer
+    commits, and typed text that is not added stays in the field with "Not added yet. Press
+    Enter to add it." A form that would lose it on submit (the close dialog, Memory,
+    Knowledge and threat-intel imports) stops and asks instead ("…, or clear the field"),
+    rather than saving it silently or dropping it. A case tag over 40 characters is refused
+    where it is typed (close dialog, header tag editor, both bulk tag forms, rule
+    automation tags) with "This is longer than 40 characters. Shorten it to add it.", and
+    the server answers 422 for a new one on `/cases/{id}/tags` and an action's `tags`
+    instead of storing it cut to 40 (`_merge_case_tags`; a tag the case already carries
+    passes unchanged). The bulk tag job already refused over-long tags. The 25-tag count
+    is kept the same way: new tags past it answer 422 with the reason ("A case can hold
+    up to 25 tags, and this would give it 27. …") instead of being left off silently,
+    so the bulk tag job fails a full case's item with that reason; the close dialog stops
+    Tags at the room the case has left and the header tag editor says when a case is
+    full. Case automation's `tag` action reads the Rule editor's `tags` list (it read
+    only `tag`/`value`, so editor rules never tagged) and records a tag it could not add,
+    whole, instead of cutting it. One module holds both bounds for every writer
+    (`engine/case_tags.py`, mirrored by `webui/src/lib/tags.ts`). The field also keeps
+    its message in view: a blocked Close scrolls the whole Tags field into the dialog's
+    scroll area (at 1440x900 the message sat below it, so Close looked like it did
+    nothing), as does typing that makes a hint or refusal appear (`focusTagInput`).
 
 ### 7.3 Known limitations
 
@@ -808,6 +918,18 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
   own hash echo from a traversal (§7.2 decision 26), which must run on every hash change of
   the eager router, and `showChatTurns`, the entry-safe store's signal for every answer a
   case chat lists (§7.2 decision 17).
+  The final polish's top bar (§7.2 decision 31) then rebased the baseline twice, each time
+  by exactly the bar's own first-paint bytes, measured by building the same tree with and
+  without the change (`vite build`): +1,428 B for the bar's container tiers (AppShell.tsx
+  +958 B, DemoIndicator.tsx +439 B, SystemUpdateControl.tsx +31 B), then +2,738 B for the
+  measured label fold (`top-bar-fold.ts`) and the search field's own-width tiers. The bar
+  is the first thing every page paints and the fold decides before that paint (a lazy
+  chunk would paint the overflowing bar first), so neither can be a lazy chunk. The
+  rebased baseline is `PRE_REVAMP_ENTRY_BYTES = 371_003` (371,003 B), with the same
+  +1,024-byte budget over it. The polish gate run measured 371,445 B with `npm run build`
+  (371,491 B with CI's commit and build-time stamps): the committed close built 367,201 B
+  and the same tree without the three top bar files and the fold 367,279 B, so the bar is
+  4,166 B and the rest of the polish 78 B, inside the budget.
 
 - **Source conversation on older reports.** Index rows written before decision 25 read
   `null` (the library shows no source) until the report next changes.

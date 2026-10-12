@@ -207,23 +207,42 @@ describe('AppShell demo indicator (R12)', () => {
     expect(screen.queryByRole('button', { name: /exit & clear/i })).toBeNull();
   });
 
-  it('announces the state exactly once: the health pill on desktop, the chip on mobile', async () => {
+  it('shows ONE "Demo mode" chip: the muted health pill steps aside and the chip announces', async () => {
+    // Round 12 screenshot tour: the bar carried two chips that both read "Demo mode" (the
+    // amber demo chip and the health pill muted to "Demo mode"). They said one thing
+    // twice, so the health pill now leaves the bar while demo mutes it, and the demo
+    // chip, which says health is muted, is the one polite announcer at every width.
     demoStatusMock.mockResolvedValue(ACTIVE);
     const desktop = renderShell();
     const desktopChip = await screen.findByTestId('demo-indicator');
-    // Desktop: the health pill (already flipped to "Demo mode") is the live region.
-    expect(desktopChip).not.toHaveAttribute('aria-live');
-    expect(screen.getByLabelText('Platform health: Demo mode')).toHaveAttribute(
-      'aria-live',
-      'polite',
+    const header = desktopChip.closest('header') as HTMLElement;
+    await waitFor(() => expect(within(header).queryByTestId('top-bar-health')).toBeNull());
+    expect(desktopChip).toHaveAttribute('aria-live', 'polite');
+    expect(within(header).getAllByText(/^Demo mode$/)).toHaveLength(1);
+    expect(screen.queryByLabelText(/^Platform health: /)).toBeNull();
+    // Nothing the muted pill said is lost: the chip's popover carries it.
+    fireEvent.click(desktopChip);
+    expect(await screen.findByTestId('demo-indicator-health-note')).toHaveTextContent(
+      /health checks are muted while demo mode is on/i,
     );
     desktop.unmount();
 
     setMobileViewport(true);
     renderShell();
     const mobileChip = await screen.findByTestId('demo-indicator');
-    // Mobile: the health pill is not in the bar, so the chip becomes the announcer.
     expect(mobileChip).toHaveAttribute('aria-live', 'polite');
-    expect(screen.queryByLabelText('Platform health: Demo mode')).toBeNull();
+    expect(screen.queryByTestId('top-bar-health')).toBeNull();
+    // The Console controls sheet restates platform health without a second announcement.
+    fireEvent.click(screen.getByRole('button', { name: 'Open console controls' }));
+    const status = await screen.findByRole('status', { name: 'Platform health: Health checks muted' });
+    expect(status).toHaveAttribute('aria-live', 'off');
+  });
+
+  it('keeps the health pill in the bar when demo mode is off', async () => {
+    renderShell();
+    const pill = await screen.findByTestId('top-bar-health');
+    expect(pill.closest('header')).not.toBeNull();
+    expect(pill).toHaveAttribute('aria-live', 'polite');
+    expect(pill).toHaveAccessibleName(/^Platform health: /);
   });
 });

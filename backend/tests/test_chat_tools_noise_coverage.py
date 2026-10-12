@@ -529,7 +529,11 @@ async def test_case_stats_summary_never_nests_the_window_label() -> None:
     assert out.summary.startswith("3 cases, all time (since "), out.summary
     assert out.summary.endswith(", exact, grouped by verdict"), out.summary
     past = await CaseStatsTool().run(make_ctx(cases=store, time_range=TimeRange(**{"from": "now-90d"})))
-    assert past.summary.startswith("3 cases, last 90 days, exact"), past.summary
+    # 90 whole days, today and the 89 before it (SPEC §7.2 decision 28): one level of
+    # brackets, never "(last 90 days (since …))".
+    first = (datetime.now(timezone.utc) - timedelta(days=89)).date()
+    assert past.summary.startswith(f"3 cases, last 90 days (since {first.day} {first:%b %Y}), exact"), past.summary
+    assert "((" not in past.summary and "))" not in past.summary
 
 
 # --------------------------------------------------------------------------- #

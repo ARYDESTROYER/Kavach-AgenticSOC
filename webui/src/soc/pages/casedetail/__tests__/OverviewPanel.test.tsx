@@ -194,13 +194,13 @@ describe('OverviewPanel — decision brief (task 7c)', () => {
   it('does not repeat an identical needs-human verdict and lifecycle status', () => {
     renderOverview({ ...CASE, verdict: 'needs_human', status: 'needs_human' } as unknown as Case);
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(/^Needs human review$/);
-    expect(screen.queryByText('Needs human review — needs human review')).toBeNull();
+    expect(screen.queryByText('Needs human review, needs human review')).toBeNull();
   });
 
   it('keeps a distinct lifecycle result in the decision headline', () => {
     renderOverview({ ...CASE, verdict: 'true_positive', status: 'escalated' } as unknown as Case);
     expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(
-      /^Likely a true positive — escalated$/,
+      /^Likely a true positive, escalated$/,
     );
   });
 
@@ -217,7 +217,7 @@ describe('OverviewPanel — decision brief (task 7c)', () => {
       escalation_level: 3,
     } as unknown as Case);
     // Round 12: the sticky header meta row carries the status; the outcome band names it
-    // at most once (here only inside the headline, "… — escalated").
+    // at most once (here only inside the headline, "…, escalated").
     expect(
       within(screen.getByTestId('case-manager-decision-summary')).queryAllByText('Escalated').length,
     ).toBeLessThanOrEqual(1);

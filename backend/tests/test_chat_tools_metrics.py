@@ -90,12 +90,16 @@ async def test_trailing_window_still_matches_the_dashboard(store: CaseStore) -> 
 
 
 async def test_ranges_longer_than_thirty_days_are_exact_and_never_capped(store: CaseStore) -> None:
-    """Round 12 (SPEC D7): a 90-day range is read whole: no 30-day cap, no relabel."""
+    """Round 12 (SPEC D7): a 90-day range is read whole: no 30-day cap, no relabel to
+    hours. It is counted as 90 whole days, today and the 89 before it, like every other
+    lookup of it (SPEC §7.2 decision 28)."""
+    first = (now_utc() - timedelta(days=89)).date()
+    label = f"last 90 days (since {first.day} {first:%b %Y})"
     ctx = make_ctx(cases=store, time_range=TimeRange(**{"from": "now-90d"}))
     out = await SocMetricsTool().run(ctx, kind="case_mix")
-    assert out.observation["window"] == "last 90 days" and out.observation["cases"] == 40
+    assert out.observation["window"] == label and out.observation["cases"] == 40
     assert "requested_window" not in out.observation and "window_capped" not in out.observation
-    assert out.coverage is None and out.summary.startswith("Case mix, last 90 days:")
+    assert out.coverage is None and out.summary.startswith(f"Case mix, {label}:")
     lifetime = await SocMetricsTool().run(make_ctx(cases=store), kind="case_mix", window="all")
     assert lifetime.observation["cases"] == 43 and lifetime.observation["window"].startswith("all time (since")
 

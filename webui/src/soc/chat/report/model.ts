@@ -29,6 +29,7 @@ import type {
 import { LIMITS, isExpiredBlock, leafBlocks, legacyTableBlock, parseBlocks } from '../blocks/schema';
 import type { AnswerBlock, DroppedBlock, KpiItem, LeafBlock } from '../blocks/schema';
 import { displayText } from '../stream-events';
+import { mergeWindows } from './windows';
 
 /* -------------------------------------------------------------------------- */
 /* Vocabulary.                                                                 */
@@ -396,7 +397,9 @@ export function buildReportDoc(report: Report, options: BuildOptions = {}): Repo
     // An item's scope lists each window its blocks state ("last 90 days; all time"): the
     // header names each window once, however many items share it. A scope over its bound
     // ends "; and 2 more", which is a count, never a window (see `windowsElided`).
-    windows: uniq(items.flatMap((i) => scopeWindows(i.scope.window).windows)),
+    // Each window once across items too ("all time (since 28 Sep 2026)", never also
+    // "all time" and "all time (since 12 Oct 2026)"; `report/windows.ts`).
+    windows: mergeWindows(uniq(items.flatMap((i) => scopeWindows(i.scope.window).windows))),
     windowsElided: items.some((i) => scopeWindows(i.scope.window).elided),
     sources: uniq([...items.flatMap((i) => i.scope.sources ?? []), ...items.flatMap((i) => (i.turn?.steps ?? []).flatMap((s) => s.sources ?? []))]),
     models: uniq([...items.map((i) => i.scope.generated_by), ...items.map((i) => i.turn?.model)]),

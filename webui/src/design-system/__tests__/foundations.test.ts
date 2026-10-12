@@ -26,6 +26,7 @@ import {
   hexToRgb,
   hslTripleToRgb,
   parseThemeCss,
+  resolveToken,
   resolveTokenRgb,
   type Rgb,
 } from '../../../scripts/lib/theme-css.mjs';
@@ -279,6 +280,71 @@ describe('materials: solid fallbacks', () => {
 
   it('sets no position on the material marker (it would race the sticky utility)', () => {
     expect(css).not.toMatch(/\.material-surface\s*\{\s*position/);
+  });
+});
+
+/**
+ * The material hides what scrolls beneath it with its FILL, not its blur (Round 12
+ * screenshot tour: at a 0.80 fill, chart labels and card text read straight through the
+ * sticky Overview header at 768 and 1920). In Chromium the backdrop blur does not reach
+ * routed content (lib/material-recipes.ts), so the fill is the whole defence.
+ *
+ * MEASURED: foreground text sitting on the card or the canvas, seen through the bar, may
+ * differ from its own surface by at most ~1.07:1 — a wash of colour, not a word (0.95
+ * left bold labels legible to a careful eye at ~1.1:1). Checked
+ * for the sticky material (`materialBar`), the glass top bar in both themes, and the
+ * optional 'command' material pack (allowed slightly more translucency, still no text).
+ */
+describe('materials: text scrolled beneath never reads (measured)', () => {
+  const { light, dark } = parseThemeCss();
+  const themes = { light, dark: new Map<string, string>([...light, ...dark]) };
+  const recipes = fs.readFileSync(path.join(WEBUI_ROOT, 'src', 'lib', 'material-recipes.ts'), 'utf8');
+  const themeTokens = fs.readFileSync(path.join(WEBUI_ROOT, 'src', 'soc', 'theme-tokens.ts'), 'utf8');
+
+  const barFill = /export const materialBar =[\s\S]*?\bbg-background\/(?:(\d+)\b|\[(0?\.\d+)\])/.exec(recipes);
+  const barAlpha = barFill?.[1] !== undefined ? Number(barFill[1]) / 100 : Number(barFill?.[2]);
+  const commandGlass = Number(/command:\s*\{[\s\S]*?'--glass-opacity':\s*'([\d.]+)'/.exec(themeTokens)?.[1]);
+
+  /** `top` at `alpha` over an opaque `under` (sRGB, source-over, as browsers paint). */
+  const over = (top: Rgb, alpha: number, under: Rgb): Rgb =>
+    top.map((c, i) => alpha * c + (1 - alpha) * under[i]) as Rgb;
+
+  /** How far body text beneath a fill of `fill` at `alpha` still stands out, worst surface. */
+  const ghost = (fill: Rgb, alpha: number, map: Map<string, string>) => {
+    const text = resolveTokenRgb('--foreground', map)!;
+    return Math.max(
+      ...(['--card', '--canvas'] as const).map((surface) => {
+        const ground = resolveTokenRgb(surface, map)!;
+        return contrastRatio(over(fill, alpha, text), over(fill, alpha, ground));
+      }),
+    );
+  };
+
+  it('reads the fills it measures (a parse failure must not pass silently)', () => {
+    expect(barAlpha).toBeGreaterThanOrEqual(0.97);
+    expect(commandGlass).toBeGreaterThan(0);
+    for (const map of Object.values(themes)) {
+      expect(Number(resolveToken('--glass-opacity', map))).toBeGreaterThan(0);
+    }
+  });
+
+  it.each(Object.entries(themes))('%s: the sticky material leaves text beneath unreadable', (_name, map) => {
+    expect(ghost(resolveTokenRgb('--background', map)!, barAlpha, map)).toBeLessThanOrEqual(1.07);
+  });
+
+  it.each(Object.entries(themes))('%s: the glass top bar leaves text beneath unreadable', (_name, map) => {
+    const alpha = Number(resolveToken('--glass-opacity', map));
+    expect(ghost(resolveTokenRgb('--glass-tint', map)!, alpha, map)).toBeLessThanOrEqual(1.07);
+  });
+
+  it.each(Object.entries(themes))('%s: the command pack glass stays below a readable ghost', (_name, map) => {
+    expect(ghost(resolveTokenRgb('--glass-tint', map)!, commandGlass, map)).toBeLessThanOrEqual(1.15);
+  });
+
+  it('starts the scroll-edge fade at the bar\'s own fill (no seam, no lighter band)', () => {
+    const fade = blockAfter(css, ".material-surface[data-scrolled='true']::after {");
+    const first = /hsl\([^/]*\/\s*([\d.]+)\)/.exec(fade)?.[1];
+    expect(Number(first)).toBe(barAlpha);
   });
 });
 

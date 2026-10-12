@@ -240,8 +240,8 @@ def in_progress_label(start: datetime, end: datetime, unit: str, tz: str) -> str
 
 
 def _aligned_unit(window: Window) -> str | None:
-    """The calendar unit of a relative window aligned to whole periods for a bucketed
-    breakdown (``common.align_to_bucket``), still running, else ``None``."""
+    """The calendar unit of a relative window counted in whole periods
+    (``common.whole_periods``: whole days or whole months), still running, else ``None``."""
     if window.all_time or window.clamped or not window.trailing:
         return None
     return window.aligned_to

@@ -2407,15 +2407,44 @@ def _top_n(options: MaterialiseOptions, available: int) -> int:
 
 def _sorted_categories(data: dict[str, Any]) -> tuple[list[str], list[int | float | None]]:
     """Labels and values aligned, sorted by value descending (not measured last), ties
-    by label, so the order — and with it every colour — is deterministic."""
+    by label, so the order — and with it every colour — is deterministic. ``ordered``
+    data keeps the producer's order (a canonical one: Critical, High, Medium, Low, Info;
+    Round 12 SPEC §7.2 decision 27)."""
     labels = data.get("labels") if isinstance(data.get("labels"), (list, tuple)) else []
     values = data.get("values") if isinstance(data.get("values"), (list, tuple)) else []
     pairs = [
         (_label_text(label), finite_number(values[i]) if i < len(values) else None)
         for i, label in enumerate(labels)
     ]
-    pairs.sort(key=lambda p: (p[1] is None, -(p[1] or 0), p[0]))
+    if data.get("ordered") is not True:
+        pairs.sort(key=lambda p: (p[1] is None, -(p[1] or 0), p[0]))
     return [p[0] for p in pairs], [p[1] for p in pairs]
+
+
+def _is_other_label(label: Any) -> bool:
+    return str(label).strip().lower() == "other"
+
+
+def _busiest_kept(items: list[Any], n: int, total: Any, is_other: Any, *, keep_other: bool = False) -> list[Any]:
+    """``items`` (in the producer's canonical order) reordered so the ``n`` that a clip
+    keeps come first: the busiest by ``total`` (not measured counts as nothing; ties by
+    position), then shown in the producer's order, "Other" last; the rest follow, still
+    in that order (Round 12 SPEC §7.2 decision 27: "when a top_n or the series bound
+    applies, the busiest values are kept and then shown in that order"). "Other" holds
+    the values already folded away, so it is kept only under the series bound
+    (``keep_other``), exactly as an unordered breakdown keeps it."""
+    if n >= len(items):
+        return list(items)
+    others = [i for i, item in enumerate(items) if is_other(item)] if keep_other else []
+    named = [i for i, item in enumerate(items) if not is_other(item)]
+    room = max(0, n - len(others))
+    ranked = sorted(named, key=lambda i: (-(total(items[i]) or 0), i))[:room]
+    if not keep_other and len(ranked) < n:
+        # Fewer named values than places: an "Other" fills the rest, as it would by volume.
+        ranked += [i for i, item in enumerate(items) if is_other(item)][: n - len(ranked)]
+    chosen = sorted(ranked, key=lambda i: (is_other(items[i]), i)) + others
+    picked = set(chosen)
+    return [items[i] for i in chosen] + [item for i, item in enumerate(items) if i not in picked]
 
 
 def _value_label(data: dict[str, Any], unit: str) -> str:
@@ -2511,6 +2540,11 @@ def _build_categories(artifact: Any, options: MaterialiseOptions, view: str, vie
     # The view's own limit is a clip like top_n, so it is disclosed the same way
     # (``total`` + caption) instead of being cut later by validation.
     n = min(n, MAX_TABLE_ROWS if view == "table" else MAX_POINTS)
+    if data.get("ordered") is True and n < len(labels):
+        # A canonical order (Critical, High…): the busiest values are kept, then shown
+        # in that order, never the first ones of the order.
+        pairs = _busiest_kept(list(zip(labels, values)), n, lambda p: p[1], lambda p: _is_other_label(p[0]))
+        labels, values = [p[0] for p in pairs], [p[1] for p in pairs]
     block = _base_block(artifact, options, views)
     dimension = _label_text(data.get("dimension"), MAX_LABEL) or None
     if view == "table":
@@ -2561,13 +2595,20 @@ def _series_rows(data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]],
     return x, series, x_kind == "time"
 
 
-def _series_order(series: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _series_order(series: list[dict[str, Any]], *, ordered: bool = False) -> list[dict[str, Any]]:
     """Descending total (not-measured points count as nothing), ties by label; a
-    series named "Other" always goes last (``--chart-8``)."""
+    series named "Other" always goes last (``--chart-8``). ``ordered`` keeps the
+    producer's order (a severity or verdict breakdown in its canonical order, Round 12
+    SPEC §7.2 decision 27), "Other" still last."""
+    def is_other(item: dict[str, Any]) -> bool:
+        return str(item.get("key")).lower() == "other" or str(item.get("label")).lower() == "other"
+
+    if ordered:
+        return sorted(series, key=is_other)
+
     def key(item: dict[str, Any]) -> tuple[bool, float, str]:
-        other = str(item.get("key")).lower() == "other" or str(item.get("label")).lower() == "other"
         total = sum(v for v in item["values"] if v is not None)
-        return (other, -total, str(item.get("label")))
+        return (is_other(item), -total, str(item.get("label")))
     return sorted(series, key=key)
 
 
@@ -2594,7 +2635,7 @@ def rebin_options(bucket: Any, unit: Any, x: list[Any]) -> list[str]:
 def _build_series(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
     data = artifact.data
     x, series, is_time = _series_rows(data)
-    series = _series_order(series)
+    series = _series_order(series, ordered=data.get("ordered") is True)
     unit = _unit(data.get("unit"))
     if len(series) > 1:
         # A sparkline draws exactly one series; never pick one silently.
@@ -2603,6 +2644,13 @@ def _build_series(artifact: Any, options: MaterialiseOptions, view: str, views: 
             view = views[0] if views else "line"
     available = len(series)
     keep = _top_n(options, available)
+    if data.get("ordered") is True and min(keep, MAX_SERIES) < available:
+        # A canonical order (severity, verdict…): the busiest series are kept, then drawn
+        # in that order; "Other" stays when the series bound (not a top_n) is the clip.
+        series = _busiest_kept(series, min(keep, MAX_SERIES),
+                               lambda s: sum(v for v in s["values"] if v is not None),
+                               lambda s: _is_other_label(s.get("key")) or _is_other_label(s.get("label")),
+                               keep_other=keep > MAX_SERIES)
     if keep > MAX_SERIES:
         others = [s for s in series[:keep] if str(s["key"]).lower() == "other"]
         keep_list = [s for s in series[:keep] if str(s["key"]).lower() != "other"][: MAX_SERIES - len(others)] + others
@@ -3411,19 +3459,22 @@ def _artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
         if btype == "chart":
             series = (block.get("series") or [{}])[0]
             x = block.get("x") or {}
+            # A stored block is already in its final order: a new view keeps it.
             return {"labels": list(x.get("values") or []), "values": list(series.get("values") or []),
-                    "unit": block.get("unit"), "dimension": x.get("label"), "value_label": series.get("label")}
+                    "unit": block.get("unit"), "dimension": x.get("label"), "value_label": series.get("label"),
+                    "ordered": True}
         labels, values = _table_column(block, "label"), _table_column(block, "value")
         if labels is None or values is None:
             return None
-        return {"labels": labels, "values": values, "unit": _column_unit(block, "value")}
+        return {"labels": labels, "values": values, "unit": _column_unit(block, "value"), "ordered": True}
     if kind == "series":
         if btype == "chart":
             x = block.get("x") or {}
             return {"x": list(x.get("values") or []), "series": list(block.get("series") or []),
                     "unit": block.get("unit"), "x_kind": x.get("kind"), "bucket": x.get("bucket"),
                     "x_label": x.get("label"), "last_in_progress": block.get("last_in_progress", False),
-                    "reference": block.get("reference"), "x_labels": x.get("labels"), "tz": x.get("tz")}
+                    "reference": block.get("reference"), "x_labels": x.get("labels"), "tz": x.get("tz"),
+                    "ordered": True}
         x_values = _table_column(block, _SERIES_X_COLUMN)
         if x_values is None:
             return None
@@ -3439,7 +3490,7 @@ def _artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
             unit = _unit(column.get("unit"), unit)
             series.append({"key": column.get("key"), "label": column.get("label"),
                            "values": _table_column(block, column.get("key")) or []})
-        return {"x": x_values, "series": series, "unit": unit, "x_kind": x_kind}
+        return {"x": x_values, "series": series, "unit": unit, "x_kind": x_kind, "ordered": True}
     if kind == "funnel":
         if btype == "chart":
             series = (block.get("series") or [{}])[0]

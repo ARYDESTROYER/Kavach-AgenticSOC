@@ -227,7 +227,7 @@ export const DecisionCard: React.FC<DecisionCardProps> = ({ c, rationale, timeli
 
       <p className="mt-3 text-xs text-muted-foreground">
         The close / escalate decision is made by deterministic code against the operator-
-        configured auto-close policy — never by raw model output.
+        configured auto-close policy, never by raw model output.
       </p>
 
       {/* --------------------------------------- the exact decide() inputs */}

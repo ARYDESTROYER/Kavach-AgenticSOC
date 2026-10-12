@@ -75,7 +75,7 @@ On a narrow composer, the scope chips merge into one **Scope · n** chip, the
 
 ### Time windows
 
-A question can name any window, of any length, and the lookups use it exactly:
+A question can name any window, of any length, and the lookups use it:
 
 - **All time**, for example "How many cases have we had in total?";
 - a rolling window, such as "the last 90 days", "the last 6 months", or "the past year";
@@ -112,10 +112,13 @@ and the run log shows the window of every lookup.
 
 Calendar periods use your organization's time zone (the time zone of the SLA targets
 under **Settings → General → SLA, priority & suppression**, UTC by default), and labels
-name the zone. A breakdown by a
-calendar unit covers whole periods: "by month for the last 6 months" covers six whole
-months, the current one marked as in progress, and the caption says so, for example
-"last 6 months (since May 2026)". Weeks start on Monday.
+name the zone. Case counts, metrics and AI cost count a rolling window in whole periods,
+broken down or not, so every figure in one answer covers the same span and says where it
+starts: "the last 90 days" is today and the 89 days before it, "last 90 days (since 15
+Jul 2026)", and "the last 6 months" is this month and the five before it, "last 6 months
+(since May 2026)", the current period marked as in progress. A window of hours, such as
+"the last 24 hours", is counted to the minute. A breakdown whose first period starts
+before the window says so, for example "Jul 2026 (from 15 Jul)". Weeks start on Monday.
 
 When you choose a range on the scope chip, a window the question asks for is kept
 inside it. A window that lies entirely outside the chip's range is refused instead of
@@ -616,7 +619,8 @@ Case Manager.
   Move to top, and Remove.
 
 Notes save shortly after you stop typing. If the report changed in another tab, the
-panel says "This report changed elsewhere — Reload" and keeps the note you typed.
+panel says "This report changed elsewhere" with a **Reload** button beside it, and keeps
+the note you typed.
 
 The template names the kind of report and frames its summary and exports:
 **Investigation**, **Threat hunt**, **Indicator report**, **Shift handoff**, **Posture

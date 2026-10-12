@@ -179,7 +179,7 @@ function autoCloseSummary(
   }
   if (!isFp) {
     return {
-      line: 'NEEDS_HUMAN and true-positive verdicts never auto-close — the auto-close bar applies to false positives only.',
+      line: 'NEEDS_HUMAN and true-positive verdicts never auto-close. The auto-close bar applies to false positives only.',
       tag: 'Held for a human',
     };
   }
@@ -196,10 +196,10 @@ function autoCloseSummary(
     };
   }
   if (!confOk) {
-    return { line: `Below the ${bar} auto-close confidence bar — held for a human.`, tag: 'Held for a human' };
+    return { line: `Below the ${bar} auto-close confidence bar, so it is held for a human.`, tag: 'Held for a human' };
   }
   return {
-    line: 'Above the confidence bar but risk exceeds the auto-close ceiling — held for a human.',
+    line: 'Above the confidence bar, but risk exceeds the auto-close ceiling, so it is held for a human.',
     tag: 'Held for a human',
   };
 }
@@ -502,7 +502,7 @@ const RelatedCrossSource: React.FC<{ c: Case; onNavigate?: Navigate; flat?: bool
           <>
             <p className="mb-3 text-xs text-muted-foreground">
               Grouped by a shared entity across sources within the cross-source window. These are
-              RELATED — they are never merged into this case.
+              RELATED. They are never merged into this case.
             </p>
             <ul className="space-y-2">
               {relatedIds.map((rid) => (
@@ -602,7 +602,7 @@ const AutomationApplied: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = fa
       <SectionHeading icon={Zap}>Automation applied</SectionHeading>
       <p className="mb-3 text-xs text-muted-foreground">
         Threshold-automation actions taken after the deterministic decision. These are
-        non-binding — automation can tag, recommend, notify, queue a re-investigation, or draft a
+        non-binding: automation can tag, recommend, notify, queue a re-investigation, or draft a
         proposal, but it never changes the lifecycle status or auto-closes a case.
       </p>
       <ul className="space-y-2">
@@ -1155,7 +1155,7 @@ export const OverviewPanel: React.FC<{
                 {c.recommended_action || DASH}
               </p>
               <p className="mt-2 text-xs text-muted-foreground">
-                Use the case action controls to close or escalate — the deterministic close /
+                Use the case action controls to close or escalate. The deterministic close /
                 escalate decision is always made by code, never by this panel.
               </p>
               {autoClose ? (
@@ -1340,7 +1340,7 @@ export const OverviewPanel: React.FC<{
                     tone="text-success"
                     label={
                       <>
-                        {ruledOut.length} check{ruledOut.length === 1 ? '' : 's'} came back clean — no
+                        {ruledOut.length} check{ruledOut.length === 1 ? '' : 's'} came back clean, with no
                         additional activity
                       </>
                     }
@@ -1387,7 +1387,7 @@ export const OverviewPanel: React.FC<{
                     icon={Shield}
                     label={
                       <>
-                        {mitre.length} MITRE technique{mitre.length === 1 ? '' : 's'} mapped — full detail
+                        {mitre.length} MITRE technique{mitre.length === 1 ? '' : 's'} mapped. Full detail is
                         on the Threat context tab
                       </>
                     }
@@ -1521,7 +1521,7 @@ export const OverviewPanel: React.FC<{
                 </dl>
                 <p className="text-xs text-muted-foreground">
                   The close / escalate call is made by deterministic code against the
-                  operator-configured policy — never by raw model output.
+                  operator-configured policy, never by raw model output.
                 </p>
               </>
             )}

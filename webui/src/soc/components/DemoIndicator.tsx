@@ -16,10 +16,16 @@
  * cluster. The mutations stay gated on `demo:manage`; a viewer without the grant still
  * sees the full safety copy.
  *
- * A11Y — ONE announcement: the shell's health pill already flips its live region to
- * "Demo mode" while demo is active, so this chip carries no live region of its own
- * where that pill is rendered. Below the desktop breakpoint the pill is not in the bar,
- * so the shell passes `announce` and the chip becomes the single polite announcer.
+ * ONE chip says "Demo mode". While demo is active the shell mutes platform health
+ * (the demo store is a throwaway in-memory one, so store warnings are expected) and
+ * shows no health pill in the bar: the muted health is part of THIS chip's story, told
+ * in its popover. A real backend outage still shows the health pill beside it.
+ *
+ * A11Y — ONE announcement: with the health pill out of the bar, the shell passes
+ * `announce` and this chip is the single polite announcer of the demo state at every
+ * width. On a narrow top bar the label folds away (container query on the bar,
+ * `@container/topbar`): the flask icon stays, with a tooltip and the full accessible
+ * name.
  *
  * Reads/writes go through the shared <DemoProvider>; on success it refreshes the
  * context so the rest of the console (cases store, cost suffix, health chip) flips
@@ -32,18 +38,20 @@ import { api } from '@/lib/api';
 import { badgeVariants } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
 import { cn } from '@/lib/cn';
 import { useDemo } from '@/soc/demo';
 import type { Navigate } from '@/soc/router';
+import { TOP_BAR_FOLD_HIDDEN } from '@/soc/top-bar-fold';
 import { useCan } from './Can';
 
 export interface DemoIndicatorProps {
   /** Shell navigation, used for the "Manage demo mode" deep-link into Settings. */
   onNavigate?: Navigate;
   /**
-   * Make this chip the polite live region for the demo state. The shell passes this
-   * only where its health pill (which already announces "Demo mode") is NOT rendered,
-   * so exactly one live region announces the state at any width.
+   * Make this chip the polite live region for the demo state. The shell passes it at
+   * every width: while demo is on, the health pill is not in the bar, so exactly one
+   * live region announces the state.
    */
   announce?: boolean;
 }
@@ -72,7 +80,7 @@ export const DemoIndicator: React.FC<DemoIndicatorProps> = ({ onNavigate, announ
     try {
       await api.demo.disable();
       await refresh();
-      toast.success('Demo mode exited — synthetic data cleared.');
+      toast.success('Demo mode exited. Synthetic data cleared.');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Could not exit demo mode.');
     } finally {
@@ -93,21 +101,35 @@ export const DemoIndicator: React.FC<DemoIndicatorProps> = ({ onNavigate, announ
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          data-testid="demo-indicator"
-          aria-label="Demo mode active — synthetic data"
-          aria-live={announce ? 'polite' : undefined}
-          className={cn(
-            badgeVariants({ variant: 'warning' }),
-            'h-7 shrink-0 gap-1.5 font-normal hover:bg-warning/15',
-          )}
-        >
-          <FlaskConical className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span className="hidden lg:inline">Demo mode</span>
-        </button>
-      </PopoverTrigger>
+      {/* Its own provider: a tooltip must never be the reason a safety chip fails to
+          mount, wherever the chip is rendered (the shell, or alone in a test). */}
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                data-testid="demo-indicator"
+                aria-label="Demo mode active, synthetic data"
+                aria-live={announce ? 'polite' : undefined}
+                className={cn(
+                  badgeVariants({ variant: 'warning' }),
+                  'h-7 shrink-0 gap-1.5 whitespace-nowrap font-normal hover:bg-warning/15',
+                )}
+              >
+                <FlaskConical className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                {/* The label shows only where the top bar has room (62rem of bar, and it
+                    folds last when the bar is crowded); outside the bar there is no
+                    `topbar` container and the chip stays compact. */}
+                <span className={cn('hidden @[62rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.demo)}>
+                  Demo mode
+                </span>
+              </button>
+            </PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent>Demo mode</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
       <PopoverContent
         align="end"
         className="w-[min(22rem,calc(100vw-2rem))] space-y-3 text-xs leading-relaxed"
@@ -121,6 +143,11 @@ export const DemoIndicator: React.FC<DemoIndicatorProps> = ({ onNavigate, announ
             You are viewing a fully isolated {modeLabel} dataset. Real cases are hidden and
             nothing here costs money or touches your real cases or cursors. Disabling restores
             your real state intact.
+          </p>
+          <p className="mt-1 text-muted-foreground" data-testid="demo-indicator-health-note">
+            Platform health checks are muted while demo mode is on: its data lives in a
+            throwaway in-memory store, so store warnings are expected. A backend outage still
+            shows in the top bar.
           </p>
         </div>
 

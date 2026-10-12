@@ -19,6 +19,7 @@ import { api } from '@/lib/api';
 import { copyText } from '@/lib/clipboard';
 import { cn } from '@/lib/cn';
 import { humanizeAge } from '@/lib/format';
+import { CASE_TAG_MAX_COUNT, caseTagError } from '@/lib/tags';
 import type { Case, SlaPolicy } from '@/lib/types';
 
 import { Badge } from '@/ui/badge';
@@ -161,18 +162,27 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
   const [assigningSelf, setAssigningSelf] = React.useState(false);
 
   const saveTags = React.useCallback(
-    async (next: string[]) => {
+    async (next: string[]): Promise<boolean> => {
       setSavingTags(true);
       try {
         onCaseChange(await api.caseTags(c.case_id, next));
+        return true;
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not save the tags.');
+        return false;
       } finally {
         setSavingTags(false);
       }
     },
     [c.case_id, onCaseChange],
   );
+  // A tag over the limit is refused here, as it is typed, never cut to fit.
+  const tagDraftError = caseTagError(tagDraft);
+  const tagErrorId = React.useId();
+  // A case holds at most CASE_TAG_MAX_COUNT tags (the server refuses more): at the cap
+  // the field says so instead of letting an Add fail.
+  const tagsFull = tags.length >= CASE_TAG_MAX_COUNT;
+  const tagsFullId = React.useId();
 
   const assignToMe = React.useCallback(async () => {
     if (!currentUser) return;
@@ -355,27 +365,56 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
           )}
           {canTag ? (
             <form
-              className="flex items-center gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
                 const value = tagDraft.trim();
-                if (!value || tags.includes(value)) return;
-                setTagDraft('');
-                void saveTags([...tags, value]);
+                if (!value || tagDraftError || tagsFull) return;
+                if (tags.includes(value)) {
+                  setTagDraft('');
+                  return;
+                }
+                // The text stays in the field until the save lands, so a refused save
+                // never loses what was typed.
+                void saveTags([...tags, value]).then((saved) => {
+                  if (saved) setTagDraft('');
+                });
               }}
             >
-              <Input
-                value={tagDraft}
-                onChange={(event) => setTagDraft(event.target.value)}
-                placeholder="Add a tag"
-                aria-label="New tag"
-                className="h-8"
-                maxLength={40}
-              />
-              <Button type="submit" size="sm" variant="outline" disabled={!tagDraft.trim() || savingTags}>
-                <Plus className="h-3.5 w-3.5" aria-hidden />
-                Add
-              </Button>
+              <div className="flex items-center gap-2">
+                <Input
+                  value={tagDraft}
+                  onChange={(event) => setTagDraft(event.target.value)}
+                  placeholder={tagsFull ? undefined : 'Add a tag'}
+                  aria-label="New tag"
+                  aria-invalid={tagDraftError ? true : undefined}
+                  aria-describedby={
+                    [tagDraftError ? tagErrorId : null, tagsFull ? tagsFullId : null].filter(Boolean).join(' ') ||
+                    undefined
+                  }
+                  disabled={tagsFull && !tagDraft}
+                  className="h-8"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="outline"
+                  disabled={!tagDraft.trim() || Boolean(tagDraftError) || tagsFull || savingTags}
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden />
+                  Add
+                </Button>
+              </div>
+              {tagDraftError ? (
+                <p id={tagErrorId} role="alert" className="mt-1.5 text-xs font-medium text-critical-text">
+                  {tagDraftError}
+                </p>
+              ) : null}
+              {tagsFull ? (
+                <p id={tagsFullId} className="mt-1.5 text-xs text-muted-foreground">
+                  A case can hold up to {CASE_TAG_MAX_COUNT} tags, and this one has {tags.length}. Remove
+                  one to add another.
+                </p>
+              ) : null}
             </form>
           ) : null}
         </PopoverContent>

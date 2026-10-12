@@ -19,16 +19,23 @@ import { Table, TableHead, TableHeader, TableRow } from '@/ui/table';
 const tokens = (cls: string) => cls.split(/\s+/).filter(Boolean);
 
 describe('material recipes', () => {
-  it('keep a ≥0.80 fill, blur only where supported, and carry the fallback marker', () => {
+  it('keep a ≥0.97 fill with or without blur support, blur only where supported, and carry the fallback marker', () => {
+    // The fill alone must hide what scrolls beneath: in Chromium the backdrop blur does
+    // not reach routed content, so a 0.80 fill let chart labels and card text read
+    // through (Round 12 screenshot tour).
+    const fillOf = (c: string): number | null => {
+      const m = /\/(?:(\d+)|\[(0?\.\d+)\])$/.exec(c);
+      if (!m) return null;
+      return m[1] !== undefined ? Number(m[1]) / 100 : Number(m[2]);
+    };
     for (const recipe of [materialBar, materialThick]) {
       const t = tokens(recipe);
       expect(t).toContain('material-surface');
-      const fills = t
-        .map((c) => /\/(\d+)$/.exec(c))
-        .filter((m): m is RegExpExecArray => m !== null)
-        .map((m) => Number(m[1]));
+      const fills = t.map(fillOf).filter((f): f is number => f !== null);
       expect(fills.length).toBeGreaterThan(0);
-      for (const f of fills) expect(f).toBeGreaterThanOrEqual(80);
+      for (const f of fills) expect(f).toBeGreaterThanOrEqual(0.97);
+      // One fill for every engine: no lighter `supports-[backdrop-filter]:` override.
+      expect(t.filter((c) => c.startsWith('supports-') && fillOf(c) !== null)).toEqual([]);
       // Blur is gated on support, so an engine without backdrop-filter gets a near-solid fill.
       expect(t.filter((c) => c.includes('backdrop-blur')).every((c) => c.startsWith('supports-'))).toBe(true);
     }
@@ -62,9 +69,12 @@ describe('shared sticky bars wear the one material', () => {
     );
     const sticky = Array.from(container.querySelectorAll('.sticky'));
     expect(sticky).toHaveLength(3);
+    // The recipe, whole, and no second page-local fill beside it (the old bars spelled
+    // their own `bg-background/95 backdrop-blur`, which none of the fallbacks reached).
+    const fills = (cls: string) => tokens(cls).filter((c) => /(^|:)bg-[a-z-]+\/(\d+|\[[\d.]+\])$/.test(c));
     for (const el of sticky) {
-      expect(el).toHaveClass('material-surface');
-      expect(el.className).not.toMatch(/bg-background\/95/);
+      for (const token of tokens(materialBar)) expect(el).toHaveClass(token);
+      expect(fills(el.className)).toEqual(fills(materialBar));
     }
 
     rerender(

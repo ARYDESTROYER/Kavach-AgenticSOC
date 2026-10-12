@@ -117,6 +117,7 @@ import { useUpstreamReleaseUpdates } from './hooks/useUpstreamReleaseUpdates';
 import { useHasUnsavedChanges } from './hooks/useDirtyDraft';
 import { useIsMobile } from './hooks/useMediaQuery';
 import { usePrefersReducedMotion } from './hooks/usePrefersReducedMotion';
+import { TOP_BAR_FOLD_HIDDEN, useTopBarFold } from './top-bar-fold';
 import { JobMonitor } from './jobs/JobMonitor';
 import { ActivityGlyph } from './chat-activity/glyph';
 import { useChatActivity } from './chat-activity/store';
@@ -210,6 +211,36 @@ function unavailablePalette(onUnavailable: () => void): React.ComponentType<Comm
  * screen ≥1536px. The two are a matched pair; `route-visual-standard.test.ts` pins them.
  */
 const CONTENT_INSET = 'mx-auto w-full min-w-0 px-4 py-6 sm:px-6';
+
+/**
+ * The order in which the top bar gives way, measured on the BAR (`@container/topbar`),
+ * never the viewport: the rail decides the bar's width as much as the window does (1440
+ * with the rail pinned leaves the bar 1200px, 768 leaves it 528px). Tailwind needs the
+ * literal classes (`@[62rem]/topbar:inline`), so these values are documentation the
+ * shell test pins against the source.
+ *
+ * Nothing in the bar wraps or squeezes: the right cluster is `shrink-0`, every chip is
+ * `whitespace-nowrap`. The current page name has priority over all of it. In order:
+ *   1. the search field shrinks with the bar, down to `TOP_BAR_SEARCH_MIN_REM` (11rem);
+ *   2. then labels fold by what is actually in the bar (`useTopBarFold`, least important
+ *      first: product name, account name, source, update, health, demo), so a crowded
+ *      chip set gives way before the field drops under 11rem;
+ *   3. below `product` the product name leaves the breadcrumb (the rail carries the logo);
+ *   4. below `labels` the chips go icon-only (Demo mode, Health, Update, Source, the
+ *      account name), each keeping a tooltip and its full accessible name;
+ *   5. a field narrower than 9.5rem of its own width shows only its icon, never a
+ *      clipped "S…", and below `search` it becomes the icon opener in the cluster;
+ *   6. below `overflow` appearance, the account menu and a source notice move into the
+ *      Console controls sheet (mobile always uses that sheet). The notification bell
+ *      stays in the bar at every desktop width, with its unread, jobs and health marks.
+ * Release identity, the demo chip and an actionable update stay in the bar throughout.
+ */
+export const TOP_BAR_TIERS = {
+  overflow: '40rem',
+  search: '46rem',
+  labels: '62rem',
+  product: '72rem',
+} as const;
 
 /**
  * The shell reads Agent health over a FIXED window. Unlike the dashboard host it replaced,
@@ -545,7 +576,7 @@ export function ReleaseBadge({
           aria-label={ariaLabel}
           className={cn(
             badgeVariants({ variant: tone }),
-            'h-7 shrink-0 gap-1.5 font-normal tabular-nums',
+            'h-7 shrink-0 gap-1.5 whitespace-nowrap font-normal tabular-nums',
           )}
         >
           <span>v{release.version}</span>
@@ -638,14 +669,20 @@ export function DeploymentUpdateButton({
             type="button"
             size="sm"
             data-testid="deployment-update-button"
-            className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+            className="h-7 shrink-0 gap-1.5 whitespace-nowrap px-2.5 text-xs"
             aria-label={accessibleLabel}
             disabled={activating}
             onClick={() => setOpen(true)}
           >
             <RefreshCw className={cn('h-3.5 w-3.5', activating && 'animate-spin')} aria-hidden />
-            <span className="hidden xl:inline">{activating ? 'Checking…' : 'Update'}</span>
-            <span className="hidden 2xl:inline">v{target.version}</span>
+            {/* Widths follow the top bar (`@container/topbar`), not the viewport, and
+                fold with the update item when the bar is crowded (`useTopBarFold`). */}
+            <span className={cn('hidden @[62rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.update)}>
+              {activating ? 'Checking…' : 'Update'}
+            </span>
+            <span className={cn('hidden @[72rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.update)}>
+              v{target.version}
+            </span>
           </Button>
         </TooltipTrigger>
         <TooltipContent>{accessibleLabel}</TooltipContent>
@@ -686,7 +723,18 @@ export function DeploymentUpdateButton({
  * A source-only notice. It deliberately offers no activate/install action: a branch
  * observation is not a deployed release and cannot satisfy the same-origin preflight.
  */
-export function UpstreamSourceNoticeButton({ notice }: { notice: UpstreamReleaseNotice }) {
+export function UpstreamSourceNoticeButton({
+  notice,
+  inTopBar = false,
+}: {
+  notice: UpstreamReleaseNotice;
+  /**
+   * The inline top-bar instance: it compacts with the bar (`@container/topbar`) and
+   * hands over to the Console controls sheet below 40rem of bar. The sheet's own
+   * instance keeps its full label.
+   */
+  inTopBar?: boolean;
+}) {
   const { candidate, kind } = notice;
   const versionLabel = candidate.version ? `v${candidate.version}` : 'a new revision';
   const accessibleLabel =
@@ -704,12 +752,21 @@ export function UpstreamSourceNoticeButton({ notice }: { notice: UpstreamRelease
               size="sm"
               variant="outline"
               data-testid="upstream-source-notice"
-              className="h-7 shrink-0 gap-1.5 border-warning/40 px-2.5 text-xs text-warning-text"
+              className={cn(
+                'h-7 shrink-0 gap-1.5 whitespace-nowrap border-warning/40 px-2.5 text-xs text-warning-text',
+                inTopBar && 'hidden @[40rem]/topbar:inline-flex',
+              )}
               aria-label={accessibleLabel}
             >
               <GitBranch className="h-3.5 w-3.5" aria-hidden />
-              <span className="hidden 2xl:inline">Source</span>
-              <span>{kind === 'version' ? versionLabel : 'differs'}</span>
+              <span className={cn('hidden @[72rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.source)}>
+                Source
+              </span>
+              <span
+                className={cn(inTopBar && ['hidden @[62rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.source])}
+              >
+                {kind === 'version' ? versionLabel : 'differs'}
+              </span>
             </Button>
           </PopoverTrigger>
         </TooltipTrigger>
@@ -848,14 +905,27 @@ const UserMenu: React.FC<{
         <button
           type="button"
           className={cn(
-            'inline-flex items-center gap-2 rounded-md border border-border/80 bg-card py-1 pl-1 pr-2 text-xs',
+            'inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-border/80 bg-card py-1 pl-1 pr-1 text-xs @[62rem]/topbar:pr-2 group-data-[fold~=account]/topbar:pr-1',
             'transition-colors hover:bg-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           )}
           aria-label="Open account menu"
         >
           <UserAvatar src={profile?.avatar} name={display} />
-          <span className="hidden max-w-[140px] truncate font-medium lg:inline">{display}</span>
-          <ChevronDown className="hidden h-3.5 w-3.5 text-muted-foreground lg:inline" aria-hidden />
+          <span
+            className={cn(
+              'hidden max-w-[140px] truncate font-medium @[62rem]/topbar:inline',
+              TOP_BAR_FOLD_HIDDEN.account,
+            )}
+          >
+            {display}
+          </span>
+          <ChevronDown
+            className={cn(
+              'hidden h-3.5 w-3.5 text-muted-foreground @[62rem]/topbar:inline',
+              TOP_BAR_FOLD_HIDDEN.account,
+            )}
+            aria-hidden
+          />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
@@ -998,6 +1068,10 @@ export const AppShell: React.FC<AppShellProps> = ({
   const [compactControlsOpen, setCompactControlsOpen] = React.useState(false);
   const paletteReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const mobileNavRef = React.useRef<HTMLDivElement>(null);
+  // The top bar folds chip labels by what is actually in it (see top-bar-fold.ts).
+  const topBarRef = React.useRef<HTMLDivElement>(null);
+  const topBarSearchRef = React.useRef<HTMLButtonElement>(null);
+  useTopBarFold(topBarRef, topBarSearchRef);
   const isMobile = useIsMobile();
   const reducedMotion = usePrefersReducedMotion();
   // The mobile menu button carries the chat activity glyph (the nav is off-canvas there).
@@ -1233,15 +1307,17 @@ export const AppShell: React.FC<AppShellProps> = ({
   // state runs in a throwaway in-memory store, so a "Store degraded"/unreachable
   // warning is expected and irrelevant — MUTE it to a calm demo note rather than
   // alarming the operator. The backend-unreachable critical state still shows.
+  // The top bar then shows no health pill at all (the demo chip owns the state and says
+  // health is muted); this view is what the Console controls sheet restates.
   const demoMutedHealth = demoActive && baseHv.tone !== 'critical';
   const hv: HealthView =
     demoMutedHealth
       ? {
           tone: 'muted',
-          label: 'Demo mode',
+          label: 'Health checks muted',
           icon: Database,
           detail: 'Synthetic data (in-memory)',
-          title: 'Demo mode — health checks muted',
+          title: 'Health checks muted in demo mode',
           help:
             "Demo mode is active, so the platform's own state runs in a throwaway " +
             'in-memory store. Store warnings are expected and muted here. Exit demo ' +
@@ -1464,11 +1540,16 @@ export const AppShell: React.FC<AppShellProps> = ({
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Top bar — frosted command-center chrome (GlassSurface honours
             prefers-reduced-transparency by falling back to a solid surface). */}
+        {/* The bar is a size container (`@container/topbar`): what fits depends on the
+            width the bar actually has, which the rail decides as much as the viewport
+            (1440 with the rail pinned leaves the bar 1200px). TOP_BAR_TIERS documents the
+            order in which things give way; the current page name never does. */}
         <GlassSurface
+          ref={topBarRef}
           as="header"
           blur="md"
           rim={false}
-          className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border px-2 sm:gap-3 sm:px-4"
+          className="group/topbar @container/topbar sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border px-2 sm:gap-3 sm:px-4"
         >
           {isMobile ? (
             <Button
@@ -1490,21 +1571,54 @@ export const AppShell: React.FC<AppShellProps> = ({
             </span>
           ) : null}
 
-          {/* Breadcrumb: OUR product name / current page (plain text — untrusted). */}
-          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
-            <span className="hidden truncate font-semibold text-foreground sm:inline">{productName}</span>
-            <span className="hidden text-muted-foreground sm:inline" aria-hidden>
+          {/* Breadcrumb: OUR product name / current page (plain text — untrusted).
+              The page name has priority over everything else in the bar and never wraps.
+              While the search field shows (46rem of bar and up) the nav does not shrink
+              at all: the field absorbs every squeeze. Any shrink share, however small,
+              is not enough: flex shrink is weighted by basis, the field's basis is the
+              whole bar, and even a 0.01 factor took half a pixel off "Workspace" and
+              ellipsized it. Below that, with the field an icon and the cluster fixed, the
+              nav is the only thing that can give: a long name on a phone ("Automated scans
+              (legacy)" at 390) takes a second line in the 56px bar rather than an
+              ellipsis, and only a name past two lines is clipped, with its full name in
+              `title`. The product name is the first thing to go (below 72rem of bar, or
+              first to fold when the bar is crowded): the rail beside it already carries
+              the logo, and the name when expanded. */}
+          <nav
+            aria-label="Breadcrumb"
+            data-testid="top-bar-breadcrumb"
+            className="flex min-w-0 items-center gap-1.5 text-sm @[46rem]/topbar:shrink-0 @[46rem]/topbar:whitespace-nowrap"
+          >
+            <span
+              className={cn(
+                'hidden max-w-[12rem] truncate font-medium text-muted-foreground @[72rem]/topbar:block',
+                TOP_BAR_FOLD_HIDDEN.product,
+              )}
+            >
+              {productName}
+            </span>
+            <span
+              className={cn('hidden text-muted-foreground @[72rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.product)}
+              aria-hidden
+            >
               /
             </span>
-            <span className="truncate text-muted-foreground" aria-current="page">{pageLabel}</span>
+            <span
+              className="line-clamp-2 min-w-0 max-w-[16rem] break-words font-semibold leading-tight text-foreground"
+              aria-current="page"
+              title={pageLabel}
+            >
+              {pageLabel}
+            </span>
           </nav>
 
           {/* Wide search trigger — an input-styled button that opens the command palette
               (Cmd-K). It is CENTRED in the track between the breadcrumb and the right
-              cluster; on the narrowest widths it is hidden and the `md:hidden` icon
-              opener in the right cluster takes over. The visible placeholder is
-              decorative — the accessible name comes from `aria-label` so it stays
-              distinct from the mobile "Open search" opener.
+              cluster, and it is what gives way first: it shrinks with the bar, and below
+              46rem of bar (TOP_BAR_TIERS) it is hidden and the compact icon opener in the
+              right cluster takes over. The visible placeholder is decorative — the
+              accessible name comes from `aria-label` so it stays distinct from the
+              compact "Open search" opener.
 
               Centring is `w-full … max-w-* mx-auto`, NOT `flex-1`. A flex item cannot
               both absorb free space and be centred by auto margins — per flexbox, free
@@ -1518,41 +1632,63 @@ export const AppShell: React.FC<AppShellProps> = ({
               Optical, not geometric: the right cluster cannot shrink and nothing in it
               truncates, so the bar's true midpoint is unreachable without narrowing this
               trigger until it overflows at `md`. This centres it between its two
-              neighbours instead, which is the honest version of the ask. */}
+              neighbours instead, which is the honest version of the ask.
+
+              Its own size container (`@container/search`) too, because the bar's width
+              alone does not say how much room the chips leave it. Crowded chips fold
+              their labels before the field drops under 11rem (`useTopBarFold`), and if it
+              still ends up narrow it reads by its OWN width: the full placeholder from
+              19rem, "Search…" and the shortcut from 9.5rem, below that only the icon,
+              centred. It never shrinks past that icon (`min-w-9`) and clips nothing
+              outside itself, so it can never read "S…" or draw its hint over the bell. */}
           <button
+            ref={topBarSearchRef}
             type="button"
+            data-testid="top-bar-search"
             onClick={(event) => openPalette(event.currentTarget)}
             aria-label="Search cases, sources, and actions"
             aria-keyshortcuts="Control+K Meta+K"
             className={cn(
-              'mx-auto hidden h-9 w-full min-w-0 max-w-md items-center gap-2 rounded-md border border-input bg-background/60 px-3 text-sm text-muted-foreground transition-colors md:flex lg:max-w-2xl',
+              '@container/search mx-auto hidden h-9 w-full min-w-9 max-w-md items-center overflow-hidden rounded-md border border-input bg-background/60 text-sm text-muted-foreground transition-colors @[46rem]/topbar:flex lg:max-w-2xl',
               'hover:border-border-strong hover:text-foreground',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             )}
           >
-            <Search className="h-4 w-4 shrink-0" aria-hidden />
-            <span className="min-w-0 flex-1 truncate text-left">
-              Search cases, sources, actions…
+            <span className="flex w-full min-w-0 items-center justify-center gap-2 px-2 @[9.5rem]/search:justify-start @[9.5rem]/search:px-3">
+              <Search className="h-4 w-4 shrink-0" aria-hidden />
+              <span className="hidden min-w-0 flex-1 truncate text-left @[9.5rem]/search:block @[19rem]/search:hidden">
+                Search…
+              </span>
+              <span className="hidden min-w-0 flex-1 truncate text-left @[19rem]/search:block">
+                Search cases, sources, actions…
+              </span>
+              <kbd className="ml-1 hidden shrink-0 rounded border border-border bg-muted px-1 text-[10px] font-medium @[9.5rem]/search:inline-block">
+                ⌘K
+              </kbd>
             </span>
-            <kbd className="ml-1 hidden shrink-0 rounded border border-border bg-muted px-1 text-[10px] font-medium md:inline-block">
-              ⌘K
-            </kbd>
           </button>
 
-          {/* `ml-auto` only BELOW `md`. There the wide trigger is `display:none`, generates
-              no box and contributes no auto margins, so this is the only thing holding the
-              cluster against the right edge. At `md` and up the trigger's own `mx-auto`
-              does the centring, and a third auto margin here would split the free space in
-              thirds — a gap of 1/3 before the trigger and 2/3 after it, which is not
-              centred. Dropping it costs nothing: with all the free space consumed by the
-              trigger's margins, this cluster is still flush right. */}
-          <div className="ml-auto flex items-center gap-1 sm:gap-2 md:ml-0">
-            {/* Compact search opener for the narrowest widths, where the wide trigger
-                above is hidden (`md:hidden`). Opens the same command palette. */}
+          {/* `ml-auto` only while the wide trigger is hidden. Then it is `display:none`,
+              generates no box and contributes no auto margins, so this is the only thing
+              holding the cluster against the right edge. Once the trigger shows, its own
+              `mx-auto` does the centring, and a third auto margin here would split the free
+              space in thirds — a gap of 1/3 before the trigger and 2/3 after it, which is
+              not centred. Dropping it costs nothing: with all the free space consumed by
+              the trigger's margins, this cluster is still flush right.
+
+              `shrink-0`, and every control in it too: the cluster never squeezes (a 32px
+              icon button squeezed to 25px, a chip wrapped onto two lines). It COMPACTS
+              instead, by the container tiers and by the measured fold (`useTopBarFold`),
+              and what no longer fits moves to the Console controls sheet. Below 40rem of
+              bar its gaps tighten to 4px, which is what keeps a long page name on one
+              line beside the bell at 768 with the rail pinned. */}
+          <div className="ml-auto flex shrink-0 items-center gap-1 whitespace-nowrap @[40rem]/topbar:gap-2 @[46rem]/topbar:ml-0">
+            {/* Compact search opener, shown while the wide trigger above is hidden
+                (below 46rem of bar). Opens the same command palette. */}
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 md:hidden"
+              className="h-8 w-8 shrink-0 @[46rem]/topbar:hidden"
               onClick={(event) => openPalette(event.currentTarget)}
               aria-label="Open search"
               aria-keyshortcuts="Control+K Meta+K"
@@ -1565,16 +1701,24 @@ export const AppShell: React.FC<AppShellProps> = ({
                 {/* In-app notification bell (#8) — self-contained: polls the unread
                     count, opens a recent-items dropdown, links to the Inbox page. It
                     also HOSTS the pinned Agent-health section, which the shell derives
-                    (the bell must stay provider-free). */}
-                <NotificationBell onNavigate={onNavigate} healthDegradations={agentDegradations} />
+                    (the bell must stay provider-free). It stays in the bar at EVERY
+                    desktop width: its unread, active-jobs and health marks, and the
+                    counts in its accessible name, are the only place those show, so it
+                    never moves into the Console controls sheet on a desktop. */}
+                <NotificationBell
+                  onNavigate={onNavigate}
+                  healthDegradations={agentDegradations}
+                  className="shrink-0"
+                />
 
-                {/* Theme toggle */}
+                {/* Theme toggle: below 40rem of bar it moves into the Console controls
+                    sheet (Appearance). */}
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-8 w-8"
+                      className="hidden h-8 w-8 shrink-0 @[40rem]/topbar:inline-flex"
                       onClick={toggleTheme}
                       aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
                     >
@@ -1593,17 +1737,19 @@ export const AppShell: React.FC<AppShellProps> = ({
             {/* Demo mode — a safety-relevant state, so it stays INLINE in the bar at
                 every width (never folded into the compact-controls Sheet) and sits
                 beside the release badge with the other identity chips. Its popover
-                carries the isolation statement plus Reset / Exit & clear. It only
-                announces where the health pill below is absent, so a screen reader
-                hears the state exactly once. Renders nothing when demo is off. */}
-            <DemoIndicator onNavigate={onNavigate} announce={isMobile} />
+                carries the isolation statement, the muted health checks, and Reset /
+                Exit & clear. It is the ONE chip that says "Demo mode": while demo mutes
+                health, the health pill below steps aside (it used to repeat "Demo mode"
+                as a second chip), so the chip is also the one polite announcer of the
+                state at every width. Renders nothing when demo is off. */}
+            <DemoIndicator onNavigate={onNavigate} announce />
 
             {/* Release identity is build-time first, then reconciled with the public
                 backend build-info endpoint. It never infers Stable from SemVer. */}
             <ReleaseBadge buildInfo={buildInfo} />
 
             {!isMobile && sourceNotice && showSourceNotice ? (
-              <UpstreamSourceNoticeButton notice={sourceNotice} />
+              <UpstreamSourceNoticeButton notice={sourceNotice} inTopBar />
             ) : null}
 
             {showSystemUpdateDirect ? (
@@ -1623,108 +1769,135 @@ export const AppShell: React.FC<AppShellProps> = ({
               />
             ) : null}
 
-            {!isMobile ? (
-              <>
-                {/* Health pill — a click-to-open Popover with plain-language help.
-                    store_type/help text is backend-derived and rendered as PLAIN
-                    text only (never markup). */}
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      className={cn(
-                        'inline-flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1 text-xs font-medium',
-                        'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        TONE_PILL[hv.tone],
-                      )}
-                      aria-live="polite"
-                      aria-label={`Platform health: ${hv.label}`}
-                    >
-                      <HealthIcon className="h-3.5 w-3.5" aria-hidden />
-                      <span className="hidden lg:inline">{hv.label}</span>
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="end"
-                    className="w-[min(20rem,calc(100vw-2rem))] space-y-1.5 text-xs leading-relaxed"
-                  >
-                    <p className="flex items-center gap-1.5 font-semibold text-foreground">
-                      <HealthIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      {hv.title}
-                    </p>
-                    <p className="whitespace-pre-line text-muted-foreground">{hv.help}</p>
-                    <p className="border-t border-border pt-1.5 font-mono text-[11px] text-muted-foreground">
-                      {hv.detail}
-                    </p>
-                  </PopoverContent>
-                </Popover>
-
-                {/* User chip + menu (only when auth enabled + authenticated) */}
-                {username ? (
-                  <>
-                    <Separator orientation="vertical" className="hidden h-6 lg:block" />
-                    <UserMenu
-                      username={username}
-                      profile={profile}
-                      onNavigate={onNavigate}
-                      onLogout={onLogout}
-                    />
-                  </>
-                ) : null}
-              </>
-            ) : (
-              <Sheet open={compactControlsOpen} onOpenChange={setCompactControlsOpen}>
+            {/* Health pill — a click-to-open Popover with plain-language help.
+                store_type/help text is backend-derived and rendered as PLAIN text only
+                (never markup). Icon-only below 62rem of bar, with its state in a
+                tooltip and its accessible name. Not rendered while demo mode mutes
+                health: that state belongs to the demo chip, and two chips both reading
+                "Demo mode" said one thing twice. A real outage (critical) still shows. */}
+            {!isMobile && !demoMutedHealth ? (
+              <Popover>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <SheetTrigger asChild>
-                      <Button
+                    <PopoverTrigger asChild>
+                      <button
                         type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="relative h-8 w-8 shrink-0"
-                        aria-label="Open console controls"
+                        data-testid="top-bar-health"
+                        className={cn(
+                          'inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border bg-card px-2 text-xs font-medium @[62rem]/topbar:px-2.5 group-data-[fold~=health]/topbar:px-2',
+                          'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                          TONE_PILL[hv.tone],
+                        )}
+                        aria-live="polite"
+                        aria-label={`Platform health: ${hv.label}`}
                       >
-                        <SlidersHorizontal className="h-4 w-4" aria-hidden />
-                        {/* The mobile bell lives INSIDE this Sheet, so without a marker
-                            here a degradation would be invisible until the operator
-                            opened the panel. The aria-label is deliberately unchanged —
-                            the bell's own label carries the state to assistive tech at
-                            every width, and the shell's live region announces it. */}
-                        {agentDegradations.length > 0 ? (
-                          <span
-                            className="absolute -bottom-0.5 -right-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-warning px-[3px] text-2xs font-semibold leading-none text-warning-foreground"
-                            data-testid="compact-controls-health-marker"
-                            aria-hidden
-                          >
-                            <AlertTriangle className="size-2.5" />
-                          </span>
-                        ) : null}
-                      </Button>
-                    </SheetTrigger>
+                        <HealthIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                        <span className={cn('hidden @[62rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.health)}>
+                          {hv.label}
+                        </span>
+                      </button>
+                    </PopoverTrigger>
                   </TooltipTrigger>
-                  <TooltipContent>Console controls</TooltipContent>
+                  <TooltipContent>Platform health: {hv.label}</TooltipContent>
                 </Tooltip>
-                <SheetContent
-                  side="right"
-                  size="sm"
-                  data-testid="compact-console-controls"
-                  className="gap-0 overflow-y-auto"
+                <PopoverContent
+                  align="end"
+                  className="w-[min(20rem,calc(100vw-2rem))] space-y-1.5 text-xs leading-relaxed"
                 >
-                  <SheetHeader>
-                    <SheetTitle>Console controls</SheetTitle>
-                    <SheetDescription>
-                      Notifications, appearance, platform status, and account controls.
-                    </SheetDescription>
-                  </SheetHeader>
+                  <p className="flex items-center gap-1.5 font-semibold text-foreground">
+                    <HealthIcon className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                    {hv.title}
+                  </p>
+                  <p className="whitespace-pre-line text-muted-foreground">{hv.help}</p>
+                  <p className="border-t border-border pt-1.5 font-mono text-[11px] text-muted-foreground">
+                    {hv.detail}
+                  </p>
+                </PopoverContent>
+              </Popover>
+            ) : null}
 
-                  <div className="space-y-5 p-5">
-                    <section aria-labelledby="compact-preferences-title" className="space-y-2">
-                      <h3
-                        id="compact-preferences-title"
-                        className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-                      >
-                        Preferences
-                      </h3>
+            {/* User chip + menu (only when auth enabled + authenticated). Avatar only
+                below 62rem of bar, or when the bar is crowded; into the Console controls
+                sheet below 40rem. */}
+            {!isMobile && username ? (
+              <div className="hidden items-center gap-2 @[40rem]/topbar:flex">
+                <Separator
+                  orientation="vertical"
+                  className={cn('hidden h-6 @[62rem]/topbar:block', TOP_BAR_FOLD_HIDDEN.account)}
+                />
+                <UserMenu
+                  username={username}
+                  profile={profile}
+                  onNavigate={onNavigate}
+                  onLogout={onLogout}
+                />
+              </div>
+            ) : null}
+
+            {/* Console controls — the overflow for whatever no longer fits the bar: on
+                mobile always, and on a desktop bar narrower than 40rem (768 with the rail
+                pinned leaves the bar 528px). It holds appearance, platform health detail
+                and the account links, as normal buttons and sections, and on mobile the
+                notifications too (a desktop bar always keeps its bell). */}
+            <Sheet open={compactControlsOpen} onOpenChange={setCompactControlsOpen}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <SheetTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={cn('relative h-8 w-8 shrink-0', !isMobile && '@[40rem]/topbar:hidden')}
+                      aria-label="Open console controls"
+                    >
+                      <SlidersHorizontal className="h-4 w-4" aria-hidden />
+                      {/* The mobile bell lives INSIDE this Sheet, so without a marker
+                          here a degradation would be invisible until the operator
+                          opened the panel. The aria-label is deliberately unchanged —
+                          the bell's own label carries the state to assistive tech at
+                          every width, and the shell's live region announces it. On a
+                          desktop the bell stays in the bar with its own health mark, so
+                          this one would say the same thing twice. */}
+                      {isMobile && agentDegradations.length > 0 ? (
+                        <span
+                          className="absolute -bottom-0.5 -right-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-warning px-[3px] text-2xs font-semibold leading-none text-warning-foreground"
+                          data-testid="compact-controls-health-marker"
+                          aria-hidden
+                        >
+                          <AlertTriangle className="size-2.5" />
+                        </span>
+                      ) : null}
+                    </Button>
+                  </SheetTrigger>
+                </TooltipTrigger>
+                <TooltipContent>Console controls</TooltipContent>
+              </Tooltip>
+              <SheetContent
+                side="right"
+                size="sm"
+                data-testid="compact-console-controls"
+                className="gap-0 overflow-y-auto"
+              >
+                <SheetHeader>
+                  <SheetTitle>Console controls</SheetTitle>
+                  <SheetDescription>
+                    {isMobile
+                      ? 'Notifications, appearance, platform status, and account controls.'
+                      : 'Appearance, platform status, and account controls.'}
+                  </SheetDescription>
+                </SheetHeader>
+
+                <div className="space-y-5 p-5">
+                  <section aria-labelledby="compact-preferences-title" className="space-y-2">
+                    <h3
+                      id="compact-preferences-title"
+                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                    >
+                      Preferences
+                    </h3>
+                    {/* On a desktop the bell is already in the bar beside this sheet's
+                        opener; only the phone bar hands it over. */}
+                    {isMobile ? (
                       <div className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-border px-3">
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-foreground">Notifications</p>
@@ -1736,161 +1909,161 @@ export const AppShell: React.FC<AppShellProps> = ({
                           className="h-11 w-11 shrink-0"
                         />
                       </div>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-11 w-full justify-between px-3 font-normal"
-                        onClick={toggleTheme}
-                        aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-                      >
-                        <span className="flex items-center gap-2">
-                          {isDark ? (
-                            <Sun className="h-4 w-4" aria-hidden />
-                          ) : (
-                            <Moon className="h-4 w-4" aria-hidden />
-                          )}
-                          Appearance
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {isDark ? 'Dark' : 'Light'}
-                        </span>
-                      </Button>
-                    </section>
+                    ) : null}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-11 w-full justify-between px-3 font-normal"
+                      onClick={toggleTheme}
+                      aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+                    >
+                      <span className="flex items-center gap-2">
+                        {isDark ? (
+                          <Sun className="h-4 w-4" aria-hidden />
+                        ) : (
+                          <Moon className="h-4 w-4" aria-hidden />
+                        )}
+                        Appearance
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {isDark ? 'Dark' : 'Light'}
+                      </span>
+                    </Button>
+                  </section>
 
-                    {(showSourceNotice || showSystemUpdateInCompactControls) && (
-                      <section aria-labelledby="compact-maintenance-title" className="space-y-2">
-                        <h3
-                          id="compact-maintenance-title"
-                          className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-                        >
-                          Maintenance
-                        </h3>
-                        {sourceNotice && showSourceNotice ? (
-                          <div className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-border px-3">
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-foreground">Source revision</p>
-                              <p className="text-xs text-muted-foreground">Observed upstream only</p>
-                            </div>
-                            <UpstreamSourceNoticeButton notice={sourceNotice} />
-                          </div>
-                        ) : null}
-                        {showSystemUpdateInCompactControls ? (
-                          <div className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-border px-3">
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium text-foreground">System update</p>
-                              <p className="truncate text-xs text-muted-foreground">
-                                {updatePresentation.label}
-                              </p>
-                            </div>
-                            <SystemUpdateControl
-                              upgrade={deploymentUpgrade}
-                              hasUnsavedChanges={hasUnsavedChanges}
-                              canRollback={canRollbackSystemUpdates}
-                            />
-                          </div>
-                        ) : null}
-                      </section>
-                    )}
-
-                    <section aria-labelledby="compact-health-title" className="space-y-2">
+                  {(showSourceNotice || showSystemUpdateInCompactControls) && (
+                    <section aria-labelledby="compact-maintenance-title" className="space-y-2">
                       <h3
-                        id="compact-health-title"
+                        id="compact-maintenance-title"
                         className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
                       >
-                        Platform
+                        Maintenance
                       </h3>
-                      <div
-                        className="rounded-md border border-border p-3"
-                        role="status"
-                        // While demo mutes health to "Demo mode", the inline demo chip is
-                        // the single polite announcer at this breakpoint — this restated
-                        // card must not announce the same state a second time.
-                        aria-live={demoMutedHealth ? 'off' : 'polite'}
-                        aria-label={`Platform health: ${hv.label}`}
-                      >
-                        <p className="flex items-center gap-2 text-sm font-medium text-foreground">
-                          <span className={cn('inline-flex rounded-md border p-1.5', TONE_PILL[hv.tone])}>
-                            <HealthIcon className="h-4 w-4" aria-hidden />
-                          </span>
-                          {hv.label}
-                        </p>
-                        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{hv.help}</p>
-                        <p className="mt-2 border-t border-border pt-2 font-mono text-xs text-muted-foreground">
-                          {hv.detail}
-                        </p>
-                      </div>
-                    </section>
-
-                    {username ? (
-                      <section aria-labelledby="compact-account-title" className="space-y-2">
-                        <h3
-                          id="compact-account-title"
-                          className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
-                        >
-                          Account
-                        </h3>
-                        <div className="flex items-center gap-3 rounded-md border border-border p-3">
-                          <UserAvatar
-                            src={profile?.avatar}
-                            name={accountDisplay}
-                            className="h-9 w-9 text-xs"
-                          />
+                      {sourceNotice && showSourceNotice ? (
+                        <div className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-border px-3">
                           <div className="min-w-0">
-                            <p className="truncate text-sm font-medium text-foreground">{accountDisplay}</p>
+                            <p className="text-sm font-medium text-foreground">Source revision</p>
+                            <p className="text-xs text-muted-foreground">Observed upstream only</p>
+                          </div>
+                          <UpstreamSourceNoticeButton notice={sourceNotice} />
+                        </div>
+                      ) : null}
+                      {showSystemUpdateInCompactControls ? (
+                        <div className="flex min-h-11 items-center justify-between gap-3 rounded-md border border-border px-3">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-foreground">System update</p>
                             <p className="truncate text-xs text-muted-foreground">
-                              {accountRole ? `${accountRole} · @${username}` : `@${username}`}
+                              {updatePresentation.label}
                             </p>
                           </div>
+                          <SystemUpdateControl
+                            upgrade={deploymentUpgrade}
+                            hasUnsavedChanges={hasUnsavedChanges}
+                            canRollback={canRollbackSystemUpdates}
+                          />
                         </div>
-                        <div className="grid gap-1">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            className="h-11 justify-start gap-2 px-3 font-normal"
-                            onClick={() => navigateFromCompactControls('account')}
-                          >
-                            <UserCircle2 className="h-4 w-4" aria-hidden />
-                            Profile
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            className="h-11 justify-start gap-2 px-3 font-normal"
-                            onClick={() => navigateFromCompactControls('security')}
-                          >
-                            <ShieldCheck className="h-4 w-4" aria-hidden />
-                            Security &amp; two-factor
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            className="h-11 justify-start gap-2 px-3 font-normal"
-                            onClick={() => navigateFromCompactControls('sessions')}
-                          >
-                            <MonitorSmartphone className="h-4 w-4" aria-hidden />
-                            Sessions &amp; activity
-                          </Button>
-                          {onLogout ? (
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="h-11 justify-start gap-2 px-3 font-normal text-critical hover:text-critical"
-                              onClick={() => {
-                                setCompactControlsOpen(false);
-                                onLogout();
-                              }}
-                            >
-                              <LogOut className="h-4 w-4" aria-hidden />
-                              Log out
-                            </Button>
-                          ) : null}
+                      ) : null}
+                    </section>
+                  )}
+
+                  <section aria-labelledby="compact-health-title" className="space-y-2">
+                    <h3
+                      id="compact-health-title"
+                      className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                    >
+                      Platform
+                    </h3>
+                    <div
+                      className="rounded-md border border-border p-3"
+                      role="status"
+                      // While demo mutes health to "Demo mode", the inline demo chip is
+                      // the single polite announcer at this breakpoint — this restated
+                      // card must not announce the same state a second time.
+                      aria-live={demoMutedHealth ? 'off' : 'polite'}
+                      aria-label={`Platform health: ${hv.label}`}
+                    >
+                      <p className="flex items-center gap-2 text-sm font-medium text-foreground">
+                        <span className={cn('inline-flex rounded-md border p-1.5', TONE_PILL[hv.tone])}>
+                          <HealthIcon className="h-4 w-4" aria-hidden />
+                        </span>
+                        {hv.label}
+                      </p>
+                      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{hv.help}</p>
+                      <p className="mt-2 border-t border-border pt-2 font-mono text-xs text-muted-foreground">
+                        {hv.detail}
+                      </p>
+                    </div>
+                  </section>
+
+                  {username ? (
+                    <section aria-labelledby="compact-account-title" className="space-y-2">
+                      <h3
+                        id="compact-account-title"
+                        className="text-xs font-semibold uppercase tracking-wider text-muted-foreground"
+                      >
+                        Account
+                      </h3>
+                      <div className="flex items-center gap-3 rounded-md border border-border p-3">
+                        <UserAvatar
+                          src={profile?.avatar}
+                          name={accountDisplay}
+                          className="h-9 w-9 text-xs"
+                        />
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-foreground">{accountDisplay}</p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {accountRole ? `${accountRole} · @${username}` : `@${username}`}
+                          </p>
                         </div>
-                      </section>
-                    ) : null}
-                  </div>
-                </SheetContent>
-              </Sheet>
-            )}
+                      </div>
+                      <div className="grid gap-1">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-11 justify-start gap-2 px-3 font-normal"
+                          onClick={() => navigateFromCompactControls('account')}
+                        >
+                          <UserCircle2 className="h-4 w-4" aria-hidden />
+                          Profile
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-11 justify-start gap-2 px-3 font-normal"
+                          onClick={() => navigateFromCompactControls('security')}
+                        >
+                          <ShieldCheck className="h-4 w-4" aria-hidden />
+                          Security &amp; two-factor
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-11 justify-start gap-2 px-3 font-normal"
+                          onClick={() => navigateFromCompactControls('sessions')}
+                        >
+                          <MonitorSmartphone className="h-4 w-4" aria-hidden />
+                          Sessions &amp; activity
+                        </Button>
+                        {onLogout ? (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            className="h-11 justify-start gap-2 px-3 font-normal text-critical hover:text-critical"
+                            onClick={() => {
+                              setCompactControlsOpen(false);
+                              onLogout();
+                            }}
+                          >
+                            <LogOut className="h-4 w-4" aria-hidden />
+                            Log out
+                          </Button>
+                        ) : null}
+                      </div>
+                    </section>
+                  ) : null}
+                </div>
+              </SheetContent>
+            </Sheet>
           </div>
         </GlassSurface>
 

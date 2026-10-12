@@ -407,7 +407,7 @@ export function RunLogHeader({ live, open, onToggle, controls }: RunLogHeaderPro
   const lookups = live.steps.filter((step) => step.kind === 'tool').length;
   const state =
     live.connection === 'recovering'
-      ? 'Connection lost — checking whether the answer was saved'
+      ? 'Connection lost. Checking whether the answer was saved'
       : live.stopping
         ? 'Stopping after the current step'
         : live.waiting

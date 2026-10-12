@@ -19,11 +19,13 @@ backend can, else a streaming fold that keeps only counters) and turns the
 Windows (SPEC D7): no window means ALL TIME; ``window`` takes ``now-90d``, ``now-6M``,
 calendar periods (``last_month``, ``this_quarter``, ``ytd``…) in the operator
 timezone, and ISO ranges, of any length; ``window_hours`` stays as an alias. The
-request's time chip still clamps (an "All time" chip never does). A relative window
-broken down by a calendar unit is aligned to whole periods BEFORE anything is counted
-(:func:`plan_bucket`, the aggregator's own rule): "by month for the last 6 months" is
-May to October, the last month in progress, and the total, the series, the bucket
-labels and the compared periods all cover that one window.
+request's time chip still clamps (an "All time" chip never does). A relative window of
+days, weeks, months or years is aligned to whole periods of its own unit BEFORE anything
+is counted, broken down or not (:func:`common.whole_periods`): "the last 6 months" is
+May to October, the last month in progress, "the last 90 days" today and the 89 days
+before it, and the total, the series, the bucket labels, the groups and the compared
+periods all cover that one window, the same one every other lookup of it in the answer
+counts (Round 12 SPEC §7.2 decision 28).
 
 A store failure mid-scan is a PARTIAL result (``exact: false``): the counted share is
 stated, never a smaller number presented as exact. Group values from rules, assignees,
@@ -53,6 +55,7 @@ from .common import (
     resolve_window,
     text,
     visible_text,
+    whole_periods,
 )
 from .periods import (
     Period,
@@ -320,6 +323,75 @@ def group_label(field: str, value: Any) -> str:
     return visible_text(raw, 200) or "(none)"
 
 
+#: Group values with ONE canonical order (Round 12 SPEC §7.2 decision 27): the severity
+#: ladder, the verdicts, the case lifecycle and the priority ladder read the same way in
+#: every breakdown, chart legend, table, export and report ("Critical, High, Medium, Low,
+#: Info"), whatever each value's volume, so a reader never has to hunt for "Critical".
+#: A value outside the order (or a missing one) follows the known values.
+CANONICAL_ORDER: dict[str, tuple[str, ...]] = {
+    "severity": ("critical", "high", "medium", "low", "info"),
+    "verdict": ("true_positive", "false_positive", "needs_human"),
+    "status": ("new", "open", "needs_human", "investigating", "escalated", "on_hold", "resolved", "closed"),
+    "priority": ("p1", "p2", "p3", "p4"),
+}
+_SEMANTIC_VERDICTS = ("true_positive", "false_positive", "needs_human")
+
+
+def _raw_key(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw).strip().lower() if raw not in (None, "") else ""
+
+
+def canonical_rank(field: str, value: Any) -> int | None:
+    """``value``'s position in ``field``'s canonical order (after every known value when
+    it is unknown or missing); ``None`` when ``field`` has no canonical order."""
+    order = CANONICAL_ORDER.get(field)
+    if order is None:
+        return None
+    key = _raw_key(value)
+    return order.index(key) if key in order else len(order)
+
+
+def series_semantic(field: str, value: Any) -> str | None:
+    """The palette key a chart series of ``field`` = ``value`` is coloured by (webui
+    ``palette.ts``): a severity in its severity colour (Critical is never green), a
+    verdict in its verdict colour, a case with no verdict as ``undetermined`` (the
+    neutral ink). ``None`` for every other field: the status axis shares one colour
+    between states (resolved and closed, awaiting analyst and on hold), so a status chart
+    keeps the categorical palette, in lifecycle order."""
+    key = _raw_key(value)
+    if field == "severity":
+        return key if key in CANONICAL_ORDER["severity"] else None
+    if field == "verdict":
+        if not key:
+            return "undetermined"
+        return key if key in _SEMANTIC_VERDICTS else None
+    return None
+
+
+def canonical_rows(rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    """``rows`` with every canonical grouping in its canonical order: grouped by the first
+    field (its canonical order, else the order its values first appear in, which is by
+    volume), then by the second field's canonical order; rows that tie keep the order
+    they came in (by volume)."""
+    if not any(f in CANONICAL_ORDER for f in fields):
+        return list(rows)
+    first_seen: dict[str, int] = {}
+    for row in rows:
+        first_seen.setdefault(_raw_key(_key_of(row, fields[0])), len(first_seen))
+
+    def key(row: dict[str, Any]) -> tuple[int, ...]:
+        out = []
+        for i, f in enumerate(fields):
+            rank = canonical_rank(f, _key_of(row, f))
+            if rank is None:
+                rank = first_seen[_raw_key(_key_of(row, f))] if i == 0 else 0
+            out.append(rank)
+        return tuple(out)
+
+    return sorted(rows, key=key)
+
+
 def window_caption_label(result: Any, window: Window) -> str:
     """The aggregate's own refined window label ("all time (since 3 Nov 2025)") when
     the window was not clamped, else the window's label."""
@@ -437,11 +509,12 @@ def plan_bucket(window: Window, bucket: str, *, explicit: bool = True) -> tuple[
 
     The unit is ``bucket`` unless it would draw more than :data:`MAX_SERIES_POINTS`
     points over a bounded window (then the finest unit that fits, never a cut series).
-    The window is aligned to whole periods of that unit exactly as the aggregators
-    align it (:func:`common.align_to_bucket`): "the last 6 months by month" is May to
-    October, its label says "since May 2026", and the headline total, the series, the
-    bucket labels and the compared periods all use that one window. An all-time window
-    has no known span: :func:`run_bucketed` checks it after the scan."""
+    The window is aligned exactly as the aggregators align it
+    (:func:`common.align_to_bucket`, the same start for every unit): "the last 6 months
+    by month" is May to October, its label says "since May 2026", and the headline
+    total, the series, the bucket labels and the compared periods all use that one
+    window. An all-time window has no known span: :func:`run_bucketed` checks it after
+    the scan."""
     if window.all_time:
         return window, bucket, None
     aligned = align_to_bucket(window, bucket)
@@ -690,6 +763,8 @@ class CaseStatsTool(ChatTool):
                                 minutes_ok=False)
         if isinstance(window, str):
             return ToolOutcome.failure(window)
+        # One start for every lookup of this window in the answer, broken down or not.
+        window = whole_periods(window)
         requested_bucket = bucket
         if bucket == "auto":
             bucket = _auto_bucket(window)
@@ -919,11 +994,14 @@ def _outcome(
         if note:
             observation["bucket_note"] = note
     if rows:
+        # Every group fits: list them in the order the chart and table show them
+        # (Critical, High, Medium, Low, Info), so the answer names them that way too.
+        listed = canonical_rows(rows, fields) if (fields and not bucket and len(rows) <= _OBS_GROUPS) else rows
         observation["groups"] = [
             {"key": {f: text(group_label(f, _key_of(g, f)), 200) for f in fields} if fields else {},
              "bucket": text(g.get("bucket"), 40) if g.get("bucket") is not None else None,
              "metrics": {m: metric_value(m, _metrics_of(g).get(m)) for m in metrics}}
-            for g in rows[:_OBS_GROUPS] if not (bucket and _count_of(g) == 0 and fields)
+            for g in listed[:_OBS_GROUPS] if not (bucket and _count_of(g) == 0 and fields)
         ]
         if len(rows) > _OBS_GROUPS:
             observation["groups_listed"] = _OBS_GROUPS
@@ -1005,15 +1083,18 @@ def _series_artifacts(
         return [], partial_info
     index = {label: i for i, label in enumerate(labels)}
     out: list[Artifact] = []
+    canonical = False
     if fields:
         field = fields[0]
         per: dict[str, list[float]] = {}
         totals: dict[str, float] = {}
+        raw_of: dict[str, Any] = {}
         for g in rows:
             slot = index.get(str(g.get("bucket")))
             if slot is None:
                 continue
             name = group_label(field, _key_of(g, field))
+            raw_of.setdefault(name, _key_of(g, field))
             per.setdefault(name, [0] * len(labels))[slot] += _count_of(g)
             totals[name] = totals.get(name, 0) + _count_of(g)
         rest = [0] * len(labels)
@@ -1022,8 +1103,20 @@ def _series_artifacts(
             if slot is not None:
                 rest[slot] += _count_of(g)
         ranked = sorted((k for k in totals if totals[k] > 0), key=lambda k: (-totals[k], k))
-        series = [{"key": f"s{i + 1}", "label": name, "values": per[name]}
-                  for i, name in enumerate(ranked[:_MAX_SERIES])]
+        # The busiest values are drawn (the rest fold into "Other"); a severity, verdict,
+        # status or priority breakdown then reads in its canonical order and a severity
+        # or verdict wears its palette colour (Critical is never a categorical green).
+        kept = ranked[:_MAX_SERIES]
+        canonical = field in CANONICAL_ORDER
+        if canonical:
+            kept.sort(key=lambda k: (canonical_rank(field, raw_of.get(k)), ranked.index(k)))
+        series = []
+        for i, name in enumerate(kept):
+            entry: dict[str, Any] = {"key": f"s{i + 1}", "label": name, "values": per[name]}
+            semantic = series_semantic(field, raw_of.get(name))
+            if semantic:
+                entry["semantic"] = semantic
+            series.append(entry)
         for name in ranked[_MAX_SERIES:]:
             rest = [a + b for a, b in zip(rest, per[name])]
         if any(rest):
@@ -1040,6 +1133,9 @@ def _series_artifacts(
         series = [{"key": "cases", "label": "Cases", "values": counts}]
         title = _BUCKET_TITLES[bucket]
     data = {**base, "series": series}
+    if canonical:
+        # Keep this order when the block is materialised (never re-ranked by volume).
+        data["ordered"] = True
     series_total = sum(sum(s["values"]) for s in series)
     if series_multi:
         # One line per rule (or technique): a case under two rules is on two lines, so
@@ -1103,6 +1199,8 @@ def _group_artifacts(
 ) -> list[Artifact]:
     out: list[Artifact] = []
     other_count = finite((other or {}).get("count")) if other else None
+    # Severity, verdict, status and priority rows read in their canonical order.
+    rows = canonical_rows(rows, fields)
     if len(fields) == 1:
         # The categories' own population ("Top 5 of 7" rules): the groups shown plus the
         # ones the top_n cut folded into "Other". ``total`` counts CASES, which the
@@ -1110,7 +1208,8 @@ def _group_artifacts(
         cut = bool(other_groups or other_count)
         field = fields[0]
         pairs = [(group_label(field, _key_of(g, field)), _count_of(g)) for g in rows]
-        data = categories(pairs, dimension=_GROUP_DIMENSIONS[field], other=other_count or None)
+        data = categories(pairs, dimension=_GROUP_DIMENSIONS[field], other=other_count or None,
+                          ordered=field in CANONICAL_ORDER)
         if overlap_note:
             # Not a partition: no donut, no share of a total.
             data["overlapping"] = True
@@ -1144,14 +1243,20 @@ def _comparison_rows(fields: list[str], metrics: tuple[str, ...], compared: list
     if fields:
         field = fields[0]
         per: dict[str, list[float]] = {}
+        raw_of: dict[str, Any] = {}
         for index, result in enumerate(compared):
             rows, _other = result_rows(result)
             for g in rows:
                 name = group_label(field, _key_of(g, field))
+                raw_of.setdefault(name, _key_of(g, field))
                 per.setdefault(name, [0.0] * len(compared))[index] += _count_of(g)
         ranked = sorted(per, key=lambda k: (-per[k][-1], -sum(per[k]), k))
+        kept = ranked[:MAX_TOP_N]
+        if field in CANONICAL_ORDER:
+            # The busiest values, in their canonical order (Critical, High, Medium…).
+            kept.sort(key=lambda k: (canonical_rank(field, raw_of.get(k)), ranked.index(k)))
         return [comparison_row(f"r{i + 1}", name, per[name], unit="count")
-                for i, name in enumerate(ranked[:MAX_TOP_N])]
+                for i, name in enumerate(kept)]
     rows = [comparison_row("count", "Cases", [int(getattr(r, "total", 0) or 0) for r in compared], unit="count",
                            good="none")]
     for metric in metrics:
@@ -1171,6 +1276,7 @@ def _comparison_rows(fields: list[str], metrics: tuple[str, ...], compared: list
 
 __all__ = [
     "AGGREGATE_TOOL_TIMEOUT_S",
+    "CANONICAL_ORDER",
     "CaseStatsInput",
     "CaseStatsTool",
     "GROUP_FIELDS",
@@ -1178,6 +1284,8 @@ __all__ = [
     "basis_caption",
     "bucket_axis",
     "bucket_edges",
+    "canonical_rank",
+    "canonical_rows",
     "comparison_basis",
     "coarsened_note",
     "display_bucket_labels",
@@ -1195,5 +1303,6 @@ __all__ = [
     "metric_value",
     "progress_reporter",
     "run_case_aggregate",
+    "series_semantic",
     "zero_case_suggestions",
 ]

@@ -113,7 +113,11 @@
        pack raises these via theme.tsx; consumers (GlassSurface, shell) read them
        so 'quiet' renders identically to the pre-wave UI. */
     --glass-tint: var(--slate-2);  /* the surface tint a glass panel blurs over   */
-    --glass-opacity: 0.82;         /* fill opacity of a glass panel (0..1)         */
+    /* Fill opacity of a glass panel (0..1). 0.97, not the old 0.82: the top bar is the
+       Console's own material and the fill alone has to hide what scrolls under it (in
+       Chromium the backdrop blur does not reach routed content, see
+       lib/material-recipes.ts), so 0.82 let card text read through the top bar. */
+    --glass-opacity: 0.97;
     --glow-strength: 0;            /* 0 = no glow (quiet); command raises it       */
     --grid-opacity: 0;             /* 0 = no command-grid overlay (quiet)          */
 
@@ -234,7 +238,7 @@
     --accent2: 243 78% 78%;              /* #a09bf3 — the :root indigo, lifted for the navy ground */
     /* Material-pack chrome (quiet defaults; command raises via theme.tsx). */
     --glass-tint: var(--slate-1);
-    --glass-opacity: 0.96;
+    --glass-opacity: 0.97;
     --glow-strength: 0;
     --grid-opacity: 0;
 
@@ -580,17 +584,20 @@
      while content is actually scrolled underneath (`useScrollEdge` sets the flag).
      The fade is the bar's OWN colour (`--material-solid`: `--background` for
      `materialBar`, `--popover` for `materialThick`), so a thick sheet header never trails
-     a darker page-coloured band over the card content beneath it. */
+     a darker page-coloured band over the card content beneath it. It starts at the bar's
+     own fill (0.97, lib/material-recipes.ts) so there is no seam where the bar ends, and
+     runs 16px: text rising toward the bar dissolves into it instead of being cut by an
+     edge it can still be read across. */
   .material-surface[data-scrolled='true']::after {
     content: '';
     position: absolute;
     inset-inline: 0;
     top: 100%;
-    height: 12px;
+    height: 16px;
     pointer-events: none;
     background: linear-gradient(
       to bottom,
-      hsl(var(--material-solid, var(--background)) / 0.85),
+      hsl(var(--material-solid, var(--background)) / 0.97),
       hsl(var(--material-solid, var(--background)) / 0)
     );
   }

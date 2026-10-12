@@ -389,7 +389,7 @@ describe('CaseDetail — feedback-into-close (two separate POSTs, #3)', () => {
     // disposition picker is the 1st).
     const outcome = within(dialog).getByLabelText(/what actually happened/i);
     fireEvent.click(outcome);
-    fireEvent.click(await screen.findByRole('option', { name: /^false positive —/i }));
+    fireEvent.click(await screen.findByRole('option', { name: /^false positive: /i }));
 
     const submit = within(dialog).getByRole('button', { name: /^close case/i });
     await waitFor(() => expect(submit).not.toBeDisabled());

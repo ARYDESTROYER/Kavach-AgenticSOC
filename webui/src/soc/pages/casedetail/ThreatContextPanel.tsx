@@ -486,7 +486,7 @@ export const ThreatContextPanel: React.FC<{
             icon={Target}
             compact
             title="No indicator reputation"
-            description="No IOC reputation was available — enrichment may be off, uncached, or the indicators are internal."
+            description="No IOC reputation was available. Enrichment may be off or uncached, or the indicators are internal."
           />
         ) : (
           <div className="space-y-2">

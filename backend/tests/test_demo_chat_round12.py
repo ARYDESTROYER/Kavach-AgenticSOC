@@ -982,7 +982,9 @@ def test_a_true_positive_rate_question_leads_with_the_rate() -> None:
     (stats,) = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
     assert {"tp_rate", "fp_rate"} <= set(stats["metrics"]) and stats["window"] == "this_quarter"
     assert body.startswith("True-positive rate **13.3%** in Q4 2026, over 45 cases.")
-    assert "By AI verdict: False positive 34 and True positive 6." in body
+    # Verdicts are named in their canonical order, as the chart beside them is (SPEC
+    # §7.2 decision 27), never by volume.
+    assert "By AI verdict: True positive 6 and False positive 34." in body
 
 
 def test_ai_closes_lead_with_the_automatic_figure_and_entity_case_counts_are_exact() -> None:

@@ -197,7 +197,7 @@ const ROW_STATUS_TEXT = {
 function rowName(conversation: ChatConversationSummary): string {
   const count = conversation.message_count;
   const status = rowActivity(conversation);
-  return `${conversation.title || UNTITLED_CONVERSATION}${status ? `, ${ROW_STATUS_TEXT[status]}` : ''} — ${formatTimestamp(conversation.updated_at)} · ${count} ${count === 1 ? 'message' : 'messages'}`;
+  return `${conversation.title || UNTITLED_CONVERSATION}${status ? `, ${ROW_STATUS_TEXT[status]}` : ''}, ${formatTimestamp(conversation.updated_at)} · ${count} ${count === 1 ? 'message' : 'messages'}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -675,7 +675,7 @@ function SearchResults({ search, headingPrefix }: { search: HistoryRailSearch; h
               <button
                 type="button"
                 onClick={() => search.openHit(hit)}
-                aria-label={`${title}${snippet ? ` — ${snippet}` : ''}`}
+                aria-label={`${title}${snippet ? `: ${snippet}` : ''}`}
                 className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60"
               >
                 <span className="block truncate text-sm text-foreground">{title}</span>

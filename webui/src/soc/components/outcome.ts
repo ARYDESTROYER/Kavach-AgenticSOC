@@ -209,7 +209,7 @@ export function aiHeadline(verdict: unknown, status: unknown): string {
   else if (s === 'closed') tail = 'closed';
   const canonical = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, ' ').trim();
   if (!tail || v === s || canonical(lead) === canonical(tail)) return lead;
-  return `${lead} — ${tail}`;
+  return `${lead}, ${tail}`;
 }
 
 /** "AI verdict: Needs human review (75%)" — null when there is no verdict. */

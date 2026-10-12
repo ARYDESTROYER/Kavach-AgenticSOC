@@ -129,7 +129,7 @@ export const AssigneePicker: React.FC<{
   return (
     <div className="flex items-center gap-2">
       <Input
-        placeholder="Unassigned — type to assign…"
+        placeholder="Unassigned. Type to assign…"
         value={free}
         disabled={!canWrite}
         onChange={(e) => setFree(e.target.value)}

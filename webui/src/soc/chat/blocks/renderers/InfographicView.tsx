@@ -29,14 +29,15 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
-import { KpiTile, KpiTileGrid } from '@/soc/components/KpiTile';
+import { KpiTile, KpiTileGrid, type KpiDelta } from '@/soc/components/KpiTile';
 import { token } from '@/soc/components/palette';
 
 import { sectionAnchorId, useBlocks } from '../context';
-import { DASH, captionStatesCount, formatDelta, formatUtc, formatValue, truncationNote } from '../format';
+import { DASH, captionStatesCount, formatUtc, formatValue, truncationNote } from '../format';
 import type { KpiGroupBlock, KpiItem, LeafBlock, ReportBlock } from '../schema';
 import { TrendColumns, trendSentence } from '../charts/SparklineChart';
 import { SmallSampleNote, comparisonFacts, comparisonSecondary, smallSamplePlan } from './ComparisonView';
+import { kpiDelta } from './KpiGroupView';
 import { headingRepeatsLeaf } from '../report-headings';
 
 /** Leaves that take the whole row of the 2-up grid (reading width or many columns). */
@@ -129,7 +130,7 @@ export function spanPlan(leaves: readonly LeafBlock[]): boolean[] {
   return out;
 }
 
-function heroDelta(group: KpiGroupBlock, item: KpiItem): { value: number; label: string } | undefined {
+function heroDelta(group: KpiGroupBlock, item: KpiItem): KpiDelta | undefined {
   const d = item.delta;
   if (!d) return undefined;
   if (group.artifact_kind === 'comparison') {
@@ -137,9 +138,8 @@ function heroDelta(group: KpiGroupBlock, item: KpiItem): { value: number; label:
     const f = comparisonFacts(item);
     if (f.measured) return { value: d.value, label: `${f.abs} (${f.pct})` };
   }
-  if (d.value === 0) return { value: 0, label: `no change ${d.period_label}`.trim() };
-  const sign = d.value > 0 ? '+' : '−';
-  return { value: d.value, label: `${sign}${formatDelta(Math.abs(d.value), item.unit)} ${d.period_label}` };
+  // The signed figure in the chip, the comparison as words beside it (as on a KPI tile).
+  return kpiDelta(item);
 }
 
 function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPrefix: string; staticMode: boolean }) {

@@ -60,6 +60,16 @@ const PROVIDER_PRESETS: Record<string, Partial<SsoProviderConfig>> = {
   generic: { type: 'generic', display_name: '', scopes: 'openid email profile' },
 };
 
+/**
+ * The Add buttons name each provider as its maker writes it ("Add Google", "Add
+ * Microsoft"), never the lower-case type id the config stores.
+ */
+const SSO_PROVIDER_ADD_LABEL: Record<'google' | 'microsoft' | 'generic', string> = {
+  google: 'Add Google',
+  microsoft: 'Add Microsoft',
+  generic: 'Add generic OIDC',
+};
+
 function newProvider(type: 'google' | 'microsoft' | 'generic'): SsoProviderConfig {
   const id = `${type}-${Math.random().toString(36).slice(2, 7)}`;
   return {
@@ -197,7 +207,7 @@ function ProviderEditor({
               type="password"
               value={secretInput}
               onChange={(e) => setSecretInput(e.target.value)}
-              placeholder={configuredSecret ? '•••••••• (set — leave blank to keep)' : 'paste the OIDC client secret'}
+              placeholder={configuredSecret ? '•••••••• (set; leave blank to keep)' : 'paste the OIDC client secret'}
               autoComplete="off"
             />
             <Button
@@ -566,7 +576,7 @@ export function SecuritySsoInner({
                     onClick={() => updateSso({ ...sso, providers: [...providers, newProvider(t)] })}
                   >
                     <Plus aria-hidden />
-                    Add {t === 'generic' ? 'generic OIDC' : t}
+                    {SSO_PROVIDER_ADD_LABEL[t]}
                   </Button>
                 ))}
               </div>

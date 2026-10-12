@@ -112,8 +112,13 @@ recipe (or `materialThick` for large floating panes, or `MaterialBar` from
 `@/design-system`); never a page-local `bg-*/95 backdrop-blur`. Content — tables,
 charts, transcripts, evidence — always sits on an opaque canvas or card, and menus,
 popovers, dialogs and sheets are solid, so translucent never stacks on translucent (a
-material nested in another material, or in the glass top bar, is painted solid). Fill
-opacity stays at or above 0.80 so 12px secondary text keeps AA; on a material, small
+material nested in another material, or in the glass top bar, is painted solid). The
+fill hides what scrolls beneath on its own, in every engine: 0.97 for bars and the top
+bar, 0.98 for thick panes. The backdrop blur is decoration that cannot be relied on (in
+Chromium it does not reach routed content), and text beneath must read as a wash of
+colour, never as words: at most about 1.07:1 against the bar in both themes, measured by
+`src/design-system/__tests__/foundations.test.ts` (a 0.80 fill let chart labels and
+card text read through). On a material, small
 text uses `text-foreground` or `text-secondary-foreground` at `font-medium`, and colour
 lives on solid chips (a sticky table header lifts its column labels to
 `text-secondary-foreground`). Under sticky chrome the scroll-edge fade replaces a hard
@@ -675,6 +680,27 @@ do not hand-build a second nav list.
   launcher should offer one calm first decision, then reveal precision on demand.
   Because the palette has wide, compact, and keyboard openers outside its Dialog,
   remember the exact opener and restore focus to it on Escape, selection, or close.
+- The top bar compacts by its OWN width (`@container/topbar`; the tiers are
+  `TOP_BAR_TIERS` in `soc/AppShell.tsx`), never the viewport, because the rail decides
+  its width as much as the window does. The current page name has priority: it never
+  wraps on a desktop bar and is never squeezed while anything else can give (a phone may
+  give a long name a second line). The search field shrinks first, down to 11rem, and
+  becomes its icon opener below 46rem of bar; below 62rem the chips (Demo mode, platform
+  health, update, source notice, account name) go icon-only, each with a tooltip and its
+  full accessible name; below 72rem the product name leaves the breadcrumb (the rail
+  carries the logo); below 40rem appearance, the account menu and a source notice move
+  into the Console controls sheet. Width tiers cannot know which chips are present, so
+  the bar also measures itself (`useTopBarFold`, `soc/top-bar-fold.ts`): while the field
+  would get less than 11rem, labels fold one at a time, least important first (product
+  name, account name, source, update, health, Demo mode), and only when every label has
+  folded may the field narrow further. The field reads by its own width (its own size
+  container): the full placeholder from 19rem, "Search…" and the shortcut from 9.5rem,
+  below that only its icon, never a clipped word. Nothing in the bar wraps or squeezes:
+  the cluster and every chip are `shrink-0` and `whitespace-nowrap`. Release identity,
+  the notification bell (with its unread, jobs and health marks), the demo chip and an
+  actionable update stay in the bar at every desktop width. One chip says "Demo mode": while
+  demo mutes platform health, the health indicator leaves the bar and the demo chip's
+  popover says health checks are muted (a backend outage still shows).
 - Product documentation is a bottom utility destination, separate from operational
   feature groups.
 - The in-app **Documentation** destination opens the version-matched Help Center
@@ -1025,10 +1051,11 @@ and a supported supervisor capability. Do not replace the badge, add a persisten
 banner, infer installability from SemVer alone, or expose a Testing observation as an
 installable release.
 
-Below the desktop breakpoint, the top bar still shows that release badge and any
-candidate, active, or failed update action directly. Group secondary utilities
-(notifications, appearance, health detail, account links, source-only observations,
-and non-actionable update setup or receipts) in one labelled, non-menu Sheet. The
+Below the desktop breakpoint (and on a desktop bar narrower than 40rem), the top bar
+still shows that release badge and any candidate, active, or failed update action
+directly; a desktop bar also keeps its notification bell. Group secondary utilities
+(appearance, health detail, account links, source-only observations, non-actionable
+update setup or receipts, and on a phone notifications) in one labelled, non-menu Sheet. The
 Sheet must use normal buttons and sections rather than ARIA menu roles, provide 44px
 touch targets, close on Escape, and return focus to its trigger. Do not let shell
 chrome create document-wide horizontal scrolling at 320px, 390px, or 600px.

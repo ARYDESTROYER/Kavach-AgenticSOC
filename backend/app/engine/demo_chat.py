@@ -674,7 +674,7 @@ def _count(value: Any) -> str:
 def _dec(value: Any, places: int = 1) -> str:
     number = _num(value)
     if number is None:
-        return "—"
+        return "not measured"
     text = f"{number:,.{places}f}"
     return text[:-2] if places == 1 and text.endswith(".0") else text
 
@@ -696,7 +696,7 @@ def _usd(value: Any) -> str:
 def _minutes(value: Any) -> str:
     number = _num(value)
     if number is None:
-        return "—"
+        return "not measured"
     if number >= 120:
         return f"{_dec(number / 60)} h"
     return f"{_dec(number)} min"
@@ -4905,7 +4905,7 @@ def _next_calls(view: PromptView, ask: Ask) -> list[Call]:
 # Narration: one sentence group per tool result (numbers from observations only).
 # --------------------------------------------------------------------------- #
 _VERDICT_WORDS = {"TRUE_POSITIVE": "true positive", "FALSE_POSITIVE": "false positive",
-                  "NEEDS_HUMAN": "needs-human"}
+                  "NEEDS_HUMAN": "needs human"}
 
 
 def _verdict_word(value: Any) -> str:
@@ -5090,7 +5090,7 @@ def _case_line(case: Mapping[str, Any]) -> str:
         facts.append(f"risk {_count(case.get('risk_score'))}")
     if case.get("status"):
         facts.append(display_text(case.get("status"), 20).replace("_", " "))
-    return " · ".join(bits) + (f" — {', '.join(facts)}" if facts else "")
+    return " · ".join(bits) + (f" ({', '.join(facts)})" if facts else "")
 
 
 def _case_noun(filters: Mapping[str, Any], noun: str) -> str:
@@ -5511,21 +5511,26 @@ def _say_lookup(r: Result) -> str:
 
 
 def _verdict_adjective(value: Any) -> str:
-    """A verdict as a compound adjective ("true-positive", "needs-human")."""
-    return _verdict_word(value).replace(" ", "-")
+    """A verdict before a noun: "true-positive", "false-positive", and "needs human" as
+    the case badge names it (never the hyphenated "needs-human")."""
+    word = _verdict_word(value)
+    return word if word == "needs human" else word.replace(" ", "-")
 
 
 def _case_facts(case: Mapping[str, Any]) -> str:
     """The case's verdict as a predicate with its verb: "is a true positive at 99%
-    confidence, risk 88/100, severity critical", "has a needs-human verdict at 88%
-    confidence, …" (needs-human is a routing verdict, not a kind of case), "has no
-    verdict yet, …". Risk and severity are separate axes, so each is named: a bare
-    "risk 7 (critical)" reads as a critical risk band beside a LOW risk gauge."""
+    confidence, risk 88/100, severity critical", "needs human review at 88% confidence,
+    …" (a routing verdict, not a kind of case), "has no verdict yet, …". Risk and
+    severity are separate axes, so each is named: a bare "risk 7 (critical)" reads as a
+    critical risk band beside a LOW risk gauge."""
     verdict = _verdict_word(case.get("verdict"))
+    upper = str(case.get("verdict") or "").upper()
     if not verdict:
         text = "has no verdict yet"
-    elif str(case.get("verdict") or "").upper() in ("TRUE_POSITIVE", "FALSE_POSITIVE"):
+    elif upper in ("TRUE_POSITIVE", "FALSE_POSITIVE"):
         text = f"is a {verdict}"
+    elif upper == "NEEDS_HUMAN":
+        text = "needs human review"
     else:
         text = f"has a {_verdict_adjective(case.get('verdict'))} verdict"
     confidence = _num(case.get("confidence"))
@@ -5589,7 +5594,7 @@ def _policy_reason(o: Mapping[str, Any], what: Mapping[str, Any]) -> str:
     verdict = what.get("verdict")
     row = next((p for p in o.get("policy") or [] if isinstance(p, Mapping) and p.get("verdict") == verdict), None)
     if verdict == "NEEDS_HUMAN":
-        return "a needs-human verdict never auto-closes (enforced in code)"
+        return "a case that needs human review never auto-closes (enforced in code)"
     if not isinstance(row, Mapping):
         return ""
     word = _verdict_word(verdict)
@@ -8072,6 +8077,28 @@ def _stats_groups(o: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [g for g in o.get("groups") or [] if isinstance(g, Mapping)]
 
 
+#: The order a severity, verdict, status or priority breakdown is narrated in, by its
+#: display label: the chart and table beside it use the same order (Round 12 SPEC §7.2
+#: decision 27), so the prose never reads "Low, High, Critical".
+_CANONICAL_LABELS: dict[str, tuple[str, ...]] = {
+    "severity": ("critical", "high", "medium", "low", "info"),
+    "verdict": ("true positive", "false positive", "needs human"),
+    "status": ("new", "open", "open · awaiting analyst", "investigating", "escalated", "on hold",
+               "resolved", "closed"),
+    "priority": ("p1", "p2", "p3", "p4"),
+}
+
+
+def _canonical_rank(field: str, label: Any) -> int:
+    """``label``'s place in ``field``'s canonical order (0 for a field without one, the
+    end for a value outside it); sorting by it is stable, so volume order stays inside."""
+    order = _CANONICAL_LABELS.get(field)
+    if order is None:
+        return 0
+    text = str(label or "").strip().lower()
+    return order.index(text) if text in order else len(order)
+
+
 def _stats_noun(o: Mapping[str, Any]) -> str:
     filters = o.get("filters") if isinstance(o.get("filters"), Mapping) else {}
     return _case_noun(filters, "case")
@@ -8142,9 +8169,10 @@ def _say_two_field_counts(o: Mapping[str, Any], first: str, second: str) -> str:
         outer.setdefault(head, []).append((_group_value(second, _dig(g, "key", second)),
                                            _num(_dig(g, "metrics", "count")) or 0))
     parts = []
-    for head, inner in list(outer.items())[:6]:
+    heads = sorted(outer.items(), key=lambda item: _canonical_rank(first, item[0]))
+    for head, inner in heads[:6]:
         total = sum(n for _label, n in inner)
-        shown = sorted(inner, key=lambda item: -item[1])[:5]
+        shown = sorted(sorted(inner, key=lambda item: -item[1])[:5], key=lambda item: _canonical_rank(second, item[0]))
         parts.append(f"{head} {_count(total)} ({_join([f'{label} {_count(n)}' for label, n in shown])})")
     if not parts:
         return ""
@@ -8166,6 +8194,7 @@ def _say_bucketed_group_totals(o: Mapping[str, Any]) -> str:
         label = _group_value(field, _dig(g, "key", field))
         totals[label] = totals.get(label, 0) + (_num(_dig(g, "metrics", "count")) or 0)
     ranked = [(label, n) for label, n in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0])) if n][:8]
+    ranked.sort(key=lambda kv: _canonical_rank(field, kv[0]))
     if not ranked:
         return ""
     name = {"status_group": "open or closed", "mitre_technique": "ATT&CK technique",
@@ -8182,7 +8211,8 @@ def _say_group_counts(o: Mapping[str, Any]) -> str:
         return _say_two_field_counts(o, fields[0], fields[1])
     field = fields[0]
     rows = [g for g in _stats_groups(o) if isinstance(g.get("key"), Mapping)]
-    parts = [f"{_group_value(field, _dig(g, 'key', field))} {_count(_dig(g, 'metrics', 'count'))}" for g in rows[:8]]
+    shown = sorted(rows[:8], key=lambda g: _canonical_rank(field, _dig(g, "key", field)))
+    parts = [f"{_group_value(field, _dig(g, 'key', field))} {_count(_dig(g, 'metrics', 'count'))}" for g in shown]
     if not parts:
         return ""
     other = _num(_dig(o, "other", "metrics", "count"))

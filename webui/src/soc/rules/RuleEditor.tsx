@@ -23,6 +23,7 @@ import * as React from 'react';
 import { Info, Lock, Wrench } from 'lucide-react';
 
 import { humanizeToken } from '@/lib/format';
+import { CASE_TAG_MAX_CHARS } from '@/lib/tags';
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/tabs';
 import { Input } from '@/ui/input';
@@ -568,6 +569,7 @@ function ActionsTab({ value, onChange, readOnly }: RuleEditorProps) {
           value={Array.isArray(auto.payload.tags) ? (auto.payload.tags as string[]) : []}
           disabled={readOnly}
           placeholder="e.g. auto-triaged"
+          maxLength={CASE_TAG_MAX_CHARS}
           onChange={(next) => setPayload({ tags: next })}
         />
       ) : null}

@@ -75,6 +75,15 @@ export interface KpiDelta {
   value: number;
   /** Optional pre-formatted label (e.g. "+12%"); falls back to |value|. */
   label?: string;
+  /**
+   * What the change is measured against ("vs previous 90 days"). When given, the chip
+   * holds only the signed figure, on one line that never wraps, and the comparison reads
+   * as plain muted words beside it, which drop under the numeral and wrap between words
+   * on a narrow tile. A whole "+87 vs previous 90 days" inside the chip wrapped the
+   * bordered chip itself onto two ragged lines (Round 12 screenshot tour). The chip's
+   * accessible name still carries both parts.
+   */
+  period?: string;
 }
 
 /**
@@ -552,9 +561,12 @@ function resolveDelta(delta: KpiDelta, goodDirection: KpiGoodDirection) {
   const directionWord = rising ? 'up' : 'down';
   // a11y: announce BOTH the direction and the judgement (never color-only).
   const judgement = improved === null ? '' : improved ? ', improved' : ', worse';
+  // The comparison (`period`) is spoken after the figure, as the tile shows it.
+  const period = delta.period?.trim();
+  const withPeriod = (figure: string) => (period ? `${figure} ${period}` : figure);
   const ariaLabel = flat
-    ? flatDeltaLabel(delta.label)
-    : `changed ${directionWord} by ${delta.label ?? Math.abs(delta.value)}${judgement}`;
+    ? withPeriod(flatDeltaLabel(delta.label))
+    : `changed ${directionWord} by ${withPeriod(String(delta.label ?? Math.abs(delta.value)))}${judgement}`;
 
   return { colorClass, chipClass, Arrow, ariaLabel };
 }
@@ -873,7 +885,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         </span>
       );
 
-    const deltaNode = deltaFacts ? (
+    const deltaPeriod = delta?.period?.trim() || null;
+    const deltaChip = deltaFacts ? (
       <span
         // `role="img"` makes `aria-label` a valid accessible name on this element (a
         // bare span maps to the generic role, where aria-label is prohibited/ignored —
@@ -884,18 +897,40 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           // `max-w-full` + a wrapping label: on a narrow tile the chip drops to its own
           // line under the numeral (the row wraps), and a long label ("+3 vs last
           // week") wraps inside the chip rather than pushing the numeral off the tile.
+          // With a separate `period` the chip holds only the signed figure and never
+          // wraps: the comparison words beside it do the wrapping.
           'mb-0.5 inline-flex max-w-full items-center gap-0.5 text-left text-xs font-semibold tabular-nums',
+          deltaPeriod && 'shrink-0 whitespace-nowrap',
           deltaFacts.colorClass,
           strip && `rounded-sm border px-1.5 py-0.5 ${deltaFacts.chipClass}`,
         )}
         aria-label={deltaFacts.ariaLabel}
       >
         {deltaFacts.Arrow ? <deltaFacts.Arrow className="h-3.5 w-3.5 shrink-0" aria-hidden /> : null}
-        <span aria-hidden className="min-w-0 break-words">
+        <span aria-hidden className={cn('min-w-0', !deltaPeriod && 'break-words')}>
           {delta!.label ?? Math.abs(delta!.value)}
         </span>
       </span>
     ) : null;
+    // The comparison words: muted, not a chip, and their own flex item, so the numeral
+    // row puts them beside the chip when they fit and under it when they do not. A
+    // whitespace text node keeps the figure and the words apart in the text content (a
+    // flex container lays no box out for it).
+    const deltaNode =
+      deltaChip && deltaPeriod ? (
+        <>
+          {deltaChip}{' '}
+          <span
+            aria-hidden
+            data-kpi-delta-period=""
+            className="mb-0.5 min-w-0 break-words text-xs text-muted-foreground"
+          >
+            {deltaPeriod}
+          </span>
+        </>
+      ) : (
+        deltaChip
+      );
 
     // The in-place partition ("of which"): a real definition list so each band is a
     // label/value pair. Plain, muted text with no judgement colour — it explains what

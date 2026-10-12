@@ -75,7 +75,7 @@ import { ItemBlocks } from './ItemBlocks';
 import { TEMPLATE_LABEL, TEMPLATE_ORDER, itemBlocks, itemKindLabel, tokens, usd } from './model';
 import {
   MAX_REPORT_ITEMS,
-  REPORT_CONFLICT_MESSAGE,
+  REPORT_CONFLICT_TEXT,
   REPORT_FULL_MESSAGE,
   emitReportChanged,
   isVersionConflict,
@@ -654,7 +654,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
               ref={titleButtonRef}
               type="button"
               className={cn('block max-w-full truncate rounded-sm text-left hover:underline', focusRing)}
-              title={`${title} — click to rename`}
+              title={`${title}. Select to rename`}
               aria-label={`${title}, rename report`}
               onClick={() => setEditingTitle(title)}
             >
@@ -781,7 +781,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
               {stale ? (
                 <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="report-summary-stale">
                   <span className="font-medium text-warning-text">Out of date</span>
-                  <span className="text-muted-foreground">— the report changed after this summary was written.</span>
+                  <span className="text-muted-foreground">The report changed after this summary was written.</span>
                   <Button
                     variant="outline"
                     size="sm"
@@ -943,7 +943,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                               : state === 'error'
                                 ? 'Not saved'
                                 : state === 'unsaved' && conflict
-                                  ? 'Not saved — reload first'
+                                  ? 'Not saved. Reload first'
                                   : null}
                         </span>
                         {(state === 'unsaved' || state === 'error') && !conflict && drafts[item.id] !== undefined ? (
@@ -977,7 +977,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
       {header}
       {conflict ? (
         <div className="flex items-center justify-between gap-2 border-b border-border bg-warning/10 px-3 py-2 text-xs" data-testid="report-conflict">
-          <span className="text-foreground">{REPORT_CONFLICT_MESSAGE.split(' — ')[0]}</span>
+          <span className="text-foreground">{REPORT_CONFLICT_TEXT}</span>
           <Button variant="outline" size="sm" className="h-7" onClick={() => void reload()}>
             <RefreshCw aria-hidden /> Reload
           </Button>

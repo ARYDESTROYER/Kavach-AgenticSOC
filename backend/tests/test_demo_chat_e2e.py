@@ -326,7 +326,7 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
     assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
     case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
-    assert re.match(r"\*\*`demo-00000539-0004`\*\* \([a-z ]+ on user `[^`]+`\) has a needs-human verdict",
+    assert re.match(r"\*\*`demo-00000539-0004`\*\* \([a-z ]+ on user `[^`]+`\) needs human review",
                     case.answer), case.answer
 
 

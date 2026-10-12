@@ -84,10 +84,10 @@ export type FeedbackOutcome = components['schemas']['FeedbackOutcome'];
  */
 export const OUTCOME_OPTIONS = [
   { value: 'unknown', text: 'Not stated' },
-  { value: 'true_positive', text: 'True positive — the alert was real' },
-  { value: 'false_positive', text: 'False positive — the alert was wrong' },
-  { value: 'true_negative', text: 'True negative — correctly quiet' },
-  { value: 'false_negative', text: 'False negative — the detection missed it' },
+  { value: 'true_positive', text: 'True positive: the alert was real' },
+  { value: 'false_positive', text: 'False positive: the alert was wrong' },
+  { value: 'true_negative', text: 'True negative: correctly quiet' },
+  { value: 'false_negative', text: 'False negative: the detection missed it' },
 ] as const satisfies ReadonlyArray<{ value: FeedbackOutcome; text: string }>;
 
 /** Fails to typecheck unless `T` is `never`. */
@@ -332,7 +332,7 @@ export const OutcomeField: React.FC<{
       </Select>
       <p id={helpId} className="text-xs leading-relaxed text-muted-foreground">
         The confirmed outcome. This is the only part of a grade that becomes
-        analyst-confirmed ground truth — the stars and the agree/override signal do not
+        analyst-confirmed ground truth. The stars and the agree/override signal do not
         label the case.
       </p>
     </div>

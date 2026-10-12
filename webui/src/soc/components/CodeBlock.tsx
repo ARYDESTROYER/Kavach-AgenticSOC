@@ -66,6 +66,8 @@ export interface CodeBlockProps extends React.HTMLAttributes<HTMLDivElement> {
   caption?: React.ReactNode;
   /** Show the copy-to-clipboard control (default true). */
   copyable?: boolean;
+  /** What Copy takes when it differs from what is shown (a reading view of exact text). */
+  copyValue?: string;
   /** Allow long lines to wrap instead of scrolling horizontally. */
   wrap?: boolean;
   /** Cap the visible height; content scrolls past it. */
@@ -80,6 +82,7 @@ export const CodeBlock = React.forwardRef<HTMLDivElement, CodeBlockProps>(
       children,
       caption,
       copyable = true,
+      copyValue,
       wrap = false,
       maxHeightClassName = 'max-h-80',
       ...props
@@ -101,13 +104,13 @@ export const CodeBlock = React.forwardRef<HTMLDivElement, CodeBlockProps>(
       // Route through copyText() so copy ALSO works over plain HTTP (non-secure
       // context, where navigator.clipboard is undefined). Show "Copied" only on a
       // truthy result — never claim success for a copy that never happened (bug #4).
-      void copyText(text).then((ok) => {
+      void copyText(copyValue ?? text).then((ok) => {
         if (!ok) return;
         setCopied(true);
         if (timer.current) clearTimeout(timer.current);
         timer.current = setTimeout(() => setCopied(false), 1500);
       });
-    }, [text]);
+    }, [copyValue, text]);
 
     const showHeader = Boolean(caption) || copyable;
 

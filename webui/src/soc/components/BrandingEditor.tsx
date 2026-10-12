@@ -288,8 +288,8 @@ function applyMaterialPreview(material: Material): void {
   const root = document.documentElement;
   // Delegate to the ONE allow-listed material applier so the preview matches the
   // saved appearance exactly — notably, 'quiet' CLEARS `--glass-opacity` (it has
-  // per-theme stylesheet defaults 0.82/0.78) instead of force-writing 0.82, so the
-  // dark chrome is never overridden. Only 'command' raises the glass.
+  // per-theme stylesheet defaults, 0.97 in both today) instead of force-writing a value,
+  // so a theme's own default is never overridden. Only 'command' changes the glass.
   applyMaterial(material, root);
   root.classList.toggle('command-grid', material === 'command');
   root.dataset.material = material;

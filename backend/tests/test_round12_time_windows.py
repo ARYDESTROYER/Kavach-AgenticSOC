@@ -15,6 +15,7 @@ import pytest
 from app.engine.time_windows import (
     BUCKET_UNITS,
     MAX_POINTS,
+    align_whole_periods,
     align_window,
     all_time_label,
     auto_bucket,
@@ -24,6 +25,7 @@ from app.engine.time_windows import (
     period_label,
     period_start,
     resolve_window,
+    whole_period_unit,
     zone_for,
 )
 
@@ -275,26 +277,104 @@ def test_last_12_months_by_month_is_twelve_whole_months() -> None:
     "spec, unit, count, first",
     [
         ("now-7d", "day", 7, "4 Oct 2026"),
-        ("now-24h", "hour", 24, "9 Oct 15:00"),
-        ("now-14d", "week", 2, "W40 2026"),
+        ("now-30d", "day", 30, "11 Sep 2026"),
         ("now-1y", "month", 12, "Nov 2025"),
         ("now-6M", "month", 6, "May 2026"),
-        ("now-12M", "quarter", 4, "Q1 2026"),
-        ("now-2y", "year", 2, "2025"),
+        ("now-3M", "month", 3, "Aug 2026"),
     ],
 )
 def test_alignment_gives_n_whole_periods(spec, unit, count, first) -> None:
     w = align_window(resolve_window(spec, now=NOW), unit)
     buckets = calendar_buckets(w, unit)
     assert len(buckets) == count and buckets[0].label == first and buckets[-1].in_progress
+    assert not buckets[0].clipped
+
+
+@pytest.mark.parametrize(
+    "spec, first, unit",
+    [
+        ("now-90d", _utc(2026, 7, 13), "day"),  # today and the 89 days before it
+        ("now-30d", _utc(2026, 9, 11), "day"),
+        ("now-14d", _utc(2026, 9, 27), "day"),
+        ("now-6w", _utc(2026, 8, 30), "day"),  # 42 days
+        ("now-2d", _utc(2026, 10, 9), "day"),
+        ("now-12M", _utc(2025, 11, 1), "month"),  # this month and the 11 before it
+        ("now-5M", _utc(2026, 6, 1), "month"),
+        ("now-2y", _utc(2024, 11, 1), "month"),
+    ],
+)
+def test_one_window_starts_at_the_same_instant_whatever_it_is_broken_down_by(spec, first, unit) -> None:
+    """Round 12 SPEC §7.2 decision 28: the start of a relative window depends on the
+    window alone. "Last 90 days" counted as a headline, by hour, day, week, month,
+    quarter or year all start at the same midnight, so one answer that counts it several
+    ways states one start and one population. A breakdown whose periods the start is not
+    a boundary of opens with the part of its first period inside the window."""
+    raw = resolve_window(spec, now=NOW)
+    whole = align_whole_periods(raw)
+    assert whole_period_unit(raw) == unit
+    assert whole.start == first and whole.end == raw.end and whole.aligned_to == unit
+    assert whole.label == f"{raw.label} (since {first.day} {first:%b %Y})" if unit == "day" else (
+        whole.label == f"{raw.label} (since {first:%b %Y})")
+    assert align_whole_periods(whole) is whole  # idempotent
+    for bucket in ("hour", "day", "week", "month", "quarter", "year"):
+        if bucket == "hour" and unit == "month":
+            continue  # months of hours is more than a chart holds; the start is the same
+        by_unit = align_window(raw, bucket)
+        assert by_unit.start == first and by_unit.label == whole.label, (spec, bucket)
+        assert align_window(by_unit, bucket) is by_unit  # idempotent
+        buckets = calendar_buckets(by_unit, bucket)  # type: ignore[arg-type]
+        # The first bucket is the period the window starts in, cut there when the start
+        # is not one of its boundaries; the last is in progress.
+        assert buckets[0].start <= first < buckets[0].end
+        assert buckets[0].clipped == (buckets[0].start != first), (spec, bucket)
+        assert buckets[-1].in_progress
+    # With no breakdown at all, the lookups that count it align it themselves.
+    assert align_window(raw, None) is raw
+
+
+def test_a_span_of_days_not_whole_in_a_coarser_unit_is_whole_days() -> None:
+    """"Last 90 days" by month starts where "last 90 days" by day does (today and the 89
+    days before it), never "from 14 Jul" beside "since 15 Jul"; its first month says
+    where it starts ("Jul 2026 (from 13 Jul)")."""
+    raw = resolve_window("now-90d", now=NOW)
+    by_month, by_day = align_window(raw, "month"), align_window(raw, "day")
+    assert by_month.start == by_day.start == _utc(2026, 7, 13)
+    assert by_month.aligned_to == by_day.aligned_to == "day"
+    assert by_month.label == by_day.label == "last 90 days (since 13 Jul 2026)"
+    months = calendar_buckets(by_month, "month")
+    assert [b.label for b in months] == ["Jul 2026", "Aug 2026", "Sep 2026", "Oct 2026"]
+    assert months[0].clipped and not months[1].clipped and months[-1].in_progress
 
 
 @pytest.mark.parametrize(
     "spec, unit",
     [
-        ("now-90d", "month"),  # not a whole number of months
+        ("now-24h", "hour"),  # hours are counted exactly, never cut to the top of an hour
+        ("now-36h", "day"),
+        ("now-1d", "hour"),  # a single day
+        ("now-1M", "day"),  # a single month
+        ("now-90m", "hour"),
+    ],
+)
+def test_windows_of_hours_and_single_periods_are_exact_in_every_breakdown(spec, unit) -> None:
+    """A window of hours, a single day or a single month is counted exactly as resolved
+    by every lookup (decision 28): "the last 24 hours" by hour is the rolling 24 hours,
+    its first hour cut at the minute the window starts, the same span its posture tiles
+    count, never the 23 whole hours before this one."""
+    raw = resolve_window(spec, now=NOW)
+    assert whole_period_unit(raw) is None
+    assert align_whole_periods(raw) is raw and align_window(raw, unit) is raw
+    if spec == "now-24h":
+        buckets = calendar_buckets(raw, "hour")
+        assert len(buckets) == 25 and buckets[0].label == "9 Oct 14:00" and buckets[0].clipped
+        assert buckets[-1].in_progress
+
+
+@pytest.mark.parametrize(
+    "spec, unit",
+    [
         ("now-1M", "month"),  # a single period: aligning would keep only this month
-        ("now-30d", "week"),
+        ("now-1d", "week"),  # a single day
         ("last_month", "day"),  # calendar periods are already whole
         ("2026-Q3", "month"),
         ("all", "month"),

@@ -171,7 +171,7 @@ export const WhyPanel: React.FC<{
             <AlertDescription className="whitespace-pre-wrap">
               {r.decision_rationale
                 ? r.decision_rationale
-                : 'The close / escalate decision is made by deterministic code against the operator-configured auto-close policy — never by raw model output. No rationale string was recorded for this case.'}
+                : 'The close / escalate decision is made by deterministic code against the operator-configured auto-close policy, never by raw model output. No rationale string was recorded for this case.'}
             </AlertDescription>
           </Alert>
         </PanelCard>

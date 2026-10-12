@@ -4,14 +4,14 @@
  *  - Roles `draftFromRow`           — data-loss guard (edit/clone must not blank a role).
  *  - NotificationBell `severityDot` — severity dot uses the SEVERITY axis, not brand/status.
  *  - Knowledge `computeImportCanSubmit` — enable guard matches what submit() indexes.
- *  - Memory `mergePendingTag`       — a typed-but-uncommitted tag isn't dropped on save.
+ *  (Memory's `mergePendingTag` flush was retired in the Round 12 polish: a submit with
+ *  pending tag text now stops and asks, see TagInput.pending.test.tsx.)
  */
 import { describe, it, expect } from 'vitest';
 
 import { draftFromRow } from '../pages/Roles';
 import { severityDot } from '../components/NotificationBell';
 import { computeImportCanSubmit } from '../pages/Knowledge';
-import { mergePendingTag } from '../pages/Memory';
 
 describe('Roles draftFromRow — RBAC data-loss guard', () => {
   const matrix = {
@@ -117,24 +117,3 @@ describe('Knowledge computeImportCanSubmit — enable guard matches submit()', (
   });
 });
 
-describe('Memory mergePendingTag — flush typed-but-uncommitted tag', () => {
-  it('appends a pending tag', () => {
-    expect(mergePendingTag(['a'], 'b')).toEqual(['a', 'b']);
-  });
-
-  it('trims and ignores blank input', () => {
-    expect(mergePendingTag(['a'], '   ')).toEqual(['a']);
-    expect(mergePendingTag(['a'], '')).toEqual(['a']);
-    expect(mergePendingTag(['a'], '  b ')).toEqual(['a', 'b']);
-  });
-
-  it('does not duplicate an already-present tag', () => {
-    expect(mergePendingTag(['a', 'b'], 'b')).toEqual(['a', 'b']);
-  });
-
-  it('does not mutate the input array', () => {
-    const t = ['a'];
-    mergePendingTag(t, 'b');
-    expect(t).toEqual(['a']);
-  });
-});

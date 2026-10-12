@@ -39,9 +39,11 @@ end), negative hour counts and spans the calendar cannot represent ("now-999999y
 never an ``OverflowError``. The integer ``0`` alone keeps its documented legacy meaning
 (``window_hours=0``: no window, all time).
 
-:func:`align_window` turns a relative window broken down by a calendar unit into N
-whole periods ("by month for the last 12 months" is twelve monthly buckets, the last in
-progress, not thirteen with a partial first); the aggregates apply it themselves.
+:func:`align_whole_periods` turns a relative window of days, weeks, months or years
+into N whole periods of its own unit ("the last 12 months" is twelve months, the last in
+progress, not thirteen with a partial first), whatever it is broken down by, so every
+lookup of one window starts at the same instant; :func:`align_window` applies it to a
+breakdown and the aggregates apply that themselves.
 
 Semantics: a window is the half-open interval ``[start, end)`` (``start=None`` means
 unbounded below; ``open_end`` means unbounded above). Labels are plain English
@@ -896,46 +898,51 @@ def shift_period_start(start: datetime, unit: str, periods: int, tz: Any = "UTC"
     return period_start(_local_midnight(target, zone), unit, zone)
 
 
-# How many ``bucket`` periods ONE unit of a relative window spans (``now-N<unit>``), for
-# the pairs where that number is whole. ``(unit, bucket) -> (periods per N, divisor)``:
-# the window spans ``N * periods / divisor`` buckets, and only aligns when that is whole.
-_ALIGNABLE: dict[tuple[str, str], tuple[int, int]] = {
-    ("h", "hour"): (1, 1),
-    ("d", "hour"): (24, 1), ("d", "day"): (1, 1), ("d", "week"): (1, 7),
-    ("w", "hour"): (168, 1), ("w", "day"): (7, 1), ("w", "week"): (1, 1),
-    ("M", "month"): (1, 1), ("M", "quarter"): (1, 3), ("M", "year"): (1, 12),
-    ("y", "month"): (12, 1), ("y", "quarter"): (4, 1), ("y", "year"): (1, 1),
-}
 _TOKEN_RE = re.compile(r"^now-(\d+)(m|h|d|w|M|y)$")
 
 
-def align_window(window: ResolvedWindow, unit: str | None) -> ResolvedWindow:
-    """A relative window broken down by calendar ``unit``, as N whole periods.
-
-    "Cases by month for the last 12 months" means twelve monthly bars: eleven complete
-    months and the current one (in progress). The exact relative window (``now-12M`` =
-    10 Oct 2025 14:23 → now) would instead start inside a month and draw THIRTEEN bars,
-    the first a partial month that reads as a drop in volume. So when a relative window
-    spans a whole number N (>= 2) of ``unit`` periods, its start snaps to the start of
-    the period N-1 periods before the current one; the label says so ("last 12 months
-    (since Nov 2025)"). Every other window — calendar periods, ranges, all time, a
-    non-whole span such as 90 days by month, or a single period — is returned as is.
-    The result is idempotent (an aligned window is returned unchanged)."""
-    if not unit or window.kind != "relative" or window.aligned_to or window.start is None:
-        return window
+def whole_period_unit(window: ResolvedWindow) -> str | None:
+    """The calendar unit EVERY lookup of a relative window starts on, from the window
+    alone (never from how one lookup breaks it down): ``"day"`` for a span of whole
+    days or weeks of two days or more ("last 90 days" counts today and the 89 days
+    before it), ``"month"`` for a span of months or years of two months or more ("last
+    6 months" counts this month and the five before it). ``None`` for a window of hours
+    or minutes, a single day or month, and every calendar period, range and all time:
+    those are counted exactly as resolved (Round 12 SPEC §7.2 decision 28)."""
+    if window.kind != "relative" or window.start is None:
+        return None
     match = _TOKEN_RE.match(window.token or "")
     if match is None:
+        return None
+    amount, wunit = int(match.group(1)), match.group(2)
+    if wunit in ("d", "w"):
+        return "day" if amount * (7 if wunit == "w" else 1) >= 2 else None
+    if wunit in ("M", "y"):
+        return "month" if amount * (12 if wunit == "y" else 1) >= 2 else None
+    return None
+
+
+def align_whole_periods(window: ResolvedWindow) -> ResolvedWindow:
+    """A relative window as N whole periods of its own unit, the last in progress
+    (:func:`whole_period_unit`): "last 90 days" is "last 90 days (since 15 Jul 2026)",
+    today and the 89 days before it from local midnight; "last 12 months" is "last 12
+    months (since Nov 2025)", eleven whole months and the current one.
+
+    The start depends on the window alone, so every lookup of one window in an answer
+    (a headline count, a breakdown by severity, a series by day, week or month, the
+    posture tiles, the noise funnel, AI cost) counts the same span and states the same
+    start; a breakdown by a unit the start is not a boundary of begins with the part of
+    its first period inside the window ("Jul 2026 (from 15 Jul)"). Hours, a single day
+    or month, minutes, calendar periods, ranges and all time come back as they are. The
+    result is idempotent (an aligned window is returned unchanged)."""
+    if window.kind != "relative" or window.aligned_to or window.start is None:
+        return window
+    unit = whole_period_unit(window)
+    match = _TOKEN_RE.match(window.token or "")
+    if unit is None or match is None:
         return window
     amount, wunit = int(match.group(1)), match.group(2)
-    rule = _ALIGNABLE.get((wunit, unit))
-    if rule is None:
-        return window
-    per, divisor = rule
-    if (amount * per) % divisor:
-        return window
-    periods = amount * per // divisor
-    if periods < 2:
-        return window
+    periods = amount * ({"d": 1, "w": 7, "M": 1, "y": 12}[wunit])
     zone, zone_name = zone_for(window.tz)
     anchor = window.now if window.now is not None else window.end
     try:
@@ -945,18 +952,32 @@ def align_window(window: ResolvedWindow, unit: str | None) -> ResolvedWindow:
     if start >= window.end:
         return window
     local = start.astimezone(zone)
-    if unit == "hour":
-        since = _fmt_instant(start, zone)
-    elif unit == "day":
-        since = _fmt_day(local.date())
-    else:
-        since = period_label(start, unit, zone)
+    since = _fmt_day(local.date()) if unit == "day" else period_label(start, unit, zone)
     suffix = since if zone_name == "UTC" else f"{since}, {zone_name}"
     label = f"{window.label} (since {suffix})"
     return ResolvedWindow(
         start=start, end=window.end, label=label, tz=window.tz, token=window.token,
         now=window.now, open_end=window.open_end, kind=window.kind, aligned_to=unit,
     )
+
+
+def align_window(window: ResolvedWindow, unit: str | None) -> ResolvedWindow:
+    """A relative window broken down by calendar ``unit``, as whole periods.
+
+    "Cases by month for the last 12 months" means twelve monthly bars: eleven complete
+    months and the current one (in progress). The exact relative window (``now-12M`` =
+    10 Oct 2025 14:23 → now) would instead start inside a month and draw THIRTEEN bars,
+    the first a partial month that reads as a drop in volume. The start is the one
+    :func:`align_whole_periods` gives the window whatever ``unit`` it is broken down by,
+    so every breakdown of one window, and every lookup of it with none, starts at the
+    same instant (Round 12 SPEC §7.2 decision 28): "last 90 days" by month is "last 90
+    days (since 15 Jul 2026)" with a first bucket "Jul 2026 (from 15 Jul)", exactly the
+    start its day breakdown and its severity breakdown have. ``unit=None`` (no
+    breakdown) returns the window as is; callers that count an unbucketed lookup align it
+    with :func:`align_whole_periods` themselves."""
+    if not unit:
+        return window
+    return align_whole_periods(window)
 
 
 def bucket_count(
@@ -1006,6 +1027,7 @@ __all__ = [
     "CalendarBucket",
     "MAX_POINTS",
     "ResolvedWindow",
+    "align_whole_periods",
     "align_window",
     "all_time_label",
     "auto_bucket",
@@ -1016,5 +1038,6 @@ __all__ = [
     "period_start",
     "resolve_window",
     "shift_period_start",
+    "whole_period_unit",
     "zone_for",
 ]

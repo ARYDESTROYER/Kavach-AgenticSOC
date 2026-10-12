@@ -5,8 +5,15 @@
  * validated against the palette axes by the parser) picks its axis token; otherwise the
  * series takes the categorical Okabe-Ito slot of its POSITION (`--chart-1..7`), and an
  * "Other" fold takes the reserved neutral `--chart-8`. The server orders series by
- * descending total, so a colour stays bound to its entity across re-renders, and a
- * legend toggle never repaints the survivors (colours are resolved before filtering).
+ * descending total, or in the canonical order of a severity, verdict, status or priority
+ * breakdown (Critical, High, Medium, Low, Info), so a colour stays bound to its entity
+ * across re-renders, and a legend toggle never repaints the survivors (colours are
+ * resolved before filtering).
+ *
+ * Semantic colours apply to a chart as a whole: only when every series (but "Other") is
+ * semantic AND no two of them share a colour. Otherwise one series could read as another
+ * (resolved and closed are both green) or a categorical slot could pass for a severity,
+ * so the whole chart keeps the categorical palette, in the same order.
  */
 import type { LucideIcon } from 'lucide-react';
 
@@ -49,13 +56,27 @@ export function asSemantic(label: string): SemanticKey | undefined {
 
 const OTHER_RE = /^other(\s*\(\d[\d,]*\))?$/i;
 
-/** Colour + glyph per series, by position (stable) unless semantic. */
+const isOther = (s: { key: string; label: string }) => s.key === 'other' || OTHER_RE.test(s.label);
+
+/**
+ * Whether a chart's series wear their semantic colours: every series but "Other" carries
+ * a semantic key and no two of those keys share a mark colour (see the module comment).
+ */
+export function usesSemanticColours(block: ChartBlock): boolean {
+  const named = block.series.filter((s) => !isOther(s));
+  if (!named.length || !named.every((s) => s.semantic)) return false;
+  const colours = named.map((s) => semanticMarkColor(s.semantic as SemanticKey));
+  return new Set(colours).size === colours.length;
+}
+
+/** Colour + glyph per series, by position (stable) unless the chart is semantic. */
 export function seriesStyles(block: ChartBlock): SeriesStyle[] {
+  const semantic = usesSemanticColours(block);
   return block.series.map((s, i) => {
-    if (s.semantic) {
+    if (semantic && s.semantic) {
       return { key: s.key, label: s.label, color: semanticMarkColor(s.semantic), icon: SEMANTIC_ICON[s.semantic] };
     }
-    if (s.key === 'other' || OTHER_RE.test(s.label)) {
+    if (isOther(s)) {
       return { key: s.key, label: s.label, color: token('chart-8') };
     }
     return { key: s.key, label: s.label, color: i < CATEGORICAL.length - 1 ? categorical(i) : token('chart-8') };

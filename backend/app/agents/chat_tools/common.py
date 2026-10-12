@@ -271,9 +271,10 @@ class Window:
     # window came from ``engine.time_windows`` unchanged (kept for the aggregate API).
     ref: datetime | None = None
     engine: Any = None
-    # The calendar unit the window's start was snapped to (``align_to_bucket``): a
-    # relative window broken down by that unit covers N whole periods, the last in
-    # progress, exactly as the aggregator counts it. ``None`` when not aligned.
+    # The calendar unit the window's start was snapped to (``whole_periods``: whole
+    # days for a span of days or weeks, whole months for months or years): the window
+    # covers N whole periods, the last in progress, exactly as the aggregator counts
+    # it. ``None`` when not aligned.
     aligned_to: str | None = None
 
     def iso_from(self) -> str:
@@ -321,24 +322,23 @@ class Window:
         )
 
 
-def align_to_bucket(window: Window, unit: str | None) -> Window:
-    """``window`` as the aggregators count it when it is broken down by the calendar
-    ``unit`` (``engine.time_windows.align_window``): a relative window that spans a
-    whole number N (>= 2) of ``unit`` periods covers N whole periods, the last in
-    progress ("last 6 months by month" is May to October, not 10 April to now with a
-    cut first month), and its label says so ("last 6 months (since May 2026)").
-
-    Every lookup that labels, totals or compares a bucketed window uses the aligned
-    window, so the headline, the series, the bucket labels and the compared periods
-    describe the same span. Calendar periods, ranges, all time, a clamped window and
-    a span that is not whole periods (90 days by month) come back unchanged."""
-    if not unit or window.all_time or window.clamped or window.aligned_to:
+def whole_periods(window: Window) -> Window:
+    """``window`` as every case, metric and cost lookup counts it
+    (``engine.time_windows.align_whole_periods``): a relative window of days, weeks,
+    months or years covers N whole periods of its own unit, the last in progress, and
+    its label says so ("last 90 days (since 15 Jul 2026)", "last 6 months (since May
+    2026)"). The start depends on the window alone, never on a breakdown, so one answer
+    that counts "last 90 days" as a headline, by month, by severity, as posture tiles,
+    as a noise funnel and as AI cost states one start and one population (Round 12
+    SPEC §7.2 decision 28). Hours, a single day or month, calendar periods, ranges, all
+    time and a window clamped into the request's range come back unchanged."""
+    if window.all_time or window.clamped or window.aligned_to:
         return window
-    from ...engine.time_windows import align_window
+    from ...engine.time_windows import align_whole_periods
 
     try:
         resolved = window.as_resolved()
-        aligned = align_window(resolved, unit)
+        aligned = align_whole_periods(resolved)
     except NotImplementedError:
         raise
     except Exception:  # noqa: BLE001 — an unalignable window stays as resolved
@@ -348,8 +348,23 @@ def align_to_bucket(window: Window, unit: str | None) -> Window:
         return window
     return replace(
         window, start=start, time_from=start.isoformat(), hours=_hours(start, window.end),
-        label=str(aligned.label or window.label), engine=aligned, aligned_to=unit,
+        label=str(aligned.label or window.label), engine=aligned,
+        # The unit the START snapped to (whole days or whole months), which the
+        # previous period steps back by.
+        aligned_to=str(getattr(aligned, "aligned_to", None) or ""),
     )
+
+
+def align_to_bucket(window: Window, unit: str | None) -> Window:
+    """``window`` as the aggregators count it when it is broken down by the calendar
+    ``unit``: :func:`whole_periods`, the same start for every breakdown ("last 6
+    months" by month is May to October, its label "last 6 months (since May 2026)";
+    "last 90 days" by month starts on 15 Jul, as by day and by severity), so the
+    headline, the series, the bucket labels and the compared periods describe the same
+    span. ``unit=None`` returns the window unchanged."""
+    if not unit:
+        return window
+    return whole_periods(window)
 
 
 def operator_tz(ctx: Any) -> str:
@@ -1085,15 +1100,20 @@ def kpi(
 
 def categories(
     pairs: list[tuple[Any, Any]], *, unit: str = "count", dimension: str | None = None,
-    other: Any = None,
+    other: Any = None, ordered: bool = False,
 ) -> dict[str, Any]:
     """A ``categories`` artifact payload, sorted by value desc then label (stable
-    colours, SPEC §7.3). ``None`` values sort last."""
+    colours, SPEC §7.3). ``None`` values sort last. ``ordered`` keeps ``pairs`` in the
+    order given (a canonical order such as Critical, High, Medium, Low, Info) and marks
+    the payload so materialisation keeps it too (Round 12 SPEC §7.2 decision 27)."""
     rows = [(display_text(label, 200) or "—", finite(value)) for label, value in pairs]
-    rows.sort(key=lambda r: (r[1] is None, -(r[1] or 0), r[0]))
+    if not ordered:
+        rows.sort(key=lambda r: (r[1] is None, -(r[1] or 0), r[0]))
     data: dict[str, Any] = {
         "labels": [r[0] for r in rows], "values": [r[1] for r in rows], "unit": unit,
     }
+    if ordered:
+        data["ordered"] = True
     if dimension:
         data["dimension"] = dimension
     if other is not None and finite(other):
@@ -1126,6 +1146,7 @@ __all__ = [
     "ToolInput",
     "Window",
     "align_to_bucket",
+    "whole_periods",
     "call_scope",
     "case_entity",
     "case_list_item",

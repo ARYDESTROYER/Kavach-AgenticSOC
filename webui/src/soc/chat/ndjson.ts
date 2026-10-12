@@ -14,7 +14,7 @@
  *  - the first `turn.done` / `turn.error` is terminal: the reader stops there and
  *    releases the connection, whatever follows;
  *  - a stream that ends WITHOUT a terminal event is reported as `incomplete`, which
- *    the engine turns into "Connection lost — checking whether the answer was saved"
+ *    the engine turns into "Connection lost. Checking whether the answer was saved"
  *    and one replay with the same idempotency key;
  *  - an `AbortSignal` stops reading promptly and is reported as `aborted`.
  *

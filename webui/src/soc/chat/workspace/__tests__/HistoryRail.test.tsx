@@ -109,9 +109,9 @@ describe('HistoryRail', () => {
     }
     // Group labels are not headings: the outline is h1 Chat → h2 thread → h3 turns.
     expect(within(nav).queryAllByRole('heading')).toHaveLength(0);
-    const active = screen.getByRole('button', { name: /^Investigate sign-ins — .* · 2 messages$/ });
+    const active = screen.getByRole('button', { name: /^Investigate sign-ins, .* · 2 messages$/ });
     expect(active).toHaveAttribute('aria-current', 'page');
-    const other = screen.getByRole('button', { name: /^Review endpoint alert — .* · 4 messages$/ });
+    const other = screen.getByRole('button', { name: /^Review endpoint alert, .* · 4 messages$/ });
     expect(other).not.toHaveAttribute('aria-current');
     fireEvent.click(other);
     expect(props.onSelect).toHaveBeenCalledWith(ROWS[1]);
@@ -164,18 +164,18 @@ describe('HistoryRail', () => {
     expect(props.onRename).not.toHaveBeenCalled();
     fireEvent.keyDown(input, { key: 'Enter', isComposing: false });
     expect(props.onRename).toHaveBeenCalledWith(ROWS[0], '正在调查');
-    expect(screen.getByRole('button', { name: /^Investigate sign-ins — / })).toHaveFocus();
+    expect(screen.getByRole('button', { name: /^Investigate sign-ins, / })).toHaveFocus();
 
     // Escape cancels and also returns focus to the row.
     await user.click(screen.getByRole('button', { name: 'Actions for Review endpoint alert' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Rename Review endpoint alert' }), { key: 'Escape' });
-    expect(screen.getByRole('button', { name: /^Review endpoint alert — / })).toHaveFocus();
+    expect(screen.getByRole('button', { name: /^Review endpoint alert, / })).toHaveFocus();
   });
 
   it('shows the full title and exact date in a row tooltip, and shortcut hints on the header', async () => {
     renderRail({ onCollapse: vi.fn(), shortcuts: { toggle: 'Control+Shift+S Meta+Shift+S' } });
-    const row = screen.getByRole('button', { name: /^Review endpoint alert — / });
+    const row = screen.getByRole('button', { name: /^Review endpoint alert, / });
     act(() => row.focus());
     const tip = await screen.findByRole('tooltip');
     expect(tip).toHaveTextContent('Review endpoint alert');
@@ -237,11 +237,11 @@ describe('HistoryRail', () => {
       summary('e', 'Quiet thread', daysAgo(0)),
     ];
     const { container } = renderRail({ conversations: rows, activeId: 'e' });
-    expect(screen.getByRole('button', { name: /^Answering thread, answering — / })).toHaveAttribute('data-status', 'running');
-    expect(screen.getByRole('button', { name: /^Unread thread, new answer — / })).toHaveAttribute('data-status', 'unread');
-    expect(screen.getByRole('button', { name: /^Waiting thread, needs your input — / })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Failed thread, answer failed — / })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Quiet thread — / })).not.toHaveAttribute('data-status');
+    expect(screen.getByRole('button', { name: /^Answering thread, answering, / })).toHaveAttribute('data-status', 'running');
+    expect(screen.getByRole('button', { name: /^Unread thread, new answer, / })).toHaveAttribute('data-status', 'unread');
+    expect(screen.getByRole('button', { name: /^Waiting thread, needs your input, / })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Failed thread, answer failed, / })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Quiet thread, / })).not.toHaveAttribute('data-status');
     const answering = screen.getByRole('button', { name: /^Answering thread/ });
     expect(answering.querySelector('[data-activity="running"]')).not.toBeNull();
     // The ring replaces the time; a dot sits before it.
@@ -309,7 +309,7 @@ describe('HistoryRail', () => {
       </TooltipProvider>,
     );
     expect(screen.getByText('brute force from 10.0.0.5')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /^Review endpoint alert — brute force/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Review endpoint alert: brute force/ }));
     expect(openHit).toHaveBeenCalledWith(hit);
     rerender(
       <TooltipProvider>

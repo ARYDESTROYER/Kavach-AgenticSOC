@@ -94,10 +94,27 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  *   - Login.tsx -209 B (Remember me tidy-up), others within ±20 B.
  * `optsFromHash` then read the same `hashKeys` table instead of its own per-key copy
  * (-397 B, one source of truth for the keys, validators and trim rule). Measured with
- * `vite build` that way: 366,837 B, the baseline below. A CI build stamps a 40-character
- * commit and a build time where a local build writes `unknown`, about 46 B more.
+ * `vite build` that way: 366,837 B. A CI build stamps a 40-character commit and a build
+ * time where a local build writes `unknown`, about 46 B more.
+ *
+ * Rebased for the Round 12 final polish (top bar, P1-shell-header-material) by exactly
+ * the top bar's own first-paint bytes, +1,428 B, measured by building the same tree with
+ * and without each file (`vite build`, the same way): AppShell.tsx +958 B (the bar's
+ * container tiers, the page name's priority, the health pill's tooltip, the Console
+ * controls sheet as the desktop overflow), DemoIndicator.tsx +439 B (its tooltip and the
+ * muted-health note the health pill used to carry), SystemUpdateControl.tsx +31 B. The
+ * bar is the first thing every page paints, so none of it can be a lazy chunk.
+ *
+ * Rebased again for the final top bar fixer by exactly its first-paint bytes, +2,738 B:
+ * the same tree built with and without the change (`vite build`, the same way) measured
+ * 371,445 B and 368,707 B. It is top-bar-fold.ts (the measured fold that lets crowded
+ * chips give way before the search field drops under 11rem: the fold order, the six
+ * literal fold classes, the measure and the hook), the search field's own-width tiers,
+ * and the fold classes on each chip label. The fold must decide before first paint (a
+ * lazy chunk would paint the overflowing bar first), so it cannot be split out. Other
+ * work keeps the +1,024 B budget over 371,003 B.
  */
-const PRE_REVAMP_ENTRY_BYTES = 366_837;
+const PRE_REVAMP_ENTRY_BYTES = 371_003;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {
@@ -169,8 +186,8 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
     const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);
     if (!m) throw new Error('could not find the entry chunk in dist/index.html');
     const bytes = fs.statSync(path.join(DIST, 'assets', m[1])).size;
-    // Hard ceiling below the 537 777-byte regression. After Round 12 (WP-GEN-A) the
-    // entry chunk is ~367 kB, so the headroom is ~33 kB; the recorded-baseline test
+    // Hard ceiling below the 537 777-byte regression. After the Round 12 final polish the
+    // entry chunk is ~371 kB, so the headroom is ~29 kB; the recorded-baseline test
     // below still caps any growth at 1 kB. Keep the figure current when it moves.
     expect(bytes).toBeLessThan(400_000);
   });

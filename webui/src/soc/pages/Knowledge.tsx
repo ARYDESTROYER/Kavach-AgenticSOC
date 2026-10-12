@@ -71,10 +71,10 @@ import {
   type SortState,
 } from '@/soc/components/DataTable';
 import { EmptyState } from '@/soc/components/EmptyState';
-import { IconButton } from '@/soc/components/IconButton';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import { Stagger } from '@/soc/components/Stagger';
 import { LoadingState } from '@/design-system';
+import { TagInput, usePendingTagDraft } from '@/soc/components/TagInput';
 import {
   announceJobAccepted,
   retainJobSubmissionIntent,
@@ -447,8 +447,9 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
   const [title, setTitle] = React.useState('');
   const [text, setText] = React.useState('');
   const [source, setSource] = React.useState('');
-  const [tagInput, setTagInput] = React.useState('');
   const [tags, setTags] = React.useState<string[]>([]);
+  const tagDraft = usePendingTagDraft();
+  const { settled: settleTags, reset: resetTagDraft } = tagDraft;
   const [submitting, setSubmitting] = React.useState(false);
   const [fileError, setFileError] = React.useState<string | null>(null);
   const [queue, setQueue] = React.useState<QueuedFile[]>([]);
@@ -555,25 +556,20 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
     [text],
   );
 
-  const addTag = React.useCallback((raw: string) => {
-    const label = raw.trim();
-    if (!label) return;
-    setTags((prev) => (prev.includes(label) ? prev : [...prev, label]));
-    setTagInput('');
-  }, []);
-
   const reset = React.useCallback(() => {
     setTitle('');
     setText('');
     setSource('');
-    setTagInput('');
+    resetTagDraft();
     setTags([]);
     setQueue([]);
     setFileError(null);
     setPickerKey((k) => k + 1);
-  }, []);
+  }, [resetTagDraft]);
 
   const submit = React.useCallback(async () => {
+    // Text typed into Tags but not added is never dropped silently: stop and ask.
+    if (!settleTags()) return;
     const params = { documents };
     const intent = retainJobSubmissionIntent(
       jobSubmissionIntentRef.current,
@@ -603,7 +599,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
     } finally {
       setSubmitting(false);
     }
-  }, [documents, navigate, reset]);
+  }, [documents, navigate, reset, settleTags]);
 
   return (
     <Card className="flex h-full flex-col">
@@ -719,43 +715,14 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
           </div>
         ) : null}
 
-        <div className="space-y-1.5">
-          <Label htmlFor="rag-tags">Tags (optional)</Label>
-          <Input
-            id="rag-tags"
-            placeholder="Type a tag and press enter…"
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addTag(tagInput);
-              }
-            }}
-          />
-          {tags.length ? (
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {tags.map((t) => (
-                <Badge key={t} variant="secondary" className="gap-1">
-                  {t}
-                  <IconButton
-                    label={`Remove tag ${t}`}
-                    tooltip={false}
-                    size="sm"
-                    onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
-                    className="-my-1 -mr-1 rounded-sm [&_svg]:size-3"
-                  >
-                    <X className="size-3" aria-hidden />
-                  </IconButton>
-                </Badge>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Applied to every imported document.
-            </p>
-          )}
-        </div>
+        <TagInput
+          label="Tags (optional)"
+          description="Applied to every imported document."
+          placeholder="Type a tag and press Enter…"
+          value={tags}
+          onChange={setTags}
+          {...tagDraft.bind}
+        />
 
         <div className="mt-auto flex items-center justify-end gap-2 pt-2">
           {hasPasted || batching ? (
@@ -788,8 +755,9 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
   const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
   const [title, setTitle] = React.useState('');
   const [content, setContent] = React.useState('');
-  const [tagInput, setTagInput] = React.useState('');
   const [tags, setTags] = React.useState<string[]>([]);
+  const tagDraft = usePendingTagDraft();
+  const { settled: settleTags, reset: resetTagDraft } = tagDraft;
   const [submitting, setSubmitting] = React.useState(false);
 
   const bytes = React.useMemo(() => new Blob([content]).size, [content]);
@@ -802,14 +770,9 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
     !tooBig &&
     !submitting;
 
-  const addTag = React.useCallback((raw: string) => {
-    const label = raw.trim();
-    if (!label) return;
-    setTags((prev) => (prev.includes(label) ? prev : [...prev, label]));
-    setTagInput('');
-  }, []);
-
   const submit = React.useCallback(async () => {
+    // Text typed into Tags but not added is never dropped silently: stop and ask.
+    if (!settleTags()) return;
     const params = {
       documents: [
         {
@@ -842,13 +805,13 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
       setTitle('');
       setContent('');
       setTags([]);
-      setTagInput('');
+      resetTagDraft();
     } catch (e) {
       toast.error(errorMessage(e, 'Could not start the threat-intel import job.'));
     } finally {
       setSubmitting(false);
     }
-  }, [content, navigate, tags, title]);
+  }, [content, navigate, resetTagDraft, settleTags, tags, title]);
 
   return (
     <Card className="flex h-full flex-col">
@@ -893,39 +856,13 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
             {tooBig ? `Too large — keep notes under ${MAX_IMPORT_LABEL}.` : `${fmtNumber(bytes)} bytes`}
           </p>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="ti-tags">Tags (optional)</Label>
-          <Input
-            id="ti-tags"
-            placeholder="Type a tag and press enter…"
-            value={tagInput}
-            onChange={(e) => setTagInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addTag(tagInput);
-              }
-            }}
-          />
-          {tags.length ? (
-            <div className="flex flex-wrap gap-1.5 pt-1">
-              {tags.map((t) => (
-                <Badge key={t} variant="secondary" className="gap-1">
-                  {t}
-                  <IconButton
-                    label={`Remove tag ${t}`}
-                    tooltip={false}
-                    size="sm"
-                    onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
-                    className="-my-1 -mr-1 rounded-sm [&_svg]:size-3"
-                  >
-                    <X className="size-3" aria-hidden />
-                  </IconButton>
-                </Badge>
-              ))}
-            </div>
-          ) : null}
-        </div>
+        <TagInput
+          label="Tags (optional)"
+          placeholder="Type a tag and press Enter…"
+          value={tags}
+          onChange={setTags}
+          {...tagDraft.bind}
+        />
         <div className="mt-auto flex items-center justify-end gap-2 pt-2">
           <Button size="sm" onClick={() => void submit()} disabled={!canSubmit}>
             <Plus aria-hidden />

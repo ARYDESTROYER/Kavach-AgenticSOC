@@ -10,6 +10,7 @@ import {
   TextPref,
 } from '../primitives';
 import { Button } from '@/ui/button';
+import { materialBar } from '@/lib/ui-recipes';
 
 describe('Settings form composition visual standard', () => {
   it('keeps section context and actions in one flat heading band', () => {
@@ -47,8 +48,12 @@ describe('Settings form composition visual standard', () => {
     expect(tocBand).not.toBeNull();
     expect(tocBand.className).toContain('border-y');
     // Sticky chrome wears the ONE Console material (it turns solid under reduced
-    // transparency / increased contrast), never a page-local translucent fill.
-    expect(tocBand.className).not.toContain('bg-background/95');
+    // transparency / increased contrast), never a page-local translucent fill: every
+    // recipe token, and no other `bg-*/NN` fill beside the recipe's.
+    for (const token of materialBar.split(/\s+/).filter(Boolean)) expect(tocBand).toHaveClass(token);
+    expect(tocBand.className.split(/\s+/).filter((c) => /(^|:)bg-[a-z-]+\/(\d+|\[[\d.]+\])$/.test(c))).toEqual(
+      materialBar.split(/\s+/).filter((c) => /(^|:)bg-[a-z-]+\/(\d+|\[[\d.]+\])$/.test(c)),
+    );
     expect(tocBand.className).not.toMatch(/rounded|shadow|bg-card/);
     // Pinned FLUSH under the top bar (no slit for scrolled content to show through), and
     // its top hairline gives way to the top bar's once content scrolls beneath it.

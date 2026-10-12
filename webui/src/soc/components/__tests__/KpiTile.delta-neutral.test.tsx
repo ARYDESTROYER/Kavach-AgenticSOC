@@ -86,3 +86,38 @@ describe('KpiTile delta — AA tokens + neutral zero', () => {
   });
 });
 
+
+describe('KpiTile delta — a separate comparison (`period`)', () => {
+  it('keeps the chip to the figure on one line and speaks the comparison after it', () => {
+    const { container } = render(
+      <KpiTile
+        label="Cases"
+        value="87"
+        variant="strip"
+        density="compact"
+        goodDirection="none"
+        delta={{ value: 87, label: '+87', period: 'vs previous 90 days' }}
+      />,
+    );
+    const c = chip(container)!;
+    expect(c.textContent).toBe('+87');
+    expect(classList(c)).toEqual(expect.arrayContaining(['whitespace-nowrap', 'shrink-0']));
+    expect(c.getAttribute('aria-label')).toBe('changed up by +87 vs previous 90 days');
+    const words = container.querySelector('[data-kpi-delta-period]') as HTMLElement;
+    expect(words.textContent).toBe('vs previous 90 days');
+    expect(c.contains(words)).toBe(false);
+  });
+
+  it('a zero with no word label is "unchanged", then the comparison', () => {
+    const { container } = render(
+      <KpiTile label="SLA breached" value="10" delta={{ value: 0, period: 'vs previous window' }} />,
+    );
+    expect(chip(container)!.getAttribute('aria-label')).toBe('unchanged vs previous window');
+  });
+
+  it('without a period the chip keeps its old wrapping behaviour (no nowrap)', () => {
+    const { container } = render(<KpiTile label="Agreement" value="92%" delta={{ value: 8, label: '+8% vs last week' }} />);
+    expect(classList(chip(container))).not.toContain('whitespace-nowrap');
+    expect(container.querySelector('[data-kpi-delta-period]')).toBeNull();
+  });
+});

@@ -141,6 +141,27 @@ describe('caseAutomationToWire — form → AutomationRule', () => {
     });
   });
 
+  it('shows a single API-written `tag` in the Tags list the editor edits, and saves it as `tags`', () => {
+    // The engine applies `tags`, else the single `tag`/`value` (engine/case_tags.py
+    // automation_tags). The editor edits `tags` only, so a single tag must show there
+    // rather than as an empty field that hides what the rule applies.
+    const form = wireToCaseAutomation({
+      id: 'legacy-tag',
+      action: 'tag',
+      conditions: {},
+      payload: { tag: ' auto-triaged ' },
+    });
+    expect(form.automation.payload).toEqual({ tags: ['auto-triaged'] });
+    expect(caseAutomationToWire(form, 'legacy-tag').payload).toEqual({ tags: ['auto-triaged'] });
+    // A listed `tags` wins and is left as is; other actions are untouched.
+    expect(
+      wireToCaseAutomation({ id: 'x', action: 'tag', payload: { tags: ['a'], tag: 'b' } }).automation.payload,
+    ).toEqual({ tags: ['a'], tag: 'b' });
+    expect(
+      wireToCaseAutomation({ id: 'y', action: 'notify', payload: { value: 'v' } }).automation.payload,
+    ).toEqual({ value: 'v' });
+  });
+
   it('round-trips wire → form → wire (id preserved via the caller)', () => {
     const original = {
       id: 'rule-1',

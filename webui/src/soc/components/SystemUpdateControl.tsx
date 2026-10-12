@@ -29,6 +29,7 @@ import {
 } from '@/ui/sheet';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
+import { TOP_BAR_FOLD_HIDDEN } from '@/soc/top-bar-fold';
 import {
   systemUpdateStageLabel,
   type DeploymentUpgradeState,
@@ -263,7 +264,7 @@ export function SystemUpdateControl({
             variant={trigger.tone}
             data-testid="system-update-button"
             className={cn(
-              'h-7 shrink-0 gap-1.5 px-2.5 text-xs',
+              'h-7 shrink-0 gap-1.5 whitespace-nowrap px-2.5 text-xs',
               trigger.tone === 'destructive' &&
                 'border-critical/30 bg-critical/10 text-critical-text hover:bg-critical/15',
             )}
@@ -275,7 +276,12 @@ export function SystemUpdateControl({
               className={cn('h-3.5 w-3.5', trigger.spinning && !reducedMotion && 'animate-spin')}
               aria-hidden
             />
-            <span className="hidden xl:inline">{upgrade.starting ? 'Starting…' : trigger.label}</span>
+            {/* The label shows where the top bar has room (`@container/topbar`, 62rem of
+                bar, folding when the bar is crowded); compact, the icon keeps its tooltip
+                and full accessible name. */}
+            <span className={cn('hidden @[62rem]/topbar:inline', TOP_BAR_FOLD_HIDDEN.update)}>
+              {upgrade.starting ? 'Starting…' : trigger.label}
+            </span>
           </Button>
         </TooltipTrigger>
         <TooltipContent>{trigger.accessible}</TooltipContent>

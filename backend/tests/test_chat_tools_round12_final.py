@@ -28,7 +28,13 @@ import pytest
 
 from app.agents.blocks import MaterialiseOptions, to_blocks
 from app.agents.chat_tools.cases import SearchCasesTool
-from app.agents.chat_tools.common import align_to_bucket, logs_console_view, parse_input, resolve_window
+from app.agents.chat_tools.common import (
+    align_to_bucket,
+    logs_console_view,
+    parse_input,
+    resolve_window,
+    whole_periods,
+)
 from app.agents.chat_tools.logs import LogStatsInput, LogStatsTool, SearchLogsInput
 from app.agents.chat_tools.metrics import CostUsageTool, SocMetricsTool
 from app.agents.chat_tools.periods import previous_period, same_period_last_year
@@ -120,10 +126,30 @@ def test_align_to_bucket_matches_the_aggregator() -> None:
     assert aligned.time_from == aligned.start.isoformat() and aligned.trailing
     assert aligned.as_resolved().aligned_to == "month"            # the aggregator does not re-align it
     assert align_to_bucket(aligned, "month") is aligned           # idempotent
-    # Calendar periods, all time and spans that are not whole periods stay as they are.
-    for spec, unit in (("last_month", "day"), ("all", "month"), ("now-90d", "month")):
+    # Calendar periods, all time and windows of hours stay as they are.
+    for spec, unit in (("last_month", "day"), ("all", "month"), ("now-24h", "hour")):
         unchanged = resolve_window(ctx, window=spec, now=FIXED)
         assert align_to_bucket(unchanged, unit) is unchanged, spec
+        assert whole_periods(unchanged) is unchanged, spec
+    # A span of months starts on the first of a month whatever it is broken down by,
+    # and with no breakdown at all (SPEC §7.2 decision 28): "last 5 months" by quarter
+    # is June to now, its first quarter "Q2 2026 (from 1 Jun)".
+    five = resolve_window(ctx, window="now-5M", now=FIXED)
+    by_quarter, alone = align_to_bucket(five, "quarter"), whole_periods(five)
+    assert by_quarter.start == alone.start == datetime(2026, 6, 1, tzinfo=timezone.utc)
+    assert by_quarter.label == alone.label == "last 5 months (since Jun 2026)" and alone.aligned_to == "month"
+    assert align_to_bucket(five, None) is five    # no breakdown: the caller decides
+    # 90 days by month is whole DAYS, as 90 days by day is (one start per answer), and
+    # the window remembers that it snapped to days, so its previous period is the 90
+    # days before it (SPEC §7.2 decision 28).
+    ninety = resolve_window(ctx, window="now-90d", now=FIXED)
+    by_month, by_day = align_to_bucket(ninety, "month"), align_to_bucket(ninety, "day")
+    assert by_month.start == by_day.start == datetime(2026, 7, 13, tzinfo=timezone.utc)
+    assert by_month.label == by_day.label == "last 90 days (since 13 Jul 2026)"
+    assert by_month.aligned_to == "day"
+    before = previous_period(by_month)
+    assert before is not None and before.end <= by_month.start
+    assert (by_month.start - before.start) == timedelta(days=90)
 
 
 async def test_case_stats_by_month_with_compare_uses_one_window() -> None:

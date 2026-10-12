@@ -187,9 +187,9 @@ describe('Users — Add-user dialog (Round 11)', () => {
   it('shows a LIVE permission summary that follows the selected role', async () => {
     const dialog = await openAddDialog();
 
-    // Default role: Analyst — Tier 1. The summary shows its exploded grants.
+    // Default role: Analyst Tier 1. The summary shows its exploded grants.
     const summary = dialog.getByTestId('role-permission-summary');
-    expect(within(summary).getByText('Analyst — Tier 1 grants')).toBeInTheDocument();
+    expect(within(summary).getByText('Analyst Tier 1 grants')).toBeInTheDocument();
     expect(within(summary).getByText('comment')).toBeInTheDocument();
     expect(within(summary).getByText('run')).toBeInTheDocument();
     expect(within(summary).queryByText('close')).not.toBeInTheDocument();
@@ -246,7 +246,7 @@ describe('Users — Add-user dialog (Round 11)', () => {
     const editor = within(await screen.findByRole('dialog', { name: 'Adjust permissions' }));
 
     // Seeded to START from the selected base role.
-    expect(editor.getByRole('button', { name: 'Analyst — Tier 1' })).toHaveAttribute(
+    expect(editor.getByRole('button', { name: 'Analyst Tier 1' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );

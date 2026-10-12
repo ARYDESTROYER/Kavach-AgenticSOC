@@ -424,7 +424,9 @@ describe('reports (SPEC §9.2)', () => {
   });
 
   it('keeps a whole multi-window item scope (no clip at the old 80 characters)', async () => {
-    const window = 'last 90 days; last 90 days vs previous 90 days; last 90 days (since 14 Jul 2026); all time (since 28 Mar 2026) (Asia/Kolkata)';
+    // Distinct windows only: two labels of ONE window are stated once and a comparison of a
+    // stated window reads inside it (report/windows.ts).
+    const window = 'last 90 days (since 14 Jul 2026); Sep 2026 vs Aug 2026; all time (since 28 Mar 2026) (Asia/Kolkata); Q3 2026';
     expect(window.length).toBeGreaterThan(80);
     stubFetch(() => json({ ...REPORT, items: [{ ...REPORT.items[0], scope: { ...REPORT.items[0].scope, window } }] }));
     const report = await getReport('rep-1');

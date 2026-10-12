@@ -46,6 +46,7 @@ import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errorMessage';
 import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
+import { caseTagError } from '@/lib/tags';
 import type { BackgroundJob, BackgroundJobKind, Case } from '@/lib/types';
 import { useEventStream } from '@/lib/useEventStream';
 
@@ -1458,10 +1459,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     [currentUser],
   );
 
+  // A bulk tag over the limit is refused as it is typed, never cut to fit.
+  const bulkTagError = bulkFormAction === 'tag' ? caseTagError(bulkFormValue) : null;
+
   const submitBulkForm = React.useCallback(() => {
     const action = bulkFormAction;
     const value = bulkFormValue.trim();
     if (!action || !value || selectedIds.size === 0 || bulkBusy) return;
+    if (action === 'tag' && caseTagError(value)) return;
     setBulkFormAction(null);
     setBulkFormValue('');
     if (action === 'assign') {
@@ -2362,8 +2367,15 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                     if (event.key === 'Enter' && bulkFormValue.trim()) submitBulkForm();
                   }}
                   placeholder={bulkFormConfig?.placeholder}
+                  aria-invalid={bulkTagError ? true : undefined}
+                  aria-describedby={bulkTagError ? 'case-manager-bulk-error' : undefined}
                 />
               )}
+              {bulkTagError ? (
+                <p id="case-manager-bulk-error" role="alert" className="text-xs font-medium text-critical-text">
+                  {bulkTagError}
+                </p>
+              ) : null}
               <p className="text-xs leading-4 text-muted-foreground">
                 The selected case IDs are snapshotted when submitted; later selection changes do not alter the job.
               </p>
@@ -2378,7 +2390,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
               >
                 Cancel
               </Button>
-              <Button onClick={submitBulkForm} disabled={!bulkFormValue.trim() || bulkBusy}>
+              <Button onClick={submitBulkForm} disabled={!bulkFormValue.trim() || Boolean(bulkTagError) || bulkBusy}>
                 {bulkFormConfig?.submit}
               </Button>
             </DialogFooter>

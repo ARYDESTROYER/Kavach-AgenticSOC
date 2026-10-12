@@ -960,7 +960,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       setTimeline(null);
       setStages(null);
       void loadTriage();
-      toast.success('Playbook applied — the case was re-investigated with it as context.');
+      toast.success('Playbook applied. The case was re-investigated with it as context.');
     } catch (e) {
       toast.error(
         e instanceof Error ? e.message : 'Could not run the playbook.',
@@ -1018,7 +1018,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       const okCount = res.sent.filter((s) => s.ok).length;
       const failCount = res.sent.length - okCount;
       if (res.sent.length === 0) {
-        toast.message('No channels matched — nothing was sent.');
+        toast.message('No channels matched, so nothing was sent.');
       } else if (failCount === 0) {
         toast.success(`Notification sent to ${okCount} channel(s).`);
       } else if (okCount === 0) {
@@ -2199,6 +2199,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         onTagsChange={setActionTags}
         tagDraft={actionTagDraft}
         onTagDraftChange={setActionTagDraft}
+        caseTags={c?.tags ?? null}
         disposition={actionDisposition}
         onDispositionChange={declareDisposition}
         currentDisposition={c?.disposition ?? null}

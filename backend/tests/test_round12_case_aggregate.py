@@ -821,10 +821,20 @@ async def test_pushdown_declines_what_it_cannot_answer_exactly(large_cases) -> N
         spec = CaseAggregateSpec(window=resolve_window("all", now=NOW), **spec_kw)
         assert await store.aggregate(spec) is None
         assert (await aggregate_cases(store, spec)).method == "fold"
-    sql = await sql_store(large_cases[:500])
-    # A half-hour zone cannot fold UTC hours into local days exactly: fold instead.
+    # A half-hour zone cannot fold UTC hours into local days exactly: fold instead. The
+    # push-down declines only when a case falls in an hour that straddles two local days
+    # (18:00-19:00 UTC holds Kolkata's midnight), and the corpus's times move with the
+    # real clock, so one case is pinned at 18:40 UTC inside the window: without it the
+    # window held no such case for part of each day and the push-down rightly answered.
+    straddle = (NOW - timedelta(days=10)).replace(hour=18, minute=40, second=0)
+    pinned = large_cases[2].model_copy(update={
+        "case_id": "case-kolkata-midnight", "cluster_signature": "sig-kolkata-midnight",
+        "created_at": straddle.isoformat(),
+    })
+    sql = await sql_store([*large_cases[:500], pinned])
     kolkata = CaseAggregateSpec(window=resolve_window("now-90d", tz="Asia/Kolkata", now=NOW),
                                 bucket="day")
+    assert kolkata.window.start <= straddle < kolkata.window.end
     assert await sql.aggregate(kolkata) is None
     assert (await sql.aggregate(CaseAggregateSpec(
         window=resolve_window("all", now=NOW), group_by=("rule",)))) is None

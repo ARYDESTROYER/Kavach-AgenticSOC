@@ -70,7 +70,7 @@ export const TimelinePanel: React.FC<TimelinePanelProps> = ({
         <div className="min-w-0">
           <h3 className="text-lg font-semibold tracking-tight text-foreground">What happened</h3>
           <p className="text-sm text-muted-foreground">
-            Source-asserted facts + the deterministic engine steps — the story of how this
+            Source-asserted facts + the deterministic engine steps: the story of how this
             alert became a case.
           </p>
         </div>

@@ -61,6 +61,8 @@ from ..engine.case_cluster import scoped_entity_body as _scoped_entity_body  # n
 from ..engine.case_cluster import widen_windows as _widen_windows  # noqa: F401
 from ..engine.case_rationale import audit_get as _audit_get  # noqa: F401
 from ..engine.case_rationale import build_rationale as _build_rationale
+from ..engine.case_tags import CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT  # noqa: F401
+from ..engine.case_tags import CaseTagError, merge_case_tags
 from ..engine.correlation import cluster_from_events
 from ..engine.log_rows import browse_query, clamp_browse_limit, clamp_per_source_timeout
 from ..engine.log_rows import browse_truncated as _browse_truncated
@@ -6112,6 +6114,24 @@ def _grant_for_body(body: CaseAction) -> str:
     return _case_action_grant(body.action, target)
 
 
+# Case tag bounds: ``CASE_TAG_MAX_CHARS`` / ``CASE_TAG_MAX_COUNT`` live in
+# ``engine/case_tags.py`` (imported above) and the web console mirrors them in
+# ``webui/src/lib/tags.ts`` under the same names.
+def _merge_case_tags(existing: list[str], incoming: list[Any], *, replace: bool) -> list[str]:
+    """Trim and de-duplicate case tags; refuse (422) what the bounds refuse.
+
+    A NEW tag over 40 characters, or new tags that would take the case past 25, answer
+    422 with a detail that says why. Nothing is cut and nothing is dropped: a shortened
+    label is a different tag, and a tag left off silently is a change the analyst asked
+    for and did not get. A tag the case already carries passes unchanged.
+    ``replace`` takes ``incoming`` as the whole list (``/tags``); otherwise it is merged
+    after ``existing`` (a lifecycle action's additive tags)."""
+    try:
+        return merge_case_tags(existing, incoming, replace=replace)
+    except CaseTagError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.post("/cases/{case_id}/action")
 async def case_action(
     case_id: str,
@@ -6156,6 +6176,10 @@ async def _perform_case_action(
         raise HTTPException(status_code=404, detail="Case not found")
     if body.action not in _ACTION_STATUS:
         raise HTTPException(status_code=400, detail=f"Unknown action: {body.action}")
+    # Checked before anything changes, so a refused tag leaves the case untouched.
+    merged_tags = (
+        _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
+    )
 
     prev_status = case.status
 
@@ -6242,15 +6266,10 @@ async def _perform_case_action(
     # assignee → set the case owner when provided (non-empty).
     if body.assignee is not None:
         case.assignee = str(body.assignee).strip()[:80]
-    # tags → merge into the case's tags (trim, de-dupe, bounded — same tidy rules
-    # as the dedicated /tags route).
-    if body.tags is not None:
-        merged = list(case.tags)
-        for t in body.tags:
-            t = str(t).strip()[:40]
-            if t and t not in merged:
-                merged.append(t)
-        case.tags = merged[:25]
+    # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
+    # the dedicated /tags route, checked above by ``_merge_case_tags``).
+    if merged_tags is not None:
+        case.tags = merged_tags
 
     # Record the lifecycle transition on the append-only status timeline.
     if case.status != prev_status:
@@ -6558,13 +6577,9 @@ async def case_tags(
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    # De-dupe, trim, cap length/count — tags are operator labels, kept tidy.
-    seen: list[str] = []
-    for t in body.tags:
-        t = str(t).strip()[:40]
-        if t and t not in seen:
-            seen.append(t)
-    case.tags = seen[:25]
+    # De-dupe, trim and bound the count; a new tag over the length limit is refused,
+    # never cut (``_merge_case_tags``).
+    case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
     case.updated_at = iso_now()
     await state.cases.save(case)
     await state.audit.record(

@@ -415,12 +415,12 @@ describe('Workspace Chat page', () => {
   it('restores the newest thread, marks it current, and switches threads', async () => {
     renderChat();
     expect(await screen.findByText('Newest sign-in review answer')).toBeInTheDocument();
-    const newest = screen.getByRole('button', { name: /^Newest sign-in review — .* · 2 messages$/ });
+    const newest = screen.getByRole('button', { name: /^Newest sign-in review, .* · 2 messages$/ });
     expect(newest).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'Newest sign-in review' })).toBeInTheDocument();
     expect(screen.getByTestId('conversation-total')).toHaveTextContent('2.1k tokens · $0.004');
 
-    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review — / }));
+    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review, / }));
     expect(await screen.findByText('Older endpoint review answer')).toBeInTheDocument();
     expect(screen.queryByText('Newest sign-in review answer')).toBeNull();
     expect(calls.some((call) => call.url === '/api/chat/conversations/c-older')).toBe(true);
@@ -463,7 +463,7 @@ describe('Workspace Chat page', () => {
     );
     expect(await screen.findByText('Yes: 1,284 failed logins.')).toBeInTheDocument();
     expect(screen.getByTestId('meta-row')).toHaveTextContent('1 lookup · 420 ms');
-    const row = await screen.findByRole('button', { name: /^Brute force review — / });
+    const row = await screen.findByRole('button', { name: /^Brute force review, / });
     expect(row).toHaveAttribute('aria-current', 'page');
     // The live transcript stays: the promoted thread is not re-fetched.
     expect(calls.some((call) => call.url === '/api/chat/conversations/c-new')).toBe(false);
@@ -483,7 +483,7 @@ describe('Workspace Chat page', () => {
       response: { answer: 'X answer', conversation_id: 'c-new', conversation_title: 'First question', message_id: 'c-new-a' },
     });
     expect(await screen.findByText('X answer')).toBeInTheDocument();
-    await screen.findByRole('button', { name: /^Older endpoint review — / });
+    await screen.findByRole('button', { name: /^Older endpoint review, / });
 
     // Hold the older thread's detail open, as on a slow backend.
     let release!: () => void;
@@ -498,7 +498,7 @@ describe('Workspace Chat page', () => {
         return scripted(input, init);
       }),
     );
-    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review — / }));
+    fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review, / }));
     await settle();
     expect(screen.getByRole('heading', { level: 2, name: 'Older endpoint review' })).toBeInTheDocument();
     // The old thread's turns are gone (no Add to report on a message of another thread).
@@ -617,7 +617,7 @@ describe('Workspace Chat page', () => {
     expect(await screen.findByText('Older endpoint review answer')).toBeInTheDocument();
     await waitFor(() => expect(document.querySelector('[data-highlighted="true"]')).not.toBeNull());
     expect(window.location.hash).toContain('conversationId=c-older');
-    fireEvent.click(screen.getByRole('button', { name: /^Newest sign-in review — / }));
+    fireEvent.click(screen.getByRole('button', { name: /^Newest sign-in review, / }));
     await screen.findByText('Newest sign-in review answer');
     expect(window.location.hash).toBe('#/chat');
   });
@@ -717,7 +717,7 @@ describe('Workspace Chat page', () => {
     await waitFor(() =>
       expect(calls.some((call) => call.method === 'DELETE' && call.url === '/api/chat/conversations/c-older')).toBe(true),
     );
-    expect(screen.queryByRole('button', { name: /^Older endpoint review — / })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Older endpoint review, / })).toBeNull();
   });
 
   it('shows a failed /chat/context as a retryable error in the empty state and the composer', async () => {

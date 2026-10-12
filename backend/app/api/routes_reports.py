@@ -422,6 +422,158 @@ def _caption_window(block: Any) -> str | None:
     return window
 
 
+# A window label with the start its data or alignment gave it: "all time (since 28 Sep
+# 2026)", "last 90 days (since 15 Jul 2026)", "… (since 3 Nov 2025) (Asia/Kolkata)".
+_SINCE_WINDOW_RE = re.compile(r"^(?P<base>.+?) \(since (?P<since>[^()]+)\)(?P<zone> \([^()]+\))?$")
+
+
+def _since_date(since: str) -> datetime | None:
+    """The date a "since" detail names ("28 Sep 2026", "Nov 2025", "28 Sep 2026, UTC")."""
+    head = since.split(",", 1)[0].strip()
+    for fmt in ("%d %b %Y", "%b %Y"):
+        try:
+            return datetime.strptime(head, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _merge_windows(windows: list[str]) -> list[str]:
+    """Each window stated ONCE (Round 12 SPEC §7.2 decision 29). One answer's lookups
+    can label the same window differently: the cases "all time (since 28 Sep 2026)", a
+    case list "all time" and the AI usage "all time (since 12 Oct 2026)" are one all-time
+    window and read "all time (since 28 Sep 2026)", from the earliest data; a relative
+    window read both rolling and in whole days ("last 90 days", "last 90 days (since 15
+    Jul 2026)") reads once, with the start its breakdowns state. Two different starts
+    of one relative window keep the shared phrase only. A comparison of a window stated
+    on its own reads inside it (:func:`_fold_comparisons`). Order of first appearance."""
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for window in windows:
+        match = _SINCE_WINDOW_RE.match(window)
+        if match is None:
+            groups.setdefault(window, [])
+            continue
+        detail = (match.group("since"), match.group("zone") or "")
+        details = groups.setdefault(match.group("base"), [])
+        if detail not in details:
+            details.append(detail)
+    merged: list[str] = []
+    for base, details in groups.items():
+        chosen: tuple[str, str] | None = None
+        if len(details) == 1:
+            chosen = details[0]
+        elif details and base == "all time":
+            dated = [(day, detail) for detail in details if (day := _since_date(detail[0])) is not None]
+            if len(dated) == len(details):
+                chosen = min(dated)[1]
+        merged.append(f"{base} (since {chosen[0]}){chosen[1]}" if chosen else base)
+    return _fold_comparisons(merged)
+
+
+#: How a comparison caption joins its periods (``chat_tools.periods.comparison_caption``),
+#: and how a scope states one it has folded into its subject.
+_COMPARED_SEPARATOR = " vs "
+_COMPARED_WITH = ", compared with "
+
+
+def _window_base(window: str) -> tuple[str, bool]:
+    """``(the window's phrase without its start, whether it states a start)``."""
+    match = _SINCE_WINDOW_RE.match(window)
+    return (match.group("base"), True) if match else (window, False)
+
+
+def _same_window(subject: str, window: str) -> bool:
+    """Is ``window`` the comparison subject ``subject``, under the merge rule above: the
+    same text, or one phrase stated with and without its start ("last 90 days" and
+    "last 90 days (since 15 Jul 2026)"); two different starts are not the same."""
+    if subject == window:
+        return True
+    (a, a_dated), (b, b_dated) = _window_base(subject), _window_base(window)
+    return a == b and not (a_dated and b_dated)
+
+
+def _split_periods(text: str) -> list[str]:
+    """``"B, C and D"`` as ``["B", "C", "D"]``, never split inside brackets (a zone or a
+    start: "16 Apr – 14 Jul 2026 (Asia/Kolkata)")."""
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if depth == 0:
+            sep = next((s for s in (" and ", ", ") if text.startswith(s, index)), None)
+            if sep is not None:
+                parts.append("".join(current))
+                current = []
+                index += len(sep)
+                continue
+        depth += 1 if char == "(" else -1 if char == ")" and depth else 0
+        current.append(char)
+        index += 1
+    parts.append("".join(current))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _comparison(window: str) -> tuple[str, list[str]] | None:
+    """``(subject, compared periods)`` of a comparison window, raw ("A vs B vs C") or
+    already stated in its subject ("A, compared with B and C"), else ``None``."""
+    if _COMPARED_SEPARATOR in window:
+        subject, _sep, rest = window.partition(_COMPARED_SEPARATOR)
+        return subject, [p for p in rest.split(_COMPARED_SEPARATOR) if p]
+    if _COMPARED_WITH in window:
+        subject, _sep, rest = window.partition(_COMPARED_WITH)
+        return subject, _split_periods(rest)
+    return None
+
+
+def _and_list(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _fold_comparisons(windows: list[str]) -> list[str]:
+    """A comparison window whose subject is also stated reads once, inside it (Round 12
+    SPEC §7.2 decision 29): "last 90 days (since 15 Jul 2026)" with "last 90 days (since
+    15 Jul 2026) vs 16 Apr – 14 Jul 2026 08:02" reads "last 90 days (since 15 Jul 2026),
+    compared with 16 Apr – 14 Jul 2026 08:02", never the same phrase twice; so do two
+    comparisons of one subject, each period once. A scope that already reads that way
+    (another item's) merges the same way, so a report header states the window once. A
+    comparison whose subject is not stated on its own is kept as it is."""
+    entries: list[dict[str, Any]] = []
+    for position, window in enumerate(windows):
+        compared = _comparison(window)
+        entries.append({"text": window, "subject": compared[0] if compared else window,
+                        "periods": list(compared[1]) if compared else [], "comparison": compared is not None,
+                        "kept": True, "changed": False, "position": position})
+    for index, entry in enumerate(entries):
+        if not entry["comparison"]:
+            continue
+        target = next((other for other in entries if other is not entry and other["kept"]
+                       and not other["comparison"] and _same_window(entry["subject"], other["text"])), None)
+        if target is None:
+            target = next((other for other in entries[:index] if other["kept"] and other["comparison"]
+                           and other["subject"] == entry["subject"]), None)
+        if target is None:
+            continue
+        for period in entry["periods"]:
+            if period not in target["periods"]:
+                target["periods"].append(period)
+        target["changed"] = True
+        # Where the window was first stated, comparison or not.
+        target["position"] = min(target["position"], entry["position"])
+        entry["kept"] = False
+    out: list[str] = []
+    for entry in sorted(entries, key=lambda e: e["position"]):
+        if not entry["kept"]:
+            continue
+        if entry["changed"] and entry["periods"]:
+            base = entry["subject"] if entry["comparison"] else entry["text"]
+            out.append(f"{base}{_COMPARED_WITH}{_and_list(entry['periods'])}")
+        else:
+            out.append(entry["text"])
+    return out
+
+
 def _join_windows(windows: list[str]) -> str | None:
     """The distinct windows, each WHOLE ("last 90 days; all time"): when they do not
     all fit the scope bound, the ones that fit and how many more ("…; and 2 more"),
@@ -530,13 +682,13 @@ def _block_windows(blocks: list[dict[str, Any]], steps: list[Any], *, tz: str,
             window = _window_of(step.params, tz=tz, now=now)
         if window:
             windows.append(window)
-    return _join_windows(list(dict.fromkeys(windows)))
+    return _join_windows(_merge_windows(windows))
 
 
 def _step_windows(steps: list[Any], *, tz: str, now: datetime | None) -> str | None:
     """The distinct windows ``steps`` asked for, each once, joined."""
-    return _join_windows(list(dict.fromkeys(
-        w for w in (_window_of(s.params, tz=tz, now=now) for s in steps) if w)))
+    return _join_windows(_merge_windows(
+        [w for w in (_window_of(s.params, tz=tz, now=now) for s in steps) if w]))
 
 
 def _brief_window(blocks: list[Any]) -> str | None:

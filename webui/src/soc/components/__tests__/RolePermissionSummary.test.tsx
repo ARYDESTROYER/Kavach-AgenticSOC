@@ -66,7 +66,7 @@ describe('RolePermissionSummary render', () => {
   it('renders per-resource action chips and updates when the role prop changes', () => {
     const { rerender } = render(<RolePermissionSummary roleName="analyst_tier1" matrix={MATRIX} />);
     const panel = screen.getByTestId('role-permission-summary');
-    expect(within(panel).getByText('Analyst — Tier 1 grants')).toBeInTheDocument();
+    expect(within(panel).getByText('Analyst Tier 1 grants')).toBeInTheDocument();
     expect(within(panel).getByText('comment')).toBeInTheDocument();
     expect(within(panel).getByText('2 resources · 4 actions')).toBeInTheDocument();
 
@@ -87,7 +87,7 @@ describe('RolePermissionSummary render', () => {
     // The bounded scroller must be focusable (Safari only keyboard-scrolls
     // focusable scrollers) and carry an accessible name.
     render(<RolePermissionSummary roleName="analyst_tier1" matrix={MATRIX} />);
-    const list = screen.getByRole('list', { name: 'Permissions granted by Analyst — Tier 1' });
+    const list = screen.getByRole('list', { name: 'Permissions granted by Analyst Tier 1' });
     expect(list).toHaveAttribute('tabindex', '0');
   });
 });

@@ -57,7 +57,7 @@ const TableHeader = React.forwardRef<HTMLTableSectionElement, TableHeaderProps>(
           '[&_tr]:border-b [&_tr]:border-border',
           // Non-sticky keeps the translucent wash (byte-identical). A pinned header is
           // floating chrome over scrolled rows, so it wears the ONE material
-          // (`materialBar`: ≥0.80 fill + blur, solid under reduced transparency or
+          // (`materialBar`: 0.97 fill + blur, solid under reduced transparency or
           // increased contrast) — and must NOT also carry `bg-surface/50`, which would
           // win the cascade over the material's fill and let rows bleed through.
           // Small text ON a material is secondary ink, never muted (ui-standard

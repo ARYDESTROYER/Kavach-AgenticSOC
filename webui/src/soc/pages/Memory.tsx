@@ -73,6 +73,7 @@ import { KpiTile } from '@/soc/components/KpiTile';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { LoadingState } from '@/design-system';
+import { TagInput, usePendingTagDraft } from '@/soc/components/TagInput';
 
 /** Uncategorised facts collect under this stable bucket label. */
 const UNCATEGORISED = 'Uncategorised';
@@ -115,15 +116,6 @@ function isEffectiveActive(e: MemoryEntry): boolean {
   return Boolean(e.active && isApprovedEntry(e));
 }
 
-/**
- * Merge a typed-but-uncommitted tag into the committed list (trimmed, de-duplicated),
- * so a tag typed into the box but not Enter-committed isn't silently dropped on save.
- */
-export function mergePendingTag(tags: string[], pending: string): string[] {
-  const v = pending.trim();
-  return v && !tags.includes(v) ? [...tags, v] : tags;
-}
-
 /* --------------------------------------------------------------- source badge -- */
 
 /** A small author pill — human operator vs agent-authored suggestion. */
@@ -163,41 +155,34 @@ function AddMemoryCard({
 }) {
   const [text, setText] = React.useState('');
   const [category, setCategory] = React.useState('');
-  const [tagInput, setTagInput] = React.useState('');
   const [tags, setTags] = React.useState<string[]>([]);
+  const tagDraft = usePendingTagDraft();
   const [submitting, setSubmitting] = React.useState(false);
-
-  const addTag = React.useCallback(() => {
-    const v = tagInput.trim();
-    if (!v) return;
-    setTags((prev) => (prev.includes(v) ? prev : [...prev, v]));
-    setTagInput('');
-  }, [tagInput]);
 
   const submit = React.useCallback(async () => {
     const body = text.trim();
     if (!body) return;
-    // Flush a typed-but-not-yet-committed tag so it isn't silently dropped on save.
-    const allTags = mergePendingTag(tags, tagInput);
+    // Text typed into Tags but not added is never saved silently: stop and ask.
+    if (!tagDraft.settled()) return;
     setSubmitting(true);
     try {
       const entry = await api.addMemory({
         text: body,
         category: category.trim() || undefined,
-        tags: allTags.length ? allTags : undefined,
+        tags: tags.length ? tags : undefined,
       });
       onAdded(entry);
       setText('');
       setCategory('');
       setTags([]);
-      setTagInput('');
+      tagDraft.reset();
       toast.success('Memory saved.');
     } catch (e) {
       toast.error(errorMessage(e, 'Could not save memory.'));
     } finally {
       setSubmitting(false);
     }
-  }, [text, category, tags, tagInput, onAdded]);
+  }, [text, category, tags, tagDraft, onAdded]);
 
   return (
     <Card>
@@ -243,39 +228,13 @@ function AddMemoryCard({
               ))}
             </datalist>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="mem-tags">Tags (optional)</Label>
-            <Input
-              id="mem-tags"
-              placeholder="Type a tag and press Enter"
-              value={tagInput}
-              onChange={(e) => setTagInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  addTag();
-                }
-              }}
-            />
-            {tags.length ? (
-              <div className="flex flex-wrap gap-1 pt-1">
-                {tags.map((t) => (
-                  <Badge key={t} variant="outline" className="gap-1">
-                    <Tag className="h-3 w-3" aria-hidden />
-                    {t}
-                    <button
-                      type="button"
-                      aria-label={`Remove tag ${t}`}
-                      className="ml-0.5 rounded-sm hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
-                    >
-                      <X className="h-3 w-3" aria-hidden />
-                    </button>
-                  </Badge>
-                ))}
-              </div>
-            ) : null}
-          </div>
+          <TagInput
+            label="Tags (optional)"
+            placeholder="Type a tag and press Enter"
+            value={tags}
+            onChange={setTags}
+            {...tagDraft.bind}
+          />
         </div>
 
         <div className="flex justify-end">
@@ -315,8 +274,8 @@ function MemoryRow({
   const [editing, setEditing] = React.useState(false);
   const [text, setText] = React.useState(entry.text);
   const [category, setCategory] = React.useState(entry.category || '');
-  const [tagInput, setTagInput] = React.useState('');
   const [tags, setTags] = React.useState<string[]>(entry.tags || []);
+  const tagDraft = usePendingTagDraft();
   const [saving, setSaving] = React.useState(false);
   const approved = isApprovedEntry(entry);
 
@@ -330,40 +289,33 @@ function MemoryRow({
     }
   }, [entry, editing]);
 
-  const addTag = React.useCallback(() => {
-    const v = tagInput.trim();
-    if (!v) return;
-    setTags((prev) => (prev.includes(v) ? prev : [...prev, v]));
-    setTagInput('');
-  }, [tagInput]);
-
   const cancel = React.useCallback(() => {
     setEditing(false);
     setText(entry.text);
     setCategory(entry.category || '');
     setTags(entry.tags || []);
-    setTagInput('');
-  }, [entry]);
+    tagDraft.reset();
+  }, [entry, tagDraft]);
 
   const save = React.useCallback(async () => {
     if (!text.trim()) return;
-    // Flush a typed-but-not-yet-committed tag so it isn't silently dropped on save.
-    const allTags = mergePendingTag(tags, tagInput);
+    // Text typed into Tags but not added is never saved silently: stop and ask.
+    if (!tagDraft.settled()) return;
     setSaving(true);
     try {
       await onSave(entry.id, {
         text: text.trim(),
         category: category.trim(),
-        tags: allTags,
+        tags,
       });
-      setTagInput('');
+      tagDraft.reset();
       setEditing(false);
     } catch {
       /* toast surfaced by caller; keep the editor open */
     } finally {
       setSaving(false);
     }
-  }, [entry.id, text, category, tags, tagInput, onSave]);
+  }, [entry.id, text, category, tags, tagDraft, onSave]);
 
   if (editing) {
     return (
@@ -384,39 +336,13 @@ function MemoryRow({
                 onChange={(e) => setCategory(e.target.value)}
               />
             </div>
-            <div className="space-y-1.5">
-              <Label htmlFor={`mem-edit-tags-${entry.id}`}>Tags</Label>
-              <Input
-                id={`mem-edit-tags-${entry.id}`}
-                placeholder="Type a tag and press Enter"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addTag();
-                  }
-                }}
-              />
-              {tags.length ? (
-                <div className="flex flex-wrap gap-1 pt-1">
-                  {tags.map((t) => (
-                    <Badge key={t} variant="outline" className="gap-1">
-                      <Tag className="h-3 w-3" aria-hidden />
-                      {t}
-                      <button
-                        type="button"
-                        aria-label={`Remove tag ${t}`}
-                        className="ml-0.5 rounded-sm hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        onClick={() => setTags((prev) => prev.filter((x) => x !== t))}
-                      >
-                        <X className="h-3 w-3" aria-hidden />
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+            <TagInput
+              label="Tags"
+              placeholder="Type a tag and press Enter"
+              value={tags}
+              onChange={setTags}
+              {...tagDraft.bind}
+            />
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={cancel} disabled={saving}>

@@ -293,3 +293,51 @@ describe('KPI frame by host', () => {
     expect(tile.className).toContain('[&_div:has(>[role=img])]:flex-col');
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* The delta chip stays on one line (Round 12 screenshot tour, shot 11).        */
+/* -------------------------------------------------------------------------- */
+describe('KPI delta chip', () => {
+  const CASES: KpiItem = {
+    key: 'cases',
+    label: 'Cases',
+    unit: 'count',
+    value: 87,
+    delta: { value: 87, period_label: 'vs previous 90 days', good_direction: 'none' },
+  } as KpiItem;
+
+  it('holds only the signed figure on one line; the comparison reads as words beside it', () => {
+    // "+87 vs previous 90 days" inside the bordered chip wrapped the chip itself onto two
+    // ragged lines in a 190px tile. Now the chip is "+87" and never wraps, and the words
+    // drop under the numeral and wrap between words when the tile is narrow.
+    show([CASES]);
+    const tile = screen.getByTestId('kpi-t-0');
+    const chip = within(tile).getByRole('img', { name: 'changed up by +87 vs previous 90 days' });
+    expect(chip).toHaveTextContent(/^\+87$/);
+    expect(chip).toHaveClass('whitespace-nowrap', 'shrink-0');
+    const words = tile.querySelector('[data-kpi-delta-period]') as HTMLElement;
+    expect(words).toHaveTextContent('vs previous 90 days');
+    expect(words).not.toHaveClass('whitespace-nowrap');
+    expect(words).toHaveAttribute('aria-hidden');
+    expect(chip.contains(words)).toBe(false);
+    // Nothing truncates: no ellipsis anywhere on the tile, and the full change still
+    // reads as one phrase in the tile's text.
+    expect(tile.innerHTML).not.toContain('truncate');
+    expect(tile).toHaveTextContent('+87 vs previous 90 days');
+  });
+
+  it('says "no change" in the chip for a zero, with the comparison beside it', () => {
+    show([{ ...CASES, value: 0, delta: { value: 0, period_label: 'vs previous window', good_direction: 'down' } } as KpiItem]);
+    const tile = screen.getByTestId('kpi-t-0');
+    const chip = within(tile).getByRole('img', { name: 'no change vs previous window' });
+    expect(chip).toHaveTextContent(/^no change$/);
+    expect(chip.querySelector('svg')).toBeNull();
+  });
+
+  it('keeps the chip on its own line in print, the comparison under it', () => {
+    show([CASES], { staticMode: true });
+    const tile = screen.getByTestId('kpi-t-0');
+    expect(tile.className).toContain('[&_div:has(>[role=img])]:flex-col');
+    expect(tile.querySelector('[data-kpi-delta-period]')).toHaveTextContent('vs previous 90 days');
+  });
+});

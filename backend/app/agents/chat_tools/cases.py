@@ -45,6 +45,7 @@ from .common import (
     resolve_window,
     text,
     verdict_semantic,
+    whole_periods,
     window_input,
 )
 
@@ -291,6 +292,8 @@ class SearchCasesTool(ChatTool):
                                 minutes_ok=False)
         if isinstance(window, str):
             return ToolOutcome.failure(window)
+        # The same start as every other case lookup of this window in the answer.
+        window = whole_periods(window)
         counts = await self._exact_counts(ctx, args, window)
         # A bounded window does not count cases with no creation date (the aggregator
         # discloses them as ``missing_created``), so it does not list them either: the
@@ -507,15 +510,18 @@ class SearchCasesTool(ChatTool):
             basis=basis, total=count, truncated=count > len(items), window=caption,
         )]
         if breakdown_known and (by_verdict or by_status):
+            # Canonical order (the lifecycle; true positive, false positive, needs human),
+            # never by volume (Round 12 SPEC §7.2 decision 27).
             if args.verdict:
-                pairs = [(_STATUS_LABELS.get(k, k), v) for k, v in by_status.items()]
-                title, dim = "Matching cases by status", "status"
+                pairs = [(_STATUS_LABELS.get(k, k), v) for k, v in _in_order(by_status, _STATUS_ORDER)]
+                title, dim = "Matching cases by status", "Status"
             else:
-                pairs = [(_VERDICT_LABELS.get(k, "No verdict" if k == "none" else k), v) for k, v in by_verdict.items()]
-                title, dim = "Matching cases by verdict", "verdict"
+                pairs = [(_VERDICT_LABELS.get(k, "No verdict" if k == "none" else k), v)
+                         for k, v in _in_order(by_verdict, _VERDICT_ORDER)]
+                title, dim = "Matching cases by verdict", "Verdict"
             artifacts.append(Artifact(
                 id="a2", kind="categories", title=title, title_trusted=True,
-                data=categories(pairs, dimension=dim), provenance="code",
+                data=categories(pairs, dimension=dim, ordered=True), provenance="code",
                 basis=basis, total=count, window=caption,
             ))
         artifacts.append(Artifact(
@@ -867,6 +873,16 @@ _VERDICT_LABELS = {"TRUE_POSITIVE": "True positive", "FALSE_POSITIVE": "False po
 _DECIDED_BY_LABELS = {
     "agent": "Agent", "analyst": "Analyst", "system": "System", "analyst_policy": "Analyst policy",
 }
+
+
+_STATUS_ORDER = ("new", "open", "needs_human", "investigating", "escalated", "on_hold", "resolved", "closed")
+_VERDICT_ORDER = ("TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_HUMAN")
+
+
+def _in_order(counts: dict[str, int], order: tuple[str, ...]) -> list[tuple[str, int]]:
+    """``counts`` in ``order``; values outside it follow, by volume then name."""
+    rank = {k: i for i, k in enumerate(order)}
+    return sorted(counts.items(), key=lambda kv: (rank.get(kv[0], len(order)), -kv[1], kv[0]))
 
 
 def _label(labels: dict[str, str], value: Any, missing: str) -> str:

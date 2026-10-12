@@ -131,7 +131,7 @@ describe('caseOutcome — precedence table', () => {
     [
       'open true positive',
       mk({ status: 'escalated', verdict: 'TRUE_POSITIVE', confidence: 0.9 }),
-      { source: 'pending', headline: 'Likely a true positive — escalated', shortLabel: 'AI: True positive 90%' },
+      { source: 'pending', headline: 'Likely a true positive, escalated', shortLabel: 'AI: True positive 90%' },
     ],
   ];
   it.each(rows)('%s', (_name, c, expected) => {

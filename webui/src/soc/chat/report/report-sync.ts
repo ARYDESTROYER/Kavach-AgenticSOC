@@ -78,7 +78,9 @@ export const MAX_REPORT_ITEMS = CHAT_LIMITS.report_items;
 export const MAX_REPORTS = 100;
 export const REPORT_FULL_MESSAGE = `Report is full (${MAX_REPORT_ITEMS} items)`;
 export const REPORT_LIMIT_MESSAGE = 'Delete a report in Reports to start another';
-export const REPORT_CONFLICT_MESSAGE = 'This report changed elsewhere — Reload';
+/** The conflict banner's own words (its Reload button sits beside them). */
+export const REPORT_CONFLICT_TEXT = 'This report changed elsewhere';
+export const REPORT_CONFLICT_MESSAGE = `${REPORT_CONFLICT_TEXT}. Reload it, then try again.`;
 /** 409 `report_full` with `reason: "size"`: the document bound, not the item count. */
 export const REPORT_SIZE_MESSAGE = 'This report is at its storage size limit. Shorten a note or remove an item';
 
