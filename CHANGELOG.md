@@ -941,7 +941,10 @@ and, just as importantly, makes each of these conditions a state an operator can
   chat is off screen. Leaving the chat detaches instead of aborting; returning or
   reloading rejoins the answer live (`GET /api/chat/turns/active`,
   `GET /api/chat/turns/{turn_id}/events?after=`, owner-only `chat.turn` events on the
-  `chat` topic). An answer, question or failure seen on one console is no news on the
+  `chat` topic). The rejoin buffer keeps at most 1,000,000 characters of the newest
+  answer text per turn; a rejoin from before text it dropped restarts the live text from
+  what it kept (a `text.reset` line), and the finished answer is always whole.
+  An answer, question or failure seen on one console is no news on the
   others: marking a conversation read and showing a turn's outcome
   (`POST /api/chat/turns/{turn_id}/seen`) publish an owner-only `chat.read` event on the
   same topic. Case chat keeps its transcript across tab switches.

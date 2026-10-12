@@ -472,12 +472,12 @@ class SqlCaseRepository(CaseRepository):
         the cursor. Rows inserted mid-scan behind the keyset are not revisited, so the
         scan is ``bounded_at_start``.
 
-        ``newest_first`` reads in two phases: first every row whose ``created_at`` the
-        column order cannot place (empty, or a legacy non-canonical spelling — few),
-        then the canonical rows newest first. A reader that stops after the newest N
-        rows therefore never misses a legacy row that string order would have put out
-        of place. ``fields`` is accepted and ignored (whole documents are read; a raw
-        page's JSON is decoded in a worker thread, off the event loop)."""
+        ``newest_first`` reads newest first by the REAL creation instant, then case id,
+        with a ``created_at`` that cannot be placed in time last — the order the
+        Elasticsearch store gets from its ``created_at`` date sort (``missing: _last``).
+        See :meth:`_scan_newest_page`. ``fields`` is accepted and ignored (whole
+        documents are read; a raw page's JSON is decoded in a worker thread, off the
+        event loop)."""
         from ...engine.case_aggregate import iso_bound
 
         del fields
@@ -492,55 +492,161 @@ class SqlCaseRepository(CaseRepository):
             filters.append(keep)
         if wanted is not None:
             filters.append(CaseRow.status.in_(wanted))
-        after = state.get("after")
-        phase = str(state.get("phase") or ("legacy" if newest_first else "asc"))
         # A raw page reads the document as TEXT and decodes it in a worker thread (see
         # ``_decode_docs``): a 1,000-row page of JSON decoded by the driver's result
         # processing would otherwise run on the event loop.
         doc_col = cast(CaseRow.doc, Text).label("doc") if raw else CaseRow.doc
+        if newest_first:
+            return await self._scan_newest_page(
+                state=state, cap=cap, filters=filters, doc_col=doc_col, raw=raw,
+                lo=lo, hi=hi,
+            )
+        after = state.get("after")
         stmt = select(CaseRow.created_at, CaseRow.case_id, doc_col).where(*filters)
-        if phase == "legacy":
-            stmt = stmt.where(_not_canonical_created())
-            if isinstance(after, list) and len(after) == 1:
-                stmt = stmt.where(CaseRow.case_id > str(after[0]))
-            stmt = stmt.order_by(CaseRow.case_id.asc())
-        elif phase == "desc":
-            stmt = stmt.where(~_not_canonical_created())
-            if isinstance(after, list) and len(after) == 2:
-                stmt = stmt.where(or_(
-                    CaseRow.created_at < str(after[0]),
-                    and_(CaseRow.created_at == str(after[0]), CaseRow.case_id < str(after[1])),
-                ))
-            stmt = stmt.order_by(CaseRow.created_at.desc(), CaseRow.case_id.desc())
-        else:
-            if isinstance(after, list) and len(after) == 2:
-                stmt = stmt.where(or_(
-                    CaseRow.created_at > str(after[0]),
-                    and_(CaseRow.created_at == str(after[0]), CaseRow.case_id > str(after[1])),
-                ))
-            stmt = stmt.order_by(CaseRow.created_at.asc(), CaseRow.case_id.asc())
-        stmt = stmt.limit(cap)
+        if isinstance(after, list) and len(after) == 2:
+            stmt = stmt.where(or_(
+                CaseRow.created_at > str(after[0]),
+                and_(CaseRow.created_at == str(after[0]), CaseRow.case_id > str(after[1])),
+            ))
+        stmt = stmt.order_by(CaseRow.created_at.asc(), CaseRow.case_id.asc()).limit(cap)
         total = state.get("total")
         async with self._sm() as session:
             rows = (await session.execute(stmt)).all()
             if not isinstance(total, int):
                 count_stmt = select(func.count()).select_from(CaseRow).where(*filters)
                 total = int((await session.execute(count_stmt)).scalar() or 0)
-        cases: list[Any] = (
-            await asyncio.to_thread(_decode_docs, [row.doc for row in rows]) if raw
-            else [Case.model_validate(row.doc) for row in rows]
-        )
+        cases = await _page_cases([row.doc for row in rows], raw)
         if len(rows) < cap:
-            if phase == "legacy":
-                # Legacy rows done: the canonical rows follow, newest first.
-                return cases, {"phase": "desc", "total": total}, total, "bounded_at_start"
             return cases, None, total, "bounded_at_start"
         last = rows[-1]
-        marker = ([str(last.case_id)] if phase == "legacy"
-                  else [str(last.created_at), str(last.case_id)])
         return (
             cases,
-            {"phase": phase, "after": marker, "total": total},
+            {"phase": "asc", "after": [str(last.created_at), str(last.case_id)],
+             "total": total},
+            total,
+            "bounded_at_start",
+        )
+
+    async def _scan_newest_page(
+        self,
+        *,
+        state: dict[str, Any],
+        cap: int,
+        filters: list[Any],
+        doc_col: Any,
+        raw: bool,
+        lo: str | None,
+        hi: str | None,
+    ) -> tuple[list[Any], Any | None, int | None, str]:
+        """One ``newest_first`` page: the next ``cap`` rows of ONE stream ordered by
+        ``(position, case_id)`` descending, where ``position`` is the canonical UTC
+        spelling of the row's creation instant (``""`` when it cannot be placed, so
+        those rows come last).
+
+        The ``created_at`` column is lexicographically ordered only where it holds the
+        canonical spelling, so the stream is merged from three sources, each read in
+        that order and each bounded:
+
+        * **canonical** rows: a descending keyset on the indexed column, at most
+          ``cap`` rows with their documents;
+        * **legacy** rows (a non-empty, non-canonical spelling written before the
+          column was normalised; healed by their next save): only ``(created_at,
+          case_id)`` is read, and each value is placed with the same parser the column
+          normaliser and the engine use (:func:`_newest_position`);
+        * **undated** rows (an empty column): ``case_id`` descending, at most ``cap``
+          keys, read only when the canonical rows cannot fill the page.
+
+        The legacy key read cannot use the index, so it is not repeated on every page:
+        the cursor carries ``legacy_next``, the newest legacy key left behind the
+        keyset (``None`` once none is left). The set of legacy rows only ever shrinks
+        (a save heals a row AT its position; every new row is canonical or undated),
+        so every legacy row still behind the keyset is at or behind that key, and the
+        rows ahead of it are canonical rows alone. A page first reads those with the
+        index only (the **head**); when the head fills the page, the page is complete
+        without the legacy read. Only a page that reaches ``legacy_next`` reads the
+        legacy keys again, for its remainder (the **tail**), and the tail recomputes
+        ``legacy_next``. A page reads at most ``cap`` documents per source: the
+        canonical ones with their keys, the chosen legacy/undated ones by id.
+
+        The cursor stays a small keyset (``after = [position, case_id]``), so the scan
+        is resumable, and a row re-saved mid-scan keeps its position (the column
+        normaliser writes exactly the position the legacy read computed), so it is
+        read once: the tail reads the legacy keys BEFORE its canonical page, and a row
+        seen on both sides of a concurrent re-save is de-duplicated by case id."""
+        bound = _newest_key(state.get("after"))
+        # A cursor without ``legacy_next`` (the first page, or one written before it
+        # existed) says nothing about the legacy rows, so its page reads them.
+        known = bound is not None and "legacy_next" in state
+        legacy_next = _newest_key(state.get("legacy_next")) if known else None
+        total = state.get("total")
+        async with self._sm() as session:
+            taken: list[tuple[str, str, Any]] = []
+            # ``bound`` is known here; past the last placed row there is no head.
+            if legacy_next is not None and bound is not None and bound[0] != "":
+                head = await session.execute(
+                    _canonical_newest(filters, doc_col, below=bound, above=legacy_next)
+                    .limit(cap)
+                )
+                taken = [(str(r.created_at), str(r.case_id), r.doc) for r in head.all()]
+            legacy: list[tuple[str, str]] = []
+            tail = len(taken) < cap
+            if tail:
+                # The head ran out (or there is none): every row between the keyset and
+                # ``legacy_next`` is taken, so the tail continues from the last of them.
+                if taken:
+                    bound = (taken[-1][0], taken[-1][1])
+                if not known or legacy_next is not None:
+                    pairs = [(str(r.created_at), str(r.case_id)) for r in (await session.execute(
+                        select(CaseRow.created_at, CaseRow.case_id).where(*filters).where(
+                            CaseRow.created_at != "",
+                            _not_canonical_created(),
+                        )
+                    )).all()]
+                    if len(pairs) > _LEGACY_PLACE_OFFLOAD_AT:
+                        legacy = await asyncio.to_thread(_legacy_positions, pairs, lo, hi, bound)
+                    else:
+                        legacy = _legacy_positions(pairs, lo, hi, bound)
+                room = cap - len(taken)
+                canonical: list[Any] = []
+                if bound is None or bound[0] != "":
+                    canonical = list((await session.execute(
+                        _canonical_newest(filters, doc_col, below=bound).limit(room)
+                    )).all())
+                undated: list[str] = []
+                if len(canonical) < room:
+                    stmt = select(CaseRow.case_id).where(*filters, CaseRow.created_at == "")
+                    if bound is not None and bound[0] == "":
+                        stmt = stmt.where(CaseRow.case_id < bound[1])
+                    undated = [str(cid) for cid in (await session.execute(
+                        stmt.order_by(CaseRow.case_id.desc()).limit(room)
+                    )).scalars().all()]
+                taken.extend(_merge_newest(canonical, legacy, undated, room))
+            fetch = [cid for _pos, cid, doc in taken if doc is _UNREAD]
+            by_id: dict[str, Any] = {}
+            if fetch:
+                by_id = {str(r.case_id): r.doc for r in (await session.execute(
+                    select(CaseRow.case_id, doc_col).where(CaseRow.case_id.in_(fetch))
+                )).all()}
+            if not isinstance(total, int):
+                count_stmt = select(func.count()).select_from(CaseRow).where(*filters)
+                total = int((await session.execute(count_stmt)).scalar() or 0)
+        # A row deleted between its key read and its document read is simply absent.
+        docs = [by_id[cid] if doc is _UNREAD else doc
+                for _pos, cid, doc in taken if doc is not _UNREAD or cid in by_id]
+        cases = await _page_cases(docs, raw)
+        if len(taken) < cap:
+            return cases, None, total, "bounded_at_start"
+        last = (taken[-1][0], taken[-1][1])
+        # The head alone filled the page: the legacy keys were not read and still sit
+        # at or behind ``legacy_next``. Otherwise the tail read them (or knew none was
+        # left): the newest one still behind the new keyset.
+        following = (legacy_next if not tail
+                     else next((key for key in legacy if key < last), None))
+        return (
+            cases,
+            {"phase": "newest", "after": list(last),
+             "legacy_next": list(following) if following is not None else None,
+             "total": total},
             total,
             "bounded_at_start",
         )
@@ -569,6 +675,119 @@ def _not_canonical_created() -> Any:
         ~CaseRow.created_at.like(_ISO_CREATED_AT_SHAPE),
         ~CaseRow.created_at.like(_ISO_CREATED_AT_UTC_TAIL),
     )
+
+
+# A newest-first page places this many legacy keys or more in a worker thread.
+_LEGACY_PLACE_OFFLOAD_AT = 1000
+# A row a newest-first page has chosen by key whose document is read afterwards.
+_UNREAD: Any = object()
+
+
+def _newest_key(value: Any) -> tuple[str, str] | None:
+    """A cursor's ``[position, case_id]`` pair, or ``None`` when it holds none."""
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return (str(value[0]), str(value[1]))
+    return None
+
+
+def _canonical_newest(
+    filters: list[Any],
+    doc_col: Any,
+    *,
+    below: tuple[str, str] | None,
+    above: tuple[str, str] | None = None,
+) -> Any:
+    """Canonical rows with their documents, newest first by ``(created_at, case_id)``,
+    strictly behind the keyset ``below`` and strictly ahead of ``above``: a range read
+    on the indexed column (a canonical column value IS its stream position)."""
+    stmt = select(CaseRow.created_at, CaseRow.case_id, doc_col).where(
+        *filters, ~_not_canonical_created(),
+    )
+    if below is not None:
+        stmt = stmt.where(or_(
+            CaseRow.created_at < below[0],
+            and_(CaseRow.created_at == below[0], CaseRow.case_id < below[1]),
+        ))
+    if above is not None:
+        stmt = stmt.where(or_(
+            CaseRow.created_at > above[0],
+            and_(CaseRow.created_at == above[0], CaseRow.case_id > above[1]),
+        ))
+    return stmt.order_by(CaseRow.created_at.desc(), CaseRow.case_id.desc())
+
+
+def _newest_position(value: Any) -> str:
+    """A ``created_at``'s position in the newest-first stream: the canonical column
+    spelling of its instant (exactly what :func:`_canonical_created_at` writes on the
+    row's next save, via the engine's own parser), or ``""`` when it cannot be placed
+    in time (such rows sort last, as Elasticsearch's ``missing: _last`` does)."""
+    try:
+        return _canonical_created_at(value)
+    except (ValueError, OverflowError, OSError, TypeError):
+        return ""
+
+
+def _legacy_positions(
+    pairs: list[tuple[str, str]],
+    lo: str | None,
+    hi: str | None,
+    bound: tuple[str, str] | None,
+) -> list[tuple[str, str]]:
+    """Legacy ``(created_at, case_id)`` keys → ``(position, case_id)`` newest first,
+    keeping only those behind the keyset ``bound``. A row now PLACED outside
+    ``[lo, hi)`` is left out (the caller's own window check, on the same parser, would
+    drop it); one that still cannot be placed is always kept (never-drop, #4). Pure;
+    runs in a worker thread for a large set."""
+    out: list[tuple[str, str]] = []
+    for raw, case_id in pairs:
+        position = _newest_position(raw)
+        if position and ((lo is not None and position < lo)
+                         or (hi is not None and position >= hi)):
+            continue
+        if bound is not None and (position, case_id) >= bound:
+            continue
+        out.append((position, case_id))
+    out.sort(reverse=True)
+    return out
+
+
+def _merge_newest(
+    canonical: list[Any],
+    legacy: list[tuple[str, str]],
+    undated: list[str],
+    cap: int,
+) -> list[tuple[str, str, Any]]:
+    """The first ``cap`` distinct rows of the three newest-first sources merged by
+    ``(position, case_id)`` descending → ``[(position, case_id, doc-or-_UNREAD)]``.
+    Each source is already in that order (the canonical one in the database's own
+    order, which the merge preserves); a case id met twice (a row re-saved between two
+    of the reads) is taken once."""
+    import heapq
+
+    streams = (
+        ((str(r.created_at), str(r.case_id), r.doc) for r in canonical),
+        ((position, case_id, _UNREAD) for position, case_id in legacy),
+        (("", case_id, _UNREAD) for case_id in undated),
+    )
+    taken: list[tuple[str, str, Any]] = []
+    seen: set[str] = set()
+    for position, case_id, doc in heapq.merge(
+        *streams, key=lambda item: (item[0], item[1]), reverse=True,
+    ):
+        if len(taken) >= cap:
+            break
+        if case_id in seen:
+            continue
+        seen.add(case_id)
+        taken.append((position, case_id, doc))
+    return taken
+
+
+async def _page_cases(docs: list[Any], raw: bool) -> list[Any]:
+    """A page's stored documents → raw dicts (decoded in a worker thread) or ``Case``."""
+    if raw:
+        return await asyncio.to_thread(_decode_docs, docs)
+    return [Case.model_validate(doc) for doc in docs]
 
 
 # A canonical ``created_at``/``ts`` whose fields are out of range (month 13, minute 60,

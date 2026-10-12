@@ -815,7 +815,8 @@ class _PopulationReader:
             cases = [c for c in (self.validate(row) for row in ordered) if c is not None]
             for case in cases:
                 self.note_floor(case)
-        # Newest first by creation (a legacy SQL row read first lands in its time order).
+        # Newest first by creation (the bundled stores already read in this order; the
+        # sort keeps the guarantee for any other repository).
         cases.sort(key=_order_key, reverse=True)
         return cases
 

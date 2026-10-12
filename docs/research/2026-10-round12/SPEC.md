@@ -185,7 +185,9 @@ Additive only. Names are binding:
 
 - `GET /api/chat/turns/active` → `list[ChatActiveTurn]` (owner-scoped; `cases:read` like chat).
 - `GET /api/chat/turns/{turn_id}/events?after=<seq>` → NDJSON replay of the bounded per-turn event
-  ring (text deltas coalesced) then live tail; owner-checked; 404 for others.
+  ring (text deltas coalesced) then live tail; owner-checked; 404 for others. *Amended in the PR
+  #131 review:* the ring bounds its answer text as well as its entries (§7.3, "Rejoin buffer"); a
+  rejoin from before dropped answer text gets one `text.reset` line in its place.
 - `GET /api/chat/conversations/{id}/messages/{message_id}/steps/{index}` → the stored observation
   the model saw for that step (owner-scoped; fenced display; never raw log rows).
 - `POST /api/chat/feedback` → 204; per-user KV + audit row; never used for training.
@@ -951,6 +953,24 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
 - **Process-local turn registry.** Running turns, their rejoin rings, Stop and the
   questions-at-once bounds live in one backend process; a restart ends running answers and a
   second replica would not see them (single replica, as before).
+- **Rejoin buffer keeps the newest answer text** (PR #131 review). Consecutive text deltas are
+  coalesced into text entries, so the 2,000-entry bound (`TURN_RING_MAX_ENTRIES`) alone did not
+  bound an unlimited answer's text, and a finished turn's ring is kept 5 minutes. The ring now
+  also holds at most `TURN_RING_MAX_TEXT_CHARS` (1,000,000) characters in at most
+  `TURN_RING_MAX_TEXT_DELTAS` (250,000) deltas, about 250,000 tokens, far beyond any one answer
+  (`backend/app/api/routes_chat.py`). Past either bound the OLDEST text is dropped, one sixteenth
+  of a bound at a time (a text entry closes at that size, so the seq bookkeeping of every kept
+  entry stays exact). A rejoin `after` a line before the dropped text gets one `text.reset`
+  tagged with the last dropped seq, in seq order, then the kept text: the live text restarts
+  from the kept part rather than being joined across the hole, and `turn.done` still carries the
+  whole saved answer. A rejoin at or past that seq resumes exactly; a reader that keeps up never
+  sees the reset. The same applies when the 2,000-entry bound drops answer text or a
+  `text.reset`; dropped step or usage lines stay simply absent, as before. Worst case per ring:
+  1,000,000 characters of text, which is 1 to 4 MB in memory (CPython stores a string at 1, 2
+  or 4 bytes per character, depending on the widest character in it), plus about 1 MB of seq
+  markers. A finished turn kept for rejoin also keeps its terminal `turn.done`, which carries
+  the whole saved answer (the same object as the turn handle's response) until
+  `RECENT_TURN_TTL_S` (5 minutes); that answer is not bounded by the ring.
 - **The compaction summary is not shown.** No route returns the summary text; the run log
   only says that earlier messages were summarised.
 - **Demo bulk actions are unavailable.** Bulk case changes run as background jobs, which

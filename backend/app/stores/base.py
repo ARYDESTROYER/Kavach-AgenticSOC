@@ -520,8 +520,10 @@ class CaseRepository(ABC):
           ``_source``). It is a transfer hint: returning whole documents is correct.
         * A repository that can read NEWEST-FIRST by ``created_at`` (then ``case_id``)
           declares a ``newest_first`` keyword (the bundled stores do; this default does
-          not, so callers know its order is the export order). The dashboards' bounded
-          population read relies on it to stop after the newest N rows.
+          not, so callers know its order is the export order). The order is by the
+          real creation INSTANT, whatever spelling a row stores, with a ``created_at``
+          that cannot be placed in time last. The dashboards' bounded population read
+          relies on it to stop after the newest N rows.
 
         This default wraps :meth:`export_page` (so every repository has it), applies the
         window and statuses in Python and always returns ``Case`` objects; the bundled

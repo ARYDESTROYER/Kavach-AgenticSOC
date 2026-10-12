@@ -294,6 +294,28 @@ describe('parking: a run nobody views holds no connection', () => {
     detach();
   });
 
+  it('a rejoin past answer text the server ring dropped restarts the text from its tail, never splices it', async () => {
+    const run = ask('Write the long quarterly narrative', { conversation_id: 'c-gap' });
+    await wait(5);
+    wires[0].push(startEvent('turn-gap', 'c-gap'));
+    wires[0].push({ type: 'text.delta', text: 'Opening paragraph. ' });
+    active = [{ turn_id: 'turn-gap', conversation_id: 'c-gap', label: 'Writing the answer', lookups: 0, status: 'running' }];
+    await until(() => entryOf('conv:c-gap')?.parked === true, 'the park');
+    await until(() => run.live.text === 'Opening paragraph. ', 'the streamed text');
+    const detach = attachRun(run);
+    const tail = await waitForWire((wire) => wire.url.includes('/events?'));
+    expect(tail.url).toBe('/api/chat/turns/turn-gap/events?after=2');
+    // The ring no longer holds the text after seq 2 up to seq 40 (the server's bound on
+    // a very long answer): it sends one text.reset in its place, then the retained tail.
+    tail.push({ type: 'text.reset' }, 40);
+    tail.push({ type: 'text.delta', text: 'closing paragraph.' }, 41);
+    await until(() => run.live.text === 'closing paragraph.', 'the retained tail');
+    tail.push(done({ answer: 'Opening paragraph. Middle. closing paragraph.', message_id: 'm-gap', conversation_id: 'c-gap' }), 42);
+    await until(() => run.state !== 'running', 'the end');
+    expect(run.state).toBe('done');
+    detach();
+  });
+
   it('keeps at most the reads someone views: several answers away from screen hold none', async () => {
     const runs = ['c3', 'c4', 'c5', 'c6'].map((id) => ask(`Question ${id}`, { conversation_id: id }));
     const viewed = ask('On screen', { conversation_id: 'c7' });

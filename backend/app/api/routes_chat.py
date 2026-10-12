@@ -78,6 +78,7 @@ import logging
 import math
 import re
 import time
+from array import array
 from collections import OrderedDict
 from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any, AsyncIterator, Iterable
@@ -96,6 +97,7 @@ from ..agents.chat_events import (
     PingEvent,
     StepStartEvent,
     TextDeltaEvent,
+    TextResetEvent,
     TurnDoneEvent,
     TurnErrorEvent,
     TurnStartEvent,
@@ -169,10 +171,27 @@ TURN_LEASE_SECONDS = IDEMPOTENCY_PENDING_TTL_SECONDS
 # after the end still gets the terminal event.
 RECENT_TURN_TTL_S = 300.0
 MAX_RECENT_TURNS = 256
-# The per-turn event ring keeps at most this many entries (text deltas are coalesced
-# into one entry per run, usage and step.progress keep only their latest), so one
-# turn's replay memory is bounded by its answer, not by its event count.
+# The per-turn event ring keeps at most this many entries (consecutive text deltas are
+# coalesced into text entries, usage and step.progress keep only their latest) …
 TURN_RING_MAX_ENTRIES = 2_000
+# … and at most this much answer text: characters, and text deltas (one seq marker
+# each). Coalescing means the entry count alone never bounds the text an unlimited
+# answer streams, so these do (PR #131 review). A million characters is about 250,000
+# tokens, far beyond any one answer; a streamed delta is typically one token (about
+# four characters). Past either bound the OLDEST text is dropped, one segment of
+# 1/TURN_RING_TEXT_SEGMENTS of the bound at a time (a text entry closes once it holds
+# that much), and a rejoin that had not yet read the dropped text gets a ``text.reset``
+# in its place: its text restarts from the retained tail, never spliced across the
+# hole, and its ``turn.done`` still carries the whole persisted answer. The text bound
+# counts characters, not bytes: CPython stores a string at 1, 2 or 4 bytes per
+# character (the widest character in it decides), so per ring that is 1 to 4 MB of text
+# plus about 1 MB of markers (4 bytes each). A finished turn kept for re-attach
+# (RECENT_TURN_TTL_S) also keeps its terminal ``turn.done``, which carries the whole
+# saved answer (the same object as the handle's ``response``); that answer is not
+# bounded here.
+TURN_RING_MAX_TEXT_CHARS = 1_000_000
+TURN_RING_MAX_TEXT_DELTAS = 250_000
+TURN_RING_TEXT_SEGMENTS = 16
 # chat.turn progress frames are published at most this often per turn.
 TURN_PROGRESS_PUBLISH_S = 1.0
 # The idle interval between ``ping`` lines (module-level so tests can shorten it).
@@ -240,24 +259,56 @@ class ChatTurnBusy(RuntimeError):
         self.scope = scope
 
 
+# Text entry seq markers (offsets inside one text entry) as 4-byte unsigned ints: a
+# marker per streamed delta, so a list of Python ints would cost ~9x the memory.
+_ENDS_TYPECODE = "I" if array("I").itemsize >= 4 else "L"
+
+
 class TurnEventRing:
     """The bounded per-turn event ring a client re-attaches to (Round 12, SPEC D13).
 
     Every relayed event gets the next ``seq`` (1, 2, 3 … — the line number of a
     ``POST /chat/stream`` relay that was attached from the start, pings excluded).
-    Consecutive ``text.delta`` events are stored as ONE text entry that remembers where
+    Consecutive ``text.delta`` events are stored as text entries that remember where
     each seq ended, so a replay ``after`` any seq resumes mid-answer exactly; a
     ``text.reset`` drops the text before it; ``usage`` and ``step.progress`` keep only
     their latest value (per step). Past :data:`TURN_RING_MAX_ENTRIES` the oldest
-    entries after ``turn.start`` are dropped (``gap`` is then set); the terminal event
-    is always kept."""
+    entries after ``turn.start`` are dropped; the terminal event is always kept.
 
-    def __init__(self, max_entries: int = TURN_RING_MAX_ENTRIES) -> None:
+    The answer text is bounded too (PR #131 review): at most ``max_text_chars``
+    characters in at most ``max_text_deltas`` deltas, plus the delta that crossed the
+    bound. A text entry closes once it holds 1/:data:`TURN_RING_TEXT_SEGMENTS` of
+    either bound, and past a bound the OLDEST text entries are dropped whole, so the
+    seq bookkeeping of every retained entry stays exact and no append ever shifts
+    the whole text. Any drop sets ``gap``. Dropped answer text (a text entry, or a
+    ``text.reset`` event the entry bound dropped) raises ``text_gap_seq`` to its last
+    seq; a reader ``after`` a seq below it is sent ONE ``text.reset`` tagged
+    ``text_gap_seq`` in its place (in seq order), so it discards the text it holds and
+    continues from the retained tail instead of splicing text across the hole. A
+    reader at or past ``text_gap_seq`` had read everything that was dropped and
+    resumes exactly. A ``text.reset`` from the engine clears ``text_gap_seq``: that
+    retained event tells every earlier reader to discard its text."""
+
+    def __init__(
+        self,
+        max_entries: int = TURN_RING_MAX_ENTRIES,
+        max_text_chars: int = TURN_RING_MAX_TEXT_CHARS,
+        max_text_deltas: int = TURN_RING_MAX_TEXT_DELTAS,
+    ) -> None:
         self.seq = 0
         self.max_entries = max(8, int(max_entries))
+        self.max_text_chars = max(1, int(max_text_chars))
+        self.max_text_deltas = max(1, int(max_text_deltas))
+        self._segment_chars = max(1, self.max_text_chars // TURN_RING_TEXT_SEGMENTS)
+        self._segment_deltas = max(1, self.max_text_deltas // TURN_RING_TEXT_SEGMENTS)
         self.entries: list[dict[str, Any]] = []
         self.gap = False
         self.terminal_seq: int | None = None
+        # The answer text held now (every text entry), and the last seq of answer text
+        # the ring dropped (0: nothing a reader still needs was dropped).
+        self.text_chars = 0
+        self.text_deltas = 0
+        self.text_gap_seq = 0
 
     def append(self, event: BaseModel) -> int:
         self.seq += 1
@@ -266,16 +317,24 @@ class TurnEventRing:
         if kind == "text.delta":
             text = str(getattr(event, "text", "") or "")
             last = self.entries[-1] if self.entries else None
-            if last is not None and last["kind"] == "text":
+            if (last is not None and last["kind"] == "text"
+                    and len(last["text"]) < self._segment_chars
+                    and len(last["ends"]) < self._segment_deltas):
                 last["text"] += text
                 last["ends"].append(len(last["text"]))
                 last["last"] = seq
             else:
                 self.entries.append({"kind": "text", "first": seq, "last": seq, "text": text,
-                                     "ends": [len(text)]})
+                                     "ends": array(_ENDS_TYPECODE, [len(text)])})
+            self.text_chars += len(text)
+            self.text_deltas += 1
+            self._bound_text()
+            self._bound_entries()
             return seq
         if kind == "text.reset":
             self.entries = [e for e in self.entries if e["kind"] != "text"]
+            self.text_chars = self.text_deltas = 0
+            self.text_gap_seq = 0
         elif kind == "usage":
             self.entries = [e for e in self.entries if getattr(e.get("event"), "type", "") != "usage"]
         elif kind == "step.progress":
@@ -288,12 +347,33 @@ class TurnEventRing:
         self.entries.append({"kind": "event", "seq": seq, "event": event})
         if kind in ("turn.done", "turn.error"):
             self.terminal_seq = seq
+        self._bound_entries()
+        return seq
+
+    def _bound_text(self) -> None:
+        """Drop the oldest text entries while the text is over a bound, never the
+        newest one (the entry the stream is writing; it alone stays under a bound plus
+        one delta)."""
+        while self.text_chars > self.max_text_chars or self.text_deltas > self.max_text_deltas:
+            index = next((i for i, e in enumerate(self.entries) if e["kind"] == "text"), None)
+            if index is None or index == len(self.entries) - 1:
+                return
+            self._dropped(self.entries.pop(index))
+
+    def _bound_entries(self) -> None:
         while len(self.entries) > self.max_entries:
             # Keep turn.start (the first entry) and the terminal event (the last).
             drop = 1 if len(self.entries) > 1 and getattr(self.entries[0].get("event"), "type", "") == "turn.start" else 0
-            self.entries.pop(drop)
-            self.gap = True
-        return seq
+            self._dropped(self.entries.pop(drop))
+
+    def _dropped(self, entry: dict[str, Any]) -> None:
+        self.gap = True
+        if entry["kind"] == "text":
+            self.text_chars -= len(entry["text"])
+            self.text_deltas -= len(entry["ends"])
+            self.text_gap_seq = max(self.text_gap_seq, entry["last"])
+        elif getattr(entry.get("event"), "type", "") == "text.reset":
+            self.text_gap_seq = max(self.text_gap_seq, entry["seq"])
 
     def after(self, after_seq: int) -> list[tuple[int, BaseModel]]:
         """``(seq, event)`` lines for everything after ``after_seq``. A text run comes
@@ -303,16 +383,24 @@ class TurnEventRing:
         exactly where that chunk ended (no gap, no repeat). Original deltas are never
         longer than that bound (``TextDeltaEvent`` refuses it); one that somehow were
         is split, its leading pieces tagged with the seq BEFORE it — a resume then
-        repeats that piece rather than skipping text."""
+        repeats that piece rather than skipping text.
+
+        A reader ``after`` a seq below ``text_gap_seq`` missed answer text the ring has
+        dropped: it gets ONE ``text.reset`` tagged ``text_gap_seq``, in seq order (every
+        retained text entry is newer), before the retained text."""
         out: list[tuple[int, BaseModel]] = []
+        gap = self.text_gap_seq if after_seq < self.text_gap_seq else 0
         for entry in self.entries:
+            if gap and (entry["seq"] if entry["kind"] == "event" else entry["first"]) > gap:
+                out.append((gap, TextResetEvent()))
+                gap = 0
             if entry["kind"] == "event":
                 if entry["seq"] > after_seq:
                     out.append((entry["seq"], entry["event"]))
                 continue
             if entry["last"] <= after_seq:
                 continue
-            ends: list[int] = entry["ends"]
+            ends: array = entry["ends"]
             first: int = entry["first"]
             text: str = entry["text"]
             # ``index``: the first original delta not yet sent; ``position`` its start.
@@ -332,6 +420,8 @@ class TurnEventRing:
                 position = limit
                 if position >= ends[index]:
                     index += 1
+        if gap:
+            out.append((gap, TextResetEvent()))
         return out
 
 

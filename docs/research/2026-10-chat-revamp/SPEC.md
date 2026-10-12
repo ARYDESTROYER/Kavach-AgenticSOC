@@ -2003,9 +2003,11 @@ document per user, at most 500 ratings).
 no longer aborts a turn when its view unmounts: a module-level turn runner (lazy chat chunk)
 detaches and re-attaches. `GET /api/chat/turns/active` lists the owner's running turns;
 `GET /api/chat/turns/{turn_id}/events?after=<seq>` replays the bounded per-turn event ring
-(text deltas coalesced, `usage` and `step.progress` latest only, at most 2,000 entries;
-`seq` = non-ping line count on a from-start stream) and tails it live; a finished turn stays
-readable for 300 s. Owner-only `chat.turn` frames (`started`, `progress`, `finished`,
+(text deltas coalesced, `usage` and `step.progress` latest only, at most 2,000 entries and,
+since the PR #131 review, at most 1,000,000 characters of answer text in 250,000 deltas, the
+oldest text dropped first and a rejoin from before it sent one `text.reset` in its place, see
+the Round 12 SPEC §7.3; `seq` = non-ping line count on a from-start stream) and tails it live;
+a finished turn stays readable for 300 s. Owner-only `chat.turn` frames (`started`, `progress`, `finished`,
 `failed`, `needs_input`) go out on the `chat` topic, never to anonymous subscribers (the
 client polls `turns/active` every 5 s while auth is off). Turns, rings and Stop are bound to
 the owner's account generation (`503 chat_account_unavailable` when it cannot be read). The
