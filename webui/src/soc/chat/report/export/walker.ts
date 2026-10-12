@@ -36,6 +36,7 @@ import { blockTabular } from '../../blocks/export-helpers';
 import { VIEW_LABEL, honestBlock } from '../../blocks/views';
 import type { AnswerBlock, Cell, ColumnType, KpiItem, LeafBlock, TableBlock, ToneKey, ValueUnit } from '../../blocks/schema';
 import { AI_AUTHORED_TYPES, isDocRef, isExpiredBlock } from '../../blocks/schema';
+import { headingRepeatsLeaf } from '../../blocks/report-headings';
 import { parseChatMarkdown, type MdBlock } from '../../ChatMarkdown';
 import { navLabel } from '@/soc/nav';
 import {
@@ -468,7 +469,10 @@ class Walker {
         for (const section of block.sections) {
           this.heading(level + 1, section.heading);
           if (section.summary) this.para(section.summary);
-          for (const leaf of section.blocks) this.block(leaf as LeafBlock, level + 2);
+          // "AI cost" over a card titled "AI cost": the section heading says it once
+          // (the screen's rule, `headingRepeatsLeaf`), so the card's title is left out.
+          const repeats = headingRepeatsLeaf(section.heading, section.blocks, section.summary);
+          section.blocks.forEach((leaf, li) => this.block(leaf as LeafBlock, level + 2, !(repeats && li === 0)));
         }
         return;
       default:

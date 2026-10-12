@@ -547,7 +547,8 @@ The reply is a short note, not an answer: it says what was summarised and what i
 (**No model call · $0** when no model was used, as in Demo Mode), names no data source,
 and has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,
 **Ask again**). The assistant does not see the note in later questions, a later
-`/compact` does not summarise it again, and **Save conversation as report** leaves it out.
+`/compact` does not summarise it again, and **Save conversation as report** and **Export
+conversation** leave it out.
 
 ## Reports
 

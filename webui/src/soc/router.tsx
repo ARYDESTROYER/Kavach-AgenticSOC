@@ -134,6 +134,20 @@ const DEEP_LINK_KEYS: Readonly<Record<string, Readonly<Record<string, RegExp>>>>
   logs: { logQuery: /^[^\p{C}\u2028\u2029]{1,512}$/u, from: NAV_TIME, to: NAV_TIME, sourceId: NAV_ID },
 };
 
+/** The Cases page's two virtual status facets (Overview drill-throughs write them). */
+const isCasesStatus = (value: string) =>
+  value === '__active__' || value === '__terminal__' || isSafeCaseResultStatus(value);
+
+/** The query keys each page owns in its hash ({@link pageHash}), with their validators. */
+function hashKeys(page: PageId): Readonly<Record<string, (value: string) => boolean>> {
+  if (page === 'cases') {
+    return { caseId: isSafeCaseId, status: isCasesStatus, assignee: isSafeCaseResultAssignee, tag: isSafeCaseResultTag };
+  }
+  if (page === 'case_manager') return { caseId: isSafeCaseId };
+  if (page === 'metrics') return { tab: (value) => value === 'effectiveness' };
+  return Object.fromEntries(Object.entries(DEEP_LINK_KEYS[page] ?? {}).map(([key, re]) => [key, (v: string) => re.test(v)]));
+}
+
 /**
  * Build a page hash while preserving the one operator context that must survive a
  * refresh: the exact case selected in Cases / Case Manager. Other transient list
@@ -196,14 +210,7 @@ export function optsFromHash(): NavOpts | undefined {
     if (!hasValidRouteEncoding(rawQuery)) return undefined;
     const params = new URLSearchParams(rawQuery);
     const deepLinkKeys = DEEP_LINK_KEYS[page];
-    const allowed =
-      page === 'cases'
-        ? new Set(['caseId', 'status', 'assignee', 'tag'])
-        : page === 'case_manager'
-          ? new Set(['caseId'])
-          : page === 'metrics'
-            ? new Set(['tab'])
-            : new Set<string>(Object.keys(deepLinkKeys ?? {}));
+    const allowed = new Set(Object.keys(hashKeys(page)));
     if (Array.from(params.keys()).some((key) => !allowed.has(key))) return undefined;
     if (Array.from(allowed).some((key) => params.getAll(key).length > 1)) return undefined;
     const read = (key: string, validator: (value: string) => boolean): string | undefined => {
@@ -224,7 +231,7 @@ export function optsFromHash(): NavOpts | undefined {
       return Object.keys(out).length && (!out.messageId || out.conversationId) ? (out as NavOpts) : undefined;
     }
     const caseId = read('caseId', isSafeCaseId);
-    const status = read('status', isSafeCaseResultStatus);
+    const status = read('status', isCasesStatus);
     const assignee = read('assignee', isSafeCaseResultAssignee);
     const tag = read('tag', isSafeCaseResultTag);
     if (params.has('caseId') && !caseId) return undefined;
@@ -238,18 +245,37 @@ export function optsFromHash(): NavOpts | undefined {
 }
 
 /**
- * The opts after a hash change that stays on `page`. The keys `current` would write to
- * the hash ({@link pageHash}) belong to the hash, so the new hash replaces them: Back
- * from `#/reports?reportId=x` to `#/reports` drops `reportId` and shows the list again.
- * Keys never written to the hash (a severity drill-through, `newChat`, a Settings
- * section) stay. Returns `current` itself when nothing changed, so the echo of an in-app
- * navigate never hands consumers keyed on the opts identity a second request.
+ * The opts after a hash change to `hash` that stays on `page`, decided key by key for the
+ * keys the page owns in its hash ({@link hashKeys}):
+ * - the hash still carries exactly what `current` writes ({@link pageHash}): keep it. This
+ *   is the echo of an in-app navigate, and it keeps values the strict parser in
+ *   {@link optsFromHash} would refuse from a typed link, such as a tag with a `/`;
+ * - the hash carries another valid value: take it (Forward to a report, row A to row B);
+ * - the hash dropped the key, or carries a value that fails validation: remove it. Back
+ *   from `#/reports?reportId=x` to `#/reports` shows the list again.
+ * Keys the hash never carries (a severity drill-through, `newChat`, a Settings section)
+ * stay. Returns `current` itself when nothing changed, so the echo never hands consumers
+ * keyed on the opts identity a second request.
  */
-export function samePageOpts(page: PageId, current: NavOpts | undefined, hashOpts: NavOpts | undefined): NavOpts | undefined {
+export function samePageOpts(page: PageId, current: NavOpts | undefined, hash: string): NavOpts | undefined {
+  const qi = hash.indexOf('?');
+  const query = qi < 0 ? '' : hash.slice(qi + 1);
+  // A malformed escape makes the whole query unreadable: it says nothing about any key.
+  if (!hasValidRouteEncoding(query)) return current;
+  const incoming = new URLSearchParams(query);
+  const written = new URLSearchParams(pageHash(page, current).split('?')[1] ?? '');
   const next: Record<string, unknown> = { ...(current ?? {}) };
-  const query = pageHash(page, current).split('?')[1];
-  if (query) for (const key of new URLSearchParams(query).keys()) delete next[key];
-  for (const [key, value] of Object.entries(hashOpts ?? {})) if (value !== undefined) next[key] = value;
+  for (const [key, valid] of Object.entries(hashKeys(page))) {
+    const all = incoming.getAll(key);
+    const raw = all.length === 1 ? all[0] : undefined;
+    if (raw !== undefined && raw === written.get(key)) continue;
+    // Case keys are trimmed, exactly as optsFromHash reads them.
+    const value = raw !== undefined && (page === 'cases' || page === 'case_manager') ? raw.trim() : raw;
+    if (value && valid(value)) next[key] = value;
+    else if (all.length || written.has(key)) delete next[key];
+  }
+  // A message anchor without its conversation is unreadable (optsFromHash refuses it).
+  if (incoming.has('messageId') && !NAV_ID.test(String(next.conversationId ?? ''))) delete next.messageId;
   const defined = (o: Record<string, unknown>) => Object.keys(o).filter((k) => o[k] !== undefined);
   const keys = defined(next);
   const before = (current ?? {}) as Record<string, unknown>;
@@ -338,13 +364,14 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return;
       }
       const next = pageFromHash();
+      const hash = window.location.hash || '';
       setPage((prev) => {
         if (prev === next) {
           // A same-page change (Case Manager row A → row B, Back from a report to the
           // list) changes only the query: the hash decides the durable options, the
-          // in-memory ones (a severity drill-through, a new chat) stay.
-          const hashOpts = optsFromHash();
-          setOpts((current) => samePageOpts(next, current, hashOpts));
+          // in-memory ones (a severity drill-through, a new chat) stay, and the echo of
+          // an in-app navigate changes nothing.
+          setOpts((current) => samePageOpts(next, current, hash));
           return prev;
         }
         // Back/forward/direct navigation to a different page carries only durable

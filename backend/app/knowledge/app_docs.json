@@ -1801,7 +1801,7 @@
    "page": "analyst/chat.md",
    "anchor": "long-conversations",
    "heading": "Long conversations",
-   "text": "The reply is a short note, not an answer: it says what was summarised and what it cost\n(**No model call · $0** when no model was used, as in Demo Mode), names no data source,\nand has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,\n**Ask again**). The assistant does not see the note in later questions, a later\n`/compact` does not summarise it again, and **Save conversation as report** leaves it out.",
+   "text": "The reply is a short note, not an answer: it says what was summarised and what it cost\n(**No model call · $0** when no model was used, as in Demo Mode), names no data source,\nand has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,\n**Ask again**). The assistant does not see the note in later questions, a later\n`/compact` does not summarise it again, and **Save conversation as report** and **Export\nconversation** leave it out.",
    "console": []
   },
   {

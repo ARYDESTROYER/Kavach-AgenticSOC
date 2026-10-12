@@ -3153,6 +3153,17 @@
               }
             ]
           },
+          "command": {
+            "anyOf": [
+              {
+                "const": "compact"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command"
+          },
           "compacted": {
             "default": false,
             "title": "Compacted",
@@ -19736,7 +19747,7 @@
     },
     "/api/reports/from-conversation": {
       "post": {
-        "description": "\"Save conversation as report\" (SPEC D11): every answer of one caller-owned\nWorkspace conversation becomes one section (its question as the heading, then\nthe answer text and blocks), in order, up to the report's item limit. The server\nresolves every item from the persisted conversation; nothing is client-supplied\ncontent. Case-scoped chat never enters Workspace history, so a case conversation\ncan never be saved this way.",
+        "description": "\"Save conversation as report\" (SPEC D11): every answer of one caller-owned\nWorkspace conversation becomes one section (its question as the heading, then\nthe answer text and blocks), in order, up to the report's item limit; a reply to a\nchat command (``/compact``) is not an answer and is left out. The server\nresolves every item from the persisted conversation; nothing is client-supplied\ncontent. Case-scoped chat never enters Workspace history, so a case conversation\ncan never be saved this way.",
         "operationId": "report_from_conversation_api_reports_from_conversation_post",
         "requestBody": {
           "content": {

@@ -20,6 +20,11 @@
  * provenance chips ("Monthly SOC report"); an executive summary or a monthly report opens
  * with its first section's summary as the lead; the `infographic` layout (or template)
  * draws the hero KPI row, the highlights and the 2-up chart grid (`InfographicView`).
+ *
+ * In both layouts a section whose first card is titled like the section ("AI cost" over a
+ * card titled "AI cost") does not say it twice: the card's title stays and takes the
+ * heading's place, and the heading is kept for assistive tech and the contents jump
+ * (`headingRepeatsLeaf`, the same rule the exports follow).
  */
 import * as React from 'react';
 import { ChevronDown } from 'lucide-react';
@@ -31,6 +36,7 @@ import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 import { sectionAnchorId, useBlocks } from '../context';
 import { INVESTIGATION_BRIEF_ADVISORY, formatUtc } from '../format';
 import type { LeafBlock, ReportBlock, ReportLayout, ReportTemplate } from '../schema';
+import { headingRepeatsLeaf } from '../report-headings';
 import { InfographicView } from './InfographicView';
 
 /** A template's name on the Brief (the Reports library's `TEMPLATE_LABEL` words). */
@@ -173,9 +179,16 @@ export function ReportView({ block, blockIndex, renderLeaf, staticMode = false }
 
       {layout === 'infographic' ? null : block.sections.map((s, si) => {
         const headingId = sectionAnchorId(domId, blockIndex, si);
+        // "AI cost" over a card titled "AI cost": the card's title says it.
+        const repeats = headingRepeatsLeaf(s.heading, s.blocks, s.summary);
         return (
           <div key={s.id} role="group" aria-labelledby={headingId} className="flex min-w-0 flex-col gap-2">
-            <h5 id={headingId} tabIndex={staticMode ? undefined : -1} className="scroll-mt-16 text-sm font-semibold text-foreground outline-none">
+            <h5
+              id={headingId}
+              tabIndex={staticMode ? undefined : -1}
+              className={cn('scroll-mt-16 text-sm font-semibold text-foreground outline-none', repeats && 'sr-only')}
+              data-repeats-leaf={repeats || undefined}
+            >
               {s.heading}
             </h5>
             {s.summary ? (

@@ -28,6 +28,7 @@ import { Markdown } from '@/soc/components/Markdown';
 
 import { RefLink, citationAnchorId, useBlocks } from '../context';
 import { formatValue, plainDocTitle } from '../format';
+import { calloutTitle } from '../report-headings';
 import type { CalloutBlock, CitationsBlock, GuideBlock, MarkdownBlock, QueryBlock, ToneKey } from '../schema';
 import { EXPIRED_TEXT, FALLBACK_TEXT, isDocRef } from '../schema';
 
@@ -57,16 +58,9 @@ const TONE: Record<ToneKey, { variant: 'info' | 'success' | 'warning' | 'destruc
   critical: { variant: 'destructive', icon: <AlertOctagon aria-hidden /> },
 };
 
-/**
- * The title a callout draws on screen, or null: a retention stub always draws one
- * ("Earlier result" when it has none); a G9 fallback notice and an untitled note draw
- * none. Shared with the infographic Brief, which hides a section heading only when the
- * leaf under it visibly says the same thing.
- */
-export function calloutTitle(block: CalloutBlock): string | null {
-  if (block.expired) return block.title ?? 'Earlier result';
-  return block.title && block.text !== FALLBACK_TEXT ? block.title : null;
-}
+// The title a callout draws lives with the pure Brief heading rule (shared with the
+// report exports, which must not import a renderer).
+export { calloutTitle } from '../report-headings';
 
 export function CalloutView({ block }: { block: CalloutBlock }) {
   const title = calloutTitle(block);

@@ -407,7 +407,10 @@ const PROMPT_EXPORT_CHARS = 8_000;
  * (the legacy `table` when no block carries it). Turns that failed or were stopped keep
  * their notice as a callout; a prompt with no saved answer (a failed or stopped send)
  * still appears, with a "No answer was saved" callout, so the export never drops what
- * the analyst asked.
+ * the analyst asked. A reply to a chat command (`/compact`, `response.command`) is a
+ * note about the chat, not an answer: it and the command that asked for it are left
+ * out, exactly as "Save conversation as report" leaves them out on the server, so the
+ * export never shows the note as an AI answer or counts it in the Methodology.
  */
 export function buildConversationDoc(conversation: ChatConversation, options: BuildOptions = {}): ReportDoc {
   const generatedAt = options.generatedAt ?? new Date().toISOString();
@@ -441,6 +444,8 @@ export function buildConversationDoc(conversation: ChatConversation, options: Bu
     const question = pending;
     pending = null;
     const response = message.response ?? null;
+    // A command reply is not an answer; its prompt (the command) goes with it.
+    if (response?.command) return;
     const raw: unknown[] = [];
     const answer = response?.answer ?? message.content;
     if (typeof answer === 'string' && answer.trim()) raw.push({ id: 'answer', type: 'markdown', provenance: 'ai', text: answer });

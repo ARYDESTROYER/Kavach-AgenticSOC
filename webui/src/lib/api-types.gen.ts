@@ -4434,7 +4434,8 @@ export interface paths {
          * Report From Conversation
          * @description "Save conversation as report" (SPEC D11): every answer of one caller-owned
          *     Workspace conversation becomes one section (its question as the heading, then
-         *     the answer text and blocks), in order, up to the report's item limit. The server
+         *     the answer text and blocks), in order, up to the report's item limit; a reply to a
+         *     chat command (``/compact``) is not an answer and is left out. The server
          *     resolves every item from the persisted conversation; nothing is client-supplied
          *     content. Case-scoped chat never enters Workspace history, so a case conversation
          *     can never be saved this way.
@@ -7656,6 +7657,8 @@ export interface components {
             /** Citations */
             citations?: components["schemas"]["Citation"][];
             clarify?: components["schemas"]["ChatClarify"] | null;
+            /** Command */
+            command?: "compact" | null;
             /**
              * Compacted
              * @default false

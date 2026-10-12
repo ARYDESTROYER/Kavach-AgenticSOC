@@ -37,7 +37,7 @@ import { DASH, captionStatesCount, formatDelta, formatUtc, formatValue, truncati
 import type { KpiGroupBlock, KpiItem, LeafBlock, ReportBlock } from '../schema';
 import { TrendColumns, trendSentence } from '../charts/SparklineChart';
 import { SmallSampleNote, comparisonFacts, comparisonSecondary, smallSamplePlan } from './ComparisonView';
-import { calloutTitle } from './SimpleViews';
+import { headingRepeatsLeaf } from '../report-headings';
 
 /** Leaves that take the whole row of the 2-up grid (reading width or many columns). */
 const WIDE_TYPES: ReadonlyArray<LeafBlock['type']> = [
@@ -94,31 +94,8 @@ export function infographicParts(block: ReportBlock): InfographicParts {
   return { hero, highlights };
 }
 
-/**
- * The title a leaf DRAWS on screen, or null. Prose (`markdown`) renders its text only,
- * whatever title it carries; a note draws its own title unless it is a fallback notice
- * (`calloutTitle`); every other leaf is a card whose heading is its title. Only a
- * title the leaf states itself counts: an untitled card's generic heading ("Key
- * figures") never stands in for a section heading.
- */
-export function leafVisibleTitle(leaf: LeafBlock): string | null {
-  if (leaf.type === 'markdown') return null;
-  if (leaf.type === 'callout') return calloutTitle(leaf);
-  return 'title' in leaf && typeof leaf.title === 'string' ? leaf.title : null;
-}
-
-/**
- * The section heading would be read twice in a row: the section's first remaining leaf
- * visibly draws the same title (case and spacing aside) and no summary stands between
- * them. A leaf that carries the title but does not draw it (prose) never hides the
- * heading: the section would lose its only visible heading.
- */
-export function headingRepeatsLeaf(heading: string, leaves: readonly LeafBlock[], summary?: string | null): boolean {
-  if (!leaves.length || (summary ?? '').trim()) return false;
-  const title = leafVisibleTitle(leaves[0]);
-  const norm = (v: string) => v.trim().replace(/\s+/g, ' ').toLowerCase();
-  return title !== null && title.trim() !== '' && norm(title) === norm(heading);
-}
+// The heading rule is shared with the document layout and every export (pure module).
+export { headingRepeatsLeaf, leafVisibleTitle } from '../report-headings';
 
 /**
  * The disclosures the hero's KPI group carries as a card (BlockCard): its caption and

@@ -2739,9 +2739,15 @@ def _is_response_action(q: str, low: str) -> bool:
         return bool(_RESPONSE_LIST_RE.search(low)) and _is_change(low)
     rest = action.group("rest")
     indicator = bool(_IPV4_RE.search(q) or _HASH_RE.search(q) or _URL_RE.search(q) or _DOMAIN_RE.search(rest))
-    if _CONSOLE_OBJECT_RE.search(rest) and not indicator:
+    if _CONSOLE_OBJECT_RE.search(_first_clause(rest)) and not indicator:
         return False
     return action.group("verb") in _RESPONSE_STRONG or indicator or bool(_RESPONSE_OBJECT_RE.search(rest))
+
+
+def _first_clause(text: str) -> str:
+    """The verb's own clause: "host srv-db-01" of "host srv-db-01 and build a report",
+    so a later request's noun never decides what the first verb acts on."""
+    return re.split(r"\b(?:and|then|but|also)\b|[,;.!?]", text, maxsplit=1)[0]
 
 
 def _response_targets(question: str) -> list[tuple[str, str]]:
@@ -3034,7 +3040,7 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if _is_response_action(q, low) or (shaped is not None and _is_response_action(shaped, shaped.lower())):
         return ask("respond", save=False)
     acting = _RESPONSE_VERB_RE.match(low)
-    if acting is not None and _CONSOLE_OBJECT_RE.search(acting.group("rest")):
+    if acting is not None and _CONSOLE_OBJECT_RE.search(_first_clause(acting.group("rest"))):
         # "Kill the export job", "Lock the case": a change to a console object.
         return ask("change", save=False)
     if _out_of_scope(low):
@@ -5694,7 +5700,7 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "rerun": ("as_table", "posture", "shift"),
     "cases": ("case", "tp", "shift"),
     "change": ("access", "help", "posture"),
-    "respond": ("case", "pivot", "access"),
+    "respond": ("case", "access", "pivot"),
     "out_of_scope": ("posture", "case", "shift"),
     "unsupported": ("access", "help", "posture"),
     "remember": ("posture", "shift", "help"),

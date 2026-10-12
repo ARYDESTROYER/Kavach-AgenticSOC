@@ -876,9 +876,42 @@ EXPLAIN_RECORDS = [
                 "Explain the first 3 steps of onboarding", "Explain the first 2 steps of the setup wizard")),
 ]
 
+# Final review round 4 (L4, demo planner): a request chat is not for gets an honest answer
+# about what chat can do, with no lookup. Never the orientation case list, an unrelated
+# Help Center passage, a console page that cannot do it, or a data refusal ("unsupported").
+_SCOPE = "Chat answers questions about your security data (cases, logs, metrics, threat intelligence"
+_CANT_ACT = "I can't do that: chat is read-only, and this console has no response actions"
+_UNRELATED = ("open case", "From the Help Center", "I could not map", "Do it in the console", "Open it in the console",
+              "Correlation across sources", "narrow composer", "KPI glossary")
+OUT_OF_SCOPE = [
+    *(G(q, kind="conversation", max_lookups=0, contains=("I can't write code or scripts.", _SCOPE), absent=_UNRELATED)
+      for q in ("Write me a python script to scan my network", "Can you write a bash script that pings every host?",
+                "Generate python code to parse the logs", "Please write a PowerShell one-liner to list services",
+                "Build me a web page for our SOC")),
+    *(G(q, kind="conversation", max_lookups=0, contains=("I can't write jokes, poems or stories.", _SCOPE),
+        absent=_UNRELATED)
+      for q in ("Tell me a joke", "Write a poem about phishing", "Tell me a funny story")),
+    # Response actions: none exists in this console, so it says where they run and offers
+    # to investigate the values the analyst named.
+    *(G(q, kind="product_help", max_lookups=0, contains=(_CANT_ACT, "EDR, firewall or SOAR tool"), absent=_UNRELATED)
+      for q in ("Isolate host srv-db-01 and block IP 203.0.113.77", "Quarantine host srv-db-01",
+                "Block IP 203.0.113.77", "Please contain the infected laptop", "Kill process 4242 on srv-db-01",
+                "Add 203.0.113.77 to the block list", "Lock the account svc_backup", "Sinkhole evil.example")),
+    G("Isolate host srv-db-01 and block IP 203.0.113.77 now", kind="product_help", max_lookups=0,
+      contains=("Before you act, chat can investigate host `srv-db-01` and IP `203.0.113.77`",)),
+    # A general-knowledge question: no Help Center section answers it, so chat says what it answers.
+    G("What is the capital of France?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=(_SCOPE,), absent=("open case",)),
+    # A console object is a change chat cannot make (never a response action), and a case
+    # for the bot activity is a case, not code.
+    G("Kill the export job", kind="product_help", tools=("app_help",), max_lookups=1, contains=(_CANT_CHANGE,)),
+    G("Create a case for the bot activity", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=(_CANT_CHANGE,)),
+]
+
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,
                    *CASES, *DEEP, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2,
-                   *EXPLAIN_RECORDS]
+                   *EXPLAIN_RECORDS, *OUT_OF_SCOPE]
 
 
 def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> None:
