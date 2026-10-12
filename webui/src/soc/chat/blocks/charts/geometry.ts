@@ -272,6 +272,28 @@ export function barWidth(slot: number, cap = BAR_MAX): number {
   return Math.max(1, Math.min(cap, Math.round((slot * 2) / 3)));
 }
 
+/**
+ * The least share of a bucket's slot its column (or group of columns) covers. A column is
+ * capped at {@link BAR_MAX}, so a wide card with few buckets drew hairline bars hundreds
+ * of pixels apart (two months across an 1,800 px lane, Round 12 tour 3). The slot is
+ * capped instead, at six times the bucket's marks.
+ */
+export const BAR_MIN_SLOT_FILL = 1 / 6;
+
+/**
+ * The plot frame a column chart draws in: the full `plotW` while its buckets fill it, and
+ * otherwise a narrower plot of `n` slots of at most `groupW / BAR_MIN_SLOT_FILL` each,
+ * centred in the same space (the y-axis ticks move with it, since they are drawn left of
+ * `x0`). `groupW` is the bucket's full mark width (one capped column, or a grouped set
+ * side by side). A chart with many buckets gets back exactly what it passed in.
+ */
+export function barPlotFrame(x0: number, plotW: number, n: number, groupW: number): { x0: number; plotW: number } {
+  const maxSlot = Math.ceil(Math.max(1, groupW) / BAR_MIN_SLOT_FILL);
+  const capped = Math.max(1, n) * maxSlot;
+  if (capped >= plotW) return { x0, plotW };
+  return { x0: Math.round(x0 + (plotW - capped) / 2), plotW: capped };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Shares.                                                                     */
 /* -------------------------------------------------------------------------- */

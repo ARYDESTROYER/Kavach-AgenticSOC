@@ -37,7 +37,7 @@ from app.agents.chat_tools.common import (
 )
 from app.agents.chat_tools.logs import LogStatsInput, LogStatsTool, SearchLogsInput
 from app.agents.chat_tools.metrics import CostUsageTool, SocMetricsTool
-from app.agents.chat_tools.periods import previous_period, same_period_last_year
+from app.agents.chat_tools.periods import PARTIAL_PERIOD_NOTE, previous_period, same_period_last_year
 from app.agents.chat_tools.registry import build_toolbox
 from app.agents.chat_tools.stats import CaseStatsTool
 from app.agents.prompts import render_chat_agent_system
@@ -183,7 +183,15 @@ async def test_case_stats_by_month_with_compare_uses_one_window() -> None:
     # The previous period is the six whole months just before the first, adjacent to it:
     # the case in the part the alignment cut off counts there, so no case falls between
     # the two periods (it read 1, the gap's case in neither).
-    assert obs["comparison"]["baseline"] == _previous_months(6) and obs["comparison"]["note"]
+    assert obs["comparison"]["baseline"] == _previous_months(6)
+    # Five whole months and part of this one against six whole months: partial while the
+    # month is young (by the 20th it is at least eight days short); near a month end the
+    # window can be as long as the one before it, which is like for like with no note.
+    note = obs["comparison"].get("note")
+    if NOW.day <= 20:
+        assert note == PARTIAL_PERIOD_NOTE
+    else:
+        assert note in (None, PARTIAL_PERIOD_NOTE)
     assert cases_row["values"] == [2, inside]
     assert_artifacts_render(out)
 

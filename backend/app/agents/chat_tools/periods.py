@@ -608,26 +608,57 @@ PARTIAL_PERIOD_NOTE = ("The latest period is still in progress and shorter than 
 LIKE_FOR_LIKE_NOTE = ("The latest period is still in progress; each compared period covers the same "
                       "elapsed time, so the change is like for like.")
 
+#: How much shorter than the period it is compared with a window that ends now may be
+#: and still compare like for like: one per cent of that period, and at least the part
+#: of today that has not happened yet (a day), though that day never counts for more
+#: than a tenth of a short period (:func:`_materially_shorter`).
+_SHORTER_SHARE = 0.01
+_UNFINISHED_DAY_S = 86_400.0
+_UNFINISHED_DAY_SHARE = 0.10
+
+
+def _materially_shorter(latest: float, before: float) -> bool:
+    """Is a window that ends now materially shorter than the period it is compared
+    with? "last 90 days (since 15 Jul 2026)" asked at 14:00 is ten hours short of 90
+    whole days: the same span as the previous 90 days for any reader, so like for like.
+    "last 6 months (since May 2026)" in mid October is half a month short: partial.
+    Shorter by more than a day or one per cent, whichever is larger, with the day capped
+    at a tenth of the compared period, so "last 2 days" just after midnight (one day
+    against two) is still partial."""
+    allowance = max(before * _SHORTER_SHARE, min(_UNFINISHED_DAY_S, before * _UNFINISHED_DAY_SHARE))
+    return before - latest > allowance
+
 
 def in_progress_note(periods: list[Period]) -> str | None:
-    """What the model must say about a period still in progress (engine text).
+    """What the model must say about a latest period that ends now (engine text), or
+    ``None`` when there is nothing to say.
 
-    It is decided by how the baseline was built, never by seconds alone: the N whole
-    periods before a window counted in whole periods (:data:`BASIS_WHOLE`) are complete
-    while the latest is not, so the change compares a partial period; the same elapsed
-    time (:data:`BASIS_ELAPSED`: "2025 to date" against "2024 to date", a window a year
-    earlier) is like for like even when a leap day or a clock change makes the two spans
-    differ by a day or an hour. An explicit window is judged by length: like for like
-    unless the latest is more than one per cent shorter."""
+    A calendar period still in progress ("Oct 2026 to date", "today") against the same
+    elapsed part of the period before it (:data:`BASIS_ELAPSED`) is like for like even
+    when a leap day or a clock change makes the two spans differ by a day or an hour,
+    and the note says so; against any other window it is judged by length (partial when
+    more than one per cent shorter). A rolling window that ends now ("last 90 days
+    (since 15 Jul 2026)", a range to today's date) is not a period in progress: it is
+    noted only when it is materially shorter than the period it is compared with
+    (:func:`_materially_shorter`: the whole months before "last 6 months" in mid month),
+    and otherwise compares like for like with no note, so a 90-day comparison asked in
+    the afternoon never reads as a partial period."""
     if len(periods) < 2 or not periods[-1].in_progress:
         return None
-    baseline = periods[-2]
-    if baseline.basis is not None:
-        partial = baseline.basis == BASIS_WHOLE
+    latest, baseline = periods[-1], periods[-2]
+    calendar = _in_progress_unit(latest.window) is not None
+    if baseline.basis == BASIS_ELAPSED:
+        return LIKE_FOR_LIKE_NOTE if calendar else None
+    now_span, before = _span(latest), _span(baseline)
+    if now_span is None or before is None:
+        return LIKE_FOR_LIKE_NOTE if calendar else None
+    if calendar:
+        partial = now_span < before * (1 - _SHORTER_SHARE)
     else:
-        latest, before = _span(periods[-1]), _span(baseline)
-        partial = latest is not None and before is not None and latest < before * 0.99
-    return PARTIAL_PERIOD_NOTE if partial else LIKE_FOR_LIKE_NOTE
+        partial = _materially_shorter(now_span, before)
+    if partial:
+        return PARTIAL_PERIOD_NOTE
+    return LIKE_FOR_LIKE_NOTE if calendar else None
 
 
 def comparison_observation(periods: list[Period], rows: list[dict[str, Any]]) -> dict[str, Any]:

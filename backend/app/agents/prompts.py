@@ -945,7 +945,11 @@ _CHAT_AGENT_BODY = (
     "card already holds its reputation score) and a block for a lookup that found nothing.\n"
     "- Durations keep the unit their result states (a value in minutes is minutes). A change "
     "versus another period is the result's change in its unit (cases, percentage points, "
-    "minutes); a change in percent is a percent of the earlier value."
+    "minutes); a change in percent is a percent of the earlier value.\n"
+    "- Name each period with its dates once (\"last 90 days (since 15 Jul 2026)\"), then plainly "
+    "(\"the last 90 days\"). Figures with no value in the earlier period share one sentence: "
+    "\"False-positive and true-positive rates were not measured in the previous 90 days, so "
+    "there is no change to show.\" Call a change partial only when its comparison note says so."
 )
 
 

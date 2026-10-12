@@ -86,6 +86,61 @@ describe('columns (bar)', () => {
     fireEvent.mouseMove(plot, { clientX: 400, clientY: 50 });
     expect(tooltip('chart-bar')).not.toBeNull();
   });
+
+  it('centres a narrower plot for a few buckets on a wide card and leaves full charts alone', () => {
+    // Tour 3: "Cases by month" (Sep 2026: 2, Oct 2026: 18) across the 1,808 px lane drew
+    // two 22 px bars about 850 px apart in an empty plot.
+    const chartOf = (kind: 'bar' | 'line', labels: string[], values: number[]) => {
+      const block = parseBlock({
+        id: `wide-${kind}-${labels.length}`,
+        type: 'chart',
+        kind,
+        title: 'Cases by month',
+        provenance: 'code',
+        artifact_kind: 'series',
+        allowed_views: ['bar', 'line', 'table'],
+        unit: 'count',
+        x: { kind: 'category', values: labels },
+        series: [{ key: 'cases', label: 'Cases', values }],
+      });
+      if (block.type !== 'chart') throw new Error('not a chart');
+      return block;
+    };
+    const frameOf = (container: HTMLElement) => {
+      const svg = container.querySelector('svg[data-plot-width]');
+      expect(svg).not.toBeNull();
+      return { x: Number(svg!.getAttribute('data-plot-x')), w: Number(svg!.getAttribute('data-plot-width')) };
+    };
+    const spy = vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(1800);
+    try {
+      const two = show(chartOf('bar', ['Sep 2026', 'Oct 2026'], [2, 18]));
+      const frame = frameOf(two.container);
+      expect(frame.w).toBe(264);
+      // Centred in the card (its tick column rides along on the left).
+      expect(Math.abs(frame.x + frame.w / 2 - 900)).toBeLessThan(24);
+      const bars = Array.from(two.container.querySelectorAll('path[data-series="0"]'));
+      expect(bars).toHaveLength(2);
+      for (const bar of bars) {
+        const x = Number(/^M([\d.]+),/.exec(bar.getAttribute('d') ?? '')?.[1]);
+        expect(x).toBeGreaterThan(frame.x);
+        expect(x + 22).toBeLessThan(frame.x + frame.w);
+      }
+      two.unmount();
+
+      // Twenty-four hourly buckets already fill the card: the plot spans it as before.
+      const hours = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2, '0')}:00`);
+      const many = show(chartOf('bar', hours, hours.map((_, h) => h)));
+      expect(frameOf(many.container).w).toBeGreaterThan(1700);
+      many.unmount();
+
+      // A line with two points is not a column chart: it keeps the full width.
+      const line = show(chartOf('line', ['Sep 2026', 'Oct 2026'], [2, 18]));
+      expect(frameOf(line.container).w).toBeGreaterThan(1700);
+      line.unmount();
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe('stacked columns', () => {

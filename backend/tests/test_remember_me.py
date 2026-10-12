@@ -20,9 +20,11 @@ Covers, over the REAL app router with the auth gate mounted exactly like main.py
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -1250,7 +1252,7 @@ def test_16e_public_projection_unit_cases() -> None:
 # --------------------------------------------------------------------------- #
 _STATUS_KEYS = {
     "enabled", "duration_seconds", "idle_seconds", "insecure_blocked", "secure_cookies",
-    "standard_session_seconds",
+    "secure_cookies_configured", "standard_session_seconds",
 }
 
 
@@ -1261,6 +1263,7 @@ def test_17_setup_status_exposes_only_the_public_remember_block() -> None:
         assert block == {
             "enabled": True, "duration_seconds": _DAY, "idle_seconds": 12 * 3600,
             "insecure_blocked": False, "secure_cookies": False,
+            "secure_cookies_configured": False,
             "standard_session_seconds": 12 * 3600,
         }
     with _build(base_url="http://testserver") as c:
@@ -1278,6 +1281,27 @@ def test_17_setup_status_exposes_only_the_public_remember_block() -> None:
                 auth_cookie_secure=True) as c:
         block = c.get("/api/setup/status").json()["remember_me"]
         assert block["insecure_blocked"] is False and block["secure_cookies"] is True
+        assert block["secure_cookies_configured"] is True
+
+
+def test_17a_setup_status_tells_an_explicit_false_from_the_default() -> None:
+    """Tour 3 finding: the Session policy editor said "AUTH_COOKIE_SECURE is not set"
+    while run-demo and the Compose file set it to false. The public block now says
+    whether the flag was configured (a boolean about the configuration, never a value),
+    and the effective value stays where it was."""
+    # Left at its default: not configured.
+    with _build() as c:
+        block = c.get("/api/setup/status").json()["remember_me"]
+        assert (block["secure_cookies"], block["secure_cookies_configured"]) == (False, False)
+    # Set explicitly to false (what run-demo and the Compose file do).
+    with _build(auth_cookie_secure=False) as c:
+        block = c.get("/api/setup/status").json()["remember_me"]
+        assert (block["secure_cookies"], block["secure_cookies_configured"]) == (False, True)
+    # Read from the environment exactly as a deployment would.
+    with patch.dict(os.environ, {"AUTH_COOKIE_SECURE": "false"}):
+        with _build() as c:
+            block = c.get("/api/setup/status").json()["remember_me"]
+            assert (block["secure_cookies"], block["secure_cookies_configured"]) == (False, True)
 
 
 def test_17b_setup_status_states_the_remembered_inactivity_limit() -> None:

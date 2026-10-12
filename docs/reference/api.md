@@ -87,7 +87,10 @@ sign-in gets a persistent cookie for the policy's remembered duration; any other
 gets a browser-session cookie (no `Max-Age`) whose token lasts `AUTH_TOKEN_HOURS`. The
 MFA pending token carries the remember choice as a signed claim, so it survives the
 second step but can never be added there. `GET /api/setup/status` reports
-`remember_me {enabled, duration_seconds, insecure_blocked}` for the sign-in page.
+`remember_me {enabled, duration_seconds, idle_seconds, insecure_blocked, secure_cookies,
+secure_cookies_configured, standard_session_seconds}` for the sign-in page and the Session
+policy editor: on/off flags and durations only, never a secret. `secure_cookies_configured`
+says whether `AUTH_COOKIE_SECURE` was set explicitly or left at its `false` default.
 `GET /api/auth/me` checks the session registry on every call: when the session has
 ended it clears the cookie and answers `authenticated: false` with a `reason` of
 `revoked`, `idle_expired`, `absolute_expired`, or `tv_mismatch` (and, for a time limit,

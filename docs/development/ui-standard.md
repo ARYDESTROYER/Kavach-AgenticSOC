@@ -983,6 +983,21 @@ are authoritative:
   rail its own sentence whenever the rail is what shows. Copy that states one rule while
   the visible percentages follow another is a defect, not a wording preference; keep any
   always-rendered clause true on every surface it can be read against.
+- Whether the flow band or the rail shows is decided by the **measured** labels against the
+  **measured** container, never by a fixed breakpoint (Round 12 polish 3: a 656px column
+  sat just over a 38rem cut-off and drew labels on top of the Escalated node). A drawn flow
+  keeps every label clear of every other label and of every node marker, keeps a stretch of
+  at least 32px of every case-flow ribbon that no label covers (a label right of its node,
+  such as "Closed by analyst policy", hides the escalated ribbons as easily as one left of
+  its node), and spreads labels that share a column instead of stacking them, clear of any
+  ribbon crossing that column. Labels start on one line; the ones that collide switch
+  to two lines (name over count and share, a column switching together, the right-hand
+  resolution labels first); when that still collides, the rail replaces the graph. Before
+  anything has measured, the container query stands in. The drawing is exactly as wide as
+  its measured box, never letterboxed, so the HTML labels stay on their nodes. Measure
+  layout sizes (`offsetWidth`, `offsetHeight`), never painted ones: Full screen measures
+  while its dialog's opening animation still scales it to 95%, and a transform is not a
+  resize, so a `getBoundingClientRect` reading stays 5% small after the animation ends.
 - **Open cases** is current lifecycle state from the selected-window posture count. It is
   not equal to Escalated minus human closure, so keep it outside the conserved graph as a
   labelled, keyboard-operable queue action. If the bounded scan is truncated, display the

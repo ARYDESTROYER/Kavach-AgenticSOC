@@ -342,6 +342,12 @@ export interface RememberMeStatus {
   insecure_blocked: boolean;
   /** Whether the session cookie is marked Secure (AUTH_COOKIE_SECURE); never a secret. */
   secure_cookies?: boolean;
+  /**
+   * Whether AUTH_COOKIE_SECURE was set explicitly rather than left at its `false`
+   * default, so the console can say "AUTH_COOKIE_SECURE=false" or "not set" truthfully.
+   * Absent from an older server; never a value.
+   */
+  secure_cookies_configured?: boolean;
   /** How long a sign-in WITHOUT Remember me lasts (the token lifetime, AUTH_TOKEN_HOURS). */
   standard_session_seconds?: number;
 }

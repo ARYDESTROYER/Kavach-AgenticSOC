@@ -454,7 +454,7 @@ export function RememberMeGroup({
                 {secureCookies
                   ? 'Sign-in cookies are marked secure, so this setting has no effect.'
                   : runtime
-                    ? 'Secure cookies are off (AUTH_COOKIE_SECURE is not set), so Remember me is offered only when the console is opened directly on the server. Allowing it on plain HTTP keeps a long-lived sign-in on a connection that is not encrypted.'
+                    ? `Secure cookies are off (${secureCookiesSetting(runtime)}), so Remember me is offered only when the console is opened directly on the server. Allowing it on plain HTTP keeps a long-lived sign-in on a connection that is not encrypted.`
                     : 'Remember me is normally offered only over HTTPS with secure cookies (AUTH_COOKIE_SECURE=true), or when the console is opened directly on the server. Allowing it on plain HTTP keeps a long-lived sign-in on a connection that is not encrypted.'}
               </span>
             </p>
@@ -463,6 +463,18 @@ export function RememberMeGroup({
       </div>
     </section>
   );
+}
+
+/**
+ * What the server's AUTH_COOKIE_SECURE setting actually is while secure cookies are off
+ * (tour 3: the editor said "is not set" while run-demo and the Compose file set it to
+ * false). An older server that does not report whether the flag was configured gets a
+ * sentence that is true either way.
+ */
+function secureCookiesSetting(runtime: Pick<RememberMeStatus, 'secure_cookies_configured'>): string {
+  if (runtime.secure_cookies_configured === true) return 'AUTH_COOKIE_SECURE=false';
+  if (runtime.secure_cookies_configured === false) return 'AUTH_COOKIE_SECURE is not set, and it defaults to false';
+  return 'AUTH_COOKIE_SECURE is not set to true';
 }
 
 export interface SessionPolicyEditorProps {

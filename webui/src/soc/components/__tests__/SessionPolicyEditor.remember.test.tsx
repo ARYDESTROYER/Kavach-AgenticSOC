@@ -268,8 +268,23 @@ describe('SessionPolicyEditor — what the server enforces', () => {
       "People who open the console the way you did can't use Remember me yet: the server does not mark its sign-in cookies as secure. Serve the console over HTTPS and set AUTH_COOKIE_SECURE=true.",
     );
     expect(screen.getByLabelText('Allow on plain HTTP (not recommended)')).toBeInTheDocument();
-    expect(screen.getByText(/Secure cookies are off \(AUTH_COOKIE_SECURE is not set\)/))
+    // An older server does not say whether the flag was configured: the sentence is
+    // true either way and never claims the variable is unset.
+    expect(screen.getByText(/Secure cookies are off \(AUTH_COOKIE_SECURE is not set to true\)/))
       .toBeInTheDocument();
+  });
+
+  it.each([
+    // Tour 3: run-demo and the Compose file set AUTH_COOKIE_SECURE=false explicitly, and
+    // the editor still said "is not set".
+    [true, 'Secure cookies are off (AUTH_COOKIE_SECURE=false), so Remember me is offered only when the console is opened directly on the server.'],
+    [false, 'Secure cookies are off (AUTH_COOKIE_SECURE is not set, and it defaults to false), so Remember me is offered only when the console is opened directly on the server.'],
+  ])('states the server\'s actual AUTH_COOKIE_SECURE setting (configured: %s)', async (configured, sentence) => {
+    runtime({ secure_cookies: false, secure_cookies_configured: configured, insecure_blocked: true });
+    renderControlled({});
+    expect(await screen.findByText((_, el) => el?.tagName === 'SPAN' && (el.textContent ?? '').startsWith(sentence)))
+      .toBeInTheDocument();
+    expect(screen.queryByText(configured ? /is not set/ : /AUTH_COOKIE_SECURE=false/)).toBeNull();
   });
 
   it('has no axe violations with the runtime status shown', async () => {

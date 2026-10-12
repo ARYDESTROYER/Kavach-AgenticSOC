@@ -3235,6 +3235,15 @@ def _remember_policy(state: AppState):
     return getattr(_session_policy(state), "remember_me", None)
 
 
+def _secure_cookies_configured(state: AppState) -> bool:
+    """Whether ``AUTH_COOKIE_SECURE`` was set explicitly (environment or ``.env``)
+    rather than left at its ``false`` default. The Session policy editor uses it to
+    say what is true ("AUTH_COOKIE_SECURE=false" versus "not set"); it describes the
+    shape of the configuration, never a secret value."""
+    fields_set = getattr(state.secrets, "model_fields_set", None) or set()
+    return "auth_cookie_secure" in fields_set
+
+
 def _remember_me_status(state: AppState, request: Request | None) -> dict[str, Any]:
     """The PUBLIC ``/setup/status`` ``remember_me`` block.
 
@@ -3243,6 +3252,8 @@ def _remember_me_status(state: AppState, request: Request | None) -> dict[str, A
     request's transport would refuse it, whether the session cookie is marked
     ``Secure`` (observable on every ``Set-Cookie`` anyway — lets the sign-in page and
     the Session policy editor tell "plain HTTP" from "HTTPS without secure cookies"),
+    whether ``AUTH_COOKIE_SECURE`` was set explicitly or left at its default
+    (``secure_cookies_configured``, a boolean about the configuration's shape),
     how long a sign-in WITHOUT Remember me lasts (the token lifetime,
     ``AUTH_TOKEN_HOURS``), and ``idle_seconds``: how long a remembered device may go
     unused before it is signed out (0 when no inactivity limit is shorter than the
@@ -3265,6 +3276,7 @@ def _remember_me_status(state: AppState, request: Request | None) -> dict[str, A
         "idle_seconds": idle_seconds,
         "insecure_blocked": insecure_blocked,
         "secure_cookies": bool(getattr(state.secrets, "auth_cookie_secure", False)),
+        "secure_cookies_configured": _secure_cookies_configured(state),
         "standard_session_seconds": standard,
     }
 

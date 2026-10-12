@@ -68,6 +68,7 @@ import {
   BAR_MAX,
   CHAR_W,
   areaPath,
+  barPlotFrame,
   barWidth,
   endLabelColumn,
   extent,
@@ -196,7 +197,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   // CHAR_W is a digit's advance; "%", "$", "k" and "h" run wider, so the tick column
   // keeps a few pixels of slack: a card without side padding (a Brief leaf) clips any
   // tick that starts left of the plot.
-  const x0 = Math.ceil(Math.max(...tickTexts.map((t) => t.length)) * CHAR_W) + Y_GAP + TICK_SLACK;
+  const axisX0 = Math.ceil(Math.max(...tickTexts.map((t) => t.length)) * CHAR_W) + Y_GAP + TICK_SLACK;
   const endLabels = isLine && visibleIdx.length >= 2 && visibleIdx.length <= 4;
   // The end labels take what their longest label needs, up to a quarter of the chart
   // (`endLabelColumn`): a label is clipped only beyond that, never at a fixed length.
@@ -204,7 +205,17 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const padRight = endColumn ? endColumn.padRight : 8;
   const plotTop = PAD_TOP;
   const baseline = Math.max(plotTop + 24, height - X_AXIS_H - (block.last_in_progress ? IN_PROGRESS_LINE_H : 0));
-  const plotW = Math.max(1, width - x0 - padRight);
+  // Columns keep a slot of at most six times their marks: a few buckets on a wide card
+  // draw a narrower plot centred in it (ticks included) rather than hairline bars far
+  // apart (`barPlotFrame`). Sized by EVERY series, so a legend toggle never moves the plot.
+  const frameGroupW =
+    stacked || block.series.length <= 1
+      ? BAR_MAX
+      : block.series.length * BAR_MAX + (block.series.length - 1) * GROUP_GAP;
+  const availW = Math.max(1, width - axisX0 - padRight);
+  const frame = isLine ? { x0: axisX0, plotW: availW } : barPlotFrame(axisX0, availW, n, frameGroupW);
+  const x0 = frame.x0;
+  const plotW = frame.plotW;
   const slot = plotW / Math.max(1, n);
   const yOf = (v: number) => baseline - ((v - scale.min) / (scale.max - scale.min)) * (baseline - plotTop);
   const zeroY = yOf(0);
@@ -715,7 +726,15 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
           }),
         }}
       >
-        <svg width={width} height={height} className="block overflow-visible" aria-hidden data-baseline={Math.round(zeroY)}>
+        <svg
+          width={width}
+          height={height}
+          className="block overflow-visible"
+          aria-hidden
+          data-baseline={Math.round(zeroY)}
+          data-plot-x={Math.round(x0)}
+          data-plot-width={Math.round(plotW)}
+        >
           <defs>
             <HatchPattern id={hatchId} />
           </defs>

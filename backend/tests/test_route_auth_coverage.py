@@ -17,6 +17,7 @@ closes the gap that let ``set_status→RESOLVED`` reach a terminal status withou
 from __future__ import annotations
 
 import inspect
+import types
 
 from fastapi.routing import APIRoute
 from starlette.routing import Mount, WebSocketRoute
@@ -63,15 +64,31 @@ def _has_authz_dependency(route: APIRoute) -> bool:
     return False
 
 
+def _code_names(code: types.CodeType) -> set[str]:
+    """Every global/attribute/imported name the compiled ``code`` (and any nested
+    function or comprehension inside it) refers to."""
+    names = set(code.co_names)
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            names |= _code_names(const)
+    return names
+
+
 def _enforces_in_body(route: APIRoute) -> bool:
     """True when the endpoint enforces RBAC INLINE via ``_enforce(...)`` rather than a
     dependency (the case_action / bulk / comment / tags / assign pattern, which must
-    resolve the principal + grant from the request body, e.g. a target-aware grant)."""
-    try:
-        src = inspect.getsource(route.endpoint)
-    except (OSError, TypeError):  # pragma: no cover - source always available offline
+    resolve the principal + grant from the request body, e.g. a target-aware grant).
+
+    Reads the LOADED bytecode, not the source file: ``inspect.getsource`` re-reads the
+    file from disk and maps it with the import-time line numbers, so an edit to
+    ``routes.py`` after import (while a suite is running) shifted the window onto a
+    neighbouring function and reported real gates as missing. A comment mentioning
+    ``_enforce(`` no longer counts either; only a real reference in the code does."""
+    endpoint = inspect.unwrap(route.endpoint)
+    code = getattr(endpoint, "__code__", None)
+    if code is None:  # pragma: no cover - every endpoint here is a plain function
         return False
-    return "_enforce(" in src
+    return "_enforce" in _code_names(code)
 
 
 def test_every_api_route_is_auth_covered() -> None:

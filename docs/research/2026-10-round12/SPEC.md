@@ -199,7 +199,9 @@ Additive only. Names are binding:
 - Remember me: `POST /api/auth/login` accepts `remember: bool = False` and returns
   `remembered: bool` plus `remember_reason` when refused (`role_excluded`, `insecure_transport`,
   `disabled`); the MFA pending token carries a signed `rm` claim. `GET /api/setup/status` adds
-  `remember_me {enabled, duration_seconds, insecure_blocked}`. `GET /api/auth/me` runs the
+  `remember_me {enabled, duration_seconds, insecure_blocked}` (plus, as built,
+  `idle_seconds`, `secure_cookies`, `secure_cookies_configured` and
+  `standard_session_seconds`). `GET /api/auth/me` runs the
   session-registry check, clears the cookie when the session ended and returns `reason`
   (`revoked | idle_expired | absolute_expired | tv_mismatch`).
 - Cases: bulk close/resolve requests accept `disposition` (required for terminal statuses in the
@@ -787,15 +789,31 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
     2026 10:34"), which left 14 Jul 10:34 to 15 Jul 00:00 in neither window and named a
     time of day on one side only. Both bounds are local midnights or month starts in the
     operator timezone, so a clock change makes the 90 days an hour longer or shorter,
-    never off midnight. The latest period's last day or month is not over, so the change
-    is noted as comparing a partial period. That note is decided by how the compared
-    period was built, never by seconds alone (`Period.basis`, `periods.in_progress_note`):
-    the whole periods before such a window are complete, so the change is partial; the
-    same elapsed time ("2025 to date" against "2024 to date", "Q1 2026 to date" against "Q4
-    2025 to date", any window that ends now against the same window a year earlier) is
-    like for like even when 29 Feb or a clock change makes one span a day or an hour
-    longer; an explicit window is judged by length (like for like unless the latest is
-    more than one per cent shorter). The narration reads "vs 0 in the previous 90
+    never off midnight. A rolling window that ends now is not a period in progress
+    (polish round 3, tour 3 shot 09, which said two 90-day windows compared "a partial
+    period"): it is noted as comparing a partial period only when it is materially
+    shorter than the period before it, by more than a day or one per cent of that period,
+    whichever is larger, the day never counting for more than a tenth of a short period
+    (`periods._materially_shorter`). "Last 90 days" asked in the afternoon (hours short of
+    90 whole days) and "last 7 days" after mid-morning compare like for like with no note;
+    "last 6 months (since May 2026)" in mid October and "last 2 days" just after midnight
+    are partial. A calendar period still in progress ("Oct 2026 to date", "today") is
+    like for like against the same elapsed time ("2025 to date" against "2024 to date",
+    "Q1 2026 to date" against "Q4 2025 to date") even when 29 Feb or a clock change makes
+    one span a day or an hour longer, and says so; against an explicit complete period it
+    is partial when more than one per cent shorter (`periods.in_progress_note`). A rolling
+    window against the same window a year earlier is like for like with no note. The
+    narration names each period with its dates once and plainly after ("Cases: 83 in the
+    last 90 days vs 0 in the previous 90 days (16 Apr to 14 Jul 2026; new)" when the
+    summary opened with "83 cases in the last 90 days (since 15 Jul 2026)"; the same in
+    the report, AI spend and compare answers, whose "There is no direction to report"
+    line names the period plainly, "in the previous 90 days", before the headline dates
+    it; a compared period always keeps its article, "in the same 24 hours a year
+    earlier"), and says the
+    rows the earlier period has no figure for in one sentence ("False-positive and
+    true-positive rates were not measured in the previous 90 days, so there is no change
+    to show", `demo_chat._say_unmeasured`); the agent prompt's style rules ask a real model
+    for the same. The narration reads "vs 0 in the previous 90
     days (16 Apr to 14 Jul 2026; new)", the KPI change "vs previous 90 days (16 Apr to 14
     Jul 2026)", which a narrow tile wraps between dates, never inside one
     (`KpiTile.keepDatesTogether`). A tile's context keeps the whole dated name and its
@@ -808,8 +826,8 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
     2026)**. Changes are computed exactly over every case:"), and outside UTC the
     comparison caption names the zone inside those dates ("… vs previous 90 days (16 Apr
     to 14 Jul 2026, Asia/Kolkata)"). A performance report's summary ends with the
-    comparison's note, so a report over "last 7 days" says the change compares a partial
-    period. A breakdown whose periods the start is not
+    comparison's note when it has one, so a report over "last 6 months" in mid month says
+    the change compares a partial period. A breakdown whose periods the start is not
     a boundary of opens with the part of its first period inside the window ("Jul 2026 (from
     15 Jul)", "W38 2026 (from 15 Sep)", "Q4 2025 (from 1 Nov)"), so "last 12 months" by
     quarter is twelve months in five bars rather than nine and a half in four, and "last 24
@@ -896,6 +914,37 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
     its message in view: a blocked Close scrolls the whole Tags field into the dialog's
     scroll area (at 1440x900 the message sat below it, so Close looked like it did
     nothing), as does typing that makes a hint or refusal appear (`focusTagInput`).
+35. **The noise reduction flow is drawn only where its measured labels fit, and a few
+    buckets draw a narrower chart** (polish round 3, tour 3 shots 17, 03 and 20). At 768px
+    with the nav collapsed the Overview column was 656px, just over the flow's old 38rem
+    container query, so the full flow was drawn (letterboxed from a 720px floor) and "Not
+    analyst-closed · 10 · 83%" sat on the Escalated node with both right-hand labels hiding
+    the escalated ribbons. The panel width, the band height and every label (one line and
+    two lines) are now measured by an invisible, `aria-hidden` probe whose text is generated
+    content, and `placeFlowLabels` (`noise-flow-labels.ts`) places them: one line first; the
+    labels a collision names switch to name over count and share (the right-hand column
+    first, a column together); labels sharing a column are spread clear of each other and
+    of a label beside them; nothing may touch another label or a node marker, and a run of
+    at least 32px of the ribbons a left-hand label sits on stays visible. When that still
+    collides the stage rail replaces the graph; before anything has measured the container
+    query stands in. The drawing is as wide as its box, never letterboxed. Verified at
+    640/656/700/768/900/1024/1280px containers in both themes with no overlap. The
+    re-verify found two gaps, both fixed. Full screen measured while its dialog's opening
+    animation still scaled it to 95%, so a 1,332px panel drew a 1,266px letterboxed flow
+    and labels sat on their node markers; every flow measurement now reads layout sizes
+    (`offsetWidth`, `offsetHeight`, the probe's label boxes divided by the panel's paint
+    scale). And with analyst-policy closes, "Closed by analyst policy" right of its node lay
+    across the escalated ribbons while placement reported a fit: a ribbon that crosses a
+    label column now bounds that column like a placed label (the decision labels spread
+    above the escalated ribbons), and every case-flow ribbon must keep a 32px stretch no
+    label covers, or the covering label stacks and, failing that, the rail replaces the
+    graph. Chat column
+    charts cap a bucket's slot at six times its marks (`barPlotFrame`), so two months on an
+    1,808px lane draw a 264px plot centred in the card instead of two bars 850px apart;
+    many-bucket charts are unchanged and the image export does the same. The Session policy
+    editor states what AUTH_COOKIE_SECURE actually is ("AUTH_COOKIE_SECURE=false" or "is not
+    set, and it defaults to false") from a new public boolean,
+    `remember_me.secure_cookies_configured` on `GET /api/setup/status`.
 
 ### 7.3 Known limitations
 

@@ -54,6 +54,12 @@ import { KPI_TOPICS } from './ask-topics';
 import { NoiseLineageView } from './NoiseLineage';
 import { SegmentedControl } from './SegmentedControl';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
+import {
+  placeFlowLabels,
+  type FlowLabelForm,
+  type FlowLabelInput,
+  type FlowLabelSizes,
+} from './noise-flow-labels';
 
 /* ------------------------------------------------------------------------- */
 /* Severity + outcome → token-name maps (routed through the palette authority  */
@@ -694,6 +700,8 @@ interface SimpleRibbon {
   id: string;
   kind: 'conversion' | 'conserved';
   path: string;
+  /** The `ribbonPath` arguments, so label placement can keep every ribbon in view. */
+  geometry: { x0: number; sy0: number; sy1: number; x1: number; ty0: number; ty1: number };
   targetColor: string;
   sourceKey: string;
   targetKey: string;
@@ -755,7 +763,11 @@ function buildSimpleLayout(
    */
   inspection: boolean = height >= 300,
 ): SimpleLayout {
-  const width = Math.max(720, requestedWidth || SIMPLE_INLINE_WIDTH);
+  // The drawing is exactly as wide as the box it is measured in (Round 12 polish 3). The
+  // old 720 floor letterboxed a narrower band and drifted the HTML labels off their
+  // nodes; whether the labels fit is now decided from their measured sizes instead
+  // (`placeFlowLabels`), and a band too narrow for them shows the stage rail.
+  const width = requestedWidth > 0 ? requestedWidth : SIMPLE_INLINE_WIDTH;
   const rowByKey = new Map(derived.rows.map((row) => [row.key, row]));
   const rawTotal = (key: string) => rowByKey.get(key)?.total ?? 0;
   const safeTotal = (key: string) => {
@@ -972,6 +984,7 @@ function buildSimpleLayout(
       id,
       kind,
       path: ribbonPath(x0, sy0, sy1, x1, ty0, ty1),
+      geometry: { x0, sy0, sy1, x1, ty0, ty1 },
       targetColor,
       sourceKey,
       targetKey,
@@ -1132,6 +1145,199 @@ function buildSimpleLayout(
     conversionNodes,
     casesX,
     contextY,
+  };
+}
+
+/**
+ * How much the transforms on `element` and its ancestors scale what it paints: its
+ * painted box (`getBoundingClientRect`) over its layout box (`offsetWidth` /
+ * `offsetHeight`, which ignore transforms). 1 when there is no layout box to compare
+ * (jsdom) or the two differ by no more than `offsetWidth`'s rounding.
+ *
+ * Polish 3 re-verify: Full screen opens a dialog that its animation still scales to 95%
+ * when the flow measures, and a transform is not a resize, so nothing measured again
+ * when it ended. The drawing was sized 5% narrow and letterboxed inside the panel while
+ * the labels, placed by percentage, drifted onto the node markers. Every flow
+ * measurement divides this out, so it reads the same at any point of an animation.
+ */
+function paintScale(element: HTMLElement): { x: number; y: number } {
+  const rect = element.getBoundingClientRect();
+  const along = (painted: number, layout: number) =>
+    layout > 0 && painted > 0 && Math.abs(painted - layout) > 0.5 ? painted / layout : 1;
+  return { x: along(rect.width, element.offsetWidth), y: along(rect.height, element.offsetHeight) };
+}
+
+/** An element's layout size in CSS pixels, whatever transform it is painted under. */
+function layoutSize(element: HTMLElement, scale: { x: number; y: number } = paintScale(element)) {
+  const rect = element.getBoundingClientRect();
+  return { width: rect.width / scale.x, height: rect.height / scale.y };
+}
+
+/** What the measuring probe read: the panel width, the band height, every label's box. */
+interface FlowMeasure {
+  width: number;
+  height: number;
+  sizes: Record<string, FlowLabelSizes>;
+  /** The three above, serialised: a re-measure that changes nothing keeps the state. */
+  signature: string;
+}
+
+/**
+ * One run of flow-label text. In the measuring probe the same text is generated content
+ * (`content: attr(data-t)`) of an `aria-hidden`, invisible box: it lays out exactly like
+ * the label, yet adds no text to the page, the accessibility tree or a text query.
+ */
+function FlowText({
+  text,
+  probe,
+  className,
+  children,
+  ...rest
+}: {
+  text: string;
+  probe?: boolean;
+  className?: string;
+  children?: React.ReactNode;
+} & React.HTMLAttributes<HTMLSpanElement> & { 'data-stage-share'?: string }) {
+  if (probe) {
+    return (
+      <span data-t={text} className={cn('before:content-[attr(data-t)]', className)}>
+        {children}
+      </span>
+    );
+  }
+  return (
+    <span className={className} {...rest}>
+      {text}
+      {children}
+    </span>
+  );
+}
+
+/** An alert / cluster label: the stage name over "177 alerts · —" (shared with its probe). */
+function conversionLabelContent(
+  key: 'ingested' | 'clustered',
+  figure: string,
+  shareText: string,
+  inspection: boolean,
+  probe = false,
+): React.ReactNode {
+  return (
+    <>
+      <FlowText
+        probe={probe}
+        text={DASHBOARD_STAGE_LABEL[key]}
+        className="block text-xs font-medium text-muted-foreground"
+      />
+      <FlowText
+        probe={probe}
+        text={figure}
+        className="mt-0.5 block font-mono text-xs font-semibold tabular-nums text-foreground"
+      >
+        <FlowText
+          probe={probe}
+          text={`· ${shareText}`}
+          className={cn(
+            'ml-1 font-sans font-normal tabular-nums text-muted-foreground',
+            inspection ? 'text-sm' : 'text-xs',
+          )}
+          {...(probe ? {} : { 'data-stage-share': key })}
+        />
+      </FlowText>
+    </>
+  );
+}
+
+/** The box classes a case-flow label uses in each form (shared with its probe). */
+function flowLabelBoxClass(side: 'after' | 'before', form: FlowLabelForm, inspection: boolean, probe = false): string {
+  return cn(
+    'rounded-sm px-1.5 py-1 font-medium',
+    form === 'line'
+      ? cn('flex items-baseline gap-x-1', probe ? 'flex-nowrap' : 'flex-wrap', side === 'after' ? 'text-left' : 'justify-end text-right')
+      : cn('flex flex-col', side === 'after' ? 'items-start text-left' : 'items-end text-right'),
+    inspection ? 'text-sm' : 'text-xs',
+  );
+}
+
+/** A case-flow label's text: "Escalated · 12 · 27%" on one line, or name over figures. */
+function flowLabelContent(
+  node: { key: string; label: string; total: number },
+  shareText: string,
+  form: FlowLabelForm,
+  inspection: boolean,
+  probe = false,
+): React.ReactNode {
+  const shareClass = cn('whitespace-nowrap font-normal tabular-nums text-muted-foreground', inspection ? 'text-sm' : 'text-xs');
+  const shareProps = probe ? {} : { 'data-stage-share': node.key };
+  if (form === 'stack') {
+    return (
+      <>
+        <FlowText probe={probe} text={node.label} className="block whitespace-nowrap" />
+        <span className="block whitespace-nowrap">
+          <FlowText probe={probe} text={fmtNumber(node.total)} className="font-mono font-semibold tabular-nums" />
+          <FlowText probe={probe} text={`· ${shareText}`} className={cn('ml-1', shareClass)} {...shareProps} />
+        </span>
+      </>
+    );
+  }
+  return (
+    <>
+      <FlowText probe={probe} text={node.label} className="whitespace-nowrap">
+        <FlowText probe={probe} text={`· ${fmtNumber(node.total)}`} className="ml-1 font-mono font-semibold tabular-nums" />
+      </FlowText>
+      <FlowText probe={probe} text={`· ${shareText}`} className={shareClass} {...shareProps} />
+    </>
+  );
+}
+
+/**
+ * The Simple flow's label geometry for {@link placeFlowLabels}: every drawn case-flow
+ * label (a zero-height node draws none), the two conversion labels, the two label
+ * columns (Auto-cleared over Closed by analyst policy right of the decision nodes;
+ * Closed by human over Not analyst-closed left of the resolution nodes), the ribbons
+ * each left-hand label sits on, and every case-flow ribbon no label may hide.
+ */
+function simpleFlowLabelInput(layout: SimpleLayout): FlowLabelInput {
+  return {
+    width: layout.width,
+    height: layout.height,
+    nodes: layout.nodes
+      .filter((node) => node.h > 0)
+      .map((node) => ({
+        key: node.key,
+        x: node.x,
+        y: node.y,
+        w: node.w,
+        h: node.h,
+        labelY: node.labelY,
+        labelSide: node.labelSide,
+        growUp: node.key === 'cases',
+      })),
+    conversion: layout.conversionNodes.map((node) => ({
+      key: node.key,
+      x: node.x - SIMPLE_NODE_W / 2,
+      y: node.y,
+      w: SIMPLE_NODE_W,
+      h: node.h,
+      labelY: node.labelY,
+      labelSide: node.labelSide,
+    })),
+    columns: [
+      ['auto_cleared', 'policy_closed'],
+      ['closed', 'escalated_remaining'],
+    ],
+    ribbonSource: { escalated: 'cases', closed: 'escalated', escalated_remaining: 'escalated' },
+    stackFirst: ['closed', 'escalated_remaining'],
+    // The case-flow ribbons: "Closed by analyst policy" right of its node lies across the
+    // escalated ribbons unless placement keeps them in view.
+    ribbons: layout.ribbons
+      .filter((ribbon) => ribbon.kind === 'conserved')
+      .map((ribbon) => ({
+        key: `${ribbon.sourceKey}>${ribbon.targetKey}`,
+        source: ribbon.sourceKey,
+        target: ribbon.targetKey,
+        ...ribbon.geometry,
+      })),
   };
 }
 
@@ -1474,24 +1680,49 @@ export function NoiseFunnel({
   // The inline band's MEASURED height (0 until measured): the drawing follows the box the
   // `clamp()` resolved to, so the viewBox can never letterbox inside it.
   const [simplePlotMeasuredHeight, setSimplePlotMeasuredHeight] = React.useState(0);
+  // Round 12 polish 3: the instrument panel's width, the band's height (read from a probe
+  // that carries the band's own clamp, so it measures while the band is hidden too) and
+  // every flow label's box in both of its forms. `null` until all of it has measured
+  // (jsdom never lays out): the band then falls back to its container query.
+  const instrumentRef = React.useRef<HTMLDivElement>(null);
+  const flowProbeRef = React.useRef<HTMLDivElement>(null);
+  const [flowMeasure, setFlowMeasure] = React.useState<FlowMeasure | null>(null);
   const simplePlotHeight = wideInspection
     ? SIMPLE_EXPANDED_HEIGHT
-    : simplePlotMeasuredHeight || SIMPLE_INLINE_HEIGHT;
+    : flowMeasure?.height || simplePlotMeasuredHeight || SIMPLE_INLINE_HEIGHT;
   const simpleFallbackWidth = wideInspection ? SIMPLE_EXPANDED_WIDTH : SIMPLE_INLINE_WIDTH;
+  const simpleLayoutWidth = flowMeasure?.width || simplePlotWidth || simpleFallbackWidth;
   const dropSuppressed = data?.drops?.suppressed ?? 0;
   const dropIgnored = data?.drops?.ignored ?? 0;
   const simpleLayout = React.useMemo(
     () =>
       derived
-        ? buildSimpleLayout(
-            derived,
-            uid,
-            simplePlotWidth || simpleFallbackWidth,
-            simplePlotHeight,
-            wideInspection,
-          )
+        ? buildSimpleLayout(derived, uid, simpleLayoutWidth, simplePlotHeight, wideInspection)
         : null,
-    [derived, simpleFallbackWidth, simplePlotHeight, simplePlotWidth, uid, wideInspection],
+    [derived, simpleLayoutWidth, simplePlotHeight, uid, wideInspection],
+  );
+  // Where every label goes, and whether the graph can be drawn at all: the first of the
+  // one-line, stacked-right and all-stacked layouts with no collision (`placeFlowLabels`).
+  const flowPlacement = React.useMemo(
+    () =>
+      flowMeasure && simpleLayout && simpleLayout.valid && simpleLayout.nodes.length > 0
+        ? placeFlowLabels(simpleFlowLabelInput(simpleLayout), flowMeasure.sizes)
+        : null,
+    [flowMeasure, simpleLayout],
+  );
+  /** `unmeasured`: no layout yet (the CSS container query decides); else measured. */
+  const flowFit: 'unmeasured' | 'fits' | 'collides' = flowPlacement ? flowPlacement.fit : 'unmeasured';
+  /** Changes whenever a probed label's text could change, so the probe is measured again. */
+  const flowProbeKey = React.useMemo(
+    () =>
+      simpleLayout
+        ? [
+            wideInspection ? 'inspection' : 'inline',
+            ...simpleLayout.nodes.filter((node) => node.h > 0).map((node) => `${node.key}:${node.total}`),
+            ...simpleLayout.conversionNodes.map((node) => `${node.key}:${node.row.total}`),
+          ].join('|')
+        : '',
+    [simpleLayout, wideInspection],
   );
   const legacyLayout = React.useMemo(
     () =>
@@ -1511,12 +1742,13 @@ export function NoiseFunnel({
     const element = simplePlotRef.current;
     if (!element) return undefined;
     const measure = () => {
-      const rect = element.getBoundingClientRect();
-      const next = Math.round(rect.width || element.clientWidth);
+      // Layout size, not the painted one: an opening dialog is still scaled (`paintScale`).
+      const box = layoutSize(element);
+      const next = Math.round(box.width || element.clientWidth);
       if (next > 0) setSimplePlotWidth((current) => (current === next ? current : next));
       // Height only matters inline (the inspection band is a fixed 400px). A hidden band
       // (narrow container) measures 0 and keeps the last value.
-      const nextHeight = Math.round(rect.height || element.clientHeight);
+      const nextHeight = Math.round(box.height || element.clientHeight);
       if (!wideInspection && nextHeight > 0) {
         setSimplePlotMeasuredHeight((current) => (current === nextHeight ? current : nextHeight));
       }
@@ -1527,6 +1759,57 @@ export function NoiseFunnel({
     observer.observe(element);
     return () => observer.disconnect();
   }, [hidden, view, wideInspection]);
+
+  React.useLayoutEffect(() => {
+    if (hidden || view !== 'simple') return undefined;
+    const panel = instrumentRef.current;
+    const probe = flowProbeRef.current;
+    if (!panel || !probe) return undefined;
+    const measure = () => {
+      // Every size in layout pixels: the panel and the probe share one transform (an
+      // opening dialog's scale), so the panel's scale converts each painted probe box.
+      const scale = paintScale(panel);
+      const width = Math.round(layoutSize(panel, scale).width);
+      const heightProbe = probe.querySelector<HTMLElement>('[data-flow-probe-height]');
+      const height = wideInspection
+        ? SIMPLE_EXPANDED_HEIGHT
+        : Math.round(heightProbe ? layoutSize(heightProbe, scale).height : 0);
+      let complete = width > 0 && height > 0;
+      const sizes: Record<string, FlowLabelSizes> = {};
+      probe.querySelectorAll<HTMLElement>('[data-flow-probe]').forEach((element) => {
+        const key = element.dataset.flowProbe ?? '';
+        const form: FlowLabelForm = element.dataset.flowForm === 'stack' ? 'stack' : 'line';
+        const box = layoutSize(element, scale);
+        // Hundredths first, so float noise from the division never adds a whole pixel.
+        const size = { w: Math.ceil(Number(box.width.toFixed(2))), h: Math.ceil(Number(box.height.toFixed(2))) };
+        if (!(size.w > 0 && size.h > 0)) complete = false;
+        // A conversion label has one form; it stands for both.
+        const entry = (sizes[key] ??= { line: size, stack: size });
+        entry[form] = size;
+      });
+      const signature = complete ? JSON.stringify([width, height, sizes]) : '';
+      setFlowMeasure((current) =>
+        (current?.signature ?? '') === signature
+          ? current
+          : complete
+            ? { width, height, sizes, signature }
+            : null,
+      );
+    };
+    measure();
+    // Web fonts change every label's width once they arrive.
+    let live = true;
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+    fonts?.ready?.then(() => live && measure()).catch(() => undefined);
+    fonts?.addEventListener?.('loadingdone', measure);
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(panel);
+    return () => {
+      live = false;
+      observer?.disconnect();
+      fonts?.removeEventListener?.('loadingdone', measure);
+    };
+  }, [hidden, view, wideInspection, flowProbeKey]);
 
   React.useEffect(() => {
     setHoveredStage(null);
@@ -1970,16 +2253,31 @@ export function NoiseFunnel({
   );
 
   // Which Simple surface a reader is actually looking at. The flow band and the stage
-  // rail are mutually exclusive: the band needs a >=38rem container, and below that the
-  // rail replaces it. When the conservation invariant fails (or nothing was opened) the
-  // band shows a status box instead of a graph and the rail is the only stage surface at
-  // EVERY width. The disclosure below is composed from these so it can never describe a
-  // surface that is not on screen.
+  // rail are mutually exclusive: the band is drawn only where its labels fit (measured,
+  // `flowFit`; before anything has measured, a >=38rem container query stands in), and
+  // otherwise the rail replaces it. When the conservation invariant fails (or nothing was
+  // opened) the band shows a status box instead of a graph and the rail is the only stage
+  // surface at EVERY width. The disclosure below is composed from these so it can never
+  // describe a surface that is not on screen.
   const simpleFlowDrawn = simpleLayout.valid && simpleLayout.nodes.length > 0;
-  /** The rail is the narrow-container fallback (hidden once the band fits). */
+  /** The rail is the fallback for a container the labels do not fit (hidden once they do). */
   const simpleRailIsFallback = simpleFlowDrawn && !wideInspection;
   /** The rail is on screen at some width (always, unless the wide band replaced it). */
   const simpleRailRendered = !simpleFlowDrawn || !wideInspection;
+  /**
+   * Classes for the two fallback surfaces (band side, rail side). Measured, React decides;
+   * unmeasured, the container query does.
+   */
+  const fallbackClass = (surface: 'flow' | 'rail', display: 'block' | 'inline') =>
+    flowFit === 'unmeasured'
+      ? surface === 'flow'
+        ? cn('hidden', display === 'block' ? '@[38rem]/noise:block' : '@[38rem]/noise:inline')
+        : '@[38rem]/noise:hidden'
+      : (flowFit === 'fits') === (surface === 'flow')
+        ? undefined
+        : 'hidden';
+  const placedLabelY = (node: SimpleNode) => flowPlacement?.labelY[node.key] ?? node.labelY;
+  const labelFormOf = (key: string): FlowLabelForm => flowPlacement?.forms[key] ?? 'line';
 
   const simpleFlowView = (
     <div
@@ -2034,10 +2332,15 @@ export function NoiseFunnel({
 
       {/* No inner `border-y` (Round 12): the band supplies the separation, and the
           flat panel's own pair of rules was two of the ten that crossed this column. */}
-      <div data-testid="noise-instrument-panel" className="@container/noise space-y-3">
+      <div
+        ref={instrumentRef}
+        data-testid="noise-instrument-panel"
+        className="@container/noise relative space-y-3"
+      >
         <div
           ref={simplePlotRef}
           data-testid="noise-flow-band"
+          data-flow-fit={simpleFlowDrawn ? flowFit : undefined}
           className={cn(
             'relative w-full',
             // Inline: scales with the viewport between 240 and 340px, and the drawing
@@ -2045,7 +2348,11 @@ export function NoiseFunnel({
             // to SIMPLE_EXPANDED_HEIGHT.
             wideInspection
               ? 'h-[400px]'
-              : 'hidden h-[clamp(240px,18dvw,340px)] @[38rem]/noise:block',
+              : cn(
+                  'h-[clamp(240px,18dvw,340px)]',
+                  // A status box (no graph) shows at every width, as before.
+                  simpleFlowDrawn ? fallbackClass('flow', 'block') : 'hidden @[38rem]/noise:block',
+                ),
           )}
         >
           {!simpleLayout.valid ? (
@@ -2173,20 +2480,30 @@ export function NoiseFunnel({
                   .filter(
                     (node) =>
                       node.h > 0 &&
-                      node.labelSide === 'before' &&
-                      Math.abs(node.labelY - (node.y + node.h / 2)) > 0.5,
+                      // A label spread off its node's middle gets a leader back to it:
+                      // every label left of its node, and the decision-column labels
+                      // right of theirs (Cases opened sits above its node by design).
+                      (node.labelSide === 'before' ||
+                        node.key === 'auto_cleared' ||
+                        node.key === 'policy_closed') &&
+                      Math.abs(placedLabelY(node) - (node.y + node.h / 2)) > 0.5,
                   )
-                  .map((node) => (
-                    <path
-                      key={`${node.key}-label-leader`}
-                      d={`M${node.x},${node.y + node.h / 2} L${node.x - 7},${node.labelY}`}
-                      fill="none"
-                      stroke={token('muted-foreground', 0.55)}
-                      strokeWidth={1}
-                      vectorEffect="non-scaling-stroke"
-                      data-label-leader={node.key}
-                    />
-                  ))}
+                  .map((node) => {
+                    const before = node.labelSide === 'before';
+                    const edge = before ? node.x : node.x + node.w;
+                    const reach = before ? edge - 7 : edge + 7;
+                    return (
+                      <path
+                        key={`${node.key}-label-leader`}
+                        d={`M${edge},${node.y + node.h / 2} L${reach},${placedLabelY(node)}`}
+                        fill="none"
+                        stroke={token('muted-foreground', 0.55)}
+                        strokeWidth={1}
+                        vectorEffect="non-scaling-stroke"
+                        data-label-leader={node.key}
+                      />
+                    );
+                  })}
 
                 {simpleLayout.nodes
                   .filter((node) => node.h > 0)
@@ -2247,24 +2564,11 @@ export function NoiseFunnel({
                       100 - ((node.x + 8) / simpleLayout.width) * 100,
                     )}%`,
                   };
-                  const labelContent = (
-                    <>
-                      <span className="block text-xs font-medium text-muted-foreground">
-                        {DASHBOARD_STAGE_LABEL[node.key]}
-                      </span>
-                      <span className="mt-0.5 block font-mono text-xs font-semibold tabular-nums text-foreground">
-                        {fmtNumber(node.row.total)} {unit}
-                        <span
-                          data-stage-share={node.key}
-                          className={cn(
-                            'ml-1 font-sans font-normal tabular-nums text-muted-foreground',
-                            wideInspection ? 'text-sm' : 'text-xs',
-                          )}
-                        >
-                          · {share.text}
-                        </span>
-                      </span>
-                    </>
+                  const labelContent = conversionLabelContent(
+                    node.key,
+                    `${fmtNumber(node.row.total)} ${unit}`,
+                    share.text,
+                    wideInspection,
                   );
                   if (view === 'detailed') {
                     return (
@@ -2329,11 +2633,12 @@ export function NoiseFunnel({
                     rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
                   );
                   const leftPct = (labelX / simpleLayout.width) * 100;
+                  // One line where it fits, else name over figures (`placeFlowLabels`).
+                  const form = labelFormOf(node.key);
                   const labelClassName = cn(
-                    'absolute -translate-y-1/2 flex flex-wrap items-baseline gap-x-1 rounded-sm bg-card/95 px-1.5 py-1 font-medium text-foreground',
-                    node.labelSide === 'after' ? 'text-left' : 'justify-end text-right',
+                    'absolute -translate-y-1/2 bg-card/95 text-foreground',
+                    flowLabelBoxClass(node.labelSide, form, wideInspection),
                     node.total === 0 && 'text-muted-foreground',
-                    wideInspection ? 'text-sm' : 'text-xs',
                   );
                   const labelStyle: React.CSSProperties = {
                     /*
@@ -2347,35 +2652,18 @@ export function NoiseFunnel({
                     ...(node.labelSide === 'after'
                       ? { left: `${leftPct}%` }
                       : { right: `${100 - leftPct}%` }),
-                    top: `${(node.labelY / simpleLayout.height) * 100}%`,
+                    top: `${(placedLabelY(node) / simpleLayout.height) * 100}%`,
                     // Never let a label (now count + share) run past the plot edge: the
                     // share wraps under the count instead of forcing horizontal scroll.
                     maxWidth: `${Math.max(12, node.labelSide === 'after' ? 100 - leftPct : leftPct)}%`,
                   };
-                  const labelContent = (
-                    <>
-                      <span className="whitespace-nowrap">
-                        {node.label}
-                        <span className="ml-1 font-mono font-semibold tabular-nums">
-                          · {fmtNumber(node.total)}
-                        </span>
-                      </span>
-                      <span
-                        data-stage-share={node.key}
-                        className={cn(
-                          'whitespace-nowrap font-normal tabular-nums text-muted-foreground',
-                          wideInspection ? 'text-sm' : 'text-xs',
-                        )}
-                      >
-                        · {share.text}
-                      </span>
-                    </>
-                  );
+                  const labelContent = flowLabelContent(node, share.text, form, wideInspection);
                   if (view === 'detailed') {
                     return (
                       <div
                         key={node.key}
                         data-flow-label={node.key}
+                        data-label-form={form}
                         className={labelClassName}
                         style={labelStyle}
                         aria-hidden
@@ -2388,6 +2676,7 @@ export function NoiseFunnel({
                     <button
                       type="button"
                       data-flow-label={node.key}
+                      data-label-form={form}
                       aria-label={`${node.label}: ${fmtNumber(node.total)} case${node.total === 1 ? '' : 's'}, ${share.sentence}${relationship}.`}
                       onClick={() => {
                         setFocusedStage(stageKey);
@@ -2442,10 +2731,10 @@ export function NoiseFunnel({
           data-testid="noise-stage-rail"
           className={cn(
             'grid grid-cols-2 items-start gap-1 gap-y-3 border-t border-border/60 pt-3 sm:grid-cols-3',
-            simpleLayout.valid && simpleLayout.nodes.length > 0
+            simpleFlowDrawn
               ? wideInspection
                 ? 'hidden'
-                : '@[38rem]/noise:hidden'
+                : fallbackClass('rail', 'block')
               : 'lg:grid-cols-4',
           )}
         >
@@ -2501,10 +2790,11 @@ export function NoiseFunnel({
               carrying the full sentence as its accessible name, and the prose goes to the
               popover that already restates it in more detail.
 
-              The two `data-disclosure-surface` spans and their container-query classes must
-              keep SHIPPING — the specs assert `not.toHaveClass('hidden')`, never
-              `toBeNull()`, because which surface is visible is decided by CSS at the
-              container width, not by React. The chip therefore lives INSIDE them. */}
+              The two `data-disclosure-surface` spans must keep SHIPPING, both of them —
+              the specs assert their classes, never `toBeNull()` — because which surface is
+              visible is decided at the container width: by the measured label fit
+              (Round 12 polish 3), and by a container query until that has measured. The
+              chip therefore lives INSIDE them. */}
           <p
             className="flex min-w-0 flex-wrap items-center gap-x-1 text-xs leading-relaxed text-muted-foreground"
             data-testid="noise-share-disclosure"
@@ -2512,7 +2802,7 @@ export function NoiseFunnel({
             {simpleFlowDrawn ? (
               <span
                 data-disclosure-surface="flow"
-                className={cn(simpleRailIsFallback && 'hidden @[38rem]/noise:inline')}
+                className={cn(simpleRailIsFallback && fallbackClass('flow', 'inline'))}
               >
                 {/* Plain muted text with its (?) beside it (Round 12), not a bordered mono
                     chip: it is a disclosure, not a control, and the box was one of the
@@ -2535,7 +2825,7 @@ export function NoiseFunnel({
             {simpleRailRendered ? (
               <span
                 data-disclosure-surface="rail"
-                className={cn(simpleRailIsFallback && '@[38rem]/noise:hidden')}
+                className={cn(simpleRailIsFallback && fallbackClass('rail', 'inline'))}
               >
                 Stage rail · flow order{' '}
               </span>
@@ -2633,6 +2923,76 @@ export function NoiseFunnel({
               </span>
             ) : null}
           </p>
+        ) : null}
+
+        {/* The measuring probe (Round 12 polish 3): every flow label in both of its forms,
+            laid out exactly as drawn but invisible, out of flow and out of the
+            accessibility tree, plus a box carrying the band's own height clamp. Its text
+            is generated content (`FlowText`), so it adds no text to the page. */}
+        {simpleFlowDrawn ? (
+          <div
+            ref={flowProbeRef}
+            aria-hidden
+            data-testid="noise-flow-probe"
+            className="pointer-events-none invisible absolute left-0 top-0 h-0 w-0 overflow-hidden"
+          >
+            {wideInspection ? null : (
+              <div data-flow-probe-height className="absolute left-0 top-0 h-[clamp(240px,18dvw,340px)] w-px" />
+            )}
+            {simpleLayout.conversionNodes.map((node) => {
+              const unit =
+                node.key === 'ingested'
+                  ? node.row.total === 1
+                    ? 'alert'
+                    : 'alerts'
+                  : node.row.total === 1
+                    ? 'cluster'
+                    : 'clusters';
+              const share = stageShare(
+                node.key,
+                node.row.total,
+                rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+              );
+              return (
+                <span
+                  key={node.key}
+                  data-flow-probe={node.key}
+                  data-flow-form="line"
+                  className="absolute left-0 top-0 block w-max rounded-sm px-1.5 py-1 text-left"
+                >
+                  {conversionLabelContent(
+                    node.key,
+                    `${fmtNumber(node.row.total)} ${unit}`,
+                    share.text,
+                    wideInspection,
+                    true,
+                  )}
+                </span>
+              );
+            })}
+            {simpleLayout.nodes
+              .filter((node) => node.h > 0)
+              .flatMap((node) => {
+                const share = stageShare(
+                  node.key,
+                  node.total,
+                  rowByKey.get(parentStageKey(node.key) ?? '')?.total ?? null,
+                );
+                return (['line', 'stack'] as const).map((form) => (
+                  <span
+                    key={`${node.key}-${form}`}
+                    data-flow-probe={node.key}
+                    data-flow-form={form}
+                    className={cn(
+                      'absolute left-0 top-0 w-max',
+                      flowLabelBoxClass(node.labelSide, form, wideInspection, true),
+                    )}
+                  >
+                    {flowLabelContent(node, share.text, form, wideInspection, true)}
+                  </span>
+                ));
+              })}
+          </div>
         ) : null}
       </div>
     </div>

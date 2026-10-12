@@ -1201,3 +1201,226 @@ describe('ribbonPath', () => {
     expect(path.endsWith('C120,45 120,15 40,15 Z')).toBe(true);
   });
 });
+
+/**
+ * Round 12 polish 3 (tour 3): the flow is drawn only where its MEASURED labels fit the
+ * MEASURED container. jsdom lays nothing out, so these specs give the panel, the band's
+ * height probe and every label probe a size: a probe is sized from its own text (the
+ * probe carries it as `data-t`, never as text content), 7 px a glyph on one line, the
+ * wider line when stacked.
+ */
+describe('measured flow fit (tour 3: labels on the Escalated node at 656 px)', () => {
+  const GLYPH = 7;
+  function probeSize(element: HTMLElement): DOMRect {
+    const texts = [element, ...element.querySelectorAll<HTMLElement>('[data-t]')]
+      .map((el) => el.dataset.t ?? '')
+      .filter(Boolean);
+    const conversion = element.dataset.flowProbe === 'ingested' || element.dataset.flowProbe === 'clustered';
+    if (conversion || element.dataset.flowForm === 'stack') {
+      const lines = [texts[0], texts.slice(1).join(' ')];
+      return DOMRect.fromRect({ width: Math.max(...lines.map((t) => t.length)) * GLYPH + 12, height: 40 });
+    }
+    return DOMRect.fromRect({ width: texts.join(' ').length * GLYPH + 12, height: 24 });
+  }
+  function layoutAt(panelWidth: number) {
+    return vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.dataset.testid === 'noise-instrument-panel' || this.dataset.testid === 'noise-flow-band') {
+        return DOMRect.fromRect({ width: panelWidth, height: 240 });
+      }
+      if (this.hasAttribute('data-flow-probe-height')) return DOMRect.fromRect({ width: 1, height: 240 });
+      if (this.dataset.flowProbe) return probeSize(this);
+      return DOMRect.fromRect({ width: 0, height: 0 });
+    });
+  }
+  const band = () => screen.getByTestId('noise-flow-band');
+  const rail = () => screen.getByTestId('noise-stage-rail');
+  const surface = (name: 'flow' | 'rail') =>
+    screen.getByTestId('noise-share-disclosure').querySelector(`[data-disclosure-surface="${name}"]`);
+
+  it('keeps the container query while nothing has measured (no layout engine)', () => {
+    render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+    expect(band()).not.toHaveAttribute('data-flow-fit', 'fits');
+    expect(band()).toHaveAttribute('data-flow-fit', 'unmeasured');
+    expect(band()).toHaveClass('hidden', '@[38rem]/noise:block');
+    expect(rail()).toHaveClass('@[38rem]/noise:hidden');
+  });
+
+  it('draws the flow with one-line labels where they fit, and hides the rail', () => {
+    const spy = layoutAt(1200);
+    try {
+      const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      expect(band()).toHaveAttribute('data-flow-fit', 'fits');
+      expect(band()).not.toHaveClass('hidden');
+      expect(band()).not.toHaveClass('@[38rem]/noise:block');
+      expect(rail()).toHaveClass('hidden');
+      expect(surface('flow')).not.toHaveClass('hidden');
+      expect(surface('rail')).toHaveClass('hidden');
+      // The drawing is exactly as wide as the panel it was measured in.
+      expect(graph(view.container)).toHaveAttribute('viewBox', '0 0 1200 240');
+      for (const key of ['cases', 'auto_cleared', 'escalated', 'closed', 'escalated_remaining']) {
+        expect(directLabel(view.container, key)).toHaveAttribute('data-label-form', 'line');
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('stacks the right-hand labels instead of laying them over the Escalated node', () => {
+    const spy = layoutAt(800);
+    try {
+      const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      expect(band()).toHaveAttribute('data-flow-fit', 'fits');
+      const remaining = directLabel(view.container, 'escalated_remaining');
+      expect(remaining).toHaveAttribute('data-label-form', 'stack');
+      expect(directLabel(view.container, 'closed')).toHaveAttribute('data-label-form', 'stack');
+      // Name over figures, and the same accessible name as the one-line label.
+      expect(remaining.children[0]).toHaveTextContent(/^Not analyst-closed$/);
+      expect(remaining.children[1]).toHaveTextContent(/^8· 53%$/);
+      expect(remaining).toHaveAccessibleName(/^Not analyst-closed: 8 cases, 53% of escalated cases/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('lists the stages in the rail when even the stacked labels collide', () => {
+    const spy = layoutAt(480);
+    try {
+      render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      expect(band()).toHaveAttribute('data-flow-fit', 'collides');
+      expect(band()).toHaveClass('hidden');
+      expect(band()).not.toHaveClass('@[38rem]/noise:block');
+      expect(rail()).not.toHaveClass('hidden');
+      expect(rail()).not.toHaveClass('@[38rem]/noise:hidden');
+      expect(surface('flow')).toHaveClass('hidden');
+      expect(surface('rail')).not.toHaveClass('hidden');
+      expect(surface('rail')).not.toHaveClass('@[38rem]/noise:hidden');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('decides from the labels, not a rem threshold: 656 px fits small counts, not huge ones', () => {
+    // Tour 3's 656 px column sat just over the old 38rem cut-off and drew a colliding flow.
+    // The same width now fits the demo's counts (compactly) and refuses counts too wide.
+    const spy = layoutAt(656);
+    try {
+      const small = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      expect(band()).toHaveAttribute('data-flow-fit', 'fits');
+      small.unmount();
+      render(
+        <NoiseFunnel
+          data={withStageTotals({
+            ingested: 123_456_789,
+            clustered: 12_345_678,
+            cases: 1_234_567,
+            auto_cleared: 1_000_000,
+            escalated: 234_567,
+            closed: 123_456,
+          })}
+          animate={false}
+          variant="flat"
+        />,
+      );
+      expect(band()).toHaveAttribute('data-flow-fit', 'collides');
+      expect(rail()).not.toHaveClass('hidden');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  /**
+   * Polish 3 re-verify: Full screen measured while its dialog's opening animation still
+   * scaled everything to 95%. `getBoundingClientRect` reports that painted box, a
+   * transform is not a resize, and the 1332 px panel was drawn 1266 px wide and
+   * letterboxed while the labels, placed by percentage, drifted onto the node markers.
+   * These layouts paint every box scaled while the layout sizes (`offsetWidth` /
+   * `offsetHeight`, which ignore transforms) stay true.
+   */
+  function scaledLayoutAt(panelWidth: number, scale: number, bandHeight = 240) {
+    const layout = (element: HTMLElement): { width: number; height: number } => {
+      if (element.dataset.testid === 'noise-instrument-panel' || element.dataset.testid === 'noise-flow-band') {
+        return { width: panelWidth, height: bandHeight };
+      }
+      if (element.hasAttribute('data-flow-probe-height')) return { width: 1, height: bandHeight };
+      if (element.dataset.flowProbe) return probeSize(element);
+      return { width: 0, height: 0 };
+    };
+    const spies = [
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+        const { width, height } = layout(this);
+        return DOMRect.fromRect({ width: width * scale, height: height * scale });
+      }),
+      vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+        return Math.round(layout(this).width);
+      }),
+      vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+        return Math.round(layout(this).height);
+      }),
+    ];
+    return { mockRestore: () => spies.forEach((spy) => spy.mockRestore()) };
+  }
+  const placedLabels = (container: HTMLElement) =>
+    [...container.querySelectorAll<HTMLElement>('button[data-flow-label]')].map((label) => [
+      label.dataset.flowLabel,
+      label.dataset.labelForm,
+      label.style.top,
+      label.style.left || label.style.right,
+    ]);
+
+  it('measures layout sizes, so a scale transform never letterboxes the drawing', () => {
+    let reference: ReturnType<typeof placedLabels>;
+    const plain = layoutAt(1332);
+    try {
+      const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      expect(graph(view.container)).toHaveAttribute('viewBox', '0 0 1332 240');
+      reference = placedLabels(view.container);
+      view.unmount();
+    } finally {
+      plain.mockRestore();
+    }
+    const scaled = scaledLayoutAt(1332, 0.95);
+    try {
+      const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      expect(band()).toHaveAttribute('data-flow-fit', 'fits');
+      // The painted panel is 1265.4 px; the drawing still follows the 1332 px layout box
+      // and the 240 px band, not 95% of either.
+      expect(graph(view.container)).toHaveAttribute('viewBox', '0 0 1332 240');
+      // Every label measured at its layout size: the same forms in the same places.
+      expect(placedLabels(view.container)).toEqual(reference);
+    } finally {
+      scaled.mockRestore();
+    }
+  });
+
+  it('draws Full screen at the panel width while its dialog is still scaling in', () => {
+    const scaled = scaledLayoutAt(1332, 0.95, 400);
+    try {
+      const view = render(<NoiseFunnel data={fixture()} animate={false} variant="flat" wideInspection />);
+      expect(graph(view.container)).toHaveAttribute('viewBox', '0 0 1332 400');
+      expect(band()).toHaveAttribute('data-flow-fit', 'fits');
+    } finally {
+      scaled.mockRestore();
+    }
+  });
+
+  it('adds no text to the page or the accessibility tree for its measurements', () => {
+    const spy = layoutAt(1200);
+    try {
+      render(<NoiseFunnel data={fixture()} animate={false} variant="flat" />);
+      const probe = screen.getByTestId('noise-flow-probe');
+      expect(probe).toHaveAttribute('aria-hidden', 'true');
+      expect(probe).toHaveClass('invisible', 'absolute');
+      expect(probe.textContent).toBe('');
+      expect(probe.querySelector('[data-stage-share]')).toBeNull();
+      // Every label text is still found exactly once.
+      expect(screen.getAllByText('Not analyst-closed', { exact: false }).length).toBeGreaterThan(0);
+      expect(
+        within(screen.getByTestId('noise-flow-band')).getAllByText(/^Not analyst-closed/),
+      ).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});

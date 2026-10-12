@@ -403,6 +403,12 @@ def test_the_agent_prompt_asks_for_a_short_report_lead_and_human_names() -> None
     assert "Long machine ids" in style and "belong in blocks and links" in style
     assert "Show each figure once" in style
     assert "Durations keep the unit their result states" in style
+    # Polish round 3 (tour 3 shot 09): a period's dates once, unmeasured figures in one
+    # sentence, and "partial" only when the comparison note says so.
+    flat = " ".join(style.split())
+    assert "Name each period with its dates once" in flat and "then plainly" in flat
+    assert "Figures with no value in the earlier period share one sentence" in flat
+    assert "Call a change partial only when its comparison note says so." in flat
 
 
 # --------------------------------------------------------------------------- #

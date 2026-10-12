@@ -19,8 +19,9 @@
  *   │             24px gutters; no cards, no per-cell rules):
  *   │               "Alert flow"          Noise-Reduction flow (8) · Human vs AI (4)
  *   │               "Cases and response"  case state (5) · response time (3) · queue (4)
- *   │             The flow leads because it is the page's widest instrument and its own
- *   │             container query needs 608px of cell width to draw a graph at all. At
+ *   │             The flow leads because it is the page's widest instrument: it draws its
+ *   │             graph only where its measured labels fit the cell (about 600px for
+ *   │             typical counts; narrower, it lists the stages instead). At
  *   │             `4xl` (≥2200px) both bands share a main column + a 460px rail.
  *   └ DEEPER ───── ONE persisted "Deeper analytics" disclosure (flat inside: a second
  *                  strip — MTTA · MTTR · Dwell · LLM spend — then coverage, volume,
@@ -3770,11 +3771,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
               no cell padding — the gutters do the separating (Round 12, replacing the
               gutterless hairline lattice that read as one slab).
 
-              ⚠️ THE FLOW GRID IS `xl:`, NEVER `lg:`. The flow's own container query hides
-              its graph below 38rem (608px) of CONTAINER width. At the tightest supported
-              desktop — 1280px, sidebar pinned — the content is ~982px; with no cell padding
-              and a 24px gutter the flow's eight columns are (982 − 24) × 8/12 ≈ 638px, which
-              clears 608. Do NOT add padding to the flow cell at `xl`.
+              ⚠️ THE FLOW GRID IS `xl:`, NEVER `lg:`. The flow draws its graph only where its
+              MEASURED labels fit the cell (Round 12 polish 3: about 600px for typical counts,
+              with two-line labels wherever one-line ones would collide), and lists the stages
+              in a rail otherwise.
+              At the tightest supported desktop — 1280px, sidebar pinned — the content is
+              ~982px; with no cell padding and a 24px gutter the flow's eight columns are
+              (982 − 24) × 8/12 ≈ 638px, which keeps the graph. Do NOT add padding to the
+              flow cell at `xl`.
 
               At `4xl` (≥2200px) the page widens to 2400px by COLUMN COUNT: both bands share
               one track template whose last column is a 460px rail, so Human vs AI stacks

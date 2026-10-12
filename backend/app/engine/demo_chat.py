@@ -786,12 +786,14 @@ _BARE_PERIODS = frozenset({"today", "yesterday", "this week", "last week", "this
 def _in(label: str) -> str:
     """A window label with the words that introduce it: "in the last 24 hours",
     "over all time (since 3 Nov 2025)", "in September 2026", "this week", "since 1
-    Mar 2026" (SPEC D7: humanised labels, never "in the all time")."""
+    Mar 2026", "in the same 24 hours a year earlier" (SPEC D7: humanised labels, never
+    "in the all time")."""
     text = (label or "").strip()
     low = text.lower()
     if not text:
         return "in the selected window"
-    if low.startswith(("last ", "past ", "previous ", "selected ")) and low.split(" (")[0] not in _BARE_PERIODS:
+    if (low.startswith(("last ", "past ", "previous ", "same ", "selected "))
+            and low.split(" (")[0] not in _BARE_PERIODS):
         return f"in the {text}"
     if low.startswith("all time"):
         return f"over {text}"
@@ -6688,7 +6690,12 @@ def _final_cost(view: PromptView, ask: Ask) -> Final | None:
         body.insert(1, buckets)
     comp = _comparison_of(cost.obs)
     if comp:
-        body[1:1] = ["Compared with the previous period:", *_say_comparison(comp, limit=4, bullets=True)]
+        # The opening sentence named the window with its dates ("AI spend in the last
+        # 90 days (since 15 Jul 2026)"): the rows name it plainly, and only the previous
+        # period keeps its dates, on its first mention.
+        stated = (comp.get("subject"),) if _window(cost.obs, "") else ()
+        body[1:1] = ["Compared with the previous period:",
+                     *_say_comparison(comp, limit=4, bullets=True, stated=stated)]
     skip = {"cost_compare"} if comp else set()
     if cost.input.get("bucket") == "month":
         skip.add("cost_month")
@@ -8028,11 +8035,78 @@ def _the(period: str) -> str:
     return f"the {period}" if period.lower().startswith(("previous ", "same ")) else period
 
 
+def _period_plain(label: str, other: str) -> str:
+    """A compared period's plain name once its dates have been stated: "last 90 days"
+    for "last 90 days (since 15 Jul 2026)", "previous 90 days" for "previous 90 days (16
+    Apr to 14 Jul 2026)". A name without dates in brackets stays whole, and so does one
+    whose plain name is the other period's too (two "last 90 days" never read alike)."""
+    short = _DATED_TAIL_RE.sub("", label).rstrip()
+    if not short or short == label or short == _DATED_TAIL_RE.sub("", other).rstrip():
+        return label
+    return short
+
+
+def _lower_head(text: str) -> str:
+    """``text`` with its first letter lower-cased for the middle of a sentence
+    ("True-positive rate" → "true-positive rate"); an acronym ("MTTR") or a value in
+    inline code keeps its case."""
+    if len(text) > 1 and text[0].isupper() and text[1].islower():
+        return text[0].lower() + text[1:]
+    return text
+
+
+def _merged_labels(labels: Sequence[str]) -> str:
+    """Several row names as one subject: "False-positive and true-positive rates" when
+    they share a last word, else "MTTR (median) and false-positive rate"."""
+    words = [label.rsplit(" ", 1) for label in labels]
+    if (len(labels) > 1 and all(len(w) == 2 and w[1].isalpha() for w in words)
+            and len({w[1].lower() for w in words}) == 1):
+        tail = words[0][1]
+        heads = [words[0][0], *(_lower_head(w[0]) for w in words[1:])]
+        return f"{_join(heads)} {tail if tail.endswith('s') else tail + 's'}"
+    return _join([labels[0], *(_lower_head(label) for label in labels[1:])])
+
+
+def _say_unmeasured(rows: Sequence[tuple[str, str]], known: set[str], name: Callable[[str], str],
+                    subject: str, baseline: str) -> str:
+    """The rows a comparison's baseline has no figure for, in ONE sentence
+    (:func:`_say_comparison`): "False-positive rate: **56.6%** in the last 90 days; not
+    measured in the previous 90 days, so there is no change to show." for one row;
+    "False-positive rate **56.6%** and true-positive rate **27.7%** in the last 90 days;
+    neither was measured in the previous 90 days, …" for several; and, when the caller
+    already gave every value (``known``), the names only: "False-positive and
+    true-positive rates were not measured in the previous 90 days, so there is no change
+    to show." ``name`` gives each period its words (dated on first mention)."""
+    labels = [label for label, _value in rows]
+    if all(label.lower() in known for label in labels):
+        verb = "were" if len(rows) > 1 else "was"
+        return f"{_merged_labels(labels)} {verb} not measured {_in(name(baseline))}, so there is no change to show."
+    if len(rows) == 1:
+        label, value = rows[0]
+        return (f"{label}: **{value}** {_in(name(subject))}; not measured {_in(name(baseline))}, "
+                "so there is no change to show.")
+    figures = _join([f"{rows[0][0]} **{rows[0][1]}**", *(f"{_lower_head(label)} **{value}**"
+                                                       for label, value in rows[1:])])
+    nothing = "neither" if len(rows) == 2 else "none"
+    return (f"{figures} {_in(name(subject))}; {nothing} was measured {_in(name(baseline))}, "
+            "so there is no change to show.")
+
+
 def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bool = True,
-                    skip: Iterable[str] = (), with_note: bool = True, bullets: bool = False) -> list[str]:
+                    skip: Iterable[str] = (), with_note: bool = True, bullets: bool = False,
+                    stated: Iterable[str] = (), known: Iterable[str] = ()) -> list[str]:
     """``Cases: **47** in Oct 2026 to date vs 30 in Sep 2026 to date (+17, +56.7%).``
     per row (the subject against its baseline; a list item with ``bullets``), then the
-    in-progress note as its own paragraph."""
+    in-progress note as its own paragraph.
+
+    Each period is named with its dates once, on its first mention (or never, when the
+    caller already ``stated`` that name in full), and plainly after: "Cases: **83** in
+    the last 90 days (since 15 Jul 2026) vs 0 in the previous 90 days (16 Apr to 14 Jul
+    2026; new)." then "MTTR median: **20 min** in the last 90 days vs 30 min in the
+    previous 90 days (−10 min)." The rows the baseline has no figure for are said in
+    one sentence, not one each; when the caller already gave their values (``known``:
+    the row labels, any case), it names them only ("False-positive and true-positive
+    rates were not measured in the previous 90 days, so there is no change to show")."""
     periods = [display_text(p, _PERIOD_CHARS) for p in comp.get("periods") or [] if isinstance(p, str)]
     subject = display_text(comp.get("subject"), _PERIOD_CHARS) or (periods[-1] if periods else "this period")
     baseline = (display_text(comp.get("baseline"), _PERIOD_CHARS)
@@ -8041,10 +8115,23 @@ def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bo
         cur_at, base_at = periods.index(subject), periods.index(baseline)
     except ValueError:
         cur_at, base_at = -1, -2
-    out: list[str] = []
+    said = {display_text(s, _PERIOD_CHARS) for s in stated if isinstance(s, str)}
+    plain = {subject: _period_plain(subject, baseline), baseline: _period_plain(baseline, subject)}
+
+    def name(period: str) -> str:
+        if period in said:
+            return plain.get(period, period)
+        said.add(period)
+        return period
+
     skipped = {s.lower() for s in skip}
     rows = [r for r in comp.get("rows") or [] if isinstance(r, Mapping)
             and display_text(r.get("label"), _NARRATED_CHARS).lower() not in skipped]
+    # Read every row first: the rows the baseline has no figure for are said together,
+    # where the first of them falls.
+    measured: list[tuple[str, str, str, str]] = []           # (label, value, baseline value, change)
+    unmeasured: list[tuple[str, str]] = []                   # (label, value)
+    order: list[int | None] = []                             # index into measured; None = the group
     for row in rows[:limit]:
         values = row.get("values") if isinstance(row.get("values"), list) else []
         if len(values) < 2 or all(_num(v) is None for v in (values[cur_at], values[base_at])):
@@ -8052,12 +8139,23 @@ def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bo
         label = display_text(row.get("label"), _NARRATED_CHARS) if plain_labels else _code(row.get("label"))
         unit = row.get("unit")
         if _num(values[base_at]) is None:
-            out.append(f"{label}: **{_value_text(values[cur_at], unit)}** {_in(subject)}; not measured "
-                       f"{_in(baseline)}, so there is no change to show.")
+            if not unmeasured:
+                order.append(None)
+            unmeasured.append((label, _value_text(values[cur_at], unit)))
             continue
         flags = [_change_text(row)] + (["small sample"] if row.get("small_sample") and unit != "count" else [])
-        out.append(f"{label}: **{_value_text(values[cur_at], unit)}** {_in(subject)} vs "
-                   f"{_value_text(values[base_at], unit)} {_with_change(_in(baseline), '; '.join(flags))}.")
+        order.append(len(measured))
+        measured.append((label, _value_text(values[cur_at], unit), _value_text(values[base_at], unit),
+                         "; ".join(flags)))
+    known_labels = {k.lower() for k in known if isinstance(k, str)}
+    out: list[str] = []
+    for at in order:
+        if at is None:
+            out.append(_say_unmeasured(unmeasured, known_labels, name, subject, baseline))
+            continue
+        label, value, before, change = measured[at]
+        now_words = _in(name(subject))
+        out.append(f"{label}: **{value}** {now_words} vs {before} {_with_change(_in(name(baseline)), change)}.")
     if bullets:
         out = [f"- {line}" for line in out]
     note = comp.get("note")
@@ -8867,9 +8965,12 @@ _DIRECTION_MEASURES = (
 _BETTER_WORSE_RE = re.compile(r"\b(better|worse|improv\w*|getting|declin\w*|regress\w*|chang\w*)\b")
 
 
-def _direction_answer(ask: Ask, comps: Sequence[Mapping[str, Any] | None]) -> str:
+def _direction_answer(ask: Ask, comps: Sequence[Mapping[str, Any] | None], *, named: Iterable[str] = ()) -> str:
     """"**Worse**: the false-positive rate went from 40% to 75.6% (+35.6 points)." when
-    the question asks whether a named measure got better or worse; "" otherwise."""
+    the question asks whether a named measure got better or worse; "" otherwise. A
+    period in ``named`` (the headline that follows states it with its dates) is named
+    plainly: "the false-positive rate was not measured in the previous 90 days"."""
+    said = {display_text(n, _PERIOD_CHARS) for n in named if isinstance(n, str)}
     if not _BETTER_WORSE_RE.search(ask.lowered):
         return ""
     for pattern, labels, better in _DIRECTION_MEASURES:
@@ -8884,8 +8985,11 @@ def _direction_answer(ask: Ask, comps: Sequence[Mapping[str, Any] | None]) -> st
                 name = name if name.isupper() else name[:1].lower() + name[1:]
                 change = _num(row.get("change"))
                 if len(values) < 2 or change is None or _num(values[-2]) is None:
-                    return (f"There is no direction to report: the {name} was not measured in "
-                            f"{display_text(comp.get('baseline'), 40) or 'the earlier period'}.")  # type: ignore[union-attr]
+                    baseline = display_text(comp.get("baseline"), _PERIOD_CHARS)  # type: ignore[union-attr]
+                    if baseline in said:
+                        baseline = _period_plain(baseline, display_text(comp.get("subject"), _PERIOD_CHARS))  # type: ignore[union-attr]
+                    return (f"There is no direction to report: the {name} was not measured "
+                            f"{_in(_the(baseline or 'the earlier period'))}.")
                 unit = row.get("unit")
                 if change == 0:
                     verdict = "No change"
@@ -8926,9 +9030,11 @@ def _final_compare(view: PromptView, ask: Ask) -> Final | None:
     stats_obs = (head or mix).obs if (head or mix) is not None else {}  # type: ignore[union-attr]
     filters = stats_obs.get("filters") if isinstance(stats_obs.get("filters"), Mapping) else {}
     filters = {k: v for k, v in filters.items() if v not in (None, "", [])}
+    named: tuple[str, ...] = ()  # the periods the headline names with their dates
     if comp:
         subject = display_text(comp.get("subject"), _PERIOD_CHARS)
         baseline = display_text(comp.get("baseline"), _PERIOD_CHARS)
+        named = (subject, baseline)
         if filters:
             # Every filter is named, in the headline and on the count row, so a filtered
             # count never reads as the case volume (SPEC: name every filter).
@@ -8941,7 +9047,8 @@ def _final_compare(view: PromptView, ask: Ask) -> Final | None:
             # The method is its own sentence: a period name that ends in its dates in
             # brackets is never followed by a second bracket.
             body.append(f"**{headline[:1].upper()}{headline[1:]}**. Changes are computed exactly over every case:")
-        body.extend(f"- {line}" for line in _say_comparison(comp, limit=6, with_note=False))
+        # The headline named both periods with their dates: the rows name them plainly.
+        body.extend(f"- {line}" for line in _say_comparison(comp, limit=6, with_note=False, stated=named))
         note = comp.get("note")
         if isinstance(note, str) and note.strip():
             body.append(_note_text(note))
@@ -8955,16 +9062,19 @@ def _final_compare(view: PromptView, ask: Ask) -> Final | None:
             body.append(f"Automation rate: {_change_text(auto)} "
                         f"({_value_text((auto.get('values') or [None])[-1], 'percent')} {_subject_when(post_comp)}).")
     if mix is not None and _comparison_of(mix.obs):
-        lines = _say_comparison(_comparison_of(mix.obs), limit=4, with_note=False)  # type: ignore[arg-type]
+        lines = _say_comparison(_comparison_of(mix.obs), limit=4, with_note=False,  # type: ignore[arg-type]
+                                stated=named)
         if lines:
             body.append(f"By {display_text((mix.obs.get('group_by') or ['severity'])[0], 30).replace('_', ' ')}:")
             body.extend(f"- {line}" for line in lines)
     if timing is not None and _comparison_of(timing.obs):
         said = [str(r.get("label")) for r in (comp or {}).get("rows") or [] if isinstance(r, Mapping)]
-        lines = _say_comparison(_comparison_of(timing.obs), limit=3, skip=said, with_note=False)  # type: ignore[arg-type]
+        lines = _say_comparison(_comparison_of(timing.obs), limit=3, skip=said,  # type: ignore[arg-type]
+                                with_note=False, stated=named)
         if lines:
             body.append("Response times: " + " ".join(lines))
-    direction = _direction_answer(ask, [measured, post_comp, _comparison_of(timing.obs) if timing else None])
+    direction = _direction_answer(ask, [measured, post_comp, _comparison_of(timing.obs) if timing else None],
+                                  named=named)
     if direction:
         body.insert(0, direction)
     split = display_text((mix.obs.get("group_by") or ["severity"])[0], 30).replace("_", " ") if mix else "severity"
@@ -9061,8 +9171,16 @@ def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
     span = (f" ({short}, {detail})" if all_time and detail else f" ({detail})" if detail else "")
     lead = f"**{title}**{span}: {_join(facts)}."
     summary_bits = [f"{_plural(cases, 'case')} {_in(label) if label else ''}".strip()]
+    # The comparison rows whose figure the opening sentence states (from the same
+    # lookup): a row the earlier period has no figure for is then named, not restated.
+    known = {"cases"} if vol else set()
     if _num(fp) is not None:
         summary_bits.append(f"false-positive rate {_pct(fp)}")
+        known |= {"false-positive rate"} if vol else set()
+    tp = totals.get("tp_rate") if vol else None
+    if _num(tp) is not None:
+        summary_bits.append(f"true-positive rate {_pct(tp)}")
+        known.add("true-positive rate")
     if _num(automation) is not None:
         summary_bits.append(f"automation rate {_pct(automation, ratio=True)}")
     if _num(mttr) is not None:
@@ -9074,9 +9192,11 @@ def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
     if _num(overall) is not None:
         summary_bits.append(f"{_pct(overall)} noise reduction from {_count(stages.get('ingested'))} alerts")
     comp = _comparison_of(vol.obs) if vol else None
-    # Three rows, then the comparison's own note: a latest period still in progress
-    # against the complete periods before it says the change compares a partial period.
-    change_lines = _say_comparison(comp, limit=3, with_note=False) if comp else []
+    # Three rows, then the comparison's own note (a window materially shorter than the
+    # period before it says the change compares a partial period). The opening sentence
+    # already named the window with its dates, so the rows name it plainly.
+    change_lines = _say_comparison(comp, limit=3, with_note=False, known=known,
+                                   stated=(comp.get("subject"),) if label else ()) if comp else []
     note = comp.get("note") if comp else None
     if change_lines and isinstance(note, str) and note.strip():
         change_lines.append(_note_text(note))
@@ -9124,7 +9244,9 @@ def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
     body = [lead]
     if comp and re.search(r"\bcompar\w*|\bvs\.?\b|\bversus\b|\bprevious\b", ask.lowered):
         # "Compare this report with the previous 30 days": the change leads the answer.
-        lines = _say_comparison(comp, limit=3, bullets=True)
+        # The lead named the window with its dates, so the rows name it plainly (the
+        # previous period keeps its dates, on its first mention), as the Summary does.
+        lines = _say_comparison(comp, limit=3, bullets=True, stated=(comp.get("subject"),) if label else ())
         if lines:
             body.append("Compared with the previous period:")
             body.extend(lines)

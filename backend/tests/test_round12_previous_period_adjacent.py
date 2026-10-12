@@ -81,8 +81,9 @@ def test_the_90_day_comparison_of_the_tour_is_adjacent_and_reads_naturally() -> 
     assert not CLOCK.search(before.label)                            # no time of day on one side only
     assert comparison_caption(periods) == (
         "last 90 days (since 15 Jul 2026) vs previous 90 days (16 Apr to 14 Jul 2026)")
-    # The latest period's last day is not over: the change is said to be partial.
-    assert "partial period" in comparison_observation(periods, [])["note"]
+    # A rolling window that ends now is not a period in progress: 13 hours short of 90
+    # whole days compares like for like, with no note (polish round 3, tour 3 shot 09).
+    assert "note" not in comparison_observation(periods, [])
 
 
 def test_the_kpi_change_names_the_same_previous_period() -> None:
@@ -99,13 +100,13 @@ def test_the_narration_reads_the_previous_period_in_words() -> None:
             comparison_row("fp", "False-positive rate", [None, 56.6], unit="percent"),
             comparison_row("mttr", "MTTR median", [30, 20], unit="minutes", samples=[25, 25])]
     lines = demo_chat._say_comparison(comparison_observation(periods, rows), with_note=False)
+    # Each period is named with its dates once, on its first mention, and plainly after.
     assert lines == [
         "Cases: **83** in the last 90 days (since 15 Jul 2026) vs 0 in the previous 90 days "
         "(16 Apr to 14 Jul 2026; new).",
-        "False-positive rate: **56.6%** in the last 90 days (since 15 Jul 2026); not measured in the "
-        "previous 90 days (16 Apr to 14 Jul 2026), so there is no change to show.",
-        "MTTR median: **20 min** in the last 90 days (since 15 Jul 2026) vs 30 min in the previous 90 days "
-        "(16 Apr to 14 Jul 2026; −10 min).",
+        "False-positive rate: **56.6%** in the last 90 days; not measured in the previous 90 days, so there is "
+        "no change to show.",
+        "MTTR median: **20 min** in the last 90 days vs 30 min in the previous 90 days (−10 min).",
     ]
     # A calendar baseline keeps its change in its own brackets.
     month = [comparison_row("cases", "Cases", [30, 47])]
@@ -241,12 +242,12 @@ LIKE = "like for like"
 PARTIAL = "partial period"
 
 
-def _note(spec: str, compare: object, now: datetime, tz: str = "UTC") -> tuple[list, str]:
+def _note(spec: str, compare: object, now: datetime, tz: str = "UTC") -> tuple[list, str | None]:
     ctx = _ctx(tz)
     window = whole_periods(resolve_window(ctx, window=spec, now=now))
     periods = resolve_periods(ctx, window, compare, now=now)
     assert isinstance(periods, list) and len(periods) == 2, periods
-    return periods, comparison_observation(periods, [])["note"]
+    return periods, comparison_observation(periods, []).get("note")
 
 
 @pytest.mark.parametrize(("spec", "compare", "now", "labels"), [
@@ -272,7 +273,12 @@ def test_the_same_elapsed_time_is_like_for_like_across_a_leap_day(
     if labels is not None:
         assert [p.label for p in periods] == labels
     assert periods[0].basis == "elapsed"
-    assert LIKE in note and PARTIAL not in note
+    if spec.startswith("now-"):
+        # A rolling window a year earlier is like for like and needs no note: it is not a
+        # period in progress, so nothing says "still in progress" (polish round 3).
+        assert note is None
+    else:
+        assert note is not None and LIKE in note and PARTIAL not in note
 
 
 def test_today_on_a_clock_change_day_is_like_for_like() -> None:
@@ -283,10 +289,43 @@ def test_today_on_a_clock_change_day_is_like_for_like() -> None:
     assert LIKE in note
 
 
-def test_whole_periods_before_a_window_in_progress_are_a_partial_comparison() -> None:
-    for spec in ("now-90d", "now-7d", "now-3M"):
-        periods, note = _note(spec, "previous_period", TOUR)
-        assert periods[0].basis == "whole" and PARTIAL in note, spec
+@pytest.mark.parametrize(("spec", "now", "partial"), [
+    # The tour: 13 h 26 min short of 90 whole days, like for like (tour 3 shot 09).
+    ("now-90d", TOUR, False),
+    # Just after midnight a 90-day window is 23 h 30 min short: still under a day.
+    ("now-90d", datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc), False),
+    # Twelve months (Nov 2025 to now) on 30 Oct at noon are a day and a half short of
+    # the twelve whole months before them: more than a day, under one per cent.
+    ("now-12M", datetime(2026, 10, 30, 12, 0, tzinfo=timezone.utc), False),
+    # A week counts the day in progress for at most a tenth of a week (16 h 48 min):
+    # 13 h 26 min short is like for like, 22 h short is partial.
+    ("now-7d", TOUR, False),
+    ("now-7d", datetime(2026, 10, 12, 2, 0, tzinfo=timezone.utc), True),
+    # Two days half an hour after midnight: one day against two.
+    ("now-2d", datetime(2026, 10, 12, 0, 30, tzinfo=timezone.utc), True),
+    # Whole months: the month in progress leaves the window weeks short.
+    ("now-3M", TOUR, True),
+    ("now-6M", TOUR, True),
+    # On the last evening of October, May to October is longer than November to April.
+    ("now-6M", datetime(2026, 10, 31, 20, 0, tzinfo=timezone.utc), False),
+])
+def test_a_rolling_window_is_partial_only_when_materially_shorter(spec: str, now: datetime, partial: bool) -> None:
+    periods, note = _note(spec, "previous_period", now)
+    assert periods[0].basis == "whole" and periods[-1].in_progress
+    if partial:
+        assert note is not None and PARTIAL in note, (spec, now)
+    else:
+        assert note is None, (spec, now, note)
+
+
+def test_a_calendar_period_in_progress_against_a_complete_one_is_partial_by_length() -> None:
+    # "Today" so far against the whole of yesterday is 13 hours short: a calendar
+    # period genuinely in progress, so even less than a day short reads as partial.
+    ctx = _ctx()
+    today = resolve_window(ctx, window="today", now=TOUR)
+    periods = resolve_periods(ctx, today, ["yesterday"], now=TOUR)
+    assert isinstance(periods, list) and periods[-1].in_progress and periods[0].basis is None
+    assert PARTIAL in comparison_observation(periods, [])["note"]
 
 
 def test_an_explicit_window_is_still_judged_by_length() -> None:
@@ -391,19 +430,234 @@ def test_the_compare_headline_never_follows_dates_with_a_second_bracket() -> Non
     assert ")** (" not in body
 
 
-def test_a_performance_report_says_its_latest_period_is_partial() -> None:
+def _report_obs(spec: str, window: str, comp: dict, total: int, totals: dict) -> object:
+    """Synthetic lookups for a performance report: the bucketed ``case_stats`` reads
+    ``window`` with ``total``/``totals`` and carries ``comp``."""
+    from tests.test_demo_chat_round12 import _generic_obs
+
+    def obs(tool: str, inp: dict) -> dict:
+        out = _generic_obs(tool, inp)
+        if tool == "case_stats" and inp.get("window") == spec and "window" in out:
+            out["window"] = window
+            if inp.get("bucket"):
+                out.update(total=total, totals=totals)
+            if inp.get("compare") and not inp.get("group_by"):
+                out["comparison"] = comp
+        return out
+    return obs
+
+
+def _summary(question: str, obs: object) -> str:
     from tests.test_demo_chat_round12 import drive
 
-    _window, periods = _periods("now-7d", TOUR)
-    rows = [comparison_row("cases", "Cases", [22, 60]), comparison_row("fp", "False-positive rate", [40.0, 45.0],
-                                                                       unit="percent", samples=[22, 60])]
+    _rounds, header, _body = drive(question, obs)
+    (envelope,) = header["blocks"]
+    assert envelope["sections"][0]["heading"] == "Summary"
+    return envelope["sections"][0]["items"][0]["text"]
+
+
+def test_the_90_day_report_summary_states_each_window_once() -> None:
+    # Screenshot tour 3 shot 09: the window was stated four times, "not measured in the
+    # previous 90 days (16 Apr to 14 Jul 2026), so there is no change to show" once per
+    # rate, and two 90-day windows were said to compare a partial period.
+    _window, periods = _periods("now-90d", TOUR)
+    rows = [comparison_row("cases", "Cases", [0, 83]),
+            comparison_row("fp", "False-positive rate", [None, 56.6], unit="percent", samples=[0, 83]),
+            comparison_row("tp", "True-positive rate", [None, 27.7], unit="percent", samples=[0, 83])]
+    comp = comparison_observation(periods, rows)
+    assert "note" not in comp                                     # like for like: nothing to add
+    summary = _summary("Last 90 days or whatever reports you can", _report_obs(
+        "now-90d", "last 90 days (since 15 Jul 2026)", comp, 83,
+        {"count": 83, "fp_rate": 56.6, "tp_rate": 27.7, "mttr_p50": 0}))
+    assert summary.startswith("83 cases in the last 90 days (since 15 Jul 2026), false-positive rate 56.6%, "
+                              "true-positive rate 27.7%, "), summary
+    assert "Cases: 83 in the last 90 days vs 0 in the previous 90 days (16 Apr to 14 Jul 2026; new)." in summary
+    assert summary.endswith("False-positive and true-positive rates were not measured in the previous 90 days, "
+                            "so there is no change to show."), summary
+    # Each window with its dates once; the "not measured" sentence once; no partial note.
+    assert summary.count("(since 15 Jul 2026)") == 1 and summary.count("16 Apr to 14 Jul 2026") == 1
+    assert summary.count("no change to show") == 1
+    assert "partial" not in summary and "in progress" not in summary
+
+
+def test_a_report_over_a_materially_shorter_window_says_it_is_partial() -> None:
+    # "Last 6 months (since May 2026)" in mid October is half a month short of the six
+    # whole months before it: the summary says so, once, after the rows.
+    _window, periods = _periods("now-6M", TOUR)
+    rows = [comparison_row("cases", "Cases", [22, 60]),
+            comparison_row("fp", "False-positive rate", [40.0, 45.0], unit="percent", samples=[22, 60])]
     comp = comparison_observation(periods, rows)
     assert PARTIAL in comp["note"]
-    _rounds, header, _body = drive("SOC performance report for the last 7 days",
-                                   _with_comparison("now-7d", "last 7 days (since 6 Oct 2026)", comp))
-    (envelope,) = header["blocks"]
-    summary = envelope["sections"][0]["items"][0]["text"]
-    assert "Cases: 60 in the last 7 days (since 6 Oct 2026) vs 22 in the previous 7 days (29 Sep to 5 Oct 2026; " \
-           "+38, +172.7%)." in summary
+    summary = _summary("SOC performance report for the last 6 months", _report_obs(
+        "now-6M", "last 6 months (since May 2026)", comp, 60, {"count": 60, "fp_rate": 45.0}))
+    assert summary.startswith("60 cases in the last 6 months (since May 2026), false-positive rate 45%"), summary
+    assert ("Cases: 60 in the last 6 months vs 22 in the previous 6 months (Nov 2025 to Apr 2026; +38, +172.7%). "
+            "False-positive rate: 45% in the last 6 months vs 40% in the previous 6 months (+5 points).") in summary
     assert summary.endswith("The latest period is still in progress and shorter than the one it is compared "
                             "with, so the change compares a partial period."), summary
+    assert summary.count("(since May 2026)") == 1 and summary.count("Nov 2025 to Apr 2026") == 1
+
+
+# --------------------------------------------------------------------------- #
+# Polish round 3 (tour 3 shot 09): each period is named with its dates once, and the
+# rows the earlier period has no figure for are said in one sentence.
+# --------------------------------------------------------------------------- #
+def test_rows_without_a_baseline_figure_are_said_once_with_their_values() -> None:
+    _window, periods = _periods("now-90d", TOUR)
+    rows = [comparison_row("fp", "False-positive rate", [None, 56.6], unit="percent"),
+            comparison_row("tp", "True-positive rate", [None, 27.7], unit="percent"),
+            comparison_row("cases", "Cases", [70, 83])]
+    lines = demo_chat._say_comparison(comparison_observation(periods, rows))
+    assert lines == [
+        "False-positive rate **56.6%** and true-positive rate **27.7%** in the last 90 days (since 15 Jul 2026); "
+        "neither was measured in the previous 90 days (16 Apr to 14 Jul 2026), so there is no change to show.",
+        "Cases: **83** in the last 90 days vs 70 in the previous 90 days (+13, +18.6%).",
+    ]
+    # Their values already given elsewhere: the names only, one sentence.
+    known = demo_chat._say_comparison(comparison_observation(periods, rows[:2]),
+                                      known=("false-positive rate", "True-positive rate"))
+    assert known == ["False-positive and true-positive rates were not measured in the previous 90 days (16 Apr to "
+                     "14 Jul 2026), so there is no change to show."]
+    three = demo_chat._say_comparison(comparison_observation(periods, [
+        *rows[:2], comparison_row("mttr", "MTTR (median)", [None, 20], unit="minutes")]))
+    assert three[0].endswith("none was measured in the previous 90 days (16 Apr to 14 Jul 2026), so there is no "
+                             "change to show.") and "and MTTR (median) **20 min**" in three[0]
+
+
+def test_merged_row_names_read_as_one_subject() -> None:
+    assert demo_chat._merged_labels(["False-positive rate", "True-positive rate"]) == (
+        "False-positive and true-positive rates")
+    assert demo_chat._merged_labels(["MTTR (median)", "MTTA (median)"]) == "MTTR (median) and MTTA (median)"
+    assert demo_chat._merged_labels(["Cases", "False-positive rate", "MTTR (median)"]) == (
+        "Cases, false-positive rate and MTTR (median)")
+
+
+def test_a_stated_period_is_named_plainly_from_the_first_row() -> None:
+    _window, periods = _periods("now-90d", TOUR)
+    comp = comparison_observation(periods, [comparison_row("cases", "Cases", [70, 83])])
+    assert demo_chat._say_comparison(comp, stated=("last 90 days (since 15 Jul 2026)",)) == [
+        "Cases: **83** in the last 90 days vs 70 in the previous 90 days (16 Apr to 14 Jul 2026; +13, +18.6%)."]
+    # Two periods with the same plain name keep their dates on every mention.
+    same = {"periods": ["last 90 days (since 16 Apr 2026)", "last 90 days (since 15 Jul 2026)"],
+            "subject": "last 90 days (since 15 Jul 2026)", "baseline": "last 90 days (since 16 Apr 2026)",
+            "rows": [{"label": "Cases", "unit": "count", "values": [70, 83], "change": 13, "change_pct": 18.6},
+                     {"label": "Closed", "unit": "count", "values": [60, 80], "change": 20, "change_pct": 33.3}]}
+    lines = demo_chat._say_comparison(same)
+    assert len(lines) == 2
+    assert all("(since 15 Jul 2026)" in line and "since 16 Apr 2026" in line for line in lines), lines
+
+
+def test_the_compare_answer_names_the_periods_with_dates_in_its_headline_only() -> None:
+    from tests.test_demo_chat_round12 import drive
+
+    _window, periods = _periods("now-90d", TOUR)
+    comp = comparison_observation(periods, [comparison_row("cases", "Cases", [70, 83]),
+                                            comparison_row("mttr", "MTTR median", [30, 20], unit="minutes",
+                                                           samples=[25, 25])])
+    by_severity = comparison_observation(periods, [comparison_row("critical", "Critical", [0, 18]),
+                                                   comparison_row("high", "High", [2, 18])])
+    plain = _with_comparison("now-90d", "last 90 days (since 15 Jul 2026)", comp)
+
+    def obs(tool: str, inp: dict) -> dict:
+        out = plain(tool, inp)
+        if tool == "case_stats" and inp.get("compare") and inp.get("group_by"):
+            out.update(window="last 90 days (since 15 Jul 2026)", comparison=by_severity)
+        return out
+
+    _rounds, _header, body = drive("Compare cases in the last 90 days with the previous period", obs)
+    # The headline names both periods with their dates; every row after it, the
+    # severity rows too, names them plainly.
+    assert body.count("(since 15 Jul 2026)") == 1 and body.count("16 Apr to 14 Jul 2026") == 1, body
+    assert "- Critical: **18** in the last 90 days vs 0 in the previous 90 days (new)." in body, body
+    assert "- Cases: **83** in the last 90 days vs 70 in the previous 90 days (+13, +18.6%)." in body
+    assert "- MTTR median: **20 min** in the last 90 days vs 30 min in the previous 90 days (−10 min)." in body
+
+
+# --------------------------------------------------------------------------- #
+# Polish round 3, final pass: every comparison answer whose opening sentence names
+# the window with its dates names it plainly in the rows that follow, and a compared
+# period always reads with its article.
+# --------------------------------------------------------------------------- #
+def test_the_report_answer_compared_with_the_previous_period_states_its_window_once() -> None:
+    from tests.test_demo_chat_round12 import drive
+
+    _window, periods = _periods("now-90d", TOUR)
+    rows = [comparison_row("cases", "Cases", [0, 83]),
+            comparison_row("fp", "False-positive rate", [None, 56.6], unit="percent", samples=[0, 83])]
+    comp = comparison_observation(periods, rows)
+    _rounds, _header, body = drive(
+        "Create a report for the last 90 days compared with the previous period",
+        _report_obs("now-90d", "last 90 days (since 15 Jul 2026)", comp, 83, {"count": 83, "fp_rate": 56.6}))
+    assert body.startswith("**SOC performance report, last 90 days** (since 15 Jul 2026): **83 cases**"), body[:200]
+    assert "Compared with the previous period:" in body, body
+    # The lead dated the window; the rows name it plainly and date the previous period once.
+    assert "- Cases: **83** in the last 90 days vs 0 in the previous 90 days (16 Apr to 14 Jul 2026; new)." in body
+    assert body.count("(since 15 Jul 2026)") == 1, body
+    assert body.count("16 Apr to 14 Jul 2026") == 1, body
+
+
+def test_the_cost_answer_compared_with_the_previous_period_states_its_window_once() -> None:
+    from tests.test_demo_chat_round12 import _generic_obs, drive
+
+    _window, periods = _periods("now-90d", TOUR)
+    comp = comparison_observation(periods, [
+        comparison_row("cost", "AI spend", [0, 0.0867], unit="usd"),
+        comparison_row("calls", "Model calls", [0, 40])])
+
+    def obs(tool: str, inp: dict) -> dict:
+        out = _generic_obs(tool, inp)
+        if tool == "cost_usage":
+            out.update(window="last 90 days (since 15 Jul 2026)", comparison=comp)
+        return out
+
+    _rounds, _header, body = drive("AI spend in the last 90 days compared with the previous period", obs)
+    assert body.startswith("**AI spend in the last 90 days (since 15 Jul 2026): "), body[:200]
+    assert ("- AI spend: **$0.0867** in the last 90 days vs $0.00 in the previous 90 days (16 Apr to 14 Jul "
+            "2026; new).") in body, body
+    assert "- Model calls: **40** in the last 90 days vs 0 in the previous 90 days (new)." in body, body
+    assert body.count("(since 15 Jul 2026)") == 1, body
+    assert body.count("16 Apr to 14 Jul 2026") == 1, body
+
+
+def test_the_direction_answer_names_the_previous_period_with_its_article_and_no_dates() -> None:
+    from tests.test_demo_chat_round12 import drive
+
+    _window, periods = _periods("now-90d", TOUR)
+    comp = comparison_observation(periods, [
+        comparison_row("cases", "Cases", [0, 83]),
+        comparison_row("fp", "False-positive rate", [None, 56.6], unit="percent", samples=[0, 83])])
+    _rounds, _header, body = drive("Is our false-positive rate better or worse than the previous 90 days?",
+                                   _with_comparison("now-90d", "last 90 days (since 15 Jul 2026)", comp))
+    # The headline that follows states both periods with their dates.
+    assert body.startswith("There is no direction to report: the false-positive rate was not measured in the "
+                           "previous 90 days.\n\n**Last 90 days (since 15 Jul 2026) compared with the previous 90 "
+                           "days (16 Apr to 14 Jul 2026)**."), body[:300]
+    assert body.count("16 Apr to 14 Jul 2026") == 1, body
+
+
+def test_the_direction_answer_dates_a_period_no_headline_states() -> None:
+    from types import SimpleNamespace
+
+    comp = {"periods": ["previous 90 days (16 Apr to 14 Jul 2026)", "last 90 days (since 15 Jul 2026)"],
+            "subject": "last 90 days (since 15 Jul 2026)", "baseline": "previous 90 days (16 Apr to 14 Jul 2026)",
+            "rows": [{"label": "False-positive rate", "unit": "percent", "values": [None, 56.6], "change": None}]}
+    ask = SimpleNamespace(lowered="is our fp rate better or worse than the previous 90 days?")
+    assert demo_chat._direction_answer(ask, [comp]) == (  # type: ignore[arg-type]
+        "There is no direction to report: the false-positive rate was not measured in the previous 90 days "
+        "(16 Apr to 14 Jul 2026).")
+    no_baseline = {**comp, "baseline": None}
+    assert demo_chat._direction_answer(ask, [no_baseline]).endswith(  # type: ignore[arg-type]
+        "was not measured in the earlier period.")
+
+
+def test_the_same_period_a_year_earlier_reads_with_its_article() -> None:
+    assert demo_chat._in("same 24 hours a year earlier") == "in the same 24 hours a year earlier"
+    assert demo_chat._in("previous 90 days (16 Apr to 14 Jul 2026)") == "in the previous 90 days (16 Apr to 14 Jul 2026)"
+    comp = {"periods": ["same 24 hours a year earlier", "last 24 hours"], "subject": "last 24 hours",
+            "baseline": "same 24 hours a year earlier",
+            "rows": [{"label": "Cases", "unit": "count", "values": [0, 41], "change": 41, "new": True},
+                     {"label": "False-positive rate", "unit": "percent", "values": [None, 80.5]}]}
+    assert demo_chat._say_comparison(comp) == [
+        "Cases: **41** in the last 24 hours vs 0 in the same 24 hours a year earlier (new).",
+        "False-positive rate: **80.5%** in the last 24 hours; not measured in the same 24 hours a year earlier, "
+        "so there is no change to show."]

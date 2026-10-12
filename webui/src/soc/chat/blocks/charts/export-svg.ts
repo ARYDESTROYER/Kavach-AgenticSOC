@@ -42,6 +42,7 @@ import type { ChartZoomView } from './export-context';
 import {
   BAR_MAX,
   areaPath,
+  barPlotFrame,
   barWidth,
   donutArcs,
   extent,
@@ -256,8 +257,15 @@ function cartesian(block: ChartBlock, ctx: Ctx, styles: SeriesStyle[]): { svg: s
   const xAxisH = block.last_in_progress ? 38 : 24;
   const top = 8;
   const baseline = top + plotH - xAxisH;
-  const x0 = PAD + Math.ceil(Math.max(...ticks.map((t) => t.length)) * CHAR12) + 8;
-  const plotW = Math.max(1, ctx.W - PAD - x0);
+  const axisX0 = PAD + Math.ceil(Math.max(...ticks.map((t) => t.length)) * CHAR12) + 8;
+  const availW = Math.max(1, ctx.W - PAD - axisX0);
+  // The live chart's frame (`barPlotFrame`): a few buckets draw a narrower, centred plot
+  // instead of hairline bars far apart. Sized by every series, like the live chart.
+  const seriesCount = Math.max(1, block.series.length);
+  const frameGroupW = stacked || seriesCount === 1 ? BAR_MAX + 10 : seriesCount * (BAR_MAX + 10) + (seriesCount - 1) * 2;
+  const frame = isLine ? { x0: axisX0, plotW: availW } : barPlotFrame(axisX0, availW, n, frameGroupW);
+  const x0 = frame.x0;
+  const plotW = frame.plotW;
   const slot = plotW / Math.max(1, n);
   const yOf = (v: number) => baseline - ((v - scale.min) / (scale.max - scale.min)) * (baseline - top);
   const xOf = (i: number) => x0 + (i + 0.5) * slot;

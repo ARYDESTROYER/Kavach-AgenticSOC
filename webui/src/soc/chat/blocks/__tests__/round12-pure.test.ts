@@ -428,6 +428,28 @@ describe('export SVG', () => {
     expect(svg).toContain('Agentic SOC, computed from your data · 2026-10-10 12:00 UTC');
   });
 
+  it('draws a few buckets as a narrower, centred plot, like the live chart', () => {
+    // Tour 3: two months in a 960 px image left two 32 px bars ~450 px apart.
+    const months = rawChart({
+      x: { kind: 'category', values: ['Sep 2026', 'Oct 2026'] },
+      series: [{ key: 's', label: 'Cases', values: [2, 18] }],
+    });
+    const { svg, width } = chartSvg(months, { title: 'Cases by month', paint: paintFrom(LIGHT), generatedAt: NOW });
+    // The baseline hairline spans the plot: two slots of six bar widths (32 px) each.
+    const baseline = /<rect x="([\d.]+)" y="[\d.]+" width="384" height="1" fill="#[0-9a-f]{6}" fill-opacity="0.6"\/>/.exec(svg);
+    expect(baseline).not.toBeNull();
+    const left = Number(baseline![1]);
+    expect(Math.abs(left + 384 / 2 - width / 2)).toBeLessThan(24);
+    // A full axis keeps the whole width.
+    const hours = Array.from({ length: 24 }, (_, h) => `${h}h`);
+    const full = chartSvg(
+      rawChart({ x: { kind: 'category', values: hours }, series: [{ key: 's', label: 'S', values: hours.map((_, h) => h) }] }),
+      { title: 'Hourly', paint: paintFrom(LIGHT), generatedAt: NOW },
+    ).svg;
+    const fullWidth = Number(/<rect x="[\d.]+" y="[\d.]+" width="([\d.]+)" height="1" fill="#[0-9a-f]{6}" fill-opacity="0.6"\/>/.exec(full)?.[1]);
+    expect(fullWidth).toBeGreaterThan(850);
+  });
+
   it('takes the theme it is given: dark and light images differ only in paint', () => {
     const block = chart('monthly-alerts');
     const light = chartSvg(block, { title: 'Alerts', paint: paintFrom(LIGHT), generatedAt: NOW }).svg;

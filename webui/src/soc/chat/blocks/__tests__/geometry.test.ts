@@ -6,7 +6,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  BAR_MAX,
   areaPath,
+  barPlotFrame,
   barWidth,
   donutArcs,
   endLabelBudget,
@@ -148,6 +150,33 @@ describe('paths', () => {
     expect(barWidth(9)).toBe(6);
     expect(barWidth(300)).toBe(22);
     expect(barWidth(0.2)).toBe(1);
+  });
+});
+
+describe('barPlotFrame (few buckets on a wide card)', () => {
+  it('centres a narrower plot when two buckets would leave hairline bars far apart', () => {
+    // Tour 3: two months across the 1,808 px lane drew two 22 px bars ~850 px apart.
+    const frame = barPlotFrame(30, 1760, 2, BAR_MAX);
+    expect(frame.plotW).toBe(2 * 132);
+    expect(frame.x0).toBe(30 + (1760 - 264) / 2);
+    // The bars still use the house width, now a sixth of their slot or more.
+    expect(barWidth(frame.plotW / 2)).toBe(BAR_MAX);
+    expect(BAR_MAX / (frame.plotW / 2)).toBeGreaterThanOrEqual(1 / 6);
+  });
+
+  it('gives a grouped bucket room for every member', () => {
+    const groupW = 2 * BAR_MAX + 2;
+    const frame = barPlotFrame(30, 1000, 2, groupW);
+    expect(frame.plotW).toBe(2 * Math.ceil(groupW * 6));
+    expect(frame.x0).toBe(Math.round(30 + (1000 - frame.plotW) / 2));
+  });
+
+  it('leaves a chart whose buckets already fill the card exactly as it was', () => {
+    expect(barPlotFrame(30, 1000, 24, BAR_MAX)).toEqual({ x0: 30, plotW: 1000 });
+    expect(barPlotFrame(30, 520, 5, BAR_MAX)).toEqual({ x0: 30, plotW: 520 });
+    // At the cap exactly, nothing moves either.
+    expect(barPlotFrame(30, 264, 2, BAR_MAX)).toEqual({ x0: 30, plotW: 264 });
+    expect(barPlotFrame(30, 400, 0, BAR_MAX).plotW).toBe(132);
   });
 });
 
