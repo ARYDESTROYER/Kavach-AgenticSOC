@@ -253,12 +253,24 @@ async def test_case_stats_partial_result_is_never_a_total(store: CaseStore, monk
 
 
 def _whole_days(days: int) -> tuple[str, str]:
-    """``(label, previous period's first day)`` of "last N days" counted as N whole days,
+    """``(label, previous period's label)`` of "last N days" counted as N whole days,
     today and the N-1 before it (SPEC §7.2 decision 28); its previous period is the N
-    days before, cut at the same time of day ("15 Jun – 13 Aug 2026 08:48")."""
-    first = (NOW - timedelta(days=days - 1)).date()
-    before = first - timedelta(days=days)
-    return f"last {days} days (since {first.day} {first:%b %Y})", f"{before.day} {before:%b}"
+    whole days just before its start, with no gap between them, named at the same
+    granularity ("previous 60 days (15 Jun to 13 Aug 2026)"; "1 to 30 Jan 2028" when the
+    previous days fall in one month).
+
+    Called just after the lookups, so the expected days come from a clock read when they
+    ran: ``NOW`` was read when the module was collected, minutes earlier in a full run,
+    and a run that crossed midnight since then would expect the day before."""
+    now = datetime.now(timezone.utc)
+    first = (now - timedelta(days=days - 1)).date()
+    before, last = first - timedelta(days=days), first - timedelta(days=1)
+    if (before.year, before.month) == (last.year, last.month):
+        head = f"{before.day}"
+    else:
+        head = f"{before.day} {before:%b}" + (f" {before.year}" if before.year != last.year else "")
+    return (f"last {days} days (since {first.day} {first:%b %Y})",
+            f"previous {days} days ({head} to {last.day} {last:%b %Y})")
 
 
 async def test_case_stats_compare_previous_period_measures_each_period_alike(store: CaseStore) -> None:
@@ -266,10 +278,8 @@ async def test_case_stats_compare_previous_period_measures_each_period_alike(sto
     out = await CaseStatsTool().run(ctx, window="now-60d", metrics=["fp_rate"], compare="previous_period")
     assert out.ok
     comparison = out.observation["comparison"]
-    label, before = _whole_days(60)
-    previous = comparison["periods"][0]
+    label, previous = _whole_days(60)
     assert comparison["periods"] == [previous, label]
-    assert previous.startswith(f"{before} ") and " – " in previous, previous
     assert comparison["subject"] == label and comparison["baseline"] == previous
     rows = {r["label"]: r for r in comparison["rows"]}
     assert rows["Cases"]["values"] == [2, 3] and rows["Cases"]["change"] == 1
@@ -294,9 +304,9 @@ async def test_case_stats_grouped_compare_is_grouped_bars(store: CaseStore) -> N
     assert artifact_views(artifact)[:2] == ["grouped_bar", "hbar"]
     chart = _blocks(artifact)[0]
     assert chart["type"] == "chart" and chart["kind"] == "grouped_bar"
-    label, before = _whole_days(60)
+    label, previous = _whole_days(60)
     labels = [s["label"] for s in chart["series"]]
-    assert labels[1] == label and labels[0].startswith(f"{before} ") and len(labels) == 2, labels
+    assert labels == [previous, label], labels
     table = _blocks(artifact, "table")[0]
     assert [c["key"] for c in table["columns"]][:3] == ["label", "p1", "p2"]
     assert artifact_data_from_block(table)["periods"][1]["label"] == label
@@ -437,10 +447,10 @@ async def test_log_stats_compare_returns_computed_changes() -> None:
     ctx = make_ctx(log_source=ElasticConnector(_spread_logs()))
     out = await LogStatsTool().run(ctx, group_by=["ip"], window="now-30d", compare="previous_period")
     # A daily series: "the last 30 days" is 30 whole days (the last in progress),
-    # compared with the 30 days before it cut at the same point.
+    # compared with the 30 whole days just before it.
     assert out.ok and "; compared with " in out.summary
     events = out.observation["comparison"]["events"]
-    assert events["periods"][1].startswith("last 30 days (since ") and "–" in events["periods"][0]
+    assert events["periods"] == list(reversed(_whole_days(30)))
     assert events["rows"][0]["values"] == [5, 5]
     assert events["rows"][0]["change"] == 0 and events["rows"][0]["small_sample"] is True
     total = _artifact(out, "comparison", "Events compared")
@@ -492,9 +502,9 @@ async def test_cost_usage_over_all_time_by_model_and_compare() -> None:
     assert_artifacts_render(out)
     compared = await CostUsageTool().run(ctx, window="now-30d", compare="previous_period")
     # By day (the auto bucket), "the last 30 days" is 30 whole days, the last in progress,
-    # compared with the 30 days before it cut at the same point (a dated range).
+    # compared with the 30 whole days just before it.
     periods = compared.observation["comparison"]["periods"]
-    assert compared.ok and periods[1].startswith("last 30 days (since ") and "–" in periods[0]
+    assert compared.ok and periods == list(reversed(_whole_days(30)))
     spend = next(r for r in compared.observation["comparison"]["rows"] if r["label"] == "AI spend")
     assert spend["values"] == [1.0, 0.75] and spend["change"] == -0.25 and spend["change_pct"] == -25.0
 
@@ -701,14 +711,14 @@ async def test_screenshot_last_90_days_or_whatever_reports_you_can(store: CaseSt
     # Every lookup of "last 90 days", broken down by week or not at all, covers the same
     # 90 whole days and states the same start, and the posture tiles compare with the
     # same previous period as every other comparison (SPEC §7.2 decision 28).
-    label, before = _whole_days(90)
+    label, previous = _whole_days(90)
     for (name, inp), out in zip(calls, outs):
         assert out.ok, (name, out.error)
         assert out.observation["window"] == label, (name, out.observation["window"])
     assert outs[0].observation["total"] == 5                            # the 400-day-old case is outside
     assert outs[1].observation["case_count"] == 5                       # the posture tiles count the same cases
     periods = outs[1].observation["comparison"]["periods"]
-    assert periods[1] == label and periods[0].startswith(f"{before} "), periods
+    assert periods == [previous, label], periods
     report = _report([a for out in outs for a in out.artifacts][:20], "monthly")
     assert sum(len(s["blocks"]) for s in report["sections"]) >= 4
 

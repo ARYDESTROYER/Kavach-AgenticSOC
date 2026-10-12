@@ -18,14 +18,24 @@
  *     "True positive", "Needs human", "Critical", "Escalated", "IP address", "Alert",
  *     never `true_positive`. The projection keeps the stored KEYS of severity, verdict
  *     and status columns (the "Show table" view draws those as badges) and marks the
- *     column `semantic`, so CSV and Copy data write the badge's words. The KPI table's
- *     Unit column stays the unit key: it is the machine-readable partner of the raw
- *     numeric Value. Only JSON keeps every raw value.
+ *     column `semantic`, so CSV and Copy data write the badge's words. A yes/no cell
+ *     reads "Yes" or "No" as the table shows it, in CSV and Copy data too. The KPI
+ *     table's Unit column stays the unit key: it is the machine-readable partner of the
+ *     raw numeric Value. Only JSON keeps every raw value.
  */
 import { csvField, tsvField } from '@/lib/csv';
 import { defang } from '@/lib/defang';
 import { IN_PROGRESS_SUFFIX, formatUtc, formatValue, hasCalendarLabels, xAxisHeader, xPositionLabel } from './format';
-import { CITATION_KIND_LABEL, ENTITY_KIND_LABEL, REPUTATION_LABEL, TIMELINE_KIND_LABEL, semanticColumn, semanticText, type SemanticColumn } from './labels';
+import {
+  CITATION_KIND_LABEL,
+  ENTITY_KIND_LABEL,
+  REPUTATION_LABEL,
+  TIMELINE_KIND_LABEL,
+  booleanText,
+  semanticColumn,
+  semanticText,
+  type SemanticColumn,
+} from './labels';
 import type { AnswerBlock, Cell, ChartBlock, ColumnType, KpiGroupBlock, TableBlock, ValueUnit } from './schema';
 import { leafBlocks } from './schema';
 
@@ -188,8 +198,14 @@ export interface EncodeOptions {
   defang?: boolean;
 }
 
-/** A cell in the words the screen shows: a severity/verdict/status key as its badge's label. */
+/**
+ * A cell in the words the screen shows (`TypedCell`): a severity/verdict/status key as
+ * its badge's label, and a yes/no value as "Yes" or "No" in any column, as Word, Excel,
+ * Markdown and HTML write it. The field encoders stay primitive (`csvField(true)` is
+ * `true`); only JSON keeps the boolean.
+ */
 function displayCell(cell: Cell, col: TabularColumn): Cell {
+  if (typeof cell === 'boolean') return booleanText(cell);
   return col.semantic && typeof cell === 'string' ? semanticText(col.semantic, cell) : cell;
 }
 

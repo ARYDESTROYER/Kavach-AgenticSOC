@@ -27,6 +27,7 @@ import { cn } from '@/lib/cn';
 import type { ChatCitation } from '@/lib/types';
 import { focusRing } from '@/lib/ui-recipes';
 import { useAnnouncer } from '@/soc/components/announcer';
+import { statusLabel } from '@/soc/components/semantic-labels';
 import { useNavigateOptional } from '@/soc/router';
 import { Button } from '@/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog';
@@ -241,7 +242,7 @@ export function AddToCaseDialog({
                         role="radio"
                         aria-checked={checked}
                         tabIndex={index === tabStop ? 0 : -1}
-                        aria-label={`${entry.display_id}: ${entry.title}${entry.status ? ` (${entry.status})` : ''}`}
+                        aria-label={`${entry.display_id}: ${entry.title}${entry.status ? ` (${statusLabel(entry.status)})` : ''}`}
                         title={entry.display_id}
                         onClick={() => setPicked(entry)}
                         className={cn(
@@ -252,7 +253,7 @@ export function AddToCaseDialog({
                       >
                         <span className="mt-0.5 shrink-0 font-mono text-xs text-foreground">{shortCaseId(entry.display_id)}</span>
                         <span className="line-clamp-2 min-w-0 flex-1 break-words text-foreground">{entry.title}</span>
-                        {entry.status ? <span className="mt-0.5 shrink-0 text-xs text-muted-foreground">{entry.status}</span> : null}
+                        {entry.status ? <span className="mt-0.5 shrink-0 text-xs text-muted-foreground">{statusLabel(entry.status)}</span> : null}
                       </button>
                     );
                   })}

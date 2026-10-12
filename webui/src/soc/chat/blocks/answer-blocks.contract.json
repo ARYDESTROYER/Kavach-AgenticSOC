@@ -305,6 +305,7 @@
     "heatmap_y": 24,
     "title": 120,
     "label": 60,
+    "kpi_context": 100,
     "caption": 280,
     "callout": 600,
     "markdown": 12000,

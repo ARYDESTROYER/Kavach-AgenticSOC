@@ -44,6 +44,7 @@ import {
   REPUTATION_LABEL,
   TIMELINE_KIND_LABEL,
   booleanText,
+  queryCaption,
   semanticColumn,
   semanticText,
 } from '../../blocks/labels';
@@ -442,13 +443,11 @@ class Walker {
         }
         return;
       }
-      case 'query': {
-        const parts = [block.language.toUpperCase()];
-        if (block.source_name) parts.push(block.source_name);
-        if (typeof block.hits === 'number') parts.push(`${formatValue(block.hits, 'count')} hits`);
-        this.push({ k: 'code', lang: block.language, text: this.f(block.query), caption: this.f(parts.join(' · ')) });
+      case 'query':
+        // The caption names the language as the screen does ("ES|QL · Elastic · 12 hits");
+        // the fence keeps the raw key (`esql`) as its syntax hint.
+        this.push({ k: 'code', lang: block.language, text: this.f(block.query), caption: this.f(queryCaption(block)) });
         return;
-      }
       case 'citations':
         this.list(
           true,

@@ -159,6 +159,17 @@ describe('comparison tiles', () => {
       .toHaveTextContent(/^vs 26 Jul 20:45 – 3 Sep 2026 05:30: —$/);
   });
 
+  it('keeps a dated baseline period and its figures whole, past the label limit', () => {
+    const raw = ROUND12_RAW[3] as { items: Array<Record<string, unknown>> };
+    const context = 'previous 180 days (18 Oct 2025 to 15 Apr 2026): 12 h 30 min · n < 20';
+    expect(context.length).toBeGreaterThan(60);
+    const b = parseBlock({ ...raw, items: [{ key: 'x', label: 'MTTR median', value: null, unit: 'minutes', context }] });
+    expect(b.type === 'kpi_group' && b.items[0].context).toBe(context);
+    show([b]);
+    expect(within(screen.getByTestId('comparison-chat-0-0')).getByTestId('comparison-baseline'))
+      .toHaveTextContent(/^vs previous 180 days \(18 Oct 2025 to 15 Apr 2026\): 12 h 30 min$/);
+  });
+
   it('flags small samples only on a change that is shown', () => {
     const raw = ROUND12_RAW[3] as { items: Array<Record<string, unknown>> };
     const b = parseBlock({

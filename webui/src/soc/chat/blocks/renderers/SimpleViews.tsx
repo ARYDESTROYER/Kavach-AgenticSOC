@@ -27,27 +27,14 @@ import { CodeBlock } from '@/soc/components/CodeBlock';
 import { Markdown } from '@/soc/components/Markdown';
 
 import { RefLink, citationAnchorId, useBlocks } from '../context';
-import { formatValue, plainDocTitle } from '../format';
-import { CITATION_KIND_LABEL } from '../labels';
+import { plainDocTitle } from '../format';
+import { CITATION_KIND_LABEL, queryCaption } from '../labels';
 import { calloutTitle } from '../report-headings';
 import type { CalloutBlock, CitationsBlock, GuideBlock, MarkdownBlock, QueryBlock, ToneKey } from '../schema';
 import { EXPIRED_TEXT, FALLBACK_TEXT, isDocRef } from '../schema';
 
-const LANGUAGE: Record<QueryBlock['language'], string> = {
-  kql: 'KQL',
-  lucene: 'Lucene',
-  esql: 'ES|QL',
-  dsl: 'Query DSL',
-  sql: 'SQL',
-};
-
-export function queryCaption(block: QueryBlock): string {
-  const parts = [LANGUAGE[block.language]];
-  if (block.source_name) parts.push(block.source_name);
-  if (typeof block.hits === 'number') parts.push(`${formatValue(block.hits, 'count')} hits`);
-  return parts.join(' · ');
-}
-
+// The caption ("ES|QL · Elastic · 12 hits") is the pure `queryCaption` in `labels.ts`,
+// shared with the report exports, which must not import a renderer.
 export function QueryView({ block }: { block: QueryBlock }) {
   return <CodeBlock value={block.query} caption={queryCaption(block)} wrap maxHeightClassName="max-h-64" data-testid="block-query" />;
 }

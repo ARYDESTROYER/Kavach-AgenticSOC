@@ -195,3 +195,34 @@ describe('material gate: sticky materials pin flush under the top bar', () => {
     expect(/\bmaterial(?:Bar|Thick)\b/.test("'md:sticky md:top-[calc(var(--header-h)+1rem)]'")).toBe(false);
   });
 });
+
+/*
+ * Backdrop: nothing above a material keeps a finished entrance in effect.
+ *
+ * Chromium treats an element whose opacity animation is still in effect as a backdrop
+ * root, and a `both`/`forwards`-filled animation stays in effect after it ends. The route
+ * wrapper fades every page in with `animate-fade-in`, so with a `both` fill the sticky
+ * Overview band's `backdrop-filter` stopped at the wrapper on first load: no blur, and
+ * card text and chart bars read straight through the 0.97 fill (Round 12 screenshot tour
+ * 2, measured live: cancelling only that animation brought the blur back). Entrances fill
+ * `backwards`: the from-state still holds through a stagger delay, and after the entrance
+ * the element is back on its own style, which equals the end keyframe.
+ */
+describe('material gate: entrances never keep an effect on an ancestor', () => {
+  const tailwind = fs.readFileSync(path.join(SRC, '..', 'tailwind.config.js'), 'utf8');
+  const animation = (name: string) =>
+    new RegExp(`'${name}':\\s*'([^']+)'`).exec(tailwind.slice(tailwind.indexOf('animation: {')))?.[1];
+
+  it.each(['fade-in', 'rise-in', 'scale-in'])('%s fills backwards, never both or forwards', (name) => {
+    const value = animation(name);
+    expect(value, `animation ${name}`).toBeTruthy();
+    expect(value!.split(/\s+/)).toContain('backwards');
+    expect(value!.split(/\s+/)).not.toContain('both');
+    expect(value!.split(/\s+/)).not.toContain('forwards');
+  });
+
+  it('the route wrapper is the entrance it guards', () => {
+    const shell = fs.readFileSync(path.join(SRC, 'soc', 'AppShell.tsx'), 'utf8');
+    expect(shell).toMatch(/cn\(CONTENT_INSET, 'animate-fade-in'\)/);
+  });
+});

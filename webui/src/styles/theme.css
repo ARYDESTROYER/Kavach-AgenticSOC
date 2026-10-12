@@ -114,9 +114,9 @@
        so 'quiet' renders identically to the pre-wave UI. */
     --glass-tint: var(--slate-2);  /* the surface tint a glass panel blurs over   */
     /* Fill opacity of a glass panel (0..1). 0.97, not the old 0.82: the top bar is the
-       Console's own material and the fill alone has to hide what scrolls under it (in
-       Chromium the backdrop blur does not reach routed content, see
-       lib/material-recipes.ts), so 0.82 let card text read through the top bar. */
+       Console's own material and the fill alone has to hide what scrolls under it (the
+       backdrop blur cannot be relied on, see lib/material-recipes.ts), so 0.82 let card
+       text read through the top bar. */
     --glass-opacity: 0.97;
     --glow-strength: 0;            /* 0 = no glow (quiet); command raises it       */
     --grid-opacity: 0;             /* 0 = no command-grid overlay (quiet)          */

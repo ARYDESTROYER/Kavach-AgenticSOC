@@ -42,7 +42,9 @@ The public barrel currently exposes:
 
 The catalog also documents stable page-anatomy components in their owning modules:
 `Card`, `Tabs`, `SegmentedControl`, `ControlBar`, `FilterBar`, `DataTable`,
-`EmptyState`, and the divider-led `SettingsCard`. Import these from the module named
+`OwnerMonogram` (the one assignee monogram for the Cases list, the Case Manager queue
+and the case header), `EmptyState`, and the divider-led `SettingsCard`. Import these
+from the module named
 in the catalog; they remain SOC/UI-layer components rather than duplicate wrappers in
 `src/design-system/`.
 

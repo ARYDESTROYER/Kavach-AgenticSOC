@@ -777,8 +777,39 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
     page cohorts from the exact start, the hourly alert counters from the hour it falls
     in), `cost_usage` and `search_cases`, so the headline, the series, the severity and rule
     breakdowns, the posture tiles and the funnel of one answer count the same cases under
-    one stated start and compare with one previous period (the same span before it, cut at
-    the same point: "16 Apr – 14 Jul 2026 08:02"). A breakdown whose periods the start is not
+    one stated start and compare with one previous period. That period is the same number
+    of whole days or months just before the start, adjacent to the window with no gap
+    between them (`[start - N periods, start)`, `periods._aligned_previous`), named by its
+    span and its dates at the window's own granularity: "last 90 days (since 15 Jul 2026)"
+    is compared with "previous 90 days (16 Apr to 14 Jul 2026)" and "last 6 months (since
+    May 2026)" with "previous 6 months (Nov 2025 to Apr 2026)". Polish round 2 replaced the
+    earlier rule (the same span cut at the time of day of the question, "16 Apr – 14 Jul
+    2026 10:34"), which left 14 Jul 10:34 to 15 Jul 00:00 in neither window and named a
+    time of day on one side only. Both bounds are local midnights or month starts in the
+    operator timezone, so a clock change makes the 90 days an hour longer or shorter,
+    never off midnight. The latest period's last day or month is not over, so the change
+    is noted as comparing a partial period. That note is decided by how the compared
+    period was built, never by seconds alone (`Period.basis`, `periods.in_progress_note`):
+    the whole periods before such a window are complete, so the change is partial; the
+    same elapsed time ("2025 to date" against "2024 to date", "Q1 2026 to date" against "Q4
+    2025 to date", any window that ends now against the same window a year earlier) is
+    like for like even when 29 Feb or a clock change makes one span a day or an hour
+    longer; an explicit window is judged by length (like for like unless the latest is
+    more than one per cent shorter). The narration reads "vs 0 in the previous 90
+    days (16 Apr to 14 Jul 2026; new)", the KPI change "vs previous 90 days (16 Apr to 14
+    Jul 2026)", which a narrow tile wraps between dates, never inside one
+    (`KpiTile.keepDatesTogether`). A tile's context keeps the whole dated name and its
+    figures ("previous 90 days (16 Apr to 14 Jul 2026): 30 min · -33.3% · n < 20"): a KPI
+    context has its own 100-character limit (`MAX_KPI_CONTEXT`, `kpi_context` in the
+    blocks contract; BLOCKS.md amendment 29), so an export's Context column and the report
+    digest never cut a date. A name that ends in its dates is never followed by a second
+    bracket: the compare answer's headline states its method as a sentence ("**Last 90
+    days (since 15 Jul 2026) compared with the previous 90 days (16 Apr to 14 Jul
+    2026)**. Changes are computed exactly over every case:"), and outside UTC the
+    comparison caption names the zone inside those dates ("… vs previous 90 days (16 Apr
+    to 14 Jul 2026, Asia/Kolkata)"). A performance report's summary ends with the
+    comparison's note, so a report over "last 7 days" says the change compares a partial
+    period. A breakdown whose periods the start is not
     a boundary of opens with the part of its first period inside the window ("Jul 2026 (from
     15 Jul)", "W38 2026 (from 15 Sep)", "Q4 2025 (from 1 Nov)"), so "last 12 months" by
     quarter is twelve months in five bars rather than nine and a half in four, and "last 24
@@ -791,9 +822,10 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
     the earliest data; "last 90 days" with "last 90 days (since 15 Jul 2026)" reads the
     dated one; two different starts of one relative window keep the shared phrase only; a
     comparison of a window that is also stated reads inside it, "last 90 days (since 15 Jul
-    2026), compared with 16 Apr – 14 Jul 2026 08:02", never the phrase twice
-    (`routes_reports._merge_windows`, mirrored on read by `chat/report/windows.ts` so
-    reports saved earlier read the same).
+    2026), compared with the previous 90 days (16 Apr to 14 Jul 2026)", never the phrase
+    twice (`routes_reports._merge_windows`, mirrored on read by `chat/report/windows.ts` so
+    reports saved earlier read the same; a period named "previous …" or "same …" takes
+    "the" there, and reports saved with the earlier "16 Apr – 14 Jul 2026 08:02" keep it).
 30. **A storyline case can be Critical with a low risk score, by design** (final polish,
     demo data). Severity is the source's own rating; risk is the deterministic cluster
     score of `engine/risk.py` (volume, velocity, reputation, diversity, asset criticality),
@@ -830,6 +862,13 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
     routed content, so at 0.80 chart labels and card text read through the sticky
     Overview header. Text beneath now differs from the bar by at most about 1.07:1 in both
     themes (measured in `foundations.test.ts`). Reduce transparency stays fully opaque.
+    Polish round 2 found the cause of the missing blur: the route wrapper's entrance fade
+    filled `both`, and a finished filling opacity animation is a backdrop root, so on first
+    load the band blurred nothing and a 1.06:1 ghost of the page still showed. Entrances
+    now fill `backwards` (`material-gate.test.ts`), the band blurs again, and while a sticky
+    `PageHeader` is pinned it sets the document's `scroll-padding-top` to the top bar, its
+    measured height and its fade, so keyboard focus (Shift+Tab onto a 24px help button) and
+    the page's headings land below it, never under it (WCAG 2.4.11).
 33. **A KPI change reads as a one-line chip plus words** (final polish, chat blocks). The
     chip holds only the signed figure ("+87", "no change") and never wraps; the comparison
     ("vs previous 90 days") is plain muted text beside it that drops under the numeral and

@@ -27,6 +27,7 @@ import pytest
 
 from app.agents.blocks import (
     MAX_CAPTION,
+    MAX_KPI_CONTEXT,
     MAX_LABEL,
     SMALL_SAMPLE_N,
     MaterialiseOptions,
@@ -150,7 +151,7 @@ async def test_comparison_tiles_keep_baseline_change_and_flag(store: CaseStore, 
         for item in tiles["items"]:
             row = rows[item["key"]]
             context = item["context"]
-            assert len(context) <= MAX_LABEL
+            assert len(context) <= MAX_KPI_CONTEXT
             assert context.endswith(_expected_tail(row)), (context, _expected_tail(row))
             assert context.startswith(baseline) or context.startswith(baseline[:10])
             flagged += context.endswith(f"n < {SMALL_SAMPLE_N}")
@@ -173,7 +174,10 @@ def test_comparison_tile_clips_only_the_period_name() -> None:
     item = tiles["items"][0]
     tail = _expected_tail({**artifact.data["rows"][0], "delta_pct": (2345678.91 - 1234567.89) / 1234567.89 * 100})
     assert item["context"].endswith(tail) and "…" in item["context"]
-    assert len(item["context"]) == MAX_LABEL
+    # The name gives way at the label limit; the figures after it are whole, within the
+    # context limit (room for any label and its figures).
+    assert item["context"] == f"{long_name[:MAX_LABEL - 1]}…{tail}"
+    assert len(item["context"]) <= MAX_KPI_CONTEXT
     assert item["delta"]["period_label"].startswith("vs a period") and len(item["delta"]["period_label"]) <= MAX_LABEL
 
 
@@ -196,10 +200,20 @@ def test_comparison_caption_names_the_zone_only_when_a_period_was_cut_in_it() ->
     month = resolve_window(kolkata, window="2026-09")
     periods = resolve_periods(kolkata, month, "previous_period")
     assert comparison_caption(periods) == "Sep 2026 vs Aug 2026 (Asia/Kolkata)"
-    aligned = align_to_bucket(resolve_window(kolkata, window="now-6M"), "month")
-    periods = resolve_periods(kolkata, aligned, "previous_period")
-    assert [p.label for p in periods][-1].endswith(")") and "Asia/Kolkata" not in periods[-1].label
-    assert comparison_caption(periods).endswith(" (Asia/Kolkata)")
+    # The zone joins the dates the caption ends in, never a second bracket after them.
+    # Pinned clocks: the previous six months span two years in October and one in
+    # December, where the first month is named without its year ("Jan to Jun 2026").
+    expected = {
+        datetime(2026, 10, 12, 9, 0, tzinfo=timezone.utc):
+            "last 6 months (since May 2026) vs previous 6 months (Nov 2025 to Apr 2026, Asia/Kolkata)",
+        datetime(2026, 12, 12, 9, 0, tzinfo=timezone.utc):
+            "last 6 months (since Jul 2026) vs previous 6 months (Jan to Jun 2026, Asia/Kolkata)",
+    }
+    for now, caption in expected.items():
+        aligned = align_to_bucket(resolve_window(kolkata, window="now-6M", now=now), "month")
+        periods = resolve_periods(kolkata, aligned, "previous_period", now=now)
+        assert [p.label for p in periods][-1].endswith(")") and "Asia/Kolkata" not in periods[-1].label
+        assert comparison_caption(periods) == caption
 
 
 # --------------------------------------------------------------------------- #

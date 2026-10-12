@@ -154,6 +154,9 @@ describe('static chart data', () => {
     expect(within(tables[tables.length - 1]).getByRole('columnheader', { name: hours[n - 1] })).toBeInTheDocument();
     expect(box).toHaveTextContent(rows[2].cells[n - 1]);
     expect(tables[tables.length - 1]).toHaveTextContent(`Columns ${layout.chunks[layout.chunks.length - 1][0] + 1}–${n} of ${n}`);
+    // The same part notes as the Word export: later parts say "(continued)", the first does not.
+    expect(tables[0].querySelector('caption')?.textContent).toMatch(/^Columns 1–\d+ of \d+$/);
+    for (const t of tables.slice(1)) expect(t.querySelector('caption')?.textContent).toMatch(/^Columns? [\d–]+ of \d+ \(continued\)$/);
     const allCells = tables.flatMap((t) => within(t).getAllByRole('cell').map((c) => c.textContent));
     expect(allCells).toHaveLength(3 * n);
   });

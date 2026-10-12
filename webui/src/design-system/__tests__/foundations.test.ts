@@ -286,8 +286,9 @@ describe('materials: solid fallbacks', () => {
 /**
  * The material hides what scrolls beneath it with its FILL, not its blur (Round 12
  * screenshot tour: at a 0.80 fill, chart labels and card text read straight through the
- * sticky Overview header at 768 and 1920). In Chromium the backdrop blur does not reach
- * routed content (lib/material-recipes.ts), so the fill is the whole defence.
+ * sticky Overview header at 768 and 1920). The backdrop blur cannot be relied on (a
+ * backdrop root above a bar stops it, lib/material-recipes.ts), so the fill is the
+ * defence that must hold on its own.
  *
  * MEASURED: foreground text sitting on the card or the canvas, seen through the bar, may
  * differ from its own surface by at most ~1.07:1 — a wash of colour, not a word (0.95

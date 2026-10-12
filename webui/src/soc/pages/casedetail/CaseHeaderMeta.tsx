@@ -30,6 +30,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 
 import { AiVerdictChip, OutcomeBadge, SeverityBadge, severityBand } from '@/soc/components/badges';
 import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
+import { OwnerMonogram, assignedToLabel } from '@/soc/components/OwnerMonogram';
 import type { CaseOutcome } from '@/soc/components/outcome';
 import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
 import { scoreBand, semanticIcon } from '@/soc/components/palette';
@@ -42,7 +43,6 @@ import { AssigneePicker } from './CollaborationPanel';
 import {
   caseDisplayId,
   caseTags,
-  monogram,
   riskValue,
   severityVersusRiskNote,
   slaReading,
@@ -266,16 +266,12 @@ export const CaseHeaderMeta: React.FC<CaseHeaderMetaProps> = ({
             type="button"
             data-testid="case-detail-owner"
             aria-keyshortcuts="M"
-            aria-label={owner ? `Owner ${owner}. Change owner` : 'Unassigned. Choose an owner'}
-            className="inline-flex shrink-0 items-center gap-1 rounded-sm text-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={owner ? `${assignedToLabel(owner)}. Change owner` : 'Unassigned. Choose an owner'}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-sm text-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             {owner ? (
-              <span
-                aria-hidden
-                className="inline-flex size-5 items-center justify-center rounded-full bg-surface-sunken text-2xs font-semibold text-muted-foreground"
-              >
-                {monogram(owner)}
-              </span>
+              /* The button's label already names the owner: the disk is decorative here. */
+              <OwnerMonogram name={owner} decorative />
             ) : (
               <UserRound className="size-3.5 text-muted-foreground" aria-hidden />
             )}

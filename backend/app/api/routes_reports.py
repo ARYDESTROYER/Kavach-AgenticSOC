@@ -517,14 +517,22 @@ def _split_periods(text: str) -> list[str]:
 
 def _comparison(window: str) -> tuple[str, list[str]] | None:
     """``(subject, compared periods)`` of a comparison window, raw ("A vs B vs C") or
-    already stated in its subject ("A, compared with B and C"), else ``None``."""
+    already stated in its subject ("A, compared with B and C"), else ``None``. A period
+    is kept by its name ("previous 90 days (…)"), without the article a statement
+    gives it (:func:`_period_phrase`)."""
     if _COMPARED_SEPARATOR in window:
         subject, _sep, rest = window.partition(_COMPARED_SEPARATOR)
         return subject, [p for p in rest.split(_COMPARED_SEPARATOR) if p]
     if _COMPARED_WITH in window:
         subject, _sep, rest = window.partition(_COMPARED_WITH)
-        return subject, _split_periods(rest)
+        return subject, [p.removeprefix("the ") for p in _split_periods(rest)]
     return None
+
+
+def _period_phrase(period: str) -> str:
+    """A compared period as a statement names it: "the previous 90 days (16 Apr to 14
+    Jul 2026)", "the same 90 days a year earlier"; a calendar name stays as it is."""
+    return f"the {period}" if period.startswith(("previous ", "same ")) else period
 
 
 def _and_list(parts: list[str]) -> str:
@@ -534,11 +542,12 @@ def _and_list(parts: list[str]) -> str:
 def _fold_comparisons(windows: list[str]) -> list[str]:
     """A comparison window whose subject is also stated reads once, inside it (Round 12
     SPEC §7.2 decision 29): "last 90 days (since 15 Jul 2026)" with "last 90 days (since
-    15 Jul 2026) vs 16 Apr – 14 Jul 2026 08:02" reads "last 90 days (since 15 Jul 2026),
-    compared with 16 Apr – 14 Jul 2026 08:02", never the same phrase twice; so do two
-    comparisons of one subject, each period once. A scope that already reads that way
-    (another item's) merges the same way, so a report header states the window once. A
-    comparison whose subject is not stated on its own is kept as it is."""
+    15 Jul 2026) vs previous 90 days (16 Apr to 14 Jul 2026)" reads "last 90 days (since
+    15 Jul 2026), compared with the previous 90 days (16 Apr to 14 Jul 2026)", never the
+    same phrase twice; so do two comparisons of one subject, each period once. A scope
+    that already reads that way (another item's) merges the same way, so a report header
+    states the window once. A comparison whose subject is not stated on its own is kept
+    as it is."""
     entries: list[dict[str, Any]] = []
     for position, window in enumerate(windows):
         compared = _comparison(window)
@@ -568,7 +577,7 @@ def _fold_comparisons(windows: list[str]) -> list[str]:
             continue
         if entry["changed"] and entry["periods"]:
             base = entry["subject"] if entry["comparison"] else entry["text"]
-            out.append(f"{base}{_COMPARED_WITH}{_and_list(entry['periods'])}")
+            out.append(f"{base}{_COMPARED_WITH}{_and_list([_period_phrase(p) for p in entry['periods']])}")
         else:
             out.append(entry["text"])
     return out

@@ -658,6 +658,12 @@ you choose Save as PDF. **Export** opens one menu with every format:
 | CSV (all tables) | Every table-like block, each labelled |
 | JSON | The report exactly as stored, for other tools |
 
+Every format except JSON writes severity, verdict, and status in the words the report
+shows on screen, such as **Critical**, **True positive**, **Needs human**, and **On hold**.
+Yes/no values read **Yes** and **No**, in the CSV too, and a query is labelled with its
+language as the screen names it, such as **ES|QL** or **Query DSL**. JSON keeps the stored
+values (`true_positive`, `on_hold`, `true`, `esql`) so other tools can read them.
+
 PDF, Word, Markdown, and HTML exports, and the Excel **Report** sheet, carry a header
 (title, author, time generated, app version, source conversations, and each item's
 window and sources), the AI summary, the items with their notes, a **Methodology &

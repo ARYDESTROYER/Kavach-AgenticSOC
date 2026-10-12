@@ -869,7 +869,7 @@ def test_a_filtered_comparison_names_its_filter_and_drops_the_all_case_posture(
     grouped = [inp for tool, inp in calls if tool == "case_stats" and inp.get("group_by")]
     assert grouped and grouped[0]["group_by"] == [group] and all(
         inp.get(k) == v for inp in grouped for k, v in filters.items()), grouped
-    assert body.startswith(f"**{noun}, Oct 2026 to date compared with Sep 2026 to date** (changes computed exactly):")
+    assert body.startswith(f"**{noun}, Oct 2026 to date compared with Sep 2026 to date**. Changes are computed exactly:")
     assert f"- {noun}: **5** in Oct 2026 to date vs 3 in Sep 2026 to date" in body
     assert "over every case" not in body and "Automation rate" not in body
     assert not any(b.get("title") == "Security posture with changes" for b in header["blocks"])
@@ -879,8 +879,8 @@ def test_an_unfiltered_comparison_keeps_the_posture_and_says_now_only_for_the_cu
     """R2-3 / R2-12: the unfiltered comparison keeps the automation rate; "now" only when
     the subject period is the current, in-progress one."""
     _rounds, _header, body = drive("Compare this month with last month", _compare_obs({}))
-    assert body.startswith("**Oct 2026 to date compared with Sep 2026 to date** (changes computed exactly over "
-                           "every case):")
+    assert body.startswith("**Oct 2026 to date compared with Sep 2026 to date**. Changes are computed exactly over "
+                           "every case:")
     assert "Automation rate: +42.4 points (86.8% now)." in body
     past = {"subject": "Sep 2026", "baseline": "Aug 2026", "periods": ["Aug 2026", "Sep 2026"],
             "in_progress": [False, False]}

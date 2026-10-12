@@ -149,6 +149,19 @@ export const DESIGN_SYSTEM_CATALOG = {
       accessibility: ['named table', 'aria-sort', 'keyboard rows', 'announced selection'],
     },
     {
+      id: 'identity.owner-monogram',
+      module: '@/soc/components/OwnerMonogram',
+      exportName: 'OwnerMonogram',
+      purpose: 'The one assignee monogram: a solid neutral disk with the owner initial, visible on every row state in both themes',
+      variants: ['named', 'decorative'],
+      accessibility: [
+        'role=img named "Assigned to <owner>" by default',
+        'decorative mode when the visible name sits beside it',
+        'letter >= 4.5:1 on the disk and disk >= 3:1 on card, page and selected row (measured)',
+        'ring under forced colours',
+      ],
+    },
+    {
       id: 'feedback.empty-state',
       module: '@/soc/components/EmptyState',
       exportName: 'EmptyState',

@@ -305,6 +305,8 @@ export const LIMITS = {
   heatmap_y: 24,
   title: 120,
   label: 60,
+  /** A KPI tile's context line: a whole period name (a label) and the figures after it. */
+  kpi_context: 100,
   caption: 280,
   callout: 600,
   markdown: 12_000,
@@ -905,7 +907,7 @@ function parseKpiItem(raw: unknown): KpiItem {
   if (display === 'gauge' && value !== null && (value < 0 || value > 100)) display = undefined;
   const item: KpiItem = { key, label: text(raw.label, LIMITS.label, 'label'), value, unit: unit(raw.unit) };
   if (raw.bound === 'lower') item.bound = 'lower';
-  const context = optText(raw.context, LIMITS.label);
+  const context = optText(raw.context, LIMITS.kpi_context);
   if (context) item.context = context;
   const delta = lenient((d) => {
     if (!isObj(d)) fail('model_type');

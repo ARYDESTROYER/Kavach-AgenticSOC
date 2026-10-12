@@ -95,6 +95,9 @@ MAX_HEATMAP_X = 48
 MAX_HEATMAP_Y = 24
 MAX_TITLE = 120
 MAX_LABEL = 60
+# A KPI tile's context line: room for a whole period name (a label, 60) and the figures
+# after it (": 1,234 · +8.8% · n < 20"), so a dated name is never cut mid-date.
+MAX_KPI_CONTEXT = 100
 MAX_CAPTION = 280
 MAX_CALLOUT = 600
 MAX_MARKDOWN = 12_000
@@ -523,6 +526,7 @@ Title = _text_type(MAX_TITLE)
 OptTitle = _opt_text_type(MAX_TITLE)
 Label = _text_type(MAX_LABEL)
 OptLabel = _opt_text_type(MAX_LABEL)
+OptKpiContext = _opt_text_type(MAX_KPI_CONTEXT)
 OptCaption = _opt_text_type(MAX_CAPTION)
 Category = _text_type(MAX_CATEGORY_CHARS)
 Number = Union[int, float]
@@ -833,7 +837,7 @@ class KpiItem(_Strict):
     value: OptNumber
     unit: ValueUnit
     bound: Literal["lower"] | None = None
-    context: OptLabel = None
+    context: OptKpiContext = None
     delta: Annotated[Union[KpiDelta, None], BeforeValidator(_lenient(_KPI_DELTA))] = None
     semantic: OptSemantic = None
     trend: Annotated[Union[KpiTrend, None], BeforeValidator(_lenient(_KPI_TREND))] = None
@@ -2765,7 +2769,7 @@ def _build_kpis(artifact: Any, options: MaterialiseOptions, view: str, views: li
                         _text_column("unit", "Unit"), _text_column("context", "Context")],
             "rows": [
                 [_label_text(i.get("label"), MAX_LABEL), finite_number(i.get("value")),
-                 _unit(i.get("unit")), _label_text(i.get("context"), MAX_LABEL) or None]
+                 _unit(i.get("unit")), _label_text(i.get("context"), MAX_KPI_CONTEXT) or None]
                 for i in items[:n]
             ],
         })
@@ -3022,7 +3026,7 @@ def _build_comparison(artifact: Any, options: MaterialiseOptions, view: str, vie
                     tail += f" · {change}"
                 if row["small_sample"]:
                     tail += f" · n < {SMALL_SAMPLE_N}"
-                item["context"] = _fit_label("", baseline, tail)
+                item["context"] = _fit_label("", baseline, tail, MAX_KPI_CONTEXT)
             if len(periods) >= 3 and any(v is not None for v in row["values"]):
                 item["trend"] = {"points": row["values"],
                                  "window_label": _fit_label(f"{periods[0]['label']} – ", periods[-1]["label"], "")}

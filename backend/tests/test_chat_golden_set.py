@@ -635,7 +635,7 @@ REGRESSIONS_R2 = [
     G("Compare critical cases this month vs last month", tools=("case_stats",),
       params=(P("case_stats", window="this_month", compare="previous_period", severity="critical"),
               P("case_stats", group_by="verdict", severity="critical")), forbid=(P("soc_metrics"),),
-      contains=(r"re:\A\*\*Critical cases, .+ compared with .+\*\* \(changes computed exactly\):",
+      contains=(r"re:\A\*\*Critical cases, .+ compared with .+\*\*\. Changes are computed exactly:",
                 r"re:^- Critical cases: \*\*\d"), absent=("over every case", "Automation rate")),
     G("How many cases for user pnair this week vs last week?", tools=("case_stats",),
       params=(P("case_stats", window="this_week", compare="previous_period", entity="pnair"),),
@@ -726,9 +726,12 @@ REGRESSIONS_R2 = [
       figures=(Fig(": {n} of", "all", _AI_CLOSED),)),
     G("Share the auto closed cases with me", tools=("search_cases",), forbid=(P("case_stats"),),
       absent=("automation rate",)),
+    # In the first moments of a month no case has closed yet, and the answer says so
+    # (plain, not bold: "No closed case matched in April 2027. …").
     G("What share of cases did the AI close this month?", tools=("case_stats",),
       params=(P("case_stats", status_group="terminal", window="this_month", metrics="re:auto_closed"),),
-      forbid=(P("search_cases"),), contains=(r"re:\A\*\*(?:\d+(?:\.\d)?%\*\* of the closed cases|No )",)),
+      forbid=(P("search_cases"),),
+      contains=(r"re:\A(?:\*\*\d+(?:\.\d)?%\*\* of the closed cases|No closed case matched in )",)),
     # Final review round 2 (L2): a period named anywhere in the question beats a
     # whole/full phrase; a period after "on"/"the" is read; a period word no rule reads
     # is named, never "No period was named".

@@ -54,12 +54,6 @@ export function primaryFact(c: Case): string | null {
   return summary && summary.toLowerCase() !== title ? summary : null;
 }
 
-/** Monogram for an owner chip ("asmith" → "A"). Decorative; the name is the text. */
-export function monogram(name: string): string {
-  const t = name.trim();
-  return t ? t.charAt(0).toUpperCase() : '';
-}
-
 /** A 0..100 risk score clamped and rounded, or null. */
 export function riskValue(score: unknown): number | null {
   return typeof score === 'number' && Number.isFinite(score)

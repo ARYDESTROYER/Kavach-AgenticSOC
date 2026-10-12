@@ -114,8 +114,12 @@ charts, transcripts, evidence — always sits on an opaque canvas or card, and m
 popovers, dialogs and sheets are solid, so translucent never stacks on translucent (a
 material nested in another material, or in the glass top bar, is painted solid). The
 fill hides what scrolls beneath on its own, in every engine: 0.97 for bars and the top
-bar, 0.98 for thick panes. The backdrop blur is decoration that cannot be relied on (in
-Chromium it does not reach routed content), and text beneath must read as a wash of
+bar, 0.98 for thick panes. The backdrop blur is decoration that cannot be relied on, and
+it stops at a backdrop root: never put a filling animation (`both`/`forwards`), `opacity`
+below 1 or a `filter` on an ancestor of a bar. The entrance utilities (`animate-fade-in`,
+`animate-rise-in`, `animate-scale-in`) fill `backwards` for this reason; the route
+wrapper's `both`-filled fade once stopped the sticky Overview band's blur on first load
+(`material-gate.test.ts`). Text beneath must read as a wash of
 colour, never as words: at most about 1.07:1 against the bar in both themes, measured by
 `src/design-system/__tests__/foundations.test.ts` (a 0.80 fill let chart labels and
 card text read through). On a material, small
@@ -131,6 +135,15 @@ token (`--material-solid`: the background for a bar, the popover colour for a th
 pane), which both the fade and every solid fallback paint, so neither changes the surface's
 colour. Never animate `backdrop-filter`. `src/design-system/__tests__/material-gate.test.ts`
 fails on a new page-local blur or translucent sticky fill.
+
+Nothing lands under a sticky page band, neither keyboard focus nor a heading (WCAG
+2.4.11). While a `sticky` `PageHeader` is pinned it sets the document scroller's
+`scroll-padding-top` to the top bar, its measured height and the 16px scroll-edge fade
+(`bandScrollPadding`), and clears it when it unmounts or stops being pinned (a
+`max-sm:static` band on a phone). Every scroll-into-view honours scroll padding: Tab and
+Shift+Tab, in-page links, `scrollIntoView` and find-in-page all stop with the target in
+full view below the band. Do not add a `scroll-margin-top` for the band on the page's
+own elements as well: margin and padding add up and push the target too low.
 
 Sticky chrome needs a scroller that actually scrolls. The shell clips horizontal
 overflow with `overflow-x-clip`, never `overflow-x-hidden`: a lone hidden axis turns

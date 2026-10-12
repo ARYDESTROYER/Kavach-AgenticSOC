@@ -1103,7 +1103,8 @@ def test_answer_blocks_contract_parity() -> None:
     assert (limits["table_columns"], limits["table_rows"]) == (B.MAX_TABLE_COLUMNS, B.MAX_TABLE_ROWS)
     assert (limits["heatmap_x"], limits["heatmap_y"]) == (B.MAX_HEATMAP_X, B.MAX_HEATMAP_Y)
     assert limits["blocks_bytes_target"] == B.MAX_BLOCKS_BYTES_TARGET
-    for key, value in {"title": B.MAX_TITLE, "label": B.MAX_LABEL, "caption": B.MAX_CAPTION,
+    for key, value in {"title": B.MAX_TITLE, "label": B.MAX_LABEL, "kpi_context": B.MAX_KPI_CONTEXT,
+                       "caption": B.MAX_CAPTION,
                        "callout": B.MAX_CALLOUT, "markdown": B.MAX_MARKDOWN,
                        "report_leaves": B.MAX_REPORT_LEAVES, "report_sections": B.MAX_REPORT_SECTIONS,
                        "stored_table_rows": B.STORED_TABLE_ROWS,

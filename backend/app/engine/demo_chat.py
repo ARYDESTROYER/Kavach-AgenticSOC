@@ -768,6 +768,12 @@ def _join(items: Sequence[str], conj: str = "and") -> str:
     return f"{', '.join(items[:-1])} {conj} {items[-1]}"
 
 
+#: How much of a compared period's name is narrated: the whole of it ("previous 180
+#: days (14 Oct 2025 to 12 Apr 2026)" is 47 characters), as the blocks show it
+#: (``blocks.MAX_LABEL``), never cut mid-date.
+_PERIOD_CHARS = 60
+
+
 def _window(obs: Mapping[str, Any], fallback: str = "the selected window") -> str:
     value = obs.get("window")
     return display_text(value, 60) if isinstance(value, str) and value.strip() else fallback
@@ -8001,14 +8007,36 @@ def _note_text(note: str) -> str:
     return _plain(text, 240)
 
 
+#: A period phrase that ends in its dates in brackets ("the previous 90 days (16 Apr to
+#: 14 Jul 2026)", "the last 90 days (since 15 Jul 2026)").
+_DATED_TAIL_RE = re.compile(r"\([^()]*\d{4}\)$")
+
+
+def _with_change(phrase: str, change: str) -> str:
+    """``phrase`` and its change in brackets: "in Sep 2026 to date (+17, +56.7%)". A
+    phrase that already ends in bracketed dates takes the change inside them, "in the
+    previous 90 days (16 Apr to 14 Jul 2026; new)", never two brackets in a row."""
+    if _DATED_TAIL_RE.search(phrase):
+        return f"{phrase[:-1]}; {change})"
+    return f"{phrase} ({change})"
+
+
+def _the(period: str) -> str:
+    """A compared period as a noun phrase: "the previous 90 days (16 Apr to 14 Jul
+    2026)", "the same 90 days a year earlier"; a calendar name stays as it is ("Sep
+    2026")."""
+    return f"the {period}" if period.lower().startswith(("previous ", "same ")) else period
+
+
 def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bool = True,
                     skip: Iterable[str] = (), with_note: bool = True, bullets: bool = False) -> list[str]:
     """``Cases: **47** in Oct 2026 to date vs 30 in Sep 2026 to date (+17, +56.7%).``
     per row (the subject against its baseline; a list item with ``bullets``), then the
     in-progress note as its own paragraph."""
-    periods = [display_text(p, 40) for p in comp.get("periods") or [] if isinstance(p, str)]
-    subject = display_text(comp.get("subject"), 40) or (periods[-1] if periods else "this period")
-    baseline = display_text(comp.get("baseline"), 40) or (periods[-2] if len(periods) > 1 else "the period before")
+    periods = [display_text(p, _PERIOD_CHARS) for p in comp.get("periods") or [] if isinstance(p, str)]
+    subject = display_text(comp.get("subject"), _PERIOD_CHARS) or (periods[-1] if periods else "this period")
+    baseline = (display_text(comp.get("baseline"), _PERIOD_CHARS)
+                or (periods[-2] if len(periods) > 1 else "the period before"))
     try:
         cur_at, base_at = periods.index(subject), periods.index(baseline)
     except ValueError:
@@ -8029,7 +8057,7 @@ def _say_comparison(comp: Mapping[str, Any], *, limit: int = 5, plain_labels: bo
             continue
         flags = [_change_text(row)] + (["small sample"] if row.get("small_sample") and unit != "count" else [])
         out.append(f"{label}: **{_value_text(values[cur_at], unit)}** {_in(subject)} vs "
-                   f"{_value_text(values[base_at], unit)} {_in(baseline)} ({'; '.join(flags)}).")
+                   f"{_value_text(values[base_at], unit)} {_with_change(_in(baseline), '; '.join(flags))}.")
     if bullets:
         out = [f"- {line}" for line in out]
     note = comp.get("note")
@@ -8289,8 +8317,8 @@ def _zero_with_baseline(o: Mapping[str, Any]) -> list[str]:
     comp = _comparison_of(o)
     row = _count_row(comp)
     values = row.get("values") if row is not None and isinstance(row.get("values"), list) else []
-    baseline = display_text((comp or {}).get("baseline"), 40) or "the previous period"
-    periods = [display_text(p, 40) for p in (comp or {}).get("periods") or [] if isinstance(p, str)]
+    baseline = display_text((comp or {}).get("baseline"), _PERIOD_CHARS) or "the previous period"
+    periods = [display_text(p, _PERIOD_CHARS) for p in (comp or {}).get("periods") or [] if isinstance(p, str)]
     at = periods.index(baseline) if baseline in periods and len(periods) == len(values) else len(values) - 2
     before = _num(values[at]) if len(values) >= 2 and 0 <= at < len(values) else None
     if comp is None or before is None:
@@ -8875,9 +8903,9 @@ def _direction_answer(ask: Ask, comps: Sequence[Mapping[str, Any] | None]) -> st
 def _subject_when(comp: Mapping[str, Any]) -> str:
     """"now" for a comparison whose subject is the current, in-progress period, else
     "in Sep 2026" (a comparison of two past periods never calls the later one "now")."""
-    periods = [display_text(p, 40) for p in comp.get("periods") or [] if isinstance(p, str)]
+    periods = [display_text(p, _PERIOD_CHARS) for p in comp.get("periods") or [] if isinstance(p, str)]
     flags = comp.get("in_progress") if isinstance(comp.get("in_progress"), list) else []
-    subject = display_text(comp.get("subject"), 40) or (periods[-1] if periods else "")
+    subject = display_text(comp.get("subject"), _PERIOD_CHARS) or (periods[-1] if periods else "")
     at = periods.index(subject) if subject in periods else len(periods) - 1
     if 0 <= at < len(flags) and flags[at] is True:
         return "now"
@@ -8899,18 +8927,20 @@ def _final_compare(view: PromptView, ask: Ask) -> Final | None:
     filters = stats_obs.get("filters") if isinstance(stats_obs.get("filters"), Mapping) else {}
     filters = {k: v for k, v in filters.items() if v not in (None, "", [])}
     if comp:
-        subject = display_text(comp.get("subject"), 40)
-        baseline = display_text(comp.get("baseline"), 40)
+        subject = display_text(comp.get("subject"), _PERIOD_CHARS)
+        baseline = display_text(comp.get("baseline"), _PERIOD_CHARS)
         if filters:
             # Every filter is named, in the headline and on the count row, so a filtered
             # count never reads as the case volume (SPEC: name every filter).
             noun = _plural_noun(_case_noun(filters, "case")) + _entity_about(filters)
             noun = noun[:1].upper() + noun[1:]
-            body.append(f"**{noun}, {subject} compared with {baseline}** (changes computed exactly):")
+            body.append(f"**{noun}, {subject} compared with {_the(baseline)}**. Changes are computed exactly:")
             comp = _relabel_count(comp, filters)
         else:
-            headline = f"{subject} compared with {baseline}"
-            body.append(f"**{headline[:1].upper()}{headline[1:]}** (changes computed exactly over every case):")
+            headline = f"{subject} compared with {_the(baseline)}"
+            # The method is its own sentence: a period name that ends in its dates in
+            # brackets is never followed by a second bracket.
+            body.append(f"**{headline[:1].upper()}{headline[1:]}**. Changes are computed exactly over every case:")
         body.extend(f"- {line}" for line in _say_comparison(comp, limit=6, with_note=False))
         note = comp.get("note")
         if isinstance(note, str) and note.strip():
@@ -9044,8 +9074,13 @@ def _final_perf_report(view: PromptView, ask: Ask) -> Final | None:
     if _num(overall) is not None:
         summary_bits.append(f"{_pct(overall)} noise reduction from {_count(stages.get('ingested'))} alerts")
     comp = _comparison_of(vol.obs) if vol else None
-    change_lines = _say_comparison(comp, limit=3) if comp else []
-    summary = _sentence(_join(summary_bits)) + (" " + " ".join(c.replace("**", "") for c in change_lines[:3])
+    # Three rows, then the comparison's own note: a latest period still in progress
+    # against the complete periods before it says the change compares a partial period.
+    change_lines = _say_comparison(comp, limit=3, with_note=False) if comp else []
+    note = comp.get("note") if comp else None
+    if change_lines and isinstance(note, str) and note.strip():
+        change_lines.append(_note_text(note))
+    summary = _sentence(_join(summary_bits)) + (" " + " ".join(c.replace("**", "") for c in change_lines)
                                                  if change_lines else "")
     steps = _perf_steps(post, noise, rules, cost)
     highlights: list[dict[str, Any]] = []

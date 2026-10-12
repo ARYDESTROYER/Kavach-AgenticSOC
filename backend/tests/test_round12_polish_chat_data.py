@@ -265,7 +265,15 @@ def test_report_scope_states_each_window_once() -> None:
     older = ["last 90 days", "last 90 days vs previous 90 days", "last 90 days (since 15 Jul 2026)",
              "last 90 days (since 15 Jul 2026) vs 16 Apr – 14 Jul 2026 08:02"]
     assert _merge_windows(older) == [
-        "last 90 days (since 15 Jul 2026), compared with previous 90 days and 16 Apr – 14 Jul 2026 08:02"]
+        "last 90 days (since 15 Jul 2026), compared with the previous 90 days and 16 Apr – 14 Jul 2026 08:02"]
+    # The previous period of a window counted in whole days is the whole days just
+    # before it, named by its span and dates: stated as "the previous 90 days (…)", and
+    # a scope that already states it merges with a raw one, each period once.
+    current = ["last 90 days (since 15 Jul 2026)",
+               "last 90 days (since 15 Jul 2026) vs previous 90 days (16 Apr to 14 Jul 2026)", "all time"]
+    folded = "last 90 days (since 15 Jul 2026), compared with the previous 90 days (16 Apr to 14 Jul 2026)"
+    assert _merge_windows(current) == [folded, "all time"]
+    assert _merge_windows([folded, current[1], "last 90 days (since 15 Jul 2026)"]) == [folded]
     # Several compared periods and a zone: each period once, the zone kept.
     assert _merge_windows(["Oct 2026 to date", "Oct 2026 to date vs Sep 2026 to date vs Aug 2026 to date (Asia/Kolkata)"]) == [
         "Oct 2026 to date, compared with Sep 2026 to date and Aug 2026 to date (Asia/Kolkata)"]

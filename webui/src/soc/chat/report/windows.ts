@@ -9,8 +9,8 @@
  * ("last 90 days", "last 90 days (since 15 Jul 2026)") reads once, with the start its
  * breakdowns state; two different starts of one relative window keep the shared phrase
  * only. A comparison of a window that is also stated reads inside it ("last 90 days
- * (since 15 Jul 2026), compared with 16 Apr – 14 Jul 2026 08:02"). Reports saved before
- * the server merged their scopes are merged here on read.
+ * (since 15 Jul 2026), compared with the previous 90 days (16 Apr to 14 Jul 2026)").
+ * Reports saved before the server merged their scopes are merged here on read.
  */
 
 const SINCE_WINDOW_RE = /^(.+?) \(since ([^()]+)\)( \([^()]+\))?$/;
@@ -108,15 +108,27 @@ function splitPeriods(text: string): string[] {
   return parts.map((part) => part.trim()).filter(Boolean);
 }
 
-/** [subject, compared periods] of a comparison window, raw ("A vs B") or already folded ("A, compared with B"). */
+/**
+ * [subject, compared periods] of a comparison window, raw ("A vs B") or already folded
+ * ("A, compared with B"). A period is kept by its name ("previous 90 days (…)"),
+ * without the article a statement gives it (`periodPhrase`).
+ */
 function comparison(window: string): [string, string[]] | null {
   const raw = window.indexOf(COMPARED_SEPARATOR);
   if (raw >= 0) {
     return [window.slice(0, raw), window.slice(raw + COMPARED_SEPARATOR.length).split(COMPARED_SEPARATOR).filter(Boolean)];
   }
   const folded = window.indexOf(COMPARED_WITH);
-  if (folded >= 0) return [window.slice(0, folded), splitPeriods(window.slice(folded + COMPARED_WITH.length))];
+  if (folded >= 0) {
+    const periods = splitPeriods(window.slice(folded + COMPARED_WITH.length));
+    return [window.slice(0, folded), periods.map((p) => (p.startsWith('the ') ? p.slice(4) : p))];
+  }
   return null;
+}
+
+/** A compared period as a statement names it: "the previous 90 days (…)", "the same 90 days a year earlier". */
+function periodPhrase(period: string): string {
+  return period.startsWith('previous ') || period.startsWith('same ') ? `the ${period}` : period;
 }
 
 function andList(parts: readonly string[]): string {
@@ -135,8 +147,9 @@ interface WindowEntry {
 
 /**
  * A comparison window whose subject is also stated reads once, inside it: "last 90
- * days (since 15 Jul 2026), compared with 16 Apr – 14 Jul 2026 08:02", never the same
- * phrase twice; so do two comparisons of one subject, each period once. A scope that
+ * days (since 15 Jul 2026), compared with the previous 90 days (16 Apr to 14 Jul
+ * 2026)", never the same phrase twice; so do two comparisons of one subject, each
+ * period once. A scope that
  * already reads that way (another item's) merges the same way, so the report header
  * states the window once. A comparison whose subject is not stated on its own is kept.
  */
@@ -170,7 +183,7 @@ function foldComparisons(windows: readonly string[]): string[] {
     .sort((a, b) => a.position - b.position)
     .map((entry) =>
       entry.changed && entry.periods.length
-        ? `${entry.comparison ? entry.subject : entry.text}${COMPARED_WITH}${andList(entry.periods)}`
+        ? `${entry.comparison ? entry.subject : entry.text}${COMPARED_WITH}${andList(entry.periods.map(periodPhrase))}`
         : entry.text,
     );
 }

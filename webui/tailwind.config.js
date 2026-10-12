@@ -276,9 +276,15 @@ export default {
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
-        'fade-in': 'fade-in 0.24s cubic-bezier(0.16,1,0.3,1) both',
-        'rise-in': 'rise-in 0.24s cubic-bezier(0.16,1,0.3,1) both',
-        'scale-in': 'scale-in 0.2s cubic-bezier(0.16,1,0.3,1) both',
+        /* Entrance fills `backwards`, never `both` (Round 12 polish): the from-state holds
+           through a stagger delay, and once the entrance ends the element is back on its own
+           style, which equals the end keyframe. A `both`-filled finished opacity animation
+           stays in effect forever, and Chromium then treats the element as a backdrop root:
+           on the route wrapper it cut the sticky Overview band's blur off from the page,
+           so card text and chart bars read through the band (material-gate.test.ts). */
+        'fade-in': 'fade-in 0.24s cubic-bezier(0.16,1,0.3,1) backwards',
+        'rise-in': 'rise-in 0.24s cubic-bezier(0.16,1,0.3,1) backwards',
+        'scale-in': 'scale-in 0.2s cubic-bezier(0.16,1,0.3,1) backwards',
         'ribbon-grow': 'ribbon-grow 0.5s cubic-bezier(0.16,1,0.3,1) both',
         'bar-indeterminate': 'bar-indeterminate 1.1s ease-in-out infinite',
         'settings-highlight': 'settings-highlight 1.6s cubic-bezier(0.16,1,0.3,1) both',

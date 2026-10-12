@@ -14,15 +14,19 @@
  * (sticky page / control / filter bars, the sticky case header). Never behind data.
  *
  * Fill opacity is 0.97, with or without `backdrop-filter` support. The fill alone has
- * to hide what scrolls beneath, because the blur cannot be relied on: in Chromium the
- * backdrop blur does not reach routed content (measured on the Overview at 768 and 1920,
- * on first load and after navigation; one cause is the `both`-filled entrance fade on
- * the route wrapper, which leaves a finished opacity effect on an ancestor), so the bar
- * was its fill and nothing else. At 0.80 that let chart labels and card text read
- * straight through (Round 12 screenshot tour), and 0.95 still left bold labels legible
- * to a careful eye (about 1.1:1). At 0.97 text beneath is a wash of colour, about 1.06:1
- * against the bar in both themes; where an engine does blur, the material keeps its
- * frosted tint. The fill also lifts 12px secondary text on the bar well clear of AA.
+ * to hide what scrolls beneath, because the blur cannot be relied on everywhere. At 0.80
+ * chart labels and card text read straight through (Round 12 screenshot tour), and 0.95
+ * still left bold labels legible to a careful eye (about 1.1:1). At 0.97 text beneath is
+ * a wash of colour, about 1.06:1 against the bar in both themes; with the blur working it
+ * is a smear nobody can read. The fill also lifts 12px secondary text on the bar well
+ * clear of AA.
+ *
+ * Keep the blur working: Chromium treats an element whose opacity animation is still in
+ * effect as a backdrop root, and the blur stops there. The route wrapper's entrance fade
+ * used to fill `both`, which keeps a finished animation in effect, so on first load the
+ * band blurred nothing and the 1.06:1 ghost of the page showed through it (screenshot
+ * tour 2). Entrances fill `backwards` (tailwind.config.js, pinned by material-gate.test.ts);
+ * never put a filling animation, `opacity` below 1 or a `filter` on an ancestor of a bar.
  * The `material-surface` marker carries the scroll-edge fade
  * (`data-scrolled="true"`, see `useScrollEdge`) and every fallback in theme.css:
  * solid under prefers-reduced-transparency / `data-transparency="reduced"`, solid

@@ -424,13 +424,17 @@ async def test_posture_tile_deltas_belong_to_the_window_shown() -> None:
 # --------------------------------------------------------------------------- #
 async def test_spend_today_ignores_the_request_range() -> None:
     usage = UsageStore(InMemoryESClient())
-    midnight = NOW.replace(hour=0, minute=0, second=0, microsecond=0)
-    today = midnight + (NOW - midnight) / 2
-    for ts, cost in ((today, 0.5), (NOW - timedelta(days=40), 2.0)):
+    # "Today" is read from the clock when the test runs, not from ``NOW`` (read when the
+    # module was collected, minutes earlier in a full run): a run that crossed midnight
+    # since then put the row in yesterday and expected it in today's spend.
+    now = datetime.now(timezone.utc)
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today = midnight + (now - midnight) / 2
+    for ts, cost in ((today, 0.5), (now - timedelta(days=40), 2.0)):
         await usage.write(UsageDoc(ts=ts.isoformat(), surface="chat", role="router", model="gpt-a",
                                    total_tokens=10, cost=cost))
-    start = (NOW - timedelta(days=60)).date().isoformat()
-    end = (NOW - timedelta(days=20)).date().isoformat()
+    start = (now - timedelta(days=60)).date().isoformat()
+    end = (now - timedelta(days=20)).date().isoformat()
     chip = TimeRange.model_validate({"from": start, "to": end})
     out = await CostUsageTool().run(_ctx(usage=usage, time_range=chip), window="now-90d")
     assert out.ok, out.error

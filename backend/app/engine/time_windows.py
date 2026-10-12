@@ -922,6 +922,19 @@ def whole_period_unit(window: ResolvedWindow) -> str | None:
     return None
 
 
+def whole_period_count(window: ResolvedWindow) -> int | None:
+    """How many whole periods of :func:`whole_period_unit` a relative window counts
+    ("last 90 days" is 90 days, "last 4 weeks" 28 days, "last 2 years" 24 months), from
+    the window alone; ``None`` when it is not counted in whole periods. The previous
+    period of such a window is that many periods just before its start."""
+    unit = whole_period_unit(window)
+    match = _TOKEN_RE.match(window.token or "")
+    if unit is None or match is None:
+        return None
+    amount, wunit = int(match.group(1)), match.group(2)
+    return amount * {"d": 1, "w": 7, "M": 1, "y": 12}[wunit]
+
+
 def align_whole_periods(window: ResolvedWindow) -> ResolvedWindow:
     """A relative window as N whole periods of its own unit, the last in progress
     (:func:`whole_period_unit`): "last 90 days" is "last 90 days (since 15 Jul 2026)",
@@ -938,11 +951,9 @@ def align_whole_periods(window: ResolvedWindow) -> ResolvedWindow:
     if window.kind != "relative" or window.aligned_to or window.start is None:
         return window
     unit = whole_period_unit(window)
-    match = _TOKEN_RE.match(window.token or "")
-    if unit is None or match is None:
+    periods = whole_period_count(window)
+    if unit is None or periods is None:
         return window
-    amount, wunit = int(match.group(1)), match.group(2)
-    periods = amount * ({"d": 1, "w": 7, "M": 1, "y": 12}[wunit])
     zone, zone_name = zone_for(window.tz)
     anchor = window.now if window.now is not None else window.end
     try:
@@ -1038,6 +1049,7 @@ __all__ = [
     "period_start",
     "resolve_window",
     "shift_period_start",
+    "whole_period_count",
     "whole_period_unit",
     "zone_for",
 ]

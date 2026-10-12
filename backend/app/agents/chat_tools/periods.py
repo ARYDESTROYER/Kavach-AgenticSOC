@@ -8,10 +8,11 @@ A ``compare`` input on ``case_stats``, ``log_stats``, ``soc_metrics`` and
   still in progress — ``this_month``, ``this_quarter``, ``this_year``, ``ytd``,
   ``this_week``, ``today`` — the SAME elapsed part of the previous one, so October
   1–10 is compared with September 1–10, never with all of September; for a relative
-  window broken down by a calendar unit (aligned to N whole periods, the last in
-  progress) the N periods before it cut at the same point, so "the last 6 months by
-  month" (May to 10 Oct) is compared with November to 10 April; the same length
-  before it for any other relative or custom window);
+  window counted in whole periods (N whole days or months, the last in progress) the N
+  whole periods just before its start, so "the last 90 days (since 15 Jul 2026)" is
+  compared with "the previous 90 days (16 Apr to 14 Jul 2026)" and "the last 6 months
+  (since May 2026)" with "the previous 6 months (Nov 2025 to Apr 2026)", with no gap
+  between them; the same length before it for any other relative or custom window);
 * ``"same_period_last_year"`` — the same window one calendar year earlier (whole ISO
   weeks step back to the same ISO week of the previous year, so a Monday-to-Sunday
   week is compared with a Monday-to-Sunday week);
@@ -29,7 +30,7 @@ runs in the operator timezone (``SlaPolicy.timezone``).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Literal
 from zoneinfo import ZoneInfo
@@ -98,14 +99,28 @@ def normalise_compare(value: Any) -> Any:
     raise ValueError(COMPARE_HELP)
 
 
+#: How a ``compare`` keyword built a period against the call's own window
+#: (:attr:`Period.basis`): the SAME elapsed time ("Sep 2026 to date" for "Oct 2026 to
+#: date", the same window a year earlier), or the N WHOLE periods just before a window
+#: counted in whole periods, the last of which is still in progress ("previous 90 days
+#: (16 Apr to 14 Jul 2026)" for "last 90 days (since 15 Jul 2026)").
+BASIS_ELAPSED = "elapsed"
+BASIS_WHOLE = "whole"
+
+
 @dataclass(frozen=True)
 class Period:
-    """One compared window: its ``label`` (in the operator timezone) and whether it is
-    still in progress (it ends now)."""
+    """One compared window: its ``label`` (in the operator timezone), whether it is
+    still in progress (it ends now) and, for a period a ``compare`` keyword built, how
+    it was built (``basis``: :data:`BASIS_ELAPSED` or :data:`BASIS_WHOLE`; ``None`` for
+    the call's own window and an explicit one). :func:`in_progress_note` reads it, so a
+    like-for-like comparison is never called partial because a leap day or a clock
+    change made the two spans differ by a day or an hour."""
 
     window: Window
     label: str
     in_progress: bool
+    basis: str | None = None
 
 
 def _zone(name: str) -> Any:
@@ -247,14 +262,67 @@ def _aligned_unit(window: Window) -> str | None:
     return window.aligned_to
 
 
-def _shift_periods(moment: datetime, unit: str, periods: int, tz: str) -> datetime:
-    """``moment`` moved back by ``periods`` calendar ``unit`` periods in ``tz`` (the
-    wall-clock time kept; whole hours for an hour)."""
-    if unit in ("month", "quarter", "year"):
-        return _shift_months(moment, -periods * {"month": 1, "quarter": 3, "year": 12}[unit], tz)
-    if unit in ("week", "day"):
-        return _shift_days(moment, -periods * (7 if unit == "week" else 1), tz)
-    return moment - timedelta(hours=periods)
+def aligned_span_label(start: datetime, end: datetime, unit: str, tz: str) -> str:
+    """Whole ``unit`` periods ``[start, end)`` named at that granularity, in ``tz``:
+    "16 Apr to 14 Jul 2026" for days (the last day is the one before ``end``; "9 to 10
+    Oct 2026" within one month), "Nov 2025 to Apr 2026" for months; the first year is
+    left out when both ends share it."""
+    zone = _zone(tz)
+    first = start.astimezone(zone)
+    last = (end - timedelta(microseconds=1)).astimezone(zone)
+    if unit == "month":
+        head = _MONTHS[first.month - 1]
+        tail = f"{_MONTHS[last.month - 1]} {last.year}"
+        single = (first.year, first.month) == (last.year, last.month)
+    else:
+        same_month = (first.year, first.month) == (last.year, last.month)
+        head = f"{first.day}" if same_month else f"{first.day} {_MONTHS[first.month - 1]}"
+        tail = _day_label(last, tz)
+        single = first.date() == last.date()
+    if single:
+        return tail
+    if first.year != last.year:
+        head += f" {first.year}"
+    return f"{head} to {tail}"
+
+
+def _previous_phrase(window: Window) -> str | None:
+    """"previous 90 days" for "last 90 days (since 15 Jul 2026)", "previous year" for
+    "past year (since Nov 2025)": the window's own span words, else ``None``."""
+    base = window.label.split(" (since ", 1)[0].strip()
+    for head in ("last ", "past "):
+        if base.startswith(head) and len(base) > len(head):
+            return "previous " + base[len(head):]
+    return None
+
+
+def _aligned_previous(window: Window, unit: str) -> Window | None:
+    """The N whole ``unit`` periods just before a window counted in N whole periods
+    (the last in progress): ``[start − N periods, start)``, adjacent to it with no gap,
+    the same N periods long, and named at the same granularity as the start the window
+    states ("previous 90 days (16 Apr to 14 Jul 2026)" for "last 90 days (since 15 Jul
+    2026)"). Calendar arithmetic in the operator timezone, so a DST change or a short
+    month inside it never moves a bound off local midnight or the first of a month."""
+    from ...engine.time_windows import shift_period_start, whole_period_count
+
+    try:
+        count = whole_period_count(window.as_resolved()) or _period_count(window, unit)
+    except NotImplementedError:
+        raise
+    except Exception:  # noqa: BLE001 — not countable: the caller steps back by length
+        return None
+    if count <= 0:
+        return None
+    try:
+        start = shift_period_start(window.start, unit, -count, window.tz)
+    except (OverflowError, OSError, ValueError):
+        return None
+    end = window.start
+    if not start < end:
+        return None
+    span = aligned_span_label(start, end, unit, window.tz)
+    phrase = _previous_phrase(window)
+    return _window_from(start, end, window, f"{phrase} ({span})" if phrase else span)
 
 
 def _period_count(window: Window, unit: str) -> int:
@@ -298,19 +366,25 @@ def _iso_week_shift(window: Window) -> int | None:
 def previous_period(window: Window) -> Window | None:
     """The period just before ``window``: the previous calendar period for a complete
     calendar window, the same elapsed part of the previous period for one still in
-    progress ("this month" so far against the same days of last month) or for a
-    relative window aligned to N whole periods (the N periods before it, cut at the
-    same point), else the same length immediately before. ``None`` for all time."""
+    progress ("this month" so far against the same days of last month), the N whole
+    periods just before the start of a relative window counted in N whole periods
+    (:func:`_aligned_previous`: adjacent, never a gap between them), else the same
+    length immediately before. ``None`` for all time."""
+    return _previous(window)[0]
+
+
+def _previous(window: Window) -> tuple[Window | None, str | None]:
+    """:func:`previous_period` and how it was built (:attr:`Period.basis`): the N
+    whole periods before a window counted in whole periods are :data:`BASIS_WHOLE`, the
+    same elapsed part of the previous calendar period :data:`BASIS_ELAPSED`; any other
+    previous period is judged by its length (``None``)."""
     if window.all_time:
-        return None
+        return None, None
     aligned = _aligned_unit(window)
     if aligned is not None:
-        count = _period_count(window, aligned)
-        if count > 0:
-            start = _shift_periods(window.start, aligned, count, window.tz)
-            end = _shift_periods(window.end, aligned, count, window.tz)
-            if start < end <= window.start:
-                return _window_from(start, end, window, range_label(start, end, window.tz))
+        before = _aligned_previous(window, aligned)
+        if before is not None:
+            return before, BASIS_WHOLE
     unit = _in_progress_unit(window)
     if unit is not None:
         if unit in ("month", "quarter", "year"):
@@ -321,7 +395,7 @@ def previous_period(window: Window) -> Window | None:
             days = 7 if unit == "week" else 1
             start = _shift_days(window.start, -days, window.tz)
             end = _shift_days(window.end, -days, window.tz)
-        return _window_from(start, end, window, in_progress_label(start, end, unit, window.tz))
+        return _window_from(start, end, window, in_progress_label(start, end, unit, window.tz)), BASIS_ELAPSED
     step = _calendar_step(window)
     if step is not None:
         unit, amount = step
@@ -335,14 +409,16 @@ def previous_period(window: Window) -> Window | None:
         start, end = window.start - span, window.start
         if window.trailing and window.label.startswith("last ") and aligned is None:
             # "last 90 days" → "previous 90 days" (the same length just before it).
-            return _window_from(start, end, window, "previous " + window.label[len("last "):])
-    return _window_from(start, end, window, range_label(start, end, window.tz))
+            return _window_from(start, end, window, "previous " + window.label[len("last "):]), None
+    return _window_from(start, end, window, range_label(start, end, window.tz)), None
 
 
 def same_period_last_year(window: Window) -> Window | None:
     """``window`` one calendar year earlier (both bounds). Whole ISO weeks step back to
     the same ISO week of the previous ISO year (Monday stays Monday, so weekend volume
-    is compared with weekend volume). ``None`` for all time."""
+    is compared with weekend volume). ``None`` for all time. A window that ends now is
+    compared with the same elapsed time a year earlier (:data:`BASIS_ELAPSED`, see
+    :func:`resolve_periods`), even when a leap day makes one of them a day longer."""
     if window.all_time:
         return None
     unit = _in_progress_unit(window)
@@ -404,14 +480,22 @@ _ZONE_FREE_NAME = re.compile(
 )
 
 
+#: A caption that ends in a period's dates in brackets ("… (16 Apr to 14 Jul 2026)"):
+#: the zone joins them rather than opening a second bracket.
+_DATED_TAIL = re.compile(r"\([^()]*\d{4}\)$")
+
+
 def comparison_caption(periods: list[Period]) -> str:
     """The scope caption of a ``comparison`` artifact: its periods, latest first
     ("Oct 2026 to date vs Sep 2026 to date"), then the operator zone ONCE when any of
-    them was cut in it ("… (Asia/Kolkata)")."""
+    them was cut in it ("… (Asia/Kolkata)"). When the caption already ends in a period's
+    dates in brackets the zone goes inside them, as a window label states it ("last 90
+    days (since 15 Jul 2026) vs previous 90 days (16 Apr to 14 Jul 2026, Asia/Kolkata)"),
+    never two brackets in a row."""
     text = " vs ".join(p.label for p in reversed(periods))
     tz = periods[-1].window.tz if periods else "UTC"
     if tz and tz != "UTC" and any(not _ZONE_FREE_NAME.match(p.label) for p in periods):
-        text += f" ({tz})"
+        text = f"{text[:-1]}, {tz})" if _DATED_TAIL.search(text) else f"{text} ({tz})"
     return text
 
 
@@ -431,14 +515,19 @@ def resolve_periods(
     if window.all_time and compare in COMPARE_KEYWORDS:
         return "Invalid input: compare needs a bounded window (all time has no previous period)"
     others: list[Window] = []
+    basis: str | None = None
     if compare == "previous_period":
-        prev = previous_period(window)
+        prev, basis = _previous(window)
         if prev is not None:
             others.append(prev)
     elif compare == "same_period_last_year":
         prev = same_period_last_year(window)
         if prev is not None:
             others.append(prev)
+            # Both bounds a calendar year back: a window that ends now meets the same
+            # point of its year a year earlier. One that ends later ("to" the end of this
+            # month) meets a complete one, judged by length.
+            basis = BASIS_ELAPSED if window.trailing else None
     else:
         specs = compare if isinstance(compare, list) else [compare]
         if len(specs) > MAX_COMPARE_PERIODS:
@@ -452,9 +541,13 @@ def resolve_periods(
             others.append(other)
     periods = [Period(window, subject_label(window), _running(window))]
     for other in others:
-        # Every period is named the same way as the subject ("Jul 2026", "Q3 2026"; a
-        # raw ISO range reads as its calendar label, :func:`subject_label`).
-        periods.append(Period(other, subject_label(other), _running(other)))
+        # A period the keywords derive keeps the name it was built with, in the words
+        # of the window it follows ("previous 90 days (16 Apr to 14 Jul 2026)", "Sep
+        # 2026 to date"); an explicit window is named the same way as the subject
+        # ("Jul 2026", "Q3 2026"; a raw ISO range reads as its calendar label,
+        # :func:`subject_label`).
+        label = other.label if compare in COMPARE_KEYWORDS else subject_label(other)
+        periods.append(Period(other, label, _running(other), basis))
     # Chronological: the latest is the subject of the deltas; equal labels are made unique.
     periods.sort(key=lambda p: (p.window.start if not p.window.all_time else ALL_TIME_START, p.window.end))
     seen: dict[str, int] = {}
@@ -462,7 +555,7 @@ def resolve_periods(
     for period in periods:
         n = seen.get(period.label, 0) + 1
         seen[period.label] = n
-        unique.append(period if n == 1 else Period(period.window, f"{period.label} ({n})", period.in_progress))
+        unique.append(period if n == 1 else replace(period, label=f"{period.label} ({n})"))
     return unique
 
 
@@ -508,16 +601,33 @@ def _span(period: Period) -> float | None:
     return (end - window.start).total_seconds()
 
 
+#: The engine note for a latest period still in progress compared with a longer,
+#: complete one (:func:`in_progress_note`), and for one compared like for like.
+PARTIAL_PERIOD_NOTE = ("The latest period is still in progress and shorter than the one it is compared "
+                       "with, so the change compares a partial period; say so.")
+LIKE_FOR_LIKE_NOTE = ("The latest period is still in progress; each compared period covers the same "
+                      "elapsed time, so the change is like for like.")
+
+
 def in_progress_note(periods: list[Period]) -> str | None:
-    """What the model must say about a period still in progress (engine text)."""
+    """What the model must say about a period still in progress (engine text).
+
+    It is decided by how the baseline was built, never by seconds alone: the N whole
+    periods before a window counted in whole periods (:data:`BASIS_WHOLE`) are complete
+    while the latest is not, so the change compares a partial period; the same elapsed
+    time (:data:`BASIS_ELAPSED`: "2025 to date" against "2024 to date", a window a year
+    earlier) is like for like even when a leap day or a clock change makes the two spans
+    differ by a day or an hour. An explicit window is judged by length: like for like
+    unless the latest is more than one per cent shorter."""
     if len(periods) < 2 or not periods[-1].in_progress:
         return None
-    latest, baseline = _span(periods[-1]), _span(periods[-2])
-    if latest is not None and baseline is not None and latest < baseline * 0.99:
-        return ("The latest period is still in progress and shorter than the one it is compared "
-                "with, so the change compares a partial period; say so.")
-    return ("The latest period is still in progress; each compared period covers the same elapsed "
-            "time, so the change is like for like.")
+    baseline = periods[-2]
+    if baseline.basis is not None:
+        partial = baseline.basis == BASIS_WHOLE
+    else:
+        latest, before = _span(periods[-1]), _span(baseline)
+        partial = latest is not None and before is not None and latest < before * 0.99
+    return PARTIAL_PERIOD_NOTE if partial else LIKE_FOR_LIKE_NOTE
 
 
 def comparison_observation(periods: list[Period], rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -544,10 +654,15 @@ def comparison_observation(periods: list[Period], rows: list[dict[str, Any]]) ->
 
 
 __all__ = [
+    "BASIS_ELAPSED",
+    "BASIS_WHOLE",
     "COMPARE_HELP",
     "INVALID_COMPARE",
+    "LIKE_FOR_LIKE_NOTE",
     "MAX_COMPARE_PERIODS",
+    "PARTIAL_PERIOD_NOTE",
     "Period",
+    "aligned_span_label",
     "comparison_caption",
     "comparison_data",
     "comparison_observation",

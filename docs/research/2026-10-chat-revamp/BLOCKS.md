@@ -176,7 +176,11 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     Amendment 7's compact storage form now applies to the inline copy only: the full,
     uncompacted response is stored in the exchange document and restored on read
     (SPEC A50), so a reopened answer shows its full blocks; answers saved before Round 12
-    keep the compact form.
+    keep the compact form. A KPI item's `context` gets its own limit, `kpi_context` 100
+    (`MAX_KPI_CONTEXT`; it was the 60-character label limit): a comparison tile's context
+    is the baseline period's whole name and its figures ("previous 90 days (16 Apr to 14
+    Jul 2026): 54.5% · +3.9% · n < 20"), so a dated name is never cut mid-date on screen,
+    in an export's Context column or in the report digest.
 30. **Exports (Round 12 WP-REP; amends §7 and v2 amendment 9).** One flat export menu: PDF
     (the browser print dialog, plus a one-click "Download PDF"), Word (`.docx`) and Excel
     (`.xlsx`, a "Report" sheet then one sheet per table) generated client-side from the same
@@ -186,7 +190,20 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     look like formulas are neutralised. Log-derived text is escaped in Markdown so it cannot
     become formatting or links. An export shows button-level progress, cannot start twice,
     and reports a failure with Retry; download links are revoked only after the browser has
-    taken the file (`lib/download.ts`).
+    taken the file (`lib/download.ts`). Every format but JSON writes enum values in the
+    screen's words (Round 12 polish): severity, verdict and status in the badges' own labels
+    (`components/semantic-labels.ts`, read through `blocks/labels.ts` by the export walker,
+    CSV and Copy data), and entity, reputation, timeline and citation kinds as their views
+    name them, so a file says "Critical", "True positive", "On hold" and "IP address", never
+    `critical`, `true_positive`, `on_hold` or `ip`. A yes/no cell reads "Yes" or "No" in
+    every format but JSON, CSV and Copy data included (the `csvField`/`tsvField` encoders
+    stay primitive), and a query block's caption names its language as the screen does
+    ("ES|QL · Elastic · 12 hits", `queryCaption` and `QUERY_LANGUAGE_LABEL` in
+    `blocks/labels.ts`) while the code fence keeps the raw key as its syntax hint. JSON
+    keeps the stored keys, and the KPI table's Unit column in CSV keeps the unit key beside
+    the raw Value. A Word or print table
+    split by columns names each part "Columns 1–5 of 6", a single column "Column 6 of 6",
+    and every later part "(continued)" (`columnPartLabel`).
 31. **Line end labels sized to the chart (SPEC A62; amends the §6 `line`/`area` row).** The
     selective end labels (2 to 4 series) reserve what their longest label needs, up to a
     quarter of the chart's width and never fewer than 14 characters (`endLabelColumn` in
@@ -315,7 +332,7 @@ interface KpiItem {
   key: string; label: string;                 // label ≤ 60
   value: number | null; unit: ValueUnit;
   bound?: 'lower';                            // renders "≥"
-  context?: string;                           // "of 43 cases", ≤ 60
+  context?: string;                           // "of 43 cases", ≤ 100 (amendment 29)
   delta?: { value: number; period_label: string; good_direction: 'up' | 'down' | 'none' };  // value in the item's own unit; label "vs previous window" (amendment 22)
   semantic?: SemanticKey;                     // accent chip + SEMANTIC_ICON
   trend?: { points: Array<number | null>; window_label: string };  // ≤ 60 points
@@ -612,7 +629,7 @@ These are the server clip limits; the client clamps the same values again.
 | donut segments | ≤ 6 | dataviz part-to-whole rule |
 | table | ≤ 12 cols × ≤ 200 rows; cell ≤ 500 chars | DOM and payload |
 | heatmap | ≤ 48 × 24 | legibility |
-| strings | title 120, label 60, caption 280, callout 600, markdown 12k | layout |
+| strings | title 120, label 60, KPI context 100, caption 280, callout 600, markdown 12k | layout |
 
 ### 5.5 Validation on both sides
 

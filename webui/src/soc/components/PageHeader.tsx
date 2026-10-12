@@ -60,6 +60,65 @@ export interface PageHeaderProps {
 }
 
 /**
+ * The document scroller's `scroll-padding-top` while a sticky page band is pinned: the top
+ * bar, the band's measured height and its 16px scroll-edge fade. Scroll padding is honoured
+ * by every scroll-into-view (keyboard focus, in-page links, `scrollIntoView`, find-in-page),
+ * so a focused control or a heading never ends up hidden under the band (WCAG 2.4.11).
+ */
+export function bandScrollPadding(height: number): string {
+  return `calc(var(--header-h) + ${height}px + 1rem)`;
+}
+
+/**
+ * Every pinned band and its height. The document root's scroll padding follows the tallest;
+ * a route transition can briefly mount two pages, and the page leaving must not clear the
+ * padding of the page arriving.
+ */
+const pinnedBands = new Map<HTMLElement, number>();
+
+function applyBandScrollPadding() {
+  const root = document.documentElement.style;
+  if (pinnedBands.size === 0) {
+    root.removeProperty('scroll-padding-top');
+    return;
+  }
+  root.setProperty('scroll-padding-top', bandScrollPadding(Math.max(...pinnedBands.values())));
+}
+
+/**
+ * Hold the document's scroll padding clear of a sticky band while it is mounted and pinned.
+ * Measured, not assumed: the band wraps to two or three lines at tablet widths. Nothing is
+ * held while the band is not actually pinned (a `max-sm:static` band scrolls away on a
+ * phone and covers nothing). A resize can flip the band's position at a breakpoint without
+ * changing its size, so the window's resize re-measures too. Never pair this with a
+ * `scroll-margin-top` on the page's headings: margin and padding add up.
+ */
+function useBandScrollPadding(ref: React.RefObject<HTMLElement | null>, enabled: boolean) {
+  React.useEffect(() => {
+    const band = ref.current;
+    if (!enabled || !band) return undefined;
+    const publish = () => {
+      if (getComputedStyle(band).position === 'sticky') {
+        pinnedBands.set(band, Math.ceil(band.getBoundingClientRect().height));
+      } else {
+        pinnedBands.delete(band);
+      }
+      applyBandScrollPadding();
+    };
+    publish();
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(publish);
+    observer?.observe(band);
+    window.addEventListener('resize', publish);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', publish);
+      pinnedBands.delete(band);
+      applyBandScrollPadding();
+    };
+  }, [ref, enabled]);
+}
+
+/**
  * Only http(s), root-relative, or in-page fragment hrefs may become links (#9,
  * defense-in-depth). A `javascript:`/`data:` crumb href — React does NOT sanitize
  * href — would execute on click, so any other scheme is dropped to a plain `<span>`.
@@ -139,7 +198,9 @@ export function PageHeader({
   // Sticky = floating chrome: the ONE Console material, with the scroll-edge fade shown
   // only while content is scrolled under the pinned header (solid fallbacks in theme.css).
   // An embedded header's bottom hairline gives way to that fade when it pins.
-  const edgeRef = useScrollEdgeRef<HTMLElement>(undefined, Boolean(sticky));
+  const bandRef = React.useRef<HTMLElement | null>(null);
+  const edgeRef = useScrollEdgeRef<HTMLElement>(bandRef, Boolean(sticky));
+  useBandScrollPadding(bandRef, Boolean(sticky));
   const stickyCls = sticky
     ? cn('sticky top-[var(--header-h)] z-20', materialBar, embedded && 'border-b-0')
     : undefined;

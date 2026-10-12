@@ -3,8 +3,8 @@
 * A relative window broken down by a calendar unit is aligned to whole periods BEFORE
   anything is counted, so the headline total, the series, its labels and the compared
   periods describe ONE span (case_stats, soc_metrics trends/timing, cost_usage,
-  log_stats), and "the previous period" of such a window is the N periods before it,
-  cut at the same point.
+  log_stats), and "the previous period" of such a window is the N whole periods just
+  before its start, with no gap between them.
 * A bounded window neither counts nor lists cases with no creation date, and says so;
   only an all-time breakdown has a "No creation date" row.
 * log_stats: twelve monthly buckets for the last twelve months; days in a non-UTC zone
@@ -101,6 +101,17 @@ def _cut_and_whole(spec: str, unit: str) -> tuple[datetime, datetime]:
     return raw.start, time_windows.align_window(raw, unit).start
 
 
+def _previous_months(n: int) -> str:
+    """The previous period of "last N months" now (UTC), counted in whole months: the N
+    whole months just before its first, named by month ("previous 6 months (Nov 2025 to
+    Apr 2026)")."""
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    first = NOW.year * 12 + NOW.month - 1 - (n - 1)            # the window's first month
+    (fy, fm), (ly, lm) = divmod(first - n, 12), divmod(first - 1, 12)
+    head = months[fm] + (f" {fy}" if fy != ly else "")
+    return f"previous {n} months ({head} to {months[lm]} {ly})"
+
+
 async def _aligned_case_store(spec: str, unit: str) -> tuple[CaseStore, int]:
     """Cases inside the aligned window, plus one in the CUT part (between the exact
     relative start and the aligned start), and one before both. Returns the store and
@@ -169,8 +180,11 @@ async def test_case_stats_by_month_with_compare_uses_one_window() -> None:
     series = _art(out, "series")
     assert not any("(from " in label for label in series.data["x_labels"])
     assert sum(series.data["series"][0]["values"]) == obs["total"]
-    # The previous period is the six months before, cut at the same point (a dated range).
-    assert "–" in obs["comparison"]["baseline"] and obs["comparison"]["note"]
+    # The previous period is the six whole months just before the first, adjacent to it:
+    # the case in the part the alignment cut off counts there, so no case falls between
+    # the two periods (it read 1, the gap's case in neither).
+    assert obs["comparison"]["baseline"] == _previous_months(6) and obs["comparison"]["note"]
+    assert cases_row["values"] == [2, inside]
     assert_artifacts_render(out)
 
 
@@ -185,14 +199,14 @@ async def test_case_stats_by_day_for_the_last_30_days() -> None:
     assert not any("(from " in label for label in _art(out, "series").data["x_labels"])
 
 
-def test_previous_period_of_an_aligned_window_is_like_for_like() -> None:
+def test_previous_period_of_an_aligned_window_is_the_whole_periods_just_before() -> None:
     ctx = make_ctx()
     window = align_to_bucket(resolve_window(ctx, window="now-6M", now=FIXED), "month")
     prev = previous_period(window)
     assert prev is not None
     assert prev.start == datetime(2025, 11, 1, tzinfo=timezone.utc)
-    assert prev.end == datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc) <= window.start
-    assert prev.label == "1 Nov 2025 – 10 Apr 2026 12:00"
+    assert prev.end == window.start == datetime(2026, 5, 1, tzinfo=timezone.utc)
+    assert prev.label == "previous 6 months (Nov 2025 to Apr 2026)"
     last_year = same_period_last_year(window)
     assert last_year is not None and last_year.start == datetime(2025, 5, 1, tzinfo=timezone.utc)
     assert "since" not in last_year.label
@@ -209,7 +223,7 @@ async def test_soc_metrics_trends_and_timing_use_the_aligned_window() -> None:
     assert obs["window"].startswith("last 6 months (since ")
     comparison = obs["comparison"]
     assert comparison["rows"][0]["values"][-1] == inside
-    assert comparison["subject"] == obs["window"] and "–" in comparison["baseline"]
+    assert comparison["subject"] == obs["window"] and comparison["baseline"] == _previous_months(6)
     assert "partial_buckets" not in obs
     timing = await SocMetricsTool().run(ctx, kind="timing", window="now-6M", bucket="month")
     assert timing.ok, timing.error

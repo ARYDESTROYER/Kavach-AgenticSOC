@@ -571,6 +571,20 @@ function resolveDelta(delta: KpiDelta, goodDirection: KpiGoodDirection) {
   return { colorClass, chipClass, Arrow, ariaLabel };
 }
 
+const MONTH = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
+const DAY_MONTH = new RegExp(`\\b(\\d{1,2}) (${MONTH})\\b`, 'g');
+const MONTH_YEAR = new RegExp(`\\b(${MONTH}) (\\d{4})\\b`, 'g');
+
+/**
+ * A comparison's words with each date held together ("16 Apr", "Jul 2026" joined by a
+ * no-break space), so a narrow tile wraps "vs previous 90 days (16 Apr to 14 Jul 2026)"
+ * between dates, never inside one ("(16" / "Apr to …"). Display only: the words read
+ * and are announced the same.
+ */
+export function keepDatesTogether(text: string): string {
+  return text.replace(DAY_MONTH, '$1\u00a0$2').replace(MONTH_YEAR, '$1\u00a0$2');
+}
+
 /**
  * The accessible name of a zero delta: a word label is spoken as is ("new"), a zero
  * figure as "unchanged" ("0 vs previous window" → "unchanged vs previous window").
@@ -925,7 +939,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             data-kpi-delta-period=""
             className="mb-0.5 min-w-0 break-words text-xs text-muted-foreground"
           >
-            {deltaPeriod}
+            {keepDatesTogether(deltaPeriod)}
           </span>
         </>
       ) : (

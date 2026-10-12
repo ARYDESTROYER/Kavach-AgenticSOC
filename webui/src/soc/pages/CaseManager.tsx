@@ -84,6 +84,7 @@ import { LoadError } from '@/soc/components/LoadError';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
+import { OwnerMonogram } from '@/soc/components/OwnerMonogram';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { caseOutcome } from '@/soc/components/outcome';
 import { semanticIcon } from '@/soc/components/palette';
@@ -111,7 +112,6 @@ import {
   caseDisplayId,
   caseTitle,
   middleEllipsis,
-  monogram,
   primaryFact,
   riskValue,
   statusWords,
@@ -350,7 +350,7 @@ const QueueRow: React.FC<{
     risk !== null ? `risk ${risk}` : null,
     statusText,
     settled ? `outcome ${outcome.shortLabel}` : outcome.shortLabel,
-    owner ? `owner ${owner}` : 'unassigned',
+    owner ? `assigned to ${owner}` : 'unassigned',
     `updated ${age}`,
     job?.failure ? `last bulk action failed: ${job.failure}` : null,
     chat.text || null,
@@ -487,15 +487,7 @@ const QueueRow: React.FC<{
                   {outcome.shortLabel}
                 </span>
               </span>
-              {owner ? (
-                <span
-                  aria-hidden
-                  title={owner}
-                  className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-sunken text-2xs font-semibold text-muted-foreground"
-                >
-                  {monogram(owner)}
-                </span>
-              ) : null}
+              <OwnerMonogram name={owner} />
               <span
                 data-testid="case-queue-status"
                 className="inline-flex shrink-0 items-center gap-1 text-foreground/80"

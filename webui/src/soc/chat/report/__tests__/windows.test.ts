@@ -62,7 +62,22 @@ describe('mergeWindows', () => {
         'last 90 days (since 15 Jul 2026)',
         'last 90 days (since 15 Jul 2026) vs 16 Apr – 14 Jul 2026 08:02',
       ]),
-    ).toEqual(['last 90 days (since 15 Jul 2026), compared with previous 90 days and 16 Apr – 14 Jul 2026 08:02']);
+    ).toEqual(['last 90 days (since 15 Jul 2026), compared with the previous 90 days and 16 Apr – 14 Jul 2026 08:02']);
+    // The previous period of a window counted in whole days is the whole days just
+    // before it, named by its span and dates: stated as "the previous 90 days (…)", and
+    // a scope that already states it merges with a raw one, each period once.
+    const folded = 'last 90 days (since 15 Jul 2026), compared with the previous 90 days (16 Apr to 14 Jul 2026)';
+    const raw = 'last 90 days (since 15 Jul 2026) vs previous 90 days (16 Apr to 14 Jul 2026)';
+    expect(mergeWindows(['last 90 days (since 15 Jul 2026)', raw, 'all time'])).toEqual([folded, 'all time']);
+    expect(mergeWindows([folded, raw, 'last 90 days (since 15 Jul 2026)'])).toEqual([folded]);
+    // Outside UTC the caption names the zone inside the dates it ends in (never a second
+    // bracket after them), and the folded scope keeps it there.
+    expect(
+      mergeWindows([
+        'last 90 days (since 15 Jul 2026)',
+        'last 90 days (since 15 Jul 2026) vs previous 90 days (16 Apr to 14 Jul 2026, Asia/Kolkata)',
+      ]),
+    ).toEqual(['last 90 days (since 15 Jul 2026), compared with the previous 90 days (16 Apr to 14 Jul 2026, Asia/Kolkata)']);
     expect(
       mergeWindows(['Oct 2026 to date', 'Oct 2026 to date vs Sep 2026 to date vs Aug 2026 to date (Asia/Kolkata)']),
     ).toEqual(['Oct 2026 to date, compared with Sep 2026 to date and Aug 2026 to date (Asia/Kolkata)']);

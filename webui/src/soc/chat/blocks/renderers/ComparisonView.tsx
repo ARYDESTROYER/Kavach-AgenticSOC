@@ -23,7 +23,7 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
-import { KpiTile, KpiTileGrid, type KpiAccent } from '@/soc/components/KpiTile';
+import { KpiTile, KpiTileGrid, keepDatesTogether, type KpiAccent } from '@/soc/components/KpiTile';
 import { SEMANTIC_ICON, token } from '@/soc/components/palette';
 
 import { DASH, MINUS, changeParts, formatValue, unitWord } from '../format';
@@ -154,7 +154,7 @@ export function comparisonSecondary(item: KpiItem, badge = true): React.ReactNod
   if (facts.measured) {
     return (
       <span className="font-sans font-normal" data-testid="comparison-baseline">
-        vs {facts.period ?? 'the previous period'}: {formatValue(facts.baseline, item.unit)}
+        vs {keepDatesTogether(facts.period ?? 'the previous period')}: {formatValue(facts.baseline, item.unit)}
         {badge && facts.smallSample !== null ? <SmallSampleBadge n={facts.smallSample} /> : null}
       </span>
     );
@@ -163,7 +163,7 @@ export function comparisonSecondary(item: KpiItem, badge = true): React.ReactNod
   if (!line) return undefined;
   return (
     <span className="font-sans font-normal" data-testid="comparison-baseline">
-      {PERIOD_FIRST.test(line) ? `vs ${line}` : line}
+      {keepDatesTogether(PERIOD_FIRST.test(line) ? `vs ${line}` : line)}
     </span>
   );
 }

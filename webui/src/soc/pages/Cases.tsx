@@ -93,6 +93,7 @@ import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { useDemo } from '@/soc/demo';
 import { LoadingBar } from '@/soc/components/LoadingBar';
 import { DemoBadge, isDemoCase } from '@/soc/components/DemoBadge';
+import { OwnerMonogram } from '@/soc/components/OwnerMonogram';
 import {
   StatusBadge,
   VerdictBadge,
@@ -1271,9 +1272,9 @@ export default function Cases({
       ),
     },
     {
-      // Owner cell — a compact monogram chip + the assignee name, or a muted
+      // Owner cell — the shared owner monogram + the assignee name, or a muted
       // "Unassigned". The name is case-derived (UNTRUSTED) so it renders as plain
-      // text; the monogram is a single derived character, decorative (`aria-hidden`).
+      // text; the monogram is decorative here (the name beside it is the text).
       id: 'assignee',
       header: 'Assignee',
       sortable: true,
@@ -1285,12 +1286,7 @@ export default function Cases({
         }
         return (
           <span className="flex items-center gap-1.5 text-sm text-foreground">
-            <span
-              className="inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-surface-sunken text-2xs font-semibold uppercase text-muted-foreground"
-              aria-hidden
-            >
-              {name.charAt(0)}
-            </span>
+            <OwnerMonogram name={name} decorative />
             <span className="max-w-[7rem] truncate">{name}</span>
           </span>
         );

@@ -853,6 +853,22 @@ describe('add to case', () => {
     );
   });
 
+  it('names each case status in the words the case badges use, never the stored key', async () => {
+    mocks.searchCasesForPicker.mockResolvedValue([
+      { case_id: 'case-1', display_id: 'SOC-0001', title: 'Loan API access', status: 'on_hold', severity: null },
+      { case_id: 'case-2', display_id: 'SOC-0002', title: 'Phishing chain', status: 'needs_human', severity: null },
+    ]);
+    const user = userEvent.setup();
+    renderMessage({ item: assistantItem() });
+    await user.click(screen.getByRole('button', { name: 'Add to case' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add this answer to a case' });
+    const first = await within(dialog).findByRole('radio', { name: 'SOC-0001: Loan API access (On hold)' });
+    expect(first).toHaveTextContent('On hold');
+    const second = within(dialog).getByRole('radio', { name: 'SOC-0002: Phishing chain (Open · awaiting analyst)' });
+    expect(second).toHaveTextContent('Open · awaiting analyst');
+    expect(dialog.textContent).not.toMatch(/on_hold|needs_human/);
+  });
+
   it('picks one case from a single-choice group with one tab stop, wrapped titles and a result count', async () => {
     const entries = ['a1', 'b2', 'c3'].map((suffix, i) => ({
       case_id: `case-${suffix}`,

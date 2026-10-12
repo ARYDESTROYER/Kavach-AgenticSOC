@@ -10,7 +10,8 @@
  */
 import { severityLabel, statusLabel, verdictLabel } from '@/soc/components/semantic-labels';
 
-import type { CitationBlockKind, ColumnType, EntityKind, ReputationVerdict, TimelineKind } from './schema';
+import { formatValue } from './format';
+import type { CitationBlockKind, ColumnType, EntityKind, QueryBlock, QueryLanguage, ReputationVerdict, TimelineKind } from './schema';
 import { CASE_STATUS_KEYS, SEVERITY_KEYS, VERDICT_KEYS } from './schema';
 
 /** The table column types whose known values the screen draws as a badge. */
@@ -51,6 +52,26 @@ export const CITATION_KIND_LABEL: Readonly<Record<CitationBlockKind, string>> = 
   knowledge: 'Knowledge',
   log: 'Log',
 };
+
+/**
+ * A query's language as its caption names it ("ES|QL · Elastic · 12 hits"). A code
+ * fence keeps the raw key (`esql`): that is the syntax hint, not a word for people.
+ */
+export const QUERY_LANGUAGE_LABEL: Readonly<Record<QueryLanguage, string>> = {
+  kql: 'KQL',
+  lucene: 'Lucene',
+  esql: 'ES|QL',
+  dsl: 'Query DSL',
+  sql: 'SQL',
+};
+
+/** A query block's caption, on screen and in every export: language · source · hits. */
+export function queryCaption(block: QueryBlock): string {
+  const parts = [QUERY_LANGUAGE_LABEL[block.language]];
+  if (block.source_name) parts.push(block.source_name);
+  if (typeof block.hits === 'number') parts.push(`${formatValue(block.hits, 'count')} hits`);
+  return parts.join(' · ');
+}
 
 /** The badge axis of a table column type, or null for a plain column. */
 export function semanticColumn(type: ColumnType | undefined): SemanticColumn | null {
