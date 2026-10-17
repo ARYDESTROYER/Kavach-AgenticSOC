@@ -2,7 +2,9 @@
  * "Group by" for a calendar time series (Round 12 P0-8): Day · Week · Month … — the
  * block's own bucket first, then the coarser units the server allowed (`rebin.ts`). A
  * value picker (radio group), not a menu, so the current grouping is always visible.
- * Hidden on paper: a printed chart shows the grouping it was printed in.
+ * Hidden on paper: a printed chart shows the grouping it was printed in. It carries no
+ * margin or alignment of its own: the chart's one control row puts it on the left
+ * (Round 13, SPEC-chat T16), and the card's own row when the chart is not drawn.
  */
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 
@@ -20,7 +22,7 @@ export interface RebinControlProps {
 export function RebinControl({ choices, value, onChange, title }: RebinControlProps) {
   if (choices.length < 2) return null;
   return (
-    <div className="mb-1.5 flex items-center justify-end gap-2" data-print-hide data-testid="chart-rebin">
+    <div className="flex shrink-0 items-center gap-2" data-print-hide data-testid="chart-rebin">
       <span className="text-2xs text-muted-foreground" aria-hidden>
         Group by
       </span>

@@ -1711,6 +1711,12 @@ class ChatAgentConfig(BaseModel):
         default=True,
         description="Animate the console logo while chat is working (custom logos never animate).",
     )
+    # --- Round 13 (SPEC-chat D9, §3.2.1). ------------------------------------------- #
+    dynamic_starters: bool = Field(
+        default=True,
+        description=("New chats open with questions about your queue, SLA and sources, computed "
+                     "from data each viewer can read. No AI cost."),
+    )
     chat_limits_version: int = Field(
         default=CURRENT_CHAT_LIMITS_VERSION, ge=0, le=CURRENT_CHAT_LIMITS_VERSION,
         description="Internal marker: the chat limits migration this configuration has adopted.",
@@ -1783,14 +1789,17 @@ class ChatAgentConfig(BaseModel):
                     out[flag] = cls.model_fields[flag].default
         if "internal_domains" in out:
             out["internal_domains"] = cls.normalise_domains(out["internal_domains"])
-        if "animated_brand" in out and not isinstance(out["animated_brand"], bool):
-            raw_flag = out["animated_brand"]
-            if isinstance(raw_flag, str) and raw_flag.strip().lower() in ("false", "0", "no", "off"):
-                out["animated_brand"] = False
-            elif isinstance(raw_flag, int) and not raw_flag:
-                out["animated_brand"] = False
-            else:
-                out["animated_brand"] = True
+        # Default-on switches (SPEC D13; Round 13 SPEC-chat D9): only an explicit "off"
+        # value turns one off; anything else malformed keeps the shipped default (on).
+        for flag in ("animated_brand", "dynamic_starters"):
+            if flag in out and not isinstance(out[flag], bool):
+                raw_flag = out[flag]
+                if isinstance(raw_flag, str) and raw_flag.strip().lower() in ("false", "0", "no", "off"):
+                    out[flag] = False
+                elif isinstance(raw_flag, int) and not raw_flag:
+                    out[flag] = False
+                else:
+                    out[flag] = True
         if "chat_daily_cap_usd" in out:
             out["chat_daily_cap_usd"] = _repair_chat_cap(out["chat_daily_cap_usd"])
         if "limits_mode" in out:

@@ -132,6 +132,21 @@ export function endLabelColumn(width: number, labels: readonly string[]): { budg
   return { budget, chars, padRight: Math.ceil(chars * CHAR_W) + END_LABEL_PAD };
 }
 /**
+ * Do the line ends NAME these series (Round 13, SPEC-chat T16)? Only when every label fits
+ * the budget whole (no "…") and no two labels read the same: then the end labels can
+ * replace the legend. Otherwise the legend, which carries every full name, stays.
+ */
+export function endLabelsName(labels: readonly string[], budget: number): boolean {
+  const seen = new Set<string>();
+  for (const label of labels) {
+    if (Array.from(label).length > budget) return false;
+    const key = label.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return labels.length > 0;
+}
+/**
  * Candidate label intervals in minutes, smallest first: sub-hour steps for "last hour"
  * lookups at 1m/5m/15m buckets, then the hour/day/week ladder.
  */

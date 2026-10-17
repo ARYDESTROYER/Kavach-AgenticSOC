@@ -2,11 +2,15 @@
  * ThreadToolbar — the 44 px band (SPEC §10.1a): History + New chat only when the rail
  * is a Sheet (so exactly one New chat is visible), the title as the `<h2>` with inline
  * rename (focus returns to the title after Enter / Escape, and ⋯ → Rename keeps focus in
- * the field), the conversation total inline from 560 px (else in ⋯), Report as a
- * toggle with the added-item count only when there is one (Round 12: never "· 0"),
- * shortcut hints, the ⋯ menu (Rename, Pin conversation, Export conversation ▸, Delete)
- * only for a saved thread, and the viewer's Width submenu (Round 12 SPEC D12) on drafts
- * too.
+ * the field), Report as a toggle with the added-item count only when there is one
+ * (Round 12: never "· 0") and shortcut hints.
+ *
+ * Round 13 (SPEC-chat T6, T10, T21, T26, T36): no inline total at any width; the thread
+ * menu starts with "This chat: 12.4k tokens · $0.03" ("Usage not recorded" for an older
+ * thread, never a dash), then Rename, Pin (Unpin), Export ▸, Save conversation as report
+ * and Delete for a saved thread, a separator and a "View" group with the three widths
+ * described in words (on drafts too); a New chat's first turn (the temporary row) shows
+ * its client title with no thread actions; titles render as text.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -15,7 +19,16 @@ import { axe, toHaveNoViolations } from 'jest-axe';
 
 import type { ChatConversationSummary } from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
-import { ThreadToolbar, conversationTotal, reportButtonHint, reportButtonLabel, type ThreadToolbarProps } from '../ThreadToolbar';
+import {
+  ThreadToolbar,
+  USAGE_NOT_RECORDED,
+  conversationTotal,
+  conversationUsageLine,
+  reportButtonHint,
+  reportButtonLabel,
+  type ThreadToolbarProps,
+} from '../ThreadToolbar';
+import { pendingThreadRow } from '../../useChatConversations';
 import { onReportChanged } from '../../report/report-sync';
 
 const toastSpy = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
@@ -96,16 +109,24 @@ function renderToolbar(overrides: Partial<ThreadToolbarProps> = {}) {
 }
 
 describe('ThreadToolbar', () => {
-  it('formats the conversation total, with a dash for legacy threads', () => {
+  it('formats the conversation total and the menu usage line, never with a dash (T10, T36)', () => {
     expect(conversationTotal(SUMMARY)).toBe('12.4k tokens · $0.03');
-    expect(conversationTotal({ ...SUMMARY, total_tokens: null })).toBe('Usage —');
+    expect(conversationTotal({ ...SUMMARY, total_tokens: null })).toBe(USAGE_NOT_RECORDED);
+    expect(USAGE_NOT_RECORDED).toBe('Usage not recorded');
     expect(conversationTotal(null)).toBeNull();
+    expect(conversationUsageLine(SUMMARY)).toBe('This chat: 12.4k tokens · $0.03');
+    expect(conversationUsageLine({ ...SUMMARY, total_cost: null })).toBe('This chat: 12.4k tokens');
+    expect(conversationUsageLine({ ...SUMMARY, total_tokens: null })).toBe('Usage not recorded');
+    expect(conversationUsageLine(null)).toBeNull();
   });
 
-  it('shows the title as the h2, the total inline and the report toggle', () => {
-    const { props } = renderToolbar();
+  it('shows the title as the h2 and the report toggle, with no inline total', () => {
+    const { props, container } = renderToolbar();
     expect(screen.getByRole('heading', { level: 2, name: 'Failed sign-in review' })).toBeInTheDocument();
-    expect(screen.getByTestId('conversation-total')).toHaveTextContent('12.4k tokens · $0.03');
+    // T10: the total left the toolbar row at every width.
+    expect(screen.queryByTestId('conversation-total')).toBeNull();
+    expect(container).not.toHaveTextContent('12.4k tokens');
+    expect(container).not.toHaveTextContent('\u2014');
     const toggle = screen.getByRole('button', { name: 'Report, 2 items added' });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByTestId('chat-report-count')).toHaveTextContent('2');
@@ -140,20 +161,25 @@ describe('ThreadToolbar', () => {
     expect(toggle).toHaveTextContent(/^4$/);
   });
 
-  it('offers the conversation width in ⋯, on a draft too, and reports the choice', async () => {
+  it('offers the conversation width in a View group of ⋯, on a draft too, and reports the choice', async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     renderToolbar({ summary: null, title: 'New chat', laneWidth: { value: 'wide', onChange } });
     // A draft has no thread actions, so the menu is named for what it offers.
     await user.click(screen.getByRole('button', { name: 'Conversation options' }));
     expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull();
-    const width = await screen.findByRole('menuitem', { name: 'Width, currently Wide' });
-    await user.click(width);
+    // No submenu: the three widths sit in the menu under "View" (T26).
+    const view = await screen.findByRole('group', { name: 'View' });
+    expect(screen.queryByRole('menuitem', { name: /^Width/ })).toBeNull();
     const wide = await screen.findByRole('menuitemradio', { name: /^Wide/ });
+    expect(view.contains(wide)).toBe(true);
     expect(wide).toHaveAttribute('aria-checked', 'true');
     const full = screen.getByRole('menuitemradio', { name: /^Full width/ });
     expect(full).toHaveAttribute('aria-checked', 'false');
-    expect(screen.getByRole('menuitemradio', { name: /^Comfortable/ })).toHaveAccessibleName(/Up to about 1,000 px$/);
+    // Described in words, never pixels.
+    expect(screen.getByRole('menuitemradio', { name: /^Comfortable/ })).toHaveAccessibleName(/Narrower, easier to read$/);
+    expect(wide).toHaveAccessibleName(/Wider, centred$/);
+    expect(screen.getByRole('menu')).not.toHaveTextContent(/px/);
     // The default is named, so a viewer who chose another width can find their way back.
     expect(full).toHaveAccessibleName(/^Full width ?, Fills the space \(default\)$/);
     act(() => full.focus());
@@ -206,16 +232,30 @@ describe('ThreadToolbar', () => {
     await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent(/^History \((Ctrl|⌘).*S\)$/));
   });
 
-  it('moves the total into ⋯ on a narrow toolbar and runs the thread actions', async () => {
+  it('starts ⋯ with the usage line, then the thread actions, then View, and runs them', async () => {
     const user = userEvent.setup();
-    const { props } = renderToolbar({ wide: false });
+    const { props } = renderToolbar({ wide: false, laneWidth: { value: 'full', onChange: vi.fn() } });
     expect(screen.queryByTestId('conversation-total')).toBeNull();
     await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    expect(await screen.findByText('This conversation: 12.4k tokens · $0.03')).toBeInTheDocument();
-    await user.click(screen.getByRole('menuitem', { name: 'Pin conversation' }));
+    const menu = await screen.findByRole('menu');
+    expect(screen.getByTestId('conversation-usage')).toHaveTextContent('This chat: 12.4k tokens · $0.03');
+    // The order of what the menu holds (T26): usage, actions, View.
+    const order = Array.from(menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [data-testid="conversation-usage"], [role="group"]'))
+      .map((el) => (el.getAttribute('role') === 'group' ? `group:${el.getAttribute('aria-labelledby') ? 'View' : ''}` : el.textContent?.trim()))
+      .filter(Boolean);
+    expect(order.slice(0, 7)).toEqual([
+      'This chat: 12.4k tokens · $0.03',
+      'Rename',
+      'Pin',
+      'Export',
+      'Save conversation as report',
+      'Delete',
+      'group:View',
+    ]);
+    await user.click(screen.getByRole('menuitem', { name: 'Pin' }));
     expect(props.onTogglePin).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    const exportTrigger = await screen.findByRole('menuitem', { name: 'Export conversation' });
+    const exportTrigger = await screen.findByRole('menuitem', { name: 'Export' });
     // Sized and muted like the other menu icons (a sub-trigger does not do it for us).
     expect(exportTrigger.querySelector('svg')).toHaveClass('size-4', 'text-muted-foreground');
     await user.click(exportTrigger);
@@ -227,6 +267,51 @@ describe('ThreadToolbar', () => {
     await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Delete' }));
     expect(props.onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it('says Unpin for a pinned thread and "Usage not recorded" for an older one', async () => {
+    const user = userEvent.setup();
+    renderToolbar({ summary: { ...SUMMARY, pinned: true, total_tokens: null, total_cost: null } });
+    await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
+    expect(await screen.findByRole('menuitem', { name: 'Unpin' })).toBeInTheDocument();
+    expect(screen.getByTestId('conversation-usage')).toHaveTextContent(/^Usage not recorded$/);
+    expect(screen.getByRole('menu')).not.toHaveTextContent('\u2014');
+  });
+
+  it('names a New chat by its question while the first answer is written, with no thread actions (T21)', async () => {
+    const user = userEvent.setup();
+    const pending = pendingThreadRow({
+      scope: 'conv:c-new',
+      kind: 'workspace',
+      conversationId: 'c-new',
+      caseId: null,
+      turnId: 't-1',
+      requestKey: 'k-1',
+      title: 'Investigate the newest escalated case and tell me who owns the host',
+      label: null,
+      lookups: 0,
+      status: 'running',
+      startedAt: Date.parse('2026-10-17T10:00:00Z'),
+      source: 'local',
+    });
+    renderToolbar({ summary: pending, title: pending.title, laneWidth: { value: 'full', onChange: vi.fn() } });
+    const heading = screen.getByRole('heading', { level: 2, name: 'Investigate the newest escalated case and tell…' });
+    // Not saved yet: plain text, nothing to rename.
+    expect(heading.querySelector('button')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Conversation options' }));
+    await screen.findByRole('group', { name: 'View' });
+    expect(screen.queryByRole('menuitem', { name: 'Rename' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Delete' })).toBeNull();
+    expect(screen.queryByTestId('conversation-usage')).toBeNull();
+  });
+
+  it('renders a hostile title as text (T6)', () => {
+    const title = '<img src=x onerror=alert(1)> **bold** [link](https://evil.test)';
+    const { container } = renderToolbar({ title, summary: { ...SUMMARY, title } });
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('strong')).toBeNull();
+    expect(screen.getByRole('heading', { level: 2 })).toHaveTextContent(title);
   });
 
   it('offers no thread actions for an unsaved draft and hides the report for case scope', async () => {
@@ -319,7 +404,7 @@ describe('ThreadToolbar', () => {
     const user = userEvent.setup();
     renderToolbar({ summary: null, title: 'New chat', laneWidth: { value: 'wide', onChange: vi.fn() } });
     await user.click(screen.getByRole('button', { name: 'Conversation options' }));
-    await screen.findByRole('menuitem', { name: 'Width, currently Wide' });
+    await screen.findByRole('group', { name: 'View' });
     expect(screen.queryByRole('menuitem', { name: 'Save conversation as report' })).toBeNull();
   });
 

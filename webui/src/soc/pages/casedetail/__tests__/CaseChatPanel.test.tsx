@@ -16,7 +16,7 @@
  * The composer and empty state are the composer package's; they are doubles here.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
@@ -171,9 +171,9 @@ describe('ChatTab — the case-scoped chat', () => {
     expect(screen.getByRole('group', { name: 'AI analyst status' })).toHaveTextContent(/Scoped to\s*case-9/);
     expect(screen.getByTestId('empty-state')).toHaveAttribute('data-variant', 'case');
     expect(screen.getByTestId('composer')).toHaveAttribute('data-variant', 'case');
-    fireEvent.click(screen.getByRole('button', { name: 'Summarize this case' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Summarise this case' }));
     await settle();
-    expect(streamBodies()[0]).toMatchObject({ message: 'Summarize this case', case_id: 'case-9', origin: 'starter' });
+    expect(streamBodies()[0]).toMatchObject({ message: 'Summarise this case', case_id: 'case-9', origin: 'starter' });
     expect(streamBodies()[0]).not.toHaveProperty('persist_conversation');
     expect(calls.some((call) => call.url.startsWith('/api/chat/conversations') || call.url.startsWith('/api/reports'))).toBe(false);
     expect(screen.queryByRole('navigation', { name: 'Chat history' })).toBeNull();
@@ -184,19 +184,28 @@ describe('ChatTab — the case-scoped chat', () => {
     const status = screen.getByRole('group', { name: 'AI analyst status' });
     expect(status).not.toHaveAttribute('aria-live');
     expect(status).toHaveTextContent('Ready');
-    fireEvent.click(screen.getByRole('button', { name: 'Check IOCs' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check indicators' }));
     await settle();
     expect(status).toHaveTextContent('Working');
-    expect(streamBodies()[0]).toMatchObject({ message: 'Check IOCs', case_id: 'case-9' });
+    expect(streamBodies()[0]).toMatchObject({ message: 'Check indicators', case_id: 'case-9' });
     await push(
       { type: 'turn.start', turn_id: 't-1', conversation_id: null, model: 'm', stream_mode: 'steps', replayed: false, estimate: { prompt_tokens: 10 } },
       { type: 'turn.done', response: { answer: 'No additional malicious indicators were found.', usage: { calls: 1, total_tokens: 500, cost: 0.001 } } },
     );
     expect(await screen.findByText('No additional malicious indicators were found.')).toBeInTheDocument();
     expect(status).toHaveTextContent('Ready');
-    expect(screen.getByTestId('meta-row')).toHaveTextContent('500 tokens');
+    // Round 13 T10: the cost stays on the row and the tokens are in the usage card it opens.
+    const usage = within(screen.getByTestId('meta-row')).getByTestId('usage-trigger');
+    expect(usage).toHaveTextContent('$0.001');
+    expect(usage).toHaveAccessibleName(/500 tokens/);
     expect(screen.queryByRole('button', { name: 'Add answer to report' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Ask again' })).toBeInTheDocument();
+    // Ask again lives in the answer's ⋯ menu; a case chat offers no report there either.
+    fireEvent.keyDown(screen.getByTestId('answer-more-actions'), { key: 'Enter' });
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: 'Ask again' })).toBeInTheDocument();
+    expect(within(menu).queryByRole('menuitem', { name: /Add answer to report/ })).toBeNull();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('keeps focus in the composer after a quick action and surfaces a failed context with Retry', async () => {
@@ -209,7 +218,7 @@ describe('ChatTab — the case-scoped chat', () => {
     await settle();
     expect(screen.getByTestId('empty-state')).toHaveAttribute('data-error', '');
 
-    const action = screen.getByRole('button', { name: 'Summarize Case' });
+    const action = screen.getByRole('button', { name: 'Summarise the case' });
     action.focus();
     fireEvent.click(action);
     await settle();
@@ -242,7 +251,7 @@ describe('ChatTab — the case-scoped chat', () => {
     expect(frame?.lastElementChild).toHaveClass('shrink-0');
     const actions = screen.getByRole('group', { name: 'Analyst quick actions' });
     expect(actions).toHaveClass('flex-nowrap', 'overflow-x-auto');
-    for (const action of ['Summarize Case', 'Check IOCs', 'Suggest Remediation']) {
+    for (const action of ['Summarise the case', 'Check indicators', 'Suggest remediation']) {
       expect(screen.getByRole('button', { name: action })).toHaveClass('shrink-0');
     }
     expect(screen.queryByRole('heading', { name: /case chat/i })).toBeNull();
@@ -250,7 +259,7 @@ describe('ChatTab — the case-scoped chat', () => {
 
   it('keeps the transcript and model history across a tab switch (SPEC D13, G5)', async () => {
     const first = await renderTab({ presentation: 'case-manager' });
-    fireEvent.click(screen.getByRole('button', { name: 'Summarize Case' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Summarise the case' }));
     await settle();
     await push(
       { type: 'turn.start', turn_id: 't-1', conversation_id: null, model: 'm', stream_mode: 'steps', replayed: false, estimate: { prompt_tokens: 10 } },
@@ -262,12 +271,12 @@ describe('ChatTab — the case-scoped chat', () => {
     await renderTab({ presentation: 'case-manager' });
     expect(screen.getByText('Two hosts, one user, no lateral movement.')).toBeInTheDocument();
     expect(screen.queryByTestId('empty-state')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Check IOCs' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check indicators' }));
     await settle();
     expect(streamBodies()[1]).toMatchObject({
-      message: 'Check IOCs',
+      message: 'Check indicators',
       history: [
-        { role: 'user', content: 'Summarize Case', origin: 'starter' },
+        { role: 'user', content: 'Summarise the case', origin: 'starter' },
         { role: 'assistant', content: 'Two hosts, one user, no lateral movement.' },
       ],
     });
@@ -275,7 +284,7 @@ describe('ChatTab — the case-scoped chat', () => {
 
   it('a turn still running when the tab is left keeps streaming and re-attaches on return', async () => {
     const first = await renderTab({ presentation: 'case-manager' });
-    fireEvent.click(screen.getByRole('button', { name: 'Check IOCs' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check indicators' }));
     await settle();
     await push({ type: 'turn.start', turn_id: 't-2', conversation_id: null, model: 'm', stream_mode: 'steps', replayed: false, estimate: { prompt_tokens: 10 } });
     first.unmount();

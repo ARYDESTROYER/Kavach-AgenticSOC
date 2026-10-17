@@ -279,7 +279,11 @@ describe('brush zoom (line and area)', () => {
     show([round12Block('monthly-alerts')]);
     const row = screen.getByTestId('chart-zoom-row');
     expect(row).toHaveClass('h-6');
-    expect(row).toHaveAttribute('data-print-hide');
+    // ONE 28 px control row above the plot (Round 13 T16), hidden on paper.
+    const controls = screen.getByTestId('chart-controls');
+    expect(controls).toHaveClass('h-7');
+    expect(controls).toContainElement(row);
+    expect(controls).toHaveAttribute('data-print-hide');
     expect(within(row).getByTestId('chart-zoom-hint')).toHaveTextContent('Drag across the chart to zoom');
     const plot = screen.getByTestId('chart-line-plot');
     act(() => plot.focus());
@@ -289,6 +293,21 @@ describe('brush zoom (line and area)', () => {
     expect(screen.getByTestId('chart-zoom-row')).toBe(row);
     expect(within(row).getByTestId('chart-zoom-bar')).toHaveTextContent('Zoomed to Sep – Oct 2026 (2 of 12 points)');
     expect(within(row).queryByTestId('chart-zoom-hint')).toBeNull();
+  });
+
+  it('never cuts the zoom hint beside Group by: a short hint on a narrow row, none where that would not fit', () => {
+    show([round12Block('monthly-alerts')]);
+    const hint = screen.getByTestId('chart-zoom-hint');
+    expect(hint.className).not.toMatch(/truncate|text-ellipsis/);
+    expect(hint).toHaveClass('whitespace-nowrap');
+    const long = hint.querySelector('[data-zoom-hint="long"]') as HTMLElement;
+    const short = hint.querySelector('[data-zoom-hint="short"]') as HTMLElement;
+    expect(long).toHaveTextContent('Drag across the chart to zoom');
+    expect(long).toHaveClass('hidden', '@[12rem]:inline');
+    expect(short).toHaveTextContent('Drag to zoom');
+    expect(short).toHaveClass('hidden', '@[5rem]:inline', '@[12rem]:hidden');
+    // The zoom row is its own size container, so the swap follows the room left beside Group by.
+    expect(screen.getByTestId('chart-zoom-row')).toHaveClass('@container', 'flex-1');
   });
 
   it('never truncates the point count: only the range may be cut on a narrow card', () => {
@@ -445,8 +464,11 @@ describe('Download PNG and SVG', () => {
     const user = userEvent.setup();
     const { blobs, names } = captureDownloads();
     show([round12Block('monthly-alerts')]);
-    // Hide Wazuh and zoom to the last four months.
-    await user.click(within(screen.getByRole('list', { name: 'Series' })).getByRole('button', { name: 'Wazuh' }));
+    // Hide Wazuh (its lines are named at their ends, so the toggles are in ⋯, T16) and
+    // zoom to the last four months.
+    expect(screen.queryByRole('list', { name: 'Series' })).toBeNull();
+    await user.click(within(await openMenu(user)).getByRole('menuitemcheckbox', { name: 'Wazuh' }));
+    await user.keyboard('{Escape}');
     const plot = screen.getByTestId('chart-line-plot');
     act(() => plot.focus());
     for (let i = 0; i < 3; i += 1) fireEvent.keyDown(plot, { key: 'ArrowLeft', shiftKey: true });
@@ -701,6 +723,111 @@ describe('infographic Brief and the new templates', () => {
     const custom = parseBlock({ ...base, id: 'b3', template: 'custom', layout: undefined });
     show([brief, exec, custom]);
     expect(screen.getAllByTestId('report-template').map((t) => t.textContent)).toEqual(['Investigation brief', 'Executive summary']);
+  });
+});
+
+describe('chart controls (Round 13 T16)', () => {
+  it('puts Group by on the left of the same row as the zoom', () => {
+    show([round12Block('monthly-alerts')]);
+    const controls = screen.getByTestId('chart-controls');
+    const rebin = screen.queryByTestId('chart-rebin');
+    if (rebin) {
+      // Group by first, the zoom after it, in one row.
+      expect(controls.firstElementChild).toBe(rebin);
+      expect(rebin.compareDocumentPosition(screen.getByTestId('chart-zoom-row')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    expect(controls).toContainElement(screen.getByTestId('chart-zoom-row'));
+  });
+
+  it('keeps Group by in a row of its own when the chart is shown as a table', async () => {
+    const user = userEvent.setup();
+    show([round12Block('daily-cases')]);
+    expect(screen.getByTestId('chart-controls')).toContainElement(screen.getByTestId('chart-rebin'));
+    await user.click(within(await openMenu(user)).getByRole('menuitem', { name: 'Show table' }));
+    const rebin = screen.getByTestId('chart-rebin');
+    expect(screen.queryByTestId('chart-controls')).toBeNull();
+    expect(rebin.parentElement).toHaveClass('h-7');
+  });
+
+  it('labels lines at their ends instead of a legend, with the series toggles in ⋯ (at least one kept)', async () => {
+    const user = userEvent.setup();
+    show([round12Block('monthly-alerts')]);
+    expect(screen.queryByRole('list', { name: 'Series' })).toBeNull();
+    const menu = await openMenu(user);
+    const items = within(menu).getAllByRole('menuitemcheckbox').filter((el) => el.getAttribute('data-testid') === 'block-series-toggle');
+    expect(items.map((el) => el.textContent)).toEqual(['Wazuh', 'Elastic']);
+    expect(items.every((el) => el.getAttribute('aria-checked') === 'true')).toBe(true);
+    await user.click(items[1]);
+    // The menu stays open; the plot keeps both end-label slots (a toggle never moves it).
+    const after = within(screen.getByRole('menu')).getAllByTestId('block-series-toggle');
+    expect(after[1]).toHaveAttribute('aria-checked', 'false');
+    expect(announce).toHaveBeenLastCalledWith('Showing 1 of 2 series');
+    await user.click(after[0]);
+    // The last visible series cannot be hidden.
+    expect(announce).toHaveBeenLastCalledWith('At least one series must stay visible');
+    expect(within(screen.getByRole('menu')).getAllByTestId('block-series-toggle')[0]).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
+describe('line legend vs end labels (Round 13 T16, review F2/F13)', () => {
+  const twoGateways = (labels: [string, string]) =>
+    parseBlock({
+      id: 'gw',
+      type: 'chart',
+      kind: 'line',
+      title: 'Failures by hour',
+      provenance: 'source',
+      artifact_kind: 'series',
+      allowed_views: ['line', 'table'],
+      unit: 'count',
+      x: { kind: 'time', values: ['2026-10-07T00:00:00Z', '2026-10-07T01:00:00Z', '2026-10-07T02:00:00Z'], bucket: '1h' },
+      series: [
+        { key: 'a', label: labels[0], values: [3, 5, 4] },
+        { key: 'b', label: labels[1], values: [1, 2, 6] },
+      ],
+    }) as AnswerBlock;
+  const at = (px: number) => vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(px);
+
+  it('keeps the legend, with every full name, when two end labels would clip to the same text', async () => {
+    at(560);
+    const user = userEvent.setup();
+    show([twoGateways(['Authentication failures on vpn-gw-1', 'Authentication failures on vpn-gw-2'])]);
+    const legend = screen.getByRole('list', { name: 'Series' });
+    expect(within(legend).getAllByRole('button').map((b) => b.textContent)).toEqual([
+      'Authentication failures on vpn-gw-1',
+      'Authentication failures on vpn-gw-2',
+    ]);
+    // The legend holds the toggles, so ⋯ does not repeat them.
+    const menu = await openMenu(user);
+    expect(within(menu).queryAllByTestId('block-series-toggle')).toHaveLength(0);
+  });
+
+  it('keeps the legend at phone width when one end label would be clipped', () => {
+    at(338);
+    show([twoGateways(['Opened', 'Closed by an analyst'])]);
+    expect(within(screen.getByRole('list', { name: 'Series' })).getByRole('button', { name: /Closed by an analyst/ })).toBeInTheDocument();
+  });
+
+  it('keeps the legend on paper when an end label is clipped, and drops it when every label is whole', () => {
+    // Print draws at the fixed A4 measure (680 px): a 23-character end-label budget.
+    const { unmount } = render(
+      <BlockCard block={twoGateways(['Authentication failures on vpn-gw-1', 'Authentication failures on vpn-gw-2'])} index={0} staticMode />,
+    );
+    expect(screen.getByRole('list', { name: 'Series' })).toHaveTextContent('Authentication failures on vpn-gw-2');
+    unmount();
+    render(<BlockCard block={twoGateways(['Opened', 'Closed'])} index={0} staticMode />);
+    expect(screen.queryByRole('list', { name: 'Series' })).toBeNull();
+  });
+
+  it('gives each Series item in ⋯ its line colour as a key', async () => {
+    at(560);
+    const user = userEvent.setup();
+    show([twoGateways(['Opened', 'Closed'])]);
+    expect(screen.queryByRole('list', { name: 'Series' })).toBeNull();
+    const items = within(await openMenu(user)).getAllByTestId('block-series-toggle');
+    const keys = items.map((item) => item.querySelector('[data-series-key]') as HTMLElement);
+    expect(keys.every((k) => k && k.getAttribute('aria-hidden') === 'true' && k.style.backgroundColor !== '')).toBe(true);
+    expect(keys[0].style.backgroundColor).not.toBe(keys[1].style.backgroundColor);
   });
 });
 

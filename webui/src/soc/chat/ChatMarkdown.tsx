@@ -20,6 +20,13 @@
  *  - images, raw HTML, autolinks and reference links render as literal text;
  *  - invisible, bidi and control characters are stripped first (`displayText`).
  *
+ * Answer prose reads at 15/24 (`text-md leading-6`, Round 13 SPEC-chat §5.1): at the
+ * 38rem prose measure (`lane.ts` `PROSE_COL`) a full line holds about 86 to 90 characters. A host that sets its
+ * own size (the Case Manager's compact chat, `text-sm`) keeps the relaxed paragraph
+ * leading it had. Inline code never splits its chip across lines into broken boxes: each
+ * line piece is a whole chip (`box-decoration-break: clone`), and a long value may break
+ * anywhere rather than run past the column (T17).
+ *
  * The AST is exported so the report exporters serialise the same sanitised tree.
  * Rendering is memoised per top-level block, so a streaming answer re-renders only
  * its growing last block.
@@ -633,7 +640,12 @@ interface RenderContext {
   headingBase: number;
   citationIds: ReadonlySet<string> | null;
   onCitation: ((id: string) => void) | null;
+  /** The host set its own text size: paragraphs keep the relaxed leading. */
+  relaxed: boolean;
 }
+
+/** A host class that sets the text size (so the 15/24 prose default does not apply). */
+const HOST_SIZE_RE = /(^|\s)text-(2xs|xs|sm|base|md|lg|xl)(\s|$)/;
 
 /** A defanged external URL plus a copy button (copies the DEFANGED text). */
 function DefangedUrl({ defanged }: { defanged: string }) {
@@ -691,7 +703,9 @@ function renderInline(nodes: MdInline[], ctx: RenderContext, key = 'i', inLink =
           <code
             key={k}
             className={cn(
-              'rounded-sm border border-border bg-muted px-1 py-0.5 font-mono text-xs text-foreground [box-decoration-break:clone]',
+              // No border: a chip that wraps would draw a broken box on each line. Each
+              // line piece is its own rounded chip (clone), in Safari too.
+              'rounded-sm bg-muted px-1 py-0.5 font-mono text-xs text-foreground [-webkit-box-decoration-break:clone] [box-decoration-break:clone]',
               // A short identifier (a case id, a host) never splits at its hyphen across
               // lines; a long one may wrap anywhere rather than overflow the lane.
               node.v.length <= INLINE_CODE_NOWRAP_CHARS ? 'whitespace-nowrap' : '[overflow-wrap:anywhere]',
@@ -770,7 +784,7 @@ function BlockView({ block, ctx }: { block: MdBlock; ctx: RenderContext }): Reac
       return <Tag className={cn('mt-3 first:mt-0', HEADING_CLASS[Math.min(3, rank)])}>{renderInline(block.inline, ctx)}</Tag>;
     }
     case 'paragraph':
-      return <p className="leading-relaxed">{renderInline(block.inline, ctx)}</p>;
+      return <p className={ctx.relaxed ? 'leading-relaxed' : undefined}>{renderInline(block.inline, ctx)}</p>;
     case 'rule':
       return <hr className="my-3 border-border" />;
     case 'code':
@@ -897,13 +911,14 @@ export const ChatMarkdown = React.memo(function ChatMarkdown({
 }: ChatMarkdownProps) {
   const blocks = React.useMemo(() => parseChatMarkdown(text), [text]);
   const base = Number.isInteger(headingBase) ? Math.min(5, Math.max(1, headingBase)) : 3;
+  const relaxed = !!className && HOST_SIZE_RE.test(className);
   const ctx = React.useMemo<RenderContext>(
-    () => ({ headingBase: base, citationIds, onCitation }),
-    [base, citationIds, onCitation],
+    () => ({ headingBase: base, citationIds, onCitation, relaxed }),
+    [base, citationIds, onCitation, relaxed],
   );
   if (!blocks.length) return null;
   return (
-    <div className={cn('min-w-0 space-y-2 break-words text-md text-foreground', className)} data-chat-markdown="">
+    <div className={cn('min-w-0 space-y-2 break-words text-md leading-6 text-foreground', className)} data-chat-markdown="">
       {blocks.map((block, index) => (
         <MemoBlock key={index} block={block} ctx={ctx} />
       ))}

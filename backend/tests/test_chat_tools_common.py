@@ -235,3 +235,38 @@ def test_nav_instant_rounds_into_the_window_at_millisecond_precision() -> None:
     for value in (at, NOW, ist, edge):
         for up in (True, False):
             assert re.fullmatch(NAV_TIME_PATTERN, nav_instant(value, round_up=up))
+
+
+# --------------------------------------------------------------------------- #
+# Round 13 (SPEC-chat T1, T36): figures round like the gauge; a missing figure reads
+# "not available", never an em dash.
+# --------------------------------------------------------------------------- #
+def test_fmt_int_rounds_half_away_from_zero_like_the_gauge() -> None:
+    import pytest
+
+    from app.agents.chat_tools.common import fmt_int, round_half_up
+
+    assert fmt_int(47.5) == "48" and fmt_int(47.4) == "47" and fmt_int(-1.5) == "-2"
+    assert fmt_int(47.6) == "48" and fmt_int(40.6) == "41"           # audit A15: 47.6 read as 47
+    assert fmt_int(0.5) == "1" and fmt_int(-0.4) == "0" and fmt_int(2.5) == "3"   # never banker's rounding
+    assert fmt_int(1284) == "1,284" and fmt_int(1_284_000.5) == "1,284,001"
+    assert fmt_int(0) == "0" and fmt_int(0.0) == "0"
+    assert round_half_up(47.5) == 48 and round_half_up(-2.5) == -3
+    # For every non-negative figure the result is what the console's Math.round shows
+    # (over the float's exact value: 0.49999999999999994 is below a half).
+    expected = {0.49999999999999994: "0", 1.4999999: "1", 12.5: "13", 99.5: "100", 100.49: "100"}
+    for value, shown in expected.items():
+        assert fmt_int(value) == shown, value
+    with pytest.raises(OverflowError):
+        round_half_up(float("inf"))
+
+
+def test_missing_figures_read_not_available() -> None:
+    from app.agents.chat_tools.common import NOT_AVAILABLE, fmt_int, fmt_pct
+
+    assert NOT_AVAILABLE == "not available"
+    for missing in (None, "12", True, False, float("nan"), float("inf"), [], {}):
+        assert fmt_int(missing) == "not available", missing
+        assert fmt_pct(missing) == "not available", missing
+    assert fmt_pct(12.345) == "12.3%" and fmt_pct(0.5, ratio=True) == "50.0%"
+    assert "—" not in fmt_int(None) + fmt_pct(None)

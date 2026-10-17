@@ -10,19 +10,30 @@
  * so `document.activeElement` is still the opener) and `restore` into
  * `onCloseAutoFocus`. An opener that is no longer in the document (the layout changed
  * while the Sheet was open) leaves Radix's default in place.
+ *
+ * Round 13 (SPEC-chat T27): passed the open event, `capture` also moves focus to an
+ * element marked `data-autofocus` inside the content instead of Radix's first focusable
+ * one (the History sheet's search field, so the New chat tooltip never opens over it).
  */
 import * as React from 'react';
 
 export interface OpenerFocus {
-  capture: () => void;
+  /** Record the opener; with the open event, focus the content's `[data-autofocus]`. */
+  capture: (event?: Event) => void;
   restore: (event: Event) => void;
 }
 
 export function useOpenerFocus(): OpenerFocus {
   const openerRef = React.useRef<HTMLElement | null>(null);
-  const capture = React.useCallback(() => {
+  const capture = React.useCallback((event?: Event) => {
     const active = typeof document === 'undefined' ? null : document.activeElement;
     openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    const content = event?.target;
+    if (!(content instanceof Element)) return;
+    const preferred = content.querySelector<HTMLElement>('[data-autofocus]');
+    if (!preferred) return;
+    event?.preventDefault();
+    preferred.focus();
   }, []);
   const restore = React.useCallback((event: Event) => {
     const opener = openerRef.current;

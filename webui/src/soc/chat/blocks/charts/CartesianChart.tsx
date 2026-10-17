@@ -33,6 +33,13 @@
  * and Reset), so the plot never moves under the pointer that just made the selection; a
  * zoom belongs to the data it was made on and is dropped when the view changes (Group
  * by, Show as); the keyboard cursor stays on the same period through a zoom and a reset.
+ *
+ * Round 13 (SPEC-chat T16): ONE 28 px control row above the plot, with the card's Group
+ * by on the left and the zoom hint, range and Reset zoom on the right. A line chart that
+ * names its 2 to 4 series at the line ends draws no legend (the series were labelled
+ * twice); its series toggles move to the card's ⋯ menu ("Series", at least one kept),
+ * and the end-label column is sized by every series, so a toggle never moves the plot.
+ * Without a card to take them (the expanded sheet) the legend and its toggles stay.
  */
 import * as React from 'react';
 
@@ -59,7 +66,7 @@ import {
   xTickLabel,
 } from '../format';
 import type { ChartBlock } from '../schema';
-import { usePublishChartView } from './export-context';
+import { ChartControlsContext, usePublishChartView } from './export-context';
 import { HatchPattern, MARK_FORCED, ChartShell, useSvgId } from './ChartShell';
 import type { AnchorRect } from './ChartTooltipPortal';
 import { TooltipBody, type TooltipRow } from './ChartTooltipPortal';
@@ -70,7 +77,9 @@ import {
   areaPath,
   barPlotFrame,
   barWidth,
+  endLabelBudget,
   endLabelColumn,
+  endLabelsName,
   extent,
   lastMeasured,
   lineRuns,
@@ -165,6 +174,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   const styles = React.useMemo(() => seriesStyles(block), [block]);
   const catStyles = React.useMemo(() => (kind === 'bar' ? categoryStyles(block, false) : null), [block, kind]);
   const [hidden, toggle] = useSeriesVisibility(block.series.length);
+  const controls = React.useContext(ChartControlsContext);
   // The card's image download draws what is shown: this zoom, these series — and says so.
   const zoomView = range
     ? {
@@ -198,10 +208,27 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
   // keeps a few pixels of slack: a card without side padding (a Brief leaf) clips any
   // tick that starts left of the plot.
   const axisX0 = Math.ceil(Math.max(...tickTexts.map((t) => t.length)) * CHAR_W) + Y_GAP + TICK_SLACK;
-  const endLabels = isLine && visibleIdx.length >= 2 && visibleIdx.length <= 4;
+  // 2 to 4 lines are named at their ends (T16). The column is sized by EVERY series, so
+  // hiding one never moves the plot, and the shown lines keep their names.
+  const labelMode = isLine && block.series.length >= 2 && block.series.length <= 4;
+  const endLabels = labelMode && visibleIdx.length >= 1;
   // The end labels take what their longest label needs, up to a quarter of the chart
   // (`endLabelColumn`): a label is clipped only beyond that, never at a fixed length.
-  const endColumn = endLabels ? endLabelColumn(width, visibleIdx.map((k) => block.series[k].label)) : null;
+  const endColumn = endLabels ? endLabelColumn(width, block.series.map((s) => s.label)) : null;
+  // The line ends NAME the series only when every label fits its budget whole and no two
+  // read the same: a clipped "Authentication fai…" twice, told apart by colour alone,
+  // names nothing (WCAG 1.4.1). Then the legend, which carries every full name, stays.
+  const namedAtEnds = labelMode && endLabelsName(block.series.map((s) => s.label), endLabelBudget(width));
+  // The card's ⋯ menu takes the series toggles when the line ends name the series.
+  const publishSeries = namedAtEnds && !staticMode ? controls?.publishSeries ?? null : null;
+  const seriesKey = `${block.series.map((s) => s.label).join('\u0000')}|${hidden.map((h) => (h ? 1 : 0)).join('')}`;
+  React.useEffect(() => {
+    if (!publishSeries) return undefined;
+    publishSeries({ labels: block.series.map((s) => s.label), hidden, toggle, colors: styles.map((st) => st.color) });
+    return () => publishSeries(null);
+    // `seriesKey` stands for the labels and the hidden flags.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publishSeries, seriesKey, styles, toggle]);
   const padRight = endColumn ? endColumn.padRight : 8;
   const plotTop = PAD_TOP;
   const baseline = Math.max(plotTop + 24, height - X_AXIS_H - (block.last_in_progress ? IN_PROGRESS_LINE_H : 0));
@@ -597,8 +624,11 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     (zoomable ? 'To zoom, hold Shift with the left or right arrow key to select a range, then press Enter. ' : '') +
     'A data table follows the chart.';
 
+  // No legend when the line ends name every series whole (in print, or when ⋯ holds the
+  // toggles); a clipped or repeated end label keeps the legend, on screen and on paper.
+  const legendDrawn = block.series.length >= 2 && !(namedAtEnds && (staticMode || publishSeries));
   const legend =
-    block.series.length >= 2 ? (
+    legendDrawn ? (
       <Legend
         items={styles}
         hidden={staticMode ? undefined : hidden}
@@ -624,45 +654,54 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
 
   return (
     <div ref={boxRef} className="min-w-0">
-      {zoomable ? (
-        // ONE row that always exists on a zoomable chart, at a fixed height: a quiet hint
-        // until a zoom, then the zoomed range and Reset. A row that appeared on release
-        // would push the plot down under the pointer that just made the selection.
-        // The row is its own size container: on a phone-width card "Zoomed to" and
-        // "points" are left to assistive tech, and only the range may truncate; the
-        // count ("15 of 30") always shows, since it is what says the chart is a slice.
-        <div
-          className="@container mb-1 flex h-6 min-w-0 items-center justify-end gap-x-2 text-2xs text-muted-foreground"
-          data-print-hide
-          data-testid="chart-zoom-row"
-        >
-          {range ? (
-            <>
-              <span className="flex min-w-0 items-baseline gap-x-1 tabular-nums" title={zoomText} data-testid="chart-zoom-bar">
-                <span className="min-w-0 truncate" data-testid="chart-zoom-range">
-                  <span className="sr-only @[28rem]:not-sr-only @[28rem]:whitespace-nowrap">Zoomed to </span>
-                  {zoomRange}
-                </span>{' '}
-                <span className="shrink-0 whitespace-nowrap" data-testid="chart-zoom-count">
-                  ({n} of {full.x.values.length}
-                  <span className="sr-only @[28rem]:not-sr-only"> points</span>)
+      {zoomable || controls?.groupBy ? (
+        // ONE 28 px control row (T16): Group by on the left, the zoom on the right. On a
+        // zoomable chart it always exists, at a fixed height: a quiet hint until a zoom,
+        // then the zoomed range and Reset. A row that appeared on release would push the
+        // plot down under the pointer that just made the selection.
+        <div className="mb-1 flex h-7 min-w-0 items-center gap-x-3 text-2xs text-muted-foreground" data-print-hide data-testid="chart-controls">
+          {controls?.groupBy ?? null}
+          {zoomable ? (
+            // Its own size container: on a phone-width card "Zoomed to" and "points" are
+            // left to assistive tech, and only the range may truncate; the count ("15 of
+            // 30") always shows, since it is what says the chart is a slice.
+            <div className="@container ml-auto flex h-6 min-w-0 flex-1 items-center justify-end gap-x-2" data-testid="chart-zoom-row">
+              {range ? (
+                <>
+                  <span className="flex min-w-0 items-baseline gap-x-1 tabular-nums" title={zoomText} data-testid="chart-zoom-bar">
+                    <span className="min-w-0 truncate" data-testid="chart-zoom-range">
+                      <span className="sr-only @[28rem]:not-sr-only @[28rem]:whitespace-nowrap">Zoomed to </span>
+                      {zoomRange}
+                    </span>{' '}
+                    <span className="shrink-0 whitespace-nowrap" data-testid="chart-zoom-count">
+                      ({n} of {full.x.values.length}
+                      <span className="sr-only @[28rem]:not-sr-only"> points</span>)
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={resetZoom}
+                    className={cn('inline-flex h-6 shrink-0 items-center rounded-sm px-1.5 font-medium text-primary hover:bg-muted', focusRing)}
+                    data-testid="chart-zoom-reset"
+                  >
+                    Reset zoom
+                  </button>
+                </>
+              ) : (
+                // The plot's sr-only instructions already say how to zoom from the keyboard.
+                // Never cut: the whole hint where it fits, a short one beside Group by on a
+                // phone-width card, and none where even that would not fit.
+                <span className="whitespace-nowrap" aria-hidden data-testid="chart-zoom-hint">
+                  <span className="hidden @[12rem]:inline" data-zoom-hint="long">
+                    Drag across the chart to zoom
+                  </span>
+                  <span className="hidden @[5rem]:inline @[12rem]:hidden" data-zoom-hint="short">
+                    Drag to zoom
+                  </span>
                 </span>
-              </span>
-              <button
-                type="button"
-                onClick={resetZoom}
-                className={cn('inline-flex h-6 shrink-0 items-center rounded-sm px-1.5 font-medium text-primary hover:bg-muted', focusRing)}
-                data-testid="chart-zoom-reset"
-              >
-                Reset zoom
-              </button>
-            </>
-          ) : (
-            // The plot's sr-only instructions already say how to zoom from the keyboard.
-            <span className="min-w-0 truncate" aria-hidden data-testid="chart-zoom-hint">
-              Drag across the chart to zoom
-            </span>
-          )}
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {block.y_label || zoneNote ? (

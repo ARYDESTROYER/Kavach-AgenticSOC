@@ -1,9 +1,14 @@
 /**
  * ONE card chrome for every visual answer block (SPEC §10.3, BLOCKS.md §6 `BlockFigure`):
- * title, scope caption, provenance tag, ONE visible "Add to report" icon button, and a ⋯
- * menu with Expand (wide sheet), Show as <view> (client-side, same data), Show table /
- * chart, Copy data (TSV, formula-defused, IOCs defanged by default), Download CSV / JSON,
- * Copy query, and Open in <page> only when an EXACT filter target exists.
+ * title, scope caption, and at rest ONE control: the ⋯ menu (Round 13, SPEC-chat T9). Its
+ * first line says who produced the values ("Measured by a lookup", "Computed by code",
+ * "Stated by the model"; a line, not a control), then Add to report, Expand (wide
+ * sheet), Show as <view> (client-side, same data), the chart's Series (when its lines
+ * are labelled at their ends), Show table / chart, Copy data (TSV, formula-defused, IOCs
+ * defanged by default), Download CSV / JSON, Copy query, and Open in <page> only when an
+ * EXACT filter target exists. The Add to report icon shows beside the menu on hover or
+ * focus within the card (opacity, so it stays focusable), and always while the block is
+ * in the report.
  *
  * Every action is a read, a copy or a download (G10). Disclosures that change how a
  * number must be read are never hidden in the menu: a truncated block always captions
@@ -20,8 +25,9 @@
  * off-screen charts skip layout and paint but stay in the accessibility tree.
  *
  * Static mode (print and static exports, Round 12 WP-REP R6/R7/R13): no menu, no Add to
- * report, no provenance glyph (its "01/10" icon read as a stray control on paper; an AI
- * block still says "Values stated by the model"), no `content-visibility` (a skipped
+ * report, no provenance line (an AI block still says "Values stated by the model"), every
+ * caption whole (never shortened by an answer's shared scope line), no
+ * `content-visibility` (a skipped
  * subtree can print blank), a title that wraps instead of truncating, and every control
  * that could still render is marked `data-print-hide`.
  *
@@ -40,8 +46,11 @@
  */
 import * as React from 'react';
 import {
+  Binary,
+  Bot,
   Braces,
   ClipboardCopy,
+  Database,
   Code2,
   Download,
   ExternalLink,
@@ -71,34 +80,35 @@ import {
 } from '@/ui/dropdown-menu';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/ui/sheet';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
-import { ProvenanceTag } from '@/soc/components/ProvenanceTag';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { isSafeCaseId } from '@/soc/case-result-route';
 import { navLabel } from '@/soc/nav';
 
 import { BlockBoundary } from './BlockBoundary';
 import { ChartBlockView } from './charts/ChartBlockView';
-import { ChartViewContext, type ChartView } from './charts/export-context';
+import { ChartControlsContext, ChartViewContext, type ChartControls, type ChartSeriesMenu, type ChartView } from './charts/export-context';
 import { downloadChartPng, downloadChartSvg } from './charts/export-image';
 import { RebinControl } from './charts/RebinControl';
 import { rebinChart, rebinChoices } from './charts/rebin';
+import { CARTESIAN_KINDS } from './charts/kinds';
 import { BlocksContext, leafAnchorKey, useBlocks } from './context';
 import { blockTabular, downloadText, toCSV, toJSON, toTSV } from './export-helpers';
 import { captionStatesCount, fileStamp, formatUtc, slug, truncationNote } from './format';
+import { CAPTION_SEPARATOR, ownCaptionParts, type BlockWidth, type SharedScope } from './layout';
 import { CaseListView } from './renderers/CaseListView';
 import { ComparisonTiles } from './renderers/ComparisonView';
 import { EntityView } from './renderers/EntityView';
 import { HeatmapView } from './renderers/HeatmapView';
 import { KpiGroupView } from './renderers/KpiGroupView';
 import { MitreView } from './renderers/MitreView';
-import { ReportView, reportScopeLine } from './renderers/ReportView';
+import { ReportView, briefHeading, reportLeafScope, reportScopeLine } from './renderers/ReportView';
 import { CalloutView, CitationsView, GuideView, MarkdownView, QueryView } from './renderers/SimpleViews';
 import { TableView } from './renderers/TableView';
 import { TimelineView } from './renderers/TimelineView';
 import { useFullBleed } from './renderers/full-bleed';
 import type { AnswerBlock, BlockView, InternalRef, LeafBlock, TimeBucket } from './schema';
 import { AI_AUTHORED_TYPES, blockView } from './schema';
-import { VIEW_LABEL, canShowTable, honestBlock, switchableViews, tableBlockOf, viewAs } from './views';
+import { VIEW_LABEL, canShowTable, honestBlock, honestChart, switchableViews, tableBlockOf, viewAs } from './views';
 
 /* -------------------------------------------------------------------------- */
 /* Labels and derived facts.                                                   */
@@ -293,20 +303,25 @@ export function BlockBody({
     }
     case 'guide':
       return <GuideView block={block} />;
-    case 'report':
+    case 'report': {
+      // The Brief states its window and time once, in its scope line: a leaf's caption
+      // leaves out what that line says (SPEC-chat T29); print keeps every caption whole.
+      const leafScope = staticMode ? null : reportLeafScope(block);
       return (
         <ReportView
           block={block}
           blockIndex={index}
           staticMode={staticMode}
+          inFrame={inCardFrame}
           renderLeaf={(leaf: LeafBlock, key: string) => (
             // One boundary per leaf: a leaf that cannot render degrades alone (G9).
             <BlockBoundary key={key} id={leaf.id} fallbackText={leaf.fallback_text}>
-              <BlockCard block={leaf} index={index} headingLevel={6} nested leafKey={key} staticMode={staticMode} />
+              <BlockCard block={leaf} index={index} headingLevel={6} nested leafKey={key} staticMode={staticMode} sharedScope={leafScope} />
             </BlockBoundary>
           )}
         />
       );
+    }
     default:
       return null;
   }
@@ -340,9 +355,30 @@ export interface BlockCardProps {
    * that already frames the block (a report panel item), so cards never nest.
    */
   bare?: boolean;
+  /**
+   * The card's width in the lane (`data-block-width`, SPEC-chat §5.1): a compact card stays
+   * in the 42rem reading column. Set by AnswerBlocks from the block's type and size.
+   */
+  width?: BlockWidth;
+  /**
+   * The scope line its answer (or its Brief) already states: the visible caption leaves
+   * those parts out, its accessible description keeps them (SPEC-chat T8, T29). Ignored
+   * in static mode, and by the expanded sheet, which always show the whole caption.
+   */
+  sharedScope?: SharedScope | null;
 }
 
 const HEADINGS = { 4: 'h4', 5: 'h5', 6: 'h6' } as const;
+
+/**
+ * Who produced a block's values, as the ⋯ menu's first line says it (SPEC-chat T9). It
+ * used to be an icon in the header that read as a stray control ("01/10").
+ */
+export const PROVENANCE_LINE: Readonly<Record<AnswerBlock['provenance'], { text: string; Icon: React.ComponentType<{ className?: string }> }>> = {
+  source: { text: 'Measured by a lookup', Icon: Database },
+  code: { text: 'Computed by code', Icon: Binary },
+  ai: { text: 'Stated by the model', Icon: Bot },
+};
 
 /** Blocks that may break out of the conversation lane ("Full width"). */
 const BLEED_TYPES: ReadonlyArray<AnswerBlock['type']> = ['chart', 'table', 'heatmap', 'timeline', 'case_list', 'kpi_group', 'mitre', 'report'];
@@ -407,6 +443,14 @@ function BlockReportToggle({
   );
 }
 
+/**
+ * The Add to report icon's resting state (SPEC-chat T9): hidden until the pointer is over
+ * the card or focus is inside it. Opacity, never `visibility`, so it stays focusable; no
+ * pointer events while hidden, so an invisible target is never tapped. Literal classes.
+ */
+const REVEAL_ON_CARD =
+  'pointer-events-none opacity-0 transition-opacity motion-reduce:transition-none group-hover/block:pointer-events-auto group-hover/block:opacity-100 group-focus-within/block:pointer-events-auto group-focus-within/block:opacity-100';
+
 export function BlockCard({
   block,
   index,
@@ -419,6 +463,8 @@ export function BlockCard({
   leafKey,
   staticMode = false,
   bare = false,
+  width,
+  sharedScope = null,
 }: BlockCardProps) {
   const ctx = useBlocks();
   const { navigate, queryForStep } = ctx;
@@ -428,7 +474,6 @@ export function BlockCard({
   const announce = useAnnouncer();
   const rawId = React.useId();
   const titleId = `blk-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-  const eyebrowId = `${titleId}-kind`;
   const [view, setView] = React.useState<BlockView | null>(null);
   const [showTable, setShowTable] = React.useState(false);
   const [expanded, setExpanded] = React.useState(false);
@@ -436,6 +481,9 @@ export function BlockCard({
   // Round 12 (P0-8): the client-side grouping, the chart as shown (for its image), and
   // the full-width breakout. All display only; the block's data never changes.
   const [rebin, setRebin] = React.useState<TimeBucket | null>(null);
+  // Round 13 (T16): the series a line chart named at its line ends hands to this menu.
+  const [seriesMenu, setSeriesMenu] = React.useState<ChartSeriesMenu | null>(null);
+  const publishSeries = React.useCallback((menu: ChartSeriesMenu | null) => setSeriesMenu(menu), []);
   const figureRef = React.useRef<HTMLElement>(null);
   const chartView = React.useRef<ChartView | null>(null);
   const bleed = useFullBleed(figureRef, !nested && !staticMode && !bare && !ctx.compact && BLEED_TYPES.includes(block.type));
@@ -448,7 +496,11 @@ export function BlockCard({
   // Bare blocks: prose and notes carry no chrome of their own.
   if (block.type === 'markdown' || block.type === 'callout') {
     return (
-      <div className={cn('min-w-0', !staticMode && '[contain-intrinsic-size:auto_80px] [content-visibility:auto]')} data-block-type={block.type}>
+      <div
+        className={cn('min-w-0', !staticMode && '[contain-intrinsic-size:auto_80px] [content-visibility:auto]')}
+        data-block-type={block.type}
+        data-block-width={width}
+      >
         <BlockBody block={block} title={blockTitle(block)} index={index} nested={nested} leafKey={leafKey} staticMode={staticMode} />
       </div>
     );
@@ -458,6 +510,9 @@ export function BlockCard({
   const displayed = view ? viewAs(grouped, view) : honestBlock(grouped);
   const title = blockTitle(block);
   const isBrief = block.type === 'report';
+  // SPEC §10.6 vocabulary: an in-chat report is a "Brief", and its title says so (T29;
+  // the "BRIEF" eyebrow above it is gone). The window it names is in the scope line.
+  const shownTitle = block.type === 'report' ? briefHeading(block) : title;
   const Heading = HEADINGS[headingLevel];
   const views = switchableViews(block);
   const currentView = blockView(displayed) as BlockView;
@@ -476,11 +531,58 @@ export function BlockCard({
   const truncNote =
     block.truncated && !captionStatesCount(block.caption, shown, block.total) ? truncationNote(shown, block.total) : null;
 
+  // The WHOLE caption: the expanded sheet, the image subtitle and assistive tech read it.
+  const asOfText = block.as_of ? `as of ${formatUtc(block.as_of)}` : null;
   const captionParts: string[] = [];
   if (block.type === 'report') captionParts.push(reportScopeLine(block));
   if (block.caption) captionParts.push(block.caption);
-  if (block.as_of) captionParts.push(`as of ${formatUtc(block.as_of)}`);
-  const viewCaption = groupedBy ? [...captionParts, `grouped by ${groupedBy}`] : captionParts;
+  if (asOfText) captionParts.push(asOfText);
+  const grouping = groupedBy ? `grouped by ${groupedBy}` : null;
+  const viewCaption = grouping ? [...captionParts, grouping] : captionParts;
+  // What the card SHOWS once its answer's scope line states the shared parts (T8): its
+  // own parts only. Print and static exports always show the whole caption.
+  const scoped = sharedScope && !staticMode ? sharedScope : null;
+  const shownCaption = scoped
+    ? [
+        ...(block.type === 'report' ? [reportScopeLine(block)] : []),
+        ...ownCaptionParts(block.caption, scoped),
+        ...(asOfText && asOfText !== scoped.asOf ? [asOfText] : []),
+        ...(grouping ? [grouping] : []),
+      ]
+    : viewCaption;
+  const captionShortened = scoped !== null && shownCaption.join(CAPTION_SEPARATOR) !== viewCaption.join(CAPTION_SEPARATOR);
+
+  // Group by joins the chart's ONE control row when a Cartesian chart is drawn (T16);
+  // otherwise (the table view, another kind) the card draws it above the body.
+  const drawnKind = displayed.type === 'chart' && !showTable && displayed.x.values.length ? honestChart(displayed).kind : null;
+  const groupByInChart = drawnKind !== null && CARTESIAN_KINDS.has(drawnKind);
+  const groupBy = rebinOptions.length ? (
+    <RebinControl
+      choices={rebinOptions}
+      value={rebin && rebinOptions.includes(rebin) ? rebin : rebinOptions[0]}
+      onChange={(b) => {
+        setRebin(b === rebinOptions[0] ? null : b);
+        announce(`Grouped by ${BUCKET_NAME[b] ?? b}`);
+      }}
+      title={title}
+    />
+  ) : null;
+  const chartControls: ChartControls = {
+    groupBy: groupByInChart ? groupBy : null,
+    publishSeries: staticMode ? null : publishSeries,
+  };
+  const series = seriesMenu && drawnKind !== null ? seriesMenu : null;
+  const toggleSeries = (k: number) => {
+    if (!series) return;
+    const visible = series.hidden.filter((h) => !h).length;
+    const hiding = !series.hidden[k];
+    if (hiding && visible <= 1) {
+      announce('At least one series must stay visible');
+      return;
+    }
+    series.toggle(k);
+    announce(`Showing ${visible + (hiding ? -1 : 1)} of ${series.labels.length} series`);
+  };
 
   const onCopyData = () => {
     if (!tabular) return;
@@ -509,6 +611,11 @@ export function BlockCard({
     void copyText(query).then((ok) => announce(ok ? 'Query copied' : 'Copy failed'));
   };
 
+  const showAddToReport = !nested && !staticMode && canAddToReport && Boolean(onAddToReport);
+  const reportUnavailable = !inReport && !!addDisabledReason;
+  const provenance = PROVENANCE_LINE[block.provenance];
+  const ProvenanceIcon = provenance.Icon;
+
   const menu = (
     <DropdownMenu onOpenChange={(open) => (open ? bleed.check() : undefined)}>
       <DropdownMenuTrigger
@@ -519,6 +626,29 @@ export function BlockCard({
         <MoreHorizontal className="size-4" aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
+        {/* Who produced the values: a line, not an action (it was the header glyph). */}
+        <DropdownMenuLabel className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground" data-testid="block-provenance">
+          <ProvenanceIcon className="size-3.5 shrink-0" aria-hidden />
+          {provenance.text}
+        </DropdownMenuLabel>
+        {showAddToReport && onAddToReport ? (
+          // A full report keeps the item FOCUSABLE (`aria-disabled`, never Radix
+          // `disabled`), so its reason stays in the reading order; the host answers a
+          // refused add with the same reason. Touch screens reach Add to report here.
+          <DropdownMenuItem
+            aria-disabled={reportUnavailable || undefined}
+            onSelect={onAddToReport}
+            className={cn(reportUnavailable && 'text-muted-foreground')}
+            data-testid="block-menu-report"
+          >
+            {inReport ? <FileCheck2 className="size-3.5" aria-hidden /> : <FilePlus2 className="size-3.5" aria-hidden />}
+            <span className="min-w-0">
+              {inReport ? 'Remove from report' : 'Add to report'}
+              {reportUnavailable ? <span className="block text-2xs text-muted-foreground">{addDisabledReason}</span> : null}
+            </span>
+          </DropdownMenuItem>
+        ) : null}
+        <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => setExpanded(true)}>
           <Maximize2 className="size-3.5" aria-hidden />
           Expand
@@ -553,6 +683,34 @@ export function BlockCard({
                 </DropdownMenuRadioItem>
               ))}
             </DropdownMenuRadioGroup>
+          </>
+        ) : null}
+        {series ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-2xs uppercase tracking-wide text-muted-foreground">Series</DropdownMenuLabel>
+            {series.labels.map((label, k) => (
+              <DropdownMenuCheckboxItem
+                key={`${k}-${label}`}
+                checked={!series.hidden[k]}
+                onCheckedChange={() => toggleSeries(k)}
+                // Keep the menu open: several series are usually toggled in a row.
+                onSelect={(e) => e.preventDefault()}
+                className="gap-2"
+                data-testid="block-series-toggle"
+              >
+                {series.colors?.[k] ? (
+                  // The line's colour, so the name ties to its line (the label carries the meaning).
+                  <span
+                    className="h-0.5 w-3 shrink-0 rounded-full forced-colors:border"
+                    style={{ backgroundColor: series.colors[k] }}
+                    data-series-key={k}
+                    aria-hidden
+                  />
+                ) : null}
+                <span className={cn('min-w-0 break-words', block.untrusted && 'font-mono')}>{label}</span>
+              </DropdownMenuCheckboxItem>
+            ))}
           </>
         ) : null}
         {tableToggle ? (
@@ -627,47 +785,55 @@ export function BlockCard({
     </DropdownMenu>
   );
 
-  const showAddToReport = !nested && !staticMode && canAddToReport && Boolean(onAddToReport);
-
   return (
     <figure
       ref={figureRef}
-      aria-labelledby={isBrief ? `${eyebrowId} ${titleId}` : titleId}
+      aria-labelledby={titleId}
       data-block-type={block.type}
+      data-block-width={width}
       data-full-bleed={bleed.on || undefined}
       style={bleed.style}
       className={cn(
-        'min-w-0',
+        'group/block min-w-0',
         !staticMode && '[contain-intrinsic-size:auto_320px] [content-visibility:auto]',
         nested || bare ? 'pt-1' : 'rounded-lg border border-border/70 px-3 pb-3 pt-2',
       )}
     >
       <figcaption className="mb-2 flex items-start gap-2">
         <div className="min-w-0 flex-1">
-          {isBrief ? (
-            // SPEC §10.6 vocabulary: an in-chat report is a "Brief".
-            <p id={eyebrowId} className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Brief
-            </p>
-          ) : null}
           <Heading
             id={titleId}
             className={cn('text-sm font-semibold text-foreground', staticMode ? 'break-words' : 'truncate')}
-            title={staticMode ? undefined : title}
+            title={staticMode ? undefined : shownTitle}
+            data-brief={isBrief || undefined}
           >
-            {titleNode(block, title)}
+            {isBrief ? shownTitle : titleNode(block, title)}
           </Heading>
           {viewCaption.length ? (
-            <p className="break-words text-xs text-muted-foreground" data-testid="block-caption">
-              {viewCaption.join(' · ')}
-            </p>
+            captionShortened ? (
+              // The answer's scope line says the rest once: the card shows its own parts,
+              // while assistive tech still reads the whole caption with the card.
+              <p className={cn('break-words text-xs text-muted-foreground', !shownCaption.length && 'sr-only')} data-testid="block-caption" data-scoped="">
+                {shownCaption.length ? <span aria-hidden>{shownCaption.join(CAPTION_SEPARATOR)}</span> : null}
+                <span className="sr-only">{viewCaption.join(CAPTION_SEPARATOR)}</span>
+              </p>
+            ) : (
+              <p className="break-words text-xs text-muted-foreground" data-testid="block-caption">
+                {viewCaption.join(CAPTION_SEPARATOR)}
+              </p>
+            )
           ) : null}
         </div>
         {staticMode ? null : (
           <div className="flex shrink-0 items-center gap-0.5" data-print-hide>
-            <ProvenanceTag kind={block.provenance} variant="icon" className="px-1" />
             {showAddToReport && onAddToReport ? (
-              <BlockReportToggle title={title} inReport={inReport} disabledReason={addDisabledReason} onToggle={onAddToReport} />
+              <div
+                className={cn('flex', !inReport && REVEAL_ON_CARD)}
+                data-testid="block-report-slot"
+                data-visibility={inReport ? 'always' : 'hover'}
+              >
+                <BlockReportToggle title={title} inReport={inReport} disabledReason={addDisabledReason} onToggle={onAddToReport} />
+              </div>
             ) : null}
             {menu}
           </div>
@@ -680,29 +846,21 @@ export function BlockCard({
         </p>
       ) : null}
 
-      {rebinOptions.length ? (
-        <RebinControl
-          choices={rebinOptions}
-          value={rebin && rebinOptions.includes(rebin) ? rebin : rebinOptions[0]}
-          onChange={(b) => {
-            setRebin(b === rebinOptions[0] ? null : b);
-            announce(`Grouped by ${BUCKET_NAME[b] ?? b}`);
-          }}
-          title={title}
-        />
-      ) : null}
+      {groupBy && !groupByInChart ? <div className="mb-1.5 flex h-7 items-center">{groupBy}</div> : null}
 
       <ChartViewContext.Provider value={chartView}>
-        <BlockBody
-          block={displayed}
-          title={title}
-          index={index}
-          showTable={showTable}
-          nested={nested}
-          bare={bare}
-          leafKey={leafKey}
-          staticMode={staticMode}
-        />
+        <ChartControlsContext.Provider value={chartControls}>
+          <BlockBody
+            block={displayed}
+            title={title}
+            index={index}
+            showTable={showTable}
+            nested={nested}
+            bare={bare}
+            leafKey={leafKey}
+            staticMode={staticMode}
+          />
+        </ChartControlsContext.Provider>
       </ChartViewContext.Provider>
 
       {truncNote || block.downsampled_for_storage ? (
@@ -717,13 +875,16 @@ export function BlockCard({
         <Sheet open onOpenChange={(o) => setExpanded(o)}>
           <SheetContent side="right" size="full" className="max-w-[min(98vw,1400px)] overflow-y-auto">
             <SheetHeader>
-              <SheetTitle>{title}</SheetTitle>
-              <SheetDescription>{viewCaption.join(' · ') || 'Expanded view'}</SheetDescription>
+              <SheetTitle>{shownTitle}</SheetTitle>
+              <SheetDescription>{viewCaption.join(CAPTION_SEPARATOR) || 'Expanded view'}</SheetDescription>
             </SheetHeader>
             <div className="min-w-0 px-6 pb-6">
-              <BlocksContext.Provider value={expandedCtx}>
-                <BlockBody block={displayed} title={title} index={index} showTable={showTable} expanded />
-              </BlocksContext.Provider>
+              {/* The sheet's copy of the chart owns its own legend and controls. */}
+              <ChartControlsContext.Provider value={null}>
+                <BlocksContext.Provider value={expandedCtx}>
+                  <BlockBody block={displayed} title={title} index={index} showTable={showTable} expanded />
+                </BlocksContext.Provider>
+              </ChartControlsContext.Provider>
             </div>
           </SheetContent>
         </Sheet>

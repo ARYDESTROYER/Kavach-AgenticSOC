@@ -22,11 +22,14 @@ import type { Navigate } from '@/soc/router';
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
 import type { CasePanelPresentation } from './shared';
 
-/** Case-scoped quick questions in the Case Detail sheet. */
-const CASE_CHAT_STARTERS = ['Summarize this case', 'Why was this flagged?', 'What should I check next?'];
+/**
+ * Case-scoped quick questions in the Case Detail sheet (sentence case, UK spelling like
+ * the rest of the console; each is also the sent text).
+ */
+export const CASE_CHAT_STARTERS = ['Summarise this case', 'Why was this flagged?', 'What should I check next?'];
 
-/** Case Manager's analyst quick actions. */
-const CASE_MANAGER_CHAT_STARTERS = ['Summarize Case', 'Check IOCs', 'Suggest Remediation'];
+/** Case Manager's analyst quick actions (sentence case, UK spelling; each is the sent text). */
+export const CASE_MANAGER_CHAT_STARTERS = ['Summarise the case', 'Check indicators', 'Suggest remediation'];
 
 const CaseChat = React.lazy(() => import('./CaseChat'));
 

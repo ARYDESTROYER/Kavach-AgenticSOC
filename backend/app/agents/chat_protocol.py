@@ -1604,6 +1604,131 @@ def parse_report_request(header: Mapping[str, Any] | None) -> dict[str, str] | N
 
 
 # --------------------------------------------------------------------------- #
+# Round 13 (SPEC-chat T6, docs/research/2026-10-round13/SPEC-chat.md §5.3): the final
+# header field ``title``, the conversation's title written by the model on its FIRST
+# answer, in the same final call (no extra model call or spend, #6).
+#   * read only from the first answer of a conversation (no earlier messages); the
+#     prompt asks for it "only when there are no earlier messages in this
+#     conversation, 2 to 6 words naming what this conversation is about";
+#   * a string, at most 48 characters, sentence case, ``display_text`` sanitised
+#     (markers and invisible characters removed), no quotes, no newline and no trailing
+#     period; anything else is dropped, never repaired into a different title;
+#   * the route applies it only to a NEW conversation whose title is still the derived
+#     default (``derive_title``), never after a rename; otherwise ``derive_title``
+#     stays; absent in compatibility mode, where no header exists;
+#   * model-written display text (#9): rendered as text everywhere.
+# --------------------------------------------------------------------------- #
+#: The longest conversation title the model may write (T6).
+MAX_CONVERSATION_TITLE_CHARS = 48
+#: Letters (any script), digits, spaces and the plain punctuation a topic needs. No
+#: quote, backtick, bracket, angle bracket, brace, question or exclamation mark, so no
+#: marker, Markdown or HTML can ride in a title.
+_TITLE_RE = re.compile(r"^[^\W_](?:[\w &+#@%/:,.()'\u2019-]*[^\W_)]|[\w &+#@%/:,.()'\u2019-]*\))?$")
+#: An apostrophe is a quote unless it sits between two letters ("Today's", "o'clock").
+_TITLE_QUOTE_RE = re.compile(r"(?<![^\W\d_])['\u2019]|['\u2019](?![^\W\d_])")
+_TITLE_WORD_RE = re.compile(r"[^\W\d_]+")
+#: Every forged-marker token the fences and the protocol use (case-insensitive),
+#: whatever the brackets: ``UNTRUSTED_LOG_DATA``, ``END_*`` closers,
+#: ``CONVERSATION_SUMMARY``, ``---ANSWER---``. The plain word "untrusted" ("Logins from
+#: untrusted networks") is an ordinary topic; brackets are refused by ``_TITLE_RE``.
+_TITLE_MARKER_RE = re.compile(
+    r"untrusted_|_untrusted|conversation_summary|(?<![a-z0-9])end_(?:memory|name|playbook|precedent|app_docs)"
+    r"|app_docs|user_turn|answer---|---answer|<<<|>>>",
+    re.IGNORECASE,
+)
+
+
+#: Small words Title Case capitalises and sentence case never does.
+_TITLE_CASE_SMALL_WORDS = frozenset({"And", "At", "By", "For", "From", "In", "Of", "On", "Or", "The", "To", "With"})
+_TITLE_SMALL_WORDS = frozenset(w.casefold() for w in _TITLE_CASE_SMALL_WORDS) | {"a", "an", "as", "vs", "via"}
+#: Console proper names, and the names of the security products it connects to, that
+#: keep their capitals in sentence case ("Active Risk Index trend", "Microsoft
+#: Defender"); they are set aside before the case check, so a title that is only such a
+#: name is not mistaken for Title Case.
+_TITLE_PROPER_NAMES = ("Active Risk Index", "Cyber Defence Center", "Risk Index", "Case Manager",
+                       "Help Center", "Demo Mode", "Microsoft Defender", "Microsoft Sentinel",
+                       "IBM QRadar", "Google Chronicle", "CrowdStrike Falcon", "Wazuh Manager")
+#: An acronym, plural or not ("VPN", "IPs", "ATT").
+_TITLE_ACRONYM_RE = re.compile(r"^[A-Z]{2,}s?$")
+
+
+def _title_case_like(words: Sequence[str]) -> bool:
+    """True for Title Case or all capitals, judged on the words after the first:
+
+    * a capitalised small word ("Logins By Host", "Okta Sign In Failures");
+    * no lower-case ordinary word (3 letters or more, not a small word or acronym), and
+      either the second word is a capitalised ordinary word ("Failed Logins from
+      Russia", "Security Posture Overview") or every word is capitalised ("Okta MFA
+      Failures", "Top Source IPs");
+    * all capitals: no word of 3 letters or more holds a lower-case letter, and two or
+      more words of 4 letters or more are in capitals ("FAILED LOGINS TODAY",
+      "PHISHING TRIAGE"). Acronyms in a sentence-case title keep their capitals
+      ("HTTP POST floods", "LDAP and SMTP failures"), and so does a lone acronym
+      ("DMARC").
+
+    Proper names after a lower-case word stay allowed ("Alerts from Microsoft
+    Defender", "Failed sign-ins on Wazuh Manager")."""
+    long_words = [w for w in words if len(w) >= 3]
+    if (long_words and not any(c.islower() for w in long_words for c in w)
+            and sum(1 for w in words if len(w) >= 4 and w.isupper()) >= 2):
+        return True
+    # A single letter is a possessive or an initial ("Today's"), never a case signal.
+    rest = [w for w in words[1:] if len(w) >= 2]
+    if not rest:
+        return False
+    if any(w in _TITLE_CASE_SMALL_WORDS for w in rest):
+        return True
+    ordinary = [w for w in rest if len(w) >= 3 and w.casefold() not in _TITLE_SMALL_WORDS
+                and not _TITLE_ACRONYM_RE.match(w)]
+    if not ordinary or any(w[0].islower() for w in ordinary):
+        return False
+    second = rest[0]
+    if second in ordinary:
+        return True
+    return all(w[0].isupper() for w in rest)
+
+
+def parse_title(header: Mapping[str, Any] | None) -> str | None:
+    """``header.title`` as the conversation's title, or ``None`` when absent or
+    unusable. Accepted only as written: a string of at most
+    :data:`MAX_CONVERSATION_TITLE_CHARS` characters on one line that display
+    sanitisation leaves unchanged (no invisible or control character), with no quote,
+    marker, bracket or trailing period, at least one letter, and in sentence case (the
+    first word not a lower-case ordinary word, no Title Case, no all capitals). A title
+    that breaks any rule is dropped, never trimmed or repaired into a different title
+    (T6)."""
+    raw = header.get("title") if isinstance(header, Mapping) else None
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > MAX_CONVERSATION_TITLE_CHARS or value != raw.strip(" "):
+        return None
+    if display_text(value, 0) != value or "  " in value:
+        return None
+    if _TITLE_MARKER_RE.search(value) or not _TITLE_RE.fullmatch(value) or _TITLE_QUOTE_RE.search(value):
+        return None
+    if value.endswith("."):
+        return None
+    words = _TITLE_WORD_RE.findall(value)
+    if not words:
+        return None
+    first = value.split(" ", 1)[0]
+    lead = _TITLE_WORD_RE.search(first)
+    # "phishing triage", "sign-in failures": not sentence case. An identifier keeps its
+    # own case ("case-0042 escalation", "t1190 activity"), and so does a mixed-case
+    # name ("iOS sign-ins").
+    if (lead is not None and lead.group(0)[0].islower() and not any(c.isdigit() for c in first)
+            and not any(c.isupper() for c in first)):
+        return None
+    checked = value
+    for name in _TITLE_PROPER_NAMES:
+        checked = checked.replace(name, "XX")
+    if _title_case_like(_TITLE_WORD_RE.findall(checked) or words):
+        return None
+    return value
+
+
+# --------------------------------------------------------------------------- #
 # §5.4.1 the app-knowledge interface the engine calls (implemented by the app
 # knowledge package; the engine works without it).
 # --------------------------------------------------------------------------- #

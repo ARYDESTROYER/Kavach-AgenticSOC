@@ -1562,7 +1562,13 @@ export const AppShell: React.FC<AppShellProps> = ({
               aria-describedby={menuActivity.text ? 'mobile-nav-activity' : undefined}
             >
               <Menu className="h-4 w-4" aria-hidden />
-              <ActivityGlyph status={menuActivity.status} className="chat-activity-badge" />
+              {/* A 6 px dot while an answer is written, never a ring around the menu icon
+                  (SPEC-chat T32); the states with news keep their coloured dot. */}
+              {menuActivity.status === 'running' ? (
+                <span aria-hidden="true" data-activity="working" className="chat-activity chat-activity-badge size-1.5" />
+              ) : (
+                <ActivityGlyph status={menuActivity.status} className="chat-activity-badge" />
+              )}
             </Button>
           ) : null}
           {isMobile && menuActivity.text ? (

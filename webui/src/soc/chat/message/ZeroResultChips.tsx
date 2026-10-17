@@ -10,16 +10,18 @@
  * text already says how to widen the search).
  *
  * The chips arrive after the answer has rendered, so they only ever APPEND: they render
- * last, below the follow-ups (nothing above them moves), and a chip that a follow-up
- * already offers is left out instead of removing that follow-up (`chipsNotInFollowUps`).
+ * last, after the follow-ups in the same row (Round 13, SPEC-chat §4.2: ghost chips behind
+ * a muted "Widen the search:" label; nothing before them moves), and a chip that a
+ * follow-up already offers is left out instead of removing that follow-up
+ * (`chipsNotInFollowUps`). They stay when the viewer turned suggested follow-ups off:
+ * they are honest search widening, not suggestions.
  */
 import * as React from 'react';
-import { CornerDownRight, SearchX } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
-import { focusRing } from '@/lib/ui-recipes';
 import type { ChatStep } from '@/lib/types';
 import { getStepObservation, isSafeChatId, type ChatZeroSuggestion } from '../chat-api';
+import { SuggestionChip } from './FollowUps';
 import { zeroChips, zeroResultSteps, type ZeroChip } from './zero-suggestions';
 
 /** At most this many zero-result lookups of one answer are read. */
@@ -78,42 +80,27 @@ export function useZeroResultChips(
 
 export interface ZeroResultChipsProps {
   chips: readonly ZeroChip[];
-  /** Other lookups of the answer did find data: say that only some found nothing. */
-  some?: boolean;
   disabled?: boolean;
   onPick: (question: string) => void;
   className?: string;
 }
 
-/** "Nothing matched. Widen the search:" (or "Some lookups found nothing.") and the chips. */
-export function ZeroResultChips({ chips, some = false, disabled = false, onPick, className }: ZeroResultChipsProps) {
+/** The muted label in front of the zero-result chips. */
+export const WIDEN_LABEL = 'Widen the search:';
+
+/** "Widen the search:" and the chips (ghost chips, the follow-ups' style). */
+export function ZeroResultChips({ chips, disabled = false, onPick, className }: ZeroResultChipsProps) {
   if (!chips.length) return null;
   return (
     <div
       role="group"
       aria-label="Ways to widen the search"
-      className={cn('flex flex-wrap items-center gap-1.5', className)}
+      className={cn('flex max-w-full flex-wrap items-center gap-1', className)}
       data-testid="zero-result-chips"
     >
-      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-        <SearchX className="size-3.5" aria-hidden />
-        {some ? 'Some lookups found nothing. Widen them:' : 'Nothing matched. Widen the search:'}
-      </span>
+      <span className="px-1 text-xs text-muted-foreground">{WIDEN_LABEL}</span>
       {chips.map((chip) => (
-        <button
-          key={chip.question}
-          type="button"
-          disabled={disabled}
-          title={chip.question}
-          onClick={() => onPick(chip.question)}
-          className={cn(
-            'inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none',
-            focusRing,
-          )}
-        >
-          <CornerDownRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-          {chip.label}
-        </button>
+        <SuggestionChip key={chip.question} label={chip.label} title={chip.question} disabled={disabled} onClick={() => onPick(chip.question)} />
       ))}
     </div>
   );

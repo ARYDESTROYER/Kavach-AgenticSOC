@@ -7,8 +7,18 @@
  *   running] → [contents · Jump to end, long answers] → answer prose (ChatMarkdown, `[D1]`
  *   markers jump to Sources) → [clarify card] → answer blocks (LAZY chunk) → [end
  *   marker, long answers] → meta row → [feedback panel] → [Sources] → [saved report] →
- *   [memory / not-saved line] → [follow-ups, latest turn only] → [zero-result chips,
- *   latest turn only: they load after the answer, so they come last and only append]
+ *   [memory / not-saved line] → [ONE row of suggestions, latest turn only: the follow-ups,
+ *   then the zero-result chips, which load after the answer, so they come last and only
+ *   append]
+ *
+ * Round 13 (SPEC-chat §5.1, T7, T10, T20): prose, notices, the run log and the
+ * suggestions sit in the 42rem READING column; compact blocks stay in it and wide blocks
+ * take the lane, and the meta row follows the widest block of its answer. The meta row
+ * reads "4 lookups · 6.2 s · $0.004 · Sources 3" with Copy, the rating pair, an "In
+ * report" chip and ⋯ (Add to report, Add to case, Ask again) on the right; below 30rem ⋯
+ * also holds Copy, Usage details and Sources. While the blocks chunk loads, each block
+ * keeps the height it will take (no dashed box, no jump). The viewer may turn suggested
+ * follow-ups off (`UserPrefs.misc.chat_suggest_follow_ups`); the zero-result chips stay.
  *
  * While the turn runs the run log sits expanded under the user turn with a live
  * header; it collapses when answer text starts (first `text.delta`, or `turn.done` in
@@ -31,7 +41,7 @@
  * statically (`chat-blocks-bundle.test.ts`).
  */
 import * as React from 'react';
-import { BookOpen, BriefcaseBusiness, Check, Copy, FileCheck2, FilePlus2, ListCollapse, MoreHorizontal, RefreshCw } from 'lucide-react';
+import { BookOpen, BriefcaseBusiness, Check, Coins, Copy, FileCheck2, FilePlus2, Library, ListCollapse, MoreHorizontal, RefreshCw } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { copyText } from '@/lib/clipboard';
@@ -39,10 +49,12 @@ import type { ChatOrigin } from '@/lib/types';
 import { useOptionalAuth } from '@/soc/auth';
 import { IconButton } from '@/soc/components/IconButton';
 import { useAnnouncer } from '@/soc/components/announcer';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/ui/dropdown-menu';
+import { useOptionalPrefs } from '@/soc/prefs';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { ChatMarkdown } from '../ChatMarkdown';
 import { isSafeChatId } from '../chat-api';
+import { blockWidth, widestBlock } from '../blocks/layout';
 import { legacyTableBlock, parseBlocks, type AnswerBlock } from '../blocks/schema';
 import { isUnsavedTurn, type ChatAssistantItem, type ChatEngine } from '../useChatEngine';
 import { AddToCaseDialog } from './AddToCaseDialog';
@@ -51,8 +63,9 @@ import { FeedbackButtons, FeedbackPanel, useAnswerFeedbackControls } from './Ans
 import { ClarifyCard } from './ClarifyCard';
 import { CommandNote } from './CommandNote';
 import { useAnswerFeedback } from './feedback';
+import { noteFollowUpUsed, useFollowUpLimit } from './follow-up-backoff';
 import { FollowUps } from './FollowUps';
-import { CONTENT_COL, LANE_COL, LANE_SUBGRID, META_COL, WIDE_COL } from './lane';
+import { LANE_SUBGRID, META_COL, PROSE_COL, READING_COL, WIDE_COL } from './lane';
 import { MemoryLine, hasMemoryLine } from './MemoryLine';
 import { MetaRow } from './MetaRow';
 import { CALLOUT_NOTICE_KINDS, NoticeCallout } from './NoticeCallout';
@@ -183,68 +196,81 @@ function CopyAnswer({ text, shortcut = false }: { text: string; shortcut?: boole
 const REPORT_REFUSED = 'The report cannot take more items';
 
 /**
- * The answer's report toggle. ONE stable name (an APG toggle must not also flip its
- * name); `aria-pressed` says whether the answer is in the report, and the tooltip uses
- * the block vocabulary ("In report ✓ (click to remove)"). A full report makes it
- * `aria-disabled`, never `disabled`: it stays focusable so its tooltip can say why, and
- * a click is answered with the reason by the binding.
+ * The "In report" chip (Round 13, SPEC-chat T10): shown while the whole answer is in the
+ * report, so the state is visible without opening ⋯. It is the report toggle in its
+ * pressed state (ONE stable name, `aria-pressed`); pressing it takes the answer out, and
+ * focus then moves to ⋯ (the chip is gone). Add to report itself lives in ⋯.
  */
-function AnswerReportToggle({ report }: { report: MessageReportBinding }) {
-  const unavailable = !report.answerInReport && !report.canAdd;
-  const hint = report.answerInReport
-    ? 'In report ✓ (click to remove)'
-    : unavailable
-      ? (report.disabledReason ?? REPORT_REFUSED)
-      : 'Add answer to report';
+function InReportChip({ report, onRemoved }: { report: MessageReportBinding; onRemoved: () => void }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <IconButton
-          label="Add answer to report"
-          tooltip={false}
-          size="sm"
-          aria-pressed={report.answerInReport}
-          aria-disabled={unavailable || undefined}
-          onClick={report.onToggleAnswer}
-          className={cn(report.answerInReport && 'text-primary', unavailable && 'cursor-not-allowed opacity-50')}
-          data-testid="answer-add-to-report"
+        <button
+          type="button"
+          aria-pressed
+          onClick={() => {
+            report.onToggleAnswer();
+            onRemoved();
+          }}
+          className="inline-flex h-6 shrink-0 items-center gap-1 rounded-sm px-1.5 text-xs font-medium text-primary hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          data-testid="answer-in-report"
         >
-          {report.answerInReport ? <FileCheck2 aria-hidden /> : <FilePlus2 aria-hidden />}
-        </IconButton>
+          <Check className="size-3.5" aria-hidden />
+          In report
+        </button>
       </TooltipTrigger>
-      <TooltipContent side="top">{hint}</TooltipContent>
+      <TooltipContent side="top">Remove the answer from the report</TooltipContent>
     </Tooltip>
   );
 }
 
 interface MoreActionsProps {
-  /** The answer text ("Copy answer"), or null. */
+  /** The answer text ("Copy answer", the narrow row only), or null. */
   copy: string | null;
   report: MessageReportBinding | null;
   onAddToCase: ((opener: HTMLElement | null) => void) | null;
   onAskAgain: (() => void) | null;
   busy: boolean;
+  /** The narrow row's "Usage details" (the cost figure leaves the row below 30rem). */
+  onUsage?: (() => void) | null;
+  /** The narrow row's "Sources" (the Sources disclosure leaves the row below 30rem). */
+  sources?: { count: number; open: boolean; onToggle: () => void } | null;
+  triggerRef?: React.MutableRefObject<HTMLButtonElement | null>;
+  testId?: string;
 }
 
 /**
- * The narrow meta row's overflow menu (a phone or a slim panel): Copy, Add to report,
- * Add to case and Ask again move here so the lookup count, the token figure, the Demo
- * marker and Sources keep their ONE line whole (SPEC §10.3); the thumbs stay visible.
- * Wider rows show them all as icon buttons.
+ * The answer's ⋯ menu (Round 13, SPEC-chat T10): Add to report, Add to case and Ask
+ * again. The narrow row (a phone or a slim panel, below 30rem) also moves Copy, Usage
+ * details and Sources here, so the lookup count and the duration keep their ONE line
+ * whole; the thumbs always stay on the row.
  */
-function MoreActions({ copy, report, onAddToCase, onAskAgain, busy }: MoreActionsProps) {
+function MoreActions({ copy, report, onAddToCase, onAskAgain, busy, onUsage = null, sources = null, triggerRef, testId = 'answer-more-actions' }: MoreActionsProps) {
   const announce = useAnnouncer();
-  const triggerRef = React.useRef<HTMLButtonElement>(null);
-  if (!copy && !report && !onAddToCase && !onAskAgain) return null;
+  const ownRef = React.useRef<HTMLButtonElement | null>(null);
+  const ref = triggerRef ?? ownRef;
+  /** "Usage details" was chosen: open the card once the menu has closed (it takes focus). */
+  const usageNext = React.useRef(false);
+  const extras = !!onUsage || (!!sources && sources.count > 0);
+  if (!copy && !report && !onAddToCase && !onAskAgain && !extras) return null;
   const reportUnavailable = !!report && !report.answerInReport && !report.canAdd;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <IconButton ref={triggerRef} label="More actions" size="sm" tooltip={false} data-testid="answer-more-actions">
+        <IconButton ref={ref} label="More actions" size="sm" tooltip={false} data-testid={testId}>
           <MoreHorizontal aria-hidden />
         </IconButton>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent
+        align="end"
+        className="w-56"
+        onCloseAutoFocus={(event) => {
+          if (!usageNext.current) return;
+          usageNext.current = false;
+          event.preventDefault();
+          onUsage?.();
+        }}
+      >
         {copy ? (
           <DropdownMenuItem
             onSelect={() => {
@@ -260,8 +286,7 @@ function MoreActions({ copy, report, onAddToCase, onAskAgain, busy }: MoreAction
         {report ? (
           // A full report keeps the item FOCUSABLE (`aria-disabled`, never Radix
           // `disabled`, which roving focus skips) so its reason stays in the reading
-          // order; choosing it is answered with that reason by the binding, as on the
-          // wide row's toggle.
+          // order; choosing it is answered with that reason by the binding.
           <DropdownMenuItem
             aria-disabled={reportUnavailable || undefined}
             onSelect={report.onToggleAnswer}
@@ -278,7 +303,7 @@ function MoreActions({ copy, report, onAddToCase, onAskAgain, busy }: MoreAction
           </DropdownMenuItem>
         ) : null}
         {onAddToCase ? (
-          <DropdownMenuItem onSelect={() => onAddToCase(triggerRef.current)}>
+          <DropdownMenuItem onSelect={() => onAddToCase(ref.current)} data-testid="more-actions-case">
             <BriefcaseBusiness className="size-3.5" aria-hidden />
             Add to case…
           </DropdownMenuItem>
@@ -289,14 +314,78 @@ function MoreActions({ copy, report, onAddToCase, onAskAgain, busy }: MoreAction
             Ask again
           </DropdownMenuItem>
         ) : null}
+        {extras ? <DropdownMenuSeparator /> : null}
+        {onUsage ? (
+          <DropdownMenuItem
+            onSelect={() => {
+              usageNext.current = true;
+            }}
+            data-testid="more-actions-usage"
+          >
+            <Coins className="size-3.5" aria-hidden />
+            Usage details
+          </DropdownMenuItem>
+        ) : null}
+        {sources && sources.count > 0 ? (
+          <DropdownMenuItem onSelect={sources.onToggle} data-testid="more-actions-sources">
+            <Library className="size-3.5" aria-hidden />
+            {sources.open ? 'Hide sources' : `Sources (${sources.count.toLocaleString('en-US')})`}
+          </DropdownMenuItem>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-/** A quiet, motionless placeholder while the blocks chunk loads. */
-function BlocksPlaceholder() {
-  return <div className="h-20 rounded-md border border-dashed border-border" aria-hidden data-testid="blocks-loading" />;
+/** One placeholder row's height (a table or list row) while the blocks chunk loads. */
+export const PLACEHOLDER_ROW_PX = 32;
+
+/**
+ * The height a block's placeholder reserves (Round 13, SPEC-chat T20): KPI 112 px, chart
+ * 280 px, a table or list 32 px per row up to 10, so the answer does not jump when the
+ * cards arrive.
+ */
+export function placeholderHeight(block: AnswerBlock): number {
+  const rows = (n: number) => PLACEHOLDER_ROW_PX * Math.min(10, Math.max(1, n));
+  switch (block.type) {
+    case 'kpi_group':
+      return 112;
+    case 'chart':
+    case 'heatmap':
+      return 280;
+    case 'table':
+      return rows(block.rows.length);
+    case 'case_list':
+      return rows(block.items.length);
+    case 'timeline':
+      return rows(block.events.length);
+    case 'markdown':
+    case 'callout':
+      return 48;
+    default:
+      return 112;
+  }
+}
+
+/**
+ * Quiet, motionless placeholders while the blocks chunk loads: one per block, at the
+ * height and in the column it will take (`bg-muted/40`, no dashed box).
+ */
+function BlocksPlaceholder({ blocks }: { blocks: readonly AnswerBlock[] }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-3" aria-hidden data-testid="blocks-loading">
+      {blocks.map((block, index) => (
+        <div
+          key={`${index}-${block.id}`}
+          className="rounded-lg bg-muted/40"
+          style={{ height: placeholderHeight(block) }}
+          // Prose placeholders sit on the prose edge; framed ones hang like their cards.
+          data-block-type={block.type === 'markdown' || block.type === 'callout' ? block.type : 'placeholder'}
+          data-block-width={blockWidth(block)}
+        />
+      ))}
+    </div>
+  );
 }
 
 /** The per-answer storage hint (SPEC A22): a restored answer compacted to fit storage. */
@@ -468,24 +557,24 @@ function MessageView({
   );
   const canAddToCase = savedAnswer && canComment && !!response?.answer?.trim();
 
+  // Suggested follow-ups (Round 13, SPEC-chat §4.2): the latest answer only, unless the
+  // viewer turned them off (`UserPrefs.misc.chat_suggest_follow_ups`), and only the first
+  // after five answers in a row whose chips went unused (the client back-off).
+  const prefsCtx = useOptionalPrefs();
+  const followUpsOn = !prefsCtx || prefsCtx.prefs.misc?.chat_suggest_follow_ups !== false;
+  const followUps = React.useMemo(() => response?.follow_ups ?? [], [response?.follow_ups]);
+  const showFollowUps = !running && latest && followUpsOn && followUps.length > 0;
+  const followLimit = useFollowUpLimit(item.key, !item.restored, showFollowUps);
+  const shownFollowUps = React.useMemo(
+    () => (showFollowUps ? followUps.slice(0, followLimit) : []),
+    [followLimit, followUps, showFollowUps],
+  );
   // Zero-result chips (D10): the latest saved answer's lookups that matched nothing. They
-  // arrive after the answer, so they render LAST and only append: a follow-up already on
-  // screen is never removed for them (a chip asking the same is left out instead).
-  const followUps = response?.follow_ups ?? [];
+  // arrive after the answer, so they render LAST in the suggestions row and only append:
+  // a follow-up already on screen is never removed for them (a chip asking the same is
+  // left out instead). They stay when follow-ups are off (honest search widening).
   const allChips = useZeroResultChips(conversationId, persistedMessageId, response?.steps, latest && !running && savedAnswer);
-  // Compared with the follow-ups actually shown (FollowUps offers at most three).
-  const chips = React.useMemo(
-    () => chipsNotInFollowUps(allChips, (response?.follow_ups ?? []).slice(0, 3)),
-    [allChips, response?.follow_ups],
-  );
-  // Only some lookups found nothing (others returned data): the chips say so.
-  const someZero = React.useMemo(
-    () =>
-      (response?.steps ?? []).some(
-        (s) => s.kind === 'tool' && s.status === 'ok' && !!s.tool && !PRODUCT_TOOLS.has(s.tool) && (s.rows ?? 0) > 0,
-      ),
-    [response?.steps],
-  );
+  const chips = React.useMemo(() => chipsNotInFollowUps(allChips, shownFollowUps), [allChips, shownFollowUps]);
 
   // Long answers (P1-6): contents, Jump to end, and Ctrl/⌘+Shift+C on the latest one.
   const answerRef = React.useRef<HTMLDivElement>(null);
@@ -495,31 +584,29 @@ function MessageView({
   useCopyLastAnswer(latest && !running && !command && response?.answer ? response.answer : null);
 
   const reportBinding = report && persistedMessageId && !command ? report : null;
-  // Wide rows show every action; a narrow row keeps the thumbs and moves the rest into ⋯
-  // (a container query on the meta row, so the two forms never show at once).
+  // The narrow row's usage card (opened from ⋯ "Usage details") and its return target.
+  const [usageOpen, setUsageOpen] = React.useState(false);
+  const narrowMoreRef = React.useRef<HTMLButtonElement | null>(null);
+  const wideMoreRef = React.useRef<HTMLButtonElement | null>(null);
+  const sourceCount = citations.length + consoleLinks.length;
+  const hasUsage = !!response?.usage;
+  // Wide rows (≥ 30rem): Copy, the rating pair, the "In report" chip and ⋯. A narrow row
+  // keeps the thumbs and moves the rest into ⋯ (a container query on the meta row, so the
+  // two forms never show at once).
   const actions =
     !running && response && !command ? (
       <>
         <span className="hidden @[30rem]/meta:contents">{response.answer ? <CopyAnswer text={response.answer} shortcut={latest} /> : null}</span>
         {savedAnswer ? <FeedbackButtons state={feedback} panelId={feedbackId} /> : null}
         <span className="hidden @[30rem]/meta:contents">
-          {reportBinding ? <AnswerReportToggle report={reportBinding} /> : null}
-          {canAddToCase ? (
-            <IconButton
-              ref={addCaseRef}
-              label="Add to case"
-              size="sm"
-              onClick={(event) => openAddToCase(event.currentTarget)}
-              data-testid="answer-add-to-case"
-            >
-              <BriefcaseBusiness aria-hidden />
-            </IconButton>
-          ) : null}
-          {!unsaved ? (
-            <IconButton label="Ask again" size="sm" disabled={busy} onClick={() => engine.askAgain(item.key)}>
-              <RefreshCw aria-hidden />
-            </IconButton>
-          ) : null}
+          <MoreActions
+            copy={null}
+            report={reportBinding}
+            onAddToCase={canAddToCase ? openAddToCase : null}
+            onAskAgain={unsaved ? null : () => engine.askAgain(item.key)}
+            busy={busy}
+            triggerRef={wideMoreRef}
+          />
         </span>
         <span className="contents @[30rem]/meta:hidden">
           <MoreActions
@@ -528,10 +615,26 @@ function MessageView({
             onAddToCase={canAddToCase ? openAddToCase : null}
             onAskAgain={unsaved ? null : () => engine.askAgain(item.key)}
             busy={busy}
+            onUsage={hasUsage ? () => setUsageOpen(true) : null}
+            sources={sourceCount > 0 ? { count: sourceCount, open: sourcesOpen, onToggle: () => setSourcesOpen((open) => !open) } : null}
+            triggerRef={narrowMoreRef}
+            testId="answer-more-actions-narrow"
           />
         </span>
       </>
     ) : null;
+  // The "In report" chip states the answer's report state at rest, on every turn: it sits
+  // outside the actions that fade on older turns (like a block's report toggle, T9).
+  const inReport =
+    !running && response && !command && reportBinding?.answerInReport ? (
+      <span className="hidden @[30rem]/meta:contents">
+        <InReportChip report={reportBinding} onRemoved={() => window.setTimeout(() => wideMoreRef.current?.focus(), 0)} />
+      </span>
+    ) : null;
+  // The meta row follows the widest block of its answer (SPEC-chat §5.1): the lane when
+  // one block is wide, else the reading column next to the prose and cards it acts on.
+  const metaWide = !compact && blocks.length > 0 && widestBlock(blocks) === 'wide';
+  const suggestions = shownFollowUps.length > 0 || (!running && latest && chips.length > 0);
 
   return (
     <article
@@ -548,7 +651,7 @@ function MessageView({
       </h3>
 
       {productHelp ? (
-        <p className={cn(CONTENT_COL, 'inline-flex items-center gap-1.5 text-2xs font-medium text-muted-foreground')}>
+        <p className={cn(READING_COL, 'inline-flex items-center gap-1.5 text-2xs font-medium text-muted-foreground')}>
           <BookOpen className="size-3.5" aria-hidden />
           Product help
         </p>
@@ -556,7 +659,7 @@ function MessageView({
 
       {item.status === 'error' && item.failure ? (
         <NoticeCallout
-          className={CONTENT_COL}
+          className={READING_COL}
           kind={item.failure.notice?.kind ?? 'provider'}
           tone="critical"
           title={item.failure.kind === 'connection_lost' ? 'Connection lost' : 'The assistant could not answer'}
@@ -571,7 +674,7 @@ function MessageView({
 
       {calloutNotice && calloutView ? (
         <NoticeCallout
-          className={CONTENT_COL}
+          className={READING_COL}
           kind={calloutNotice.kind}
           tone={calloutView.tone}
           title={stoppedLocally ? undefined : calloutView.title}
@@ -586,7 +689,7 @@ function MessageView({
       {compacted ? (
         <p
           role="note"
-          className={cn(CONTENT_COL, 'inline-flex items-center gap-1.5 text-2xs text-muted-foreground')}
+          className={cn(READING_COL, 'inline-flex items-center gap-1.5 text-2xs text-muted-foreground')}
           data-testid="answer-compacted"
         >
           <ListCollapse className="size-3.5 shrink-0" aria-hidden />
@@ -595,7 +698,7 @@ function MessageView({
       ) : null}
 
       {running && live ? (
-        <div className={cn(CONTENT_COL, 'space-y-1.5')}>
+        <div className={cn(READING_COL, 'space-y-1.5')}>
           <RunLogHeader live={live} open={logOpen} onToggle={() => setLogOpen((open) => !open)} controls={logId} />
           <RunLogList steps={steps} id={logId} hidden={!logOpen} />
         </div>
@@ -603,7 +706,7 @@ function MessageView({
 
       {longAnswer ? (
         <AnswerContents
-          className={CONTENT_COL}
+          className={READING_COL}
           headings={headings}
           answerRef={answerRef}
           showJump={longAnswer}
@@ -611,13 +714,15 @@ function MessageView({
         />
       ) : null}
 
-      {command && response ? <CommandNote className={CONTENT_COL} response={response} /> : null}
+      {command && response ? <CommandNote className={READING_COL} response={response} /> : null}
 
       {showAnswer ? (
         <div
           ref={answerRef}
           className={cn(
-            CONTENT_COL,
+            READING_COL,
+            // Prose keeps its own measure inside the column: 86 to 90 characters (§5.1).
+            !compact && PROSE_COL,
             highlighted && 'rounded-sm ring-2 ring-primary/60 ring-offset-4 ring-offset-background',
           )}
         >
@@ -633,7 +738,7 @@ function MessageView({
 
       {clarify ? (
         <ClarifyCard
-          className={CONTENT_COL}
+          className={READING_COL}
           clarify={clarify}
           active={latest}
           disabled={busy}
@@ -642,13 +747,15 @@ function MessageView({
       ) : null}
 
       {!running && blocks.length ? (
-        <div className={compact ? CONTENT_COL : WIDE_COL}>
-          <React.Suspense fallback={<BlocksPlaceholder />}>
+        <div className={compact ? READING_COL : WIDE_COL}>
+          <React.Suspense fallback={<BlocksPlaceholder blocks={blocks} />}>
             <AnswerBlocks
               blocks={blocks}
               messageId={blocksMessageId}
               domId={domId}
               compact={compact}
+              // One scope line for the captions several cards repeat (T8).
+              shareCaptions={!compact}
               inReport={report?.blocks}
               // Visibility never follows `canAdd` or a pending request: a block already in
               // a full report must stay removable, and the clicked toggle must keep focus.
@@ -662,10 +769,10 @@ function MessageView({
         </div>
       ) : null}
 
-      {longAnswer ? <AnswerEnd ref={endRef} className={CONTENT_COL} /> : null}
+      {longAnswer ? <AnswerEnd ref={endRef} className={READING_COL} /> : null}
 
       {!running && response && !command ? (
-        <div className={cn(blocks.length && !compact ? META_COL : CONTENT_COL, 'space-y-1.5')}>
+        <div className={cn(metaWide ? META_COL : READING_COL, 'space-y-1.5')}>
           <MetaRow
             response={response}
             steps={steps}
@@ -675,10 +782,14 @@ function MessageView({
               open: sourcesOpen,
               onToggle: () => setSourcesOpen((open) => !open),
               controls: sourcesId,
-              count: citations.length + consoleLinks.length,
+              count: sourceCount,
             }}
             actions={actions}
+            pinned={inReport}
             actionsAlwaysVisible={latest}
+            usageOpen={usageOpen}
+            onUsageOpenChange={setUsageOpen}
+            usageReturnFocus={() => narrowMoreRef.current}
           />
           {savedAnswer && feedback.panelOpen ? <FeedbackPanel state={feedback} id={feedbackId} /> : null}
           {hasLog ? (
@@ -714,23 +825,25 @@ function MessageView({
         </div>
       ) : null}
 
-      {!running && latest && followUps.length ? (
-        <FollowUps
-          className={compact ? CONTENT_COL : LANE_COL}
-          items={followUps}
-          disabled={busy}
-          onPick={(text) => engine.send(text, { origin: 'follow_up' })}
-        />
-      ) : null}
-
-      {!running && latest && chips.length ? (
-        <ZeroResultChips
-          className={compact ? CONTENT_COL : LANE_COL}
-          chips={chips}
-          some={someZero}
-          disabled={busy}
-          onPick={(text) => ask(text, 'follow_up')}
-        />
+      {suggestions ? (
+        // ONE row of suggestions in the reading column (SPEC-chat §4.2): the follow-ups,
+        // then the zero-result chips behind "Widen the search:".
+        <div className={cn(READING_COL, 'flex flex-wrap items-center gap-x-1 gap-y-1')} data-testid="answer-suggestions">
+          {shownFollowUps.length ? (
+            <FollowUps
+              items={shownFollowUps}
+              limit={followLimit}
+              disabled={busy}
+              onPick={(text) => {
+                noteFollowUpUsed();
+                engine.send(text, { origin: 'follow_up' });
+              }}
+            />
+          ) : null}
+          {!running && latest && chips.length ? (
+            <ZeroResultChips chips={chips} disabled={busy} onPick={(text) => ask(text, 'follow_up')} />
+          ) : null}
+        </div>
       ) : null}
 
       {inspected ? (

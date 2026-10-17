@@ -6,8 +6,11 @@
  * SPEC D1): Question limits (Unlimited — the default: a question runs until it answers
  * or the analyst presses Stop, guarded only by the engine's loop guards — or Bounded,
  * which shows the per-question knobs, the rarely-touched ones behind "More limits"),
- * Spending (the optional chat daily limit, SPEC D5), Answers (the org's default live
- * mode, whether "Type out answers" is allowed, the animated logo), Timeouts and capacity
+ * Spending (the optional chat daily limit, SPEC D5), Answers (one "Typed-out answers"
+ * control: Off, Allowed (off by default) or Allowed (on by default), mapped onto
+ * `allow_text_streaming` and `default_stream_mode`; the animated logo), Suggestions
+ * (Round 13 SPEC-chat T31: `dynamic_starters`, questions computed from live data at no
+ * AI cost), Timeouts and capacity
  * (the knobs that apply in both modes) and which indicators chat may send to enrichment
  * providers. The section is the ONE editor for this block: `advanced-schema.tsx` lists
  * `chat_agent` in `CURATED_SECTIONS`, so every knob of the block must be reachable here
@@ -30,7 +33,7 @@
 import * as React from 'react';
 import { ChevronDown } from 'lucide-react';
 
-import type { ChatAgentConfig, ChatLimitsMode, ChatStreamMode } from '@/lib/types';
+import type { ChatAgentConfig, ChatLimitsMode } from '@/lib/types';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
@@ -66,6 +69,7 @@ export const CHAT_AGENT_DEFAULTS: Readonly<ChatAgentConfig> = Object.freeze({
   animated_brand: true,
   limits_mode: 'unlimited',
   chat_daily_cap_usd: null,
+  dynamic_starters: true,
 });
 
 /**
@@ -175,8 +179,30 @@ export function coherentChatAgent(stored: Partial<ChatAgentConfig> | null | unde
   }
   cfg.limits_mode = limitsMode(cfg);
   cfg.chat_daily_cap_usd = repairChatCap(cfg.chat_daily_cap_usd);
+  // `config._repair`: only an explicit off turns live-data suggestions off (default on).
+  cfg.dynamic_starters = cfg.dynamic_starters !== false;
   return cfg;
 }
+
+/** The one "Typed-out answers" control (SPEC-chat T31) over two stored fields. */
+export type TypedAnswers = 'off' | 'allowed_off' | 'allowed_on';
+
+/** What viewers get: Off when not allowed, else the org default. */
+export function typedAnswers(cfg: Pick<ChatAgentConfig, 'allow_text_streaming' | 'default_stream_mode'>): TypedAnswers {
+  if (!cfg.allow_text_streaming) return 'off';
+  return cfg.default_stream_mode === 'text' ? 'allowed_on' : 'allowed_off';
+}
+
+/** The stored pair for a choice (no new config field). */
+export function typedAnswersPatch(choice: TypedAnswers): Pick<ChatAgentConfig, 'allow_text_streaming' | 'default_stream_mode'> {
+  if (choice === 'off') return { allow_text_streaming: false, default_stream_mode: 'steps' };
+  return { allow_text_streaming: true, default_stream_mode: choice === 'allowed_on' ? 'text' : 'steps' };
+}
+
+/** The suggestions switch (T31), worded as the backend field's description. */
+export const DYNAMIC_STARTERS_LABEL = 'Suggest questions from live data';
+export const DYNAMIC_STARTERS_HELP =
+  'New chats open with questions about your queue, SLA and sources, computed from data each viewer can read. No AI cost.';
 
 /**
  * Lookups that really run side by side in one step (backend
@@ -189,10 +215,18 @@ export function effectiveParallel(cfg: Pick<ChatAgentConfig, 'limits_mode' | 'ma
 
 /* -------------------------------------------------------------- rendering --- */
 
-const MODE_OPTIONS: { value: ChatStreamMode; label: string }[] = [
-  { value: 'steps', label: 'Live steps' },
-  { value: 'text', label: 'Type out answers' },
+const TYPED_OPTIONS: { value: TypedAnswers; label: string }[] = [
+  { value: 'off', label: 'Off' },
+  { value: 'allowed_off', label: 'Allowed (off by default)' },
+  { value: 'allowed_on', label: 'Allowed (on by default)' },
 ];
+
+/** What each typed-out answers choice means, under the control. */
+export const TYPED_ANSWERS_HELP: Readonly<Record<TypedAnswers, string>> = {
+  off: 'Answers arrive whole. The composer switch is disabled and says why.',
+  allowed_off: 'Answers arrive whole until a viewer turns on "Type out answers" in the composer options.',
+  allowed_on: 'Answers appear word by word until a viewer turns it off in the composer options.',
+};
 
 const LIMITS_OPTIONS: { value: ChatLimitsMode; label: string }[] = [
   { value: 'unlimited', label: 'Unlimited' },
@@ -305,7 +339,8 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
   const bounded = mode === 'bounded';
   const capOn = cfg.chat_daily_cap_usd !== null && cfg.chat_daily_cap_usd !== undefined;
   const limitsHelpId = React.useId();
-  const liveHelpId = React.useId();
+  const typedHelpId = React.useId();
+  const typed = typedAnswers(cfg);
   const capSwitchRef = React.useRef<HTMLDivElement>(null);
 
   const set = (patch: Partial<ChatAgentConfig>) => update({ chat_agent: coherentChatAgent({ ...cfg, ...patch }) });
@@ -355,7 +390,7 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
     <div className="space-y-6">
       <SectionTitle
         title="Chat assistant"
-        sub="How the read-only assistant answers in Workspace and Case Manager chat: whether a question has limits, what chat may spend, the live mode, and which indicators it may send to enrichment providers."
+        sub="How the read-only assistant answers in Workspace and Case Manager chat: whether a question has limits, what chat may spend, typed-out answers, suggested questions, and which indicators it may send to enrichment providers."
       />
 
       <section className="space-y-4">
@@ -430,32 +465,36 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
       <section className="space-y-4 border-t border-border/70 pt-4">
         <SubHeader title="Answers" />
         <div className="space-y-1.5">
-          <p className="text-sm font-medium leading-none text-foreground">Default live mode</p>
+          <p className="text-sm font-medium leading-none text-foreground">Typed-out answers</p>
           <SegmentedControl
-            aria-label="Default live mode"
-            aria-describedby={liveHelpId}
+            aria-label="Typed-out answers"
+            aria-describedby={typedHelpId}
             size="sm"
-            options={MODE_OPTIONS.map((o) => ({ ...o, disabled: o.value === 'text' && !cfg.allow_text_streaming }))}
-            value={cfg.allow_text_streaming ? cfg.default_stream_mode : 'steps'}
-            onValueChange={(value) => set({ default_stream_mode: value })}
+            orientation="both"
+            className="h-auto flex-wrap"
+            options={TYPED_OPTIONS}
+            value={typed}
+            onValueChange={(value) => set(typedAnswersPatch(value))}
           />
-          <p id={liveHelpId} aria-live="polite" className="text-xs text-muted-foreground">
-            {cfg.allow_text_streaming
-              ? 'Applies until a viewer picks their own mode in the composer options.'
-              : 'Answers arrive whole while typed-out answers are not allowed.'}
+          <p id={typedHelpId} aria-live="polite" className="text-xs text-muted-foreground" data-testid="typed-answers-help">
+            {TYPED_ANSWERS_HELP[typed]}
           </p>
         </div>
-        <SwitchPref
-          label="Allow typed-out answers"
-          help="Lets answers appear word by word. When off, the composer switch is disabled and says why."
-          checked={cfg.allow_text_streaming}
-          onChange={(value) => set({ allow_text_streaming: value })}
-        />
         <SwitchPref
           label="Animate the logo while chat works"
           help="A thin ring turns around the logo while an answer is being written. A custom logo itself never moves; the Chat item keeps its own indicator either way."
           checked={cfg.animated_brand !== false}
           onChange={(value) => set({ animated_brand: value })}
+        />
+      </section>
+
+      <section className="space-y-4 border-t border-border/70 pt-4">
+        <SubHeader title="Suggestions" />
+        <SwitchPref
+          label={DYNAMIC_STARTERS_LABEL}
+          help={DYNAMIC_STARTERS_HELP}
+          checked={cfg.dynamic_starters !== false}
+          onChange={(value) => set({ dynamic_starters: value })}
         />
       </section>
 

@@ -1,6 +1,7 @@
 /**
  * AccessPopover (SPEC §5.6, §10.4): the caller's catalogue grouped by scope, each
- * tool's label, data source, required permission and ✓ / "Needs <perm>", partly
+ * tool's label with ✓ and its data source, or "Needs permission to …" with the grant
+ * code muted (Round 13, SPEC-chat T24: allowed rows print no `resource:action`), partly
  * available kind-gated tools, and honest loading / empty states. Strings render as
  * text (#9).
  */
@@ -9,7 +10,7 @@ import { render, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import type { ChatToolInfo } from '@/lib/types';
 import { AccessList } from '../AccessPopover';
-import { capabilityLabel } from '../access-copy';
+import { capabilityLabel, permissionNeed, permissionNeedText, permissionPhrase } from '../access-copy';
 import { makeContext } from './fixtures';
 
 expect.extend(toHaveNoViolations);
@@ -20,12 +21,19 @@ describe('AccessList', () => {
     const logs = screen.getByRole('region', { name: 'Logs' });
     // Present-tense capabilities, not the run log's past-tense step labels.
     const row = within(logs).getByText('Search logs').closest('li') as HTMLElement;
-    expect(row).toHaveTextContent('Needs sources:read');
-    expect(row).toHaveTextContent('Searched logs data');
+    // A locked row: the grant as a sentence, its code muted beside it (T24).
+    expect(row).toHaveTextContent('Needs permission to read sources (sources:read)');
+    expect(within(row).getByText('(sources:read)')).toHaveClass('text-muted-foreground');
+    expect(row).not.toHaveTextContent('Searched logs data');
+    // An allowed row: the label and its data source only, no permission string.
     const docs = screen.getByRole('region', { name: 'Help docs' });
-    expect(within(docs).getByText('Search the Help Center').closest('li')).toHaveTextContent(
-      'Allowed. No permission needed',
-    );
+    const help = within(docs).getByText('Search the Help Center').closest('li') as HTMLElement;
+    expect(help).toHaveTextContent('Allowed: Search the Help Center');
+    expect(help).not.toHaveTextContent('No permission needed');
+    const cases = screen.getByRole('region', { name: 'Cases' });
+    for (const item of within(cases).getAllByRole('listitem')) {
+      if (item.getAttribute('data-tool-state') === 'allowed') expect(item).not.toHaveTextContent(/[a-z]+:[a-z]+/);
+    }
     // Scope groups appear in catalogue order.
     expect(screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual([
       'Logs',
@@ -69,7 +77,8 @@ describe('AccessList', () => {
       kinds_allowed: ['tuning'],
     };
     render(<AccessList context={makeContext({ tools: [automation] })} />);
-    expect(screen.getByText('Some details need settings:read')).toBeInTheDocument();
+    expect(screen.getByText('Some details need permission to read settings')).toBeInTheDocument();
+    expect(screen.getByText('(settings:read)')).toBeInTheDocument();
   });
 
   it('names every grant that would unlock a kind-gated tool, joined with "or"', () => {
@@ -93,9 +102,11 @@ describe('AccessList', () => {
     };
     render(<AccessList context={makeContext({ tools: [automation, both] })} />);
     expect(
-      screen.getByText('Needs automation:read or settings:read or proposals:read or rules:read'),
+      screen.getByText('Needs permission to read automation, read settings, read approvals or read rules'),
     ).toBeInTheDocument();
-    expect(screen.getByText('Needs cases:read and cost:view')).toBeInTheDocument();
+    expect(screen.getByText('(automation:read or settings:read or proposals:read or rules:read)')).toBeInTheDocument();
+    expect(screen.getByText('Needs permission to read cases and view costs')).toBeInTheDocument();
+    expect(screen.getByText('(cases:read and cost:view)')).toBeInTheDocument();
   });
 
   it('says once, with Retry, when the context cannot be read', async () => {
@@ -142,6 +153,25 @@ describe('AccessList', () => {
     const { container } = render(<AccessList context={makeContext({ tools: [tool] })} />);
     expect(container.querySelector('img')).toBeNull();
     expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeInTheDocument();
+  });
+});
+
+describe('permission copy (SPEC-chat T24)', () => {
+  it('words known grants, and any well-formed one as "<action> <resource>"', () => {
+    expect(permissionPhrase('sources:read')).toBe('read sources');
+    expect(permissionPhrase('cost:view')).toBe('view costs');
+    expect(permissionPhrase('threat_feeds:read')).toBe('read threat feeds');
+    expect(permissionPhrase('not a grant')).toBe('not a grant');
+  });
+
+  it('builds the sentence and the code, joined the way the grants combine', () => {
+    expect(permissionNeed('sources:read')).toEqual({ text: 'Needs permission to read sources', code: '(sources:read)' });
+    expect(permissionNeedText('metrics:view or sources:read')).toBe(
+      'Needs permission to view metrics or read sources (metrics:view or sources:read)',
+    );
+    expect(permissionNeedText('cases:read and cost:view', 'needs')).toBe(
+      'needs permission to read cases and view costs (cases:read and cost:view)',
+    );
   });
 });
 

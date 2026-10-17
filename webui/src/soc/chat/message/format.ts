@@ -8,6 +8,8 @@
  * already-normalised enums and numbers.
  */
 import type { ChatStep, ChatStepStatus, TurnUsage } from '@/lib/types';
+import { verdictLabel } from '@/soc/components/semantic-labels';
+import { KIND_LABEL, caseStatusWord, kindLabel } from '../display';
 
 /** "820", "1.2k", "12.4k", "184k", "1.3M" (lower-case k, as in SPEC §8). */
 export function compactTokens(value: number | null | undefined): string {
@@ -203,19 +205,37 @@ export function windowLabel(value: string): string {
 
 /** Enum-valued chips ("FALSE_POSITIVE", "NEEDS_HUMAN") read as words. */
 const ENUM_KEYS = new Set(['verdict', 'status', 'status_group', 'disposition', 'decided_by', 'closed_by']);
+/** Chips whose value is a kind or a language ("ip", "esql"), read through the shared words. */
+const KIND_KEYS = new Set(['kind', 'entity_kind', 'language', 'lang']);
+const ENUM_VALUE = /^[A-Za-z]+(?:_[A-Za-z]+)*$/;
+
+/** "FALSE_POSITIVE" → "False positive" (sentence case, the badges' style). */
+function enumWords(value: string): string {
+  const words = value.replace(/_/g, ' ').toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 /**
  * A chip value as text (booleans and nulls read as words, never as blanks). With its
  * `key`, the time window, relative times and sort fields read as words ("last 7 days",
  * "this week", "creation time") instead of query syntax ("now-7d", "this_week",
- * "created_at"), and enum values read as words ("false positive").
+ * "created_at"), verdicts and statuses read as the badges word them ("True positive",
+ * "Escalated"), and kinds as the console names them ("IP"; Round 13, SPEC-chat T14).
  */
 export function paramValue(value: string | number | boolean | null, key?: string): string {
   if (value === null) return 'none';
   if (typeof value === 'boolean') return value ? 'yes' : 'no';
   if (typeof value === 'number') return key === 'window_hours' ? windowHoursLabel(value) : value.toLocaleString();
   if (key === 'window') return windowLabel(value);
-  if (key && ENUM_KEYS.has(key) && /^[A-Za-z]+(?:_[A-Za-z]+)*$/.test(value)) return value.replace(/_/g, ' ').toLowerCase();
+  if (key && ENUM_KEYS.has(key) && ENUM_VALUE.test(value)) {
+    if (key === 'verdict') return verdictLabel(value.toLowerCase());
+    if (key === 'status' || key === 'status_group') return caseStatusWord(value) ?? enumWords(value);
+    return enumWords(value);
+  }
+  // A known kind in the console's words ("IP"), any other in sentence case ("Posture").
+  if (key && KIND_KEYS.has(key) && ENUM_VALUE.test(value)) {
+    return Object.prototype.hasOwnProperty.call(KIND_LABEL, value.toLowerCase()) ? kindLabel(value) : enumWords(value);
+  }
   if (key === 'time_from' || key === 'time_to') return relativeTimeLabel(value);
   if (key === 'sort_field') return SORT_FIELD_LABELS[value] ?? value.replace(/_/g, ' ');
   if (key === 'sort_order') return value === 'asc' ? 'oldest first' : value === 'desc' ? 'newest first' : value;

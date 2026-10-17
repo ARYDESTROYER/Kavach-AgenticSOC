@@ -10,6 +10,14 @@
  * shared message components in their compact presentation; the composer is the
  * compact `case` variant. Case Manager keeps its one-line status and its quick actions.
  *
+ * Round 13 (SPEC-chat §3.1 `case`, §3.14): before the first message the chat offers the
+ * compact capability line plus three case chips chosen from the case state
+ * (`GET /api/chat/starters?surface=case`, read here once and handed to the empty
+ * state). While those chips are on screen (or still loading) the quick-action row stays
+ * out of the way, so the empty case chat never shows two rows of suggestions that say
+ * the same thing; it appears with the first message, or at once when no chip is
+ * offered. Chips and quick actions both send in THIS case chat with origin `starter`.
+ *
  * Round 12 (SPEC D13): the case's transcript and model history live in the turn
  * runner's session store (memory only, last 20 cases), so switching to another tab or
  * reopening the case keeps them, and a turn still running when the analyst leaves keeps
@@ -32,12 +40,13 @@ import { Transcript } from '@/soc/chat/message/Transcript';
 import { announcedLookupBound, useTurnAnnouncer } from '@/soc/chat/message/useTurnAnnouncer';
 import { useChatContext } from '@/soc/chat/useChatContext';
 import { useChatEngine } from '@/soc/chat/useChatEngine';
+import { useChatStarters } from '@/soc/chat/starters/useChatStarters';
 import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 
 const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
-  'Summarize Case': ClipboardList,
-  'Check IOCs': FileSearch,
-  'Suggest Remediation': ShieldCheck,
+  'Summarise the case': ClipboardList,
+  'Check indicators': FileSearch,
+  'Suggest remediation': ShieldCheck,
 };
 
 /**
@@ -89,6 +98,12 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
   const send = (prompt: string) => {
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };
+  // The case chips (one read, shared with the empty state through the module cache).
+  const caseStarters = useChatStarters({ surface: 'case', caseId, principal, enabled: !!caseId });
+  const chipsOffered =
+    caseStarters.loading || (caseStarters.info?.starters ?? []).some((starter) => (starter.action ?? 'send') === 'send');
+  // The quick actions join once the conversation has started, or when no chip is offered.
+  const showQuickActions = engine.items.length > 0 || !chipsOffered;
 
   return (
     <div
@@ -124,6 +139,11 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
             disabled={busy}
             error={context.error}
             onRetry={context.refresh}
+            // Round 13 (SPEC-chat §3.14): three case-scoped chips from the case state,
+            // sent in this case chat with origin `starter` (never Workspace history, #5).
+            caseId={caseId}
+            principal={principal}
+            starters={caseStarters}
             onStarter={(starter: ChatStarter) => send(starter.prompt)}
           />
         }
@@ -135,29 +155,31 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
       <div className="shrink-0 space-y-2 overflow-hidden px-1 pb-0.5 pt-2 [scrollbar-gutter:stable_both-edges]">
         <div className={LANE_GRID}>
           <div className={cn(CONTENT_COL, 'space-y-2')}>
-            <div
-              role="group"
-              aria-label="Analyst quick actions"
-              className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain"
-            >
-              {starters.map((prompt) => {
-                const Icon = STARTER_ICON[prompt] ?? MessageSquare;
-                return (
-                  <Button
-                    key={prompt}
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
-                    onClick={() => send(prompt)}
-                    disabled={busy}
-                  >
-                    <Icon aria-hidden />
-                    {prompt}
-                  </Button>
-                );
-              })}
-            </div>
+            {showQuickActions ? (
+              <div
+                role="group"
+                aria-label="Analyst quick actions"
+                className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain"
+              >
+                {starters.map((prompt) => {
+                  const Icon = STARTER_ICON[prompt] ?? MessageSquare;
+                  return (
+                    <Button
+                      key={prompt}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+                      onClick={() => send(prompt)}
+                      disabled={busy}
+                    >
+                      <Icon aria-hidden />
+                      {prompt}
+                    </Button>
+                  );
+                })}
+              </div>
+            ) : null}
             <Composer
               ref={composerRef}
               engine={engine}

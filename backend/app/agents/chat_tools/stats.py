@@ -475,8 +475,21 @@ def zero_case_suggestions(args: CaseFilters, window: Window, tool: str) -> list[
                 reduced["window"] = args.window
             elif args.window_hours is not None:
                 reduced["window_hours"] = args.window_hours
-            out.append({"label": f"Without the {key.replace('_', ' ')} filter", "tool": tool, "input": reduced})
+            out.append({"label": ZERO_CASE_FILTER_LABELS[key], "tool": tool, "input": reduced})
     return out[:4]
+
+
+#: The chip label that drops one case filter, in the field's display words (Round 13
+#: T11), never a raw key.
+ZERO_CASE_FILTER_LABELS: dict[str, str] = {
+    "text": "Without the text filter", "rule": "Without the rule filter",
+    "assignee": "Without the assignee filter", "entity": "Without the entity filter",
+    "verdict": "Without the verdict filter", "severity": "Without the severity filter",
+    "priority": "Without the priority filter", "status": "Without the status filter",
+    # The open-or-closed filter, in the words its breakdown uses ("Open or closed"),
+    # never the key "status group".
+    "status_group": "Open and closed cases",
+}
 
 
 def invalid_aggregate_input(exc: Exception) -> ToolOutcome:

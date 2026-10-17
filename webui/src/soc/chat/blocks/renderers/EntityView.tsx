@@ -22,7 +22,7 @@ import { SeverityBadge, VerdictBadge } from '@/soc/components/badges';
 import { SEMANTIC_ICON } from '@/soc/components/palette';
 import { isPageId } from '@/soc/nav';
 
-import { CaseHoverArm, CaseLink, RefLink } from '../context';
+import { CaseHoverArm, CaseLink, CaseRefText, RefLink } from '../context';
 import { formatUtc } from '../format';
 import { ENTITY_KIND_LABEL, REPUTATION_LABEL } from '../labels';
 import type { EntityBlock, ReputationVerdict } from '../schema';
@@ -185,8 +185,9 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
             <ul className="space-y-1">
               {block.related_cases.map((c, i) => (
                 <li key={`${c.case_id}-${i}`} className="flex flex-wrap items-center gap-2 text-sm">
-                  <CaseLink facts={c} className="min-w-0 truncate">
-                    {c.title}
+                  <CaseLink facts={c} className="min-w-0 break-words">
+                    {/* Number then title; the internal id only as a tooltip (T14). */}
+                    <CaseRefText facts={c} />
                   </CaseLink>
                   {c.severity ? <SeverityBadge severity={c.severity} /> : null}
                 </li>

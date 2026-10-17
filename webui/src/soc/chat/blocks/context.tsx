@@ -148,6 +148,72 @@ export const RefLink = React.forwardRef<HTMLAnchorElement, RefLinkProps>(functio
 /* -------------------------------------------------------------------------- */
 /* Case links with a lazy hover preview.                                       */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * How a case is named in a block (Round 13, SPEC-chat T14): its display number (mono) then
+ * its title, the internal id (`case-6b22d1…`) only in the number's tooltip. Until the
+ * server sends a `case_number` (it does not yet), the title alone cannot tell two cases
+ * apart, so the internal id stays VISIBLE after the title: muted, mono, middle-ellipsised
+ * ("case-6b22…70b4", the Case Manager queue's form), with the full id in its tooltip and
+ * for assistive tech. A case with neither a number nor a title shows its whole id, which
+ * wraps instead of being cut. Titles wrap too (the hosts never truncate them), so the
+ * whole title is always on screen.
+ */
+export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 'case_number' | 'title'> }) {
+  const number = facts.case_number?.trim() || null;
+  const title = facts.title?.trim() && facts.title.trim() !== facts.case_id ? facts.title.trim() : null;
+  if (!number && !title) {
+    return (
+      <span className="break-all font-mono text-xs" data-case-ref="id">
+        {facts.case_id}
+      </span>
+    );
+  }
+  if (!number) {
+    const short = shortCaseId(facts.case_id);
+    return (
+      <>
+        <span className="break-words" data-case-ref="title">
+          {title}
+        </span>{' '}
+        <span className="whitespace-nowrap font-mono text-2xs font-normal text-muted-foreground" title={facts.case_id} data-case-ref="id">
+          {short === facts.case_id ? (
+            short
+          ) : (
+            <>
+              <span aria-hidden>{short}</span>
+              <span className="sr-only">{facts.case_id}</span>
+            </>
+          )}
+        </span>
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="mr-1.5 font-mono text-xs" title={facts.case_id} data-case-ref="number">
+        {number}
+      </span>
+      {title ? (
+        <span className="break-words" data-case-ref="title">
+          {title}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * A long internal case id with both ends kept ("case-6b22…70b4", 9 + 4 characters, the
+ * Case Manager queue's `middleEllipsis`); a short id (a template such as "CASE-000042")
+ * is returned whole.
+ */
+export function shortCaseId(caseId: string, head = 9, tail = 4): string {
+  const text = String(caseId ?? '');
+  if (text.length <= head + tail + 1) return text;
+  return `${text.slice(0, head)}…${text.slice(-tail)}`;
+}
+
 type HoverCardComponent = React.ComponentType<{ case: Case; children: React.ReactNode }>;
 
 /** The loaded preview component, shared by every block once any pointer fetched it. */
@@ -226,6 +292,8 @@ class PreviewBoundary extends React.Component<{ fallback: React.ReactNode; child
 
 export interface CaseLinkFacts {
   case_id: string;
+  /** The display number ("CASE-0042"), when the block carries one. */
+  case_number?: string;
   title?: string;
   severity?: SeverityKey;
   verdict?: VerdictKey;
@@ -238,6 +306,7 @@ export interface CaseLinkFacts {
 function previewCase(facts: CaseLinkFacts): Case {
   return {
     case_id: facts.case_id,
+    case_number: facts.case_number,
     title: facts.title,
     severity_band: facts.severity,
     verdict: facts.verdict,

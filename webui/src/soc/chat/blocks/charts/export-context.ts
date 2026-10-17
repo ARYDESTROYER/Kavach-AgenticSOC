@@ -33,6 +33,34 @@ export type ChartViewRef = React.MutableRefObject<ChartView | null>;
 
 export const ChartViewContext = React.createContext<ChartViewRef | null>(null);
 
+/**
+ * The series toggles a chart hands to its card's ⋯ menu (Round 13, SPEC-chat T16): when
+ * a line chart names every series whole at the line ends, it draws no legend, and the
+ * menu's "Series" checkboxes (each with its line colour as a key) show and hide them
+ * instead (at least one always stays visible).
+ */
+export interface ChartSeriesMenu {
+  labels: readonly string[];
+  /** `hidden[k]`: series k is hidden. */
+  hidden: readonly boolean[];
+  toggle: (index: number) => void;
+  /** `colors[k]`: series k's line colour, drawn as a key beside its checkbox. */
+  colors?: readonly string[];
+}
+
+/**
+ * What a card lends the chart it draws inline (never the expanded sheet's copy):
+ *  - `groupBy`: the card's "Group by" control, which the chart places at the left of its
+ *    ONE 28 px control row (the zoom hint, range and Reset zoom sit on the right);
+ *  - `publishSeries`: where the chart hands its series toggles when it draws no legend.
+ */
+export interface ChartControls {
+  groupBy: React.ReactNode | null;
+  publishSeries: ((menu: ChartSeriesMenu | null) => void) | null;
+}
+
+export const ChartControlsContext = React.createContext<ChartControls | null>(null);
+
 /** Publish the view as currently drawn; it is cleared when the chart unmounts. */
 export function usePublishChartView(block: ChartBlock, hidden: readonly boolean[], zoom: ChartZoomView | null = null): void {
   const ref = React.useContext(ChartViewContext);

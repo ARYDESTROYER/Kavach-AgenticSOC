@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import ROUND_HALF_UP, Decimal
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -868,22 +869,37 @@ def logs_console_view(
 # --------------------------------------------------------------------------- #
 
 
+#: What engine text says for a figure that was not measured (Round 13 T36: no em dash
+#: on screen; the run log and step summaries read "FP rate not available").
+NOT_AVAILABLE = "not available"
+
+
+def round_half_up(value: float) -> int:
+    """The nearest integer, a half rounded away from zero (``Decimal`` ``ROUND_HALF_UP``
+    over the float's exact value): 47.5 -> 48, 47.4 -> 47, -1.5 -> -2. For every
+    non-negative figure this is the integer the console's gauge shows (``Math.round``),
+    so a step summary never says 47 beside a gauge that says 48 (Round 13 T1)."""
+    return int(Decimal(value).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def fmt_int(value: Any) -> str:
-    """``1,284``; ``—`` for a missing value."""
+    """``1,284``, rounded half away from zero (never truncated); ``not available``
+    for a missing value."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return "—"
-    return f"{int(value):,}"
+        return NOT_AVAILABLE
+    return f"{value if isinstance(value, int) else round_half_up(value):,}"
 
 
 def fmt_pct(value: Any, *, ratio: bool = False, digits: int = 1) -> str:
-    """A percentage string from a 0..100 value (or a 0..1 ``ratio``)."""
+    """A percentage string from a 0..100 value (or a 0..1 ``ratio``); ``not available``
+    for a missing value."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return "—"
+        return NOT_AVAILABLE
     return f"{(value * 100 if ratio else value):.{digits}f}%"
 
 
 def finite(value: Any) -> float | None:
-    """A finite float, else ``None`` (the em-dash ``"—"`` of a metric is ``None``)."""
+    """A finite float, else ``None`` (a metric's not-measured value is ``None``)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
@@ -1160,6 +1176,7 @@ __all__ = [
     "current_call",
     "enum_value",
     "finite",
+    "NOT_AVAILABLE",
     "fmt_int",
     "fmt_pct",
     "iso_or_none",
@@ -1170,6 +1187,7 @@ __all__ = [
     "parse_input",
     "ratio_to_pct",
     "resolve_window",
+    "round_half_up",
     "text",
     "verdict_semantic",
     "visible_text",

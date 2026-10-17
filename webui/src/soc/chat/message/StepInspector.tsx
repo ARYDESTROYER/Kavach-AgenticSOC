@@ -24,6 +24,11 @@
  *   - A side sheet (a parallel task: the conversation stays where it was). It opens on
  *     its title, never on an action that sends a turn; focus returns to the row's
  *     Inspect button when it closes.
+ *   - Round 13 (SPEC-chat T14, T28): the status and time are said ONCE, in the header; the
+ *     lookup reads as its catalogue label ("Read SOC metrics"), the tool id only in its
+ *     tooltip; "Explain this step" and "Retry step" are secondary buttons (no filled
+ *     primary in the chat); the query and the stored result keep their lines and scroll
+ *     sideways instead of wrapping JSON mid-key on a phone.
  */
 import * as React from 'react';
 import { MessageCircleQuestion, RotateCcw } from 'lucide-react';
@@ -34,9 +39,15 @@ import { CodeBlock } from '@/soc/components/CodeBlock';
 import { Button } from '@/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/ui/sheet';
 import { apiErrorCode, getStepObservation, isSafeChatId, type ChatStepObservation } from '../chat-api';
+import { CAPABILITY_LABELS } from '../composer/access-copy';
 import { displayText, INVISIBLE_TEXT_CLASS } from '../stream-events';
 import { compactTokens, formatDuration, paramKeyLabel, paramValue, STEP_STATUS_LABEL, BASIS_LABEL, windowLabel } from './format';
 import type { RunLogStep } from './RunLog';
+
+/** A lookup's tool as the access list names it ("soc_metrics" → "Read SOC metrics"); else the id. */
+export function lookupLabel(tool: string): string {
+  return Object.prototype.hasOwnProperty.call(CAPABILITY_LABELS, tool) ? CAPABILITY_LABELS[tool] : tool;
+}
 
 /** Statuses a "Retry step" can help with. */
 const RETRYABLE = new Set(['error', 'timeout', 'cancelled', 'skipped']);
@@ -353,7 +364,8 @@ function ObservationView({ observation }: { observation: Record<string, unknown>
         value={showExact ? exactText : compactText}
         copyValue={exactText}
         caption="Stored result · untrusted text"
-        wrap
+        // JSON keeps its lines and scrolls sideways; it never wraps mid-key (T28).
+        wrap={false}
         maxHeightClassName="max-h-[50dvh]"
         data-testid="step-inspector-observation"
         data-view={showExact ? 'exact' : 'compact'}
@@ -484,7 +496,13 @@ export function StepInspector({
                 <dl className="space-y-1">
                   {step.tool ? (
                     <Field name="Lookup">
-                      <span className="font-mono text-xs">{step.tool}</span>
+                      <span data-testid="step-inspector-lookup">{lookupLabel(step.tool)}</span>
+                      {lookupLabel(step.tool) !== step.tool ? (
+                        // The tool's id stays visible for an administrator (never only a tooltip).
+                        <span className="ml-1.5 font-mono text-2xs text-muted-foreground" data-testid="step-inspector-tool-id">
+                          ({step.tool})
+                        </span>
+                      ) : null}
                     </Field>
                   ) : null}
                   {params.map(([key, value]) => (
@@ -506,7 +524,8 @@ export function StepInspector({
                   <CodeBlock
                     value={visibleText(result.query)}
                     caption="Query as run · untrusted text"
-                    wrap
+                    // Lines keep their shape and scroll sideways (T28).
+                    wrap={false}
                     maxHeightClassName="max-h-48"
                     data-testid="step-inspector-query"
                   />
@@ -515,13 +534,11 @@ export function StepInspector({
 
               <section aria-labelledby="step-inspector-cost" className="space-y-2">
                 <h3 id="step-inspector-cost" className="text-sm font-semibold text-foreground">
-                  Time, rows and tokens
+                  {result?.sources?.length ? 'Sources and tokens' : rows && result?.coverage ? 'Coverage and tokens' : 'Tokens'}
                 </h3>
                 <dl className="space-y-1">
-                  <Field name="Status">{status}</Field>
-                  {duration ? <Field name="Time">{duration}</Field> : null}
-                  {rows ? <Field name="Rows">{rows}</Field> : null}
-                  {result?.coverage ? <Field name="Coverage">{result.coverage}</Field> : null}
+                  {/* The status, time and rows are in the header (one status line, T28). */}
+                  {rows && result?.coverage ? <Field name="Coverage">{result.coverage}</Field> : null}
                   {result?.sources?.length ? <Field name="Sources">{result.sources.join(', ')}</Field> : null}
                   <Field name="Tokens">
                     {embedding ?? 'No model tokens (a lookup does not call the model)'}
@@ -572,7 +589,13 @@ export function StepInspector({
             {onAsk ? (
               <SheetFooter className={cn('gap-2 p-4 sm:justify-start')}>
                 {canRetry ? (
-                  <Button type="button" size="sm" disabled={busy} onClick={() => ask(retryStepQuestion(step, question, questionRecency), 'retry_step')}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={busy}
+                    onClick={() => ask(retryStepQuestion(step, question, questionRecency), 'retry_step')}
+                  >
                     <RotateCcw aria-hidden />
                     Retry step
                   </Button>
@@ -580,7 +603,7 @@ export function StepInspector({
                 <Button
                   type="button"
                   size="sm"
-                  variant={canRetry ? 'outline' : 'default'}
+                  variant="secondary"
                   disabled={busy}
                   onClick={() => ask(explainStepQuestion(step, question, questionRecency), 'follow_up')}
                 >

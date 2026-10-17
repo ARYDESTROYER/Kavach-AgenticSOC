@@ -14,7 +14,7 @@ import { galleryBlock } from '../__fixtures__/gallery';
 import { attackUrl } from '../renderers/MitreView';
 import { sortRows, visibleColumns } from '../renderers/TableView';
 import { parseBlock } from '../schema';
-import type { AnswerBlock, EntityBlock, InternalRef, TableBlock } from '../schema';
+import type { AnswerBlock, EntityBlock, InternalRef, ReportBlock, TableBlock } from '../schema';
 
 function show(block: AnswerBlock, props: Partial<React.ComponentProps<typeof AnswerBlocks>> = {}) {
   return render(<AnswerBlocks blocks={[block]} messageId="m1" {...props} />);
@@ -65,7 +65,7 @@ describe('case list', () => {
   it('links every title to the exact case and shows its badges', () => {
     const nav = vi.fn();
     show(galleryBlock('open-cases'), { onNavigate: nav });
-    const link = screen.getByRole('link', { name: 'Suspicious PowerShell on web-01' });
+    const link = screen.getByRole('link', { name: 'Suspicious PowerShell on web-01 case-1049' });
     expect(link).toHaveAttribute('href', '#/case_manager?caseId=case-1049');
     fireEvent.click(link);
     expect(nav).toHaveBeenCalledWith({ page: 'case_manager', opts: { caseId: 'case-1049' } });
@@ -82,7 +82,7 @@ describe('case list', () => {
     // card loads, so `findByRole` can return it and the lazy module (slow under a loaded
     // full-suite run) can then replace it before the assertion. The armed link is the
     // hover card's trigger (Radix marks it with `data-state`); the wait is generous.
-    const name = 'Brute force against vpn-gw-2';
+    const name = 'Brute force against vpn-gw-2 case-1052';
     await waitFor(() => expect(screen.getByRole('link', { name })).toHaveAttribute('data-state'), { timeout: 10_000 });
     // The link survives the lazy swap and is still a single link per case.
     expect(screen.getAllByRole('link', { name })).toHaveLength(1);
@@ -145,7 +145,9 @@ describe('kpi group', () => {
         ],
       }),
     );
-    const caption = screen.getByText('not windowed');
+    // The engine's "not windowed" reads in plain words (Round 13 T19).
+    expect(screen.queryByText('not windowed')).toBeNull();
+    const caption = screen.getByText('Right now');
     expect(caption).toHaveClass('font-sans');
     expect(caption).not.toHaveClass('font-mono');
     expect(screen.getByTestId('block-kpis')).toHaveTextContent('0 min');
@@ -277,7 +279,8 @@ describe('entity', () => {
     expect(screen.getByText('Malicious')).toBeInTheDocument();
     expect(screen.getByText('score 92')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Investigate/ })).toHaveAttribute('href', '#/investigate');
-    expect(screen.getByRole('link', { name: 'Brute force against vpn-gw-2' })).toHaveAttribute(
+    // The case's id follows its title (no case number is sent yet), so the name tells cases apart.
+    expect(screen.getByRole('link', { name: 'Brute force against vpn-gw-2 case-1052' })).toHaveAttribute(
       'href',
       '#/case_manager?caseId=case-1052',
     );
@@ -389,38 +392,59 @@ describe('query, callout, citations, guide, markdown', () => {
 });
 
 describe('report (Brief)', () => {
-  it('shows scope, provenance chips, a contents list and every section', () => {
+  it('shows the scope line once, the template, every section, and no contents control under 4 sections', () => {
     show(galleryBlock('shift-brief'), { domId: 'm9' });
     const report = screen.getByTestId('block-report');
-    expect(screen.getByText(/Window: last 12h · Sources: Wazuh, Elastic · Generated 2026-10-08 09:15 UTC/)).toBeInTheDocument();
-    expect(within(report).getByTestId('report-provenance')).toHaveTextContent('1 measured');
-    expect(within(report).getByTestId('report-provenance')).toHaveTextContent('0 AI-stated');
+    // The window is stated once, in the scope line (Round 13 T29).
+    expect(screen.getByText(/^Last 12h · Sources: Wazuh, Elastic · Generated 2026-10-08 09:15 UTC$/)).toBeInTheDocument();
+    expect(within(report).getByTestId('report-template')).toHaveTextContent('Shift handoff');
+    // No model-stated figure in it: no provenance counter at all.
+    expect(within(report).queryByTestId('report-ai-note')).toBeNull();
+    expect(report).not.toHaveTextContent(/measured|AI-stated/);
     expect(within(report).getAllByRole('heading', { level: 5 }).map((h) => h.textContent)).toEqual([
       'Summary',
       'Numbers',
       'Watch next shift',
     ]);
-    const toc = screen.getByRole('button', { name: /Contents \(3 sections\)/ });
-    expect(toc).toHaveAttribute('aria-expanded', 'false');
-    fireEvent.click(toc);
-    fireEvent.click(screen.getByRole('button', { name: 'Watch next shift' }));
-    expect(document.activeElement).toHaveTextContent('Watch next shift');
+    // Three sections read without a contents control (T29: only from four).
+    expect(screen.queryByRole('button', { name: /Contents/ })).toBeNull();
     // Leaves inside the report never get their own Add to report.
     expect(report.querySelector('[data-testid="block-add-to-report"]')).toBeNull();
+  });
+
+  it('offers the contents control from four sections, and jumps to a section', () => {
+    const raw = galleryBlock('shift-brief') as ReportBlock;
+    const four = { ...raw, sections: [...raw.sections, { ...raw.sections[0], id: 'extra', heading: 'Extra notes' }] } as ReportBlock;
+    show(four, { domId: 'm9' });
+    const toc = screen.getByRole('button', { name: /Contents \(4 sections\)/ });
+    expect(toc).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Watch next shift' }));
+    expect(document.activeElement).toHaveTextContent('Watch next shift');
+  });
+
+  it('says how many figures the model stated, and only when there are some', () => {
+    const raw = galleryBlock('shift-brief') as ReportBlock;
+    const leaf = raw.sections[1].blocks[0];
+    const withAi = {
+      ...raw,
+      sections: raw.sections.map((s, i) => (i === 1 ? { ...s, blocks: [leaf, { ...leaf, id: 'ai-1', provenance: 'ai' }, { ...leaf, id: 'ai-2', provenance: 'ai' }] } : s)),
+    } as ReportBlock;
+    show(withAi);
+    expect(screen.getByTestId('report-ai-note')).toHaveTextContent(/^Includes 2 figures stated by the model$/);
   });
 });
 
 describe('navigation defaults', () => {
   it('falls back to the router (a no-op outside a RouterProvider) without crashing', () => {
     show(galleryBlock('open-cases'));
-    fireEvent.click(screen.getByRole('link', { name: 'Suspicious PowerShell on web-01' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Suspicious PowerShell on web-01 case-1049' }));
     expect(screen.getByTestId('block-case-list')).toBeInTheDocument();
   });
 
   it('keeps modifier clicks as plain links (open in new tab)', () => {
     const nav = vi.fn<[InternalRef], void>();
     show(galleryBlock('open-cases'), { onNavigate: nav });
-    fireEvent.click(screen.getByRole('link', { name: 'Suspicious PowerShell on web-01' }), { ctrlKey: true });
+    fireEvent.click(screen.getByRole('link', { name: 'Suspicious PowerShell on web-01 case-1049' }), { ctrlKey: true });
     expect(nav).not.toHaveBeenCalled();
   });
 });

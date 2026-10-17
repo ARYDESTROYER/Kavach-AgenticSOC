@@ -874,13 +874,15 @@ export function NavSidebar({
           collapsed ? 'w-full justify-center px-2' : 'gap-3 px-3',
         )}
       >
-        <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary dark:bg-accent">
+        <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary dark:bg-accent max-sm:[&>.chat-brand-ring]:hidden">
           {logoUrl ? (
             <img src={logoUrl} alt="" className="h-6 w-6 rounded object-contain" />
           ) : (
             <Shield className="h-5 w-5" aria-hidden />
           )}
-          {/* Turns while any answer is being written; the logo itself never moves. */}
+          {/* Turns while any answer is being written; the logo itself never moves. Below
+              `sm` (the phone sheet) only the Chat item's own glyph turns (SPEC-chat T32):
+              the tile hides the ring there. */}
           <BrandActivityRing />
         </span>
         {/* The descriptions the chat destinations' buttons point at (aria-describedby). */}

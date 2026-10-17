@@ -20,8 +20,14 @@
  * node (not in the ref callback), so React StrictMode's simulated unmount/remount in
  * development re-creates it instead of leaving the geometry frozen at its first width
  * (diagnosis/layout.md (g)).
+ *
+ * Round 13 (SPEC-chat T33): when opening the report panel collapses a docked rail to
+ * the strip, that is announced ("History collapsed to make room for the report"), and
+ * closing the panel restores the docked rail (the analyst's own collapse choice is
+ * never touched by the panel).
  */
 import * as React from 'react';
+import { useAnnouncer } from '@/soc/components/announcer';
 
 export const C_MIN = 640;
 export const RAIL_WIDTH = 264;
@@ -43,6 +49,18 @@ export const TOOLBAR_TOTAL_MIN = 560;
 export const TOOLBAR_COMPACT_MAX = 480;
 
 export type RailMode = 'docked' | 'strip' | 'sheet';
+
+/** Spoken when the report panel takes the docked rail's room (T33). */
+export const RAIL_YIELDED_MESSAGE = 'History collapsed to make room for the report';
+
+/** The report panel, not the analyst, turned a dockable, uncollapsed rail into the strip. */
+export function railYieldedToPanel(
+  geometry: Pick<ChatGeometry, 'rail' | 'railCanDock'>,
+  railCollapsed: boolean,
+  panelOpen: boolean,
+): boolean {
+  return panelOpen && geometry.rail === 'strip' && geometry.railCanDock && !railCollapsed;
+}
 export type PanelMode = 'split' | 'overlay';
 
 export interface ChatGeometryInput {
@@ -167,5 +185,15 @@ export function useChatGeometry(panelOpen: boolean): UseChatGeometry {
   }, []);
 
   const geometry = computeGeometry({ frameWidth, railCollapsed, panelOpen, panelWidth });
+
+  // Say so when the panel took the rail's room; it comes back by itself on close.
+  const announce = useAnnouncer();
+  const yielded = railYieldedToPanel(geometry, railCollapsed, panelOpen);
+  const yieldedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (yielded && !yieldedRef.current) announce(RAIL_YIELDED_MESSAGE);
+    yieldedRef.current = yielded;
+  }, [announce, yielded]);
+
   return { ...geometry, frameRef, frameWidth, railCollapsed, setRailCollapsed, panelWidth, setPanelWidth };
 }

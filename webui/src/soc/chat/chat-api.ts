@@ -35,7 +35,12 @@ import type {
   ChatResponse,
   ChatSavedReport,
   ChatScope,
+  ChatCatchUp,
+  ChatCatchUpClause,
   ChatStarter,
+  ChatStarterEvent,
+  ChatStarterRef,
+  ChatStartersInfo,
   ChatTimeRange,
   ChatToolInfo,
   ChatTopicQuestion,
@@ -47,6 +52,10 @@ import type {
   ReportSummary,
   ReportSummaryEstimate,
   ReportTemplateName,
+  StarterAction,
+  StarterRefKind,
+  StarterSurface,
+  StarterUrgency,
 } from '@/lib/types';
 import { readChatStream, type ChatStreamOutcome } from './ndjson';
 import {
@@ -383,6 +392,186 @@ export async function getChatContext(query: ChatContextQuery = {}, signal?: Abor
 /** The org bounds a `Preferences.chat_agent` carries, as public context bounds. */
 export function boundsFromAgentConfig(config: ChatAgentConfig | null | undefined): ChatContextBounds {
   return normaliseBounds(config ?? null);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Round 13 starters: GET /api/chat/starters, POST /api/chat/starters/events   */
+/* (SPEC-chat §3.2.2, §3.8).                                                   */
+/* -------------------------------------------------------------------------- */
+
+/** An opaque starter key (`ChatStarter.key`, `ChatStarterEvent.keys`). */
+export const STARTER_KEY_RE = /^[0-9a-f]{16}$/;
+const STARTER_TEMPLATE_RE = /^[a-z0-9_]{1,40}$/;
+/** Bounds mirrored from backend `models` (starter section) and the wording rules (§3.7). */
+export const CHAT_STARTERS_LIMITS = {
+  starters: 6,
+  clauses: 4,
+  keys: 6,
+  question_chars: 400,
+  display_chars: 120,
+  reason_chars: 80,
+  clause_chars: 60,
+  since_label_chars: 40,
+  ref_chars: 128,
+} as const;
+const STARTER_ACTIONS: readonly StarterAction[] = ['send', 'open_conversation', 'use_prompt'];
+const STARTER_REF_KINDS: readonly StarterRefKind[] = ['case', 'rule', 'source', 'campaign', 'technique', 'conversation', 'prompt'];
+const STARTER_URGENCIES: readonly StarterUrgency[] = ['none', 'attention', 'critical'];
+export const STARTER_SURFACES: readonly StarterSurface[] = ['home', 'thread', 'case'];
+
+/**
+ * A server string the client shows AND (for a `send` card) sends byte for byte: one
+ * visible line that display sanitising would not change (no invisible or bidi
+ * character, no line break, no surrounding space) and at most `limit` characters.
+ * Anything else is refused, never cut or altered (SPEC-chat §3.8: a value is never
+ * cut, quoted or altered; a card that cannot be shown as sent is dropped).
+ */
+function exactLine(value: unknown, limit: number): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  if (displayText(value, 0) !== value) return null;
+  return Array.from(value).length <= limit ? value : null;
+}
+
+function normaliseStarterRef(raw: unknown): ChatStarterRef | null {
+  if (!isObj(raw)) return null;
+  const kind = enumOr(raw.kind, STARTER_REF_KINDS, null);
+  const value = exactLine(raw.value, CHAT_STARTERS_LIMITS.ref_chars);
+  return kind && value ? { kind, value } : null;
+}
+
+/**
+ * One Round 13 starter card, or `null` when it cannot be shown or used exactly.
+ *
+ * - `send` (the default when `action` is absent): `prompt` is the visible question and
+ *   the exact text sent with `origin: 'starter'`, so it must pass {@link exactLine}.
+ * - `open_conversation` / `use_prompt`: display-only text (at most 120 characters) and a
+ *   reference to the analyst's own conversation or saved prompt (a safe id). Neither is
+ *   ever sent to a model by the client.
+ * - An unknown `action` (a newer server) drops the card rather than guessing.
+ * Every other string is display text (React text only, #9).
+ */
+export function normaliseStarterCard(raw: unknown): ChatStarter | null {
+  if (!isObj(raw) || typeof raw.id !== 'string' || !STARTER_ID_RE.test(raw.id)) return null;
+  const action: StarterAction | null =
+    raw.action === undefined || raw.action === null ? 'send' : enumOr(raw.action, STARTER_ACTIONS, null);
+  if (!action) return null;
+  let ref: ChatStarterRef | null = null;
+  if (raw.ref !== undefined && raw.ref !== null) {
+    ref = normaliseStarterRef(raw.ref);
+    if (!ref) return null;
+  }
+  if (action === 'open_conversation' && (!ref || ref.kind !== 'conversation' || !isSafeChatId(ref.value))) return null;
+  if (action === 'use_prompt' && (!ref || ref.kind !== 'prompt' || !SAVED_PROMPT_ID_RE.test(ref.value))) return null;
+  const prompt = exactLine(
+    raw.prompt,
+    action === 'send' ? CHAT_STARTERS_LIMITS.question_chars : CHAT_STARTERS_LIMITS.display_chars,
+  );
+  if (!prompt) return null;
+  const key = typeof raw.key === 'string' && STARTER_KEY_RE.test(raw.key) ? raw.key : null;
+  return {
+    id: raw.id,
+    label: text(raw.label, CHAT_STARTER_LIMITS.label_chars),
+    description: text(raw.description, CHAT_STARTER_LIMITS.description_chars),
+    prompt,
+    tools: strings(raw.tools, CHAT_STARTER_LIMITS.tools, (name) => TOOL_NAME_RE.test(name)),
+    template: typeof raw.template === 'string' && STARTER_TEMPLATE_RE.test(raw.template) ? raw.template : null,
+    reason: text(raw.reason, CHAT_STARTERS_LIMITS.reason_chars),
+    action,
+    ref,
+    key,
+    urgency: enumOr(raw.urgency, STARTER_URGENCIES, 'none'),
+    as_of: optStr(raw.as_of, 40),
+    expires_at: optStr(raw.expires_at, 40),
+  };
+}
+
+/** The catch-up line, or `null` when no clause can be shown and sent exactly. */
+function normaliseCatchUp(raw: unknown): ChatCatchUp | null {
+  if (!isObj(raw)) return null;
+  const since = optStr(raw.since, 40);
+  const sinceLabel = text(raw.since_label, CHAT_STARTERS_LIMITS.since_label_chars);
+  if (!since || !sinceLabel || !Array.isArray(raw.clauses)) return null;
+  const clauses: ChatCatchUpClause[] = [];
+  for (const item of raw.clauses) {
+    if (!isObj(item)) continue;
+    const clauseText = text(item.text, CHAT_STARTERS_LIMITS.clause_chars);
+    const starter = normaliseStarterCard(item.starter);
+    // A clause is a link that SENDS its question: never a display-only card.
+    if (!clauseText || !starter || starter.action !== 'send') continue;
+    clauses.push({ text: clauseText, starter });
+    if (clauses.length >= CHAT_STARTERS_LIMITS.clauses) break;
+  }
+  return clauses.length ? { since, since_label: sinceLabel, clauses } : null;
+}
+
+/**
+ * Lenient `ChatStartersInfo`: at most six cards in server order, one per family (id) and
+ * per key; a drifted card is dropped, never repaired. `enabled` reads as on unless the
+ * server says `false`.
+ */
+export function normaliseChatStartersInfo(raw: unknown, surface: StarterSurface = 'home'): ChatStartersInfo {
+  const src = isObj(raw) ? raw : {};
+  const starters: ChatStarter[] = [];
+  if (Array.isArray(src.starters)) {
+    for (const item of src.starters) {
+      const starter = normaliseStarterCard(item);
+      if (!starter) continue;
+      if (starters.some((s) => s.id === starter.id || (starter.key && s.key === starter.key))) continue;
+      starters.push(starter);
+      if (starters.length >= CHAT_STARTERS_LIMITS.starters) break;
+    }
+  }
+  return {
+    surface: enumOr(src.surface, STARTER_SURFACES, surface),
+    enabled: src.enabled !== false,
+    as_of: optStr(src.as_of, 40) ?? '',
+    expires_at: optStr(src.expires_at, 40) ?? '',
+    timezone: optText(src.timezone, 64) ?? 'UTC',
+    starters,
+    catch_up: normaliseCatchUp(src.catch_up),
+  };
+}
+
+export interface ChatStartersQuery {
+  surface: StarterSurface;
+  /** `surface: 'thread'`: the open Workspace conversation (the caller's own). */
+  conversationId?: string | null;
+  /** `surface: 'case'`: the case of a case-scoped chat. */
+  caseId?: string | null;
+}
+
+/**
+ * `GET /api/chat/starters` (SPEC-chat §3.2.2): a pure read, cached per caller for 60 s
+ * server-side. A thread read without a well-formed conversation id, or a case read
+ * without a case id, is refused locally (the server would answer 404).
+ */
+export async function getChatStarters(query: ChatStartersQuery, signal?: AbortSignal): Promise<ChatStartersInfo> {
+  const surface = STARTER_SURFACES.includes(query.surface) ? query.surface : 'home';
+  const conversationId = surface === 'thread' && isSafeChatId(query.conversationId) ? query.conversationId : undefined;
+  const caseId =
+    surface === 'case' && typeof query.caseId === 'string' && query.caseId.length > 0 && query.caseId.length <= 128
+      ? query.caseId
+      : undefined;
+  if ((surface === 'thread' && !conversationId) || (surface === 'case' && !caseId)) {
+    throw new ApiError(404, 'There are no suggestions for this view.', null);
+  }
+  const raw = await request<unknown>('GET', 'chat/starters', {
+    query: { surface, conversation_id: conversationId, case_id: caseId },
+    signal,
+  });
+  return normaliseChatStartersInfo(raw, surface);
+}
+
+/**
+ * `POST /api/chat/starters/events` (204): what the viewer saw, used or hid. Only the
+ * caller's own presentation state changes (no audit row, no question text, D10). Keys
+ * are filtered to the opaque grammar and capped at six; a malformed event sends nothing.
+ */
+export async function postChatStarterEvent(event: ChatStarterEvent): Promise<void> {
+  if (!event || !['viewed', 'used', 'dismissed'].includes(event.type)) return;
+  const surface = event.surface && STARTER_SURFACES.includes(event.surface) ? event.surface : 'home';
+  const keys = strings(event.keys ?? [], CHAT_STARTERS_LIMITS.keys, (key) => STARTER_KEY_RE.test(key));
+  await request<unknown>('POST', 'chat/starters/events', { body: { type: event.type, surface, keys } });
 }
 
 /* -------------------------------------------------------------------------- */

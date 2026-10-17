@@ -33,15 +33,37 @@
  *
  * Drafts live in the engine (per thread, owned by the host). The composer never
  * stores message text anywhere else.
+ *
+ * Round 13 (SPEC-chat T13, §7.1):
+ * - The placeholder is a plain question prompt ("Ask about cases, logs, metrics or this
+ *   console"; "Ask a question" below 560 px). The key hints moved to a muted
+ *   "/ commands · @ scope" at the right of the control row, shown only while the field
+ *   is focused and empty (and not below 560 px, where the row has no room for it).
+ * - The focus frame is quieter than Round 12's 2 px glow at 30 %: the 1 px `border-ring`
+ *   plus a solid 1 px outer `ring-1 ring-ring` ({@link COMPOSER_FOCUS_FRAME}). The SPEC's
+ *   `ring-2 ring-ring/15` measured 1.23:1 and the border change alone 1.49:1 (light),
+ *   under its own 3:1 rule; the solid outer pixel changes from the page to the ring
+ *   colour at 4.7:1 (light) and 8:1 (dark).
+ * - The meter keeps its slot but is invisible at rest (TokenMeter).
+ * - The Workspace composer listens to the two prompt-library events
+ *   (`composer/library-events.ts`): `openPromptLibrary({categories})` opens the library
+ *   filtered to a start-screen pill's categories, and `pickPromptFromLibrary(id)` runs
+ *   one saved or ready-made prompt through exactly the library's Use path (fill the
+ *   field, open its values card, or start the promptbook). An id that cannot be found
+ *   says so in a toast and changes nothing; a saved-prompt read that failed says that
+ *   instead (the prompt may well exist). A library a pill opened and that closes with
+ *   nothing chosen hands focus back to the pill.
  */
 import * as React from 'react';
 import { ArrowUp, Lock, Square } from 'lucide-react';
-import type { ChatContextInfo, ChatPrompt } from '@/lib/types';
+import { toast } from 'sonner';
+import type { ChatContextInfo, ChatPrompt, ChatPromptCategory } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { Popover, PopoverAnchor, PopoverContent } from '@/ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { useAnnouncer } from '@/soc/components/announcer';
+import { getSavedPrompts } from '../chat-api';
 import type { ChatEngine } from '../useChatEngine';
 import { anyLayerOpen } from '../shortcuts/useChatShortcuts';
 import { AccessPopover } from './AccessPopover';
@@ -58,9 +80,9 @@ import {
 import { ComposerMenu } from './ComposerMenu';
 import { ComposerOptions, ModelChip } from './ComposerOptions';
 import { SCOPE_LABELS, withClientHistory } from './format';
-import { onOpenPromptLibrary } from './library-events';
+import { onOpenPromptLibrary, onPickPromptFromLibrary } from './library-events';
 import { PromptLibraryDialog } from './PromptLibrary';
-import { planIsDirect, planPrompt, type LibraryPrompt, type PromptPlan } from './prompt-library';
+import { planIsDirect, planPrompt, visibleStarters, type LibraryPrompt, type PromptPlan } from './prompt-library';
 import { PROMPTBOOK_RUNNING_REASON, PromptParamsCard, PromptbookBar, usePromptbookRunner } from './PromptRunner';
 import { SavePromptDialog, useSavedPrompts, type PromptDraft } from './SavedPrompts';
 import { ScopeControls } from './ScopeControls';
@@ -116,19 +138,35 @@ export interface ComposerProps {
   defaultModel?: string | null;
 }
 
-/** SPEC §10.4 placeholder. */
-export const COMPOSER_PLACEHOLDER = 'Ask about your data or this app. / for commands, @ to scope';
+/** The placeholder (SPEC-chat T13; was SPEC §10.4's key-hint list). */
+export const COMPOSER_PLACEHOLDER = 'Ask about cases, logs, metrics or this console';
 /**
- * The same grammar, short enough for one line in a narrow composer. Chromium sizes a
- * `field-sizing: content` field from its placeholder, so the long one would wrap to
- * two lines below about 450 px and break the 88 px resting height (SPEC §10.4).
+ * Short enough for one line in a narrow composer. Chromium sizes a `field-sizing:
+ * content` field from its placeholder, so the long one would wrap to two lines below
+ * about 450 px and break the 88 px resting height (SPEC §10.4).
  */
-export const COMPOSER_PLACEHOLDER_NARROW = 'Ask… / for commands, @ to scope';
+export const COMPOSER_PLACEHOLDER_NARROW = 'Ask a question';
+/** The muted key hint at the right of the control row while the field is focused and empty (T13). */
+export const COMPOSER_KEY_HINT = '/ commands · @ scope';
+/** A `use_prompt` starter (or any pick) named a prompt this viewer no longer has. */
+export const PROMPT_UNAVAILABLE = 'That saved prompt is no longer available.';
+/**
+ * A pick of a saved prompt when the saved prompts could not be read: the prompt may well
+ * exist, so this never says it is gone (that needs a read that succeeded without it).
+ */
+export const PROMPT_READ_FAILED = 'Saved prompts could not be loaded. Try again.';
 /** The compact Case Manager composer has no `/` or `@` menus, so it never advertises them. */
 export const CASE_COMPOSER_PLACEHOLDER = 'Ask about this case';
 /** The Read-only chip's tooltip (SPEC §10.4, exact). */
 export const READ_ONLY_TOOLTIP =
   'Searches logs, cases, metrics, intel and the help docs. It cannot change anything. Answers can be wrong; log content is untrusted data.';
+/**
+ * The field's focus on the composer frame (SPEC-chat T13): the 1 px border turns ring
+ * colour and a solid 1 px ring draws outside it. Every pixel that changes keeps at least
+ * 3:1 against what it was (measured in Composer.test), unlike a translucent glow.
+ */
+export const COMPOSER_FOCUS_FRAME =
+  'has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-1 has-[textarea:focus-visible]:ring-ring';
 /** Below this composer width the Scope and @ chips merge (SPEC §10.4). */
 export const COMPOSER_NARROW_PX = 560;
 /** Beyond this many @-scopes the chips also merge, so the 32 px row never overflows. */
@@ -190,6 +228,12 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   const [accessOpen, setAccessOpen] = React.useState(false);
   const [saveDraft, setSaveDraft] = React.useState<PromptDraft | null>(null);
   const [libraryOpen, setLibraryOpen] = React.useState(false);
+  /** A start-screen pill's library categories (Round 13); none = the whole library. */
+  const [libraryCategories, setLibraryCategories] = React.useState<ChatPromptCategory[] | undefined>(undefined);
+  /** A prompt id from `pickPromptFromLibrary`, until it is found (or not). */
+  const [pendingPick, setPendingPick] = React.useState<string | null>(null);
+  /** Focus the values card once a picked prompt has opened it. */
+  const cardFocusPending = React.useRef(false);
   const [plan, setPlan] = React.useState<PromptPlan | null>(null);
   const pendingSelection = React.useRef<[number, number] | null>(null);
   /** Where focus goes when Options ⋯ closes after choosing a prompt (Radix would return it to ⋯). */
@@ -207,6 +251,8 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     props.canChooseModel ?? Boolean(context && (context.rates || context.budget || context.simulated !== null));
   const narrow = width !== null && width < COMPOSER_NARROW_PX;
   const merged = narrow || engine.scopes.length > MAX_INLINE_SCOPE_CHIPS;
+  // The "/ commands · @ scope" hint: Workspace only, while the field is focused and empty.
+  const showKeyHint = !isCase && !narrow && focused && draft === '' && !blockReason;
 
   // The width is an input so the JS fallback re-measures when the lane reflows
   // (rail toggled, report split opened) and not only on the next keystroke.
@@ -238,6 +284,11 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
   const menuKind: 'slash' | 'at' | null = slash ? 'slash' : at ? 'at' : null;
   const menuOpen = Boolean(menuKind) && items.length > 0 && focused && dismissedDraft !== draft;
   const activeValue = enabled.includes(active) ? active : (enabled[0] ?? '');
+  // A closed menu forgets its highlight: the next one opens on its first row, not on the
+  // row chosen last time (which the menu would scroll to, T22).
+  React.useEffect(() => {
+    if (!menuOpen) setActive('');
+  }, [menuOpen]);
 
   // Load saved prompts the first time `/` is typed (never at mount).
   const slashActive = Boolean(slash);
@@ -289,12 +340,44 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     [focusTextarea, replaceDraft],
   );
 
-  // The new-chat empty state's "Prompt library" link (Workspace only).
+  /**
+   * The control outside the composer that opened the library (a start-screen pill): a
+   * library closed without choosing anything hands focus back to it, so a keyboard user
+   * browsing the pills keeps their place. Null when the composer itself opened it.
+   */
+  const libraryOpener = React.useRef<HTMLElement | null>(null);
+  /** A prompt was used (or a copy started) from the library: focus goes forward, not back. */
+  const libraryChosen = React.useRef(false);
+
+  /** Open the prompt library: the whole of it, or a start-screen pill's categories. */
+  const openLibrary = React.useCallback(
+    (categories?: readonly ChatPromptCategory[], opener: HTMLElement | null = null) => {
+      loadPrompts();
+      libraryOpener.current = opener;
+      libraryChosen.current = false;
+      setLibraryCategories(categories && categories.length ? [...categories] : undefined);
+      setLibraryOpen(true);
+    },
+    [loadPrompts],
+  );
+
+  // The start screen's category pills (Workspace only, SPEC-chat §5.2).
   React.useEffect(() => {
     if (isCase) return undefined;
-    return onOpenPromptLibrary(() => {
+    return onOpenPromptLibrary(({ categories }) => {
+      const active = typeof document !== 'undefined' ? document.activeElement : null;
+      const opener =
+        active instanceof HTMLElement && active !== document.body && !rootRef.current?.contains(active) ? active : null;
+      openLibrary(categories, opener);
+    });
+  }, [isCase, openLibrary]);
+
+  // A `use_prompt` starter card (SPEC-chat §3.9): resolved below, then the Use path.
+  React.useEffect(() => {
+    if (isCase) return undefined;
+    return onPickPromptFromLibrary(({ promptId }) => {
       loadPrompts();
-      setLibraryOpen(true);
+      setPendingPick(promptId);
     });
   }, [isCase, loadPrompts]);
 
@@ -330,6 +413,63 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     else focusTextarea();
   }, [focusTextarea]);
 
+  // A picked prompt that opened its values card hands focus to it once it renders.
+  React.useEffect(() => {
+    if (!plan || !cardFocusPending.current) return;
+    cardFocusPending.current = false;
+    focusCard();
+  }, [plan, focusCard]);
+
+  /** Run a picked prompt exactly as the library's Use does (fill, values card or book). */
+  const runPicked = React.useRef<(prompt: LibraryPrompt) => void>(() => undefined);
+  runPicked.current = (prompt: LibraryPrompt) => {
+    if (pickPrompt(prompt) === 'card') cardFocusPending.current = true;
+  };
+
+  // Resolve a picked id among the ready-made prompts this viewer can run and their saved
+  // prompts (read first; a saved list read earlier is checked again before "not found").
+  const savedState = prompts.state;
+  const savedList = prompts.prompts;
+  React.useEffect(() => {
+    if (!pendingPick) return undefined;
+    const id = pendingPick;
+    if (id.startsWith('starter:')) {
+      if (!context && !contextError) return undefined; // the catalogue decides what may run
+      const starter = visibleStarters(context).find((prompt) => prompt.id === id);
+      setPendingPick(null);
+      if (starter) runPicked.current(starter);
+      else toast(PROMPT_UNAVAILABLE);
+      return undefined;
+    }
+    if (savedState === 'idle' || savedState === 'loading') return undefined;
+    const known = savedList.find((prompt) => prompt.id === id);
+    if (known) {
+      setPendingPick(null);
+      runPicked.current(known);
+      return undefined;
+    }
+    // Not in the list this composer holds: read the saved prompts once more (another tab
+    // may have saved it since), then use it or say it is gone. Only a read that
+    // succeeded without it means "gone": a failed read (this one, after the list itself
+    // failed to load) says so and changes nothing.
+    let alive = true;
+    void getSavedPrompts()
+      .then(
+        (fresh): LibraryPrompt | 'missing' => fresh.find((prompt) => prompt.id === id) ?? 'missing',
+        (): 'failed' => 'failed',
+      )
+      .then((found) => {
+        if (!alive) return;
+        setPendingPick(null);
+        if (found === 'failed') toast.error(PROMPT_READ_FAILED);
+        else if (found === 'missing') toast(PROMPT_UNAVAILABLE);
+        else runPicked.current(found);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [pendingPick, savedState, savedList, context, contextError]);
+
   /** The values card was submitted with the filled steps (only while sending is possible). */
   const runPlan = (current: PromptPlan, steps: string[]) => {
     if (current.book) {
@@ -357,8 +497,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
     }
     if (item.kind === 'library') {
       engine.setDraft('');
-      prompts.load();
-      setLibraryOpen(true);
+      openLibrary();
       return;
     }
     if (item.kind === 'scope') {
@@ -517,7 +656,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
         optionsCloseFocus.current = pickPrompt(prompt);
       }}
       onSaveCurrent={() => setSaveDraft({ text: draft })}
-      onOpenLibrary={() => setLibraryOpen(true)}
+      onOpenLibrary={() => openLibrary()}
       onOpenShortcuts={onOpenShortcuts}
       onCloseAutoFocus={(event) => {
         // A chosen prompt hands focus to its values card (or the field it filled);
@@ -597,11 +736,26 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
           controller={prompts}
           context={context}
           contextError={contextError}
-          onUse={(prompt) => void pickPrompt(prompt)}
-          onCompose={(next) => setSaveDraft(next)}
+          onUse={(prompt) => {
+            libraryChosen.current = true;
+            void pickPrompt(prompt);
+          }}
+          onCompose={(next) => {
+            libraryChosen.current = true;
+            setSaveDraft(next);
+          }}
+          categories={libraryCategories}
           // A chosen prompt with values moves focus into its card (its first value, or
-          // Run for a promptbook without values); otherwise back to the field.
-          onCloseFocus={focusCard}
+          // Run for a promptbook without values); otherwise back to the field. Closed
+          // without a choice after a start-screen pill opened it: back to that pill.
+          onCloseFocus={() => {
+            const opener = libraryOpener.current;
+            const chosen = libraryChosen.current;
+            libraryOpener.current = null;
+            libraryChosen.current = false;
+            if (!chosen && opener?.isConnected) opener.focus();
+            else focusCard();
+          }}
         />
       )}
     </>
@@ -642,7 +796,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
         <div
           className={cn(
             'flex items-end gap-1 rounded-md border border-input bg-card p-1 transition-colors',
-            'has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/30',
+            COMPOSER_FOCUS_FRAME,
           )}
         >
           {textarea}
@@ -676,7 +830,7 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
             className={cn(
               'rounded-md border border-input bg-card px-2 pb-1.5 pt-1.5 transition-colors',
               // The field's focus shows on the frame; a focused chip keeps its own ring.
-              'has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/30',
+              COMPOSER_FOCUS_FRAME,
             )}
           >
             {textarea}
@@ -726,7 +880,19 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
               </div>
               <div className="flex shrink-0 items-center gap-1">
                 {meterContext ? (
-                  <TokenMeter context={meterContext} draft={draft} conversationTotals={conversationTotals} />
+                  <TokenMeter
+                    context={meterContext}
+                    draft={draft}
+                    conversationTotals={conversationTotals}
+                    compact={narrow}
+                  />
+                ) : null}
+                {/* Beside Options: the meter's resting slot (invisible while the field is
+                    empty) sits to its left, so the hint never floats away from the controls. */}
+                {showKeyHint ? (
+                  <span className="whitespace-nowrap px-1 text-xs text-muted-foreground" aria-hidden="true" data-testid="composer-key-hint">
+                    {COMPOSER_KEY_HINT}
+                  </span>
                 ) : null}
                 {options}
                 {sendStop}
@@ -738,6 +904,8 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
           side="top"
           align="start"
           sideOffset={6}
+          // A 16 px gutter from the screen edge on a phone (as the scope popover, T23).
+          collisionPadding={16}
           aria-label={menuKind === 'at' ? 'Scopes' : 'Commands'}
           className="w-[min(30rem,calc(100vw-2rem))] p-0"
           onOpenAutoFocus={(event) => event.preventDefault()}

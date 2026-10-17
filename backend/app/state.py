@@ -837,6 +837,15 @@ class AppState:
             return None
 
     @property
+    def chat_starters(self):
+        """Round 13 (SPEC-chat §3.2.3): the caller-keyed chat starter state store over
+        the ACTIVE chat KV (the demo stack's in Demo Mode, so Demo state stays in the
+        sandbox). Presentation state only: family ids, opaque keys, counters, times."""
+        from .stores.chat_starters import starters_store_for
+
+        return starters_store_for(getattr(self.chat_conversations, "_kv", None) or self.kv)
+
+    @property
     def rag_service(self):
         # In demo, the RAG service is the demo's SHARED (pipeline+chat) vector store so
         # the Knowledge surface reflects the demo corpus; off demo, the real service.
@@ -3673,6 +3682,13 @@ class AppState:
             # A turn still running at shutdown is abandoned like a reset-cancelled
             # one: its reservation is aborted so a retry runs fresh after restart.
             await self.cancel_chat_turns()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # Round 13: the chat starters' background readings (hunt, platform).
+            from .engine.chat_starters import close_slow_signals
+
+            await close_slow_signals(self)
         except Exception:  # noqa: BLE001
             pass
         try:

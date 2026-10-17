@@ -233,6 +233,8 @@ async def test_case_stats_zero_matches_suggest_valid_calls(store: CaseStore) -> 
         CaseStatsInput.model_validate(suggestion["input"])              # a VALID call
     assert any(s["input"].get("window") == "all" for s in suggestions)
     assert any("rule" not in s["input"] for s in suggestions)
+    # Round 13 (SPEC-chat T11): chip labels use display words, never a raw key.
+    assert "Without the rule filter" in [s["label"] for s in suggestions]
 
 
 async def test_case_stats_partial_result_is_never_a_total(store: CaseStore, monkeypatch) -> None:
@@ -470,6 +472,30 @@ async def test_log_stats_zero_matches_suggest_valid_calls() -> None:
     assert suggestions and all(s["tool"] == "log_stats" for s in suggestions)
     for suggestion in suggestions:
         LogStatsInput.model_validate(suggestion["input"])
+    # Round 13 (SPEC-chat T11, audit A16): "Without the source IP filter", never "ip".
+    labels = [s["label"] for s in suggestions]
+    assert "Without the source IP filter" in labels
+    assert not any("the ip filter" in label for label in labels)
+
+
+def test_zero_result_chip_labels_name_fields_in_display_words() -> None:
+    """Round 13 (SPEC-chat T11): every filter a zero-result chip drops has a display
+    label; none shows a raw key (ip, severity_gte, status_group)."""
+    from app.agents.chat_tools.logs import ZERO_LOG_FILTER_LABELS
+    from app.agents.chat_tools.stats import ZERO_CASE_FILTER_LABELS
+
+    assert ZERO_LOG_FILTER_LABELS["ip"] == "Without the source IP filter"
+    assert ZERO_LOG_FILTER_LABELS["contains"] == "Without the text filter"
+    assert ZERO_LOG_FILTER_LABELS["severity_gte"] == "Any severity"
+    assert ZERO_CASE_FILTER_LABELS["status_group"] == "Open and closed cases"
+    assert set(ZERO_LOG_FILTER_LABELS) == {"contains", "rule", "user", "host", "ip", "severity_gte"}
+    assert set(ZERO_CASE_FILTER_LABELS) == {"text", "rule", "assignee", "entity", "verdict", "severity",
+                                            "priority", "status", "status_group"}
+    for label in (*ZERO_LOG_FILTER_LABELS.values(), *ZERO_CASE_FILTER_LABELS.values()):
+        assert label[0].isupper() and "_" not in label and " ip " not in f" {label} "
+        # No key with its underscore swapped for a space ("status group", "severity gte").
+        assert not any(key.replace("_", " ") in label.lower()
+                       for key in (*ZERO_LOG_FILTER_LABELS, *ZERO_CASE_FILTER_LABELS) if "_" in key), label
 
 
 # --------------------------------------------------------------------------- #

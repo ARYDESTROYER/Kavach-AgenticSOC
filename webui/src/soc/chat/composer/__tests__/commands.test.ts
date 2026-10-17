@@ -13,6 +13,7 @@ import {
   parseAtQuery,
   parseSlashQuery,
   promptHint,
+  starterHint,
   removeAtToken,
   reportTemplateText,
   REPORT_TEMPLATE_SPECS,
@@ -25,7 +26,12 @@ import {
   TURNED_OFF_COPY,
   type ComposerMenuItem,
   LIBRARY_ITEM_VALUE,
+  MENU_HINT_MAX,
+  SLASH_COMMANDS,
+  sectionsHint,
 } from '../commands';
+import { SCOPE_DESCRIPTIONS } from '../format';
+import { STARTER_PROMPTS } from '../prompt-library';
 import { ALL_TOOLS, makeContext } from './fixtures';
 
 /** A context where the deployment switched these tools off (allowed stays true, SPEC A30). */
@@ -298,7 +304,7 @@ describe('@ scopes', () => {
     expect(items.map((i) => i.value)).toEqual(['scope:logs', 'scope:metrics', 'scope:intel', 'scope:docs', 'scope:platform']);
     const logs = items[0];
     expect(logs.kind === 'scope' && logs.disabled).toBe(true);
-    expect(logs.hint).toBe('Needs sources:read');
+    expect(logs.hint).toBe('Needs permission to read sources (sources:read)');
   });
 
   it('filters by id or label prefix and closes when nothing matches', () => {
@@ -369,5 +375,57 @@ describe('@ scopes', () => {
     expect(missingGrant({ ...base, requires: ['a:r', 'b:r'], missing: ['a:r', 'b:r'] })).toBe('a:r and b:r');
     expect(missingGrant({ ...base, requires: ['a:r'], missing: [] })).toBe('a:r');
     expect(missingGrant({ ...base, allowed: true, requires: ['a:r'] })).toBeNull();
+  });
+});
+
+describe('menu descriptions (Round 13, SPEC-chat T22)', () => {
+  it('keeps every description the console writes to at most 60 characters', () => {
+    expect(MENU_HINT_MAX).toBe(60);
+    const ours = [
+      ...SLASH_COMMANDS.map((c) => c.description),
+      COMPACT_ARGUMENT_HINT,
+      ...Object.values(SCOPE_DESCRIPTIONS),
+      TURNED_OFF_COPY,
+      'Needs permission to read sources (sources:read)',
+    ];
+    for (const text of ours) expect(text.length, text).toBeLessThanOrEqual(MENU_HINT_MAX);
+    // Every report template's row, built from its sections.
+    const all = slashMenuGroups(parseSlashQuery('/report ')!, makeContext(), []).flatMap((g) => g.items);
+    expect(all.length).toBe(REPORT_TEMPLATE_SPECS.length);
+    for (const row of all) expect(row.hint.length, row.hint).toBeLessThanOrEqual(MENU_HINT_MAX);
+    // And the library entry.
+    const library = slashMenuGroups(parseSlashQuery('/')!, makeContext(), []).flatMap((g) => g.items).find((i) => i.kind === 'library');
+    expect(library?.hint.length).toBeLessThanOrEqual(MENU_HINT_MAX);
+  });
+
+  it('describes every ready-made prompt in console copy of at most 60 characters, never its full text', () => {
+    for (const prompt of STARTER_PROMPTS) {
+      const hint = starterHint(prompt);
+      expect(hint.length, `${prompt.id}: ${hint}`).toBeLessThanOrEqual(MENU_HINT_MAX);
+      expect(hint).not.toBe(prompt.text);
+    }
+    const byId = (id: string) => STARTER_PROMPTS.find((p) => p.id === id)!;
+    expect(starterHint(byId('starter:hunt-indicator'))).toBe('Hunt · Asks for Indicator, Period');
+    expect(starterHint(byId('starter:failed-sign-ins'))).toBe('Hunt · Asks for User');
+    expect(starterHint(byId('starter:needs-review'))).toBe('Triage');
+    expect(starterHint(byId('starter:book-triage-case'))).toBe('Triage · 3 steps · Asks for Case id');
+    // Too many names to fit: the values are counted.
+    const many = { ...byId('starter:hunt-indicator'), text: '{first value name} {second value name} {third value name} {fourth one}' };
+    expect(starterHint(many)).toBe('Hunt · Asks for 4 values');
+    // The `/` menu uses it for starters and keeps the analyst's own text for theirs.
+    const rows = slashMenuGroups(parseSlashQuery('/hunt')!, makeContext(), []).flatMap((g) => g.items);
+    const hunt = rows.find((row) => row.value === 'prompt:starter:hunt-indicator');
+    expect(hunt?.hint).toBe('Hunt · Asks for Indicator, Period');
+    for (const row of rows) if (row.kind === 'prompt') expect(row.hint.length, row.hint).toBeLessThanOrEqual(MENU_HINT_MAX);
+  });
+
+  it('lists whole section names, then how many more', () => {
+    expect(sectionsHint(['Summary', 'Open work', 'Key metrics', 'Next steps'])).toBe(
+      'Summary · Open work · Key metrics · Next steps',
+    );
+    const monthly = REPORT_TEMPLATE_SPECS.find((spec) => spec.template === 'monthly')!;
+    expect(sectionsHint(monthly.sections)).toBe('Summary · Volume by week · Quality · Response times · 3 more');
+    // Never a cut word: a single section longer than the limit is counted instead.
+    expect(sectionsHint(['x'.repeat(70), 'y'])).toBe('2 sections');
   });
 });

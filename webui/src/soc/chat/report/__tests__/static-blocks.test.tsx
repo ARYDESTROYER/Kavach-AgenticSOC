@@ -74,9 +74,16 @@ describe('static Brief (R6)', () => {
     expect(screen.getByText('6,400')).toBeInTheDocument();
   });
 
-  it('keeps the interactive contents on screen', () => {
-    render(<BlockCard block={galleryBlock('shift-brief')} index={0} />);
-    expect(screen.getByRole('button', { name: /Contents \(3 sections\)/ })).toBeInTheDocument();
+  it('keeps the interactive contents on screen from 4 sections (Round 13, SPEC-chat T29)', () => {
+    // Three sections need no contents control on screen (it only came back in print).
+    const three = render(<BlockCard block={galleryBlock('shift-brief')} index={0} />);
+    expect(screen.queryByRole('button', { name: /Contents \(3 sections\)/ })).toBeNull();
+    three.unmount();
+    const brief = galleryBlock('shift-brief');
+    if (brief.type !== 'report') throw new Error('shift-brief is a report block');
+    const four = { ...brief, sections: [...brief.sections, { ...brief.sections[0], id: 'extra', heading: 'Extra' }] };
+    render(<BlockCard block={four} index={0} />);
+    expect(screen.getByRole('button', { name: /Contents \(4 sections\)/ })).toBeInTheDocument();
   });
 });
 

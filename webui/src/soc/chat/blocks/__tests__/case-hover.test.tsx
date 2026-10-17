@@ -14,7 +14,8 @@ vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => () => undefin
 import AnswerBlocks from '../AnswerBlocks';
 import { galleryBlock } from '../__fixtures__/gallery';
 
-const TITLE = 'Brute force against vpn-gw-2';
+// The link reads title then the case's id (no case number is sent yet, T14).
+const TITLE = 'Brute force against vpn-gw-2 case-1052';
 
 describe('case hover preview arming', () => {
   it('keeps a focused case link mounted (and focused) while the pointer arms the preview', async () => {

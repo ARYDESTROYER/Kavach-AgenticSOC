@@ -6,7 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 
-import { RunLogList, buildRunRows, stepsFromResponse, type RunLogStep } from '../RunLog';
+import type { ChatLiveTurn } from '../../turn-runner';
+import { RunLogHeader, RunLogList, buildRunRows, stepsFromResponse, type RunLogStep } from '../RunLog';
 import { step } from './fixtures';
 
 const model = (index: number, status: RunLogStep['status'], label = 'Thinking'): RunLogStep => ({
@@ -55,8 +56,10 @@ describe('RunLogList', () => {
         ])}
       />,
     );
-    expect(screen.getByText('Timed out · 1.2 s')).toBeInTheDocument();
-    expect(screen.getByText('Denied · 1.2 s')).toBeInTheDocument();
+    // The status word only when a lookup did not simply finish; the time after the label.
+    const words = screen.getAllByTestId('run-log-status').map((node) => node.textContent);
+    expect(words).toEqual(['Timed out', 'Denied']);
+    expect(screen.getAllByTestId('run-log-duration').map((node) => node.textContent)).toEqual(['· 1.2 s', '· 1.2 s']);
     expect(screen.getAllByText('Window')[0]).toBeInTheDocument();
     expect(screen.getAllByText('last 24h')[0]).toBeInTheDocument();
     expect(screen.getByText('evil.example')).toHaveClass('font-mono');
@@ -102,9 +105,191 @@ describe('RunLogList', () => {
     expect(screen.queryByText('created_at')).toBeNull();
   });
 
-  it('says so when nothing has run yet', () => {
-    render(<RunLogList id="log-2" steps={[]} />);
-    expect(screen.getByText('No lookups yet.')).toBeInTheDocument();
+  it('says what the assistant is doing before any lookup ran, never "No lookups yet."', () => {
+    const { rerender } = render(<RunLogList id="log-2" steps={[]} />);
+    expect(screen.getByTestId('run-log-pending')).toHaveTextContent('Reading your question…');
+    expect(screen.queryByText('No lookups yet.')).toBeNull();
+    const thinking: RunLogStep = {
+      index: 1, kind: 'model', tool: null, label: 'Thinking', params: {}, group: null, status: 'running', result: null,
+    };
+    rerender(<RunLogList id="log-2" steps={[thinking]} />);
+    expect(screen.getByTestId('run-log-pending')).toHaveTextContent('Choosing lookups…');
+    expect(screen.queryByText('Thinking')).toBeNull();
+    // A model call that writes the answer straight away keeps its own row.
+    rerender(<RunLogList id="log-2" steps={[{ ...thinking, label: 'Writing the answer' }]} />);
+    expect(screen.queryByTestId('run-log-pending')).toBeNull();
+    expect(screen.getByText('Writing the answer')).toBeInTheDocument();
+  });
+
+  it('lays a row out as icon, label, then the muted time; Done is the icon with an sr-only word', () => {
+    render(<RunLogList id="log-d" steps={stepsFromResponse([step(1)])} />);
+    const row = document.querySelector('[data-step-status="ok"]') as HTMLElement;
+    const line = row.children[1].firstElementChild as HTMLElement;
+    const parts = Array.from(line.children).map((node) => node.textContent);
+    expect(parts.slice(0, 3)).toEqual(['Searched logs', 'Done', '· 1.2 s']);
+    expect(within(row).getByText('Done')).toHaveClass('sr-only');
+    expect(screen.queryByTestId('run-log-status')).toBeNull();
+    // The status icon leads, at 16 px.
+    expect(row.firstElementChild).toHaveClass('size-4');
+  });
+
+  it('reads verdicts, statuses and kinds in the console words, and many sources as a count', () => {
+    render(
+      <RunLogList
+        id="log-w"
+        steps={stepsFromResponse([
+          step(1, {
+            params: { verdict: 'TRUE_POSITIVE', status: 'escalated', kind: 'ip' },
+            untrusted_params: {},
+            sources: ['Wazuh Manager', 'Splunk Enterprise Security', 'Elastic'],
+          }),
+        ])}
+      />,
+    );
+    expect(screen.getByText('True positive')).toBeInTheDocument();
+    expect(screen.getByText('Escalated')).toBeInTheDocument();
+    expect(screen.getByText('IP')).toBeInTheDocument();
+    expect(screen.queryByText('TRUE_POSITIVE')).toBeNull();
+    const sources = screen.getByText('3 sources');
+    expect(sources).toHaveAttribute('title', 'Wazuh Manager, Splunk Enterprise Security, Elastic');
+  });
+
+  it('names many sources "3 sources" (never "Source 3 sources") and shows the names on keyboard or touch', () => {
+    render(
+      <RunLogList
+        id="log-s"
+        steps={stepsFromResponse([step(1, { params: {}, untrusted_params: {}, sources: ['Wazuh Manager', 'Elastic', 'Splunk'] })])}
+      />,
+    );
+    const chip = screen.getByRole('button', { name: '3 sources' });
+    expect(chip).toHaveTextContent(/^3 sources$/);
+    expect(screen.getByTestId('run-log-chips')).not.toHaveTextContent(/Source 3/);
+    // The names are a disclosure, not only a pointer tooltip.
+    const names = screen.getByTestId('run-log-source-names');
+    expect(chip).toHaveAttribute('aria-expanded', 'false');
+    expect(chip).toHaveAttribute('aria-controls', names.id);
+    expect(names).not.toBeVisible();
+    fireEvent.click(chip);
+    expect(chip).toHaveAttribute('aria-expanded', 'true');
+    expect(names).toBeVisible();
+    expect(names).toHaveTextContent('Wazuh Manager, Elastic, Splunk');
+  });
+
+  it('gives each lookup’s source names their own id, so a button never controls another lookup’s list (review RV1)', () => {
+    render(
+      <RunLogList
+        id="log-1"
+        steps={stepsFromResponse([
+          step(1, { params: {}, untrusted_params: {}, sources: ['Wazuh', 'Elastic', 'Splunk'] }),
+          step(2, { params: {}, untrusted_params: {}, sources: ['Okta', 'Entra ID'], group: 7 }),
+          step(3, { params: {}, untrusted_params: {}, sources: ['Okta', 'Wazuh'], group: 7 }),
+        ])}
+      />,
+    );
+    const buttons = screen.getAllByTestId('run-log-sources');
+    expect(buttons).toHaveLength(3);
+    const ids = buttons.map((button) => button.getAttribute('aria-controls') as string);
+    expect(new Set(ids).size).toBe(3);
+    for (const id of ids) expect(document.querySelectorAll(`[id="${id}"]`)).toHaveLength(1);
+    // Every id in the log is unique (the query disclosures and the list itself included).
+    const all = Array.from(document.querySelectorAll('[id]')).map((el) => el.id);
+    expect(new Set(all).size).toBe(all.length);
+    // Opening the second lookup's names opens its own list, and only that one.
+    fireEvent.click(buttons[1]);
+    const second = document.getElementById(ids[1]) as HTMLElement;
+    expect(second).toBeVisible();
+    expect(second).toHaveTextContent('Okta, Entra ID');
+    expect(document.getElementById(ids[0])).not.toBeVisible();
+    expect(document.getElementById(ids[2])).not.toBeVisible();
+    fireEvent.click(buttons[0]);
+    expect(document.getElementById(ids[0])).toHaveTextContent('Wazuh, Elastic, Splunk');
+    expect(document.getElementById(ids[0])).toBeVisible();
+  });
+
+  it('keeps one source a plain "Source" chip', () => {
+    render(<RunLogList id="log-1" steps={stepsFromResponse([step(1, { params: {}, untrusted_params: {}, sources: ['Wazuh'] })])} />);
+    expect(screen.queryByTestId('run-log-sources')).toBeNull();
+    expect(screen.getByTestId('run-log-chips')).toHaveTextContent(/^SourceWazuh$/);
+  });
+});
+
+describe('RunLogHeader — narrow rows (T20, review F4/F14)', () => {
+  const live = (over: Partial<ChatLiveTurn> = {}): ChatLiveTurn =>
+    ({
+      transport: 'stream',
+      turnId: 't1',
+      model: null,
+      streamMode: 'live',
+      replayed: false,
+      estimatePromptTokens: 0,
+      steps: [
+        { index: 1, kind: 'tool', tool: 'search_cases', label: 'Searched cases', status: 'ok', params: {} },
+        { index: 2, kind: 'tool', tool: 'case_stats', label: 'Counted cases', status: 'ok', params: {} },
+        { index: 3, kind: 'tool', tool: 'soc_metrics', label: 'Read SOC metrics', status: 'ok', params: {} },
+        { index: 4, kind: 'tool', tool: 'log_stats', label: 'Counted log events', status: 'running', params: {} },
+      ],
+      usage: { prompt_tokens: 9000, completion_tokens: 500, total_tokens: 9500, cost: 0.0312, estimated: true, simulated: true },
+      text: 'x'.repeat(4000),
+      stopping: false,
+      connection: 'open',
+      startedAt: 0,
+      ...over,
+    }) as unknown as ChatLiveTurn;
+
+  it('wraps the row instead of squeezing the progress, and never splits a figure from its unit', () => {
+    render(<RunLogHeader live={live()} open={false} onToggle={() => undefined} controls="log" />);
+    const row = screen.getByTestId('run-log-header-row');
+    expect(row).toHaveClass('flex-wrap');
+    const usage = screen.getByTestId('run-log-usage');
+    // The usage may drop under the progress: it neither refuses to shrink nor refuses to wrap.
+    expect(usage.className).not.toMatch(/\bshrink-0\b|\bwhitespace-nowrap\b/);
+    const usageGroups = Array.from(usage.querySelectorAll('[data-figure-group]')).map((el) => el.textContent);
+    expect(usageGroups).toEqual(['≈ 9.5k tokens', '· ≈ $0.03', '· simulated', '· ≈ 1k output tokens']);
+    const progress = screen.getByTestId('run-log-progress-label');
+    expect(Array.from(progress.querySelectorAll('[data-figure-group]')).map((el) => el.textContent)).toEqual(['· 4 lookups']);
+    for (const group of Array.from(row.querySelectorAll('[data-figure-group]'))) expect(group).toHaveClass('whitespace-nowrap');
+    expect(screen.getByTestId('run-log-header')).toHaveTextContent('Working · 4 lookups');
+    expect(usage).toHaveTextContent('≈ 9.5k tokens · ≈ $0.03 · simulated · ≈ 1k output tokens');
+  });
+
+  it('lets the state sentence wrap between its words while each count stays whole (review RV2)', () => {
+    // "Connection lost. Checking whether the answer was saved" is wider than a phone's
+    // header row: held on one line it ran past the row and under the chevron.
+    render(<RunLogHeader live={live({ connection: 'recovering' })} open={false} onToggle={() => undefined} controls="log" />);
+    const progress = screen.getByTestId('run-log-progress-label');
+    const state = progress.querySelector('[data-run-state]') as HTMLElement;
+    expect(state).toHaveTextContent(/^Connection lost\. Checking whether the answer was saved$/);
+    expect(state).not.toHaveClass('whitespace-nowrap');
+    expect(state.closest('.whitespace-nowrap')).toBeNull();
+    expect(state).not.toHaveAttribute('data-figure-group');
+    const count = within(progress).getByText('· 4 lookups');
+    expect(count).toHaveClass('whitespace-nowrap');
+    expect(count).toHaveAttribute('data-figure-group');
+    // The label may shrink inside the button, which may shrink inside the wrapping row.
+    expect(progress).toHaveClass('min-w-0');
+    expect(screen.getByTestId('run-log-header')).toHaveClass('min-w-0');
+    expect(screen.getByTestId('run-log-header')).toHaveTextContent('Connection lost. Checking whether the answer was saved · 4 lookups');
+  });
+
+  it('keeps every state sentence out of the unbreakable figure groups', () => {
+    for (const [over, text] of [
+      [{ stopping: true }, 'Stopping after the current step'],
+      [{ waiting: true }, 'Waiting for another answer to finish'],
+      [{}, 'Working'],
+    ] as const) {
+      const { unmount } = render(<RunLogHeader live={live(over as Partial<ChatLiveTurn>)} open={false} onToggle={() => undefined} controls="log" />);
+      const state = screen.getByTestId('run-log-progress-label').querySelector('[data-run-state]') as HTMLElement;
+      expect(state).toHaveTextContent(text);
+      expect(state.closest('.whitespace-nowrap')).toBeNull();
+      unmount();
+    }
+  });
+
+  it('draws no count group before the first lookup', () => {
+    render(<RunLogHeader live={live({ steps: [] })} open={false} onToggle={() => undefined} controls="log" />);
+    const progress = screen.getByTestId('run-log-progress-label');
+    expect(progress).toHaveTextContent(/^Working$/);
+    expect(progress.querySelectorAll('[data-figure-group]')).toHaveLength(0);
   });
 });
 

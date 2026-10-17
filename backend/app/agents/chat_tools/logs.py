@@ -1413,10 +1413,18 @@ def zero_log_suggestions(tool: str, args: Any, window: Window, plan: _Plan) -> l
     for key in ("contains", "rule", "user", "host", "ip", "severity_gte"):
         if key in base:
             reduced = {k: v for k, v in base.items() if k != key}
-            label = {"contains": "Without the text filter", "severity_gte": "Any severity"}.get(
-                key, f"Without the {key} filter")
-            out.append({"label": label, "tool": tool, "input": {**reduced, **keep, **window_input_}})
+            out.append({"label": ZERO_LOG_FILTER_LABELS[key], "tool": tool,
+                        "input": {**reduced, **keep, **window_input_}})
     return out[:4]
+
+
+#: The chip label that drops one log filter, in the field's display words (Round 13
+#: T11: "Without the source IP filter", never the raw key "ip").
+ZERO_LOG_FILTER_LABELS: dict[str, str] = {
+    "contains": "Without the text filter", "rule": "Without the rule filter",
+    "user": "Without the user filter", "host": "Without the host filter",
+    "ip": "Without the source IP filter", "severity_gte": "Any severity",
+}
 
 
 _GROUP_DIMENSIONS = {"ip": "Source IP", "user": "User", "host": "Host", "rule": "Rule",

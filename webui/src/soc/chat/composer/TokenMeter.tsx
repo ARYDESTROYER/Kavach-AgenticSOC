@@ -26,6 +26,17 @@
  * Enter on the estimate button (a Popover: a Radix HoverCard cancels the tap on touch
  * screens). It never takes focus. Its content is supplementary: the button's accessible
  * name carries the estimate and the ring is its own meter.
+ *
+ * Round 13 (SPEC-chat T2, T13): at rest (an empty draft and under half the context
+ * window used) the meter keeps its slot but is invisible and not focusable, so a new
+ * chat shows no unexplained "≈ 4.1k" and "<1%"; typing, or a conversation past half
+ * the window, shows it. Shown, it reads "≈ 4.1k tokens"; below 560 px of composer
+ * (`compact`) only the ring shows, inside the button that names the estimate. The
+ * card's history row counts the exchanges the next request replays: "History: none
+ * yet" on a new chat (0 is a count, never "missing"), "History: 3 exchanges,
+ * summarised near the limit" in unlimited mode, which has no exchange cap to name, and
+ * "History: summary of earlier messages" when only the running summary is replayed
+ * (after `/compact`).
  */
 import * as React from 'react';
 import type { ChatContextInfo } from '@/lib/types';
@@ -42,6 +53,7 @@ import {
   chatUnlimited,
   contextMeterValue,
   contextNote,
+  contextValueText,
   formatContextPercent,
   formatExactTokens,
   formatFactor,
@@ -63,7 +75,38 @@ export interface TokenMeterProps {
   conversationTotals?: ConversationTotals | null;
   /** Show the context ring (the compact Case Manager composer shows the estimate only). */
   showRing?: boolean;
+  /** A narrow composer (below 560 px): the ring alone, inside the estimate button. */
+  compact?: boolean;
   className?: string;
+}
+
+/** The meter shows at rest once the context window is at least this full (percent). */
+export const METER_REST_PERCENT = 50;
+
+/**
+ * Whether the meter is at rest (invisible, keeping its slot): nothing typed and under
+ * {@link METER_REST_PERCENT}% of the context window used (or no window known).
+ */
+export function meterAtRest(draft: string, contextPercent: number | null | undefined): boolean {
+  const percent = typeof contextPercent === 'number' && Number.isFinite(contextPercent) ? contextPercent : 0;
+  return draft.trim() === '' && percent < METER_REST_PERCENT;
+}
+
+/**
+ * The card's history row: the exchanges the next request replays (`history_exchanges`,
+ * 0 on a new chat). Unlimited mode never names an exchange cap. `historyTokens` is the
+ * server's history figure: with no exchange replayed verbatim it can still be above 0
+ * (unlimited mode replays the running conversation summary alone, as after `/compact`),
+ * and that history is the summary, never "none yet".
+ */
+export function historyLabel(exchanges: number, unlimited: boolean, historyTokens = 0): string {
+  const n = Number.isFinite(exchanges) && exchanges > 0 ? Math.floor(exchanges) : 0;
+  if (n === 0) {
+    const replayed = Number.isFinite(historyTokens) && historyTokens > 0;
+    return replayed ? 'History: summary of earlier messages' : 'History: none yet';
+  }
+  const noun = `${n.toLocaleString('en-US')} ${n === 1 ? 'exchange' : 'exchanges'}`;
+  return unlimited ? `History: ${noun}, summarised near the limit` : `History: last ${noun}`;
 }
 
 function Row({ label, value, sub }: { label: React.ReactNode; value: React.ReactNode; sub?: boolean }) {
@@ -79,7 +122,14 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <p className="mb-1.5 text-xs font-medium text-foreground">{children}</p>;
 }
 
-export function TokenMeter({ context, draft, conversationTotals, showRing = true, className }: TokenMeterProps) {
+export function TokenMeter({
+  context,
+  draft,
+  conversationTotals,
+  showRing = true,
+  compact = false,
+  className,
+}: TokenMeterProps) {
   const [open, setOpen] = React.useState(false);
   const cpt = context.chars_per_token;
   const unlimited = chatUnlimited(context);
@@ -89,7 +139,11 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
   const cost = projectedCostRange(context, next.total, turnMax ?? next.total);
   const contextValue = contextMeterValue(context, next.total);
   const ring = showRing ? contextValue : null;
-  const exchanges = context.history_exchanges || CHAT_HISTORY_EXCHANGES;
+  // `??`, not `||`: 0 is a real count (a new chat), never "unknown" (SPEC-chat T2).
+  const exchanges = context.history_exchanges ?? CHAT_HISTORY_EXCHANGES;
+  const atRest = meterAtRest(draft, contextValue?.percent);
+  const estimateText = `≈ ${formatTokenCount(next.total)} tokens`;
+  const ringOnly = compact && ring !== null;
   const simulated = context.simulated === true;
   const spend = context.spent_today;
   const limit = context.budget?.enabled ? context.budget.daily_limit : null;
@@ -108,6 +162,13 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
     closeTimer.current = null;
   };
   React.useEffect(() => clearTimers, []);
+  // An invisible meter never keeps its card open (the draft was sent or cleared).
+  React.useEffect(() => {
+    if (atRest) {
+      clearTimers();
+      setOpen(false);
+    }
+  }, [atRest]);
   // Mouse hover opens and closes the card after a short delay; touch and keyboard use
   // the button (a Radix HoverCard would cancel the tap on touch screens).
   const hoverIn = (event: React.PointerEvent) => {
@@ -137,18 +198,26 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
     >
       <PopoverAnchor asChild>
         <div
-          className={cn('flex items-center gap-1.5 text-xs text-muted-foreground', className)}
+          className={cn('flex items-center gap-1.5 text-xs text-muted-foreground', atRest && 'invisible', className)}
+          data-meter-state={atRest ? 'rest' : 'shown'}
+          aria-hidden={atRest || undefined}
           onPointerEnter={hoverIn}
           onPointerLeave={hoverOut}
         >
           <PopoverTrigger asChild>
             <button
               type="button"
+              // Invisible at rest is also out of the tab order (visibility: hidden).
+              tabIndex={atRest ? -1 : undefined}
               className={cn(
                 'inline-flex h-6 items-center rounded-[3px] px-1 tabular-nums transition-colors hover:bg-muted hover:text-foreground',
                 focusRing,
               )}
-              aria-label={`Estimated next request: ≈ ${formatTokenCount(next.total)} tokens`}
+              aria-label={
+                ringOnly && contextValue
+                  ? `Estimated next request: ${estimateText}. ${contextValueText(contextValue)}`
+                  : `Estimated next request: ${estimateText}`
+              }
               onClick={(event) => {
                 // A click on a card the mouse just opened keeps it open (no toggle-off).
                 if (openedByHover.current && open) {
@@ -158,17 +227,19 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
                 }
               }}
             >
-              ≈ {formatTokenCount(next.total)}
+              {ringOnly && ring ? <ContextRing value={ring} decorative /> : estimateText}
             </button>
           </PopoverTrigger>
-          {ring ? <ContextRing value={ring} /> : null}
+          {ring && !ringOnly ? <ContextRing value={ring} /> : null}
         </div>
       </PopoverAnchor>
       <PopoverContent
         side="top"
         align="end"
+        // The 16 px screen-edge gap every composer layer keeps (SPEC-chat T23, audit C8).
+        collisionPadding={16}
         aria-labelledby={titleId}
-        className="w-80 p-3 text-xs"
+        className="w-[min(20rem,calc(100vw-2rem))] p-3 text-xs"
         onOpenAutoFocus={(event) => event.preventDefault()}
         onPointerEnter={hoverIn}
         onPointerLeave={hoverOut}
@@ -196,11 +267,7 @@ export function TokenMeter({ context, draft, conversationTotals, showRing = true
         <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
           <Row label="Estimate" value={`≈ ${formatExactTokens(next.total)}`} />
           <Row sub label="System and tools" value={formatExactTokens(next.system)} />
-          <Row
-            sub
-            label={`History · last ${exchanges} ${exchanges === 1 ? 'exchange' : 'exchanges'}`}
-            value={formatExactTokens(next.history)}
-          />
+          <Row sub label={historyLabel(exchanges, unlimited, context.history_tokens)} value={formatExactTokens(next.history)} />
           <Row sub label="Your draft" value={formatExactTokens(next.draft)} />
           {next.factor !== 1 ? <Row sub label="Calibrated to this conversation" value={formatFactor(next.factor)} /> : null}
           {turnMax !== null ? <Row label="Whole question" value={`up to ≈ ${formatExactTokens(turnMax)}`} /> : null}

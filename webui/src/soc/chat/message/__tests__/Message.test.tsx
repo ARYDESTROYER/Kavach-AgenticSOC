@@ -69,12 +69,19 @@ describe('Message — running', () => {
     });
     const { rerender, engine } = renderMessage({ item });
     const header = screen.getByTestId('run-log-header');
-    expect(header).toHaveTextContent('Working · 1 lookup · 1.2k tokens · $0.002');
+    // Round 13 T20: progress on the left, the live usage on the right (muted, tabular).
+    expect(header).toHaveTextContent(/^Working · 1 lookup$/);
+    const usage = screen.getByTestId('run-log-usage');
+    expect(usage).toHaveTextContent(/^1\.2k tokens · \$0\.002$/);
+    expect(usage).toHaveClass('ml-auto', 'tabular-nums');
+    expect(header).not.toContainElement(usage);
     expect(header).toHaveAttribute('aria-expanded', 'true');
     expect(document.getElementById(header.getAttribute('aria-controls') ?? '')).not.toHaveAttribute('hidden');
     expect(screen.getByText('Searched logs')).toBeInTheDocument();
     expect(screen.getByText('Thinking')).toBeInTheDocument();
-    expect(screen.getByText('Done · 1.2 s')).toBeInTheDocument();
+    // Done is the check icon with an sr-only word; the time follows the label.
+    expect(screen.getByText('Done')).toHaveClass('sr-only');
+    expect(screen.getByText('· 1.2 s')).toBeInTheDocument();
     // The shared reduced-motion-aware glyph, never a page-local spinner.
     expect(screen.getAllByTestId('console-loading-glyph').length).toBeGreaterThan(0);
     // No actions or meta row while running.
@@ -87,7 +94,7 @@ describe('Message — running', () => {
       </TooltipProvider>,
     );
     expect(screen.getByTestId('run-log-header')).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByTestId('run-log-header')).toHaveTextContent('≈ 6 output tokens');
+    expect(screen.getByTestId('run-log-usage')).toHaveTextContent('≈ 6 output tokens');
     expect(screen.getByText('Partial answer so far')).toBeInTheDocument();
   });
 
@@ -117,10 +124,16 @@ describe('Message — completed', () => {
     // The exact query sits behind its own disclosure, rendered as code.
     fireEvent.click(within(list as HTMLElement).getByRole('button', { name: 'Query' }));
     expect(screen.getByText('event.outcome:failure AND source.ip:10.0.0.5')).toBeInTheDocument();
-    expect(within(meta).getByRole('button', { name: /2\.1k tokens · \$0\.004\. Usage details/ })).toBeInTheDocument();
-    // The duration hides in a narrow lane; the lookup count never truncates there.
-    expect(disclosure).toHaveClass('shrink-0');
-    expect(within(disclosure).getByText(/^· 2\.4 s$/)).toHaveClass('hidden', '@[30rem]/meta:inline');
+    // The cost opens the usage card, which holds the tokens (Round 13 T10).
+    // Its name STARTS with what it shows (WCAG 2.5.3), then the tokens (review F20).
+    const cost = within(meta).getByRole('button', { name: '$0.004 · 2.1k tokens. Usage details' });
+    expect(cost).toHaveTextContent(/^\$0\.004$/);
+    // Figures never truncate: the lead keeps "2 lookups · 2.4 s" whole at every width.
+    expect(disclosure).toHaveClass('shrink-0', 'whitespace-nowrap');
+    expect(disclosure).toHaveTextContent(/^2 lookups · 2\.4 s$/);
+    expect(meta.querySelector('.truncate')).toBeNull();
+    // The cost and Sources need the wide row; below 30rem they move into ⋯.
+    expect(within(meta).getByTestId('meta-wide')).toHaveClass('hidden', '@[30rem]/meta:inline-flex');
   });
 
   it('reads "Answered in" without lookups, "Usage not recorded" for legacy turns and "simulated" in Demo', () => {
@@ -133,17 +146,26 @@ describe('Message — completed', () => {
     // In a narrow lane the cost drops (the name and card keep it) and the Demo marker
     // sits outside the truncating figure, so it can never be cut away (390 px).
     expect(meta).toHaveClass('@container/meta');
-    const figure = within(meta).getByRole('button', { name: /simulated\. Usage details$/ });
+    const figure = within(meta).getByRole('button', { name: '$0.004 · 2.1k tokens · simulated. Usage details' });
     expect(figure).not.toHaveTextContent('simulated');
-    expect(within(figure).getByText(/· \$0\.004/)).toHaveClass('hidden', '@[30rem]/meta:inline');
+    expect(figure).toHaveTextContent(/^\$0\.004$/);
     const marker = within(meta).getByText('simulated');
     expect(marker).toHaveClass('shrink-0');
     expect(marker).toHaveAttribute('aria-hidden', 'true');
     unmount();
 
     renderMessage({ item: assistantItem({ restored: true, response: { answer: 'Legacy answer' } }) });
-    expect(screen.getByTestId('meta-row')).toHaveTextContent('Usage not recorded · —');
+    // "Usage not recorded" alone: never a dash on screen (T36), never 0.
+    expect(screen.getByTestId('meta-row')).toHaveTextContent('Usage not recorded');
+    expect(screen.getByTestId('meta-row')).not.toHaveTextContent('—');
     expect(screen.getByTestId('meta-row')).not.toHaveTextContent(/\b0 tokens/);
+  });
+
+  it('keeps the token figure as the trigger when a turn has no cost', () => {
+    renderMessage({ item: assistantItem({ response: response({ usage: { ...USAGE, cost: Number.NaN } }) }) });
+    const meta = screen.getByTestId('meta-row');
+    expect(within(meta).getByTestId('usage-trigger')).toHaveTextContent(/^2\.1k tokens$/);
+    expect(within(meta).getByTestId('usage-trigger')).toHaveAccessibleName('2.1k tokens. Usage details');
   });
 
   it('discloses sources, links docs safely, names the grant a console link needs and jumps from [D1]', async () => {
@@ -170,7 +192,8 @@ describe('Message — completed', () => {
     expect(screen.getByRole('button', { name: /Cases/ })).toBeInTheDocument();
   });
 
-  it('shows Copy, Add to report and Ask again; older turns reveal them on hover only', () => {
+  it('shows Copy, the thumbs and ⋯ (Add to report, Ask again); older turns reveal them on hover only', async () => {
+    const user = userEvent.setup();
     const report: MessageReportBinding = {
       blocks: new Set(),
       answerInReport: false,
@@ -182,11 +205,16 @@ describe('Message — completed', () => {
     const actions = screen.getByTestId('meta-row').querySelector('[data-actions-visibility]');
     expect(actions).toHaveAttribute('data-actions-visibility', 'always');
     expect(screen.getByRole('button', { name: 'Copy answer' })).toBeInTheDocument();
-    const add = screen.getByRole('button', { name: 'Add answer to report' });
-    expect(add).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(add);
+    // Round 13 T10: no separate report, case or ask-again icons on the row.
+    expect(screen.queryByRole('button', { name: 'Add answer to report' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
+    expect(screen.queryByTestId('answer-in-report')).toBeNull();
+    await user.click(screen.getByTestId('answer-more-actions'));
+    const menu = await screen.findByRole('menu');
+    await user.click(within(menu).getByRole('menuitem', { name: 'Add answer to report' }));
     expect(report.onToggleAnswer).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+    await user.click(screen.getByTestId('answer-more-actions'));
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Ask again' }));
     expect(engine.askAgain).toHaveBeenCalledTimes(1);
     unmount();
 
@@ -196,10 +224,35 @@ describe('Message — completed', () => {
     // Opacity, never visibility: a visibility-hidden control cannot take focus.
     expect(older).toHaveClass('opacity-0');
     expect(older).not.toHaveClass('invisible');
-    expect(screen.getByRole('button', { name: 'Add answer to report' })).toHaveAttribute('aria-pressed', 'true');
+    // While the answer is in the report an "In report" chip says so (a pressed toggle),
+    // at rest even on an older turn: it sits outside the fading actions (review F6).
+    const chip = screen.getByTestId('answer-in-report');
+    expect(chip).toHaveAccessibleName('In report');
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(older).not.toContainElement(chip);
+    let node: HTMLElement | null = chip;
+    while (node && node !== screen.getByTestId('meta-row')) {
+      expect(node.className).not.toMatch(/(^|\s)opacity-0(\s|$)/);
+      node = node.parentElement;
+    }
   });
 
-  it('keeps Copy and Ask again keyboard-reachable on an older pre-revamp turn', async () => {
+  it('takes the answer out of the report from its "In report" chip, then focuses ⋯', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const onToggleAnswer = vi.fn();
+    renderMessage({
+      item: assistantItem(),
+      report: { blocks: new Set(), answerInReport: true, canAdd: true, onToggleAnswer, onToggleBlock: vi.fn() },
+    });
+    fireEvent.click(screen.getByTestId('answer-in-report'));
+    expect(onToggleAnswer).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(10);
+    });
+    expect(document.activeElement).toBe(screen.getByTestId('answer-more-actions'));
+  });
+
+  it('keeps Copy and ⋯ keyboard-reachable on an older pre-revamp turn', async () => {
     const user = userEvent.setup();
     // A restored legacy turn: no usage, no lookups, no sources — nothing focusable
     // precedes the actions inside the turn.
@@ -210,15 +263,19 @@ describe('Message — completed', () => {
     await user.tab();
     expect(document.activeElement).toHaveAccessibleName('Copy answer');
     await user.tab();
-    expect(document.activeElement).toHaveAccessibleName('Ask again');
+    expect(document.activeElement).toHaveAccessibleName('More actions');
   });
 
-  it('never offers Add to report without a binding (case scope)', () => {
+  it('never offers Add to report without a binding (case scope)', async () => {
+    const user = userEvent.setup();
     renderMessage({ item: assistantItem() });
     expect(screen.queryByRole('button', { name: 'Add answer to report' })).toBeNull();
+    await user.click(screen.getByTestId('answer-more-actions'));
+    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: /report/ })).toBeNull();
   });
 
-  it('keeps the answer toggle focusable on a full report and says why in its tooltip', async () => {
+  it('keeps Add answer to report reachable on a full report and says why in the menu', async () => {
+    const user = userEvent.setup();
     const onToggleAnswer = vi.fn();
     const full: MessageReportBinding = {
       blocks: new Set(),
@@ -229,24 +286,23 @@ describe('Message — completed', () => {
       onToggleBlock: vi.fn(),
     };
     const { unmount } = renderMessage({ item: assistantItem(), report: full });
-    const toggle = screen.getByRole('button', { name: 'Add answer to report' });
-    // aria-disabled, not disabled: it keeps focus and its tooltip.
-    expect(toggle).not.toBeDisabled();
-    expect(toggle).toHaveAttribute('aria-disabled', 'true');
-    act(() => toggle.focus());
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Report is full (40 items)');
-    // The binding answers the click with the reason (no request).
-    fireEvent.click(toggle);
+    await user.click(screen.getByTestId('answer-more-actions'));
+    const item = within(await screen.findByRole('menu')).getByTestId('more-actions-report');
+    // aria-disabled, never disabled: it stays in the reading order with its reason.
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).toHaveTextContent('Report is full (40 items)');
+    // The binding answers the choice with the reason (no request).
+    await user.click(item);
     expect(onToggleAnswer).toHaveBeenCalledTimes(1);
     unmount();
 
-    // An answer already in a full report stays removable, with the block vocabulary.
+    // An answer already in a full report stays removable.
     renderMessage({ item: assistantItem(), report: { ...full, answerInReport: true } });
-    const inReport = screen.getByRole('button', { name: 'Add answer to report' });
-    expect(inReport).not.toHaveAttribute('aria-disabled');
-    expect(inReport).toHaveAttribute('aria-pressed', 'true');
-    act(() => inReport.focus());
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('In report ✓ (click to remove)');
+    expect(screen.getByTestId('answer-in-report')).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByTestId('answer-more-actions'));
+    const remove = within(await screen.findByRole('menu')).getByTestId('more-actions-report');
+    expect(remove).toHaveTextContent('Remove answer from report');
+    expect(remove).not.toHaveAttribute('aria-disabled');
   });
 
   it('labels product help and offers follow-ups on the latest turn only (origin follow_up)', () => {
@@ -608,7 +664,8 @@ describe('Message — usage and provenance', () => {
       }),
     });
     const meta = screen.getByTestId('meta-row');
-    expect(meta).toHaveTextContent('Usage not recorded · —');
+    expect(meta).toHaveTextContent('Usage not recorded');
+    expect(meta).not.toHaveTextContent('—');
     expect(within(meta).getAllByTestId('turn-provenance').map((node) => node.textContent)).toEqual(['gpt-legacy', 'Wazuh prod']);
   });
 });

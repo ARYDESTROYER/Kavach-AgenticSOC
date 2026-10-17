@@ -98,7 +98,12 @@ describe('KpiGroupView', () => {
     show([{ key: 'ari', label: 'Active Risk Index', unit: 'score', value: 47.6, display: 'gauge', context: '20 active cases now' } as KpiItem]);
     const tile = screen.getByTestId('kpi-t-0');
     expect(within(tile).getByText('Active Risk Index')).toHaveClass('break-words');
-    expect(within(tile).getByText('20 active cases now')).toHaveClass('break-words');
+    // The context has its own wrapping line; the band word (47.6 reads 48: "High") is
+    // stacked over "/100" beside the numeral.
+    const context = within(tile).getByTestId('kpi-gauge-context');
+    expect(context).toHaveTextContent(/^20 active cases now$/);
+    expect(context).toHaveClass('break-words');
+    expect(within(tile).getByTestId('kpi-gauge-band-word')).toHaveTextContent(/^High$/);
     expect(tile.innerHTML).not.toContain('truncate');
   });
 

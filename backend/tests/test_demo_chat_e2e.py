@@ -113,7 +113,9 @@ async def test_every_demo_starter_runs_a_multi_lookup_turn_deterministically(dem
         assert first.blocks, starter.id
         assert first.notice is None, (starter.id, first.notice)
         assert first.answer_kind == EXPECTED_KIND[starter.id]
-        assert len(first.follow_ups) == 3 and starter.prompt not in first.follow_ups
+        # Round 13 (SPEC-chat §4.1): up to 3 follow-ups, each anchored in what the answer
+        # shows or built from its artifacts (WP-DEMO13 anchors the Demo planner's table).
+        assert 1 <= len(first.follow_ups) <= 3 and starter.prompt not in first.follow_ups
         # Metered through the ONE gateway: simulated, $0 real pricing (#6, SPEC §1).
         assert first.usage is not None and first.usage.calls >= 2
         assert first.usage.simulated is True and first.usage.pricing_source == "zero"

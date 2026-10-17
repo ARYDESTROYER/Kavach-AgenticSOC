@@ -75,10 +75,22 @@ export const ANCHOR_PEEK_PX = 48;
 export const HIGHLIGHT_MS = 2000;
 
 /**
- * The lane's scroll-edge mask while "Jump to latest" shows: the bottom 2.5rem (the pill
- * and its margin) is faded out completely and the content fades back in over the next
- * 1.5rem, so the pill sits on empty canvas, never on a line of text (Apple scroll-edge
- * effect). It takes the lane's own colour whatever the host's background is.
+ * The "Jump to latest" pill zone (Round 13, SPEC-chat T18): the 28 px pill, 8 px below it
+ * and 12 px above it, 48 px in all. The lane's bottom padding is this zone WHENEVER the
+ * transcript has turns, not only while the pill shows: the last line can always scroll
+ * fully clear of the pill, and the pill hiding (at 8 px from the end) never changes the
+ * scroll height, so the content never snaps back against the reader's scroll. While the
+ * pill shows, the scroll-edge mask hides exactly this zone (no visible text under it).
+ */
+export const JUMP_ZONE_PX = 48;
+/** The lane's bottom padding while the pill shows (= {@link JUMP_ZONE_PX}). Literal for Tailwind. */
+export const JUMP_ZONE_PADDING = 'pb-12';
+
+/**
+ * The lane's scroll-edge mask while "Jump to latest" shows: the bottom 3rem (the pill
+ * zone) is faded out completely and the content comes back over the next 0.5rem, so the
+ * pill sits on empty canvas, never on a line of text (Apple scroll-edge effect). It takes
+ * the lane's own colour whatever the host's background is.
  *
  * The fade never reaches the scrollbar: two solid strips, each as wide as one scrollbar
  * gutter (`--chat-sbw`, measured on the lane: `scrollbar-gutter: stable both-edges`
@@ -88,8 +100,8 @@ export const HIGHLIGHT_MS = 2000;
  * strings so Tailwind's compiler sees them.
  */
 export const JUMP_MASK = [
-  '[-webkit-mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem),linear-gradient(#000,#000),linear-gradient(#000,#000)]',
-  '[mask-image:linear-gradient(to_top,transparent_0,transparent_2.5rem,#000_4rem),linear-gradient(#000,#000),linear-gradient(#000,#000)]',
+  '[-webkit-mask-image:linear-gradient(to_top,transparent_0,transparent_3rem,#000_3.5rem),linear-gradient(#000,#000),linear-gradient(#000,#000)]',
+  '[mask-image:linear-gradient(to_top,transparent_0,transparent_3rem,#000_3.5rem),linear-gradient(#000,#000),linear-gradient(#000,#000)]',
   '[-webkit-mask-size:100%_100%,var(--chat-sbw,0px)_100%,var(--chat-sbw,0px)_100%]',
   '[mask-size:100%_100%,var(--chat-sbw,0px)_100%,var(--chat-sbw,0px)_100%]',
   '[-webkit-mask-position:0_0,0_0,100%_0]',
@@ -103,12 +115,12 @@ export function scrollbarGutter(el: HTMLElement): number {
   return Number.isFinite(both) && both > 0 ? both / 2 : 0;
 }
 /**
- * The pointer guard over the faded band (2.5rem, the fully transparent part): masking
+ * The pointer guard over the faded band (3rem, the fully transparent pill zone): masking
  * does not affect hit-testing, so without it an invisible link or chart beside the pill
  * would still take clicks and hovers. Sticky inside the lane, so it stays on the lane's
  * bottom edge, never covers the scrollbar, and wheel or touch over it still scrolls.
  */
-export const JUMP_BAND_GUARD = 'pointer-events-auto sticky bottom-0 z-10 -mt-10 h-10';
+export const JUMP_BAND_GUARD = 'pointer-events-auto sticky bottom-0 z-10 -mt-12 h-12';
 /** Focus scrolled into view clears the masked band (4rem: the band and its fade). */
 export const JUMP_SCROLL_PADDING = 'scroll-pb-16';
 
@@ -768,13 +780,20 @@ export function Transcript({
   };
 
   const hasTurns = exchanges.length > 0;
+  // Round 13 (SPEC-chat §5.2, D6): the Workspace start stack is anchored to the bottom of
+  // the lane, directly above the docked composer (the compact case chat keeps its top).
+  const emptyStart = !compact && !hasTurns && !replace && !!empty;
   // "Jump to latest" points at the latest turn: an empty transcript (the new-chat
   // starters, squeezed by a card above the composer on a phone) has none to jump to.
   const jumpShown = showJump && hasTurns && !replace;
   const lastIndex = exchanges.length - 1;
-  // Lane height minus the peek and the lane's bottom padding (py-3 / py-6): exactly
-  // enough room to scroll a fresh user turn to 48 px below the lane top.
-  const minAnchorHeight = laneHeight > ANCHOR_PEEK_PX * 2 ? laneHeight - ANCHOR_PEEK_PX - (compact ? 12 : 24) : undefined;
+  // The pill zone is the bottom padding of any transcript with turns (T18), so the
+  // padding never changes as the pill shows and hides.
+  const zonePadded = hasTurns && !replace;
+  // Lane height minus the peek and the lane's bottom padding (the pill zone, else py-3 /
+  // py-6): exactly enough room to scroll a fresh user turn to 48 px below the lane top.
+  const bottomPad = zonePadded ? JUMP_ZONE_PX : compact ? 12 : 24;
+  const minAnchorHeight = laneHeight > ANCHOR_PEEK_PX * 2 ? laneHeight - ANCHOR_PEEK_PX - bottomPad : undefined;
 
   return (
     <div className={cn('relative flex min-h-0 flex-1 flex-col', className)}>
@@ -794,7 +813,19 @@ export function Transcript({
       >
         {/* No side padding: the gutters are the lane grid's own side tracks (lane.ts). The
             compact embed has no host gutter, so it keeps its 4 px inset. */}
-        <div ref={contentRef} className={cn(LANE_GRID, compact ? 'gap-y-4 px-1 py-3' : 'gap-y-6 py-6')}>
+        <div
+          ref={contentRef}
+          className={cn(
+            LANE_GRID,
+            compact ? 'gap-y-4 px-1 py-3' : 'gap-y-6 py-6',
+            // The bottom padding is the pill zone whether or not the pill shows (T18).
+            zonePadded && JUMP_ZONE_PADDING,
+            // The new-chat start stack (Round 13, SPEC-chat §5.2): the grid fills the
+            // lane's height and the stack sits at its bottom, 24 px above the composer
+            // frame (20 px here plus the composer area's 4 px top inset).
+            emptyStart && 'min-h-full pb-5',
+          )}
+        >
           {header ? <div className={cn(CONTENT_COL, 'space-y-2')}>{header}</div> : null}
           {!replace && hasTurns && earlier && (earlier.remaining > 0 || earlier.loadedAny) ? (
             <div className={LANE_COL}>
@@ -830,7 +861,7 @@ export function Transcript({
                   >
                     {exchange.user ? (
                       // The whole lane: the bubble sits on the lane's RIGHT edge. The compact
-                      // embed keeps everything (its composer too) in one 48rem column.
+                      // embed keeps everything (its composer too) in one 42rem reading column.
                       <UserTurn
                         className={compact ? CONTENT_COL : LANE_COL}
                         item={exchange.user}
@@ -860,7 +891,9 @@ export function Transcript({
               })}
             </div>
           ) : (
-            <div className={LANE_COL}>{empty}</div>
+            <div className={cn(LANE_COL, emptyStart && 'self-end')} data-chat-empty="">
+              {empty}
+            </div>
           )}
         </div>
         {jumpShown ? <div aria-hidden="true" className={JUMP_BAND_GUARD} data-testid="jump-band-guard" /> : null}
@@ -870,7 +903,7 @@ export function Transcript({
         // band the lane's scroll-edge mask has faded out (JUMP_MASK), so it never covers
         // text. A solid control (not a material: it floats over a faded band, and menus,
         // popovers and controls are opaque). Only the button takes pointer events.
-        // The compact embed centres it on its one 48rem column (the same grid, inset and
+        // The compact embed centres it on its one 42rem reading column (the same grid, inset and
         // scrollbar gutter as the content), the workspace on its centred lane. The compact
         // bar clips (its gutter needs an overflow box), so it keeps 6 px above and below
         // the pill for the focus ring (2 px + 2 px offset) and the shadow.

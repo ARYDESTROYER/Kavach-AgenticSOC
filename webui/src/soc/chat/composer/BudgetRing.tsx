@@ -30,21 +30,31 @@ const clampPercent = (value: number) => Math.max(0, Math.min(100, Number.isFinit
 export interface ContextRingProps {
   value: ContextMeterValue;
   className?: string;
+  /**
+   * Drawn inside a control that names it (the narrow composer's meter button, SPEC-chat
+   * T13): no meter role of its own, hidden from assistive tech.
+   */
+  decorative?: boolean;
 }
 
 /** Context-window use: a 16 px ring and its percentage ("<1%", "12%"). */
-export function ContextRing({ value, className }: ContextRingProps) {
+export function ContextRing({ value, className, decorative = false }: ContextRingProps) {
   const clamped = clampPercent(value.percent);
   const dash = (clamped / 100) * CIRCUMFERENCE;
   const high = value.level === 'high';
+  const semantics = decorative
+    ? ({ 'aria-hidden': true } as const)
+    : ({
+        role: 'meter',
+        'aria-label': 'Context window used',
+        'aria-valuemin': 0,
+        'aria-valuemax': 100,
+        'aria-valuenow': Math.round(clamped),
+        'aria-valuetext': contextValueText(value),
+      } as const);
   return (
     <span
-      role="meter"
-      aria-label="Context window used"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={Math.round(clamped)}
-      aria-valuetext={contextValueText(value)}
+      {...semantics}
       data-level={value.level}
       data-testid="context-ring"
       className={cn('inline-flex items-center gap-1 tabular-nums', high ? 'text-warning-text' : 'text-muted-foreground', className)}

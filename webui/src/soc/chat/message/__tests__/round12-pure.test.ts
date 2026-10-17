@@ -455,8 +455,14 @@ describe('chip values', () => {
     expect(windowLabel('now-90d')).toBe('last 90 days');
     expect(windowLabel('2026-07-01/2026-09-30')).toBe('2026-07-01/2026-09-30');
     expect(paramValue('this_quarter', 'window')).toBe('this quarter');
-    expect(paramValue('FALSE_POSITIVE', 'verdict')).toBe('false positive');
-    expect(paramValue('NEEDS_HUMAN', 'verdict')).toBe('needs human');
+    // The badges' words (Round 13 T14).
+    expect(paramValue('FALSE_POSITIVE', 'verdict')).toBe('False positive');
+    expect(paramValue('NEEDS_HUMAN', 'verdict')).toBe('Needs human');
+    expect(paramValue('on_hold', 'status')).toBe('On hold');
+    expect(paramValue('ip', 'kind')).toBe('IP');
+    expect(paramValue('esql', 'language')).toBe('ES|QL');
+    // A kind with no console word reads in sentence case (Round 13 review F21), never raw.
+    expect(paramValue('weird_kind', 'kind')).toBe('Weird kind');
     expect(paramValue('FALSE_POSITIVE', 'query')).toBe('FALSE_POSITIVE');
   });
 });

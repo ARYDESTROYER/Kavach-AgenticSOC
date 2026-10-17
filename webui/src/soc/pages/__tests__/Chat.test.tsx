@@ -242,6 +242,9 @@ beforeEach(() => {
       calls.push({ url, method, body });
       const path = url.split('?')[0];
       if (path === '/api/prefs/user') return json({});
+      // Round 13 starters (the empty state is a double here; the workspace still reads them).
+      if (path === '/api/chat/starters') return json({ surface: 'home', enabled: true, starters: [], catch_up: null });
+      if (path === '/api/chat/starters/events') return new Response(null, { status: 204 });
       if (path === '/api/chat/context') {
         if (contextFailures > 0) {
           contextFailures -= 1;
@@ -398,10 +401,9 @@ describe('Workspace Chat page', () => {
     const composerCol = screen.getByTestId('composer').closest('.col-start-2') as HTMLElement;
     expect(composerCol).toHaveClass('col-start-2', 'col-end-3');
     expect(composerCol.className).not.toContain('max-w-[48rem]');
-    // Thread ⋯ → Width → Wide caps the lane at 88rem and is remembered.
+    // Thread ⋯ → View → Wide caps the lane at 88rem and is remembered (Round 13 T26:
+    // the widths sit in the menu's View group, no submenu).
     await user.click(screen.getByRole('button', { name: 'Conversation actions' }));
-    const width = await screen.findByRole('menuitem', { name: 'Width, currently Full width' });
-    await user.click(width);
     const wide = await screen.findByRole('menuitemradio', { name: /^Wide/ });
     act(() => wide.focus());
     await user.keyboard('{Enter}');
@@ -418,7 +420,8 @@ describe('Workspace Chat page', () => {
     const newest = screen.getByRole('button', { name: /^Newest sign-in review, .* · 2 messages$/ });
     expect(newest).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('heading', { level: 2, name: 'Newest sign-in review' })).toBeInTheDocument();
-    expect(screen.getByTestId('conversation-total')).toHaveTextContent('2.1k tokens · $0.004');
+    // Round 13 T10: the total left the toolbar row (it is the thread menu's first line).
+    expect(screen.queryByTestId('conversation-total')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review, / }));
     expect(await screen.findByText('Older endpoint review answer')).toBeInTheDocument();
@@ -440,7 +443,9 @@ describe('Workspace Chat page', () => {
       { type: 'step.start', step: { index: 1, ordinal: 1, kind: 'tool', tool: 'log_stats', label: 'Counted events', params: { window: 'last 24h' } } },
       { type: 'usage', totals: { calls: 1, total_tokens: 1200, cost: 0.002 } },
     );
-    expect(screen.getByTestId('run-log-header')).toHaveTextContent('Working · 1 lookup · 1.2k tokens · $0.002');
+    // Round 13 T20: the running figures sit at the right of the header row.
+    expect(screen.getByTestId('run-log-header')).toHaveTextContent('Working · 1 lookup');
+    expect(screen.getByTestId('run-log-usage')).toHaveTextContent('1.2k tokens · $0.002');
     expect(screen.getByText('Counted events')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
 
@@ -501,9 +506,10 @@ describe('Workspace Chat page', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Older endpoint review, / }));
     await settle();
     expect(screen.getByRole('heading', { level: 2, name: 'Older endpoint review' })).toBeInTheDocument();
-    // The old thread's turns are gone (no Add to report on a message of another thread).
+    // The old thread's turns are gone (no answer actions, so no Add to report, on a
+    // message of another thread; Round 13 T10 keeps Add to report in the answer's ⋯).
     expect(screen.queryByText('X answer')).toBeNull();
-    expect(screen.queryByRole('button', { name: /Add answer to report/ })).toBeNull();
+    expect(screen.queryByTestId('answer-more-actions')).toBeNull();
     expect(screen.getByText('Restoring conversation')).toBeInTheDocument();
     await act(async () => {
       release();
@@ -631,10 +637,11 @@ describe('Workspace Chat page', () => {
   it('adds an answer to the report, opens the split panel without moving focus, and announces it', async () => {
     renderChat();
     await screen.findByText('Newest sign-in review answer');
-    // Focus sits in the composer; the split panel must not take it.
-    const composer = screen.getByRole('textbox', { name: 'Message' });
-    composer.focus();
-    fireEvent.click(screen.getByRole('button', { name: 'Add answer to report' }));
+    // Add to report lives in the answer's ⋯ (Round 13 T10). Focus goes back to ⋯ when the
+    // menu closes; the split panel must not take it.
+    const more = screen.getByTestId('answer-more-actions');
+    fireEvent.keyDown(more, { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Add answer to report' }));
     await settle();
     const addCall = calls.find((call) => call.url === '/api/reports/add');
     expect(addCall?.body).toEqual({ conversation_id: 'c-newest', message_id: 'c-newest-a' });
@@ -642,8 +649,10 @@ describe('Workspace Chat page', () => {
     expect(panel).toHaveAttribute('data-mode', 'split');
     expect(panel).toHaveAttribute('data-report-id', 'r-1');
     expect(screen.getByRole('separator', { name: 'Resize report panel' })).toHaveAttribute('aria-valuenow', '360');
-    expect(document.activeElement).toBe(composer);
-    expect(screen.getByRole('button', { name: 'Add answer to report' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(document.activeElement).toBe(more));
+    expect(panel).not.toContainElement(document.activeElement as HTMLElement);
+    // The answer's "In report" chip is the pressed report toggle.
+    expect(screen.getByRole('button', { name: 'In report' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Report, 1 item added' })).toHaveAttribute('aria-pressed', 'true');
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
@@ -659,7 +668,8 @@ describe('Workspace Chat page', () => {
     renderChat();
     await screen.findByText('Newest sign-in review answer');
     expect(screen.getByTestId('workspace-chat-page')).toHaveAttribute('data-rail', 'strip');
-    fireEvent.click(screen.getByRole('button', { name: 'Add answer to report' }));
+    fireEvent.keyDown(screen.getByTestId('answer-more-actions'), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Add answer to report' }));
     await settle();
     expect(screen.queryByTestId('report-panel')).toBeNull();
     expect(toastMock).toHaveBeenCalledWith('Added to report', expect.objectContaining({ action: expect.objectContaining({ label: 'Open' }) }));

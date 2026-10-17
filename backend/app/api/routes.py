@@ -5222,8 +5222,10 @@ async def delete_user(
     await state.refresh_users()
     await _stop_chat_turns(state, username)
     from ..stores.chat_feedback import feedback_store_for
+    from ..stores.chat_starters import starters_store_for
 
     real_chat = state.real_chat_conversations
+    real_chat_kv = getattr(real_chat, "_kv", None) or state.kv
     await state.auth.purge_user_side_state(
         username,
         inbox=state.real_inbox,
@@ -5231,8 +5233,11 @@ async def delete_user(
         user_prefs=state.user_prefs,
         custom_roles=state.custom_roles,
         chat_conversations=real_chat,
-        chat_feedback=feedback_store_for(getattr(real_chat, "_kv", None) or state.kv),
+        chat_feedback=feedback_store_for(real_chat_kv),
         reports=state.real_reports,
+        # Round 13 (SPEC-chat §3.2.3): the user's chat starter state goes with the
+        # ratings, over the same REAL chat KV.
+        chat_starters=starters_store_for(real_chat_kv),
     )
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),

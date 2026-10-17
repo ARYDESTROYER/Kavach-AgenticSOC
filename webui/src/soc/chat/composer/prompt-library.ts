@@ -4,7 +4,8 @@
  * Two kinds of entries share one shape (`ChatPrompt`):
  *
  *   - the analyst's OWN prompts — `UserPrefs.chat_prompts` (≤ 50), each with an optional
- *     category and a favorite star, edited through the existing prefs routes;
+ *     category and a favourite star (the stored field is `favorite`), edited through the
+ *     existing prefs routes;
  *   - STARTER prompts shipped in code ({@link STARTER_PROMPTS}), read-only templates per
  *     category, offered only when every tool they need is allowed (fail closed, like the
  *     `/` commands). An analyst can save a copy and change it.
@@ -248,7 +249,7 @@ export function visibleStarters(context: ChatContextInfo | null | undefined): Li
 
 export type LibraryFilter = 'all' | 'favorites' | ChatPromptCategory;
 
-/** Favorites first, then the stored order (stable). */
+/** Favourites first, then the stored order (stable). */
 export function orderPrompts<T extends ChatPrompt>(prompts: readonly T[]): T[] {
   return prompts
     .map((prompt, index) => ({ prompt, index }))
@@ -268,9 +269,21 @@ export function matchesPrompt(prompt: ChatPrompt, query: string): boolean {
   );
 }
 
-/** Filter by the chip (all / favorites / a category) and the search text. */
-export function filterPrompts<T extends ChatPrompt>(prompts: readonly T[], filter: LibraryFilter, query: string): T[] {
+/**
+ * Filter by the chip (all / favourites / a category) and the search text. A list of
+ * categories (Round 13: a start-screen pill such as Hunt, which covers `hunt` and `ioc`)
+ * keeps the prompts in any of them; an empty list keeps every prompt.
+ */
+export function filterPrompts<T extends ChatPrompt>(
+  prompts: readonly T[],
+  filter: LibraryFilter | readonly ChatPromptCategory[],
+  query: string,
+): T[] {
   return prompts.filter((prompt) => {
+    if (Array.isArray(filter)) {
+      if (filter.length && !(prompt.category && filter.includes(prompt.category))) return false;
+      return matchesPrompt(prompt, query);
+    }
     if (filter === 'favorites' && !prompt.favorite) return false;
     if (filter !== 'all' && filter !== 'favorites' && prompt.category !== filter) return false;
     return matchesPrompt(prompt, query);

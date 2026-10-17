@@ -20,6 +20,11 @@
  * under it, which two columns of an A4 page cannot hold (so no leaf spans columns there
  * either: a span would create the second column again).
  *
+ * Inside a block card (`inFrame`) the hero draws no frame of its own (Round 13, SPEC-chat
+ * T29: no card in a card): its tiles keep their inner hairlines and hang to the card's
+ * content edge, like a KPI card's tiles. A Brief with no card around it (a report panel
+ * item) keeps the hero's closed frame.
+ *
  * A section whose first card is titled like the section ("Response times" over a card
  * titled "Response times") does not say it twice in a row: the card's title stays and
  * takes the heading's place, and the section heading is kept for assistive tech and the
@@ -37,7 +42,7 @@ import { DASH, captionStatesCount, formatUtc, formatValue, truncationNote } from
 import type { KpiGroupBlock, KpiItem, LeafBlock, ReportBlock } from '../schema';
 import { TrendColumns, trendSentence } from '../charts/SparklineChart';
 import { SmallSampleNote, comparisonFacts, comparisonSecondary, smallSamplePlan } from './ComparisonView';
-import { kpiDelta } from './KpiGroupView';
+import { kpiContext, kpiDelta } from './KpiGroupView';
 import { headingRepeatsLeaf } from '../report-headings';
 
 /** Leaves that take the whole row of the 2-up grid (reading width or many columns). */
@@ -130,6 +135,13 @@ export function spanPlan(leaves: readonly LeafBlock[]): boolean[] {
   return out;
 }
 
+/**
+ * The hero grid's hang inside a card frame: out by the comfortable strip tiles' own side
+ * padding (`KpiTile` comfortable `px-3 xl:px-4 2xl:px-5`), so every label starts on the
+ * card's content edge. Literal, so Tailwind's compiler sees it.
+ */
+const HERO_HANG = '-mx-3 xl:-mx-4 2xl:-mx-5';
+
 function heroDelta(group: KpiGroupBlock, item: KpiItem): KpiDelta | undefined {
   const d = item.delta;
   if (!d) return undefined;
@@ -142,7 +154,7 @@ function heroDelta(group: KpiGroupBlock, item: KpiItem): KpiDelta | undefined {
   return kpiDelta(item);
 }
 
-function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPrefix: string; staticMode: boolean }) {
+function HeroRow({ group, idPrefix, staticMode, inFrame }: { group: KpiGroupBlock; idPrefix: string; staticMode: boolean; inFrame: boolean }) {
   const comparison = group.artifact_kind === 'comparison';
   const plan = comparison ? smallSamplePlan(group.items) : null;
   const { caption, note } = heroDisclosures(group);
@@ -161,7 +173,7 @@ function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPref
       {group.provenance === 'ai' ? (
         <p className="mb-1.5 text-xs italic text-muted-foreground">Values stated by the model, not measured</p>
       ) : null}
-      <KpiTileGrid count={group.items.length} framed role="list">
+      <KpiTileGrid count={group.items.length} framed={!inFrame} containerClassName={inFrame ? HERO_HANG : undefined} role="list">
         {group.items.map((item, i) => {
           const trend = item.trend && item.trend.points.length >= 2 ? item.trend : null;
           const delta = heroDelta(group, item);
@@ -198,7 +210,7 @@ function HeroRow({ group, idPrefix, staticMode }: { group: KpiGroupBlock; idPref
                   ) : item.value === null ? (
                     <span className="font-sans font-normal">Not measured</span>
                   ) : item.context ? (
-                    <span className="font-sans font-normal">{item.context}</span>
+                    <span className="font-sans font-normal">{kpiContext(item.context)}</span>
                   ) : undefined
                 }
                 delta={delta}
@@ -231,9 +243,11 @@ export interface InfographicViewProps {
   blockIndex: number;
   renderLeaf: (leaf: LeafBlock, key: string) => React.ReactNode;
   staticMode?: boolean;
+  /** The Brief sits in a block card's frame: the hero draws no frame of its own. */
+  inFrame?: boolean;
 }
 
-export function InfographicView({ block, blockIndex, renderLeaf, staticMode = false }: InfographicViewProps) {
+export function InfographicView({ block, blockIndex, renderLeaf, staticMode = false, inFrame = false }: InfographicViewProps) {
   const { domId } = useBlocks();
   const { hero, highlights } = infographicParts(block);
   const taken = new Set<string>([
@@ -242,7 +256,7 @@ export function InfographicView({ block, blockIndex, renderLeaf, staticMode = fa
   ]);
   return (
     <div className="flex min-w-0 flex-col gap-5" data-testid="infographic">
-      {hero ? <HeroRow group={hero.block} idPrefix={`brief-${blockIndex}`} staticMode={staticMode} /> : null}
+      {hero ? <HeroRow group={hero.block} idPrefix={`brief-${blockIndex}`} staticMode={staticMode} inFrame={inFrame} /> : null}
       {highlights.length ? (
         <div className="@container min-w-0" data-testid="infographic-highlights">
           <ul className={cn('grid gap-2', highlightColumns(highlights.length))} aria-label="Highlights">

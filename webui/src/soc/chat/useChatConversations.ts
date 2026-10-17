@@ -48,6 +48,14 @@
  * has not opened yet, over simply the newest, and an answer on screen is marked read
  * (`POST …/read`).
  *
+ * Round 13 (SPEC-chat T21): while a New chat's FIRST turn runs, that thread is the
+ * selection in all but name: the rail lists it as a temporary row at the top of Today
+ * (running glyph, `aria-current`, no actions; it is not saved yet) and `activeSummary`
+ * is that row, so the toolbar names it with a client title (the question's first 48
+ * characters cut at a word boundary, {@link clientThreadTitle}) instead of "New chat".
+ * The server's title replaces both when the answer lands (`conversationPersisted`).
+ * {@link isPendingThreadRow} tells hosts the row is not a saved thread.
+ *
  * Case-scoped chat passes `enabled: false`: no list, no detail, no persistence.
  */
 import * as React from 'react';
@@ -175,6 +183,54 @@ export function overlayActivity(
     });
   }
   return out;
+}
+
+/** A client-derived thread title is at most this long (SPEC-chat T21). */
+export const CLIENT_TITLE_MAX = 48;
+
+/**
+ * The toolbar and rail title of a new thread while its first answer is written: the
+ * question's first 48 characters, cut at a word boundary with "…" (never inside a
+ * word; one word longer than the limit is cut there without an ellipsis). Display text
+ * only: the caller passes the activity entry's already-sanitised title.
+ */
+export function clientThreadTitle(question: string): string {
+  const text = question.replace(/\s+/g, ' ').trim();
+  if (text.length <= CLIENT_TITLE_MAX) return text;
+  // Leave room for the ellipsis: whole words fill at most 47 characters.
+  const head = text.slice(0, CLIENT_TITLE_MAX);
+  const cut = head.lastIndexOf(' ');
+  if (cut <= 0) return text.slice(0, CLIENT_TITLE_MAX);
+  const words = text.slice(0, cut).replace(/[\s,;:.!?\u2013-]+$/u, '');
+  return words ? `${words}\u2026` : text.slice(0, CLIENT_TITLE_MAX);
+}
+
+/** Rows made by {@link pendingThreadRow}: a new thread not saved yet (no actions). */
+const PENDING_ROWS = new WeakSet<ChatConversationSummary>();
+
+/** True for the temporary row of a new thread whose first answer is being written. */
+export function isPendingThreadRow(row: ChatConversationSummary | null | undefined): boolean {
+  return !!row && PENDING_ROWS.has(row);
+}
+
+/**
+ * The temporary row of the new thread on screen (SPEC-chat T21): its conversation id
+ * once `turn.start` named it (the activity scope until then), the client title, and
+ * the running status.
+ */
+export function pendingThreadRow(entry: ChatActivity): ChatConversationSummary {
+  const at = new Date(Number.isFinite(entry.startedAt) ? entry.startedAt : Date.now()).toISOString();
+  const row: ChatConversationSummary = {
+    id: entry.conversationId ?? entry.scope,
+    title: clientThreadTitle(entry.title) || UNTITLED_CONVERSATION,
+    preview: '',
+    created_at: at,
+    updated_at: at,
+    message_count: 0,
+    status: 'running',
+  };
+  PENDING_ROWS.add(row);
+  return row;
 }
 
 /**
@@ -843,6 +899,9 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
 
   const select = React.useCallback(
     (item: ChatConversationSummary | string) => {
+      // The temporary row of the New chat on screen (T21) is already shown and not saved
+      // yet: selecting it changes nothing (a host may still close its history sheet).
+      if (typeof item !== 'string' && isPendingThreadRow(item)) return;
       const id = typeof item === 'string' ? item : item.id;
       if (!isSafeChatId(id)) return;
       if (activeIdRef.current === id) return;
@@ -1082,18 +1141,31 @@ export function useChatConversations(options: UseChatConversationsOptions = {}):
 
   /* -------------------------------------------------------------- derived -- */
 
-  // The new thread whose first answer is on screen stays "New chat" (no second row);
-  // once the analyst opens its row (or it saves) it is the selected thread instead.
-  const shown = React.useMemo(
+  // The new thread whose first answer is on screen (a New chat whose first turn runs)
+  // is the temporary top row and the toolbar's subject (SPEC-chat T21); once it saves
+  // it is the selected thread instead. Any other on-screen run keeps no second row.
+  const pendingEntry = React.useMemo(
     () =>
-      overlayActivity(conversations, activity, (entry) => viewedScopes.has(entry.scope) && entry.conversationId !== activeId),
-    [activeId, activity, conversations, viewedScopes],
+      enabled && activeId === null
+        ? (activity.find((entry) => entry.kind === 'workspace' && entry.status === 'running' && viewedScopes.has(entry.scope)) ??
+          null)
+        : null,
+    [activeId, activity, enabled, viewedScopes],
   );
+  const pendingRow = React.useMemo(() => (pendingEntry ? pendingThreadRow(pendingEntry) : null), [pendingEntry]);
+  const shown = React.useMemo(() => {
+    const rows = overlayActivity(
+      conversations,
+      activity,
+      (entry) => viewedScopes.has(entry.scope) && entry.conversationId !== activeId,
+    );
+    return pendingRow ? [pendingRow, ...rows.filter((row) => row.id !== pendingRow.id)] : rows;
+  }, [activeId, activity, conversations, pendingRow, viewedScopes]);
   shownRef.current = shown;
 
   const activeSummary = React.useMemo(
-    () => shown.find((item) => item.id === activeId) ?? null,
-    [activeId, shown],
+    () => (activeId === null ? pendingRow : (shown.find((item) => item.id === activeId) ?? null)),
+    [activeId, pendingRow, shown],
   );
 
   const retention: ChatRetentionInfo = {

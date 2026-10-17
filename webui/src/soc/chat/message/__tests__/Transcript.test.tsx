@@ -15,12 +15,13 @@
  * a masked band).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import { AnnouncerProvider } from '@/soc/components/announcer';
 import { TooltipProvider } from '@/ui/tooltip';
 import type { ChatEngine, ChatTranscriptItem } from '../../useChatEngine';
-import { BLOCK_PROSE_CAP, CONTENT_COL, LANE_COL, LANE_GRID, WIDE_COL } from '../lane';
+import { BLOCK_PROSE_CAP, CONTENT_COL, LANE_COL, LANE_GRID, READING_COL, WIDE_COL } from '../lane';
 import {
   ANCHOR_PEEK_PX,
   FOLLOW_THRESHOLD_PX,
@@ -28,6 +29,8 @@ import {
   JUMP_BAND_GUARD,
   JUMP_MASK,
   JUMP_SCROLL_PADDING,
+  JUMP_ZONE_PADDING,
+  JUMP_ZONE_PX,
   JUMP_THRESHOLD_PX,
   Transcript,
   groupExchanges,
@@ -194,18 +197,22 @@ describe('Transcript', () => {
     const lane = container.querySelector('[data-chat-scroll-lane]') as HTMLElement;
     const grid = lane.firstElementChild as HTMLElement;
     // The gutters are the grid's side tracks: no side padding on the content grid.
-    expect(grid.className).toBe(`${LANE_GRID} gap-y-6 py-6`);
+    // The bottom padding of a transcript with turns is the Jump to latest pill zone (T18).
+    expect(grid.className).toBe(`${LANE_GRID} gap-y-6 py-6 ${JUMP_ZONE_PADDING}`);
     expect(grid.className).not.toMatch(/\bpx-/);
     // The user turn spans the lane, so its right-aligned bubble ends on the lane's right edge.
     const userTurn = screen.getByText('Show failed logins').parentElement as HTMLElement;
     expect(userTurn.className).toContain(LANE_COL);
     expect(userTurn).toHaveClass('justify-end');
-    // Prose keeps its measure on the lane's LEFT edge; follow-ups span the lane.
-    expect(CONTENT_COL).toContain('max-w-[48rem]');
-    expect(CONTENT_COL).toContain('justify-self-start');
+    // Prose keeps its 42rem reading measure on the lane's LEFT edge (Round 13 §5.1), and
+    // so do the follow-ups: one row in the reading column after the meta row.
+    expect(READING_COL).toContain('max-w-[42rem]');
+    expect(READING_COL).toContain('justify-self-start');
+    expect(CONTENT_COL).toBe(READING_COL);
     const followUps = screen.getByRole('group', { name: 'Suggested follow-ups' });
-    expect(followUps.className).toContain(LANE_COL);
-    expect(followUps.className).not.toContain('max-w-[48rem]');
+    const row = screen.getByTestId('answer-suggestions');
+    expect(row).toContainElement(followUps);
+    expect(row.className).toContain(READING_COL);
   });
 
   it('makes the scroll lane the containing block of its sr-only headings (diagnosis (d))', () => {
@@ -319,12 +326,16 @@ describe('Transcript', () => {
     expect(screen.queryByRole('button', { name: 'Jump to latest' })).toBeNull();
     expect(lane).not.toHaveAttribute('data-jump-mask');
     expect(screen.queryByTestId('jump-band-guard')).toBeNull();
+    // No turns: no pill zone either (the start stack keeps its own bottom spacing).
+    expect(lane.firstElementChild).not.toHaveClass(JUMP_ZONE_PADDING);
   });
 
   it('puts Jump to latest outside the content: a centred pill over a masked band', () => {
     const { container } = renderTranscript({ engine: engineWith([userItem('q'), assistantItem({ restored: true })]) });
     const { lane, m } = laneMetrics(container, { top: 500, height: 1000, client: 500 });
     expect(lane.className).not.toContain('mask-image');
+    // At the end, with no pill, the pill zone is already the bottom padding (review F12).
+    expect(lane.firstElementChild).toHaveClass(JUMP_ZONE_PADDING);
     fireEvent.wheel(lane);
     m.top = 100;
     fireEvent.scroll(lane);
@@ -338,7 +349,9 @@ describe('Transcript', () => {
     // on a line of text.
     expect(lane).toHaveAttribute('data-jump-mask', 'true');
     for (const cls of JUMP_MASK.split(' ')) expect(lane).toHaveClass(cls);
-    expect(JUMP_MASK).toContain('transparent_2.5rem');
+    // It hides exactly the pill zone (28 px pill + 12 px above + 8 px below = 3rem, T18).
+    expect(JUMP_ZONE_PX).toBe(48);
+    expect(JUMP_MASK).toContain('transparent_3rem');
     // The fade never reaches the scrollbar: two solid strips, one scrollbar gutter wide
     // (`--chat-sbw`, measured on the lane), are added at the left and right edges.
     expect(JUMP_MASK).toContain('[mask-size:100%_100%,var(--chat-sbw,0px)_100%,var(--chat-sbw,0px)_100%]');
@@ -353,7 +366,11 @@ describe('Transcript', () => {
     expect(guard).toBe(lane.lastElementChild);
     expect(guard).toHaveAttribute('aria-hidden', 'true');
     for (const cls of JUMP_BAND_GUARD.split(' ')) expect(guard).toHaveClass(cls);
-    expect(guard).toHaveClass('pointer-events-auto', 'sticky', 'bottom-0', 'h-10', '-mt-10');
+    expect(guard).toHaveClass('pointer-events-auto', 'sticky', 'bottom-0', 'h-12', '-mt-12');
+    // The lane's bottom padding is the pill zone, so the last line can always scroll fully
+    // clear of the pill (T18).
+    const grid = lane.firstElementChild as HTMLElement;
+    expect(grid).toHaveClass(JUMP_ZONE_PADDING);
     expect(guard).toBeEmptyDOMElement();
     // A keyboard focus that scrolls into view lands clear of the faded band.
     expect(lane).toHaveClass(JUMP_SCROLL_PADDING);
@@ -361,6 +378,9 @@ describe('Transcript', () => {
     expect(lane).not.toHaveAttribute('data-jump-mask');
     expect(lane).not.toHaveClass(JUMP_SCROLL_PADDING);
     expect(screen.queryByTestId('jump-band-guard')).toBeNull();
+    // The padding stays when the pill hides (review F12): the scroll height never shrinks
+    // under a reader scrolling to the end, so the content never snaps back.
+    expect(grid).toHaveClass(JUMP_ZONE_PADDING);
   });
 
   it('measures one scrollbar gutter for the mask (both gutters are reserved, so half the difference)', () => {
@@ -395,8 +415,9 @@ describe('Transcript', () => {
     // The block column spans the lane, hangs framed cards, and caps the bare prose blocks.
     expect(column.className).toBe(WIDE_COL);
     for (const cls of BLOCK_PROSE_CAP.split(' ')) expect(column).toHaveClass(cls);
-    expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-block-type=markdown]]:max-w-[48rem]');
-    expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-block-type=callout]]:max-w-[48rem]');
+    // A model-written paragraph keeps the 38rem prose measure; a note the reading column's.
+    expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-block-type=markdown]]:max-w-[38rem]');
+    expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-block-type=callout]]:max-w-[42rem]');
     // The variant's selector (`column > * > [data-block-type=…]`) reaches exactly the
     // prose blocks, and the framed table is not capped.
     const capped = Array.from(column.querySelectorAll(':scope > * > [data-block-type=markdown], :scope > * > [data-block-type=callout]'));
@@ -464,16 +485,19 @@ describe('Transcript', () => {
     expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument();
   });
 
-  it('hands focus to the composer after a transcript action that sends', () => {
+  it('hands focus to the composer after a transcript action that sends', async () => {
+    const user = userEvent.setup();
     const onFocusComposer = vi.fn();
     const engine = engineWith([userItem('q'), assistantItem({ response: response({ follow_ups: ['Show the top hosts'] }) })]);
     renderTranscript({ engine, onFocusComposer });
     fireEvent.click(screen.getByRole('button', { name: 'Show the top hosts' }));
     expect(engine.send).toHaveBeenCalledWith('Show the top hosts', { origin: 'follow_up' });
     expect(onFocusComposer).toHaveBeenCalledTimes(1);
-    // Nothing sent (busy, blocked): focus is left alone.
+    // Nothing sent (busy, blocked): focus is left alone. Ask again lives in ⋯ (T10).
     (engine.askAgain as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
-    fireEvent.click(screen.getByRole('button', { name: 'Ask again' }));
+    await user.click(screen.getByTestId('answer-more-actions'));
+    await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Ask again' }));
+    expect(engine.askAgain).toHaveBeenCalledTimes(1);
     expect(onFocusComposer).toHaveBeenCalledTimes(1);
   });
 

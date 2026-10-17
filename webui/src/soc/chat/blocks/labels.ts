@@ -100,6 +100,19 @@ export function semanticText(kind: SemanticColumn, text: string): string {
   }
 }
 
+/** Engine context words the console says plainly (Round 13, SPEC-chat T19). */
+const KPI_CONTEXT_WORDS: Readonly<Record<string, string>> = {
+  'not windowed': 'Right now',
+};
+
+/**
+ * A KPI's context as a tile (and an export) says it: the engine's "not windowed" (a count
+ * of right now, not of the chosen window) reads "Right now"; anything else as written.
+ */
+export function kpiContext(context: string): string {
+  return KPI_CONTEXT_WORDS[context.trim().toLowerCase()] ?? context;
+}
+
 /** A yes/no cell as the table shows it. */
 export function booleanText(value: boolean): string {
   return value ? 'Yes' : 'No';
