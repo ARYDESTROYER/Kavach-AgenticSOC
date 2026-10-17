@@ -181,6 +181,7 @@ import { BarList, type BarListItem } from '@/soc/components/BarList';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { AutomationNudge } from './AutomationNudge';
+import { readSeparationPreview } from './overview-separation';
 import { CaseDetail } from '@/soc/pages/CaseDetail';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { usePosture } from '@/soc/hooks/usePosture';
@@ -876,8 +877,10 @@ function SnapshotCard({
         className,
       )}
       data-testid="snapshot-card"
+      data-ov="snap"
+      data-ov-cell="snap"
     >
-      <div className="flex items-start justify-between gap-2">
+      <div className="flex items-start justify-between gap-2" data-ov="head">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-foreground">{title}</h2>
           <p className="text-sm text-muted-foreground">{caption}</p>
@@ -1107,7 +1110,7 @@ function TopCasesPanel({
   const floorRows = Math.min(cases.length, minRows);
   return (
     <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-3" data-ov="head">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-foreground">Latest cases</h2>
           <p className="text-sm text-muted-foreground">Real-time triage queue</p>
@@ -1525,8 +1528,16 @@ function Band({
   'data-testid'?: string;
 }) {
   return (
-    <section aria-labelledby={id} className={cn('min-w-0', className)} data-testid={testId}>
-      <header className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
+    <section
+      aria-labelledby={id}
+      className={cn('min-w-0', className)}
+      data-testid={testId}
+      data-ov="band"
+    >
+      <header
+        className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-1"
+        data-ov="band-head"
+      >
         <div className="min-w-0">
           <h2
             id={id}
@@ -1600,8 +1611,10 @@ function Instrument({
       aria-label={title}
       className={cn('flex h-full min-w-0 flex-col', className)}
       data-scope={scope}
+      data-ov="cell"
+      data-ov-cell="instrument"
     >
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5" data-ov="head">
         <h3 className="text-base font-semibold text-foreground">{title}</h3>
         {count != null ? (
           <span className="text-sm tabular-nums text-muted-foreground">{fmtNumber(count)}</span>
@@ -1700,6 +1713,12 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // router context (no-op when rendered provider-less in a unit test).
   const contextNavigate = useNavigateOptional();
   const navigate = onNavigate ?? contextNavigate;
+  /**
+   * Round 13 TEMPORARY preview: which card-separation treatment to render, read once on
+   * mount from `?separation=<id>` (see `overview-separation.ts`). Null — the default — is
+   * today's look: the scoped styles in theme.css match only while `data-ov-sep` is set.
+   */
+  const [separation] = React.useState(readSeparationPreview);
 
   // ----- Time range + auto-refresh (the CONTROL BAR state) ---------------- //
   const [range, setRange] = React.useState<TimeRange>(DEFAULT_RANGE);
@@ -3552,7 +3571,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
       : null;
 
   return (
-    <PageContainer variant="wide" className={containerClass}>
+    <PageContainer
+      variant="wide"
+      className={containerClass}
+      data-ov-sep={separation ?? undefined}
+    >
       {/* ---- BAND 0 — MASTHEAD + DASHBAR ----------------------------------------------
           The title, the time-range and refresh controls in the `meta` slot BESIDE it, and
           the page's freshness on the right. Sticky on the Console's one translucent
@@ -3635,6 +3658,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
           <div>
             <Stagger
               data-testid="kpi-strip"
+              data-ov="kpi"
               // First load only, and quick: 40ms a tile, ≤200ms in all (Round 12 motion).
               step={40}
               maxDelay={200}
@@ -3787,6 +3811,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
             variant="rise"
             delay={40}
             data-testid="hero-row"
+            data-ov="bands"
             className="min-w-0 space-y-8 3xl:space-y-10"
           >
             <Band
@@ -3804,9 +3829,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   'grid min-w-0 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:gap-x-8',
                   '4xl:grid-cols-[minmax(0,1fr)_460px]',
                 )}
+                data-ov="grid"
+                data-ov-grid="flow"
               >
                 {noiseCellVisible ? (
-                  <div className="min-w-0 xl:col-span-8 4xl:col-span-1">
+                  <div
+                    className="min-w-0 xl:col-span-8 4xl:col-span-1"
+                    data-ov="cell"
+                    data-ov-cell="flow"
+                  >
                     {noiseUnavailable ? (
                       <EmptyState
                         data-testid="noise-reduction-unavailable"
@@ -3870,6 +3901,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     'min-w-0',
                     noiseSupported ? 'xl:col-span-4 4xl:col-span-1' : 'xl:col-span-12 4xl:col-span-2',
                   )}
+                  data-ov="cell"
+                  data-ov-cell="hva"
                 >
                   <HumanVsAiCard
                     totals={humanVsAi.totals}
@@ -3914,6 +3947,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     '3xl:grid-rows-[auto_1fr] 4xl:grid-cols-[minmax(0,1fr)_460px]',
                   )}
                   data-testid="cases-band-grid"
+                  data-ov="grid"
+                  data-ov-grid="cases"
                 >
                   {/* Case state: ONE labelled region holding both snapshots. They sit side by
                       side whenever the cell is at least 35rem (560px) wide and stack below
@@ -3921,11 +3956,16 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   <section
                     aria-label="Resolved and open cases"
                     className="@container min-w-0 xl:col-span-5 3xl:col-span-8 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1"
+                    data-ov="cell"
+                    data-ov-cell="snapshots"
                   >
                     {/* `content-start`: the band stretches this cell, and a grid's auto rows
                         would otherwise share that stretch and push each snapshot's footnote
                         away from its own donut. */}
-                    <div className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0">
+                    <div
+                      className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0"
+                      data-ov="snap-grid"
+                    >
                       <SnapshotCard
                         title="Open cases"
                         caption={`Arrived in the ${windowPhrase}, still open`}
@@ -4003,8 +4043,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   <section
                     aria-label="Mean time to detect / respond"
                     className="@container flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1"
+                    data-ov="cell"
+                    data-ov-cell="response"
                   >
-                    <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start justify-between gap-2" data-ov="head">
                       <div className="min-w-0">
                         <h2 className="text-base font-semibold text-foreground">Response time</h2>
                         <p className="text-sm text-muted-foreground">p50 · server-computed</p>
@@ -4067,7 +4109,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     </div>
                   </section>
 
-                  <div className="min-w-0 max-xl:@[48rem]:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2">
+                  <div
+                    className="min-w-0 max-xl:@[48rem]:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2"
+                    data-ov="cell"
+                    data-ov-cell="latest"
+                  >
                     <TopCasesPanel
                       cases={latestCases}
                       navigate={navigate}
@@ -4087,7 +4133,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
               its header states what is inside in one line. Its single top rule is the only
               hairline this band draws. */}
           <Collapsible open={deeperOpen} onOpenChange={onDeeperOpenChange} asChild>
-            <section aria-label="Deeper analytics" className="min-w-0 border-t border-border pt-4">
+            <section
+              aria-label="Deeper analytics"
+              className="min-w-0 border-t border-border pt-4"
+              data-ov="deeper"
+            >
               <h2 className="m-0">
                 <CollapsibleTrigger asChild>
                   {/* The summary WRAPS (Round 12 review): beside the title from `md`, on
@@ -4096,6 +4146,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     type="button"
                     aria-expanded={deeperOpen}
                     aria-controls="overview-deeper-region"
+                    data-ov="deeper-trigger"
                     className="group/deeper flex w-full min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <ChevronDown
@@ -4133,11 +4184,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     'grid min-w-0 items-stretch gap-x-6 gap-y-10 3xl:gap-x-10',
                     '3xl:grid-cols-[minmax(0,38rem)_minmax(0,1fr)]',
                   )}
+                  data-ov="deeper-grid"
                 >
                   {/* -- Sub-band: Efficiency and cost -------------------------------- */}
                   <section
                     aria-labelledby="overview-deeper-efficiency"
                     className="flex min-w-0 flex-col"
+                    data-ov="subband"
+                    data-ov-cell="subband"
                   >
                     <SubBandTitle
                       id="overview-deeper-efficiency"
@@ -4258,7 +4312,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     {/* Stacked in the narrow column from 1920px, coverage keeps its own
                         height and the volume chart takes whatever the taller neighbouring
                         sub-band leaves (no dead space inside the coverage block). */}
-                    <div className="mt-8 grid flex-1 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:grid-cols-1 3xl:grid-rows-[auto_minmax(0,1fr)]">
+                    <div
+                      className="mt-8 grid flex-1 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:grid-cols-1 3xl:grid-rows-[auto_minmax(0,1fr)]"
+                      data-ov="grid"
+                      data-ov-grid="efficiency"
+                    >
                       <Instrument
                         title="Ingest coverage"
                         caption="Right now · am I seeing everything?"
@@ -4297,6 +4355,8 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   <section
                     aria-labelledby="overview-deeper-volume"
                     className="flex min-w-0 flex-col"
+                    data-ov="subband"
+                    data-ov-cell="subband"
                   >
                     <SubBandTitle
                       id="overview-deeper-volume"
@@ -4304,7 +4364,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     >
                       What&rsquo;s driving volume
                     </SubBandTitle>
-                    <div className="grid flex-1 items-stretch gap-x-6 gap-y-8 md:grid-cols-2">
+                    <div
+                      className="grid flex-1 items-stretch gap-x-6 gap-y-8 md:grid-cols-2"
+                      data-ov="grid"
+                      data-ov-grid="volume"
+                    >
                       <Instrument
                         title="Case workload state"
                         count={workloadItems.length}
