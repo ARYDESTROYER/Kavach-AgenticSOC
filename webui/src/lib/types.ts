@@ -84,7 +84,8 @@ export interface AuthMe {
 // Account / profile self-service (Round-2 Wave 2) — GET/PUT /api/account/me.
 // --------------------------------------------------------------------------- //
 /**
- * GET /api/account/me — the signed-in user's own profile.
+ * GET /api/account/me — the signed-in user's own profile. The route nests it under
+ * `user` (`env_managed` beside it); `api.account.*` return it flat, as typed here.
  *
  * `username` + `role` are read-only identity; the rest are self-editable. Every
  * value is user-entered → render as PLAIN text (#9). Secrets are NEVER present

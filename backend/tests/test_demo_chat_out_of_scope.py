@@ -86,7 +86,8 @@ def test_explaining_a_case_names_its_rule_and_source_in_full(rule: str) -> None:
 
     rounds, _header, body = drive("Explain case case-1c85aa", obs)
     assert ("get_case", {"case_id": "case-1c85aa"}) in ran(rounds)
-    assert f"**`case-1c85aa`** ({rule} on IP `203.0.113.77`)" in body
+    # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
+    assert f"**{rule} on IP `203.0.113.77`** (`case-1c85aa`)" in body
     assert f"It covers rule `{rule}` and source `Microsoft Entra ID Protection — Graph security alerts`." in body
     assert "…" not in body
 
@@ -100,8 +101,9 @@ def test_a_case_list_names_long_rules_and_titles_in_full() -> None:
     rounds, _header, body = drive("List the open cases and explain each",
                                   lambda tool, inp: found if tool == "search_cases" else _generic_obs(tool, inp))
     assert [tool for tool, _inp in ran(rounds)] == ["search_cases"]
-    assert f"`case-a` ({LONG_RULES[0]} on IP `203.0.113.77`)" in body
-    assert f"`case-b` (`{free_title}`)" in body
+    # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
+    assert f"{LONG_RULES[0]} on IP `203.0.113.77` (`case-a`)" in body
+    assert f"`{free_title}` (`case-b`)" in body
     # A rule the name does not already say is listed whole too.
     assert f"rule `{LONG_RULES[2]}`" in body
     assert "…" not in body

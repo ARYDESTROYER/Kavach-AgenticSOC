@@ -122,6 +122,23 @@ describe('zero-result chips', () => {
     expect(suggestionQuestion('Any severity')).toBe('Show the same for any severity');
   });
 
+  it('keeps the label\'s own case after its first word (Round 13 T11 display labels)', () => {
+    // The engine's display label names the field in its own words: "source IP" stays.
+    expect(suggestionQuestion('Without the source IP filter')).toBe('Show the same without the source IP filter');
+    expect(suggestionQuestion('  Without the source IP filter ')).toBe('Show the same without the source IP filter');
+    expect(suggestionQuestion('Open and closed cases')).toBe('Show the same for open and closed cases');
+    expect(suggestionQuestion('Last 30 days')).toBe('Show the same for the last 30 days');
+    // Prefixes match whatever their case; an acronym leading the label keeps its capitals.
+    expect(suggestionQuestion('without the host filter')).toBe('Show the same without the host filter');
+    expect(suggestionQuestion('ALL TIME')).toBe('Show the same for all time');
+    expect(suggestionQuestion('IP addresses seen today')).toBe('Show the same for IP addresses seen today');
+    expect(suggestionQuestion('A wider window')).toBe('Show the same for a wider window');
+    // The chip shows the label as written and sends the question built from it.
+    expect(zeroChips([{ label: 'Without the source IP filter', tool: 'search_logs' }])).toEqual([
+      { label: 'Without the source IP filter', question: 'Show the same without the source IP filter' },
+    ]);
+  });
+
   it('dedupes chips, keeps at most four, and leaves out a chip a shown follow-up already asks', () => {
     const chips = zeroChips([
       { label: 'All time', tool: 'case_stats' },

@@ -876,12 +876,17 @@ def test_a_filtered_comparison_names_its_filter_and_drops_the_all_case_posture(
 
 
 def test_an_unfiltered_comparison_keeps_the_posture_and_says_now_only_for_the_current_period() -> None:
-    """R2-3 / R2-12: the unfiltered comparison keeps the automation rate; "now" only when
-    the subject period is the current, in-progress one."""
-    _rounds, _header, body = drive("Compare this month with last month", _compare_obs({}))
+    """R2-3 / R2-12: the unfiltered comparison keeps the automation rate (in the posture
+    block; Round 13 T15: the prose names two of its figures, so it says the automation
+    rate only when the question asks for it); "now" only when the subject period is the
+    current, in-progress one."""
+    _rounds, header, body = drive("Compare this month with last month", _compare_obs({}))
     assert body.startswith("**Oct 2026 to date compared with Sep 2026 to date**. Changes are computed exactly over "
                            "every case:")
-    assert "Automation rate: +42.4 points (86.8% now)." in body
+    assert ("soc_metrics", {"kind": "posture", "window": "this_month", "compare": "previous_period"}) in ran(_rounds)
+    assert "Automation rate" not in body
+    _rounds, _header, asked = drive("Compare the automation rate this month with last month", _compare_obs({}))
+    assert "Automation rate: +42.4 points (86.8% now)." in asked
     past = {"subject": "Sep 2026", "baseline": "Aug 2026", "periods": ["Aug 2026", "Sep 2026"],
             "in_progress": [False, False]}
     assert demo_chat._subject_when(past) == "in Sep 2026"

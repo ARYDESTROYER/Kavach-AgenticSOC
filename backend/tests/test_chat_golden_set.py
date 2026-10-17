@@ -28,6 +28,7 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 import pytest
@@ -362,6 +363,11 @@ CASES = [
       params=(P("get_case", case_id="demo-00000539-0004"),)),
     G("Why was case demo-00000539-0024 closed?", tools=("get_case", "explain_decision"),
       params=(P("explain_decision", case_id="demo-00000539-0024"),)),
+    # An auto-closed false positive: the decision inputs block shows the policy's bars,
+    # so the prose names the case's own confidence and risk only (T15, every answer).
+    G("Investigate case demo-tune-00000539-0000", tools=("get_case", "explain_decision"),
+      params=(P("get_case", case_id="demo-tune-00000539-0000"),),
+      contains=("meets the policy's false-positive bar",), absent=("at least 85%", "at most 30")),
     # A case that does not exist: a clear data answer, never "chat cannot read that data".
     G("Explain case case-0001", min_lookups=2, may_fail=("get_case", "explain_decision"),
       contains=("No case with the id `case-0001` was found",)),
@@ -926,7 +932,9 @@ OUT_OF_SCOPE = [
     G("Tell me the story of case demo-00000539-0004", tools=("get_case",),
       params=(P("get_case", case_id="demo-00000539-0004"),), absent=("I can't write",)),
     G("Tell me the story of this case", tools=("get_case",), fields={"case_id": "demo-00000539-0004"},
-      contains=("**`demo-00000539-0004`**",), absent=("I can't write",)),
+      # A8: a case without a number leads with what it is about; its id follows it.
+      contains=("re:^\\*\\*Identity signin on user `dsingh`\\*\\* \\(`demo-00000539-0004`\\)",),
+      absent=("I can't write",)),
     G("Tell me the story of what happened today", any_of=("search_cases",), absent=("I can't write",)),
     # A response answer names only what reads as a host or user name, never "of" or "out".
     *(G(q, kind="product_help", max_lookups=0,
@@ -1056,6 +1064,117 @@ _REFERENCE = ("app_help", "app_status")
 _CAPPED_720 = re.compile(r"\b720 ?h(?:ours?)?\b|now-720h", re.IGNORECASE)
 
 
+# Round 13 T15 (the takeaway rule): an answer with a ``kpi_group`` of three or more
+# figures names at most two of them in its prose. A figure counts as named when the
+# prose writes its value (as the planner formats that unit) in a clause that also
+# names it (a word of its label), so a coincidence ("Low: 32" beside an Auto-closed
+# tile of 32) is not counted.
+_T15_STOP = frozenset({"the", "and", "for", "with", "now", "still", "per", "rate", "median"})
+
+
+def _t15_quantize(value: float, places: int = 0) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+
+
+def _t15_dec(value: float) -> str:
+    text = f"{_t15_quantize(value, 1)}"
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _t15_forms(item: dict[str, Any]) -> set[str]:
+    value = item.get("value")
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return set()
+    unit = item.get("unit") or "count"
+    if unit == "percent":
+        return {f"{_t15_dec(value)}%", f"{_t15_quantize(value)}%"}
+    if unit == "ratio":
+        return {f"{_t15_dec(value * 100)}%", f"{_t15_quantize(value * 100)}%"}
+    if unit == "usd":
+        return {f"${value:,.2f}", f"${value:,.4f}"}
+    if unit == "minutes":
+        return {f"{_t15_dec(value)} min", f"{_t15_dec(value / 60)} h", f"{_t15_dec(value)} minutes"}
+    if unit in ("seconds", "ms", "hours"):
+        return {f"{_t15_dec(value)} {u}" for u in ("s", "ms", "h", "seconds", "hours")}
+    if value == int(value) or item.get("display") == "gauge":
+        whole = int(_t15_quantize(value))
+        return {f"{whole:,}", str(whole)}
+    return {_t15_dec(value)}
+
+
+def _t15_keywords(item: dict[str, Any]) -> set[str]:
+    label = re.sub(r"\([^)]*\)", " ", str(item.get("label") or "")).lower()
+    words = [w for w in re.split(r"[^a-z]+", label) if len(w) >= 3 and w not in _T15_STOP]
+    return {w[:4] for w in words} or {label.strip()[:4]}
+
+
+def _t15_named(clause: str, form: str) -> bool:
+    lead = r"(?<![\w.,$])" if form[0].isdigit() else r"(?<![\w.,])"
+    return re.search(lead + re.escape(form) + r"(?![\w%]|[.,]\d)", clause) is not None
+
+
+def _t15_groups(blocks: Any) -> Iterator[dict[str, Any]]:
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "kpi_group":
+            yield block
+        elif block.get("type") == "report":
+            for section in block.get("sections") or []:
+                yield from _t15_groups((section.get("blocks") or []) + (section.get("items") or []))
+
+
+_BARE_ID_LEAD = re.compile(r"^(?:- |\d+\. )?(?:\*\*)?`(?:case-[0-9a-f]{32}|demo-[A-Za-z0-9-]+)`(?:\*\*)?(?! \()")
+
+
+def _bare_id_leads(answer: str) -> list[str]:
+    """Prose lines that lead with an internal case id and no title (A8)."""
+    return [line for line in (answer or "").splitlines() if _BARE_ID_LEAD.match(line.strip())]
+
+
+def test_the_bare_id_check_itself() -> None:
+    assert _bare_id_leads("**`demo-00000539-0004`** (identity signin on user `dsingh`) is open.")
+    assert _bare_id_leads("- `case-062c11bc99b64c92853d96a798730094`, `case-3f6c7a7091e643edaddc9728b7d6e873`")
+    assert not _bare_id_leads("**identity signin on user `dsingh`** (`demo-00000539-0004`) is open.")
+    assert not _bare_id_leads("- `CASE-000042` · identity signin on user `dsingh` (high, risk 80, open)")
+
+
+def test_the_takeaway_check_reads_label_and_value_as_one_clause() -> None:
+    """The T15 checker itself: "Label: **value**" names that figure (never split at the
+    colon), and clock times and dates are labels, not figures."""
+    group = [{"type": "kpi_group", "title": "Posture", "items": [
+        {"label": "Cases", "value": 7, "unit": "count"},
+        {"label": "False-positive rate", "value": 42.9, "unit": "percent"},
+        {"label": "Automation rate", "value": 50, "unit": "percent"}]}]
+    named_three = "- Cases: **7** in W41.\n- False-positive rate: **42.9%** in W41.\nAutomation rate: no change (50%)."
+    assert _t15_violations(named_three, group)
+    assert not _t15_violations("- Cases: **7** in W41.\n- False-positive rate: **42.9%** in W41.", group)
+    assert not _t15_violations("Cases per hour: 17 Oct 19:00: 0 and 17 Oct 22:00: 7. FP rate **42.9%**.", group)
+
+
+def _t15_violations(answer: str, blocks: Any) -> list[tuple[Any, list[Any]]]:
+    text = re.sub(r"`[^`]*`", " ", answer or "")  # inline code: ids and entity values, never a figure
+    # Clock times and dates are bucket labels ("17 Oct 19:00", "W41 2026"), never a figure.
+    text = re.sub(r"\b\d{1,2}:\d{2}\b|\b\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b|\bW\d{1,2}\b|"
+                  r"\b(?:19|20)\d{2}\b", " ", text)
+    # A clause runs to a full stop, a semicolon or a line end. Never split at a colon:
+    # "False-positive rate: **42.9%**" names the figure in ONE clause (label and value).
+    clauses = [c.lower() for c in re.split(r"(?<=[.;])\s+|\n+", text) if c.strip()]
+    bad = []
+    for group in _t15_groups(blocks):
+        items = [i for i in group.get("items") or [] if isinstance(i, dict)]
+        if len(items) < 3:
+            continue
+        named: dict[frozenset[str], list[Any]] = {}
+        for item in items:
+            forms, keys = _t15_forms(item), _t15_keywords(item)
+            if any(_t15_named(c, f) and any(k in c for k in keys) for c in clauses for f in forms):
+                named.setdefault(frozenset(forms), []).append(item.get("label"))
+        if len(named) > 2:
+            bad.append((group.get("title"), list(named.values())))
+    return bad
+
+
 def _match(expected: Any, actual: Any) -> bool:
     """One expected parameter value against a step's display value."""
     if expected is None:
@@ -1113,6 +1232,13 @@ def _check(g: G, response: dict[str, Any], client: TestClient | None = None) -> 
             assert text in answer, (text, context)
     for text in g.absent:
         assert text not in answer, (text, context)
+    # Round 13 A8: no prose line leads with a bare internal case id; a case with no
+    # number leads with what it is about, its id after it.
+    assert not _bare_id_leads(answer), (_bare_id_leads(answer), context)
+    # Round 13 T15: beside a key-figure block of three or more figures, the prose gives
+    # the takeaway and names at most two of them.
+    assert not _t15_violations(answer, response.get("blocks")), (_t15_violations(answer, response.get("blocks")),
+                                                                  context)
     # "Product help" is shown only for answers about the console (SPEC D9).
     kind = response.get("answer_kind")
     if kind == "product_help":
@@ -1705,3 +1831,640 @@ def test_scripted_open_cases_by_month_match_the_store(client: TestClient, stats_
 
 
 _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+# --------------------------------------------------------------------------- #
+# Round 13 (SPEC-chat §3.15, §4.3; WP-DEMO13): every console starter through the
+# stream in Demo, the case chips in a case chat, follow-up chips answered for what
+# they name, the takeaway rule (T15) and the conversation title (T6).
+# --------------------------------------------------------------------------- #
+from app.agents import chat_starter_text as starter_text  # noqa: E402
+from app.agents.chat_protocol import parse_title  # noqa: E402
+from app.api.routes_chat_starters import router as starters_router  # noqa: E402
+from app.engine import demo_chat  # noqa: E402
+
+#: The templates answered as product help (SPEC §3.15): the rest are data answers.
+_PRODUCT_STARTERS = frozenset({"learn_app", "explain_metric", "connect_source", "demo"})
+_PRODUCT_KINDS = ("product_help", "mixed")
+#: Every fenced span of a prompt (the engine's untrusted fences).
+_FENCED = re.compile(r"<<<UNTRUSTED_[A-Z_]+>>>.*?<<<END_UNTRUSTED_[A-Z_]+>>>", re.DOTALL)
+_COUNTED = "The suggestion counted"
+
+
+@pytest.fixture(scope="module")
+def starter_client() -> Iterator[TestClient]:
+    """Its own Demo app (with the starters route): these tests close a case, so they
+    never share the golden set's store."""
+    patch = pytest.MonkeyPatch()
+    patch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    secrets = Secrets(_env_file=None, es_store_enabled=False, redis_url="",
+                      anthropic_api_key=None, openai_api_key=None)
+    overrides = {"anthropic": MockProvider(), "openai": MockProvider(), "mock": MockProvider()}
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        state = AppState.create(secrets=secrets, es=InMemoryESClient(), provider_overrides=overrides)
+        await state.startup(start_poller=False)
+        await state.update_prefs(state.prefs.model_copy(update={"setup_complete": True}))
+        await state.enable_demo(mode="seeded", seed=1337, history_days=HISTORY_DAYS)
+        app.state.tlsoc = state
+        yield
+        await state.shutdown()
+
+    api = FastAPI(lifespan=lifespan)
+    for router in (base_router, chat_router, library_router, reports_router, starters_router):
+        api.include_router(router)
+    try:
+        with TestClient(api) as test_client:
+            yield test_client
+    finally:
+        patch.undo()
+
+
+class _PlannerPrompts:
+    """Every prompt the Demo planner received (the messages ``plan_turn`` was given)."""
+
+    def __init__(self) -> None:
+        self.rounds: list[list[dict[str, Any]]] = []
+
+    def unfenced(self) -> str:
+        """The analyst- and engine-written text of every round, fences removed (the
+        planner's own earlier tool calls are its actions, not its instructions)."""
+        return "\n".join(_FENCED.sub(" ", str(m.get("content") or "")) for rnd in self.rounds for m in rnd
+                         if m.get("role") in ("user", "system"))
+
+    def fenced_refs(self) -> list[dict[str, Any]]:
+        refs = []
+        for rnd in self.rounds:
+            for m in rnd:
+                for body in re.findall(r"<<<UNTRUSTED_[A-Z_]+>>> source=entity_ref\n(.*?)\n<<<END_UNTRUSTED",
+                                       str(m.get("content") or ""), re.DOTALL):
+                    refs.append(json.loads(body))
+        return refs
+
+
+@pytest.fixture()
+def planner_prompts(monkeypatch: pytest.MonkeyPatch) -> _PlannerPrompts:
+    seen = _PlannerPrompts()
+    real = demo_chat.plan_turn
+
+    def spy(messages: Any) -> str:
+        seen.rounds.append([dict(m) for m in messages])
+        return real(messages)
+
+    monkeypatch.setattr(demo_chat, "plan_turn", spy)
+    return seen
+
+
+def _status(case: Any) -> str:
+    return str(getattr(case.status, "value", case.status))
+
+
+def _verdict(case: Any) -> str:
+    return str(getattr(case.verdict, "value", case.verdict))
+
+
+def _created(case: Any) -> datetime:
+    created = datetime.fromisoformat(str(case.created_at))
+    return created if created.tzinfo else created.replace(tzinfo=UTC)
+
+
+def _home_cards(client: TestClient) -> list[dict[str, Any]]:
+    response = client.get("/api/chat/starters", params={"surface": "home"})
+    assert response.status_code == 200, response.text
+    return [c for c in response.json()["starters"] if c.get("action") == "send"]
+
+
+def _starter_slots(client: TestClient) -> dict[str, dict[str, Any]]:
+    """Slots for every send template, read from the Demo store itself: a count slot
+    holds the store's own figure wherever the store has one (so an answer that says
+    "the suggestion counted …" means the planner's figure disagrees with the store)."""
+    from app.engine.chat_starters import hunt_window
+
+    cases = _store_cases(client)
+    now = datetime.now(UTC)
+    active = [c for c in cases if _status(c) in ACTIVE_STATUSES]
+    needs = next(c for c in active if _verdict(c) == "NEEDS_HUMAN")
+    assigned = next(c for c in active if getattr(c, "assignee", ""))
+    day = [c for c in cases if _created(c) >= now - timedelta(hours=24)]
+    rules: dict[str, int] = {}
+    for case in day:
+        for rule in dict.fromkeys(case.rule_ids or []):
+            rules[rule] = rules.get(rule, 0) + 1
+    rule, rule_n = max(rules.items(), key=lambda kv: (kv[1], kv[0]))
+    window = hunt_window("UTC", now)
+    techniques: dict[str, int] = {}
+    for case in cases:
+        if window.start <= _created(case) < (window.end or now + timedelta(days=1)):
+            for tid in dict.fromkeys(case.mitre or []):
+                techniques[tid] = techniques.get(tid, 0) + 1
+    technique, technique_n = max(techniques.items(), key=lambda kv: (kv[1], kv[0]))
+    assert technique_n >= 2 and rule_n >= 1 and len(day) >= 2, (technique_n, rule_n, len(day))
+    campaigns, _total = client.portal.call(  # type: ignore[union-attr]
+        lambda: _state(client).campaign_store.list(status="open", limit=5))
+    campaign = campaigns[0]
+    yesterday = starter_text.format_since(now - timedelta(hours=26), now=now, tz=UTC)
+    last_month = (now.replace(day=1) - timedelta(days=1))
+    close = int(_sla_totals(client).get("about_to_breach") or 0)
+    return {
+        "needs_human": {"case": needs.case_id},
+        # The card counts the caller's own open cases; chat cannot filter by the caller,
+        # so any count works and the answer must say that plainly (see the test).
+        "my_cases": {"n": 2}, "my_cases_one": {"case": assigned.case_id},
+        "sla_breached_one": {"case": needs.case_id}, "sla_close": {"n": max(2, close)},
+        "sla_close_one": {"case": assigned.case_id},
+        "new_cases_one": {"since": yesterday},
+        "volume_drop": {"n": max(2, len(day) // 4), "m": len(day)},
+        "noisy_rule": {"rule": rule, "n": rule_n, "m": len(day)},
+        "campaign": {"n": max(2, len(campaign.case_ids)), "campaign": campaign.id},
+        "silent_source": {"source": "demo-wazuh"}, "silent_sources": {"n": 2},
+        "budget_ai": {"pct": 85}, "budget_chat": {"pct": 90},
+        "shift_start": {"h": 24}, "shift_handoff": {}, "weekly": {},
+        "monthly": {"month": starter_text.format_month(last_month.year, last_month.month)},
+        "hunt": {"technique": technique, "n": technique_n},
+        "approvals": {"n": 2}, "approvals_one": {}, "platform": {}, "demo": {}, "triage": {}, "posture": {},
+        "report": {}, "explain_metric": {}, "learn_app": {}, "connect_source": {},
+    }
+
+
+def _sla_totals(client: TestClient) -> dict[str, Any]:
+    """The shift snapshot's SLA totals (breached, about to breach), read directly."""
+    state = _state(client)
+    snap = client.portal.call(lambda: state.standup_service.shift_snapshot(state.prefs, window_hours=24))
+    return (snap.get("sla_aging") or {}).get("totals") or {}
+
+
+def client_campaigns(client: TestClient) -> list[Any]:
+    campaigns, _total = client.portal.call(lambda: _state(client).campaign_store.list(status="open", limit=50))
+    return list(campaigns)
+
+
+def _usual_daily(cases: list[Any], now: datetime) -> int:
+    """The volume card's usual daily level, counted from the store the way
+    ``chat_starters.volume_windows`` counts it: the median of the seven 24-hour windows
+    that end at the start of the hour holding "24 hours ago"."""
+    edge = (now - timedelta(hours=24)).replace(minute=0, second=0, microsecond=0)
+    windows = sorted(sum(1 for c in cases if edge - timedelta(hours=24 * i) <= _created(c)
+                         < edge - timedelta(hours=24 * (i - 1))) for i in range(7, 0, -1))
+    return windows[3]
+
+
+def _ref_values(template_id: str, slots: dict[str, Any]) -> list[str]:
+    """The referenced values a template's slots hold (a case, rule, source, campaign or
+    technique): the values that must reach the planner only inside their fence."""
+    return [str(slots[name]) for name in ("case", "rule", "source", "campaign", "technique") if slots.get(name)]
+
+
+def _check_starter(template_id: str, response: dict[str, Any], prompts: _PlannerPrompts,
+                   slots: dict[str, Any]) -> None:
+    answer = response.get("answer") or ""
+    context = (template_id, answer[:500], [(s["tool"], s.get("status"), s.get("params"))
+                                           for s in _tool_steps(response)])
+    assert answer.strip() and "could not plan an answer" not in answer and "could not map" not in answer, context
+    notice = (response.get("notice") or {}).get("kind")
+    assert notice not in ("unsupported", "unsupported_no_link"), (notice, context)
+    kind = response.get("answer_kind")
+    if template_id in _PRODUCT_STARTERS:
+        assert kind in _PRODUCT_KINDS, (kind, context)
+    else:
+        assert kind == "data", (kind, context)
+        ok = {s["tool"] for s in _tool_steps(response) if s.get("status") == "ok"}
+        assert ok - {"app_help", "app_status"}, context
+    # The referenced value reached the planner only inside its entity_ref fence.
+    unfenced = prompts.unfenced()
+    for value in _ref_values(template_id, slots):
+        assert value not in unfenced, (value, template_id)
+        assert any(ref.get("value") == value for ref in prompts.fenced_refs()), (value, template_id)
+    assert not _bare_id_leads(answer), (_bare_id_leads(answer), context)
+    # The takeaway rule (T15): a key-figure block of three or more figures, and the
+    # prose names at most two of them.
+    assert not _t15_violations(answer, response.get("blocks")), (_t15_violations(answer, response.get("blocks")),
+                                                                  context)
+
+
+_SEND_TEMPLATES = [tid for tid, spec in starter_text.TEMPLATES.items()
+                   if spec.action == "send" and not tid.startswith("case_")]
+
+
+def test_every_send_template_is_covered() -> None:
+    """Every home and thread send template is sent below (from the live cards or from
+    store-read slots); the case chips have their own test."""
+    covered = {"needs_human", "sla_breached", "new_cases", "volume_spike", "my_cases", "my_cases_one",
+               "sla_breached_one", "sla_close", "sla_close_one", "new_cases_one", "volume_drop", "noisy_rule",
+               "campaign", "silent_source", "silent_sources", "budget_ai", "budget_chat", "shift_start",
+               "shift_handoff", "weekly", "monthly", "hunt", "approvals", "approvals_one", "platform", "demo",
+               "triage", "posture", "report", "explain_metric", "learn_app", "connect_source"}
+    assert set(_SEND_TEMPLATES) == covered, set(_SEND_TEMPLATES) ^ covered
+
+
+def test_the_demo_home_cards_answer_with_the_figures_they_state(starter_client: TestClient,
+                                                                  planner_prompts: _PlannerPrompts) -> None:
+    """The live Demo home cards (the starter engine's own counts, read from the store)
+    sent as the console sends them: each answer states the card's figure and never
+    says the figure moved."""
+    cards = _home_cards(starter_client)
+    assert len(cards) >= 4, [c.get("template") for c in cards]
+    for card in cards:
+        parsed = starter_text.parse_starter_question(card["prompt"])
+        assert parsed is not None, card
+        template_id, slots = parsed
+        planner_prompts.rounds.clear()
+        response = _stream(starter_client, card["prompt"], origin="starter")
+        _check_starter(template_id, response, planner_prompts, dict(slots))
+        answer = response["answer"]
+        assert _COUNTED not in answer, (template_id, answer[:400])
+        if isinstance(slots.get("n"), int):
+            assert f"**{slots['n']:,} " in answer, (template_id, slots, answer[:400])
+
+
+def test_the_home_card_counts_match_the_case_store(starter_client: TestClient) -> None:
+    """The figures the cards (and so their answers) state equal a direct count of the
+    case store: new cases since the card's time, and new cases in the last 24 hours."""
+    now = datetime.now(UTC)
+    cases = _store_cases(starter_client)
+    for card in _home_cards(starter_client):
+        parsed = starter_text.parse_starter_question(card["prompt"])
+        assert parsed is not None
+        template_id, slots = parsed
+        if template_id == "volume_spike":
+            day = [c for c in cases if _created(c) >= now - timedelta(hours=24)]
+            assert slots["n"] == len(day), (slots, len(day))
+        if template_id == "new_cases" and re.fullmatch(r"\d{2}:\d{2}", str(slots["since"])):
+            hour, minute = (int(p) for p in str(slots["since"]).split(":"))
+            since = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            assert slots["n"] == sum(1 for c in cases if _created(c) >= since), slots
+
+
+@pytest.mark.parametrize("template_id", [t for t in _SEND_TEMPLATES
+                                         if t not in ("sla_breached", "new_cases", "volume_spike")])
+def test_every_starter_template_answers_from_demo_data(starter_client: TestClient, planner_prompts: _PlannerPrompts,
+                                                        template_id: str) -> None:
+    slots = _starter_slots(starter_client)[template_id]
+    question = starter_text.render_question(template_id, slots)
+    planner_prompts.rounds.clear()
+    response = _stream(starter_client, question, origin="starter")
+    _check_starter(template_id, response, planner_prompts, slots)
+    answer = response["answer"]
+    # The template's own lookups ran (the card's ``tools``, as far as Demo grants them).
+    spec = starter_text.TEMPLATES[template_id]
+    ok = {s["tool"] for s in _tool_steps(response) if s.get("status") == "ok"}
+    if template_id not in _PRODUCT_STARTERS:
+        assert ok & set(spec.tools), (template_id, spec.tools, ok)
+    # Figures from the store: the slots above hold the store's own count, so the
+    # answer states it and never says it moved.
+    cases = _store_cases(starter_client)
+    now = datetime.now(UTC)
+    if template_id == "my_cases":
+        # Chat cannot filter by the signed-in analyst: the answer says so and counts the
+        # whole open queue, never presenting it as the analyst's own cases.
+        open_total = sum(1 for c in cases if _status(c) in ACTIVE_STATUSES)
+        assert f"The suggestion counted {slots['n']:,} open cases assigned to you." in answer, answer[:300]
+        assert f"(**{open_total:,} cases**)" in answer, answer[:300]
+    if template_id in ("needs_human", "my_cases_one", "sla_breached_one", "sla_close_one"):
+        # The answer is about the referenced case.
+        assert f"`{slots['case']}`" in answer, answer[:300]
+    if template_id == "sla_close":
+        close = int(_sla_totals(starter_client).get("about_to_breach") or 0)
+        if close == slots["n"]:
+            assert _COUNTED not in answer, answer[:300]
+        else:
+            assert (f"The suggestion counted {slots['n']:,} cases; there {'is' if close == 1 else 'are'} "
+                    f"{close:,} now.") in answer, answer[:300]
+    if template_id == "new_cases_one":
+        label = str(slots["since"])
+        hour, minute = (int(p) for p in label.split()[-1].split(":"))
+        start = (now - timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        opened = sum(1 for c in cases if _created(c) >= start)
+        assert f"**{opened:,} case" in answer and f"since {label}" in answer, (opened, answer[:300])
+    if template_id == "volume_drop":
+        day = sum(1 for c in cases if _created(c) >= now - timedelta(hours=24))
+        before = sum(1 for c in cases if now - timedelta(hours=48) <= _created(c) < now - timedelta(hours=24))
+        assert answer.startswith(f"**{day:,} new case"), answer[:300]
+        assert f"against {before:,} in the 24 hours before" in answer, answer[:300]
+        assert f"The usual daily level is {_usual_daily(cases, now):,}" in answer, answer[:300]
+    if template_id == "campaign":
+        campaign = next(iter(c for c in client_campaigns(starter_client) if c.id == slots["campaign"]))
+        assert f"**{len(campaign.case_ids):,} cases**" in answer, answer[:300]
+    if template_id == "hunt":
+        # The slot holds the store's count of the technique's cases in the hunt window.
+        assert f"**{slots['n']:,} cases**" in answer and _COUNTED not in answer, answer[:400]
+    if template_id == "noisy_rule":
+        assert f"`{slots['rule']}`" in answer and _COUNTED not in answer, answer[:400]
+    if template_id == "silent_sources":
+        # The store has no quiet source: the answer says so, and that the card's count moved.
+        assert "No log source is quiet now" in answer and _COUNTED in answer, answer[:300]
+    if template_id == "approvals":
+        pending = next(s for s in _tool_steps(response) if s["tool"] == "automation_status")
+        stated = re.match(r"\*\*(\d+) changes?\*\*", answer)
+        assert stated and stated.group(1) in pending["summary"], (answer[:200], pending["summary"])
+
+
+def test_a_case_closed_after_its_card_was_made_is_answered_as_closed(starter_client: TestClient) -> None:
+    """SPEC §3.15: a case closed between the card and the send yields an answer that
+    says it was closed (and no longer needs a person)."""
+    from app.constants import CaseStatus
+
+    case = next(c for c in _store_cases(starter_client)
+                if _status(c) in ACTIVE_STATUSES and _verdict(c) == "NEEDS_HUMAN")
+    question = starter_text.render_question("needs_human", {"case": case.case_id})
+    store = _state(starter_client).cases
+    starter_client.portal.call(  # type: ignore[union-attr]
+        lambda: store.save(case.model_copy(update={"status": CaseStatus.CLOSED})))
+    response = _stream(starter_client, question, origin="starter")
+    answer = response["answer"]
+    assert response["answer_kind"] == "data"
+    assert f"`{case.case_id}`" in answer and "was closed after this suggestion was made" in answer, answer[:400]
+    assert "no longer needs a person" in answer, answer[:400]
+
+
+@pytest.mark.parametrize("template_id, pick, tool", [
+    ("case_needs_person", "needs_human", "explain_decision"),
+    ("case_undecided", "open", "get_case"),
+    ("case_closed_why", "closed", "explain_decision"),
+    ("case_entity", "needs_human", "search_cases"),
+    ("case_related", "needs_human", "search_cases"),
+    ("case_handoff", "open", "get_case"),
+])
+def test_every_case_chip_is_answered_for_its_case(starter_client: TestClient, template_id: str, pick: str,
+                                                  tool: str) -> None:
+    """SPEC §3.14/§3.15: each case chip, sent in a Demo case chat, is answered for that
+    case: a data answer about it, by its handle, through the chip's lookups."""
+    cases = _store_cases(starter_client)
+    case = next(c for c in cases if (
+        (pick == "needs_human" and _status(c) in ACTIVE_STATUSES and _verdict(c) == "NEEDS_HUMAN")
+        or (pick == "open" and _status(c) in ACTIVE_STATUSES)
+        or (pick == "closed" and _status(c) == "closed")))
+    question = starter_text.render_question(template_id, {})
+    response = _stream(starter_client, question, origin="starter", case_id=case.case_id)
+    answer = response["answer"]
+    ok = [s for s in _tool_steps(response) if s.get("status") == "ok"]
+    assert response["answer_kind"] == "data", (template_id, answer[:300])
+    assert (response.get("notice") or {}).get("kind") not in ("unsupported", "unsupported_no_link")
+    assert any(s["tool"] == "get_case" for s in ok) and any(s["tool"] == tool for s in ok), (template_id, ok)
+    # About THIS case: by its handle, or as "this case" (the chat is the case's own).
+    handle = getattr(case, "case_number", None) or case.case_id
+    assert f"`{handle}`" in answer or "this case" in answer.lower(), (template_id, answer[:300])
+    assert all((s.get("params") or {}).get("case_id") in (None, case.case_id) for s in ok if s["tool"] == "get_case")
+    assert response.get("case_id") == case.case_id
+    # Its chips name this case only, never another one a lookup listed (F14).
+    others = {c.case_id for c in cases if c.case_id != case.case_id}
+    assert not [chip for chip in response.get("follow_ups") or [] if any(o in chip for o in others)], \
+        response.get("follow_ups")
+
+
+def test_case_chat_follow_up_chips_are_answered_for_the_case(starter_client: TestClient) -> None:
+    """Every chip under a Case Manager chat answer, sent back in that case chat (whose
+    history replays no lookup digest), is answered for the chat's own case; "Which
+    other cases share an entity with …" lists the cases on its entity."""
+    case = next(c for c in _store_cases(starter_client)
+                if _status(c) in ACTIVE_STATUSES and _verdict(c) == "NEEDS_HUMAN" and c.entity)
+    question = starter_text.render_question("case_needs_person", {})
+    first = _stream(starter_client, question, origin="starter", case_id=case.case_id)
+    chips = first.get("follow_ups") or []
+    assert chips, first.get("answer", "")[:300]
+    history = [{"role": "user", "content": question, "origin": "starter"},
+               {"role": "assistant", "content": first["answer"]}]
+    for chip in chips:
+        response = _stream(starter_client, chip, origin="follow_up", case_id=case.case_id, history=history)
+        answer = response["answer"]
+        ok = [s for s in _tool_steps(response) if s.get("status") == "ok"]
+        assert response["answer_kind"] in ("data", "mixed"), (chip, answer[:300])
+        assert all((s.get("params") or {}).get("case_id") in (None, case.case_id)
+                   for s in ok if s["tool"] == "get_case"), (chip, ok)
+        if chip.lower().startswith("which other cases share"):
+            assert any(s["tool"] == "search_cases" and (s.get("params") or {}).get("entity") for s in ok), (chip, ok)
+            assert "share" in answer or "No other case" in answer, (chip, answer[:300])
+
+
+#: The planner's own follow-up chips and the tools each one names (``demo_chat._CHIPS``)
+#: plus the engine's deterministic chips (``agents.chat_followups``): a chip, sent back,
+#: is answered by the lookups it names, never by help, a clarify card or the fallback.
+_ENGINE_CHIPS: tuple[tuple[str, tuple[str, ...] | None], ...] = (
+    (r"Investigate the top .+ in this answer", ("search_logs",)),
+    (r"Which of these cases are still open, and who has them\?", ("search_cases",)),
+    (r"Explain T[\d.]+ and whether other cases show it", ("mitre_lookup",)),
+    (r"What else did this .+ do in the .+\?", ("search_logs",)),
+    (r"Compare this with the previous .+", None),
+    (r"Show the same .+", None),
+    (r"Break this down by .+ instead", None),
+    # The breakdown answer's own chip: the same cases and window over time.
+    (r"Show these cases .*by (?:hour|day|week|month)", ("case_stats",)),
+)
+
+#: What a chip's next turn must look up, beyond the tool: the filter, grouping or
+#: window its words define (F1: a chip is answered for what it names, never by an
+#: unfiltered list). ``(chip pattern, tool, {param: expected value or "re:…"})``.
+_CHIP_FILTERS: tuple[tuple[str, str, dict[str, Any]], ...] = (
+    (r"Which cases were escalated\b", "search_cases", {"status": "escalated"}),
+    (r"Who closed the cases\b", "case_stats", {"group_by": "closed_by"}),
+    (r"Which open cases need human review\?", "search_cases", {"status_group": "active", "verdict": "NEEDS_HUMAN"}),
+    (r"How many cases came from .+\?", "case_stats", {"group_by": "source"}),
+    (r"Which cases drove the false-positive rate\b", "search_cases", {"verdict": "FALSE_POSITIVE"}),
+    (r"List the true positives\b", "search_cases", {"verdict": "TRUE_POSITIVE"}),
+    (r"List the false positives\b", "search_cases", {"verdict": "FALSE_POSITIVE"}),
+    (r"Which rules drove the false positives\b", "case_stats", {"group_by": "rule", "verdict": "FALSE_POSITIVE"}),
+    (r"Which open cases push the Active Risk Index up\?", "search_cases", {"status_group": "active"}),
+    (r"Show the failed sign-ins by user\b", "log_stats", {"group_by": "user"}),
+    (r"Which of these cases are still open\b", "search_cases", {"status_group": "active"}),
+    (r"Show the cases .+ by severity", "case_stats", {"group_by": "severity"}),
+    (r"Show these cases .*by day", "case_stats", {"bucket": "day"}),
+    (r"Show these cases .*by hour", "case_stats", {"bucket": "hour"}),
+    (r"Show these cases .*by week", "case_stats", {"bucket": "week"}),
+    (r"Show these cases .*by month", "case_stats", {"bucket": "month"}),
+    (r"Which of the cases since \d+ \w+ \d{4} \d{2}:\d{2} are critical\?", "search_cases",
+     {"severity": "critical", "window": r"re:T\d{2}:\d{2}"}),
+    (r"Show the cases since \d+ \w+ \d{4} \d{2}:\d{2} by rule", "case_stats",
+     {"group_by": "rule", "window": r"re:T\d{2}:\d{2}"}),
+    (r"Show the case status changes\b", "audit_search", {"action_type": "status"}),
+    (r"Which model spent the most\b", "cost_usage", {"group_by": "model"}),
+    (r"Show the AI spend by role\b", "cost_usage", {"group_by": "role"}),
+    (r"Which other cases share an entity with \S+\?", "search_cases", {"entity": "re:."}),
+)
+
+
+def _assert_chip_filters(chip: str, second: dict[str, Any]) -> None:
+    steps = _tool_steps(second)
+    for pattern, tool, subset in _CHIP_FILTERS:
+        if re.fullmatch(pattern + r".*", chip):
+            assert _matched_step(steps, tool, subset) is not None, (chip, tool, subset,
+                                                                    [(s["tool"], s.get("params")) for s in steps])
+    match = re.fullmatch(r"(?:Investigate|Summarise) (\S+)(?: for a handoff note)?", chip)
+    if match:
+        assert _matched_step(steps, "get_case", {"case_id": match.group(1)}) is not None, (chip, steps)
+
+
+def _chip_tools(chip: str) -> tuple[str, tuple[str, ...] | None] | None:
+    for rows in demo_chat._CHIPS.values():
+        for text, tools in rows:
+            if re.fullmatch(re.sub(r"\\\{[a-z_]+\\\}", ".+", re.escape(text)), chip, re.IGNORECASE):
+                return text, tools
+    for pattern, tools in _ENGINE_CHIPS:
+        if re.fullmatch(pattern, chip):
+            return pattern, tools
+    return None
+
+
+_FOLLOWED = [
+    "How is our security posture right now?", "Which hosts had the most events in the last 24 hours?",
+    "List the cases from the last 7 days", "Show me the newest escalated case", "What did the AI spend this week?",
+    "Cases by severity in the last 7 days", "Which ATT&CK techniques show up in our cases?",
+    "What do we know about 198.51.100.7?", "Compare this month vs last month: cases, FP rate, MTTR",
+    "Show me the MTTR trend over the last 30 days", "Are any log sources silent?",
+    "Give me an investigation brief for case demo-00000539-0052", "Show the case trend from 2026-08-01 to 2026-09-30",
+    "How many open critical false positives this week?",
+    # Round 13 review (F1, F17): chips whose words define a filter the answer must use.
+    "Show me the noise reduction funnel", "Show the audit trail for today", "List the escalated cases",
+    "Show brute force attempts in the last 24 hours", "Are all log sources healthy?",
+]
+
+
+@pytest.mark.parametrize("question", _FOLLOWED)
+def test_every_follow_up_chip_is_answered_for_what_it_names(starter_client: TestClient, question: str) -> None:
+    """SPEC §4.1/§4.3, T4: each chip under a Demo answer, sent as the console sends it
+    (origin follow_up, in the conversation whose latest answer it sits under), runs
+    the lookups it names; a chip about "this answer" re-reads that answer's lookups."""
+    first = _stream(starter_client, question, persist_conversation=True, idempotency_key=_key("chip", question))
+    chips = list(first["follow_ups"])
+    assert chips, (question, first["answer"][:200])
+    for n, chip in enumerate(chips):
+        # Each chip under the answer it was offered with (a fresh copy of the turn).
+        under = first if n == 0 else _stream(starter_client, question, persist_conversation=True,
+                                              idempotency_key=_key("chip", question, str(n)))
+        data = {s["tool"] for s in _tool_steps(under) if s.get("status") == "ok"} - {"app_help", "app_status"}
+        second = _stream(starter_client, chip, origin="follow_up", persist_conversation=True,
+                         conversation_id=under["conversation_id"], idempotency_key=_key("chip", question, chip))
+        _assert_chip_answered(question, chip, data, second)
+
+
+def _assert_chip_answered(question: str, chip: str, data: set[str], second: dict[str, Any]) -> None:
+    answer = second["answer"]
+    ok = [s["tool"] for s in _tool_steps(second) if s.get("status") == "ok"]
+    context = (question, chip, ok, answer[:300])
+    assert "could not map" not in answer and "could not plan" not in answer, context
+    assert second.get("clarify") is None, context
+    assert set(ok) - {"app_help", "app_status"}, context
+    named = _chip_tools(chip)
+    assert named is not None, ("a chip no table names", context)
+    _assert_chip_filters(chip, second)
+    if named[1]:
+        assert set(named[1]) & set(ok), (named[1], context)
+    elif data:
+        # "Compare this…", "Show the same…", "Break this down…": the earlier answer's
+        # own lookups again (a case list compares through the case counts).
+        assert data & set(ok) or ("search_cases" in data and "case_stats" in ok), (data, context)
+
+
+@pytest.mark.parametrize("template_id", ["sla_breached", "hunt", "campaign", "noisy_rule", "approvals", "platform",
+                                         "volume_drop", "new_cases_one", "silent_source", "my_cases"])
+def test_starter_answers_offer_chips_about_what_they_show(starter_client: TestClient, template_id: str) -> None:
+    """T4: a starter answer's chips name what it shows (its window, a case, a
+    technique, its figures) and each one is answered."""
+    slots = _starter_slots(starter_client).get(template_id)
+    if slots is None:
+        card = next(c for c in _home_cards(starter_client) if c["template"] == template_id)
+        question = card["prompt"]
+    else:
+        question = starter_text.render_question(template_id, slots)
+    first = _stream(starter_client, question, origin="starter", persist_conversation=True,
+                    idempotency_key=_key("starter-chips", template_id))
+    chips = list(first["follow_ups"])
+    assert chips, (template_id, first["answer"][:300])
+    for n, chip in enumerate(chips):
+        under = first if n == 0 else _stream(starter_client, question, origin="starter", persist_conversation=True,
+                                              idempotency_key=_key("starter-chips", template_id, str(n)))
+        data = {s["tool"] for s in _tool_steps(under) if s.get("status") == "ok"} - {"app_help", "app_status"}
+        second = _stream(starter_client, chip, origin="follow_up", persist_conversation=True,
+                         conversation_id=under["conversation_id"],
+                         idempotency_key=_key("starter-chips", template_id, chip))
+        _assert_chip_answered(question, chip, data, second)
+
+
+@pytest.mark.parametrize("question, title", [
+    ("How is our security posture right now?", "Security posture"),
+    ("What did the AI spend this week?", "AI spend"),
+    ("Cases by severity in the last 7 days", "Cases by severity"),
+    # H1: the case's rule in words, never one generic title for every investigation.
+    ("Investigate case demo-00000539-0004", "Identity signin case"),
+    ("Create a report on case volume and false positives for the last 7 days",
+     "Case volume and false positives report"),
+])
+def test_the_first_answer_titles_the_conversation(starter_client: TestClient, question: str, title: str) -> None:
+    """T6: the first answer of a Workspace conversation names it (2 to 6 words, sentence
+    case, engine words only); later answers keep that title."""
+    first = _stream(starter_client, question, persist_conversation=True, idempotency_key=_key("title", question))
+    assert first["conversation_title"] == title and parse_title({"title": title}) == title
+    second = _stream(starter_client, "Which open cases need attention first, and why?", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("title", question, "2"))
+    assert second["conversation_title"] == title
+
+
+def test_a_starter_titles_its_conversation(starter_client: TestClient) -> None:
+    card = next(c for c in _home_cards(starter_client) if c["template"] == "sla_breached")
+    response = _stream(starter_client, card["prompt"], origin="starter", persist_conversation=True,
+                       idempotency_key=_key("title", "starter"))
+    assert response["conversation_title"] == "Cases past their response target"
+
+
+@pytest.mark.parametrize("template_id, title", [
+    ("demo", "What Demo Mode simulates"), ("posture", "Security posture now"), ("weekly", "Last week compared"),
+    ("explain_metric", "Active Risk Index explained"), ("connect_source", "Connecting a log source"),
+])
+def test_a_classified_starter_keeps_its_curated_title(starter_client: TestClient, template_id: str,
+                                                      title: str) -> None:
+    """H1: the starters classified like typed questions keep their curated titles, never
+    the generic "Console help" or "Period comparison"."""
+    question = starter_text.render_question(template_id, {})
+    response = _stream(starter_client, question, origin="starter", persist_conversation=True,
+                       idempotency_key=_key("title", template_id))
+    assert response["conversation_title"] == title, response.get("conversation_title")
+
+
+def test_the_demo_card_answer_says_what_is_simulated(starter_client: TestClient) -> None:
+    """The Demo Mode card's answer leads with what Demo Mode simulates (the Help Center),
+    not with a settings page, and shows no deployment source counts that contradict the
+    Demo sources streaming beside it."""
+    response = _stream(starter_client, starter_text.render_question("demo", {}), origin="starter")
+    answer = response["answer"]
+    assert not answer.startswith("Start in"), answer[:200]
+    assert "synthetic" in answer.lower() or "simulated" in answer.lower(), answer[:400]
+    assert not [b for b in response.get("blocks") or [] if b.get("type") == "kpi_group"
+                and b.get("title") == "Deployment"], response.get("blocks")
+
+
+def test_a_volume_and_false_positives_report_covers_both(starter_client: TestClient) -> None:
+    """T37: "case volume and false positives" counts every case (no verdict filter),
+    names the false positives among them, and its next steps come from its figures."""
+    response = _stream(starter_client, "Create a report on case volume and false positives for the last 7 days",
+                       persist_conversation=True, idempotency_key=_key("t37", "1"))
+    steps = _tool_steps(response)
+    assert all("verdict" not in (s.get("params") or {}) for s in steps), steps
+    total = _store_count(starter_client, "now-7d", {})
+    fp = _store_count(starter_client, "now-7d", {"verdict": "FALSE_POSITIVE"})
+    answer = response["answer"]
+    assert answer.startswith(f"**{total:,} cases** in the last 7 days"), answer[:200]
+    assert f", {fp:,} of them false positives" in answer, answer[:200]
+    envelope = next(b for b in response["blocks"] if b.get("type") == "report")
+    assert envelope["title"].startswith("Case volume and false positives")
+    steps_text = next(i["text"] for s in envelope["sections"] if s["heading"] == "Next steps"
+                      for i in (s.get("blocks") or s.get("items") or []) if i.get("type") == "markdown")
+    assert "Verify the figures in the console" not in steps_text and re.search(r"\d", steps_text), steps_text
+    if fp and fp / total >= 0.5:
+        assert f"{fp:,} false positives" in steps_text, steps_text
+
+
+@pytest.mark.parametrize("question, follow, dropped", [
+    ("Show events from 198.51.100.77 in the last hour", "Show the same without the source IP filter", "ip"),
+    ("How many open critical false positives this week?", "Show the same for open and closed cases",
+     "status_group"),
+])
+def test_a_zero_result_chip_drops_the_filter_its_label_names(starter_client: TestClient, question: str,
+                                                              follow: str, dropped: str) -> None:
+    """Round 13 B note: a zero-result chip names a field in display words ("source
+    IP", "Open and closed cases"); the rerun maps them back to the input key."""
+    first = _stream(starter_client, question, persist_conversation=True, idempotency_key=_key("zero13", question))
+    # The console's zero-result chip sends exactly this question (``suggestion_question``).
+    second = _stream(starter_client, follow, origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("zero13", question, "2"))
+    reran = [s for s in _tool_steps(second) if s["tool"] in ("search_logs", "case_stats", "search_cases")]
+    assert reran and all(dropped not in (s.get("params") or {}) for s in reran), reran
+    assert second["answer"].startswith("Re-ran the earlier lookups"), second["answer"][:200]

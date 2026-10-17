@@ -4,14 +4,15 @@
  * then ", {first name}" from the signed-in display name (its first word), else the
  * username, else nothing (auth off).
  *
- * The display name comes from `GET /api/account/me`, whose body is
- * `{authenticated, auth_enabled, env_managed, user: {username, display_name, ...}}`
- * (`routes.account_me`): the name is `user.display_name` (a top-level `display_name`
- * is read too, for safety). It is read only when someone is signed in, cached per
- * principal and re-read in the background when a start stack mounts more than a
- * minute after the last read, so a name saved on the Account page reaches the greeting
- * on the next new chat without a reload. Any failure keeps the last known name (or
- * the username). It is the analyst's own text, rendered as React text only.
+ * The display name comes from `GET /api/account/me` through `api.account.get()`, which
+ * unwraps the route's `{authenticated, auth_enabled, env_managed, user: {...}}` body into
+ * the flat profile (`profileDisplayName` still reads either shape). It is read only when
+ * someone is signed in, cached per principal and re-read in the background when a start
+ * stack mounts more than a minute after the last read. A profile saved on the Account
+ * page in this tab (its `soc:account-profile-saved` window event) replaces the cached
+ * name at once, so a new name shows on the next new chat without a reload or a wait.
+ * Any failure keeps the last known name (or the username). It is the analyst's own text,
+ * rendered as React text only.
  */
 import * as React from 'react';
 
@@ -51,8 +52,26 @@ export function clearGreetingNameCache(): void {
 }
 
 /**
- * The display name in a `GET /api/account/me` body: `user.display_name`, else a
- * top-level `display_name`; '' when neither is a string.
+ * The window event the Account page fires after a successful save (`pages/Account.tsx`
+ * holds the same name); its detail is the saved flat profile. Listened for from the
+ * moment this module loads, so a name cached by an earlier start screen is replaced
+ * even while no start screen is mounted.
+ */
+export const ACCOUNT_PROFILE_SAVED_EVENT = 'soc:account-profile-saved';
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(ACCOUNT_PROFILE_SAVED_EVENT, (event) => {
+    const profile = (event as CustomEvent<unknown>).detail as { username?: unknown } | null;
+    if (profile && typeof profile.username === 'string' && profile.username) {
+      names.set(profile.username, { name: profileDisplayName(profile), at: Date.now() });
+    }
+  });
+}
+
+/**
+ * The display name in an account profile: the flat profile `api.account.get()` returns
+ * (a top-level `display_name`), or a raw `GET /api/account/me` body (`user.display_name`);
+ * '' when neither is a string.
  */
 export function profileDisplayName(profile: unknown): string {
   if (!profile || typeof profile !== 'object') return '';
@@ -65,18 +84,22 @@ export function profileDisplayName(profile: unknown): string {
 function readDisplayName(principal: string): Promise<string> {
   let read = pending.get(principal);
   if (!read) {
+    // Dated when it starts: a save that lands while it runs is newer and stays.
+    const started = Date.now();
     read = api.account
       .get()
       .then((profile) => {
-        const name = profileDisplayName(profile);
-        names.set(principal, { name, at: Date.now() });
-        return name;
+        const known = names.get(principal);
+        if (!known || known.at <= started) {
+          names.set(principal, { name: profileDisplayName(profile), at: started });
+        }
+        return names.get(principal)?.name ?? '';
       })
       .catch(() => {
         // Keep a name already known; a first failure falls back to the username.
-        const known = names.get(principal);
-        names.set(principal, { name: known?.name ?? '', at: Date.now() });
-        return known?.name ?? '';
+        const name = names.get(principal)?.name ?? '';
+        names.set(principal, { name, at: Date.now() });
+        return name;
       })
       .finally(() => pending.delete(principal));
     pending.set(principal, read);

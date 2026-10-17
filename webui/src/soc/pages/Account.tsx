@@ -55,6 +55,18 @@ import {
   SelectValue,
 } from '@/ui/select';
 
+/**
+ * Fired on `window` after a successful profile save, with the saved flat profile as its
+ * detail, so a chat start screen loaded earlier in this tab greets by the new display
+ * name at once (`chat/starters/greeting.ts` listens for the same name). A window event,
+ * not a shared module: nothing on first paint changes for it.
+ */
+const ACCOUNT_PROFILE_SAVED_EVENT = 'soc:account-profile-saved';
+
+function announceProfileSaved(profile: AccountProfile): void {
+  window.dispatchEvent(new CustomEvent(ACCOUNT_PROFILE_SAVED_EVENT, { detail: profile }));
+}
+
 export interface AccountPageProps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onNavigate?: (page: any, opts?: any) => void;
@@ -240,6 +252,7 @@ export function AccountInner({ onNavigateToSecurity, embedded = false }: Account
   const [avatarBusy, setAvatarBusy] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
 
+  // `api.account.*` return the flat profile (the route nests it under `user`).
   const hydrate = React.useCallback((p: AccountProfile) => {
     setProfile(p);
     setDisplayName(p.display_name ?? '');
@@ -311,6 +324,7 @@ export function AccountInner({ onNavigateToSecurity, embedded = false }: Account
       try {
         const next = await api.account.put(patch);
         hydrate(next);
+        announceProfileSaved(next);
         toast.success('Profile saved.');
       } catch (err) {
         toast.error(errMsg(err, 'Could not save your profile.'));
@@ -340,6 +354,7 @@ export function AccountInner({ onNavigateToSecurity, embedded = false }: Account
     try {
       const next = await api.account.avatar(avatarPending);
       hydrate(next);
+      announceProfileSaved(next);
       toast.success('Photo updated.');
     } catch (err) {
       toast.error(errMsg(err, 'Could not update your photo.'));
@@ -359,6 +374,7 @@ export function AccountInner({ onNavigateToSecurity, embedded = false }: Account
     try {
       const next = await api.account.avatar('');
       hydrate(next);
+      announceProfileSaved(next);
       toast.success('Photo removed.');
     } catch (err) {
       toast.error(errMsg(err, 'Could not remove your photo.'));

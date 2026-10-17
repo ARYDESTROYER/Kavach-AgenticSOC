@@ -204,7 +204,18 @@ describe('shortcut list', () => {
   it('documents every shortcut, composer keys included, and none uses K or B', () => {
     const ids = CHAT_SHORTCUTS.map((s) => s.id);
     expect(ids).toEqual(
-      expect.arrayContaining(['send', 'newline', 'edit-last', 'stop', 'focus', 'new-chat', 'toggle-history', 'copy-last', 'shortcuts']),
+      expect.arrayContaining([
+        'send',
+        'newline',
+        'edit-last',
+        'stop',
+        'focus',
+        'new-chat',
+        'toggle-history',
+        'copy-last',
+        'hide-suggestion',
+        'shortcuts',
+      ]),
     );
     for (const s of CHAT_SHORTCUTS) {
       expect(s.keys.includes('Mod') && s.keys.some((k) => k === ('K' as never) || k === ('B' as never))).toBe(false);
@@ -218,6 +229,21 @@ describe('shortcut list', () => {
       expect(isCopyLastAnswer({ key: 'C', code: 'KeyC', shiftKey: true, altKey: false, ctrlKey: false, metaKey: false, ...mod })).toBe(true);
     }
     expect(COPY_LAST_ANSWER_KEYS).toBe('Control+Shift+C Meta+Shift+C');
+  });
+
+  it('documents Delete or Backspace on a focused suggestion (SPEC-chat §5.6)', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'hide-suggestion');
+    expect(entry).toEqual({
+      id: 'hide-suggestion',
+      label: 'Hide a suggestion for a day',
+      keys: ['Delete'],
+      altKeys: ['Backspace'],
+      where: 'chat',
+      note: 'on a focused suggestion',
+    });
+    // Plain keys: the same words on every platform.
+    expect(shortcutLabel(['Delete'], true)).toBe('Delete');
+    expect(shortcutLabel(['Backspace'], false)).toBe('Backspace');
   });
 
   it('labels keys per platform', () => {
@@ -245,6 +271,12 @@ describe('ShortcutSheet', () => {
     expect(within(send).getByText('Enter').tagName).toBe('KBD');
     const newline = within(dialog).getByText('New line').closest('div') as HTMLElement;
     expect(within(newline).getAllByText(/Shift|⇧|Enter/).map((k) => k.tagName)).toEqual(['KBD', 'KBD']);
+    // Alternative keys read "Delete or Backspace", in the "Anywhere in Chat" group.
+    expect(terms).toContain('Hide a suggestion for a day (on a focused suggestion)');
+    const hide = within(dialog).getByText('Hide a suggestion for a day').closest('div') as HTMLElement;
+    expect(Array.from(hide.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['Delete', 'Backspace']);
+    expect(hide.querySelector('dd')?.textContent).toBe('Delete or Backspace');
+    expect(hide.closest('section')).toHaveAccessibleName('Anywhere in Chat');
     expect(await axe(document.body, { rules: { region: { enabled: false } } })).toHaveNoViolations();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(onOpenChange).toHaveBeenCalledWith(false);

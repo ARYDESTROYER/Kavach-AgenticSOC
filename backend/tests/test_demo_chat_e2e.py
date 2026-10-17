@@ -131,8 +131,10 @@ async def test_starter_blocks_carry_the_numbers_the_answer_states(demo_state) ->
     assert ari.get("display") == "gauge" and kpis["provenance"] == "code"
     assert f"**Active Risk Index {int(round(ari['value']))}**" in posture.answer
     line = _block(posture, type="chart", kind="line")
-    new_cases = int(round(sum(v for v in line["series"][0]["values"] if v is not None)))
-    assert f"{new_cases:,} new and" in posture.answer
+    # Round 13 T15: the window's totals are in the key figures beside the prose, so the
+    # trend sentence states the line chart's peak (the busiest bucket's new cases).
+    peak = int(round(max(v for v in line["series"][0]["values"] if v is not None)))
+    assert f"with {peak:,} new case" in posture.answer
 
     explain = await _turn(demo_state, STARTERS["explain_metric"].prompt)
     funnel = _block(explain, type="chart", kind="funnel")
@@ -161,7 +163,8 @@ async def test_starter_blocks_carry_the_numbers_the_answer_states(demo_state) ->
     paragraphs = shift.answer.split("\n\n")
     assert len(paragraphs) == 3 and paragraphs[-1] == "The brief below is ready to add to a report."
     attention = next(b for s in brief["sections"] for b in s["blocks"] if b.get("type") == "case_list")
-    assert paragraphs[1].startswith(f"Start with `{attention['items'][0]['case_id']}` (")
+    # Round 13 A8: the case to start with by what it is about, its id after it.
+    assert paragraphs[1].startswith("Start with ") and f"(`{attention['items'][0]['case_id']}`)" in paragraphs[1]
     assert "Needs attention first" not in shift.answer and "Posture:" not in shift.answer
 
 
@@ -328,7 +331,7 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
     assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
     case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
-    assert re.match(r"\*\*`demo-00000539-0004`\*\* \([a-z ]+ on user `[^`]+`\) needs human review",
+    assert re.match(r"\*\*[A-Z][a-z ]+ on user `[^`]+`\*\* \(`demo-00000539-0004`\) needs human review",
                     case.answer), case.answer
 
 
@@ -387,8 +390,9 @@ async def test_case_manager_chat_answers_about_its_case(demo_state) -> None:
                                                  tool_context=ctx, origin="user")
     tools = [(s.tool, s.status) for s in _tool_steps(response)]
     assert ("get_case", "ok") in tools and ("explain_decision", "ok") in tools
-    # The id is the handle and the machine title reads as what happened to which entity (D6).
-    assert re.match(rf"\*\*`{case_id}`\*\* \([a-z ]+ on [A-Za-z ]+ `[^`]+`\) is a true positive", response.answer), (
+    # The machine title reads as what happened to which entity (D6); with no case number
+    # it leads and the id follows (Round 13 A8).
+    assert re.match(rf"\*\*[A-Z][a-z ]+ on [A-Za-z ]+ `[^`]+`\*\* \(`{case_id}`\) is a true positive", response.answer), (
         response.answer)
     assert "How the policy sees it:" in response.answer
     assert response.case_id == case_id

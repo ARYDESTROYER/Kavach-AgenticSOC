@@ -360,12 +360,22 @@ def test_posture_final_has_gauge_kpis_trend_and_numbers_from_observations() -> N
     assert_valid_final(header, manifest(msgs))
     assert [(b["ref"], b["view"]) for b in header["blocks"]] == [("t1.a1", "kpi_group"), ("t2.a1", "line"),
                                                                 ("t1.a2", "donut")]
-    assert body.startswith("**Active Risk Index 61**")
-    for figure in ("9 cases open now", "43 cases", "4 of them critical", "79.1%", "MTTA not measured yet",
+    assert body.startswith("**Active Risk Index 61** (high) across the 9 cases open now.")
+    for figure in ("most closed cases were false positives", "the AI closed almost all of them",
+                   "4 critical cases were created in the last 24h",
                    "the peak was 1 hour before the latest, with 7 new cases"):
         assert figure in body, figure
+    # Round 13 T15: the key-figure block shows the posture figures, so the prose gives
+    # the takeaway and names at most two of them (the risk index and the open count);
+    # the window's new-case total is the block's "Cases" figure, so the trend names
+    # only its peak.
+    for shown_in_block in ("43 cases", "79.1%", "90%", "MTTA", "MTTR", "10 new and"):
+        assert shown_in_block not in body, shown_in_block
     assert header["answer_kind"] == "data"
-    assert "Write a shift brief for the incoming analyst" in header["follow_ups"]
+    # Round 13 T4: the chips name what this answer shows (its window, its figures).
+    assert header["follow_ups"] == ["Which cases drove the false-positive rate in the last 24h?",
+                                    "Which open cases push the Active Risk Index up?",
+                                    "How did the automation rate change in the last 24h?"]
 
 
 def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> None:
@@ -386,13 +396,16 @@ def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> Non
     assert envelope["type"] == "report" and envelope["template"] == "shift"
     assert [s["heading"] for s in envelope["sections"]] == ["Summary", "Open work", "Key metrics", "Next steps"]
     steps = envelope["sections"][-1]["items"][0]["text"]
-    assert steps.startswith("1. Work the 1 case past SLA first: `case-0042`.")
-    # The lead names the window once; needs_human counts cases in Needs human STATUS.
-    assert body.startswith("**Shift brief, last 24h.** **5 open cases**: 2 escalated, 1 in Needs human status")
+    # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
+    assert steps.startswith("1. Work the 1 case past SLA first: `x` (`case-0042`).")
+    # The lead names the window once and (Round 13 T15) at most two of the headline's
+    # figures, which the Shift headline block shows in full; needs_human counts cases
+    # in Needs human STATUS (the next steps say so).
+    assert body.startswith("**Shift brief, last 24h.** **5 open cases**, 1 of them past SLA.")
     assert "Decide the 1 case in Needs human status." in steps
     # The brief holds the detail; the prose is its lead (browser-QA D5): the headline,
     # the first case to work, and the ready sentence.
-    assert body.split("\n\n")[1:] == ["Start with `case-0042` (`x`, escalated).",
+    assert body.split("\n\n")[1:] == ["Start with `x` (`case-0042`), escalated.",
                                         "The brief below is ready to add to a report."]
     assert "Posture:" not in body and "Needs attention first" not in body
     # One figure shown once (A34): the Shift headline KPIs carry the five counts and
@@ -441,7 +454,8 @@ def test_case_lines_and_pivots_name_cases_in_words_not_machine_titles() -> None:
                "verdict": "NEEDS_HUMAN", "risk_score": 64, "status": "escalated"}
     # Plain punctuation, and the verdict as the case badge words it (never an em dash or
     # "needs-human", Round 12 final polish).
-    assert demo_chat._case_line(machine) == ("`case-1` · identity signin on user `dsingh` (high, needs human, "
+    # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
+    assert demo_chat._case_line(machine) == ("Identity signin on user `dsingh` · `case-1` (high, needs human, "
                                              "risk 64, escalated)")
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — demo_sqli_webshell, web_shell"}) == (
         "demo sqli webshell, web shell on IP `203.0.113.9`")
@@ -492,8 +506,9 @@ def test_case_final_explains_the_decision_from_the_policy_table() -> None:
         call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS)])
     header, body = final_of(plan_turn(msgs))
     assert_valid_final(header, manifest(msgs))
-    # The id is the handle; the free-form title names the case (inline code, D6).
-    assert body.startswith("**`case-0042`** (`user:amy - phishing`) is a true positive at 90% confidence, "
+    # The free-form title names the case (inline code, D6); with no number, it leads and
+    # the id follows (Round 13 A8).
+    assert body.startswith("**`user:amy - phishing`** (`case-0042`) is a true positive at 90% confidence, "
                            "risk 80/100, severity critical")
     assert ("Why it is still open: the deterministic auto-close policy sends a case with a true-positive verdict "
             "at 90% confidence and risk 80 to a human, because true-positive auto-close is turned off in the "
@@ -720,7 +735,9 @@ def test_report_summary_is_json_built_only_from_the_digest() -> None:
     assert "Night shift" not in summary and "check this" not in summary   # user text is not echoed
     assert "Key figures: Active Risk Index 61." in summary
     assert "It references 1 case: 1 critical." in summary
-    assert steps[0] == "Review the critical and high-severity cases first."
+    # Round 13 T37: every step comes from the report's own figures.
+    assert steps[0] == "Review the 1 critical case first."
+    assert not any(s.startswith(("Verify the figures", "Regenerate this summary")) for s in steps), steps
     assert "Confirm an owner for the 1 open case in this report." in steps
     assert "Check the 1 analyst note against the data before sharing." in steps
     assert len(steps) <= 5
@@ -1269,7 +1286,7 @@ def test_a_behaviour_hunt_says_how_it_chose_its_anchor_case() -> None:
                   _hunt_round(1, 0, verdict="FALSE_POSITIVE"))
     _, body = final_of(plan_turn(msgs))
     assert body.startswith("The question names no indicator or known attack type, so this hunt is anchored on the "
-                           "highest-risk open case with an indicator entity, `case-9`")
+                           "highest-risk open case with an indicator entity, `web` (`case-9`)")
     assert "which is a false positive at 88% confidence" in body
     assert "Name an indicator (an IP, domain, URL or hash) to hunt it directly." in body
     assert "newest" not in body and "containment in place" not in body
@@ -1355,8 +1372,9 @@ def test_tp_cost_mitre_sources_and_campaign_finals_state_their_figures() -> None
     cost = {"window": "last 24h", "total_cost_usd": 0.053, "calls": 6, "total_tokens": 14669, "simulated": True,
             "by_role": [{"key": "chat", "cost": 0.0503, "calls": 5}]}
     _, body = final_of(plan_turn(prompt("What did AI spend look like?", [call("cost_usage", cost)])))
-    assert body.startswith("**AI spend in the last 24h: $0.0530 (simulated)** across 6 model calls and 14,669 "
-                           "tokens.")
+    # Round 13 T15: the spend and the call count; the token total is in the key figures.
+    assert body.startswith("**AI spend in the last 24h: $0.0530 (simulated)** across 6 model calls.")
+    assert "14,669" not in body
     assert "By role: `chat` $0.0503 (5 calls)." in body
 
     techniques = {"techniques": [{"id": "T1110", "name": "Brute Force", "tactics": ["credential-access"],
@@ -1549,7 +1567,7 @@ def test_a_case_report_lead_names_the_case_by_what_happened() -> None:
         call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])
     header, body = final_of(plan_turn(msgs))
     assert header["blocks"][0]["type"] == "report"
-    assert body.startswith("**`case-0042`** (phish click on user `amy`) is a true positive at 90% confidence")
+    assert body.startswith("**Phish click on user `amy`** (`case-0042`) is a true positive at 90% confidence")
     summary = header["blocks"][0]["sections"][0]["items"][0]["text"]
     assert "amy" not in summary and "`" not in summary      # the Summary leaf carries no case value
 
@@ -1700,7 +1718,7 @@ def test_a_case_answer_names_its_entity_once() -> None:
     _, body = final_of(plan_turn(prompt("Tell me about case-0042", [
         call("get_case", machine, artifacts=GET_CASE_ARTS, inp={"case_id": "case-0042"}),
         call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])))
-    assert "(phish click on user `amy`)" in body and body.count("user `amy`") == 1
+    assert "**Phish click on user `amy`** (`case-0042`)" in body and body.count("user `amy`") == 1
     assert "It covers rule `phish`." in body
     # A free-text title does not name the entity, so the facts still do.
     _, body = final_of(plan_turn(prompt("Tell me about case-0042", [
