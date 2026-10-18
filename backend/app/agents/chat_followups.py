@@ -246,7 +246,7 @@ _ANCHOR_CELL_TYPES = frozenset({"case", "code", "entity"})
 #: the top-N "Other" fold): engine words, never something the answer is about, so they
 #: never anchor ("Do other SOC teams see this?" is not about an "Other" bar).
 PLACEHOLDER_LABELS = frozenset({
-    "other", "others", "(none)", "none", "unknown", "unassigned", "not closed", "no verdict",
+    "other", "others", "(none)", "none", "(empty)", "empty", "unknown", "unassigned", "not closed", "no verdict",
     "no verdict yet", "not classified", "no severity", "no priority", "no rule", "default source",
     "no technique", "no tactic", "not decided",
 })

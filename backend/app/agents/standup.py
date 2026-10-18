@@ -46,8 +46,11 @@ logger = logging.getLogger("tlsoc.agents.standup")
 # ``shift_report.urgency_score``), so a stale-but-high-risk SLA-breached case can no
 # longer be evicted by recency before urgency ranking even when one status holds more
 # than this many open cases. In tenants with >LIMIT high-risk open cases in a single
-# status, lower-risk cases beyond the cap are omitted from the brief.
-_OPEN_FETCH_LIMIT = 500
+# status, lower-risk cases beyond the cap are omitted from the brief. The chat's
+# ``sla`` starter (``engine/chat_starters.py``) reads this bound: while one open status
+# holds more cases than it, this snapshot's SLA totals are not the whole open set, so
+# that card is not shown (its count would contradict the ``shift_report`` answer).
+OPEN_FETCH_LIMIT = 500
 
 # What-needs-attention-first standup prompt (Feature 11). A LOCAL specialisation of the
 # base standup writer so we do NOT touch the shared agents/prompts.py this wave; it adds
@@ -252,7 +255,7 @@ class StandupService:
                 try:
                     cases, _ = await self._cases.list(
                         status=status,
-                        limit=_OPEN_FETCH_LIMIT,
+                        limit=OPEN_FETCH_LIMIT,
                         sort_field=sort_field,
                         sort_order=sort_order,
                     )

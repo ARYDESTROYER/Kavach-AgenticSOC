@@ -24,7 +24,7 @@ import { isPageId } from '@/soc/nav';
 
 import { CaseHoverArm, CaseLink, CaseRefText, RefLink } from '../context';
 import { formatUtc } from '../format';
-import { ENTITY_KIND_LABEL, REPUTATION_LABEL } from '../labels';
+import { ENTITY_KIND_LABEL, REPUTATION_LABEL, entityFacts } from '../labels';
 import type { EntityBlock, ReputationVerdict } from '../schema';
 import { KpiGroupView } from './KpiGroupView';
 
@@ -81,6 +81,8 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
   const rawId = React.useId();
   const valueId = `ent-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const canInvestigate = isPageId('investigate');
+  // The kind is the badge: a "Kind" fact restating it is not listed again (T14).
+  const facts = entityFacts(block);
   return (
     // The block card already frames it; only a report leaf (no card of its own) draws
     // the entity's border, so the transcript never shows a card inside a card.
@@ -115,16 +117,16 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
 
           {/* Facts sit beside the gauge rather than below it, so the card has no dead
               band under the indicator. */}
-          {block.facts.length ? (
+          {facts.length ? (
             <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
-              {block.facts.map((f, i) => (
+              {facts.map((f, i) => (
                 <React.Fragment key={i}>
                   <dt className="truncate text-muted-foreground" title={f.label}>
                     {f.label}
                   </dt>
                   {/* Mono only for a fact the server marked attacker-derived (G7); product
-                      values ("ip", "1 of 1 answered") are prose (browser-QA D7). The
-                      indicator itself is already InlineCode above. */}
+                      values ("1 of 1 answered") are prose (browser-QA D7). The indicator
+                      itself is already InlineCode above. */}
                   <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground')}>{f.value}</dd>
                 </React.Fragment>
               ))}

@@ -69,8 +69,16 @@ describe('the reading column and the block hang (T5, T7)', () => {
   });
 
   it('caps compact cards to 42rem of text: the frame adds exactly its hang on each side', () => {
-    expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-block-width=compact]]:max-w-[42rem]');
-    expect(BLOCK_PROSE_CAP).toContain('@[40rem]:[&>*>*[data-block-width=compact]]:max-w-[calc(42rem+1.5rem+2px)]');
+    // The prose blocks are compact too, but keep their own caps: the compact caps leave
+    // them out (the computed cascade is pinned by lane-cascade.test.ts). Written out in
+    // full: Tailwind scans this file, and an interpolated class would emit a broken rule.
+    expect(BLOCK_PROSE_CAP).toContain(
+      '[&>*>*[data-block-width=compact]:not([data-block-type=markdown]):not([data-block-type=callout])]:max-w-[42rem]',
+    );
+    expect(BLOCK_PROSE_CAP).toContain(
+      '@[40rem]:[&>*>*[data-block-width=compact]:not([data-block-type=markdown]):not([data-block-type=callout])]:max-w-[calc(42rem+1.5rem+2px)]',
+    );
+    expect(BLOCK_PROSE_CAP).not.toContain('[data-block-width=compact]]');
     // 42rem + 2 × (0.75rem + 1px): the card text ends on the reading column's right edge.
     expect(READING_PX + 2 * CARD_HANG_PX).toBe(42 * 16 + 1.5 * 16 + 2);
     expect(BLOCK_PROSE_CAP).toContain('[&>*>*[data-scope-line]]:max-w-[42rem]');

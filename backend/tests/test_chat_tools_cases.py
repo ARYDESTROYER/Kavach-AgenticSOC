@@ -220,6 +220,15 @@ async def test_explain_decision_matches_decide_and_writes_nothing(store: CaseSto
     assert_artifacts_render(out)
 
 
+@pytest.mark.parametrize("risk,shown", [(98.5, 99), (46.5, 47), (2.5, 3), (0.5, 1), (47.4, 47), (98.49, 98)])
+async def test_explain_decision_states_the_gauge_integer(store: CaseStore, risk: float, shown: int) -> None:
+    # Round 13 T1: the step summary rounds risk half up, like the gauge, the get_case
+    # summary and the card's reason line (never Python's half-to-even "risk 98").
+    out = await ExplainDecisionTool().run(make_ctx(cases=store), verdict="TRUE_POSITIVE", confidence=0.9,
+                                          risk_score=risk)
+    assert f" and risk {shown} would be " in out.summary, out.summary
+
+
 async def test_explain_decision_forwarding_needs_sources_read(store: CaseStore) -> None:
     seen: list[str] = []
 

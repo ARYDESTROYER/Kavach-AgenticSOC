@@ -10,18 +10,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 
 import type { StarterSurface } from '@/lib/types';
+import { clearChatActivity } from '../../../chat-activity/activity';
 import {
+  DISMISS_FALLBACK_MS,
   STARTERS_REFRESH_MS,
   STARTERS_VIEWED_AFTER_MS,
   clearChatStartersCache,
+  commitStarterDismissal,
+  flushStarterDismissals,
   hideStarterLocally,
+  pendingStarterDismissal,
   restoreStarterLocally,
   useChatStarters,
   useHiddenStarterKeys,
   useStarterViewed,
   type UseStarterViewedArgs,
 } from '../useChatStarters';
-import { NEEDS_HUMAN, TRIAGE, json, makeInfo, query, stubStarterFetch, type StarterCall } from './fixtures';
+import { NEEDS_HUMAN, NEW_CASES, SILENT_SOURCE, TRIAGE, json, makeInfo, query, stubStarterFetch, type StarterCall } from './fixtures';
 
 let visibility: DocumentVisibilityState = 'visible';
 
@@ -221,6 +226,36 @@ describe('locally hidden cards', () => {
     renderStarters({ principal: 'bob' });
     await act(async () => {});
     expect(hidden.result.current.size).toBe(0);
+  });
+
+  it('posts a waiting dismissal only under the viewer who hid the card', () => {
+    vi.useFakeTimers();
+    const server = stubStarterFetch(() => json(makeInfo()));
+    // Hidden by admin, who then signs out (here or in another tab): the toast closing,
+    // the 60 s fallback and the page going away all post nothing under the next viewer.
+    const token = hideStarterLocally('k-admin', NEEDS_HUMAN.key, 'admin');
+    expect(pendingStarterDismissal('k-admin', token)).toBe(true);
+    clearChatActivity();
+    expect(pendingStarterDismissal('k-admin')).toBe(false);
+    commitStarterDismissal('k-admin', token);
+    vi.advanceTimersByTime(DISMISS_FALLBACK_MS);
+    flushStarterDismissals();
+    expect(server.events()).toEqual([]);
+    // Hidden with no known viewer, then a viewer is seen: it was not that viewer's hide.
+    hideStarterLocally('k-unknown', NEW_CASES.key);
+    renderStarters({ principal: 'bob' });
+    expect(pendingStarterDismissal('k-unknown')).toBe(true);
+    vi.advanceTimersByTime(DISMISS_FALLBACK_MS);
+    expect(server.events()).toEqual([]);
+    // Hidden by bob while bob is signed in: posted (here by the fallback).
+    hideStarterLocally('k-bob', SILENT_SOURCE.key, 'bob');
+    vi.advanceTimersByTime(DISMISS_FALLBACK_MS);
+    expect(server.events()).toEqual([{ type: 'dismissed', surface: 'home', keys: [SILENT_SOURCE.key] }]);
+    // A token names one hide: an older token neither posts nor cancels a newer hide.
+    const older = hideStarterLocally('k-twice', TRIAGE.key, 'bob');
+    const newer = hideStarterLocally('k-twice', TRIAGE.key, 'bob');
+    expect(pendingStarterDismissal('k-twice', older)).toBe(false);
+    expect(pendingStarterDismissal('k-twice', newer)).toBe(true);
   });
 });
 

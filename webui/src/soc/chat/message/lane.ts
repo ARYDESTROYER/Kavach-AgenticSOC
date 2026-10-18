@@ -103,14 +103,19 @@ export const BLOCK_HANG =
  * `markdown` block is prose, at the 38rem prose measure; a `callout` a note like the
  * message's notices), the shared scope line, and every COMPACT framed block. A compact card's frame is 42rem of text
  * plus its hang on each side once the hang applies, so its text ends exactly on the
- * reading column's right edge. Literals, so Tailwind's compiler sees them.
+ * reading column's right edge. The prose blocks are marked compact too (so an answer of
+ * prose alone keeps its meta row in the reading column), so the two compact caps leave
+ * `markdown` and `callout` out: Tailwind emits these rules with equal specificity in its
+ * own order, and a compact cap that matched a prose block would replace its prose cap
+ * (the computed cascade is pinned by `lane-cascade.test.ts`). Literals, so Tailwind's
+ * compiler sees them.
  */
 export const BLOCK_PROSE_CAP = [
   '[&>*>*[data-block-type=markdown]]:max-w-[38rem]',
   '[&>*>*[data-block-type=callout]]:max-w-[42rem]',
   '[&>*>*[data-scope-line]]:max-w-[42rem]',
-  '[&>*>*[data-block-width=compact]]:max-w-[42rem]',
-  '@[40rem]:[&>*>*[data-block-width=compact]]:max-w-[calc(42rem+1.5rem+2px)]',
+  '[&>*>*[data-block-width=compact]:not([data-block-type=markdown]):not([data-block-type=callout])]:max-w-[42rem]',
+  '@[40rem]:[&>*>*[data-block-width=compact]:not([data-block-type=markdown]):not([data-block-type=callout])]:max-w-[calc(42rem+1.5rem+2px)]',
 ].join(' ');
 
 /** Answer blocks: the whole lane, framed cards hanging into the gutter, compact blocks and prose capped (above). */

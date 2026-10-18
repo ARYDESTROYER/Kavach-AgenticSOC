@@ -329,6 +329,44 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
   execution, raw log rows to the model (#7), training on answer ratings, and an MCP
   server.
 
+**H. Round-13 chat deferred items (see `docs/research/2026-10-round13/SPEC-chat.md` §9 and
+§10.7):**
+
+- ☐ **A configured shift schedule per team** (D4): shift cards follow each analyst's own
+  visits today (a first visit after 8 hours starts a shift; the handoff card 7 to 13
+  hours later).
+- ☐ **Organisation-wide suggestion analytics**: counts-only analytics need their own
+  decision; D10 forbids content telemetry, and today nothing about suggestions is
+  aggregated across users.
+- ☐ **Organisation-editable starter templates**: the templates are curated in code
+  (`agents/chat_starter_text.py`).
+- ☐ **SSE-driven starter refresh**: the 120-second poll and the focus refresh cover this
+  round.
+- ☐ **Follow-up chips that carry typed references**: the deterministic chips are
+  value-free.
+- ☐ **Server-side follow-up back-off**: the back-off is per browser this round.
+- ☐ **Row-level `can_object()` scope in the chat case tools**: until then, object scoping
+  suppresses every case suggestion family and the catch-up line (fail closed).
+- ☐ **Case numbers on case-list blocks**: `agents/blocks.py` `CaseListItem`,
+  `case_list_item` and the shift report's "Needs attention" items do not carry
+  `case_number` yet, so case lists show the title and a short id; starter case
+  references resolve numbers only within the newest 5,000 cases.
+- ☐ **"My cases" in chat**: a signed-in-analyst filter on `search_cases` (or the caller's
+  name in the prompt), so the `my_cases` suggestion's answer lists only the caller's cases.
+- ☐ **About-to-breach rows from `shift_report`**: so the `sla_close` suggestions can be
+  answered in full.
+- ☐ **Starter speed at scale**: the open-case read can take a request past 600 ms on a
+  20,000-case SQLite store with 15% of cases open; the hunt and auto-close health cards
+  are missing for up to one refresh after a start or 10 idle minutes.
+- ☐ **Small leftovers**: `related_cases` titles equal the case id
+  (`chat_tools/cases.py`); live case titles from `agents/pipeline.py` still use an em
+  dash separator (switch to " · "); the shell user chip shows a saved display name
+  only after a reload; four test fixtures (three webui, one backend:
+  `backend/tests/test_reports_routes.py`) carry the old Demo source names.
+- **Never** (product decisions, not backlog): model-written starters, starters that act,
+  starters that fill the composer with case or log values, a scrolling suggestion feed,
+  and training on clicks.
+
 Each item ends with: `pytest -q` green (keep the count current), full docs+app
 `npm run build` + `npm run test:strict` clean, **#3 `decide()` byte-identical**, additive + zero new runtime deps
 where possible, and docs + Journal updated. Commit or publish only after intentional,
@@ -340,6 +378,15 @@ explicit authorization.
 - ☑ AGENTS.md (with CLAUDE.md forwarder), Journal.md, docs/ENVIRONMENT.md, this ROADMAP.
 
 ## Progress (this cycle, newest first)
+- ◐ **Round 13, chat: dynamic suggestions and a neater chat** (branch `claude/round12`, PR
+  to `Testing`). Dynamic $0 starters computed by code under each viewer's grants
+  (`GET /api/chat/starters`, `POST /api/chat/starters/events`, the `chat_starters` KV
+  namespace), a bottom-anchored start stack with a catch-up line, a thread catch-up line,
+  Case Manager case chips, anchored follow-ups, conversation titles from the first answer,
+  a 42rem reading column with compact and wide blocks, quiet block headers with one shared
+  scope line, the cost on the meta row with tokens in the usage card, and Demo answers for
+  every starter. Deferred items are in section H above; records in
+  `docs/research/2026-10-round13/SPEC-chat.md` §10.
 - ◐ **Round 12 — chat without limits, working indicator, Remember me, reports, Overview,
   Case Manager** (branch `claude/round12`, PR to `Testing`). Chat questions run without
   per-question caps (loop guards, continuation, conversation summary), outside the daily

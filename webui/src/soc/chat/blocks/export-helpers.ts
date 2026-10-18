@@ -32,6 +32,7 @@ import {
   REPUTATION_LABEL,
   TIMELINE_KIND_LABEL,
   booleanText,
+  entityFacts,
   semanticColumn,
   semanticText,
   type SemanticColumn,
@@ -176,7 +177,7 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
         rows: [
           ['Kind', ENTITY_KIND_LABEL[block.entity.kind]],
           ['Value', block.entity.value],
-          ...block.facts.map((f): Cell[] => [f.label, f.value]),
+          ...entityFacts(block).map((f): Cell[] => [f.label, f.value]),
           ...block.reputation.map((r): Cell[] => [
             `Reputation: ${r.provider}`,
             r.score === undefined || r.score === null ? REPUTATION_LABEL[r.verdict] : `${REPUTATION_LABEL[r.verdict]} (${r.score})`,

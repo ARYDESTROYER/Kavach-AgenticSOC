@@ -439,6 +439,18 @@ saved, keep no running summary: when the conversation outgrows the model's conte
 window, only the newest exchanges that fit are sent, and the oldest are left out without
 a notice. The card shows the same note there.
 
+### Chat suggestions have bounded scope
+
+The suggested questions on a new chat follow each analyst's own visits: a first visit
+after 8 hours or more away counts as the start of a shift, and the handoff card appears 7
+to 13 hours later. There is no configured team shift schedule. While row-level object
+scope is turned on for a role, no suggestion about cases and no "Since …" line is shown,
+because chat's case lookups do not apply that scope yet and a suggestion must never state
+a count its answer would contradict. Case lists in chat answers name a case by its title
+and a short ID until the lookups return case numbers, and chat cannot yet filter cases by
+the signed-in analyst, so the answer to "Which of my open cases should I work on first?"
+says so and shows the open queue by assignee.
+
 ### Baseline learning and anomaly promotion are separate
 
 The normal pull/push path now observes and persists aggregate-only source and cluster

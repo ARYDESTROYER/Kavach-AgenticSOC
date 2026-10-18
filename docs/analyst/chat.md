@@ -26,52 +26,173 @@ The Chat page has three zones:
 - **Conversation** in the middle: the thread toolbar, the transcript, and the composer.
 - **Report** on the right, on demand: the report you are building from this
   conversation. It opens beside the conversation when there is room and over it
-  otherwise. See [Reports](#reports).
+  otherwise. When the history rail has to shrink to make room, the page says "History
+  collapsed to make room for the report", and closing the report brings the docked rail
+  back. See [Reports](#reports).
 
-The thread toolbar shows the conversation title (select it to rename), the
-conversation's total tokens and cost, a **Report** toggle (with its item count once the
-report has items), and a `⋯` menu with Rename, Pin conversation, Export conversation,
-Save conversation as report, Width, and Delete.
+The thread toolbar shows the conversation title (select it to rename), a **Report**
+toggle (with its item count once the report has items), and a `⋯` menu. The menu's
+first line is the conversation's usage, for example "This chat: 12.4k tokens · $0.03"
+("Usage not recorded" for a conversation saved before usage was recorded). Then come
+**Rename**, **Pin** (or **Unpin**), **Export**, **Save conversation as report**, and
+**Delete**, and a **View** group with the conversation width.
 
 ### Conversation width
 
 The conversation uses the width the page gives it: when you collapse the navigation
 or the history rail, the answers grow into the space, up to the full width of the
-screen. Prose keeps a readable line length on the left edge, and charts, tables, and the
-message box use the whole width. Choose how wide it may grow under `⋯` → **Width**:
+screen. Answers keep one **reading column** on the left edge: answer text wraps before
+about 90 characters a line, and small results stay in that column beside the text that
+explains them. Larger results, the start screen's suggestions, and the message box use
+the whole width. Choose how wide the conversation may grow under `⋯` → **View**:
 
 | Width | Use it for |
 |---|---|
-| **Comfortable** | A narrower column, up to about 1,000 px |
-| **Wide** | Up to about 1,400 px, centred on very wide screens |
-| **Full width** (default) | All the space beside the menus, for wide tables and charts |
+| **Comfortable** | Narrower, easier to read: up to about 1,000 px |
+| **Wide** | Wider: up to about 1,400 px, centred on very wide screens |
+| **Full width** (default) | Fills the space beside the menus, for wide tables and charts |
 
 The choice is saved to your account and follows you to other devices; if you chose
 Comfortable or Wide before, your choice is kept. With Comfortable or Wide, a single chart
 or table can also take the full width from its own `⋯` menu (**Full width**).
 
+A result stays in the reading column when it is small: up to four key figures, an
+indicator card, a case list, ATT&CK techniques, a table of up to three columns, or a
+bar, donut, or funnel chart of up to 12 categories. Time charts, wider tables, heatmaps,
+timelines, queries, and Briefs use the whole width.
+
+## Start a chat
+
+A new chat opens on a short start screen, directly above the message box, so the
+suggestions sit next to where you type and nothing moves when you send:
+
+- **A greeting**, such as "Good afternoon, Priya", from your display name (set it on
+  **Account**), else your username.
+- **What changed since you were last here**, for the first hour of a visit when anything
+  did (a new visit starts after 30 minutes away): "Since 09:12: 5 new cases (2 critical),
+  1 of your cases changed and Wazuh quiet for 3 hours." Each part is a link that asks
+  about it. Otherwise the line reads "Ask about cases, logs, metrics or this console."
+- **Suggested questions**: three or four cards (four in a row on a wide screen, two by
+  two on a medium one, three in a column on a phone), each a question about your own
+  data right now, with a short reason under it, such as "Escalated 2 hours ago, risk 86".
+- **Category pills**: **Investigate**, **Hunt**, **Posture**, **Report**, **Learn the
+  app**, and **All prompts**. Each opens the [prompt library](#the-prompt-library)
+  filtered to that kind of question. A pill appears only when the library holds a prompt
+  in its category that you may run.
+
+### Suggested questions
+
+The cards are computed by code from what is in the console now, under your own
+permissions: no AI model builds, ranks, or words them, and building them costs nothing.
+They read the platform's own records (cases, source health, campaigns, approvals, and
+spend), never raw logs. Every number on a card is exact, and a card appears only when
+you hold the permissions its answer needs, so a card never offers an answer you cannot
+see.
+
+| A card about | When it appears |
+|---|---|
+| A case that needs a person | An escalated case, one waiting for review, or an open case whose AI verdict is Needs human, that is unassigned or assigned to you; the most urgent one |
+| Your cases | Open cases are assigned to you |
+| Response targets | SLA targets are on and open cases are past, or close to, their response target |
+| New cases | Cases have opened since your last visit |
+| Case volume | New cases in the last 24 hours are at least twice the usual daily level (and 5 or more above it), or half of it or less |
+| A noisy detection rule | One rule created at least 10 cases, and 30% or more of all new cases, in the last 24 hours |
+| A campaign | A campaign is new, or has grown, since your last visit |
+| A quiet log source | A log source has gone quiet or is failing its polls |
+| AI spending | Today's AI budget, or the chat spending limit, is mostly used (needs `models:read` and `cost:view`) |
+| Your shift | The start of your shift (your first visit after 8 hours or more away), or a handoff 7 to 13 hours after it |
+| The week or the month | The first visit of a new week (Monday) or a new month (the 1st) |
+| A chat to continue | One of your other conversations has a new answer, or a question waiting for you, from the last 24 hours |
+| A saved prompt | You starred a saved prompt or promptbook |
+| A hunt | An ATT&CK technique appeared in 3 or more cases in the last 7 days |
+| Approvals | Tuning changes are waiting for approval |
+| Auto-close health | The auto-close health check reports auto-close as degraded or collapsed |
+| Demo Mode | Demo Mode is on |
+
+The most urgent cards come first, cards about your own cases rank higher, and a card you
+have seen three times without using it gives way to others. When fewer cards apply, the
+everyday questions fill the rest: which open cases need attention first, posture now, an
+executive report for the last 7 days, the Active Risk Index explained, and a tour of the
+console. On a fresh install with no source and no case, the first card is "How do I
+connect my first log source?".
+
+Selecting a card sends its question as written, at once; nothing is typed into your
+message box. A card that names a case, rule, source, campaign, or technique sends that
+value to the assistant marked as data from your systems, not as your own words, so an
+indicator in it is looked up with an enrichment provider only when the answer's own
+lookups return it (see [What chat can read](#what-chat-can-read)). Two cards act
+differently: **Continue** opens that conversation, and a saved prompt card does what
+**Use** does in the prompt library. The cards are a snapshot: when a number has changed
+by the time you send, or the case was closed, the answer says so.
+
+Cards refresh every two minutes while the page is visible, and when you come back to the
+window after that, but never while your pointer is over them or focus is on them, so a
+card never moves under you. While an answer is being written, the cards are paused.
+
+When an administrator has turned on row-level scope for your role, cards about cases and
+the catch-up line are not shown, because chat's case lookups do not apply that scope yet
+and a card must never state a count the answer would contradict.
+
+**Hide for a day.** Point at a card (or tab to it) and select **Hide for a day** in its
+corner, or press **Delete** or **Backspace** on a focused card. The next suggestion takes
+its place and the other cards stay where they are. A notice "Hidden for a day" offers
+**Undo**, which puts the card back where it was; while the notice shows, Ctrl+Z (⌘Z on a
+Mac) on the start screen does the same. The card is hidden on the server only
+when the notice closes without **Undo**; that kind of card then stays away for 24 hours.
+
+If the suggestions cannot be loaded, the start screen says "Couldn't load suggestions."
+with **Retry**; the message box works as usual. When there is little height, the greeting
+is hidden and the rest stays.
+
+### Catching up in an open conversation
+
+When you come back to a conversation whose last answer is 30 minutes old or more, one
+quiet line above the message box can say what changed since that answer, in the same
+words as the start screen. Each part asks about it in the same conversation. The line
+disappears as soon as you type, an answer starts, or you select **Hide this summary**,
+and it shows at most once per conversation per visit.
+
+### Turn suggestions off
+
+- **For yourself:** in the message box's Options `⋯`, clear **Suggestions when a chat
+  starts** (the start screen's cards and the catch-up lines) or **Suggested follow-ups**
+  (the chips under an answer, see [Follow-ups](#follow-ups)). Each choice is saved to your
+  account. With the start screen's suggestions off, a new chat shows only the greeting,
+  the line "Ask about cases, logs, metrics or this console.", and the category pills.
+- **For everyone:** an administrator can turn off **Suggest questions from live data**
+  under **Settings → General → Chat assistant**. New chats then offer only the everyday
+  questions and no catch-up line.
+
+Suggestions store only what they need to rotate and hide cards: which kinds of card you
+saw, used, or hid, as opaque keys with counts and times, and when you last visited. No
+question text, value, or answer is stored, nothing of it is sent to a model or used to
+train one, it is never shown to anyone else or combined across users, and it is deleted
+with your account. A suggestion you send is an ordinary question, recorded and metered
+like any other.
+
 ## Ask a question
 
-Type into the composer and press **Enter**; **Shift+Enter** adds a new line. A new
-conversation opens with six starters: *Investigate*, *Hunt an indicator*, *Posture
-now*, *Shift brief*, *Explain a metric*, and *Learn the app*. A starter appears only
-when you hold the permissions its lookups need, and its question is built from your
-own data, such as your newest open case or your primary source.
+Type into the message box, which reads "Ask about cases, logs, metrics or this console"
+("Ask a question" on a narrow screen), and press **Enter**; **Shift+Enter** adds a new
+line. While the box is focused and empty, a muted hint at the right of its controls
+reads "/ commands · @ scope". The box has a quiet frame at rest and a clearer one while
+you type in it.
 
 The composer has one row of controls under the text box:
 
 | Control | What it does |
 |---|---|
-| **Read-only** | Opens **What the assistant can access**: every lookup, its data source, the permission it needs, and whether you have it. A lookup an administrator switched off reads "Turned off on this deployment". |
-| Scope | The log source and time range in one chip, for example "Wazuh · Auto" or "Wazuh · 30d". The default, **Auto**, chooses no range and sets no outer limit: each lookup uses its own default window (see [Time windows](#time-windows)). The ranges are **1h**, **24h**, **7d**, **30d**, **90d**, **6mo**, **12mo**, and **All time**. A range you choose is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it. **All time** never limits a question. The shift brief covers at most 7 days, and agent improvement always compares its own fixed periods. The run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
+| **Read-only** | Opens **What the assistant can access**: every lookup and its data source. A lookup you may not run says which permission it needs, such as "Needs permission to read sources (sources:read)", so an administrator can grant it. A lookup an administrator switched off reads "Turned off on this deployment". |
+| Scope | The log source and time range in one chip, for example "Wazuh · Auto" or "Wazuh · 30d". The default, **Auto**, chooses no range and sets no outer limit: each lookup uses its own default window (see [Time windows](#time-windows)). The popover says it in one line, "Auto: each lookup uses its own default window.", with the details under **How ranges work**. The ranges are **1h**, **24h**, **7d**, **30d**, **90d**, **6mo**, **12mo**, and **All time**. A range you choose is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it. **All time** never limits a question. The shift brief covers at most 7 days, and agent improvement always compares its own fixed periods. The run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |
 | `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |
 | `/` commands | Type `/` at the start for the commands below, your saved prompts, and the prompt library. |
-| `≈ 1.2k` and the ring | The token estimate for your next request, and a ring that shows how much of the model's context window that request uses (see [Tokens and cost](#tokens-and-cost)). |
-| Options `⋯` | Model, **Type out answers**, Prompts (your saved prompts, **Save current prompt**, and **Prompt library…**), and Keyboard shortcuts. A non-default model also shows as a removable chip. A reopened conversation starts on the default model; each saved answer still names the model it used. |
+| Token meter | Hidden until you type (or until the conversation uses half of the model's context window). Then it reads, for example, "≈ 4.1k tokens", the estimate for your next request, with a ring that shows how much of the context window that request uses; on a narrow composer only the ring shows (see [Tokens and cost](#tokens-and-cost)). |
+| Options `⋯` | Model, **Type out answers**, **Suggestions when a chat starts**, **Suggested follow-ups**, Prompts (your **Favourites** or your saved prompts, **Save current prompt**, and **Prompt library…**), and Keyboard shortcuts. A non-default model also shows as a removable chip. A reopened conversation starts on the default model; each saved answer still names the model it used. On a phone, the model list and the prompts are listed inside the menu. |
 | Send / Stop | Send becomes Stop while an answer is being written. |
 
 On a narrow composer, the scope chips merge into one **Scope · n** chip, the
-**Read-only** chip shows only its lock, and the model chip shows only its icon.
+**Read-only** chip shows only its lock, and the model chip shows only its icon. Every
+menu and popover of the composer keeps a 16 px gap from the edge of the screen.
 
 ### Time windows
 
@@ -145,7 +266,10 @@ A command is listed only when you may run its lookups. Commands without a value 
 once. A command that takes a value fills the composer and selects the placeholder so you
 can type the value and press Enter: the value is then your own words, which matters for
 indicator lookups (see [What chat can read](#what-chat-can-read)). In the `/` and `@`
-menus, **Enter** chooses an item; **Tab** moves focus and never sends.
+menus, **Enter** chooses an item; **Tab** moves focus and never sends. Each menu opens on
+its first row. Group headings stay in view as the list scrolls, and each row has its
+description on a second line. Pointing at a row highlights it without scrolling the
+list; the arrow keys scroll it.
 
 `/compact` works in a saved conversation only, and only when chat runs without limits;
 text after `/compact` is not sent. See [Long conversations](#long-conversations).
@@ -153,10 +277,16 @@ text after `/compact` is not sent. See [Long conversations](#long-conversations)
 ### The prompt library
 
 Keep the questions you ask often, and start from the starter prompts that ship with
-the product. Open the library with **Prompt library** in the `/` menu, or with **Prompt
-library…** in the Options menu's Prompts list. It lists your own prompts and the
+the product. Open the library with **Prompt library** in the `/` menu, with **Prompt
+library…** in the Options menu's Prompts list, or with a category pill on the start
+screen, which opens it filtered to that category. It lists your own prompts and the
 read-only **starter prompts**, filtered by category (Triage, Hunt, IOC, Posture,
-Reporting, and App help) or by **Favorites**, with a search box.
+Reporting, and App help) or by **Favourites**, with a search box.
+
+Select a row to use it: the prompt fills the message box (or asks for its values first).
+A row's `⋯` menu holds **Save a copy**. A promptbook row says how many steps it has,
+such as "3 steps", and expands to show them. Closing the library without choosing
+returns you to where you opened it.
 
 - **Save a prompt** with **Save prompt** beside one of your earlier questions, with
   **Save current prompt** in the Options menu's Prompts list, or with **Save a copy** on
@@ -213,22 +343,31 @@ menu:
 - **Type out answers**: the same, plus the final answer appears word by word.
 
 Your choice is remembered for your account and takes effect from the next question.
-Each answer records the mode it ran with. When an administrator has turned typed-out
-answers off, or the selected model cannot stream, the switch is disabled and says why.
+Each answer records the mode it ran with. Under the switch, one line says what it does:
+"Shows the answer as it is written." When an administrator has turned typed-out answers
+off, or the selected model cannot stream, the switch is disabled and says why.
 
 ## Follow an answer as it runs
 
-While the assistant works, a run log sits under your question. Its header shows the
-running totals, for example "Working · 3 lookups · 1.2k tokens · $0.002". It has one
-row per lookup, or per group of lookups that ran side by side. A row shows:
+While the assistant works, a run log sits under your question. Before the first lookup
+it reads "Reading your question…", then "Choosing lookups…". Its header then shows the
+progress on the left, for example "Working · 3 lookups", and the running totals on the
+right, for example "1.2k tokens · $0.002"; on a narrow screen the totals move under the
+progress. It has one row per lookup, or per group of lookups that ran side by side. A
+row shows:
 
-- its status: Done, Failed, Timed out, Denied, Skipped, or Stopped;
-- what it did, such as "Searched logs" or "Counted cases";
-- chips for the effective parameters, including the time window and source;
+- its status as an icon: a check when it is done, or the word Failed, Timed out,
+  Denied, Skipped, or Stopped;
+- what it did, such as "Searched logs" or "Counted cases", and how long it took;
+- chips for the effective parameters in words, including the time window and source; a
+  lookup over several sources reads "3 sources", and selecting it lists them;
 - a short result with row counts, the basis (exact, newest N, sample, or cached), and
   coverage such as "newest 200 of 1,284,113" or "3 of 4 sources answered";
 - the exact query behind a disclosure, shown as untrusted code; and
 - **Inspect**, once the lookup has finished (see [Inspect a lookup](#inspect-a-lookup)).
+
+While a result is still on its way, the space it will take is kept for it, so the
+answer does not jump when it arrives.
 
 A count over a very large case store reports its progress while it runs, for example
 "Counted 42,000 of 118,402 cases…". Model calls add no rows of their own; their tokens
@@ -262,8 +401,10 @@ While chat works away from the screen:
 - the **Chat** item in the navigation shows a turning ring; an accent dot means a new
   answer you have not read, amber means a question you have not opened yet is waiting
   for your input, and red means an answer failed;
-- the logo can show a thin turning ring too (an administrator can turn this off, and a
-  custom logo itself never moves);
+- on a phone, where the navigation sits behind the menu button, that button shows a
+  small dot while an answer is being written;
+- the logo can show a thin turning ring too, on larger screens (an administrator can
+  turn this off, and a custom logo itself never moves);
 - the browser tab title starts with **●** while an answer is being written and **✓**
   when one is ready; and
 - when an answer is ready and Chat is not on screen, you get one **Answer ready**
@@ -281,22 +422,30 @@ the case.
 
 A finished answer reads from top to bottom:
 
-1. **The answer**: the direct answer first, then the evidence. A long answer with four
-   or more headings starts with a **Contents** list, and a long answer offers **Jump to
-   end**.
+1. **The answer**: the direct answer first, then the evidence. When a block shows the
+   figures, the text gives the takeaway and names at most two of them. A long answer
+   with four or more headings starts with a **Contents** list, and a long answer offers
+   **Jump to end**. An answer never ends with a question or an offer; suggestions go
+   in the follow-ups.
 2. **Blocks**: charts, tables, and other results (see below).
-3. **The meta row**: one line such as "4 lookups · 6.2 s · 2.1k tokens · $0.004".
-   Select the lookups to reopen the run log, or the token figure for usage details.
-   **Sources** lists the answer's citations and console links. Thumbs up and thumbs
-   down rate the answer (see [Rate an answer](#rate-an-answer)). **Copy**, **Add to
-   report**, and the **More actions** menu (Copy answer, Add answer to report, **Add to
-   case…**, and **Ask again**) sit at the right; on older answers they appear when you
-   point at or tab into the answer.
-4. **Follow-ups**: up to three suggested next questions, on the latest answer only.
+3. **The meta row**: one line such as "4 lookups · 6.2 s · $0.004 · Sources 3". Select
+   the lookups to reopen the run log, or the cost for the usage card, which holds the
+   tokens (an answer without a cost shows its token figure there instead). **Sources**
+   lists the answer's citations and console links. At the right: **Copy**, thumbs up
+   and thumbs down (see [Rate an answer](#rate-an-answer)), and the **More actions**
+   menu (**Add answer to report**, **Add to case…**, and **Ask again**). On older
+   answers they appear when you point at or tab into the answer. While the whole answer
+   is in the report, an **In report** chip shows before them; selecting it takes the
+   answer out. On a narrow screen the row keeps "4 lookups · 6.2 s", the thumbs, and
+   **More actions**, which then also holds **Copy answer**, **Usage details**, and
+   **Sources**, so no figure is ever cut.
+4. **Follow-ups**: up to three suggested next questions, on the latest answer only (see
+   [Follow-ups](#follow-ups)).
 
 An answer about the product carries a **Product help** label, shown only when no data
-lookup ran. An answer saved before usage was recorded shows "Usage not recorded · —"
-instead of a zero. In Demo Mode, money figures are marked "simulated".
+lookup ran. An answer saved before usage was recorded shows "Usage not recorded" instead
+of a zero. A figure that a lookup could not provide reads "not available". In Demo
+Mode, money figures are marked "simulated".
 
 A notice at the top of an answer explains anything unusual:
 
@@ -322,41 +471,83 @@ shows **Needs input** until you reply. The amber mark on **Chat** shows only unt
 open the question, and when you next open Chat it starts on your newest conversation
 rather than on a question you have already seen.
 
+### Follow-ups
+
+Under the latest answer, up to three suggested next questions sit in one quiet row, each
+with a small arrow. They are about something the answer shows, such as an entity, a
+window, a breakdown, or a case: usually one or two that go deeper and one that widens,
+for example "Investigate the top source IP in this answer", "Break this down by rule
+instead", "Which of these cases are still open, and who has them?", "Explain T1190 and
+whether other cases show it", "What else did this host do in the last 7 days?",
+"Compare this with the previous week", or "Show the same for the last 30 days".
+
+The assistant's own suggestions are kept only when they name something the answer
+shows, so a hunt for one technique never suggests a different one. An answer about the
+product, or a conversation without data, keeps at most two of them. A suggestion that
+repeats a question already asked in the conversation, or that needs a lookup you may not
+run, is left out. Suggestions are chosen by code from the answer and the assistant's own
+list, with no extra model call.
+
+Selecting a suggestion sends it as your next question; it counts as a suggestion, not as
+your own words, for indicator lookups. When you skip the suggestions of five answers in a
+row, only the first suggestion shows until you use one again (counted in this browser).
+To hide follow-ups altogether, clear **Suggested follow-ups** in the message box's
+Options `⋯`.
+
 ### When nothing matched
 
-When a lookup finds nothing, the answer says so in words, and one-click suggestions
-under it widen the search, for example a longer time window or a broader filter
-("Nothing matched. Widen the search:"). Selecting one sends it as your next question.
+When a lookup finds nothing, the answer says so in words, and one-click suggestions widen
+the search: a longer time window, every source, or the same lookup without one filter,
+for example "Without the source IP filter", "Open and closed cases", "Any severity", or
+"All sources". They join the follow-ups' row after a muted "Widen the search:" label and
+stay even when you turned follow-ups off, because they only repeat the lookup more
+widely. Selecting one sends it as your next question, for example "Show the same without
+the source IP filter".
 
 ### Charts, tables, and other blocks
 
 Numbers in blocks come only from lookups. The model chooses which result to show and
 how, but it never writes the numbers, so every chart is backed by a lookup in the run
-log. Each block shows its title, a caption with the window, the source, and how the
-number was counted (for example "6,438 cases · exact"), and a provenance tag: **source**
-for values read from a connected system, **code** for values the platform computed, and
-**AI** for text the assistant wrote, such as a brief's narrative or a callout. A chart,
-table, or key figure is never AI-written. When a block shows the top N of a larger
-total, its caption says so.
+log. Each block shows its title and a caption with the window, the source, and how the
+number was counted (for example "6,438 cases · exact"). The first line of its `⋯` menu
+says who produced the values: **Measured by a lookup** for values read from a connected
+system, **Computed by code** for values the platform computed, and **Stated by the
+model** for text the assistant wrote, such as a brief's narrative or a callout; such a
+block also says "Values stated by the model, not measured" under it. A chart, table, or
+key figure is never AI-written. When a block shows the top N of a larger total, its
+caption says so.
+
+When several blocks in a row share the same caption parts and the same time, the answer
+states them once, in a quiet line above the first block, for example "44 cases · exact ·
+last 24 hours · as of 11:13", and each block's caption keeps only what differs. A
+printout, an export, a report item, and the expanded view keep each block's full
+caption, because a block can travel alone.
+
+Cases are named by their case number and title. A case without a number shows its title
+followed by a short form of its ID (the full ID is in its tooltip). Verdicts, statuses,
+and kinds read in words, such as "True positive", "Open → Escalated", and "IP".
 
 Case counts in chat are exact across your whole case store, however large: chat never
 presents a sample as a total. If the store fails part-way through a count, the answer
 says how much was counted instead of showing a smaller number as exact.
 
-Block types include key-figure groups (with a gauge for the Active Risk Index); bar,
+Block types include key-figure groups (the Active Risk Index tile shows a small gauge
+beside its figure, with the band, such as "High", above "/100"); bar,
 grouped bar, horizontal bar, stacked bar, line, area, donut, sparkline, and funnel
 charts; heatmaps; tables; case lists; timelines; entity cards; ATT&CK technique cards;
 query blocks; and guides with console links. A **comparison** sets two or more periods
 side by side, for example this quarter against the last: tiles with the absolute and
 percentage change, grouped columns, and a table. A change from zero reads "new", never
 infinity, and a figure based on fewer than 20 cases is marked as a small sample. A
-**Brief** groups several results into sections, for example for a shift handoff; an
-infographic Brief leads with key figures and trend lines and lays its charts out in a
-grid.
+**Brief** groups several results into sections, for example for a shift handoff. Its
+title reads "Brief: {title}" (unless the title already says brief), its window is stated
+once, and it shows a **Contents** control from four sections. An infographic Brief leads
+with key figures and trend lines and lays its charts out in a grid.
 
 Charts over time read in calendar terms, such as "Mar 2026" or "W14 2026", name their
-time zone, and draw the current period lighter with "(in progress)". On a time chart you
-can:
+time zone, and draw the current period lighter with "(in progress)". A time chart has one
+row of controls above it: **Group by** on the left, and the zoom hint ("Drag to zoom"),
+the zoomed range, and **Reset zoom** on the right. On a time chart you can:
 
 - **Group by** a coarser unit, such as days into weeks or weeks into months, when the
   data allows it; the table, Copy data, and the downloads follow the grouping shown.
@@ -364,16 +555,23 @@ can:
   another; with the keyboard, Shift+←/→ then Enter. **Reset zoom** shows the whole
   series again.
 - **Hide or show a series** by selecting it in the legend; at least one stays visible.
+  When every line is labelled at its end, the chart draws no legend, and **Series** in
+  the block's `⋯` menu shows or hides lines instead.
 
-All of these change only the view of the same numbers; nothing is looked up again.
+All of these change only the view of the same numbers; nothing is looked up again. A
+horizontal bar shows its value just after the bar, and a donut's legend sits beside it on
+a wide card and under it on a narrow one.
 
-Every block has **Add to report** and a `⋯` menu:
+At rest a block shows only its `⋯` menu. **Add to report** appears beside it when you
+point at or tab into the block, and stays while the block is in the report. The menu:
 
 | Action | What it does |
 |---|---|
+| Add to report | Adds the block to this conversation's report, or removes it (also beside the menu, see above) |
 | Expand | Opens the block in a wide view |
 | Full width | Lets the block use the whole conversation width (offered when there is room to gain) |
 | Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. |
+| Series | Shows or hides each line of a chart whose lines are labelled at their ends |
 | Show table / Show chart | Flips between the chart and its data |
 | Copy data | Copies the rows as tab-separated text. Indicators are defanged by default (`hxxp`, `[.]`), and the menu has a toggle. |
 | Download CSV / Download JSON | Saves the block's data. CSV cells that look like formulas are neutralized. |
@@ -407,12 +605,18 @@ writes its own links.
 ### Inspect a lookup
 
 Select **Inspect** on a finished lookup in the run log to see exactly what it did, in a
-side panel:
+side panel. Its header names the step and what the lookup did, such as "Step 2: Searched
+logs", and states its status and time once:
 
-- **What was sent**: the lookup's parameters and the exact query as it ran;
+- **What was sent**: which lookup ran, its parameters, and the exact query as it ran;
+  the lookup is named in words with its tool name in muted text, such as "Search logs
+  (search_logs)";
 - **What the model saw**: the result as the model received it, which is counts, top
   values, and a few sample rows, never raw log records;
-- its time, rows, and tokens.
+- its rows and tokens, under a heading that names what it holds, such as "Sources and
+  tokens".
+
+Queries and results keep their lines and scroll sideways on a narrow screen.
 
 Everything in the panel came from logs or the model, so it is shown as plain text, and
 invisible or look-alike characters are written as visible escapes (such as `\u200b` for a zero-width space) so
@@ -449,13 +653,18 @@ disposition. Nothing is added to a case without this confirmation.
 
 Chat shows token use and cost before, during, and after each question.
 
-- **Before you send:** `≈ 1.2k` is the estimate for your next request: the system
-  instructions, the part of this conversation that will be sent, and your draft, at
-  about four characters per token. After the first answer in a conversation, the
-  estimate is calibrated against what the model actually counted. The ring beside it
-  shows how much of the model's context window that request fills, for example "12%".
-  Point at either, or select the estimate, for the breakdown, the projected cost, the
-  model's context window, and this conversation's totals. When chat runs without
+- **Before you send:** once you start typing, "≈ 1.2k tokens" is the estimate for your
+  next request: the system instructions, the part of this conversation that will be
+  sent, and your draft, at about four characters per token. With an empty message box
+  the meter stays hidden until the conversation uses half of the model's context window.
+  After the first answer in a conversation, the estimate is calibrated against what the
+  model actually counted. The ring beside it shows how much of the model's context
+  window that request fills, for example "12%". Point at either, or select the estimate,
+  for the breakdown, the projected cost, the model's context window, and this
+  conversation's totals. The card's history line says what the next request replays:
+  "History: none yet" in a new chat, "History: 3 exchanges, summarised near the limit"
+  when chat runs without limits, or "History: summary of earlier messages" after
+  `/compact`. When chat runs without
   limits, a long saved Workspace conversation is summarised automatically near the
   limit, so the chat keeps going; there is no hard cap. In Case Manager chat, in an
   unsaved conversation, and when an administrator has set per-question limits, only
@@ -469,11 +678,12 @@ Chat shows token use and cost before, during, and after each question.
   when one is set and you may see it. Automatic investigations count against that
   budget; chat is recorded in the cost ledger but is not paused by it.
 - **While it runs:** the run-log header updates after every model call.
-- **After it finishes:** the meta row shows the exact totals. The usage details list
-  input, cached input, output, and total tokens, search-embedding calls, model calls,
-  cost, model time, the model, the sources queried, and whether any figure was
-  estimated (`≈`).
-- **For the conversation:** the toolbar shows the running total.
+- **After it finishes:** the meta row shows the exact cost; select it for the usage
+  card, which holds the tokens. The usage details list input, cached input, output, and
+  total tokens, search-embedding calls, model calls, cost, model time, the model, the
+  sources queried, and whether any figure was estimated (`≈`).
+- **For the conversation:** the first line of the thread `⋯` menu, for example "This
+  chat: 12.4k tokens · $0.03".
 
 **Chat is not limited by the AI budget, daily or monthly.** That budget protects
 automatic investigations: when it is close or used up, one alert above the composer
@@ -550,8 +760,8 @@ The reply is a short note, not an answer: it says what was summarised and what i
 (**No model call · $0** when no model was used, as in Demo Mode), names no data source,
 and has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,
 **Ask again**). The assistant does not see the note in later questions, a later
-`/compact` does not summarise it again, and **Save conversation as report** and **Export
-conversation** leave it out.
+`/compact` does not summarise it again, and **Save conversation as report** and **Export**
+leave it out.
 
 ## Reports
 
@@ -566,8 +776,9 @@ query behind each one.
 Ask for a report and chat creates it for you. A question such as "Create a monthly SOC
 report for September" or `/report monthly` runs the lookups the report needs, writes
 the answer as a **Brief** with that template's sections, and saves it to the Reports
-library. A line under the answer says **Saved to Reports** with the report's title,
-**Open**, and **Export**. The server creates the report from the saved answer; the model
+library. One line under the answer says so, for example "Saved to Reports: Monthly SOC
+report, September 2026 · Open · Export", with no second notice. The server creates the
+report from the saved answer; the model
 only names its title and template. When the save could not happen (for example,
 because you already have 100 reports), the line says why and, when trying again can
 help, offers **Save as report**. A stopped or failed answer is not saved as a report,
@@ -595,10 +806,12 @@ report's item limit; answers that do not fit are counted in the confirmation.
 
 ### Add to a report
 
-Select **Add to report** on a block to add that block, or on an answer's meta row to add
-the whole answer as a section titled with your question. The first add creates this
-conversation's draft report; the control then reads **In report ✓**, and selecting it
-again removes the item. When there is room, the report panel opens beside the
+Select **Add to report** on a block (beside its `⋯` menu, or in it) to add that block, or
+**Add answer to report** in an answer's **More actions** menu to add the whole answer as
+a section titled with your question. The first add creates this conversation's draft
+report. A block's control then shows as added, and an answer shows an **In report** chip
+on its meta row; selecting either again removes the item. When there is room, the report
+panel opens beside the
 conversation without taking focus; on a narrower screen it stays closed and a notice
 offers **Open**.
 
@@ -612,11 +825,17 @@ Case Manager.
 
 ### The report panel
 
-- **Header:** the editable title, the template, the item count out of 60, **Download
+- **Header:** the editable title (the panel reads "Report" until this conversation has a
+  working report), the template, the item count, such as "1 of 60 items", **Download
   PDF**, and **Export**.
+- **Saved from this chat:** the reports this conversation's answers saved to the Reports
+  library (see [Reports from chat](#reports-from-chat)), each with **Open** and
+  **Export**. The list updates when an answer in this conversation saves one, even with
+  the panel open.
 - **Summary:** see [AI summary](#ai-summary).
-- **Items:** collapsed cards, each with a note field and a menu with Move up, Move down,
-  Move to top, and Remove.
+- **Items:** collapsed cards whose full titles wrap, each with a note field and a menu
+  with Move up, Move down, Move to top, and Remove. With no items yet, the panel reads
+  "Nothing added yet. Use Add to report on an answer or a block."
 
 Notes save shortly after you stop typing. If the report changed in another tab, the
 panel says "This report changed elsewhere" with a **Reload** button beside it, and keeps
@@ -698,14 +917,23 @@ model call.
 
 ## Conversation history
 
-**New chat** starts an unsaved draft; it appears in history as soon as its first
+**New chat** starts an unsaved draft; it appears at the top of Today as soon as its first
 question starts, marked as answering, and is saved with the first answer. History groups
 conversations into Pinned, Today, Yesterday, Previous 7 days, Previous 30 days, and then
 by month.
 
-- **Search** looks through titles, your questions, answer text, and block titles. A
-  result shows the matching snippet, and opening it scrolls to and highlights the
-  message.
+A new conversation is named after its first answer, in 2 to 6 words that say what it is
+about, such as "Failed logins on the VPN". Until that answer arrives, the toolbar and the
+history row show the first words of your question. The name comes with the answer, at no
+extra cost. A name that is too long, written all in upper case, or not in sentence case
+is not used, and the conversation keeps your question as its title. A name you choose with
+**Rename** is never replaced, and a Case Manager chat is never named this way.
+
+- **Search** looks through titles, your questions, answer text, and block titles. Every
+  result shows its matching snippet under the title, as plain text with the matching
+  words highlighted, and opening it scrolls to and highlights the message. The command
+  palette's chat results show the same plain snippets. On a phone, the history sheet
+  opens with its search field ready to type in.
 - Each row's menu offers **Rename**, **Pin** or **Unpin**, **Open report** (when the
   conversation has one), **Export**, and **Delete**. A conversation with an answer in
   progress cannot be deleted until it finishes. Deleting a conversation keeps its
@@ -800,6 +1028,25 @@ once its conversation is long, only the newest exchanges that fit are sent with 
 question, and older ones are left out of what the model sees (see
 [Long conversations](#long-conversations)).
 
+An empty case chat offers up to three suggested questions, the ones that apply to the
+case's state (a case that fits fewer of them shows one or two). They come from this list:
+
+- "Why does this case need a person, and what would settle it?" (an escalated case, one
+  waiting for review, or an open case whose AI verdict is Needs human);
+- "What evidence is missing before this case can be decided?" (an open case without a
+  verdict);
+- "Why was this case closed that way, and who decided?" (a closed or resolved case);
+- "What else has this case's main entity done in the last 24 hours?" (a case with a
+  main entity);
+- "Which other cases share entities with this one?" (a case that shares a campaign or
+  an entity with another case); and
+- "Summarise this case for a handoff note." (any case).
+
+They name no value, because the case is already the chat's subject, and they are sent
+in this case chat only. While they show, the quick actions ("Summarise the case", "Check
+indicators", "Suggest remediation") stay out of the way; they appear after the first
+message, or when no suggestion could be loaded.
+
 Each question and its final answer text (without charts or the run log) are posted to
 the case's discussion thread, where anyone who can read the case sees them. Posting
 needs the `cases:comment` permission; without it, the answer is marked **Not saved**
@@ -815,8 +1062,11 @@ enter your personal Workspace history.
 ## Demo Mode
 
 With Demo Mode on (**Settings → Organization → Experimental & Demo**), chat answers from
-the synthetic demo data at no cost: the starters ask about demo cases and sources,
-lookups and answers are deterministic, and money figures are marked "simulated". Demo
+the synthetic demo data at no cost: the suggested questions are built from the demo
+cases and sources (with a Demo Mode card, and a "Since …" line on your first visit),
+every suggestion and case chat question gets a real answer from that data, lookups and
+answers are deterministic, and money figures are marked "simulated". Demo cases have no
+case numbers, so answers name a case by what it is about, followed by its ID. Demo
 answers cover the same ground as a live model, including any time window, breakdowns,
 comparisons, reports, and clarifying questions. Report summaries are deterministic too
 and are not rate limited. Demo conversations and reports are kept apart from your real
@@ -836,8 +1086,12 @@ ones and are removed when Demo Mode is turned off.
 | Ctrl/⌘+Shift+S | Show or hide history |
 | Ctrl/⌘+Shift+C | Copy the last answer |
 | Ctrl/⌘+/ | Show all shortcuts |
+| Delete or Backspace | Hide a suggestion for a day (on a focused suggestion) |
+| Ctrl/⌘+Z | Undo the last hidden suggestion (on the start screen) |
 
-Esc always closes the topmost menu or dialog first. The command palette also offers
+On the start screen the suggestions are one stop in the Tab order: the arrow keys move
+between them, Home and End jump to the first and last, and Enter or Space sends the
+focused one. Esc always closes the topmost menu or dialog first. The command palette also offers
 **New chat**, **Search chats**, **Open Reports**, and **Ask AI**, which opens a new chat
 with your text in the composer for you to review and send.
 
@@ -865,9 +1119,10 @@ Administrators can switch chat to **Bounded** under **Settings → General → C
 assistant**. Each question then stops looking things up at its limits (model calls,
 lookups, tokens, and time; by default 5 model calls, 10 lookups, about 60,000 tokens,
 and 90 seconds), answers from what it found, and says so. The same section sets the
-answers-at-once bounds, the default live mode, whether answers may be typed out, the
-daily chat spending limit, whether the logo animates while chat works, internal
-domains, and whether e-mail addresses may be looked up.
+answers-at-once bounds, **Typed-out answers** (off, or allowed and off or on by
+default), **Suggest questions from live data**, the daily chat spending limit, whether
+the logo animates while chat works, internal domains, and whether e-mail addresses may
+be looked up.
 
 Use [Investigation](investigation.md) for the broader entity and case workflow,
 [Logs and search](logs-search.md) to inspect telemetry directly, and

@@ -12,6 +12,22 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**Round 13 (chat): dynamic suggestions and a neater chat.** A new chat opens on a short
+start screen directly above the message box: a greeting, a "Since 09:12: …" line saying
+what changed since your last visit, three or four suggested questions about your own data
+right now (a case that needs a person, new cases, response targets, a quiet source, a
+noisy rule, a campaign, your shift, and more), each with a one-line reason, and category
+pills into the prompt library. The suggestions are computed by code under your own
+permissions, at no AI cost and without reading logs, and every number on them is exact.
+Hide one for a day, with Undo. An open conversation can show the same catch-up line above
+the message box, and Case Manager chat offers up to three questions chosen from the case's state.
+Follow-up chips now name something the answer shows, new conversations are named from
+their first answer, and answers read in one calm column with small results beside the
+text, quiet block headers, one shared scope line, the cost on the meta row and tokens in
+its usage card. The composer, run log, history rail and report panel are tidier, and Demo
+Mode answers every suggestion from its data. The Help Center chat, settings,
+configuration, permissions and API pages are updated to match.
+
 **Round 12: chat without limits, a working indicator, Remember me, reliable report
 downloads, an exact Overview, and a Case Manager that records what a case was.** Workspace
 Chat no longer stops a question at a step, token or time limit, never cuts an answer
@@ -331,6 +347,23 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **Round 13 chat fixes.** Risk figures in chat step summaries round half up, the same
+  integer the Overview gauge shows (47.5 reads 48, not 47). The token meter no longer says
+  "last 12 exchanges" on a new chat ("History: none yet"; "History: 3 exchanges,
+  summarised near the limit" without limits; "History: summary of earlier messages" after
+  `/compact`). The report panel no longer says "No report yet" after an answer saved a
+  report: it lists **Saved from this chat** and updates when an answer saves one. On a
+  phone, block frames no longer hang past the scroll lane's edge, and **Jump to latest**
+  never covers a line. Follow-up chips no longer suggest a different technique than the
+  answer hunted. Zero-result chips say "Without the source IP filter", not "Without the
+  ip filter", and send "Show the same without the source IP filter". A missing figure in
+  chat text reads "not available" and an answer without usage reads "Usage not recorded",
+  never a dash; in charts and comparison rows a blank log value reads "(empty)" and a
+  category with no label "(none)". History search snippets and command-palette chat hits
+  are plain text without Markdown markers. The Account page loads and keeps the profile fields
+  (`api.account.*` unwrap the route's `user` object), so a display name shows in the
+  shell chip and in the start screen's greeting. Inline code no longer splits its border
+  across lines. Demo source names and seed case titles no longer contain em dashes.
 - **A case closed as false positive still read "Undetermined" / "Needs human review —
   closed".** Resolving could not capture a disposition, and the case headline led with
   the AI verdict even after an analyst classified the case; both are fixed, and the
@@ -872,6 +905,52 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **Dynamic chat suggestions (Round 13).** `GET /api/chat/starters?surface=home|thread|case`
+  serves the new-chat cards, the catch-up line and Case Manager case chips
+  (`ChatStartersInfo`), computed by `engine/chat_starters.py` from cases, source health,
+  campaigns, approvals and spend under the caller's grants and tool catalogue: no model
+  call, no log read, no audit row, no usage record, exact counts only, cached per caller
+  for 60 seconds. Seventeen signal families are ranked by urgency, recency, whether they
+  concern the caller's own cases, and novelty, then filled with everyday questions. A card
+  that names a case, rule, source, campaign or ATT&CK technique carries a server-worded
+  question (`agents/chat_starter_text.py`) that the client sends byte for byte with
+  `origin: "starter"`; the engine sends the value to the model in its own `entity_ref`
+  untrusted fence with a fixed note, live and on replay, and refuses values that fail the
+  per-kind grammar or start like a role marker. `POST /api/chat/starters/events` records
+  `viewed`, `used` and `dismissed` (opaque keys only, at most 30 a minute) in the new
+  per-user `chat_starters` KV document (visit clock, counters and hidden-for-a-day
+  families; never question text), cleared with the user and by a factory reset. Visits
+  drive a "Since …" catch-up line and shift cards (a first visit after 8 hours starts a
+  shift; a handoff card 7 to 13 hours later). The organisation switch
+  `chat_agent.dynamic_starters` and the personal switches **Suggestions when a chat
+  starts** and **Suggested follow-ups** (`UserPrefs.misc.chat_suggest_start`,
+  `chat_suggest_follow_ups`) default on.
+- **The start screen (Round 13).** A bottom-anchored stack above the docked composer: a
+  greeting with the analyst's first name, the catch-up line or "Ask about cases, logs,
+  metrics or this console.", 3 or 4 suggestion cards by the measured lane width (never
+  truncated; reason line; urgency dot), **Hide for a day** with Undo (the next card takes
+  the hidden card's own slot; Delete or Backspace on a focused card), and category pills
+  (Investigate, Hunt, Posture, Report, Learn the app, All prompts) that open the prompt
+  library filtered. One tab stop with arrow keys, Home and End; refreshes every two
+  minutes but never under the pointer or focus. A quiet catch-up line can sit above the
+  composer in a conversation whose last answer is 30 minutes old, and Case Manager chat
+  offers up to three value-free case questions.
+- **Anchored follow-ups (Round 13).** `agents/chat_followups.py` picks at most 3 follow-ups
+  per answer, live and in Demo, from deterministic value-free chips built from the
+  answer's own results and the model's own suggestions that name something the answer
+  shows; repeats and chips needing a lookup the caller cannot run are dropped, and no
+  extra model call is made. They sit in one quiet row with the zero-result chips; after
+  five unused answers only the first shows.
+- **Conversation titles from the first answer (Round 13).** The final header gains
+  `title`, asked for only on a conversation's first answer and accepted only as one
+  sentence-case line of at most 48 characters; the store applies it only when it creates
+  the conversation, so a rename always wins. While the first answer is written, the
+  toolbar and a temporary history row show the question's first words.
+- **Settings and options (Round 13).** **Settings → General → Chat assistant** gains
+  **Suggest questions from live data** and one **Typed-out answers** control (Off,
+  Allowed (off by default), Allowed (on by default)) over the existing two keys. The
+  composer's Options menu gains the two suggestion switches. The shortcut sheet lists
+  "Hide a suggestion for a day: Delete or Backspace".
 - **Chat without per-question limits** (`ChatAgentConfig.limits_mode`, default
   `unlimited`). A question ends when the model writes its answer or the analyst presses
   Stop. Guards end pathological loops without cutting a working answer: an identical
@@ -1329,6 +1408,30 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Changed
 
+- **A neater chat (Round 13).** Answers keep one 42rem reading column on the lane's left
+  edge (prose at a 38rem measure and 15/24, about 85 characters a line), and small results
+  (up to four key figures, an indicator, a case list, ATT&CK techniques, a short table, a
+  small categorical chart) stay in it; larger blocks use the whole width. A block header
+  shows only its `⋯` menu at rest (provenance moves to the menu's first line, Add to
+  report shows on hover or focus), and caption parts shared by consecutive blocks are
+  stated once in a scope line. The meta row reads "4 lookups · 6.2 s · $0.004 · Sources
+  3": the cost opens the usage card that holds the tokens, an **In report** chip shows
+  while the answer is in the report, and Add to report, Add to case and Ask again move to
+  `⋯`. The toolbar drops its inline total; the thread menu opens with "This chat: 12.4k
+  tokens · $0.03" and a **View** group for the width. The run log reads "Reading your
+  question…" and "Choosing lookups…", shows status as icons, and reserves each block's
+  height. The composer has a plain placeholder, a "/ commands · @ scope" hint only while
+  focused and empty, a meter hidden until you type, a quieter focus frame, two-line `/`
+  menu rows with sticky headings, a one-line scope hint with "How ranges work", and
+  permission sentences in the access list. History search shows every hit's snippet, the
+  report panel lists reports saved from the chat, the prompt library row is its Use with
+  "Favourites", the Active Risk Index tile matches its neighbours' height, and Case
+  Manager's quick actions read "Summarise the case", "Check indicators" and "Suggest
+  remediation". The prompt asks for a takeaway that names at most two figures a block
+  shows and never ends an answer with a question or an offer.
+- **`GET /api/chat/context` `starters`** keeps its shape but returns only the static
+  everyday set (the Demo Mode card first in Demo) and no longer reads the case store; live
+  suggestions moved to `GET /api/chat/starters`.
 - **Chat is no longer covered by the AI budget, daily or monthly.** Chat calls
   (`role=chat` on the `chat` surface) are never blocked by the budget gate, and their
   spend is excluded from both of its ceilings (`budget.daily_usd` and

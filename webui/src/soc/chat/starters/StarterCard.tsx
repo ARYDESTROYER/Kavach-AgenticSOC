@@ -15,8 +15,9 @@
  * and while the card has KEYBOARD focus (`:focus-visible` inside the card, so a card
  * focused by code after a mouse Hide does not keep showing it; opacity, never
  * `visibility`), always on a touch screen (no hover there, so it is never an invisible
- * target), and is out of the tab order: keyboard users press Delete on the card (the
- * grid handles it). A paused card has no Hide button.
+ * target), and is out of the tab order: keyboard users press Delete or Backspace on the
+ * card (the grid handles it), and Ctrl+Z (⌘Z) brings the card back while Undo is
+ * offered. A paused card has no Hide button and declares no keys.
  *
  * Every string is server text rendered as React text only (#9): no HTML, no Markdown,
  * no link built from a value.
@@ -28,10 +29,17 @@ import type { ChatStarter } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
+import { ariaKeyShortcuts } from '../shortcuts/shortcut-list';
 import { starterIcon } from './starter-icons';
 
 /** The Hide button's tooltip and accessible name stem (§5.5). */
 export const HIDE_FOR_A_DAY = 'Hide for a day';
+
+/**
+ * A hideable card's `aria-keyshortcuts`, from the shortcut sheet's own entries:
+ * "Delete Backspace Control+Z Meta+Z".
+ */
+export const STARTER_CARD_KEYSHORTCUTS = ariaKeyShortcuts('hide-suggestion', 'undo-hide-suggestion');
 
 /** The card's resting look (shared with the skeleton so both keep one height). */
 export const STARTER_CARD_FRAME = 'min-h-[4.5rem] rounded-md bg-muted/40';
@@ -68,8 +76,9 @@ export const StarterCard = React.forwardRef<HTMLButtonElement, StarterCardProps>
         aria-labelledby={questionId}
         aria-describedby={reason ? reasonId : undefined}
         aria-disabled={disabled || undefined}
-        // Delete (or Backspace) on the card hides it for a day (the grid handles the key).
-        aria-keyshortcuts={onHide ? 'Delete' : undefined}
+        // Delete or Backspace on the card hides it for a day, Ctrl+Z (⌘Z) undoes that
+        // (the start stack handles the keys).
+        aria-keyshortcuts={onHide && !disabled ? STARTER_CARD_KEYSHORTCUTS : undefined}
         data-starter={starter.id}
         data-starter-key={starter.key ?? undefined}
         onClick={() => {

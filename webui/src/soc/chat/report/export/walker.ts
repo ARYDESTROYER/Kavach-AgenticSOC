@@ -44,6 +44,7 @@ import {
   REPUTATION_LABEL,
   TIMELINE_KIND_LABEL,
   booleanText,
+  entityFacts,
   queryCaption,
   semanticColumn,
   semanticText,
@@ -400,7 +401,7 @@ class Walker {
         if (block.verdict) add('Verdict', verdictLabel(block.verdict));
         if (block.first_seen) add('First seen', formatUtc(block.first_seen));
         if (block.last_seen) add('Last seen', formatUtc(block.last_seen));
-        for (const f of block.facts) add(f.label, f.value, f.untrusted || block.untrusted);
+        for (const f of entityFacts(block)) add(f.label, f.value, f.untrusted || block.untrusted);
         for (const c of block.counts) add(c.label, formatValue(c.value, c.unit));
         this.table(['Field', 'Value'], rows, [false, false], [false, false], (cell) => (cell === null ? '—' : String(cell)), trust);
         if (block.reputation.length) {

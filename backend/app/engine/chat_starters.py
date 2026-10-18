@@ -36,6 +36,7 @@ import logging
 import re
 import time
 import weakref
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
@@ -671,19 +672,22 @@ def case_chip_templates(
     *, status: str | None, verdict: str | None, has_entity: bool, has_related: bool,
     allowed: Callable[[str], bool] | None = None,
 ) -> list[str]:
-    """The three Case Manager chips for a case (§3.14): the first that applies of
-    ``case_needs_person`` (status needs_human or escalated), ``case_undecided`` (open,
-    no verdict) and ``case_closed_why`` (closed or resolved); then ``case_entity`` when
-    the case has a main entity; then ``case_related`` when it shares a campaign or
-    entity with another case, else ``case_handoff``; filled to 3 from the remaining
-    applicable templates in table order.
+    """Up to three Case Manager chips for a case (§3.14, SPEC-chat §10.2): the first
+    that applies of ``case_needs_person`` (status needs_human or escalated, or an open
+    case whose verdict is NEEDS_HUMAN, the home ``needs_human`` rule),
+    ``case_undecided`` (open, no verdict) and ``case_closed_why`` (closed or resolved);
+    then ``case_entity`` when the case has a main entity; then ``case_related`` when it
+    shares a campaign or entity with another case, else ``case_handoff``; filled to 3
+    from the remaining applicable templates in table order. Only templates that apply
+    are added, so a case can get one or two.
 
     ``allowed`` (optional, additive) is the caller's tool check per template: a chip
     whose answer the caller could not get does not apply, so the pick and the fill run
     over the chips the caller can use (never fewer chips than the grants allow)."""
     value = (status or "").strip().lower()
     applicable = {
-        "case_needs_person": value in ("needs_human", "escalated"),
+        "case_needs_person": value in ("needs_human", "escalated") or (
+            value in OPEN_CASE_STATUSES and (verdict or "").strip().upper() == "NEEDS_HUMAN"),
         "case_undecided": value in OPEN_CASE_STATUSES and not verdict,
         "case_closed_why": value in TERMINAL_CASE_STATUSES,
         "case_entity": bool(has_entity),
@@ -1253,6 +1257,16 @@ class _Build:
     def since_label(self, at: datetime) -> str:
         return text.format_since(at, now=self.now, tz=self.zone)
 
+    @property
+    def count_start(self) -> datetime | None:
+        """Where every count beside the ``{since}`` label starts: the instant that label
+        names (the baseline floored to its minute, or local midnight of a date-only
+        label), so the card counts what an answer counting from the label counts. The
+        exact baseline still decides visits and ranking."""
+        if self.baseline is None:
+            return None
+        return text.since_start(self.baseline, now=self.now, tz=self.zone)
+
     def age(self, at: datetime | None) -> str | None:
         return text.format_age(self.now - at) if at is not None else None
 
@@ -1333,8 +1347,9 @@ async def _family_my_cases(b: _Build) -> _Built:
     if not n:
         return _Built()
     clause = None
-    if pop.complete and b.baseline is not None:
-        changed = sum(1 for c in mine if (_ts(c.updated_at) or b.baseline) > b.baseline)
+    start = b.count_start
+    if pop.complete and start is not None:
+        changed = sum(1 for c in mine if (updated := _ts(c.updated_at)) is not None and updated >= start)
         clause = text.clause_my_cases(changed) if changed else None
     past = 0
     sla = getattr(b.prefs, "sla", None)
@@ -1373,6 +1388,20 @@ async def _family_my_cases(b: _Build) -> _Built:
     ), clause)
 
 
+def _shift_snapshot_reads_whole(cases: Sequence[Any]) -> bool:
+    """True when the ``shift_report`` snapshot sees every one of ``cases`` (the whole
+    open set). That snapshot reads at most ``standup.OPEN_FETCH_LIMIT`` cases per open
+    status by risk plus the oldest as many again; with no status over the bound, the
+    risk read alone returns every case of each status, so the card's SLA count and the
+    answer's agree. Over it, the snapshot's totals cover a subset."""
+    from ..agents import standup
+
+    bound = int(standup.OPEN_FETCH_LIMIT)
+    per_status = Counter(str(getattr(getattr(c, "status", None), "value", getattr(c, "status", None)))
+                         for c in cases)
+    return all(count <= bound for count in per_status.values())
+
+
 async def _family_sla(b: _Build) -> _Built:
     from . import shift_report
 
@@ -1381,6 +1410,10 @@ async def _family_sla(b: _Build) -> _Built:
         return _Built()
     pop = await b.population()
     if not pop.complete:  # needs the whole open set (§3.3): skipped over the limit
+        return _Built()
+    if not _shift_snapshot_reads_whole(pop.cases):
+        # The answer's shift_report would count a subset (§3.3: a card never states a
+        # count its answer would contradict).
         return _Built()
     aging = shift_report.sla_aging(pop.cases, sla, now=b.now)
     breached, close = aging["breached"], aging["about_to_breach"]
@@ -1425,10 +1458,13 @@ def _window(start: datetime, end: datetime, tz: str, *, label: str = "since the 
 async def _family_new_cases(b: _Build) -> _Built:
     from .case_aggregate import CaseAggregateSpec, aggregate_cases
 
-    if b.baseline is None or b.baseline >= b.now:
+    start = b.count_start
+    if b.baseline is None or start is None or start >= b.now:
         return _Built()
+    # Counted from the instant the "since" label names, not the exact baseline: the
+    # answer can only count from the label (§3.3, §3.7).
     result = await aggregate_cases(b.ctx.cases, CaseAggregateSpec(
-        window=_window(b.baseline, b.now, b.tz_name), group_by=("severity",), prefs=b.prefs,
+        window=_window(start, b.now, b.tz_name), group_by=("severity",), prefs=b.prefs,
     ))
     if not result.exact or result.partial:
         return _Built()
@@ -1594,7 +1630,8 @@ async def _member_times(b: _Build, case_ids: Sequence[str]) -> dict[str, datetim
 
 
 async def _family_campaign(b: _Build) -> _Built:
-    if b.baseline is None or b.ctx.campaigns is None:
+    start = b.count_start
+    if start is None or b.ctx.campaigns is None:
         return _Built()
     campaigns, _total = await b.ctx.campaigns.list()
     picks: list[tuple[int, int, int, str, Any, bool, int]] = []
@@ -1606,17 +1643,17 @@ async def _family_campaign(b: _Build) -> _Built:
         if len(members) < 2:
             continue
         first = _ts(campaign.first_seen) or _ts(campaign.created_at)
-        if first is not None and first > b.baseline:
+        if first is not None and first >= start:
             new_count += 1
             picks.append((1, len(members), len(members), campaign.id, campaign, True, len(members)))
             continue
         last = _ts(campaign.last_seen)
-        if last is None or last <= b.baseline:
+        if last is None or last < start:
             continue
         times = await _member_times(b, members)
         if times is None:
             continue
-        grown = sum(1 for t in times.values() if t is not None and t > b.baseline)
+        grown = sum(1 for t in times.values() if t is not None and t >= start)
         if grown >= 1:
             picks.append((0, grown, len(members), campaign.id, campaign, False, grown))
     if not picks:
@@ -1681,6 +1718,20 @@ def _source_reasons(problems: Sequence[Mapping[str, Any]], age: str | None) -> l
     return options
 
 
+def _quiet_source_ref(row: Mapping[str, Any], others: list[Mapping[str, Any]]) -> str | None:
+    """The value a one-source quiet card names its source by (SPEC-chat §10.2): the
+    display name when it passes the ``source`` grammar and names only this row, else
+    the source id. The chat tools match an id before a display name (``source_health``,
+    and ``plan_sources`` for ``search_logs`` and ``log_stats``), so a name that is also
+    another row's id, or that another row shares, would answer about another source."""
+    name = row.get("source_name")
+    if isinstance(name, str) and text.ref_value("source", name) == name and not any(
+            name in (other.get("source_id"), other.get("source_name")) for other in others):
+        return name
+    sid = row.get("source_id")
+    return sid if isinstance(sid, str) and text.ref_value("source", sid) == sid else None
+
+
 async def _family_silent_source(b: _Build) -> _Built:
     reader = getattr(b.ctx, "source_health_rows", None)
     if reader is None:
@@ -1704,8 +1755,7 @@ async def _family_silent_source(b: _Build) -> _Built:
     multiplier, level = family_urgency("silent_source", quiet_for=longest)
     if len(problems) == 1:
         row = problems[0]
-        value = next((v for v in (row.get("source_name"), row.get("source_id"))
-                      if isinstance(v, str) and text.ref_value("source", v) == v), None)
+        value = _quiet_source_ref(row, [r for r in (rows or []) if isinstance(r, dict) and r is not row])
         clause = text.clause_quiet_sources(1)
         if value is None:
             return _Built(clause=clause)
@@ -2231,7 +2281,8 @@ def _catch_up(b: _Build, results: Mapping[str, _Built], baseline: datetime) -> C
         return None
     try:
         return ChatCatchUp(
-            since=text_iso(baseline), since_label=label,
+            # The instant the label names, where the clauses' counts start.
+            since=text_iso(text.since_start(baseline, now=b.now, tz=b.zone)), since_label=label,
             clauses=[ChatCatchUpClause(text=clause, starter=starter) for clause, starter in kept],
         )
     except ValueError:

@@ -1114,6 +1114,17 @@ def kpi(
     return item
 
 
+#: The row label of a counted LOG value that is empty (``""`` or only whitespace): the
+#: events were counted, only their value is blank, so the row is worded, never the em
+#: dash a missing figure would read as (Round 13 T36; BLOCKS G3 keeps the dash for "not
+#: measured"). Parenthesised like Kibana's own empty-value label so it does not read as
+#: a log value; ``chat_followups.PLACEHOLDER_LABELS`` keeps it from anchoring a chip.
+EMPTY_VALUE_LABEL = "(empty)"
+#: The row label of a category with no label at all (the word ``stats.group_label``
+#: uses for a missing value).
+MISSING_LABEL = "(none)"
+
+
 def categories(
     pairs: list[tuple[Any, Any]], *, unit: str = "count", dimension: str | None = None,
     other: Any = None, ordered: bool = False,
@@ -1122,7 +1133,7 @@ def categories(
     colours, SPEC §7.3). ``None`` values sort last. ``ordered`` keeps ``pairs`` in the
     order given (a canonical order such as Critical, High, Medium, Low, Info) and marks
     the payload so materialisation keeps it too (Round 12 SPEC §7.2 decision 27)."""
-    rows = [(display_text(label, 200) or "—", finite(value)) for label, value in pairs]
+    rows = [(display_text(label, 200) or MISSING_LABEL, finite(value)) for label, value in pairs]
     if not ordered:
         rows.sort(key=lambda r: (r[1] is None, -(r[1] or 0), r[0]))
     data: dict[str, Any] = {
@@ -1153,10 +1164,12 @@ def column(
 
 __all__ = [
     "AMBIGUOUS_MINUTES",
+    "EMPTY_VALUE_LABEL",
     "EMPTY_WINDOW",
     "OUTSIDE_SELECTED_RANGE",
     "MAX_CITATIONS_PER_CALL",
     "MAX_WINDOW_DAYS",
+    "MISSING_LABEL",
     "MAX_WINDOW_HOURS",
     "ToolCall",
     "ToolInput",

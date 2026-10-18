@@ -271,7 +271,11 @@ TRENDS = [
 
 COMPARISONS = [
     G("Compare this month vs last month: cases, FP rate, MTTR", tools=("case_stats", "soc_metrics"),
-      params=(P("case_stats", window="this_month", compare="previous_period"),)),
+      params=(P("case_stats", window="this_month", compare="previous_period"),),
+      # The asked figures in the asked order: two stated (T15), MTTR pointed to, and
+      # never an unasked one (MTTD) in its place.
+      contains=(r"re:(?s)Cases: \*\*.*False-positive rate: \*\*.*MTTR \(median\) is in the figures below",),
+      absent=("MTTD",)),
     G("How does this quarter compare with last quarter?", tools=("case_stats", "soc_metrics"),
       params=(P("case_stats", window="this_quarter", compare="previous_period"),)),
     G("Compare this week with last week", tools=("case_stats", "soc_metrics"),
@@ -1316,12 +1320,16 @@ def _store_cases(client: TestClient) -> list[Any]:
 
 
 def _store_count(client: TestClient, window: Any, filters: dict[str, str]) -> int:
-    """Cases created in ``window`` (half-open, like the aggregator) matching ``filters``."""
+    """Cases created in ``window`` (half-open, like the aggregator) matching ``filters``.
+    A relative window of days, weeks, months or years counts whole periods, the last in
+    progress, exactly as every chat case lookup counts it ("last 7 days (since 12 Oct)",
+    ``chat_tools.common.whole_periods``); otherwise the count would depend on the time
+    of day the suite runs."""
     from app.constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES
     from app.engine.priority import band_of_case
-    from app.engine.time_windows import resolve_window
+    from app.engine.time_windows import align_whole_periods, resolve_window
 
-    resolved = None if window in (None, "all") else resolve_window(window, tz="UTC")
+    resolved = None if window in (None, "all") else align_whole_periods(resolve_window(window, tz="UTC"))
     prefs = _state(client).prefs
     count = 0
     for case in _store_cases(client):
@@ -2080,8 +2088,11 @@ def test_the_demo_home_cards_answer_with_the_figures_they_state(starter_client: 
 def test_the_home_card_counts_match_the_case_store(starter_client: TestClient) -> None:
     """The figures the cards (and so their answers) state equal a direct count of the
     case store: new cases since the card's time, and new cases in the last 24 hours."""
+    from zoneinfo import ZoneInfo
+
     now = datetime.now(UTC)
     cases = _store_cases(starter_client)
+    zone = ZoneInfo(starter_client.get("/api/chat/starters", params={"surface": "home"}).json()["timezone"])
     for card in _home_cards(starter_client):
         parsed = starter_text.parse_starter_question(card["prompt"])
         assert parsed is not None
@@ -2089,10 +2100,93 @@ def test_the_home_card_counts_match_the_case_store(starter_client: TestClient) -
         if template_id == "volume_spike":
             day = [c for c in cases if _created(c) >= now - timedelta(hours=24)]
             assert slots["n"] == len(day), (slots, len(day))
-        if template_id == "new_cases" and re.fullmatch(r"\d{2}:\d{2}", str(slots["since"])):
-            hour, minute = (int(p) for p in str(slots["since"]).split(":"))
-            since = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            assert slots["n"] == sum(1 for c in cases if _created(c) >= since), slots
+        if template_id == "new_cases":
+            since = _label_instant(str(slots["since"]), now, zone)
+            assert slots["n"] == sum(1 for c in cases if _created(c) >= since), (slots, since)
+
+
+_WEEKDAY_WORDS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTH_WORDS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _label_instant(label: str, now: datetime, zone: Any) -> datetime:
+    """The instant a ``{since}`` label names, read from the label alone (SPEC §3.7):
+    "09:12" today, "yesterday 18:40", "Mon 18:40" within 7 days at that minute, "12 Oct"
+    at local midnight."""
+    local = now.astimezone(zone)
+    words = label.split()
+    if len(words) == 2 and words[1] in _MONTH_WORDS:
+        day = local.replace(month=_MONTH_WORDS.index(words[1]) + 1, day=int(words[0]),
+                            hour=0, minute=0, second=0, microsecond=0)
+        if day > local:
+            day = day.replace(year=day.year - 1)
+        return day.astimezone(UTC)
+    hour, minute = (int(p) for p in words[-1].split(":"))
+    back = (0 if len(words) == 1 else 1 if words[0] == "yesterday"
+            else (local.weekday() - _WEEKDAY_WORDS.index(words[0])) % 7)
+    at = (local - timedelta(days=back)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return at.astimezone(UTC)
+
+
+def _pick_last_visit(created: list[datetime], now: datetime, zone: Any, shape: str) -> tuple[datetime, datetime]:
+    """A last-visit time whose ``{since}`` label names an earlier instant than the visit
+    itself, with a store case in between, and that instant: a date-only label (9 or
+    more days back, at 14:00 local, with a case that morning), or a clock label (a
+    baseline one second after a case created mid-minute)."""
+    if shape == "date":
+        for back in range(9, 30):
+            day = (now.astimezone(zone) - timedelta(days=back)).replace(hour=0, minute=0, second=0, microsecond=0)
+            last = day + timedelta(hours=14)
+            if any(day <= t < last for t in created) and any(t >= last for t in created):
+                return last.astimezone(UTC), day.astimezone(UTC)
+        raise AssertionError("no Demo day has a case before 14:00")
+    pick = next(t for t in reversed(created)
+                if now - timedelta(days=5) < t < now - timedelta(minutes=40) and 1 <= t.second <= 50)
+    last = pick + timedelta(seconds=1)
+    return last, last.replace(second=0, microsecond=0)
+
+
+@pytest.mark.parametrize("shape", ["date", "minute"])
+def test_a_new_cases_card_counts_from_the_instant_its_label_names(starter_client: TestClient, shape: str) -> None:
+    """The new-cases card and its catch-up clause count from the instant the "since"
+    label names (local midnight of a date-only label, the minute of a clock label), the
+    instant an answer to that question counts from: the answer states the card's
+    figure and never says it moved (SPEC-chat §3.3, §3.7, §3.8.7)."""
+    from zoneinfo import ZoneInfo
+
+    from app.engine.chat_starters import StarterUserState
+
+    state = _state(starter_client)
+    created = sorted(_created(c) for c in _store_cases(starter_client))
+    info = starter_client.get("/api/chat/starters", params={"surface": "home"}).json()
+    zone = ZoneInfo(info["timezone"])
+    now = datetime.now(UTC)
+    last, start = _pick_last_visit(created, now, zone, shape)
+    assert sum(1 for t in created if t >= start) > sum(1 for t in created if t >= last)
+
+    def visited(_previous: Any) -> Any:
+        return StarterUserState(last_seen_at=last, visit_started_at=last - timedelta(minutes=10),
+                                catchup_since=last - timedelta(days=1), shift_started_at=last - timedelta(hours=1))
+
+    starter_client.portal.call(lambda: state.chat_starters.update("", visited))  # type: ignore[union-attr]
+    try:
+        info = starter_client.get("/api/chat/starters", params={"surface": "home"}).json()
+        card = next(c for c in info["starters"] if c.get("template") == "new_cases")
+        parsed = starter_text.parse_starter_question(card["prompt"])
+        assert parsed is not None
+        _template, slots = parsed
+        expected = sum(1 for t in created if t >= start)
+        assert slots["n"] == expected, (card["prompt"], expected)
+        catch_up = info["catch_up"]
+        assert catch_up is not None and catch_up["since_label"] == slots["since"]
+        assert datetime.fromisoformat(catch_up["since"].replace("Z", "+00:00")) == start
+        assert catch_up["clauses"][0]["text"].startswith(f"{expected:,} new cases")
+        response = _stream(starter_client, card["prompt"], origin="starter")
+        answer = response["answer"]
+        assert _COUNTED not in answer, answer[:400]
+        assert f"**{expected:,} " in answer, answer[:400]
+    finally:
+        starter_client.portal.call(lambda: state.chat_starters.clear(""))  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("template_id", [t for t in _SEND_TEMPLATES
@@ -2132,8 +2226,13 @@ def test_every_starter_template_answers_from_demo_data(starter_client: TestClien
                     f"{close:,} now.") in answer, answer[:300]
     if template_id == "new_cases_one":
         label = str(slots["since"])
-        hour, minute = (int(p) for p in label.split()[-1].split(":"))
-        start = (now - timedelta(days=1)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+        # "yesterday 22:11", or "Fri 22:11" in the two hours after midnight (26 hours back
+        # is then two days back): the day the label names, at its clock time.
+        words = label.split()
+        hour, minute = (int(p) for p in words[-1].split(":"))
+        back = (0 if len(words) == 1 else 1 if words[0] == "yesterday"
+                else (now.weekday() - ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").index(words[0])) % 7)
+        start = (now - timedelta(days=back)).replace(hour=hour, minute=minute, second=0, microsecond=0)
         opened = sum(1 for c in cases if _created(c) >= start)
         assert f"**{opened:,} case" in answer and f"since {label}" in answer, (opened, answer[:300])
     if template_id == "volume_drop":
@@ -2468,3 +2567,295 @@ def test_a_zero_result_chip_drops_the_filter_its_label_names(starter_client: Tes
     reran = [s for s in _tool_steps(second) if s["tool"] in ("search_logs", "case_stats", "search_cases")]
     assert reran and all(dropped not in (s.get("params") or {}) for s in reran), reran
     assert second["answer"].startswith("Re-ran the earlier lookups"), second["answer"][:200]
+
+
+# --------------------------------------------------------------------------- #
+# Round 13 final review (WP-DEMO13): chips answered for the answer they sit under.
+# --------------------------------------------------------------------------- #
+_STILL_OPEN = "Which of these cases are still open?"
+
+
+@pytest.mark.parametrize("question, kept", [
+    ("List the escalated cases", {"status": "escalated"}),
+    ("List the on hold cases in the last 30 days", {"status": "on_hold", "window": "now-30d"}),
+    ("List the cases from the last 7 days", {"status_group": "active", "window": "now-7d"}),
+])
+def test_the_still_open_chip_keeps_the_earlier_list_filter(starter_client: TestClient, question: str,
+                                                           kept: dict[str, Any]) -> None:
+    """SPEC §4.1: "these cases" are the earlier list's cases. An open status it was
+    filtered by stays the filter (never the whole open queue), the count stated is at
+    most the earlier list's open count, and the chip is offered only under a list that
+    holds open and closed cases."""
+    first = _stream(starter_client, question, persist_conversation=True, idempotency_key=_key("open13", question))
+    earlier = next(s.get("params") or {} for s in _tool_steps(first) if s["tool"] == "search_cases")
+    window, status = earlier.get("window"), earlier.get("status")
+    total = _store_count(starter_client, window, {"status": status} if status else {})
+    open_before = _store_count(starter_client, window, {"status": status} if status else {"status_group": "active"})
+    assert (_STILL_OPEN in first["follow_ups"]) == (0 < open_before < total), (first["follow_ups"], open_before,
+                                                                               total)
+    second = _stream(starter_client, _STILL_OPEN, origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("open13", question, "2"))
+    steps = _tool_steps(second)
+    assert _matched_step(steps, "search_cases", kept) is not None, [(s["tool"], s.get("params")) for s in steps]
+    assert all("status_group" not in (s.get("params") or {}) for s in steps if status), steps
+    stated = re.match(r"\*\*([\d,]+) cases?\*\*", second["answer"])
+    assert stated and int(stated.group(1).replace(",", "")) <= open_before, (second["answer"][:200], open_before)
+
+
+def test_the_still_open_chip_under_a_closed_list_says_none_is_open(starter_client: TestClient) -> None:
+    question = "List the closed cases from the last 30 days"
+    first = _stream(starter_client, question, persist_conversation=True, idempotency_key=_key("open13", question))
+    assert _STILL_OPEN not in first["follow_ups"], first["follow_ups"]
+    second = _stream(starter_client, "Which of these cases are still open, and who has them?", origin="follow_up",
+                     persist_conversation=True, conversation_id=first["conversation_id"],
+                     idempotency_key=_key("open13", question, "2"))
+    assert second["answer"].startswith("None of those cases is still open"), second["answer"][:200]
+    assert not _tool_steps(second), _tool_steps(second)
+
+
+@pytest.mark.parametrize("question, kept", [
+    ("How many escalated cases this month?", {"status": "escalated", "window": "this_month"}),
+    ("How many false positives in the last 30 days?", {"verdict": "FALSE_POSITIVE", "window": "now-30d"}),
+    ("List the cases from the last 7 days", {"window": "now-7d"}),
+])
+def test_a_compare_chip_under_a_case_answer_compares_those_cases(starter_client: TestClient, question: str,
+                                                                  kept: dict[str, Any]) -> None:
+    """SPEC §4.1: "Compare this with the previous {period}" under a case count or a case
+    list compares THOSE cases (the earlier lookup's filters and window) with the period
+    before, never every case."""
+    first = _stream(starter_client, question, persist_conversation=True, idempotency_key=_key("cmp13", question))
+    # A case list offers no comparison chip (search_cases is not a compared lookup), but
+    # the same words typed under it are answered the same way.
+    period = {"this_month": "month", "now-30d": "30 days", "now-7d": "7 days"}[kept["window"]]
+    chip = next((c for c in first["follow_ups"] if c.startswith("Compare this with the previous")),
+                f"Compare this with the previous {period}")
+    assert chip == f"Compare this with the previous {period}", chip
+    second = _stream(starter_client, chip, origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("cmp13", question, "2"))
+    steps = [s for s in _tool_steps(second) if s.get("status") == "ok"]
+    compared = [s for s in steps if (s.get("params") or {}).get("compare") == "previous_period"]
+    assert compared and all(s["tool"] == "case_stats" for s in compared), steps
+    assert all(_has(s.get("params"), kept) for s in compared), (kept, [s.get("params") for s in compared])
+    assert not any(s["tool"] == "soc_metrics" for s in steps), steps
+    total = _store_count(starter_client, kept["window"], {k: v for k, v in kept.items() if k != "window"})
+    assert f"**{total:,}**" in second["answer"], (total, second["answer"][:300])
+
+
+def test_the_noisy_rule_compare_chip_compares_that_rule(starter_client: TestClient) -> None:
+    slots = _starter_slots(starter_client)["noisy_rule"]
+    question = starter_text.render_question("noisy_rule", slots)
+    first = _stream(starter_client, question, origin="starter", persist_conversation=True,
+                    idempotency_key=_key("cmp13", "noisy"))
+    chip = next((c for c in first["follow_ups"] if c.startswith("Compare this with the previous")), None)
+    if chip is None:
+        chip = "Compare this with the previous 24 hours"
+    second = _stream(starter_client, chip, origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("cmp13", "noisy", "2"))
+    compared = [s for s in _tool_steps(second) if (s.get("params") or {}).get("compare") == "previous_period"]
+    assert compared and all((s.get("params") or {}).get("rule") == slots["rule"] for s in compared), compared
+    assert f"`{slots['rule']}`" in second["answer"] or slots["rule"] in second["answer"], second["answer"][:300]
+
+
+def _case_chat_turn(client: TestClient, case_id: str, history: list[dict[str, Any]], question: str,
+                    origin: str) -> dict[str, Any]:
+    response = _stream(client, question, origin=origin, case_id=case_id, history=history)
+    history.extend([{"role": "user", "content": question, "origin": origin},
+                    {"role": "assistant", "content": response["answer"]}])
+    return response
+
+
+def test_case_chat_compare_and_its_chips_are_answered_for_the_case_entity(starter_client: TestClient) -> None:
+    """A Case Manager chat replays no lookup digest: "Compare this with the previous 24
+    hours" under the case_entity answer compares the case's main entity's log activity
+    with the period before (never the case summary again), and the chips under that
+    comparison stay on that entity and keep its window."""
+    case = next(c for c in _store_cases(starter_client)
+                if _status(c) in ACTIVE_STATUSES and _verdict(c) == "NEEDS_HUMAN" and c.entity)
+    value = case.entity.value
+    history: list[dict[str, Any]] = []
+    first = _case_chat_turn(starter_client, case.case_id, history, starter_text.render_question("case_entity", {}),
+                            "starter")
+    chip = next(c for c in first["follow_ups"] if c.startswith("Compare this with the previous"))
+    compared = _case_chat_turn(starter_client, case.case_id, history, chip, "follow_up")
+    ok = [s for s in _tool_steps(compared) if s.get("status") == "ok"]
+    stats = next(s for s in ok if s["tool"] == "log_stats")
+    assert (stats.get("params") or {}).get("compare") == "previous_period", stats
+    assert value in json.dumps(stats.get("params")), (value, stats)
+    assert not any(s["tool"] == "explain_decision" for s in ok), ok
+    assert "period before" in compared["answer"], compared["answer"][:300]
+    assert compared["follow_ups"], compared["answer"][:300]
+    for chip in compared["follow_ups"]:
+        response = _case_chat_turn(starter_client, case.case_id, list(history), chip, "follow_up")
+        ok = [s for s in _tool_steps(response) if s.get("status") == "ok"]
+        assert not any(s["tool"] == "explain_decision" for s in ok), (chip, ok)
+        logs = [s for s in ok if s["tool"] in ("log_stats", "search_logs")]
+        assert logs, (chip, ok)
+        # The first log lookup is about the case's own entity (a top value follows it).
+        assert value in json.dumps(logs[0].get("params")), (chip, logs[0])
+        if chip.startswith("Show the same for the last 7 days"):
+            assert all((s.get("params") or {}).get("time_from") == "now-7d" for s in logs), (chip, logs)
+            assert (logs[0].get("params") or {}).get("compare") == "previous_period", (chip, logs)
+
+
+def test_case_chat_still_open_chip_lists_the_open_cases_on_the_entity(starter_client: TestClient) -> None:
+    case = next(c for c in _store_cases(starter_client) if c.case_id == "demo-recent-00000539-0000")
+    value = case.entity.value
+    history: list[dict[str, Any]] = []
+    first = _case_chat_turn(starter_client, case.case_id, history, starter_text.render_question("case_related", {}),
+                            "starter")
+    chip = "Which of these cases are still open, and who has them?"
+    response = _case_chat_turn(starter_client, case.case_id, history, chip, "follow_up")
+    found = _matched_step(_tool_steps(response), "search_cases", {"entity": value, "status_group": "active"})
+    assert found is not None, _tool_steps(response)
+    open_on_entity = sum(1 for c in _store_cases(starter_client)
+                         if _status(c) in ACTIVE_STATUSES and value in json.dumps(c.model_dump(mode="json")))
+    stated = re.match(r"\*\*([\d,]+) cases?\*\*", response["answer"])
+    assert stated and int(stated.group(1)) <= open_on_entity, (response["answer"][:200], open_on_entity)
+    assert chip in first["follow_ups"], first["follow_ups"]
+
+
+def test_show_the_same_under_a_comparison_keeps_it_and_the_takeaway_rule(starter_client: TestClient) -> None:
+    """SPEC §4.1: "Show the same for the {next window}" is offered after a comparison ran
+    and re-runs that comparison over the window named; its prose names at most two of
+    the figures its key-figure blocks show (T15)."""
+    question = starter_text.render_question("weekly", {})
+    first = _stream(starter_client, question, origin="starter", persist_conversation=True,
+                    idempotency_key=_key("same13", "weekly"))
+    chip = "Show the same for the last 30 days"
+    assert chip in first["follow_ups"], first["follow_ups"]
+    second = _stream(starter_client, chip, origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("same13", "weekly", "2"))
+    steps = [s for s in _tool_steps(second) if s.get("status") == "ok"]
+    assert steps and all(_has(s.get("params"), {"window": "now-30d", "compare": "previous_period"})
+                         for s in steps), steps
+    assert not _t15_violations(second["answer"], second.get("blocks")), (
+        _t15_violations(second["answer"], second.get("blocks")), second["answer"][:400])
+
+
+def test_a_case_count_answer_beside_its_key_figures_names_two_of_them(starter_client: TestClient) -> None:
+    """T15 on the rerun path: the same summary lookups re-run without a comparison (a
+    widening chip) state the count and one more figure beside the Case figures block."""
+    question = "How did last week compare with the week before?"
+    first = _stream(starter_client, question, persist_conversation=True, idempotency_key=_key("same13", "plain"))
+    second = _stream(starter_client, "Show the same for all time", origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("same13", "plain", "2"))
+    assert all("compare" not in (s.get("params") or {}) for s in _tool_steps(second)), _tool_steps(second)
+    total = _store_count(starter_client, "all", {})
+    assert f"**{total:,} cases** over all time" in second["answer"], second["answer"][:300]
+    assert not _t15_violations(second["answer"], second.get("blocks")), (
+        _t15_violations(second["answer"], second.get("blocks")), second["answer"][:400])
+
+
+def test_a_technique_answer_shows_every_case_it_lists(starter_client: TestClient) -> None:
+    """Every case the prose lists is in a block, and a list shorter than the count says
+    which part of it it is ("The 5 highest-risk of the 11")."""
+    response = _stream(starter_client, "Which cases show T1078?")
+    answer = response["answer"]
+    listed = re.findall(r"^- .*?`(demo-[\w-]+)`", answer, re.MULTILINE)
+    count = int(re.search(r"appears in \*\*(\d+) cases?\*\*", answer).group(1))  # type: ignore[union-attr]
+    shown = {i.get("case_id") for b in response["blocks"] if b.get("type") == "case_list"
+             for i in (b.get("items") or [])}
+    assert listed and set(listed) <= shown, (listed, shown)
+    if len(listed) < count:
+        assert re.search(rf"\b{len(listed)} highest-risk\b.*\bof the {count}\b", answer), answer[:500]
+    titles = [b.get("title") for b in response["blocks"] if b.get("type") == "case_list"]
+    assert titles and all(t.startswith("Cases with T1078") for t in titles), titles
+
+
+def test_the_closed_why_chip_never_contradicts_who_closed_the_case(starter_client: TestClient) -> None:
+    """A case closed by the AI agent that today's policy would send to a human is said
+    once, reconciled; the decider is named once and never as a raw enum."""
+    closed = [c for c in _store_cases(starter_client) if _status(c) == "closed"
+              and str(getattr(c.decision_by, "value", c.decision_by)) == "agent"]
+    question = starter_text.render_question("case_closed_why", {})
+    for case in closed[:6]:
+        answer = _stream(starter_client, question, origin="starter", case_id=case.case_id)["answer"]
+        assert "recorded by" not in answer, answer[:500]
+        if "would go to a human" in answer:
+            assert "it was closed by the AI agent; under today's policy" in answer, answer[:500]
+            assert "Who decided" not in answer, answer[:500]
+        assert answer.count("the AI agent") == 1, answer[:500]
+
+
+def test_the_rebucket_chip_under_a_since_window_is_by_hour_or_day(starter_client: TestClient) -> None:
+    slots = _starter_slots(starter_client)["new_cases_one"]
+    question = starter_text.render_question("new_cases_one", slots)
+    first = _stream(starter_client, question, origin="starter", persist_conversation=True,
+                    idempotency_key=_key("clock13", "1"))
+    chip = next(c for c in first["follow_ups"] if c.endswith(" by rule"))
+    second = _stream(starter_client, chip, origin="follow_up", persist_conversation=True,
+                     conversation_id=first["conversation_id"], idempotency_key=_key("clock13", "2"))
+    rebucket = [c for c in second["follow_ups"] if c.startswith("Show these cases")]
+    assert rebucket and all(re.search(r" by (?:hour|day)$", c) for c in rebucket), second["follow_ups"]
+
+
+@pytest.mark.parametrize("question, filter_word", [
+    ("Show the SLA breaches for critical cases", "severity"),
+    ("Which of my cases are past their SLA?", "yours"),
+])
+def test_a_filtered_sla_question_says_the_filter_was_not_applied(starter_client: TestClient, question: str,
+                                                                  filter_word: str) -> None:
+    response = _stream(starter_client, question)
+    breached = int(_sla_totals(starter_client).get("breached") or 0)
+    answer = response["answer"]
+    assert answer.startswith(f"**{breached:,} case"), answer[:200]
+    assert "The shift snapshot cannot" in answer and filter_word in answer, answer[:400]
+
+
+@pytest.fixture(scope="module")
+def half_risk_client() -> Iterator[TestClient]:
+    """A Demo app whose newest escalated case has a risk of exactly 98.5, the value
+    Python's half-to-even rounding would state as 98 (Round 13 T1)."""
+    from app.constants import CaseStatus, EntityType, SourceSurface, Verdict
+    from app.models import Case, Entity, StatusHistoryEntry
+
+    patch = pytest.MonkeyPatch()
+    patch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    secrets = Secrets(_env_file=None, es_store_enabled=False, redis_url="",
+                      anthropic_api_key=None, openai_api_key=None)
+    overrides = {"anthropic": MockProvider(), "openai": MockProvider(), "mock": MockProvider()}
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        state = AppState.create(secrets=secrets, es=InMemoryESClient(), provider_overrides=overrides)
+        await state.startup(start_poller=False)
+        await state.update_prefs(state.prefs.model_copy(update={"setup_complete": True}))
+        await state.enable_demo(mode="seeded", seed=1337, history_days=HISTORY_DAYS)
+        now = datetime.now(UTC)
+        await state.cases.save(Case(
+            case_id="case-half-risk", cluster_signature="sig-half-risk", source_surface=SourceSurface.INVESTIGATE,
+            entity=Entity(type=EntityType.IP, value="198.51.100.7"),
+            created_at=(now - timedelta(minutes=5)).isoformat(), updated_at=now.isoformat(),
+            status=CaseStatus.ESCALATED, verdict=Verdict.TRUE_POSITIVE, risk_score=98.5, confidence=0.9,
+            rule_ids=["half_risk_rule"],
+            status_history=[StatusHistoryEntry(from_status="open", to_status="escalated", at=now.isoformat())],
+        ))
+        app.state.tlsoc = state
+        yield
+        await state.shutdown()
+
+    api = FastAPI(lifespan=lifespan)
+    for router in (base_router, chat_router, library_router, reports_router, starters_router):
+        api.include_router(router)
+    try:
+        with TestClient(api) as test_client:
+            yield test_client
+    finally:
+        patch.undo()
+
+
+def test_a_half_risk_is_one_integer_on_the_card_the_steps_and_the_answer(half_risk_client: TestClient) -> None:
+    """Risk 98.5 reads 99 everywhere in one turn: the needs-human card's reason line,
+    the get_case and explain_decision step summaries and the Demo answer (round half
+    up, like the gauge; SPEC-chat §3.7, §5.3 T1)."""
+    info = half_risk_client.get("/api/chat/starters", params={"surface": "home"}).json()
+    card = next(c for c in info["starters"] if c["id"] == "needs_human")
+    assert card["ref"]["value"] == "case-half-risk" and card["reason"].endswith("risk 99"), card
+    response = _stream(half_risk_client, card["prompt"], origin="starter")
+    summaries = {s.get("tool"): str(s.get("summary") or "") for s in _tool_steps(response)}
+    assert "risk 99" in summaries.get("get_case", ""), summaries
+    assert "risk 99 " in summaries.get("explain_decision", ""), summaries
+    answer = response["answer"]
+    assert "risk 99/100" in answer, answer[:500]
+    assert not re.search(r"\brisk 98\b", answer), answer[:500]
+    assert all(not re.search(r"\brisk 98\b", s) for s in summaries.values()), summaries

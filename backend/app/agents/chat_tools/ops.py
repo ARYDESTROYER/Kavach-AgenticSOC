@@ -112,7 +112,13 @@ class SourceHealthTool(ChatTool):
             logger.warning("source health rows failed: %s", exc)
             return ToolOutcome.failure("Source health could not be read")
         if args.source_id:
-            rows = [r for r in rows if r.get("source_id") == args.source_id]
+            # An id first, else a display name: a starter names a source by its display
+            # name when that passes the grammar (SPEC-chat §3.8.1), and fences that
+            # value, so the obvious call with it must find the source. Two sources with
+            # the same name both answer.
+            wanted = args.source_id
+            by_id = [r for r in rows if r.get("source_id") == wanted]
+            rows = by_id or [r for r in rows if r.get("source_name") == wanted]
             if not rows:
                 return ToolOutcome.failure("Unknown log source")
         now_ms = int(to_millis(now_utc()))

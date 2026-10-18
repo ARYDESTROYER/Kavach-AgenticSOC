@@ -559,12 +559,24 @@ def test_which_cases_show_a_technique_lists_the_cases_of_its_top_rules() -> None
         rule = inp["rule"]
         return {"count": 1, "cases": [{"case_id": f"demo-{rule}", "status": "open", "risk_score": len(rule)}]}
 
-    rounds, _header, body = drive("Which cases show T1078?", obs)
+    rounds: list[list[dict[str, Any]]] = []
+    while True:
+        reply = plan_turn(prompt("Which cases show T1078?", *rounds))
+        if parse_reply(reply).kind == "final":
+            header, body = final_of(reply)
+            break
+        rounds.append([call(t, obs(t, i), inp=i, artifacts=[art("a1", "case_list", {"items": []})]
+                            if t == "search_cases" else None) for t, i in tools_of(reply)])
     assert [i["rule"] for t, i in ran(rounds) if t == "search_cases"] == [
         "identity_signin", "impossible_travel", "vpn_login"]
     assert "**14 cases**" in body and "from 4 rules" in body
     assert "By rule: `identity_signin` 5, `impossible_travel` 4, `vpn_login` 3 and `mfa_fatigue` 2." in body
-    assert "The highest-risk cases from its top 3 rules, which hold 12 of the 14:" in body
+    # The list says which part of the count it is, and the blocks hold every case it
+    # lists (one per rule searched, in the order of the "By rule" line).
+    assert "The 3 highest-risk cases from its top 3 rules, which hold 12 of the 14:" in body
+    titles = [b.get("title") for b in header["blocks"] if b.get("view") == "case_list"]
+    assert titles == ["Cases with T1078 from its top rule", "Cases with T1078 from its second rule",
+                      "Cases with T1078 from its third rule"], header["blocks"]
 
 
 def test_entity_case_counts_are_one_sentence() -> None:
@@ -736,3 +748,204 @@ def test_a_campaign_answer_counts_the_cases_on_its_entity_outside_the_campaign()
     assert "**2 cases** involve" not in body
     _rounds, _header, body = drive(_starter("campaign", {"campaign": "campaign-1", "n": 2}), obs(["demo-9"]))
     assert "**1 case** outside the campaign involves IP `203.0.113.77`." in body, body
+
+
+# --------------------------------------------------------------------------- #
+# Round 13 final review (WP-DEMO13 final fixer).
+# --------------------------------------------------------------------------- #
+_SHIFT_OBS = {"window": "last 24 hours", "sla": {"enabled": True, "totals": {"breached": 2},
+                                                 "breached": [{"case_id": "demo-9", "overdue_minutes": 300}]},
+              "attention": [], "workload": []}
+
+
+@pytest.mark.parametrize("question, said", [
+    ("Show the SLA breaches for critical cases", "cannot filter by severity, so this counts every open case past "
+                                                 "its response target, not only critical ones."),
+    ("Which high severity cases are overdue on SLA?", "not only high ones"),
+    ("Which of my cases are past their SLA?", "cannot tell which cases are yours"),
+    ("Which unassigned cases are past their SLA?", "cannot filter by assignee"),
+    ("Which escalated cases are past their response target?", "cannot filter by status"),
+])
+def test_an_sla_question_that_names_a_filter_says_the_snapshot_cannot_apply_it(question: str, said: str) -> None:
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        return {"case": {"case_id": inp.get("case_id"), "status": "open"}} if tool == "get_case" else _SHIFT_OBS
+
+    rounds, _header, body = drive(question, obs)
+    assert [t for t, _i in ran(rounds)][0] == "shift_report"
+    assert "The shift snapshot " + said.split(", so")[0] in body or said in body, body
+
+
+def test_an_sla_question_without_a_filter_has_no_unapplied_filter_note() -> None:
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        return {"case": {"case_id": inp.get("case_id"), "status": "open"}} if tool == "get_case" else _SHIFT_OBS
+
+    for question in ("Which SLA breached cases are oldest?", "Which cases are past their SLA?"):
+        _rounds, _header, body = drive(question, obs)
+        assert "The shift snapshot cannot" not in body, body
+
+
+def _decision(what: dict[str, Any], recorded: dict[str, Any]) -> str:
+    policy = [{"verdict": "FALSE_POSITIVE", "auto_close_enabled": True, "min_confidence": 0.85,
+               "max_risk_score": 30}]
+    return demo_chat._say_decision(demo_chat.Result(
+        ordinal=1, tool="explain_decision", status="ok", summary="", input={},
+        observation={"what_if": what, "policy": policy, "recorded": recorded}))
+
+
+def test_a_closed_case_today_policy_would_route_otherwise_is_reconciled() -> None:
+    text = _decision({"verdict": "FALSE_POSITIVE", "confidence": 0.83, "risk_score": 16, "status": "needs_human",
+                      "decision_by": "system"}, {"status": "closed", "decision_by": "agent"})
+    assert text.startswith("It was closed by the AI agent; under today's policy a case like it (a false-positive "
+                           "verdict at 83% confidence and risk 16) would go to a human, because its confidence is "
+                           "below the policy's minimum."), text
+    assert "recorded by" not in text
+    # An open case whose status a person set says so in words, never "recorded by agent".
+    other = _decision({"verdict": "FALSE_POSITIVE", "confidence": 0.9, "risk_score": 16, "status": "closed",
+                       "decision_by": "agent"}, {"status": "on_hold", "decision_by": "analyst"})
+    assert other.endswith("Its current status was set by an analyst."), other
+
+
+def test_the_closed_why_chip_names_the_decider_once() -> None:
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        if tool == "get_case":
+            return {"case": {"case_id": "demo-3", "status": "closed", "verdict": "FALSE_POSITIVE",
+                             "decision_by": "agent", "confidence": 0.83, "risk_score": 16}}
+        return {"what_if": {"verdict": "FALSE_POSITIVE", "confidence": 0.83, "risk_score": 16,
+                            "status": "needs_human", "decision_by": "system"},
+                "policy": [{"verdict": "FALSE_POSITIVE", "auto_close_enabled": True, "min_confidence": 0.85,
+                            "max_risk_score": 30}],
+                "recorded": {"status": "closed", "decision_by": "agent"}}
+
+    _rounds, _header, body = drive(render_question("case_closed_why", {}), obs, case_scoped=True)
+    assert "it was closed by the AI agent; under today's policy" in body, body
+    assert "Who decided" not in body and body.count("the AI agent") == 1, body
+
+
+def test_every_intent_with_a_final_has_a_title_or_only_follows_an_earlier_answer() -> None:
+    from app.agents.chat_protocol import parse_title
+
+    untitled = set(demo_chat._FINALS) - set(demo_chat._INTENT_TITLES)
+    assert untitled <= demo_chat._UNTITLED_INTENTS, sorted(untitled - demo_chat._UNTITLED_INTENTS)
+    for title in [*demo_chat._INTENT_TITLES.values(), *demo_chat._GROUP_TITLES.values()]:
+        assert parse_title({"title": title}) == title, title
+
+
+@pytest.mark.parametrize("question, title", [
+    ("Which cases show T1078?", "ATT&CK technique cases"),
+    ("How many cases came from Splunk Enterprise Security (HEC)?", "Cases from a log source"),
+    ("Which other cases share an entity with demo-00000539-0004?", "Related cases"),
+    ("Who closed the cases in the last 24 hours?", "Who closed the cases"),
+])
+def test_a_first_question_is_titled_in_engine_words(question: str, title: str) -> None:
+    view = read_prompt(prompt(question))
+    ask = classify(view.question, view)
+    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == title
+
+
+def test_the_rebucket_chip_under_a_clock_window_is_never_by_month() -> None:
+    view = read_prompt(prompt("Show the cases since 16 Oct 2026 22:19 by rule"))
+    ask = classify(view.question, view)
+    obs = {"window": "since 16 Oct 2026 22:19"}
+    assert demo_chat._rebucket_chip(ask, obs, view) == "Show these cases since 16 Oct 2026 22:19 by day"
+    # With the clock anchor of this turn dating today, a window that began yesterday is by hour.
+    clock = demo_chat.Result(ordinal=1, tool="case_stats", status="ok", summary="", input=dict(demo_chat._CLOCK_INPUT),
+                             observation={"buckets": [{"label": "17 Oct 2026"}]})
+    view.rounds = [[clock]]
+    assert demo_chat._rebucket_chip(ask, obs, view).endswith("by hour")
+    # A rolling window keeps its length rule.
+    rolling = classify("Cases by rule in the last 30 days", read_prompt(prompt("Cases by rule in the last 30 days")))
+    assert demo_chat._rebucket_chip(rolling, {"window": "last 30 days"}).endswith("by day")
+
+
+def test_the_still_open_chip_is_offered_only_under_open_and_closed_cases() -> None:
+    def view_with(obs: dict[str, Any]) -> demo_chat.PromptView:
+        view = read_prompt(prompt("List the cases from the last 7 days"))
+        view.rounds = [[demo_chat.Result(ordinal=1, tool="search_cases", status="ok", summary="",
+                                         input={"window": "now-7d"}, observation=obs)]]
+        return view
+
+    assert demo_chat._lists_open_and_closed(view_with({"count": 41, "open": 7}))
+    assert not demo_chat._lists_open_and_closed(view_with({"count": 8, "open": 8}))
+    assert not demo_chat._lists_open_and_closed(view_with({"count": 52, "open": 0}))
+    assert not demo_chat._lists_open_and_closed(view_with({"count": 52}))
+
+
+def test_the_still_open_chip_keeps_an_open_status_and_needs_no_lookup_under_closed_cases() -> None:
+    escalated = demo_chat.PromptView(question="Which of these cases are still open?",
+                                     granted=("search_cases", "case_stats"),
+                                     prior_calls=[_prior("m1", "search_cases", (("status", "escalated"),))])
+    ask = classify(escalated.question, escalated)
+    calls = [(c.tool, c.input) for c in demo_chat._next_calls(escalated, ask)]
+    assert calls[0] == ("search_cases", {"status": "escalated", "sort_field": "risk_score", "limit": 10}), calls
+    assert all("status_group" not in inp for _t, inp in calls), calls
+    closed = demo_chat.PromptView(question="Which of these cases are still open?", granted=("search_cases",),
+                                  prior_calls=[_prior("m1", "search_cases", (("status_group", "terminal"),))])
+    ask = classify(closed.question, closed)
+    assert demo_chat._next_calls(closed, ask) == []
+    final = demo_chat._final_these_open(closed, ask)
+    assert final is not None and final.body == ["None of those cases is still open: the list above holds closed "
+                                                "cases only."]
+
+
+@pytest.mark.parametrize("prior, kept", [
+    ((("group_by", "verdict"), ("status", "escalated"), ("window", "this_month")),
+     {"status": "escalated", "window": "this_month"}),
+    ((("verdict", "FALSE_POSITIVE"), ("window", "now-30d"), ("limit", "10")),
+     {"verdict": "FALSE_POSITIVE", "window": "now-30d"}),
+])
+def test_a_compare_chip_under_case_figures_keeps_their_filters(prior: tuple[tuple[str, str], ...],
+                                                               kept: dict[str, Any]) -> None:
+    tool = "case_stats" if dict(prior).get("group_by") else "search_cases"
+    view = demo_chat.PromptView(question="Compare this with the previous month", granted=("case_stats",),
+                                prior_calls=[_prior("m1", tool, prior)])
+    ask = classify(view.question, view)
+    assert ask.intent == "compare_cases"
+    calls = [(c.tool, c.input) for c in demo_chat._next_calls(view, ask)]
+    assert calls and all(t == "case_stats" and inp.get("compare") == "previous_period"
+                         and all(inp.get(k) == v for k, v in kept.items()) for t, inp in calls), calls
+
+
+def test_case_chat_engine_chips_are_answered_for_the_case_entity() -> None:
+    for chip, slot in (("Compare this with the previous 24 hours", "compare"),
+                       ("Break this down by source IP instead", "group")):
+        ask, calls = _plan_of(chip, case_scoped=True)
+        assert ask.intent == "case_entity" and ask.slot(slot), (chip, ask.intent)
+        assert calls == [("get_case", {})], calls
+    # "Show the same for …" keeps a comparison only when the answer it sits under compared.
+    compared = (PriorExchange(user="Compare this with the previous 24 hours", answer="x", origin="follow_up"),)
+    view = read_prompt(prompt("Show the same for the last 7 days", case_scoped=True, history=compared))
+    assert classify(view.question, view).slot("compare")
+    view = read_prompt(prompt("Show the same for the last 7 days", case_scoped=True))
+    ask = classify(view.question, view)
+    assert ask.intent == "case_entity" and not ask.slot("compare")
+    ask, _calls = _plan_of("Investigate the top host in this answer", case_scoped=True)
+    assert ask.intent == "top_entity" and ask.slot("case_scope")
+    ask, _calls = _plan_of("Which of these cases are still open, and who has them?", case_scoped=True)
+    assert ask.intent == "these_open" and ask.slot("case_scope")
+
+
+@pytest.mark.parametrize("question, labels", [
+    ("Compare this month vs last month: cases, FP rate, MTTR", ["Cases", "False-positive rate"]),
+    ("Compare this month vs last month: MTTD and cases", ["Cases"]),
+    ("Compare cases this month with last month", ["Cases", "True-positive rate"]),
+    ("Compare MTTR this month vs last month", ["MTTR (median)"]),
+])
+def test_a_comparison_states_the_asked_figures_and_never_an_unasked_one_instead(question: str,
+                                                                                labels: list[str]) -> None:
+    comp = {"rows": [{"key": "count", "label": "Cases"}, {"key": "tp_rate", "label": "True-positive rate"},
+                     {"key": "fp_rate", "label": "False-positive rate"}, {"key": "mttr", "label": "MTTR (median)"}]}
+    view = read_prompt(prompt(question))
+    ask = classify(view.question, view)
+    assert [r["label"] for r in demo_chat._top_rows(comp, ask)["rows"]] == labels
+
+
+def test_demo_figures_round_half_up_like_the_gauge() -> None:
+    # Round 13 T1: the Demo answer's whole figures (case risk among them) round half up,
+    # like the gauge, fmt_int and the cards; never Python's half-to-even.
+    assert demo_chat._count(98.5) == "99"
+    assert demo_chat._count(48.5) == "49"
+    assert demo_chat._count(47.4) == "47"
+    assert demo_chat._count(1234.5) == "1,235"
+    assert demo_chat._count(None) == "0"
+    assert demo_chat._plural(0.5, "case") == "1 case"
+    assert demo_chat._plural(2.5, "case") == "3 cases"

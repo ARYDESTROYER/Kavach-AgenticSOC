@@ -1299,8 +1299,9 @@ class ExplainDecisionTool(ChatTool):
             ))
         if what_if is not None:
             outcome_text = "auto-closed" if what_if["auto_closed"] else "routed to a human"
+            # The gauge's integer (round half up, T1), never Python's half-to-even.
             summary = (f"{verdict_name} at confidence {what_if['confidence']:.2f} and risk "
-                       f"{what_if['risk_score']:.0f} would be {outcome_text}")
+                       f"{fmt_int(what_if['risk_score'])} would be {outcome_text}")
             if what_if["escalate"]:
                 summary += " (escalated)"
         else:

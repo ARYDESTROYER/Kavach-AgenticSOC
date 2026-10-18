@@ -273,6 +273,32 @@ describe('entity', () => {
     expect(screen.getByText('314 reports in 30 days')).toHaveClass('text-muted-foreground');
   });
 
+  it('shows the kind once, as the badge in words, never a raw "Kind ip" fact (T14)', () => {
+    // The shape `lookup_indicator` wrote before it stopped repeating the kind as a fact.
+    const block = parseBlock({
+      id: 'hunt',
+      type: 'entity',
+      provenance: 'source',
+      artifact_kind: 'entity',
+      allowed_views: ['entity'],
+      entity: { kind: 'ip', value: '198.51.100.250' },
+      facts: [
+        { label: 'Kind', value: 'ip' },
+        { label: 'Providers', value: '1 of 1 answered' },
+      ],
+      reputation: [],
+      counts: [],
+      related_cases: [],
+    }) as EntityBlock;
+    show(block);
+    const card = screen.getByTestId('block-entity');
+    expect(within(card).getAllByText('IP address')).toHaveLength(1);
+    expect(within(card).queryByText('Kind')).toBeNull();
+    expect(within(card).queryByText('ip')).toBeNull();
+    expect(within(card).getByText('Providers')).toBeInTheDocument();
+    expect(within(card).getByText('1 of 1 answered')).toBeInTheDocument();
+  });
+
   it('shows the indicator verbatim, the risk gauge, reputation and navigation', () => {
     const { container } = show(galleryBlock('ioc'));
     expect(container.querySelector('code')).toHaveTextContent('203.0.113.14');

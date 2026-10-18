@@ -25,10 +25,18 @@
  * on the server for 24 hours, waits until the toast closes without Undo), and
  * {@link useStarterViewed}, which posts the `viewed` event once per start stack or
  * opened thread (§3.6, §3.10).
+ *
+ * A waiting dismissal belongs to the viewer who hid the card and never outlives that
+ * viewer: it records its principal and is dropped, never posted, when the principal
+ * changes, when this user signs out here or in another tab (the chat activity `clear`
+ * signal), or when its post is refused (a 401 is never retried). The start screen
+ * posts its own waiting dismissals when it unmounts, while the viewer's session is
+ * still the one that hid them.
  */
 import * as React from 'react';
 
 import type { ChatStartersInfo, StarterSurface } from '@/lib/types';
+import { onChatActivity } from '../../chat-activity/activity';
 import { getChatStarters, postChatStarterEvent } from '../chat-api';
 
 /** Mirrors the server's per-caller cache window (`CACHE_TTL_S`). */
@@ -86,6 +94,8 @@ interface PendingDismissal {
   token: number;
   /** The opaque server key the `dismissed` event carries. */
   starterKey: string;
+  /** The viewer who hid the card (null: auth off); only that viewer's session posts it. */
+  principal: string | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 /** local hide key → its dismissal, not posted yet. */
@@ -134,9 +144,13 @@ function bindPagehide(): void {
 /**
  * Hide a card at once. With its opaque server key, its `dismissed` event is scheduled
  * (see {@link commitStarterDismissal}); the returned token names this hide, so a late
- * callback from an earlier toast never commits or cancels a later one.
+ * callback from an earlier toast never commits or cancels a later one. `principal` is
+ * the viewer the start screen renders for (the last known principal when omitted): the
+ * dismissal is posted only while that viewer is still the one signed in here.
  */
-export function hideStarterLocally(key: string, starterKey?: string | null): number {
+export function hideStarterLocally(key: string, starterKey?: string | null, principal?: string | null): number {
+  // The viewer hiding the card is the current one (another viewer's hides go first).
+  if (typeof principal === 'string' && principal) notePrincipal(principal);
   hidden.delete(key);
   hidden.set(key, Date.now());
   while (hidden.size > HIDDEN_LIMIT) {
@@ -154,7 +168,7 @@ export function hideStarterLocally(key: string, starterKey?: string | null): num
   const token = dismissalToken;
   if (starterKey) {
     const timer = setTimeout(() => commitStarterDismissal(key, token), DISMISS_FALLBACK_MS);
-    pendingDismissals.set(key, { token, starterKey, timer });
+    pendingDismissals.set(key, { token, starterKey, principal: lastPrincipal, timer });
     bindPagehide();
   }
   publishHidden();
@@ -164,17 +178,20 @@ export function hideStarterLocally(key: string, starterKey?: string | null): num
 /**
  * Post a hidden card's `dismissed` event (its toast closed without Undo): the server
  * hides the family for 24 hours. Cached answers still list the card, so the next read
- * asks the server again. A token from an older hide of the same card does nothing.
+ * asks the server again. A token from an older hide of the same card does nothing, and
+ * a dismissal recorded for another viewer than the current one is dropped unposted
+ * (it must never hide a family in someone else's suggestions).
  */
 export function commitStarterDismissal(key: string, token?: number): void {
   const pending = pendingDismissals.get(key);
   if (!pending || (token !== undefined && pending.token !== token)) return;
   if (pending.timer !== null) clearTimeout(pending.timer);
   pendingDismissals.delete(key);
-  if (!hidden.has(key)) return;
+  if (!hidden.has(key) || pending.principal !== lastPrincipal) return;
   for (const entry of cache.values()) entry.at = 0;
   void postChatStarterEvent({ type: 'dismissed', surface: 'home', keys: [pending.starterKey] }).catch(() => {
-    /* presentation state only: the card is already hidden here */
+    // Presentation state only: the card is already hidden here. A refused post (a 401
+    // after a sign-out, say) is dropped, never retried under a later session.
   });
 }
 
@@ -194,9 +211,13 @@ export function restoreStarterLocally(key: string, token?: number): void {
   publishHidden();
 }
 
-/** Test hook: whether a hidden card's dismissal is still waiting for its toast. */
-export function pendingStarterDismissal(key: string): boolean {
-  return pendingDismissals.has(key);
+/**
+ * Whether a hidden card's dismissal is still waiting for its toast (with a token: that
+ * very hide, not a later one of the same card). The keyboard Undo asks it.
+ */
+export function pendingStarterDismissal(key: string, token?: number): boolean {
+  const pending = pendingDismissals.get(key);
+  return !!pending && (token === undefined || pending.token === token);
 }
 
 function subscribeHidden(listener: () => void): () => void {
@@ -242,6 +263,11 @@ export function clearChatStartersCache(): void {
   lastPrincipal = null;
   clearHidden();
 }
+
+// A sign-out (here or in this user's other tabs) or another user: the previous viewer's
+// suggestions, hides and waiting dismissals leave memory, and nothing waiting is posted
+// under whoever signs in next.
+onChatActivity('clear', clearChatStartersCache);
 
 /**
  * Record the principal this render runs as; a different known principal clears the

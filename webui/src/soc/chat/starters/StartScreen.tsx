@@ -10,9 +10,11 @@
  * directly above the docked composer (D6), and the stack spans the lane, so the card
  * grid, the pills and the composer share both edges. Columns and the card count follow
  * the MEASURED width of the stack (never a viewport query): 1 column and 3 cards below
- * 560 px, 2 columns and 4 cards from 560 px, 4 columns from 1,040 px. Rows are as tall
- * as their tallest card, the skeleton shows exactly the visible count at the card's
- * height, and a card swap is an opacity cross-fade, so nothing shifts. Below a 480 px
+ * 560 px, 2 columns and 4 cards from 560 px, 4 columns from 1,040 px. From two columns
+ * every row is as tall as the tallest card (`auto-rows-fr`); one column keeps each
+ * card's own height, so a short question carries no empty fill on a phone. The
+ * skeleton shows exactly the visible count at the card's height, and a card swap is an
+ * opacity cross-fade, so nothing shifts. Below a 480 px
  * lane height the greeting is visually hidden (it still names the section). When the
  * stack is taller than the lane, the lane opens at its end.
  *
@@ -24,14 +26,23 @@
  * Keyboard (§5.6): the grid is one tab stop (roving `tabIndex`); arrow keys move in
  * reading order and wrap, Home and End jump to the first and last card, Enter or Space
  * activates, Delete or Backspace (not its auto-repeat, and never on a paused card)
- * hides the focused card and focus moves to the card that takes its place.
+ * hides the focused card and focus moves to the card that takes its place. Ctrl+Z (⌘Z)
+ * anywhere in the stack undoes the last hide whose Undo is still offered and focuses
+ * the card that came back.
  *
  * Hide (§3.9): the next ranked card not on screen takes the hidden card's OWN slot and
  * every other card keeps its slot and its DOM node ({@link starterSlots} replays the
  * hide and Undo history over the server order); the toast "Hidden for a day" offers
- * Undo, which puts the card back in its slot. The `dismissed` event (the family hidden
- * on the server for 24 hours) is posted only when the toast closes without Undo, so
- * Undo posts nothing and the server never hides a card the analyst brought back.
+ * Undo for 10 seconds, which puts the card back in its slot. The toast opens at the top
+ * of the conversation lane, centred over it ({@link hideToastStyle}): clear of the docked
+ * composer under the stack, and of the console header, the thread toolbar, the
+ * navigation and the history rail. The `dismissed` event (the
+ * family hidden on the server for 24 hours) is posted only when the toast closes
+ * without Undo, so Undo posts nothing and the server never hides a card the analyst
+ * brought back. Leaving the start screen ends Undo: its waiting dismissals are posted
+ * then, while the session is still the hiding viewer's, and its toasts close. A hidden
+ * card's catch-up clause leaves the line above the grid with it (the clause sends the
+ * same question), and Undo brings both back.
  * Within one applied result and card count the grid never gets shorter (a shorter card
  * taking a slot does not move the bottom-anchored stack). While the pointer is over the
  * grid or focus is inside it, a fresh result is held (never reorder under the analyst).
@@ -43,11 +54,12 @@ import * as React from 'react';
 import { RotateCcw } from 'lucide-react';
 import { toast } from 'sonner';
 
-import type { ChatContextInfo, ChatStarter } from '@/lib/types';
+import type { ChatCatchUp, ChatContextInfo, ChatStarter, ChatStartersInfo } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { PROMPTBOOK_RUNNING_REASON } from '../composer/PromptRunner';
 import { getPromptbook, subscribePromptbook } from '../composer/promptbook-store';
+import { nonLatinCharacter } from '../shortcuts/useChatShortcuts';
 import { CatchUpLine } from './CatchUpLine';
 import { CategoryPills } from './CategoryPills';
 import { greetingLine, useGreetingName } from './greeting';
@@ -55,6 +67,7 @@ import { STARTER_CARD_FRAME, StarterCard } from './StarterCard';
 import {
   commitStarterDismissal,
   hideStarterLocally,
+  pendingStarterDismissal,
   restoreStarterLocally,
   useHiddenStarters,
   type ChatStartersController,
@@ -67,6 +80,66 @@ export const CAPABILITY_LINE = 'Ask about cases, logs, metrics or this console.'
 export const STARTERS_LOAD_ERROR = "Couldn't load suggestions.";
 /** §5.5 toast after Hide. */
 export const HIDDEN_FOR_A_DAY = 'Hidden for a day';
+/**
+ * How long the "Hidden for a day" toast offers Undo (sonner's default is 4 s; the
+ * console's other action toasts stay 8 to 9 s). Shorter than the dismissal fallback.
+ */
+export const HIDE_TOAST_MS = 10_000;
+/**
+ * Where the toast opens: the console's toaster sits bottom right, on top of the docked
+ * composer directly under the start stack, so this one opens at the top centre (and
+ * {@link hideToastStyle} places it over the conversation lane, below the header and the
+ * thread toolbar).
+ */
+export const HIDE_TOAST_POSITION = 'top-center';
+/**
+ * Room between the top of the conversation lane (the bottom edge of the thread toolbar)
+ * and the hide toast. A toast also takes pointer and touch input from a 15 px strip above
+ * its top edge (sonner's hover gap: `--gap`, 14 px, plus 1 px); 20 px keeps that strip
+ * 5 px clear of the toolbar while leaving the most room above the start stack on a short
+ * phone.
+ */
+export const HIDE_TOAST_CLEARANCE_PX = 20;
+/** sonner 1.7's phone layout: under this query its top toaster sits at `--mobile-offset-top`. */
+const SONNER_PHONE_QUERY = '(max-width: 600px)';
+
+/**
+ * The hide toast's own place inside sonner's top-centre toaster: it opens
+ * {@link HIDE_TOAST_CLEARANCE_PX} below the top of the conversation lane the stack sits
+ * in, so it is under the console header and the thread toolbar at every width, and
+ * centred over that lane, so it stays clear of the navigation and the history rail
+ * beside it. At sonner's own place it covered the header's search, notifications and
+ * navigation controls for its 10 seconds, and on a tablet or phone the toolbar's History
+ * button too. Outside a lane it opens over the console's main region (`#socMain`, under
+ * the header); with neither, where sonner puts it.
+ *
+ * The toaster sits `--offset-top` below the viewport top (`--mobile-offset-top` in
+ * sonner's phone layout), so that offset is taken off `top`. Outside the phone layout
+ * the toaster is centred on the viewport, so `left` moves the toast by the distance
+ * between the viewport's centre and the lane's; in the phone layout the toast spans the
+ * viewport, like the lane, and keeps sonner's sides.
+ */
+export function hideToastStyle(anchor: Element | null): React.CSSProperties | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const frame = anchor?.closest('[data-chat-scroll-lane]') ?? document.getElementById('socMain');
+  if (!frame) return undefined;
+  const rect = frame.getBoundingClientRect();
+  const below = Math.max(0, Math.round(rect.top)) + HIDE_TOAST_CLEARANCE_PX;
+  const phone = typeof window.matchMedia === 'function' && window.matchMedia(SONNER_PHONE_QUERY).matches;
+  if (phone) return { top: `calc(${below}px - var(--mobile-offset-top))` };
+  const shift = rect.width > 0 ? Math.round(rect.left + rect.width / 2 - document.documentElement.clientWidth / 2) : 0;
+  return { top: `calc(${below}px - var(--offset-top))`, left: `${shift}px` };
+}
+
+/** Ctrl+Z or ⌘Z (no Shift or Alt, not its auto-repeat, not mid-composition). */
+export function isUndoHideKey(
+  event: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'metaKey' | 'shiftKey' | 'altKey' | 'repeat' | 'isComposing'>,
+): boolean {
+  if (event.repeat || event.isComposing || event.altKey || event.shiftKey || !(event.ctrlKey || event.metaKey)) return false;
+  const raw = event.key || '';
+  // The physical key only when the layout typed no Latin character (the chat shortcut rule).
+  return raw.toLowerCase() === 'z' || (nonLatinCharacter(raw) && event.code === 'KeyZ');
+}
 
 /** Lane width breakpoints (§5.2), in CSS px of the measured stack. */
 export const TWO_COLUMNS_FROM = 560;
@@ -82,6 +155,14 @@ export function startGrid(width: number): { columns: 1 | 2 | 4; count: 3 | 4 } {
 }
 
 const GRID_COLUMNS: Record<1 | 2 | 4, string> = { 1: 'grid-cols-1', 2: 'grid-cols-2', 4: 'grid-cols-4' };
+
+/**
+ * The grid's classes: rows share the tallest card's height only from two columns, where
+ * a row holds several cards; one column keeps each card's own height (§5.2 phone budget).
+ */
+export function startGridClass(columns: 1 | 2 | 4): string {
+  return cn('mt-4 grid gap-2', columns > 1 && 'auto-rows-fr', GRID_COLUMNS[columns]);
+}
 
 /** The local identity a card is hidden under (its opaque key, else its family). */
 export function starterHideKey(starter: Pick<ChatStarter, 'id' | 'key'>): string {
@@ -163,6 +244,31 @@ export function starterSlots(
   });
 }
 
+/**
+ * The catch-up line without the clauses of hidden cards (§3.9, §10.2): a clause sends
+ * the same question as its family's card and carries the same key, so a card hidden
+ * here takes its clause off the line at once (the server leaves the family out of the
+ * next read). A clause goes when its own key is hidden or its family's card is; with no
+ * clause left there is no line (the capability line shows). Undo brings it back.
+ */
+export function visibleCatchUp(
+  info: Pick<ChatStartersInfo, 'starters' | 'catch_up'> | null,
+  hiddenKeys: ReadonlySet<string>,
+): ChatCatchUp | null {
+  const line = info?.catch_up;
+  if (!line || !line.clauses.length) return null;
+  if (!hiddenKeys.size) return line;
+  const hiddenFamilies = new Set<string>();
+  for (const starter of [...(info?.starters ?? []), ...line.clauses.map((clause) => clause.starter)]) {
+    if (hiddenKeys.has(starterHideKey(starter))) hiddenFamilies.add(starter.id);
+  }
+  const clauses = line.clauses.filter(
+    (clause) => !hiddenKeys.has(starterHideKey(clause.starter)) && !hiddenFamilies.has(clause.starter.id),
+  );
+  if (clauses.length === line.clauses.length) return line;
+  return clauses.length ? { ...line, clauses } : null;
+}
+
 /** Measure an element's width, and the height of the scroll lane it sits in. */
 function useStackGeometry(node: HTMLElement | null): { width: number; laneHeight: number } {
   const [geometry, setGeometry] = React.useState({ width: 0, laneHeight: 0 });
@@ -226,7 +332,7 @@ export function StartScreen({
   const failed = !!starters && !!starters.error && !info;
   const visible = React.useMemo(() => starterSlots(info?.starters ?? [], hidden, count), [info, hidden, count]);
   const visibleSignature = visible.map(starterHideKey).join(',');
-  const catchUp = info?.catch_up && info.catch_up.clauses.length ? info.catch_up : null;
+  const catchUp = React.useMemo(() => visibleCatchUp(info, hidden.keys), [info, hidden]);
 
   // The keys on screen, for the `viewed` event.
   const shownKeys = visible.map((starter) => starter.key).filter((key): key is string => !!key);
@@ -288,27 +394,93 @@ export function StartScreen({
     cardRefs.current[next]?.focus();
   }, [visibleSignature, visibleCount, node]);
 
+  /**
+   * This stack's hides whose Undo is still offered, by token, oldest first: the keyboard
+   * Undo takes the newest, and an unmount posts what is still waiting.
+   */
+  const hidesRef = React.useRef(new Map<number, { id: string; toastId: string; keyed: boolean }>());
+
   const hide = (starter: ChatStarter, index: number, fromKeyboard: boolean) => {
     // A paused card is shown but not usable: it cannot be hidden either (§3.9).
     if (paused) return;
     const id = starterHideKey(starter);
-    const token = hideStarterLocally(id, starter.key ?? null);
+    // Recorded for the viewer this stack renders for: only that session posts it.
+    const token = hideStarterLocally(id, starter.key ?? null, principal);
     if (fromKeyboard || cardRefs.current[index] === document.activeElement || node?.contains(document.activeElement)) {
       pendingFocus.current = index;
     }
+    const toastId = `starter-hide-${token}`;
+    const hides = hidesRef.current;
+    hides.set(token, { id, toastId, keyed: !!starter.key });
     // The family is hidden on the server only once the toast closes without Undo.
     toast(HIDDEN_FOR_A_DAY, {
+      id: toastId,
+      duration: HIDE_TOAST_MS,
+      position: HIDE_TOAST_POSITION,
+      style: hideToastStyle(node),
       action: {
         label: 'Undo',
         onClick: () => {
+          hides.delete(token);
           undoFocus.current = id;
           restoreStarterLocally(id, token);
         },
       },
-      onAutoClose: () => commitStarterDismissal(id, token),
-      onDismiss: () => commitStarterDismissal(id, token),
+      onAutoClose: () => {
+        hides.delete(token);
+        commitStarterDismissal(id, token);
+      },
+      onDismiss: () => {
+        hides.delete(token);
+        commitStarterDismissal(id, token);
+      },
     });
   };
+
+  /** Ctrl+Z / ⌘Z: undo the newest hide whose Undo is still offered (true: one was). */
+  const undoLastHide = (): boolean => {
+    const hides = hidesRef.current;
+    for (const [token, entry] of Array.from(hides).reverse()) {
+      hides.delete(token);
+      // Its dismissal was already posted (the fallback ran): Undo can no longer keep it.
+      if (entry.keyed && !pendingStarterDismissal(entry.id, token)) continue;
+      undoFocus.current = entry.id;
+      restoreStarterLocally(entry.id, token);
+      // A dismissal by code fires no close callback; nothing is waiting to post anyway.
+      toast.dismiss(entry.toastId);
+      return true;
+    }
+    return false;
+  };
+
+  // Leaving the start screen (a send, another thread, another page, a sign-out) ends
+  // Undo for its hides: each waiting dismissal is posted now, while the session is
+  // still the one that hid it, and its toast closes, so nothing posts later under
+  // whoever is signed in by then.
+  React.useEffect(() => {
+    const hides = hidesRef.current;
+    return () => {
+      for (const [token, entry] of Array.from(hides)) {
+        commitStarterDismissal(entry.id, token);
+        toast.dismiss(entry.toastId);
+      }
+      hides.clear();
+    };
+  }, []);
+
+  // Ctrl+Z / ⌘Z anywhere in the stack (a card, a clause, a pill). The composer sits
+  // outside it, so its own text undo is untouched.
+  const undoRef = React.useRef(undoLastHide);
+  undoRef.current = undoLastHide;
+  React.useEffect(() => {
+    if (!node) return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || !isUndoHideKey(event)) return;
+      if (undoRef.current()) event.preventDefault();
+    };
+    node.addEventListener('keydown', onKeyDown);
+    return () => node.removeEventListener('keydown', onKeyDown);
+  }, [node]);
 
   const onCardKeyDown = (index: number, starter: ChatStarter) => (event: React.KeyboardEvent<HTMLButtonElement>) => {
     const n = visible.length;
@@ -497,11 +669,7 @@ export function StartScreen({
           </Button>
         </div>
       ) : loading ? (
-        <div
-          aria-hidden="true"
-          data-testid="starter-skeletons"
-          className={cn('mt-4 grid auto-rows-fr gap-2', GRID_COLUMNS[columns])}
-        >
+        <div aria-hidden="true" data-testid="starter-skeletons" className={startGridClass(columns)}>
           {Array.from({ length: count }, (_, index) => (
             <div key={index} className={cn(STARTER_CARD_FRAME, 'motion-safe:animate-pulse')} />
           ))}
@@ -511,7 +679,7 @@ export function StartScreen({
           ref={setGrid}
           aria-label="Suggested questions"
           aria-describedby={bookRunning ? reasonId : undefined}
-          className={cn('mt-4 grid auto-rows-fr gap-2', GRID_COLUMNS[columns])}
+          className={startGridClass(columns)}
           style={gridMinHeight ? { minHeight: gridMinHeight } : undefined}
         >
           {visible.map((starter, index) => (

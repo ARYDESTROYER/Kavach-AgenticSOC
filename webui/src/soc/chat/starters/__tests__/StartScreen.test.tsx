@@ -11,7 +11,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
-const { toastMock } = vi.hoisted(() => ({ toastMock: vi.fn() }));
+const { toastMock } = vi.hoisted(() => ({ toastMock: Object.assign(vi.fn(), { dismiss: vi.fn() }) }));
 vi.mock('sonner', async (importOriginal) => ({ ...(await importOriginal<typeof import('sonner')>()), toast: toastMock }));
 
 import type { ChatStarter, ChatStartersInfo } from '@/lib/types';
@@ -20,19 +20,28 @@ import { makeContext } from '../../composer/__tests__/fixtures';
 import { OPEN_PROMPT_LIBRARY_EVENT } from '../../composer/library-events';
 import { PROMPTBOOK_RUNNING_REASON } from '../../composer/PromptRunner';
 import { beginPromptbook, resetPromptbookForTests } from '../../composer/promptbook-store';
+import { clearChatActivity } from '../../../chat-activity/activity';
 import { CATEGORY_PILLS, visiblePills } from '../CategoryPills';
 import { GREETING_NAME_TTL_MS, clearGreetingNameCache, greetingFor, greetingLine, profileDisplayName } from '../greeting';
 import { STARTER_ICONS, starterIcon } from '../starter-icons';
 import {
   CAPABILITY_LINE,
   HIDDEN_FOR_A_DAY,
+  HIDE_TOAST_CLEARANCE_PX,
+  HIDE_TOAST_MS,
+  HIDE_TOAST_POSITION,
   STARTERS_LOAD_ERROR,
   StartScreen,
+  hideToastStyle,
+  isUndoHideKey,
   startGrid,
+  startGridClass,
   starterHideKey,
   starterSlots,
+  visibleCatchUp,
   type StartScreenProps,
 } from '../StartScreen';
+import { STARTER_CARD_KEYSHORTCUTS } from '../StarterCard';
 import {
   STARTERS_REFRESH_MS,
   clearChatStartersCache,
@@ -64,6 +73,7 @@ beforeEach(() => {
   clearChatStartersCache();
   clearGreetingNameCache();
   toastMock.mockReset();
+  toastMock.dismiss.mockReset();
   stackWidth = 1200;
   laneHeight = 0;
   // jsdom has no layout: the stack's measured width and the lane's height are scripted.
@@ -84,6 +94,35 @@ afterEach(() => {
   vi.unstubAllGlobals();
   resetPromptbookForTests();
 });
+
+type Box = { x: number; y: number; width: number; height: number };
+
+/**
+ * Script the console's layout for the hide toast's place: the scroll lane's and the
+ * main region's boxes, the viewport width and whether sonner's phone layout applies.
+ */
+function scriptLayout({ lane, main, viewportWidth, phone = false }: { lane?: Box; main?: Box; viewportWidth: number; phone?: boolean }) {
+  vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.testid === 'chat-start') return DOMRect.fromRect({ width: stackWidth, height: 300 });
+    if (lane && this.dataset.chatScrollLane) return DOMRect.fromRect(lane);
+    if (main && this.id === 'socMain') return DOMRect.fromRect(main);
+    return DOMRect.fromRect();
+  });
+  vi.spyOn(document.documentElement, 'clientWidth', 'get').mockReturnValue(viewportWidth);
+  vi.spyOn(window, 'matchMedia').mockImplementation(
+    (query: string) =>
+      ({
+        matches: phone && query === '(max-width: 600px)',
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      }) as MediaQueryList,
+  );
+}
 
 function controller(info: ChatStartersInfo | null, overrides: Partial<ChatStartersController> = {}): ChatStartersController {
   return { info, loading: false, error: null, retry: vi.fn(), setHeld: vi.fn(), ...overrides };
@@ -278,6 +317,185 @@ describe('StartScreen', () => {
     expect(screen.queryByRole('button', { name: /^Hide for a day/ })).toBeNull();
     await act(async () => {});
     expect(server.events()).toEqual([]);
+  });
+
+  it('opens the hide toast at the top centre for 10 seconds, away from the docked composer', async () => {
+    const user = userEvent.setup();
+    renderStart();
+    act(() => mainCards()[0].focus());
+    await user.keyboard('{Delete}');
+    expect(HIDE_TOAST_MS).toBeGreaterThanOrEqual(10_000);
+    expect(toastMock).toHaveBeenCalledWith(
+      HIDDEN_FOR_A_DAY,
+      expect.objectContaining({ position: 'top-center', duration: HIDE_TOAST_MS, id: expect.stringMatching(/^starter-hide-\d+$/) }),
+    );
+  });
+
+  it('opens the hide toast under the thread toolbar, centred over the conversation lane, never over the header', async () => {
+    const user = userEvent.setup();
+    // A 1440 px console: the lane starts under the toolbar (y 100), right of the
+    // navigation and the history rail (x 504), so its centre is 252 px right of the
+    // viewport's, where sonner centres its top toaster.
+    scriptLayout({ lane: { x: 504, y: 100, width: 936, height: 700 }, viewportWidth: 1440 });
+    renderStart();
+    act(() => mainCards()[0].focus());
+    await user.keyboard('{Delete}');
+    const options = toastMock.mock.calls[0][1] as { position: string; style: React.CSSProperties };
+    expect(options.position).toBe(HIDE_TOAST_POSITION);
+    expect(options.style).toEqual({ top: 'calc(120px - var(--offset-top))', left: '252px' });
+    // Its hover gap (the 15 px strip above it that also takes clicks) stays below the toolbar.
+    expect(HIDE_TOAST_CLEARANCE_PX).toBeGreaterThan(15);
+  });
+
+  it('opens the hide toast under the thread toolbar in the phone layout, across the lane', async () => {
+    const user = userEvent.setup();
+    stackWidth = 358;
+    scriptLayout({ lane: { x: 0, y: 100, width: 390, height: 640 }, viewportWidth: 390, phone: true });
+    renderStart();
+    act(() => mainCards()[0].focus());
+    await user.keyboard('{Delete}');
+    const options = toastMock.mock.calls[0][1] as { style: React.CSSProperties };
+    // sonner's phone toaster sits at --mobile-offset-top and spans the viewport: no sideways move.
+    expect(options.style).toEqual({ top: 'calc(120px - var(--mobile-offset-top))' });
+  });
+
+  it('places the hide toast below the console main region outside a lane, and leaves it to sonner with neither', () => {
+    scriptLayout({ main: { x: 240, y: 56, width: 1200, height: 844 }, viewportWidth: 1440 });
+    const main = document.createElement('main');
+    main.id = 'socMain';
+    const inside = document.createElement('div');
+    main.append(inside);
+    document.body.append(main);
+    try {
+      expect(hideToastStyle(inside)).toEqual({ top: 'calc(76px - var(--offset-top))', left: '120px' });
+      expect(hideToastStyle(null)).toEqual({ top: 'calc(76px - var(--offset-top))', left: '120px' });
+    } finally {
+      main.remove();
+    }
+    expect(hideToastStyle(document.createElement('div'))).toBeUndefined();
+  });
+
+  it('undoes the last hide with Ctrl+Z or Cmd+Z: the card comes back with focus, its toast closes and nothing is posted', async () => {
+    const user = userEvent.setup();
+    const server = stubStarterFetch(() => json(makeInfo()));
+    renderStart();
+    act(() => mainCards()[0].focus());
+    await user.keyboard('{Delete}');
+    expect(mainCards().map((b) => b.dataset.starter)).toEqual(['triage', 'new_cases', 'silent_source', 'continue']);
+    const first = toastMock.mock.calls[0][1] as { id: string; onAutoClose: () => void; onDismiss: () => void };
+    await user.keyboard('{Control>}z{/Control}');
+    expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'new_cases', 'silent_source', 'continue']);
+    expect(mainCards()[0]).toHaveFocus();
+    expect(toastMock.dismiss).toHaveBeenCalledWith(first.id);
+    // A late close callback of that toast posts nothing: Undo kept the card.
+    act(() => first.onAutoClose());
+    act(() => first.onDismiss());
+    await act(async () => {});
+    expect(server.events()).toEqual([]);
+    // Two hides in a row: ⌘Z takes them back newest first, and each slot gets its card.
+    act(() => mainCards()[1].focus());
+    await user.keyboard('{Delete}');
+    act(() => mainCards()[2].focus());
+    await user.keyboard('{Backspace}');
+    expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'triage', 'posture', 'continue']);
+    await user.keyboard('{Meta>}z{/Meta}');
+    expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'triage', 'silent_source', 'continue']);
+    expect(mainCards()[2]).toHaveFocus();
+    // From a pill too (anywhere in the start stack).
+    act(() => (document.querySelector('[data-pill]') as HTMLElement).focus());
+    await user.keyboard('{Control>}z{/Control}');
+    expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'new_cases', 'silent_source', 'continue']);
+    expect(mainCards()[1]).toHaveFocus();
+    // Nothing left to undo: the key is left alone.
+    expect(fireEvent.keyDown(mainCards()[1], { key: 'z', ctrlKey: true })).toBe(true);
+    await act(async () => {});
+    expect(server.events()).toEqual([]);
+  });
+
+  it('reads Ctrl+Z and Cmd+Z only, on any keyboard layout', () => {
+    const k = (init: Partial<KeyboardEvent>) =>
+      ({ key: 'z', code: 'KeyZ', ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, repeat: false, isComposing: false, ...init }) as KeyboardEvent;
+    expect(isUndoHideKey(k({ ctrlKey: true }))).toBe(true);
+    expect(isUndoHideKey(k({ metaKey: true, key: 'Z' }))).toBe(true);
+    expect(isUndoHideKey(k({}))).toBe(false);
+    expect(isUndoHideKey(k({ ctrlKey: true, shiftKey: true }))).toBe(false);
+    expect(isUndoHideKey(k({ ctrlKey: true, altKey: true }))).toBe(false);
+    expect(isUndoHideKey(k({ ctrlKey: true, repeat: true }))).toBe(false);
+    expect(isUndoHideKey(k({ ctrlKey: true, isComposing: true }))).toBe(false);
+    // A non-Latin layout: the physical Z key. A Latin layout types its own character there.
+    expect(isUndoHideKey(k({ ctrlKey: true, key: 'я' }))).toBe(true);
+    expect(isUndoHideKey(k({ ctrlKey: true, key: ';' }))).toBe(false);
+  });
+
+  it('takes a hidden card\'s clause off the catch-up line, and Undo puts it back', async () => {
+    const user = userEvent.setup();
+    const LINE = 'Since 09:12: 5 new cases (2 critical) and Wazuh quiet for 3 hours.';
+    renderStart({ starters: controller(makeInfo({ catch_up: CATCH_UP })) });
+    expect(screen.getByTestId('catch-up-line')).toHaveTextContent(LINE);
+    // NEW_CASES (slot 1) is hidden: its clause sends the same question, so it goes too.
+    act(() => mainCards()[1].focus());
+    await user.keyboard('{Delete}');
+    const line = screen.getByTestId('catch-up-line');
+    expect(line).toHaveTextContent('Since 09:12: Wazuh quiet for 3 hours.');
+    expect(within(line).queryByRole('button', { name: '5 new cases (2 critical)' })).toBeNull();
+    expect(within(line).getAllByRole('button').map((b) => b.dataset.starter)).toEqual(['silent_source']);
+    act(() => (toastMock.mock.calls[0][1] as { action: { onClick: () => void } }).action.onClick());
+    expect(screen.getByTestId('catch-up-line')).toHaveTextContent(LINE);
+    // Both clause families hidden: no line is left, so the capability line shows.
+    act(() => mainCards()[1].focus());
+    await user.keyboard('{Delete}');
+    act(() => mainCards()[2].focus());
+    await user.keyboard('{Delete}');
+    expect(screen.queryByTestId('catch-up-line')).toBeNull();
+    expect(screen.getByText(CAPABILITY_LINE)).toBeInTheDocument();
+  });
+
+  it('matches a clause to a hidden card by its key or by its family', () => {
+    const info = makeInfo({ catch_up: CATCH_UP });
+    expect(visibleCatchUp(info, new Set())).toBe(CATCH_UP);
+    expect(visibleCatchUp(info, new Set(['unrelated-key']))).toBe(CATCH_UP);
+    expect(visibleCatchUp(info, new Set([NEW_CASES.key as string]))?.clauses.map((c) => c.starter.id)).toEqual(['silent_source']);
+    // The clause carries another key, but its family's card is hidden: it goes too.
+    const rekeyed = makeInfo({
+      catch_up: { ...CATCH_UP, clauses: [{ ...CATCH_UP.clauses[0], starter: { ...NEW_CASES, key: 'aaaaaaaaaaaaaaaa' } }, CATCH_UP.clauses[1]] },
+    });
+    expect(visibleCatchUp(rekeyed, new Set([NEW_CASES.key as string]))?.clauses.map((c) => c.starter.id)).toEqual(['silent_source']);
+    expect(visibleCatchUp(info, new Set([NEW_CASES.key as string, SILENT_SOURCE.key as string]))).toBeNull();
+    expect(visibleCatchUp(makeInfo(), new Set([NEW_CASES.key as string]))).toBeNull();
+  });
+
+  it('shares the tallest card\'s height across rows only from two columns', () => {
+    expect(startGridClass(1)).not.toContain('auto-rows-fr');
+    expect(startGridClass(2)).toContain('auto-rows-fr');
+    expect(startGridClass(4)).toContain('auto-rows-fr');
+    const rows = (width: number) => {
+      stackWidth = width;
+      const view = renderStart();
+      const className = screen.getByRole('list', { name: 'Suggested questions' }).className;
+      view.unmount();
+      return className;
+    };
+    // One column: each card keeps its own height (no empty fill on a phone).
+    expect(rows(0)).not.toContain('auto-rows-fr');
+    expect(rows(400)).not.toContain('auto-rows-fr');
+    expect(rows(600)).toContain('auto-rows-fr');
+    expect(rows(1100)).toContain('auto-rows-fr');
+    stackWidth = 400;
+    const loading = renderStart({ starters: controller(null, { loading: true }) });
+    expect(screen.getByTestId('starter-skeletons').className).not.toContain('auto-rows-fr');
+    loading.unmount();
+    stackWidth = 1100;
+    renderStart({ starters: controller(null, { loading: true }) });
+    expect(screen.getByTestId('starter-skeletons').className).toContain('auto-rows-fr');
+  });
+
+  it('declares Delete, Backspace and the undo keys on a hideable card, and no keys on a paused one', () => {
+    expect(STARTER_CARD_KEYSHORTCUTS).toBe('Delete Backspace Control+Z Meta+Z');
+    const view = renderStart();
+    for (const card of mainCards()) expect(card).toHaveAttribute('aria-keyshortcuts', 'Delete Backspace Control+Z Meta+Z');
+    view.unmount();
+    renderStart({ disabled: true });
+    for (const card of mainCards()) expect(card).not.toHaveAttribute('aria-keyshortcuts');
   });
 
   it('places stand-ins slot by slot, and Undo of an earlier hide leaves later slots alone', () => {
@@ -562,12 +780,12 @@ describe('StartScreen with the real starters hook', () => {
     return server;
   }
 
-  function LiveStart({ poll = false }: { poll?: boolean }) {
-    const starters = useChatStarters({ surface: 'home', principal: 'admin', enabled: true, poll });
+  function LiveStart({ poll = false, principal = 'admin' }: { poll?: boolean; principal?: string }) {
+    const starters = useChatStarters({ surface: 'home', principal, enabled: true, poll });
     return (
       <TooltipProvider>
         <div data-chat-scroll-lane="true">
-          <StartScreen context={makeContext()} starters={starters} onActivate={() => {}} />
+          <StartScreen context={makeContext()} starters={starters} principal={principal} onActivate={() => {}} />
           <button type="button">Elsewhere</button>
           <textarea aria-label="Composer" />
         </div>
@@ -608,6 +826,54 @@ describe('StartScreen with the real starters hook', () => {
     render(<LiveStart />);
     await waitFor(() => expect(server.reads()).toHaveLength(2));
     await waitFor(() => expect(mainCards().map((b) => b.dataset.starter)).toEqual(['new_cases', 'silent_source', 'continue', 'triage']));
+  });
+
+  it('posts a waiting dismissal as the viewer who hid it when the start screen goes, and closes its toast', async () => {
+    const user = userEvent.setup();
+    const server = honouringServer();
+    const view = render(<LiveStart principal="admin" />);
+    await waitFor(() => expect(mainCards()).toHaveLength(4));
+    act(() => mainCards()[0].focus());
+    await user.keyboard('{Delete}');
+    const options = toastMock.mock.calls[0][1] as { id: string; onAutoClose: () => void; onDismiss: () => void };
+    expect(server.events()).toEqual([]);
+    // Leaving the start screen (another page, a send, a sign-out from the menu) ends Undo:
+    // the dismissal goes now, while the session is still the one that hid it.
+    view.unmount();
+    await waitFor(() => expect(server.events()).toEqual([{ type: 'dismissed', surface: 'home', keys: [NEEDS_HUMAN.key] }]));
+    expect(toastMock.dismiss).toHaveBeenCalledWith(options.id);
+    expect(pendingStarterDismissal(starterHideKey(NEEDS_HUMAN))).toBe(false);
+    // The toast closing later (on the sign-in page, under the next viewer) posts nothing.
+    act(() => options.onAutoClose());
+    act(() => options.onDismiss());
+    await act(async () => {});
+    expect(server.events()).toHaveLength(1);
+  });
+
+  it('drops a waiting dismissal, never posting it, when the viewer signs out or another viewer appears', async () => {
+    const user = userEvent.setup();
+    const server = honouringServer();
+    const view = render(<LiveStart principal="admin" />);
+    await waitFor(() => expect(mainCards()).toHaveLength(4));
+    act(() => mainCards()[0].focus());
+    await user.keyboard('{Delete}');
+    expect(pendingStarterDismissal(starterHideKey(NEEDS_HUMAN))).toBe(true);
+    // A sign-out here or in another tab of this user (the chat activity `clear` signal).
+    act(() => clearChatActivity());
+    expect(pendingStarterDismissal(starterHideKey(NEEDS_HUMAN))).toBe(false);
+    act(() => (toastMock.mock.calls[0][1] as { onAutoClose: () => void }).onAutoClose());
+    await act(async () => {});
+    expect(server.events()).toEqual([]);
+    // Hidden again, then another viewer's suggestions render in this tab before the toast closes.
+    await waitFor(() => expect(mainCards()[0].dataset.starter).toBe('needs_human'));
+    act(() => mainCards()[0].focus());
+    await user.keyboard('{Delete}');
+    const other = render(<LiveStart principal="bob" />);
+    act(() => (toastMock.mock.calls[1][1] as { onAutoClose: () => void }).onAutoClose());
+    other.unmount();
+    view.unmount();
+    await act(async () => {});
+    expect(server.events()).toEqual([]);
   });
 
   it('posts a waiting dismissal when the page goes away', async () => {

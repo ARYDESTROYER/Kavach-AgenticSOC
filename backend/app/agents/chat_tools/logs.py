@@ -41,6 +41,7 @@ from ...engine.log_rows import BrowseTarget, clamp_per_source_timeout, fan_out
 from ...utils import dotted_get
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
+    EMPTY_VALUE_LABEL,
     ToolInput,
     Window,
     align_to_bucket,
@@ -320,6 +321,18 @@ async def plan_sources(
         selected = [t for t in targets if t.source_id == source_id]
         if selected:
             return _Plan("fanout", selected[0].source_name, source_id, targets=selected)
+        # Not an id: a source's display name (a starter fences a source by its display
+        # name when that passes the grammar, SPEC-chat §3.8.1). Only one name match is
+        # taken; a name two sources share stays ambiguous.
+        named = [t for t in targets if t.source_name == source_id]
+        if len(named) == 1:
+            sid = named[0].source_id
+            resolved = await resolve_source(ctx, sid)
+            if resolved is not None:
+                conn, name, closer = resolved
+                return _Plan("single", name or named[0].source_name or connector_name(conn, sid), sid, conn,
+                             close=closer)
+            return _Plan("fanout", named[0].source_name, sid, targets=named)
         return ToolOutcome.failure("Unknown or unavailable log source")
     if targets and (all_sources is True or (all_sources is None and len(targets) > 1)):
         return _Plan("fanout", f"{len(targets)} sources", None, targets=targets)
@@ -1300,7 +1313,8 @@ class LogStatsTool(ChatTool):
             pairs = top[f]
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="categories", title=GROUP_TITLES[f], title_trusted=True,
-                data={"labels": [visible_text(k, 200) or "—" for k, _v in pairs], "values": [v for _k, v in pairs],
+                data={"labels": [visible_text(k, 200) or EMPTY_VALUE_LABEL for k, _v in pairs],
+                      "values": [v for _k, v in pairs],
                       "unit": "count", "dimension": f, "other": other[f]},
                 provenance="source", untrusted_labels=True,
                 basis="sample" if (all_exact and merged_remainder) else basis,
@@ -1492,7 +1506,8 @@ def _add_log_comparison(
         outcome.coverage = "; ".join(x for x in (outcome.coverage, f"comparison {note}") if x)
     if first is not None and per_value:
         ranked = sorted(per_value, key=lambda k: (-(per_value[k][-1] or 0), k))[:20]
-        value_rows = [comparison_row(f"v{i + 1}", visible_text(value, 200) or "—", per_value[value], unit="count")
+        value_rows = [comparison_row(f"v{i + 1}", visible_text(value, 200) or EMPTY_VALUE_LABEL, per_value[value],
+                                     unit="count")
                       for i, value in enumerate(ranked)]
         outcome.artifacts.append(Artifact(
             id=f"a{len(outcome.artifacts) + 1}", kind="comparison", title="Top values compared", title_trusted=True,

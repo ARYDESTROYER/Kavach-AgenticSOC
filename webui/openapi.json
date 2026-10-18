@@ -1520,6 +1520,53 @@
         "title": "ChatBudgetInfo",
         "type": "object"
       },
+      "ChatCatchUp": {
+        "description": "\"Since {since_label}: clause, clause and clause.\" (at most 160 characters as a\nwhole line; the server drops clauses from the end until it fits).",
+        "properties": {
+          "clauses": {
+            "items": {
+              "$ref": "#/components/schemas/ChatCatchUpClause"
+            },
+            "maxItems": 4,
+            "title": "Clauses",
+            "type": "array"
+          },
+          "since": {
+            "title": "Since",
+            "type": "string"
+          },
+          "since_label": {
+            "title": "Since Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "since",
+          "since_label"
+        ],
+        "title": "ChatCatchUp",
+        "type": "object"
+      },
+      "ChatCatchUpClause": {
+        "description": "One clause of the catch-up line (\"5 new cases (2 critical)\") and the starter\nit sends when clicked (action ``send`` only; SPEC §3.6).",
+        "properties": {
+          "starter": {
+            "$ref": "#/components/schemas/ChatStarter"
+          },
+          "text": {
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "starter"
+        ],
+        "title": "ChatCatchUpClause",
+        "type": "object"
+      },
       "ChatClarify": {
         "description": "A clarifying question the model asked instead of guessing (SPEC D10). Option\ntext is model-authored and may echo log values: the UI renders it as untrusted\ntext, and a pick is sent with ``origin=\"clarify\"`` (follow_up taint class, #9).",
         "properties": {
@@ -3464,13 +3511,45 @@
         "type": "object"
       },
       "ChatStarter": {
-        "description": "One empty-state starter card (SPEC §10.5).",
+        "description": "One starter card (SPEC §10.5; Round 13 SPEC-chat §3.2.1).\n\n``id`` is the FAMILY id (one card per family; the pre-Round-13 ids investigate,\nhunt, posture, shift_brief, explain_metric and learn_app stay valid). ``label`` is\na short family name and ``description`` equals ``reason``, for older clients. For\naction ``send``, ``prompt`` is both the visible question and the exact text the\nclient sends with ``origin: \"starter\"`` (never edited, never put in the composer);\ndynamic templates render at most 100 characters. Action ``open_conversation`` and\n``use_prompt`` cards are display-only: ``prompt`` is their card text (at most 120\ncharacters) and is never sent; ``ref`` names the conversation or saved prompt.",
         "properties": {
+          "action": {
+            "default": "send",
+            "enum": [
+              "send",
+              "open_conversation",
+              "use_prompt"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "as_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
           "description": {
             "default": "",
             "maxLength": 120,
             "title": "Description",
             "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
           },
           "id": {
             "maxLength": 40,
@@ -3478,6 +3557,18 @@
             "pattern": "^[a-z0-9_]+$",
             "title": "Id",
             "type": "string"
+          },
+          "key": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{16}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
           },
           "label": {
             "maxLength": 40,
@@ -3491,6 +3582,34 @@
             "title": "Prompt",
             "type": "string"
           },
+          "reason": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Reason",
+            "type": "string"
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatStarterRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "template": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z0-9_]{1,40}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template"
+          },
           "tools": {
             "items": {
               "type": "string"
@@ -3498,6 +3617,16 @@
             "maxItems": 8,
             "title": "Tools",
             "type": "array"
+          },
+          "urgency": {
+            "default": "none",
+            "enum": [
+              "none",
+              "attention",
+              "critical"
+            ],
+            "title": "Urgency",
+            "type": "string"
           }
         },
         "required": [
@@ -3506,6 +3635,132 @@
           "prompt"
         ],
         "title": "ChatStarter",
+        "type": "object"
+      },
+      "ChatStarterEvent": {
+        "additionalProperties": false,
+        "description": "``POST /api/chat/starters/events`` body (SPEC §3.2.2, §3.6). Presentation state\nonly: it updates the caller's own starter state document, writes no audit row and\nstores no text (D10). A ``thread`` ``viewed`` event carries no keys.",
+        "properties": {
+          "keys": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 6,
+            "title": "Keys",
+            "type": "array"
+          },
+          "surface": {
+            "default": "home",
+            "enum": [
+              "home",
+              "thread",
+              "case"
+            ],
+            "title": "Surface",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "viewed",
+              "used",
+              "dismissed"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "ChatStarterEvent",
+        "type": "object"
+      },
+      "ChatStarterRef": {
+        "additionalProperties": false,
+        "description": "A typed reference a starter names (a case, rule, source, campaign, ATT&CK\ntechnique) or opens (a conversation, a saved prompt). ``value`` passes its kind's\nstrict grammar (``chat_starter_text.ref_value``) unchanged, or the model refuses it:\na value is never cut, quoted or altered (SPEC §3.8.1).",
+        "properties": {
+          "kind": {
+            "enum": [
+              "case",
+              "rule",
+              "source",
+              "campaign",
+              "technique",
+              "conversation",
+              "prompt"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "ChatStarterRef",
+        "type": "object"
+      },
+      "ChatStartersInfo": {
+        "description": "``GET /api/chat/starters`` (SPEC §3.2.2). ``enabled`` mirrors\n``chat_agent.dynamic_starters``; when it is false the server returns the evergreen\nset only and no catch-up line. ``expires_at`` is ``as_of`` + 120 s.",
+        "properties": {
+          "as_of": {
+            "title": "As Of",
+            "type": "string"
+          },
+          "catch_up": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatCatchUp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          },
+          "starters": {
+            "items": {
+              "$ref": "#/components/schemas/ChatStarter"
+            },
+            "maxItems": 6,
+            "title": "Starters",
+            "type": "array"
+          },
+          "surface": {
+            "enum": [
+              "home",
+              "thread",
+              "case"
+            ],
+            "title": "Surface",
+            "type": "string"
+          },
+          "timezone": {
+            "title": "Timezone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "surface",
+          "enabled",
+          "as_of",
+          "expires_at",
+          "timezone"
+        ],
+        "title": "ChatStartersInfo",
         "type": "object"
       },
       "ChatStep": {
@@ -14789,7 +15044,7 @@
     },
     "/api/chat/context": {
       "get": {
-        "description": "Everything the composer meter needs (SPEC §8): the effective model and its\nlimits, the static prompt and history estimates, the caller's tool catalogue,\nthe live-text availability, the §4.2 bounds, calibration and the starters.\nMoney and budget fields need ``models:read``; ``spent_today``/``remaining`` also\n``cost:view``. Cached per principal for 30 s (dropped when one of the caller's\nturns ends) and resolved without audit rows.",
+        "description": "Everything the composer meter needs (SPEC §8): the effective model and its\nlimits, the static prompt and history estimates, the caller's tool catalogue,\nthe live-text availability, the §4.2 bounds, calibration and the static evergreen\nstarters (Round 13 SPEC D2: no case-store read).\nMoney and budget fields need ``models:read``; ``spent_today``/``remaining`` also\n``cost:view``. Cached per principal for 30 s (dropped when one of the caller's\nturns ends) and resolved without audit rows.",
         "operationId": "chat_context_api_chat_context_get",
         "parameters": [
           {
@@ -15457,6 +15712,120 @@
           }
         },
         "summary": "Chat Feedback Summary"
+      }
+    },
+    "/api/chat/starters": {
+      "get": {
+        "description": "The caller's starters for ``surface`` (see the module docstring).",
+        "operationId": "chat_starters_api_chat_starters_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "surface",
+            "required": false,
+            "schema": {
+              "default": "home",
+              "enum": [
+                "home",
+                "thread",
+                "case"
+              ],
+              "title": "Surface",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9._:-]{1,128}$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Conversation Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "case_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Case Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatStartersInfo"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Starters"
+      }
+    },
+    "/api/chat/starters/events": {
+      "post": {
+        "description": "Record that the caller saw, used or hid starters (see the module docstring).",
+        "operationId": "chat_starter_event_api_chat_starters_events_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatStarterEvent"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Chat Starter Event"
       }
     },
     "/api/chat/stream": {

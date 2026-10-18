@@ -43,14 +43,16 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping, Sequence, TypeVar
 
 from ..constants import INVISIBLE_TEXT_CLASS, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from .chat_entity import ENTITY_REF_SOURCE, entity_value
-from .prompts import fence_block
+from .chat_role_lookalikes import CONFUSABLE_READINGS, EXTRA_READINGS
+from .prompts import _fold_char, fence_block
 
 # --------------------------------------------------------------------------- #
 # Bounds (SPEC §3.6, §3.7).
@@ -156,7 +158,65 @@ _NAMED_SLOTS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
 #: A value that opens like a chat role marker ("SYSTEM:", "assistant :") is refused for
 #: every kind (SPEC §3.15): the fence already keeps any value out of the instructions,
 #: and a card never needs to name one that reads like a speaker label.
-_ROLE_PREFIX_RE = re.compile(r"(?:system|assistant|user|developer|tool|human)\s*:", re.IGNORECASE)
+_ROLE_WORDS = ("system", "assistant", "user", "developer", "tool", "human")
+_ROLE_PREFIX_RE = re.compile(rf"(?:{'|'.join(_ROLE_WORDS)})\s*:", re.IGNORECASE)
+
+#: What a character READS as for that check: the UTS #39 confusables of the role-word
+#: letters and of the colon, vendored in ``chat_role_lookalikes`` (Cyrillic, Greek,
+#: Cherokee, Lisu, Coptic, Armenian, the Latin small capitals and more), plus the three
+#: hand additions there. Fullwidth forms, mathematical letters and modifier letters
+#: already fold through NFKC; accents and combining marks are stripped by the skeleton.
+_ROLE_LOOKALIKES = str.maketrans({
+    ch: reading
+    for readings in (CONFUSABLE_READINGS, EXTRA_READINGS)
+    for reading, chars in readings.items()
+    for ch in chars
+})
+
+
+def _skeleton_letter(letter: str) -> str:
+    """How one role-word letter may read in a skeleton: either case, plus ``l`` for an
+    ``i`` (UTS #39 reads a capital I and an l as one glyph) and ``rn`` for an ``m``."""
+    spellings = [letter, letter.upper(), *{"i": ("l",), "m": ("rn",)}.get(letter, ())]
+    return "(?:" + "|".join(spellings) + ")"
+
+
+def _skeleton_word(word: str) -> str:
+    """``word`` as it may read in a skeleton: every letter read as itself, or one letter
+    (any one) taken by a character the table does not map, such as a Coptic sima
+    (which UTS #39 reads as a C) for the S of SYSTEM. One unknown letter among the
+    letters of a role word still reads as that word."""
+    letters = [_skeleton_letter(ch) for ch in word]
+    unknown = "[^\\x00-\\x7f]"
+    swapped = ["".join(letters[:i]) + unknown + "".join(letters[i + 1:])
+               for i in range(len(letters))]
+    return "|".join(["".join(letters), *swapped])
+
+
+#: ``_ROLE_PREFIX_RE`` for a skeleton (case is spelled out, not ignored, so that an
+#: I/l glyph stands for an i but a capital L does not).
+_ROLE_SKELETON_RE = re.compile("(?:" + "|".join(_skeleton_word(w) for w in _ROLE_WORDS) + r")\s*:")
+
+
+def _role_skeleton(value: str) -> str:
+    """What ``value`` LOOKS like for the role-marker check: folded like the fence
+    marker matching (NFKC; format characters and combining marks dropped), accents
+    stripped (NFKD without its marks), then look-alike letters and colons mapped to
+    their readings. Used only to refuse; a value is never rewritten with it."""
+    folded = "".join(_fold_char(ch) for ch in value)
+    bare = "".join(
+        ch for ch in unicodedata.normalize("NFKD", folded) if unicodedata.category(ch) != "Mn"
+    )
+    return bare.translate(_ROLE_LOOKALIKES)
+
+
+def _opens_like_role_marker(value: str) -> bool:
+    """True when ``value`` starts like a chat role marker, as written or as it reads
+    (a fullwidth, accented, Cyrillic, Cherokee or Lisu "SYSTEM:", or one with a Lisu
+    tone letter for its colon, is refused like the ASCII one)."""
+    if _ROLE_PREFIX_RE.match(value):
+        return True
+    return not value.isascii() and _ROLE_SKELETON_RE.match(_role_skeleton(value)) is not None
 
 
 def _technique_known(value: str) -> bool:
@@ -188,11 +248,13 @@ def ref_value(kind: Any, raw: Any) -> str | None:
       two are never sent to a model.
 
     Every kind also refuses a value that opens like a chat role marker
-    (``SYSTEM:x``, ``assistant:x``; SPEC §3.15). Surrounding whitespace is never
-    trimmed here: a value that is not already exact fails."""
+    (``SYSTEM:x``, ``assistant:x``; SPEC §3.15), checked on the value as written and
+    on its folded look-alike skeleton (``ＳＹＳＴＥＭ:x``, ``ЅYSTEM:x``, ``SYSTÉM:x``).
+    Surrounding whitespace is never trimmed here: a value that is not already exact
+    fails."""
     if not isinstance(raw, str) or not raw or len(raw) > REF_MAX_CHARS:
         return None
-    if _ROLE_PREFIX_RE.match(raw):
+    if _opens_like_role_marker(raw):
         return None
     if kind in ("case", "rule"):
         return raw if entity_value(kind, raw) == raw else None
@@ -768,17 +830,42 @@ def format_age(delta: timedelta | float) -> str:
     return f"{format_count(int(seconds // 86400))} days"
 
 
+#: A ``{since}`` label states the time of day for a baseline fewer than this many
+#: local days ago, else only the date (SPEC §3.7).
+SINCE_CLOCK_DAYS = 7
+
+
+def _since_parts(at: datetime, now: datetime, tz: tzinfo) -> tuple[datetime, int]:
+    """``at`` in ``tz`` and how many local calendar days before ``now`` it falls."""
+    local, today = at.astimezone(tz), now.astimezone(tz)
+    return local, (today.date() - local.date()).days
+
+
+def since_start(at: datetime, *, now: datetime, tz: tzinfo) -> datetime:
+    """The instant the :func:`format_since` label of ``at`` names, in UTC: ``at``
+    floored to its minute in ``tz`` when the label shows a clock ("09:12", "yesterday
+    18:40", "Mon 18:40"), else local midnight of its day ("12 Oct"). Every count shown
+    beside a ``{since}`` label starts here, so it agrees with an answer that counts
+    from the label (SPEC §3.3 exact counts, §3.7)."""
+    local, days = _since_parts(at, now, tz)
+    if days < SINCE_CLOCK_DAYS:
+        start = local.replace(second=0, microsecond=0)
+    else:
+        start = datetime.combine(local.date(), datetime.min.time(), tzinfo=tz)
+    return start.astimezone(timezone.utc)
+
+
 def format_since(at: datetime, *, now: datetime, tz: tzinfo) -> str:
     """A past time in the operator time zone, 24-hour: "09:12" today, "yesterday
-    18:40", "Mon 18:40" within the last 7 days, "12 Oct" otherwise."""
-    local, today = at.astimezone(tz), now.astimezone(tz)
+    18:40", "Mon 18:40" within the last 7 days, "12 Oct" otherwise. The instant the
+    label names is :func:`since_start`."""
+    local, days = _since_parts(at, now, tz)
     clock = f"{local.hour:02d}:{local.minute:02d}"
-    days = (today.date() - local.date()).days
     if days <= 0:
         return clock
     if days == 1:
         return f"yesterday {clock}"
-    if days < 7:
+    if days < SINCE_CLOCK_DAYS:
         return f"{_WEEKDAYS[local.weekday()]} {clock}"
     return f"{local.day} {_MONTHS_SHORT[local.month - 1]}"
 

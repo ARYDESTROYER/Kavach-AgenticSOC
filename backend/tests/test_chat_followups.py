@@ -474,6 +474,19 @@ def test_placeholder_labels_never_anchor() -> None:
         assert group_label(field, None).casefold() in PLACEHOLDER_LABELS, field
 
 
+def test_the_empty_and_missing_value_labels_never_anchor() -> None:
+    # Round 13 T36: the worded labels that replaced the em dash for an empty log value
+    # and a label-less category are engine words, not something an answer is about.
+    from app.agents.chat_followups import PLACEHOLDER_LABELS
+    from app.agents.chat_tools.common import EMPTY_VALUE_LABEL, MISSING_LABEL
+
+    assert EMPTY_VALUE_LABEL.casefold() in PLACEHOLDER_LABELS and MISSING_LABEL.casefold() in PLACEHOLDER_LABELS
+    cats = ArtifactInfo(kind="categories", tool="log_stats", window="last 24 hours",
+                        data={"labels": [EMPTY_VALUE_LABEL, "alice"], "values": [6, 3], "dimension": "user"})
+    anchors = answer_anchors([cats])
+    assert "(empty)" not in anchors and "empty" not in anchors and "alice" in anchors
+
+
 def test_suggestion_questions_keep_the_label_case() -> None:
     from app.agents.chat_followups import suggestion_question
 

@@ -211,6 +211,52 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     rate" show whole on a wide chart. A label longer than that budget is clipped with "…" and
     carries the whole label as its SVG `<title>`; the legend, tooltip and sr-only table always
     name a series in full. Static and print mode (680 px) follow the same rule.
+32. **Compact and wide block widths (SPEC A66; Round 13 SPEC-chat §5.1, T7).** Every framed
+    block carries `data-block-width="compact|wide"`, set by `AnswerBlocks` from its type and
+    size (`blocks/layout.ts` `blockWidth`): a `kpi_group` of at most 4 items, `entity`,
+    `case_list`, `mitre`, a `table` of at most 3 columns, and a `chart` of kind `hbar`, `bar`,
+    `donut` or `funnel` over a category axis of at most 12 categories are compact; every other
+    framed block is wide. `markdown` and `callout` are prose, not framed cards: `blockWidth`
+    reads them as compact, and the block column caps a `markdown` block at the 38rem prose
+    measure and a `callout` at the 42rem reading column, never hung into the gutter. A
+    compact card stays in the 42rem reading column, its frame hanging into the gutter by its border and
+    padding from a 40rem conversation, so its text ends on the column's right edge; a wide
+    card spans the lane. A run of two or more consecutive `entity` blocks shares one row
+    (`blockGroups`) and counts as wide, and the meta row follows the widest group of its
+    answer (`widestBlock`). The block's own Full width toggle is unchanged. Display only: the
+    block, its exports and its report snapshot are never changed. Related: a horizontal bar
+    draws its value just after the bar's end; a donut's legend uses one marker (the shape in
+    the series colour), `max-w-[16rem]`, beside the donut from a 30rem card and under it
+    below; the Active Risk Index tile in a `kpi_group` is a 56×28 decorative arc beside a text
+    numeral with the band word stacked over "/100" and the context alone on its line ("Right
+    now" for a figure that is not windowed), so it matches a captioned tile's height.
+33. **Block header controls and the shared scope line (Round 13 SPEC-chat T8, T9, T16, T29;
+    amends §6 `BlockFigure` and v2 amendment 3).** At rest a card header shows only its ⋯
+    menu. The menu's first line is non-interactive provenance ("Measured by a lookup",
+    "Computed by code", "Stated by the model"; the separate provenance glyph is gone), then
+    Add to report, Expand, Full width, Show as, Series (checkbox items with the line colour,
+    at least one kept, offered when the chart labels its lines at their ends), Show table or
+    chart, Copy data, the downloads, Copy query and Open in. The Add to report icon shows
+    beside ⋯ on hover or focus-within (opacity, so it stays focusable) and always while the
+    block is in the report. A chart's Group by sits in ONE 28 px control row with the zoom
+    hint, range and Reset zoom (the hint reads "Drag to zoom" on a narrow row and is hidden
+    where even that does not fit); a line chart whose end labels are all whole and distinct
+    draws no legend, otherwise the legend stays on screen and in print. The italic "Values
+    stated by the model, not measured" caption stays. **Shared scope line:** when two or more
+    consecutive framed data blocks of one answer (only prose between them) share caption
+    parts (split on " · ") and the same "as of" minute, one `text-xs` muted line states the
+    shared parts once above the first, in the reading column, and each card's visible caption
+    keeps only its other parts (its full caption stays in its accessible name). Print, every
+    export, Add to report snapshots and the expanded sheet keep each block's full caption, so
+    a block can travel alone. A `report` Brief reads "Brief: {title}" (no prefix when the
+    title already contains "brief"), states its window once from engine text only (a model
+    subtitle never becomes the scope line), shows its provenance counter only when
+    model-stated figures exist ("Includes 2 figures stated by the model"), and shows the
+    on-screen Contents from 4 sections (the static and print Contents from 2); an infographic
+    hero inside a Brief draws no inner frame. Case references in `case_list`, `entity` and
+    related cases read the case number then the title; until the server sends
+    `case_number`, the title is followed by a muted mono middle-ellipsised id, with the full
+    id in its tooltip and as sr-only text.
 
 ---
 

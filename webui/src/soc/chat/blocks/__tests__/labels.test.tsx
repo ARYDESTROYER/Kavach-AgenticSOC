@@ -19,6 +19,7 @@ import {
   QUERY_LANGUAGE_LABEL,
   TIMELINE_KIND_LABEL,
   booleanText,
+  entityFacts,
   queryCaption,
   semanticColumn,
   semanticText,
@@ -206,6 +207,50 @@ describe('Copy data and the per-block CSV use the screen words', () => {
       items: [{ n: 1, kind: 'runbook', label: 'Brute force runbook' }],
     });
     expect(toCSV(blockTabular(cites)!)).toContain('1,"Runbook","Brute force runbook"');
+  });
+});
+
+describe('an entity card names its kind once', () => {
+  const entity = (facts: Array<{ label: string; value: string; untrusted?: boolean }>) =>
+    one({
+      id: 'hunt',
+      type: 'entity',
+      provenance: 'source',
+      artifact_kind: 'entity',
+      allowed_views: ['entity'],
+      entity: { kind: 'ip', value: '198.51.100.250' },
+      facts,
+      reputation: [],
+      counts: [],
+      related_cases: [],
+    });
+
+  it('leaves out a "Kind" fact that restates the card\'s kind, and words any other kind', () => {
+    const block = entity([
+      { label: 'Kind', value: 'ip' },
+      { label: 'Providers', value: '1 of 1 answered' },
+    ]);
+    if (block.type !== 'entity') throw new Error('entity expected');
+    expect(entityFacts(block).map((f) => [f.label, f.value])).toEqual([['Providers', '1 of 1 answered']]);
+    // Any case or spacing, and the kind's own words, restate it too.
+    for (const value of ['IP', ' ip ', 'IP address']) {
+      expect(entityFacts({ entity: block.entity, facts: [{ label: ' kind ', value, untrusted: false }] })).toEqual([]);
+    }
+    // Another known kind is shown in words; anything else is listed as written.
+    expect(entityFacts({ entity: block.entity, facts: [{ label: 'Kind', value: 'domain', untrusted: false }] })).toEqual([
+      { label: 'Kind', value: 'Domain', untrusted: false },
+    ]);
+    expect(entityFacts({ entity: block.entity, facts: [{ label: 'Kind', value: 'scanner', untrusted: true }] })).toEqual([
+      { label: 'Kind', value: 'scanner', untrusted: true },
+    ]);
+  });
+
+  it('writes exactly one Kind row, in words, to the CSV and Copy data', () => {
+    const csv = toCSV(blockTabular(entity([{ label: 'Kind', value: 'ip' }, { label: 'Providers', value: '1 of 1 answered' }]))!);
+    const kindRows = csv.split('\r\n').filter((line) => line.startsWith('"Kind"'));
+    expect(kindRows).toEqual(['"Kind","IP address"']);
+    expect(csv).toContain('"Providers","1 of 1 answered"');
+    expect(csv).not.toMatch(/"ip"/);
   });
 });
 
