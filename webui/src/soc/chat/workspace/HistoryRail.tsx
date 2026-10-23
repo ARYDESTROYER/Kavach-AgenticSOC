@@ -78,6 +78,7 @@ import { UNTITLED_CONVERSATION } from '../chat-api';
 import { shortcutLabel, type ShortcutKey } from '../shortcuts/shortcut-list';
 import { isPendingThreadRow, type ChatRetentionInfo } from '../useChatConversations';
 import { plainSnippet } from './plain-snippet';
+import { focusQuietly, quietFocusGuard } from '../quiet-focus';
 
 export type ConversationExportFormat = 'markdown' | 'html' | 'print';
 
@@ -179,12 +180,22 @@ export function HintedIconButton({
   label,
   hint,
   tooltipSide = 'top',
+  onFocus,
   ...props
 }: Omit<IconButtonProps, 'tooltip'> & { hint?: readonly ShortcutKey[] }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <IconButton label={label} tooltip={false} {...props} />
+        <IconButton
+          label={label}
+          tooltip={false}
+          {...props}
+          // Focus handed back by code (a sheet closing) does not open the hint.
+          onFocus={(event) => {
+            onFocus?.(event);
+            quietFocusGuard(event);
+          }}
+        />
       </TooltipTrigger>
       <TooltipContent side={tooltipSide}>{hint ? `${label} (${shortcutLabel(hint)})` : label}</TooltipContent>
     </Tooltip>
@@ -284,6 +295,18 @@ function RenameField({
   );
 }
 
+/**
+ * When a row's ⋯ trigger shows, and the same three states hide the row's time in its
+ * place: the pointer is over the row, keyboard focus is in the row (the row itself or
+ * the trigger: `:focus-visible`, so a row focused by a click keeps its time), or the
+ * trigger's menu is open. One condition for both, so the time and the trigger are never
+ * hidden together (Round 13 polish).
+ */
+const ROW_MENU_SHOWN =
+  'group-hover/row:opacity-100 group-has-[:focus-visible]/row:opacity-100 group-has-[[data-state=open]]/row:opacity-100';
+const ROW_TIME_HIDDEN =
+  'group-hover/row:invisible group-has-[:focus-visible]/row:invisible group-has-[[data-state=open]]/row:invisible';
+
 function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: ChatConversationSummary; actions: RowActions; onRename: () => void; tabIndex: number }) {
   const title = conversation.title || UNTITLED_CONVERSATION;
   const deleteLocked = (actions.busy && actions.activeId === conversation.id) || conversation.status === 'running';
@@ -298,7 +321,10 @@ function RowMenu({ conversation, actions, onRename, tabIndex }: { conversation: 
           type="button"
           tabIndex={tabIndex}
           aria-label={`Actions for ${title}`}
-          className="absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/row:opacity-100 data-[state=open]:opacity-100"
+          className={cn(
+            'absolute right-1 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-sm text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            ROW_MENU_SHOWN,
+          )}
         >
           <MoreHorizontal className="size-4" aria-hidden />
         </button>
@@ -441,7 +467,8 @@ export function HistoryRail({
     const row = Array.from(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-rail-row]') ?? []).find(
       (candidate) => candidate.dataset.conversationId === refocusId,
     );
-    row?.focus();
+    // Handed back by code after a rename: not a reason to open the row's tooltip.
+    focusQuietly(row);
     setRefocusId(null);
   }, [refocusId, renamingId]);
 
@@ -585,7 +612,10 @@ export function HistoryRail({
                                   aria-label={rowName(conversation)}
                                   data-status={status ?? undefined}
                                   data-pending={pending ? '' : undefined}
-                                  onFocus={() => setFocusIndex(index)}
+                                  onFocus={(event) => {
+                                    setFocusIndex(index);
+                                    quietFocusGuard(event);
+                                  }}
                                   // The pending row is already on screen and not saved: the
                                   // selection ignores it, and the host still closes its
                                   // history sheet (on a phone, like any other row).
@@ -602,16 +632,17 @@ export function HistoryRail({
                                 >
                                   <span className="min-w-0 flex-1 truncate">{conversation.title || UNTITLED_CONVERSATION}</span>
                                   <span
-                                    // Hidden whenever the ⋯ trigger shows: on hover, on focus,
-                                    // and while its menu is open (focus is then in the portalled
-                                    // menu and the pointer may have left the row). A running
-                                    // answer shows its ring in the time's place; a dot marks
-                                    // news before the time.
+                                    // Hidden exactly when the ⋯ trigger shows (ROW_MENU_SHOWN):
+                                    // on hover, on keyboard focus in the row, and while its menu
+                                    // is open (focus is then in the portalled menu and the
+                                    // pointer may have left the row). A row focused by a click
+                                    // keeps its time: the trigger stays hidden then, and the two
+                                    // are never hidden together. A running answer shows its ring
+                                    // in the time's place; a dot marks news before the time.
                                     className={cn(
                                       'inline-flex min-w-7 shrink-0 items-center justify-end gap-1.5 pl-3 text-right text-2xs tabular-nums text-muted-foreground',
                                       // The pending row has no ⋯ to make room for.
-                                      !pending &&
-                                        'group-focus-within/row:invisible group-hover/row:invisible group-has-[[data-state=open]]/row:invisible',
+                                      !pending && ROW_TIME_HIDDEN,
                                     )}
                                     aria-hidden
                                   >
@@ -823,7 +854,7 @@ export function HistoryStrip({ onNewChat, onSearch, onExpand, shortcuts }: Histo
       >
         <Plus aria-hidden />
       </HintedIconButton>
-      <IconButton label="Search chats" tooltipSide="right" onClick={onSearch}>
+      <IconButton label="Search chats" tooltipSide="right" onClick={onSearch} onFocus={quietFocusGuard}>
         <Search aria-hidden />
       </IconButton>
       <HintedIconButton

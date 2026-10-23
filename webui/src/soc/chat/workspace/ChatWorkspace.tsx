@@ -97,6 +97,12 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   const [panelOpen, setPanelOpen] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [historySearchFocus, setHistorySearchFocus] = React.useState(false);
+  // However the sheet closed (a pick or New chat closes it without onOpenChange), the
+  // next open records its opener as usual: only Search chats moves focus into the
+  // search field itself (left on, the field took focus before the opener was recorded).
+  React.useEffect(() => {
+    if (!historyOpen) setHistorySearchFocus(false);
+  }, [historyOpen]);
   const historyOpener = useOpenerFocus();
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [pendingReportFor, setPendingReportFor] = React.useState<string | null>(null);
@@ -537,6 +543,10 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
             busy={busy}
             onNewChat={newChat}
             onSearch={() => {
+              // The rail focuses its search field as it mounts, so the sheet's open
+              // event (where the opener is usually recorded) never fires: record Search
+              // chats now, or closing the sheet would drop focus to the page.
+              historyOpener.capture();
               setHistorySearchFocus(true);
               setHistoryOpen(true);
             }}

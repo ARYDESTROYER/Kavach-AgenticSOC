@@ -86,6 +86,19 @@ _PROVIDER_FAILURE_CAUSE = {
 # tolerance used when proving that an all-time ledger read includes the current run.
 _LEDGER_DISPLAY_EPSILON = 0.000001
 
+#: The separator between a new case title's entity and its rules (T36: no em dash on
+#: screen). Stored titles keep the separator they were written with (an em dash before
+#: Round 13), so every parser of case titles accepts both
+#: (``engine/demo_chat._MACHINE_TITLE_RE``).
+CASE_TITLE_SEPARATOR = " \u00b7 "
+
+
+def machine_case_title(cluster: Cluster) -> str:
+    """The title of a case the pipeline writes: ``<entity type>:<value> · <rules>``."""
+    rules = ", ".join(cluster.rule_values) or "activity"
+    return f"{cluster.entity.type.value}:{cluster.entity.value}{CASE_TITLE_SEPARATOR}{rules}"
+
+
 # Distinguishes the legacy/default primary query surface from an explicit ``None``.
 # ``None`` means the originating source is push-only and MUST NOT inherit another
 # source's read tool.
@@ -379,15 +392,9 @@ class InvestigationPipeline:
         if not fmt or not getattr(fmt, "enabled", False) or self._seq_store is None:
             return ""
         try:
-            from ..engine.case_id import render, reset_bucket
+            from ..engine.case_id import allocate_case_number
 
-            bucket = reset_bucket(fmt.reset_period)
-            seq = await self._seq_store.next(fmt.prefix, bucket, start=fmt.seq_start)
-            return render(fmt.template, {
-                "seq": seq,
-                "prefix": fmt.prefix,
-                "source": cluster.source_name or "",
-            })
+            return await allocate_case_number(self._seq_store, fmt, source=cluster.source_name or "")
         except Exception as exc:  # noqa: BLE001 — numbering must never break creation
             logger.warning("Case-number allocation failed (%s); falling back to case_id", exc)
             return ""
@@ -1162,9 +1169,7 @@ class InvestigationPipeline:
             status_reason=rationale,
             recommended_action="No action required; this detection is declared benign here.",
             reproduce_query=normalize_kql(entity_kql(cluster, prefs), prefs),
-            title=truncate(
-                f"{cluster.entity.type.value}:{cluster.entity.value} — "
-                f"{', '.join(cluster.rule_values) or 'activity'}", 200),
+            title=truncate(machine_case_title(cluster), 200),
             summary=truncate(rationale, 300),
             token_cost=(existing.token_cost if existing else 0.0),
             # Analyst-owned state on an un-investigated case survives the close: a grade
@@ -1264,9 +1269,7 @@ class InvestigationPipeline:
             risk_breakdown=cluster.risk_breakdown,
             verdict=None,
             status=CaseStatus.OPEN,
-            title=truncate(
-                f"{cluster.entity.type.value}:{cluster.entity.value} — "
-                f"{', '.join(cluster.rule_values) or 'activity'}", 200),
+            title=truncate(machine_case_title(cluster), 200),
             summary=truncate(
                 f"Candidate awaiting analysis — {awaiting_reason}." if awaiting_reason
                 else "Candidate cluster awaiting investigation.", 300),
@@ -1318,7 +1321,7 @@ class InvestigationPipeline:
         created_at = existing.created_at if existing else iso_now()
         history = existing.history if existing else []
         token_cost = (existing.token_cost if existing else 0.0) + cost
-        title = f"{cluster.entity.type.value}:{cluster.entity.value} — {', '.join(cluster.rule_values) or 'activity'}"
+        title = machine_case_title(cluster)
         # P1 provenance: keep the original creating surface; never overwrite it with
         # the current call's surface (so an automated_scan case stays in the
         # Automated Scans tab after a manual investigate).

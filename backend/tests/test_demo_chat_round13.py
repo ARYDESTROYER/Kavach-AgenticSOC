@@ -111,7 +111,8 @@ def test_a_starter_count_that_moved_is_said_plainly() -> None:
     assert "The suggestion counted 3 cases; there are 5 now." in body
     # The log hunt reads the entity a lookup of THIS turn returned (the riskiest case's).
     assert ("log_stats", {"user": "pnair", "group_by": ["host"], "time_from": "now-7d"}) in ran(rounds)
-    assert header["title"] == "ATT&CK technique hunt"
+    # The title names the technique (a corpus-known id, Round 13 polish).
+    assert header["title"] == "ATT&CK hunt for T1078"
 
 
 def test_a_case_closed_since_the_card_is_said_to_be_closed() -> None:
@@ -640,16 +641,42 @@ def test_a_merged_ranking_count_is_not_stated_as_exact() -> None:
     assert final is not None and "with 64 events" not in final.body[0] and "`dc01`" in final.body[0]
 
 
-def test_the_my_cases_answer_says_chat_cannot_filter_by_the_analyst() -> None:
+def test_the_my_cases_answer_lists_the_signed_in_analysts_own_cases() -> None:
+    # Round 13 polish: search_cases takes assignee "me" (the signed-in analyst).
     def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
         if tool == "search_cases":
-            return {"count": 25, "cases": [{"case_id": "demo-1", "assignee": "auto-triage", "risk_score": 90}]}
+            return {"count": 2, "assignee_me": "the signed-in analyst's own cases",
+                    "filters": {"status_group": "active", "assignee": "Admin"},
+                    "cases": [{"case_id": "demo-1", "case_number": "CASE-000041", "assignee": "Admin",
+                               "risk_score": 90, "title": "user:dsingh · identity_signin"},
+                              {"case_id": "demo-2", "case_number": "CASE-000042", "assignee": "Admin",
+                               "risk_score": 40, "title": "host:ws-12 · edr_alert"}]}
+        raise AssertionError(f"unexpected lookup {tool}")
+
+    rounds, _header, body = drive(_starter("my_cases", {"n": 2}), obs)
+    assert ("search_cases", {"status_group": "active", "assignee": "me", "sort_field": "risk_score",
+                             "limit": 10}) in ran(rounds)
+    assert body.startswith("**2 open cases** are assigned to you.")
+    assert "Start with **`CASE-000041`**" in body and "cannot filter" not in body
+    assert "The suggestion counted" not in body  # the card's count stands
+
+
+def test_the_my_cases_answer_says_so_when_nobody_is_signed_in() -> None:
+    # Auth off: "me" names no one, so the lookup matches no case; the answer says why and
+    # shows the open queue by assignee instead, never as the analyst's own cases.
+    from app.agents.chat_tools.cases import ASSIGNEE_ME_NOBODY
+
+    def obs(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        if tool == "search_cases":
+            return {"count": 0, "assignee_me": ASSIGNEE_ME_NOBODY, "cases": []}
+        assert tool == "case_stats" and inp.get("group_by") == ["assignee"], (tool, inp)
         return {"totals": {"count": 25}, "groups": [{"key": {"assignee": "Admin"}, "metrics": {"count": 2}}]}
 
-    _rounds, _header, body = drive(_starter("my_cases", {"n": 2}), obs)
-    assert body.startswith("The suggestion counted 2 open cases assigned to you. Chat's case lookups cannot filter "
-                           "by the signed-in analyst yet")
-    assert "`Admin` 2" in body
+    rounds, _header, body = drive(_starter("my_cases", {"n": 2}), obs)
+    assert [tool for tool, _inp in ran(rounds)] == ["search_cases", "case_stats"]
+    assert body.startswith("No analyst is signed in (sign-in is off), so chat cannot tell which open cases are "
+                           "yours.")
+    assert "The open queue (**25 cases**) by assignee: `Admin` 2." in body
 
 
 def test_a_demo_help_answer_leads_with_the_help_center_and_hides_deployment_figures() -> None:
@@ -664,14 +691,20 @@ def test_titles_name_the_classified_starter_and_the_case_rule() -> None:
     assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Last week compared"
     view = read_prompt(prompt("Investigate case demo-1"))
     got = demo_chat.Result(ordinal=1, tool="get_case", status="ok", summary="", input={"case_id": "demo-1"},
-                           observation={"case": {"case_id": "demo-1", "title": "user:pnair · identity_signin"}})
+                           observation={"case": {"case_id": "demo-1", "case_number": "CASE-000041",
+                                                 "title": "user:pnair · identity_signin",
+                                                 "rules": ["identity_signin"]}})
     view.rounds = [[got]]
     ask = classify(view.question, view)
-    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Identity signin case"
-    # A free-text title is case text: the case's first detection rule names it.
+    # Round 13 polish: the case's first detection rule (its rule ids, never its title)
+    # and its display number.
+    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Identity signin case CASE-000041"
+    # The title is case text and never names the conversation; the rule ids do.
     got.observation["case"] = {"case_id": "demo-1", "title": "ip · demo_noisy_scanner #1",
                                "rules": ["demo_noisy_scanner"]}
     assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Demo noisy scanner case"
+    got.observation["case"] = {"case_id": "demo-1", "title": "user:pnair · identity_signin"}
+    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Case investigation"
 
 
 def test_the_decision_reason_does_not_restate_the_policy_bars() -> None:
@@ -831,7 +864,7 @@ def test_every_intent_with_a_final_has_a_title_or_only_follows_an_earlier_answer
 
 
 @pytest.mark.parametrize("question, title", [
-    ("Which cases show T1078?", "ATT&CK technique cases"),
+    ("Which cases show T1078?", "Cases with T1078"),
     ("How many cases came from Splunk Enterprise Security (HEC)?", "Cases from a log source"),
     ("Which other cases share an entity with demo-00000539-0004?", "Related cases"),
     ("Who closed the cases in the last 24 hours?", "Who closed the cases"),

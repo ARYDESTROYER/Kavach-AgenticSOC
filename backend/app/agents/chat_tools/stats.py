@@ -42,7 +42,14 @@ from typing import Any, Awaitable, Callable, ClassVar, Literal
 from pydantic import Field, field_validator
 
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
-from .cases import _DECIDED_BY_LABELS, _STATUS_LABELS, _VERDICT_LABELS, CaseFilters
+from .cases import (
+    _DECIDED_BY_LABELS,
+    _STATUS_LABELS,
+    _VERDICT_LABELS,
+    ASSIGNEE_ME_NOBODY,
+    CaseFilters,
+    resolve_assignee_me,
+)
 from .common import (
     Window,
     align_to_bucket,
@@ -727,6 +734,7 @@ def comparison_basis(compared: list[Any]) -> tuple[str, str | None]:
 class CaseStatsTool(ChatTool):
     name: ClassVar[str] = "case_stats"
     label: ClassVar[str] = "Counted cases"
+    running_label: ClassVar[str] = "Counting cases"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Case store (exact counts over every case)"
@@ -736,9 +744,8 @@ class CaseStatsTool(ChatTool):
         "case_stats(group_by?=[<=2 of verdict|status|status_group|severity|priority|rule|assignee|source|"
         "surface|disposition|mitre_tactic|mitre_technique|decided_by|closed_by], bucket?=hour|day|week|month|"
         "quarter|year|auto (creation time), metrics?=[count] (<=6 of count,fp_rate,tp_rate,auto_closed,"
-        "human_closed,analyst_fp,mtta_p50,mttr_p50,mttd_p50,..._p90,mean_risk,open_now), top_n?<=50, window? "
-        "(default all time), compare?, and the search_cases filters) -- EXACT counts, breakdowns, trends and "
-        "rates over every case"
+        "human_closed,analyst_fp,mtta_p50,mttr_p50,mttd_p50,..._p90,mean_risk,open_now), top_n?<=50, window?, "
+        "compare?, and the search_cases filters) -- EXACT counts, breakdowns, trends and rates over every case"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
         "group_by", "bucket", "metrics", "top_n", "window", "window_hours", "compare", "text", "status",
@@ -771,6 +778,10 @@ class CaseStatsTool(ChatTool):
             return ToolOutcome.failure("Invalid input: group_by takes at most two fields")
         if ctx.cases is None:
             return ToolOutcome.failure("The case store is not available")
+        # Assignee "me" is the signed-in analyst (search_cases resolves it the same way).
+        args, me = resolve_assignee_me(ctx, args)
+        if me is False:
+            return ToolOutcome.failure(ASSIGNEE_ME_NOBODY)
         ref = datetime.now(timezone.utc)
         window = resolve_window(ctx, window=args.window, window_hours=args.window_hours, default="all", now=ref,
                                 minutes_ok=False)

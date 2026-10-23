@@ -876,7 +876,7 @@ _CHAT_AGENT_BODY = (
     "setting means and how to use the console.\n"
     "- Open or still-open cases: status_group active (new, open, needs_human, investigating, "
     "escalated, on_hold); closed cases: status_group terminal (resolved, closed). status is one "
-    "exact lifecycle value, never \"open cases\".\n"
+    "exact lifecycle value, never \"open cases\". \"My cases\": assignee \"me\".\n"
     "- Log counts and top values: log_stats (interval 1w, 1M, 1q, 1y for calendar weeks, months, "
     "quarters, years). Matching events: search_logs.\n"
     "- Performance, posture, monthly, quarterly or executive reports, and \"how are we doing\": "

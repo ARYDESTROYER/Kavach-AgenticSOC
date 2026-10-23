@@ -89,6 +89,7 @@ def _source_state(row: dict[str, Any]) -> str:
 class SourceHealthTool(ChatTool):
     name: ClassVar[str] = "source_health"
     label: ClassVar[str] = "Checked source health"
+    running_label: ClassVar[str] = "Checking source health"
     scope: ClassVar[str] = "platform"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Source health and ingest coverage"
@@ -231,6 +232,7 @@ def automation_signature(kinds: Any) -> str:
 class AutomationStatusTool(ChatTool):
     name: ClassVar[str] = "automation_status"
     label: ClassVar[str] = "Read automation status"
+    running_label: ClassVar[str] = "Reading automation status"
     scope: ClassVar[str] = "platform"
     requires: ClassVar[tuple[tuple[str, str], ...]] = ()
     kind_permissions: ClassVar[dict[str, tuple[str, str]]] = {
@@ -583,6 +585,7 @@ def audit_observation_row(row: dict[str, Any]) -> dict[str, Any]:
 class AuditSearchTool(ChatTool):
     name: ClassVar[str] = "audit_search"
     label: ClassVar[str] = "Searched the audit trail"
+    running_label: ClassVar[str] = "Searching the audit trail"
     scope: ClassVar[str] = "platform"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("audit", "view"),)
     data_source: ClassVar[str] = "Append-only audit trail (agent and analyst actions)"

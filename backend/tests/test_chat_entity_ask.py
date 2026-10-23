@@ -342,7 +342,9 @@ def _demo_entities(client: TestClient) -> dict[str, str]:
             kind = str(getattr(case.entity.type, "value", case.entity.type)) if case.entity else ""
             if kind in ("ip", "user", "host") and kind not in out:
                 out[kind] = case.entity.value
-            out.setdefault("case", case.case_id)
+            # The console's Ask AI chip sends a case's display number when it has one
+            # (Cases.tsx: ``c.case_number || c.case_id``); every seeded Demo case has one.
+            out.setdefault("case", case.case_number or case.case_id)
             for rule in case.rule_ids or []:
                 rules[rule] = rules.get(rule, 0) + 1
         out["rule"] = max(rules, key=lambda r: (rules[r], r))

@@ -168,6 +168,11 @@ describe('HistoryRail', () => {
     fireEvent.keyDown(input, { key: 'Enter', isComposing: false });
     expect(props.onRename).toHaveBeenCalledWith(ROWS[0], '正在调查');
     expect(screen.getByRole('button', { name: /^Investigate sign-ins, / })).toHaveFocus();
+    // Focus handed back by code: the row's full-title tooltip stays shut.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(screen.queryByRole('tooltip')).toBeNull();
 
     // Escape cancels and also returns focus to the row.
     await user.click(screen.getByRole('button', { name: 'Actions for Review endpoint alert' }));
@@ -188,6 +193,25 @@ describe('HistoryRail', () => {
     expect(collapse).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+S Meta+Shift+S');
     act(() => collapse.focus());
     await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent(/^Collapse history \((Ctrl|⌘).*S\)$/));
+  });
+
+  it('hides a row time only in the states that show its ⋯ trigger, never on click focus alone', () => {
+    renderRail();
+    const row = screen.getByRole('button', { name: /^Review endpoint alert, / });
+    const time = row.querySelector('span[aria-hidden]') as HTMLElement;
+    const trigger = screen.getByRole('button', { name: 'Actions for Review endpoint alert' });
+    const timeClasses = time.className.split(/\s+/);
+    const triggerClasses = trigger.className.split(/\s+/);
+    // A row focused by a click keeps focus but not :focus-visible, and the trigger stays
+    // hidden then: plain focus-within must not hide the time (the empty-slot bug).
+    expect(timeClasses.some((c) => c.startsWith('group-focus-within'))).toBe(false);
+    expect(triggerClasses.some((c) => c.startsWith('group-focus-within'))).toBe(false);
+    const hiding = timeClasses.filter((c) => c.endsWith(':invisible')).map((c) => c.slice(0, -':invisible'.length));
+    const showing = triggerClasses.filter((c) => c.startsWith('group-') && c.endsWith(':opacity-100')).map((c) => c.slice(0, -':opacity-100'.length));
+    expect(hiding.sort()).toEqual(['group-has-[:focus-visible]/row', 'group-has-[[data-state=open]]/row', 'group-hover/row']);
+    // The same three states, so the time and the trigger are never hidden together.
+    expect(showing.sort()).toEqual(hiding.sort());
+    expect(triggerClasses).toContain('opacity-0');
   });
 
   it('pins, opens a report only when one exists, exports and deletes', async () => {

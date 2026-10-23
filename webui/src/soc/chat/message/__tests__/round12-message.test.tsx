@@ -263,6 +263,13 @@ describe('zero-result chips', () => {
     renderMessage({ item: assistantItem({ response: response({ steps: [step(1, { rows: 12 }), zeroStep()] }) }) });
     const group = await screen.findByRole('group', { name: 'Ways to widen the search' });
     expect(group).toHaveTextContent(/^Widen the search:/);
+    // The label, then ONE wrapping block holding every chip: on a phone the block moves
+    // under the label as a whole instead of leaving one chip beside it.
+    const list = within(group).getByTestId('zero-result-chip-list');
+    expect(Array.from(group.children)).toEqual([group.firstElementChild, list]);
+    expect(group.firstElementChild).toHaveTextContent(/^Widen the search:$/);
+    expect(within(list).getAllByRole('button')).toEqual(within(group).getAllByRole('button'));
+    expect(list).toHaveClass('flex', 'flex-wrap', 'min-w-0', 'max-w-full');
     for (const chip of within(group).getAllByRole('button')) {
       expect(chip).not.toHaveClass('border');
       expect(chip).toHaveClass('rounded-sm', 'hover:bg-hover');

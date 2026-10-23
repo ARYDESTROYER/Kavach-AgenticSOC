@@ -347,6 +347,43 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **Round 13 polish: chat workspace details.** A running lookup reads in the present
+  tense ("Searching logs", "Looking up an indicator") and switches to the past tense once
+  it ends; saved answers keep their labels. A history row you clicked keeps its time
+  instead of leaving an empty slot (the time gives way to the row's ⋯ button only while
+  that button shows). Picking a conversation from the History sheet on a phone no longer
+  opens the "History" tooltip over it: focus that the console hands back never opens a
+  tooltip, while focus you move with the keyboard still shows it; the collapsed rail's
+  Search chats now gets focus back too. "Ask about this case" stays on one line in Case
+  Manager chat on a phone. "Widen the search:" sits on its own line above its suggestions
+  on a narrow screen. Start-screen placeholders now take the height of the suggestion
+  cards, so the cards no longer push the greeting up when they arrive.
+- **Round 13 polish: my cases, close-to-target cases, the shift card, Demo case
+  numbers.** `search_cases` and `case_stats` take assignee `me`, which the server
+  resolves to the signed-in analyst (trimmed and case-insensitive, like every assignee
+  match), so "Which of my open cases should I work on first?" lists your own open cases
+  instead of the whole queue; with sign-in off, `me` matches no case and the answer says
+  so. The shift report lists the 5 open cases closest to their response target, nearest
+  first, with who has each (and each overdue case's owner), so the "close to their
+  response target" suggestions get a full answer from the same count the card shows. The
+  shift-start suggestion now counts as newer than your catch-up point (SPEC-chat §3.5),
+  so it ranks with the other new signals. Every seeded Demo case has a case number from
+  the Case-ID format template (CASE-000001 onwards, oldest first, the same after a
+  reset), cases the Demo creates continue the sequence, and chat case lists and related
+  cases carry the number, so cards, answers and the console no longer show internal ids
+  such as `case-3fa004…`. New case titles separate the entity and the rules with " · "
+  instead of an em dash; stored titles keep theirs and every title parser reads both.
+- **Round 13 polish: "my case" answers and distinct Demo titles.** In Demo Mode, "What
+  should I do next on case X?" also reads your own open cases (assignee `me`) and says
+  whether it is your only one, lists your others by risk, or says it is no longer
+  assigned to you. Demo conversation names now carry one detail that tells similar ones
+  apart: the case number ("CASE-000045 needs a person"), the ATT&CK technique ("ATT&CK
+  hunt for T1078"), the period ("Security posture, last 24 hours", "This month versus
+  last month"), the breakdown or the filters ("Open critical cases, this week"), or a
+  rule id that passes the rule grammar, so the history rail no longer shows a column of
+  "Indicator hunt" or "Case list" rows. A name is still 2 to 6 words and never repeats an
+  indicator, entity, log value or case title; a case is named by its rule ids, never its
+  title.
 - **Round 13 chat fixes.** Risk figures in chat step summaries round half up, the same
   integer the Overview gauge shows (47.5 reads 48, not 47). The token meter no longer says
   "last 12 exchanges" on a new chat ("History: none yet"; "History: 3 exchanges,

@@ -158,6 +158,28 @@ class CaseFilters(ToolInput):
         return self.window is not None or self.window_hours is not None
 
 
+#: The ``assignee`` value that names the signed-in analyst ("my cases", Round 13 polish).
+#: The case tools resolve it on the server to the caller's username, matched like every
+#: assignee (trimmed, case-insensitive); with nobody signed in (auth off) it names no
+#: one, so it matches no case and the result says so. Any other value is a username, as
+#: before: the case rows already show every case's assignee to anyone who may read cases.
+ASSIGNEE_ME = "me"
+ASSIGNEE_ME_NOBODY = 'No analyst is signed in (sign-in is off), so assignee "me" matches no case'
+
+
+def resolve_assignee_me(ctx: ChatToolContext, args: Any) -> tuple[Any, bool | None]:
+    """``(args, me)``: ``args`` with assignee "me" replaced by the caller's username.
+    ``me`` is None when the input did not ask for "me", True when it was resolved, and
+    False when "me" was asked but nobody is signed in (``args`` unchanged)."""
+    value = getattr(args, "assignee", None)
+    if not isinstance(value, str) or value.strip().lower() != ASSIGNEE_ME:
+        return args, None
+    caller = (getattr(ctx, "caller", "") or "").strip()
+    if not caller:
+        return args, False
+    return args.model_copy(update={"assignee": caller}), True
+
+
 class SearchCasesInput(CaseFilters):
     sort_field: Literal["created_at", "updated_at", "risk_score"] = "created_at"
     sort_order: Literal["desc", "asc"] = "desc"
@@ -258,6 +280,7 @@ _UNDATED_EXTRA_ROWS = 50
 class SearchCasesTool(ChatTool):
     name: ClassVar[str] = "search_cases"
     label: ClassVar[str] = "Searched cases"
+    running_label: ClassVar[str] = "Searching cases"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Case store"
@@ -265,9 +288,9 @@ class SearchCasesTool(ChatTool):
     timeout_s: ClassVar[float] = 600
     signature: ClassVar[str] = (
         "search_cases(text?, status?, status_group?=active|terminal, verdict?=TRUE_POSITIVE|FALSE_POSITIVE|"
-        "NEEDS_HUMAN, entity?, severity?, priority?=P1..P4, assignee?, rule?, window? (default all time), "
-        "sort_field?=created_at|updated_at|risk_score, sort_order?, limit?=20 (<=50)) -- list matching cases "
-        "with an EXACT count and verdict and status counts over every case"
+        "NEEDS_HUMAN, entity?, severity?, priority?=P1..P4, assignee? (me = signed-in analyst), rule?, window?, "
+        "sort_field?=created_at|updated_at|risk_score, sort_order?, limit?=20 (<=50)) -- list matching cases with "
+        "an EXACT count and verdict and status counts over every case"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
         "text", "status", "status_group", "verdict", "entity", "severity", "priority",
@@ -294,6 +317,9 @@ class SearchCasesTool(ChatTool):
             return ToolOutcome.failure(window)
         # The same start as every other case lookup of this window in the answer.
         window = whole_periods(window)
+        args, me = resolve_assignee_me(ctx, args)
+        if me is False:
+            return self._nobody_signed_in(ctx, args, window)
         counts = await self._exact_counts(ctx, args, window)
         # A bounded window does not count cases with no creation date (the aggregator
         # discloses them as ``missing_created``), so it does not list them either: the
@@ -322,8 +348,19 @@ class SearchCasesTool(ChatTool):
                 listed_exact, scanned = True, None
             else:
                 unlisted = int(getattr(counts, "total", 0) or 0) - listed_count
-        return self._outcome(ctx, args, window, page, listed_count, listed_exact, scanned, counts,
-                             unlisted=unlisted)
+        outcome = self._outcome(ctx, args, window, page, listed_count, listed_exact, scanned, counts,
+                                unlisted=unlisted)
+        if me:
+            outcome.observation["assignee_me"] = "the signed-in analyst's own cases"
+        return outcome
+
+    def _nobody_signed_in(self, ctx: ChatToolContext, args: SearchCasesInput, window: Any) -> ToolOutcome:
+        """Assignee "me" with nobody signed in: an exact zero, said plainly (no read)."""
+        outcome = self._outcome(ctx, args, window, [], 0, True, None, None)
+        outcome.observation["assignee_me"] = ASSIGNEE_ME_NOBODY
+        outcome.summary = f"{ASSIGNEE_ME_NOBODY} ({window.label})"
+        outcome.coverage = ASSIGNEE_ME_NOBODY
+        return outcome
 
     async def _scan_rows(
         self, ctx: ChatToolContext, args: SearchCasesInput, window: Any,
@@ -621,6 +658,7 @@ def _last_decision_reason(case: Any) -> str | None:
 class GetCaseTool(ChatTool):
     name: ClassVar[str] = "get_case"
     label: ClassVar[str] = "Read a case"
+    running_label: ClassVar[str] = "Reading a case"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("cost", "view"),)
@@ -708,7 +746,8 @@ class GetCaseTool(ChatTool):
                     "id": text(campaign.id, 128), "name": opt_text(campaign.name, 120),
                     "status": enum_value(campaign.status), "case_count": len(campaign.case_ids),
                 }
-        artifacts = self._artifacts(ctx, case, technique_rows, history)
+        related = await self._related(ctx, case)
+        artifacts = self._artifacts(ctx, case, technique_rows, history, related)
         verdict = enum_value(case.verdict) or "no verdict"
         status = enum_value(case.status) or "unknown"
         summary = (
@@ -776,7 +815,25 @@ class GetCaseTool(ChatTool):
             "playbook": opt_text(playbook.get("id"), 60),
         }
 
-    def _artifacts(self, ctx: ChatToolContext, case: Any, techniques: list[dict[str, Any]], history: list[Any]) -> list[Artifact]:
+    async def _related(self, ctx: ChatToolContext, case: Any) -> list[dict[str, Any]]:
+        """The entity card's related cases (at most 5): each named by its display number
+        and title when the store has it, else by its id (one bounded read per case)."""
+        out: list[dict[str, Any]] = []
+        for cid in list(case.related_case_ids or [])[:5]:
+            other = None
+            try:
+                other = await ctx.cases.get(str(cid))
+            except Exception as exc:  # noqa: BLE001 -- the id alone still names it
+                logger.info("related case read failed: %s", exc)
+            out.append({
+                "case_id": str(cid),
+                "case_number": opt_text(getattr(other, "case_number", ""), 64) if other is not None else None,
+                "title": display(getattr(other, "title", "") or cid) if other is not None else str(cid),
+            })
+        return out
+
+    def _artifacts(self, ctx: ChatToolContext, case: Any, techniques: list[dict[str, Any]], history: list[Any],
+                   related: list[dict[str, Any]] | None = None) -> list[Artifact]:
         artifacts: list[Artifact] = []
         entity_type = enum_value(getattr(case.entity, "type", None)) or ""
         kind = _ENTITY_KIND.get(entity_type)
@@ -804,7 +861,7 @@ class GetCaseTool(ChatTool):
                     "risk": finite(case.risk_score),
                     "verdict": verdict_semantic(case.verdict),
                     "facts": facts,
-                    "related_cases": [
+                    "related_cases": related if related is not None else [
                         {"case_id": str(cid), "title": str(cid)} for cid in list(case.related_case_ids or [])[:5]
                     ],
                     "first_seen": iso_or_none(case.created_at),
@@ -899,9 +956,34 @@ _HEADLINE_LABELS = {
 }
 
 
+#: SLA rows the shift snapshot lists per kind (overdue, close to target); the totals
+#: count every one.
+_SLA_ROWS = 5
+
+
+def _sla_ref(row: dict[str, Any]) -> dict[str, Any]:
+    """A shift SLA row's case: its id and, when it has one, its display number."""
+    case_id = text(row.get("case_id"), 128)
+    shown = opt_text(row.get("display_id"), 64)
+    return {"case_id": case_id, "case_number": shown if shown and shown != case_id else None}
+
+
+def _minutes_left(row: dict[str, Any]) -> float | None:
+    target, age = finite(row.get("target_minutes")), finite(row.get("age_minutes"))
+    return round(max(0.0, target - age), 1) if target is not None and age is not None else None
+
+
+def _nearest_first(rows: Any) -> list[dict[str, Any]]:
+    """Close-to-target rows, the least time left first (ties by case id)."""
+    kept = [r for r in (rows or []) if isinstance(r, dict)]
+    return sorted(kept, key=lambda r: (_minutes_left(r) if _minutes_left(r) is not None else math.inf,
+                                       str(r.get("case_id") or "")))
+
+
 class ShiftReportTool(ChatTool):
     name: ClassVar[str] = "shift_report"
     label: ClassVar[str] = "Built the shift snapshot"
+    running_label: ClassVar[str] = "Building the shift snapshot"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Open cases and shift handoff"
@@ -958,7 +1040,8 @@ class ShiftReportTool(ChatTool):
                 for k in _HEADLINE_LABELS if isinstance(deltas.get(k), dict)
             },
             "attention": [
-                {"case_id": text(q.get("case_id"), 128), "title": text(q.get("title"), 160),
+                {"case_id": text(q.get("case_id"), 128), "case_number": opt_text(q.get("case_number"), 64),
+                 "title": text(q.get("title"), 160),
                  "status": q.get("status"), "verdict": q.get("verdict"),
                  "risk_score": finite(q.get("risk_score")), "severity": q.get("severity_band"),
                  "age_minutes": finite(q.get("age_minutes")), "assignee": opt_text(q.get("assignee"), 80)}
@@ -968,8 +1051,16 @@ class ShiftReportTool(ChatTool):
                 "enabled": bool(sla.get("enabled")),
                 "totals": (sla.get("totals") or {}),
                 "breached": [
-                    {"case_id": text(b.get("case_id"), 128), "overdue_minutes": finite(b.get("overdue_minutes"))}
-                    for b in (sla.get("breached") or [])[:5] if isinstance(b, dict)
+                    {**_sla_ref(b), "overdue_minutes": finite(b.get("overdue_minutes")),
+                     "assignee": opt_text(b.get("assignee"), 80)}
+                    for b in [r for r in (sla.get("breached") or []) if isinstance(r, dict)][:_SLA_ROWS]
+                ],
+                # Round 13 polish: the open cases close to their response target, nearest
+                # first, bounded like the overdue list (the totals count every one).
+                "about_to_breach": [
+                    {**_sla_ref(b), "minutes_left": _minutes_left(b), "target_minutes": finite(b.get("target_minutes")),
+                     "assignee": opt_text(b.get("assignee"), 80)}
+                    for b in _nearest_first(sla.get("about_to_breach"))[:_SLA_ROWS]
                 ],
             },
             "workload": [
@@ -998,7 +1089,8 @@ class ShiftReportTool(ChatTool):
         artifacts.append(Artifact(
             id="a2", kind="case_list", title="Needs attention", title_trusted=True,
             data={"items": [
-                {"case_id": str(q.get("case_id") or ""), "title": display(q.get("title") or q.get("case_id")),
+                {"case_id": str(q.get("case_id") or ""), "case_number": opt_text(q.get("case_number"), 64),
+                 "title": display(q.get("title") or q.get("case_id")),
                  "severity": q.get("severity_band") if q.get("severity_band") in ("critical", "high", "medium", "low", "info") else None,
                  "verdict": verdict_semantic(q.get("verdict")), "status": q.get("status"),
                  "risk": finite(q.get("risk_score"))}
@@ -1052,6 +1144,7 @@ class ListCampaignsInput(ToolInput):
 class ListCampaignsTool(ChatTool):
     name: ClassVar[str] = "list_campaigns"
     label: ClassVar[str] = "Listed campaigns"
+    running_label: ClassVar[str] = "Listing campaigns"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Campaign correlation"
@@ -1189,6 +1282,7 @@ def _policy_rows(policy: Any) -> list[dict[str, Any]]:
 class ExplainDecisionTool(ChatTool):
     name: ClassVar[str] = "explain_decision"
     label: ClassVar[str] = "Explained the decision policy"
+    running_label: ClassVar[str] = "Explaining the decision policy"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)

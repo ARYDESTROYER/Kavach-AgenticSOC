@@ -133,6 +133,7 @@ def bind_enrichment(*, prefs: Any, secrets: Any, cache: Any = None, registry: An
 class LookupIndicatorTool(ChatTool):
     name: ClassVar[str] = "lookup_indicator"
     label: ClassVar[str] = "Looked up an indicator"
+    running_label: ClassVar[str] = "Looking up an indicator"
     scope: ClassVar[str] = "intel"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("enrichment", "read"),)
     data_source: ClassVar[str] = "Threat-intel enrichment providers (cached)"
@@ -341,6 +342,7 @@ class MitreLookupInput(ToolInput):
 class MitreLookupTool(ChatTool):
     name: ClassVar[str] = "mitre_lookup"
     label: ClassVar[str] = "Looked up ATT&CK techniques"
+    running_label: ClassVar[str] = "Looking up ATT&CK techniques"
     scope: ClassVar[str] = "intel"
     requires: ClassVar[tuple[tuple[str, str], ...]] = ()
     data_source: ClassVar[str] = "Bundled MITRE ATT&CK corpus"
@@ -483,6 +485,7 @@ def knowledge_signature(kinds: Any) -> str:
 class SearchKnowledgeTool(ChatTool):
     name: ClassVar[str] = "search_knowledge"
     label: ClassVar[str] = "Searched the knowledge base"
+    running_label: ClassVar[str] = "Searching the knowledge base"
     scope: ClassVar[str] = "intel"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("rag", "read"),)
     kind_permissions: ClassVar[dict[str, tuple[str, str]]] = {

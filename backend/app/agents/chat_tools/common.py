@@ -1068,6 +1068,7 @@ def case_list_item(case: Any, prefs: Any) -> dict[str, Any]:
     """A ``case_list`` artifact item (BLOCKS.md §5.3)."""
     return {
         "case_id": str(getattr(case, "case_id", "")),
+        "case_number": opt_text(getattr(case, "case_number", ""), 64),
         "title": display_text(getattr(case, "title", "") or getattr(case, "case_id", ""), 120),
         "severity": case_severity(case, prefs),
         "verdict": _VERDICT_SEMANTIC.get(enum_value(getattr(case, "verdict", None)) or ""),

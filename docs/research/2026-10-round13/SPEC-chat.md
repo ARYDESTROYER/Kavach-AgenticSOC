@@ -1289,6 +1289,47 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   uses the same rounded risk as its reason line.
 - **Demo:** the `demo` card takes slot 4 unless the viewer hid it (with base 20 it was
   always ranked out of the six).
+- **Shift card personal factor (polish round):** the shift family's signal time is the
+  start of the shift (the visit that started it), and the card now counts §3.5's
+  `personal = 1.5` when that start is newer than the catch-up baseline, as every other
+  timed family does: a shift-start card on a new shift scores 80 × 1.5 × 1.5 = 180
+  (recency 1.0), a handoff whose shift began before the baseline keeps 1.0. On a first
+  Demo visit it ranks fourth among the signals (after new cases, a case that needs a
+  person and response targets) and is served in the six, but the Demo card's slot 4
+  rule above puts it fifth, so it fills the first slot a hidden card frees rather than
+  showing among the first four. §8.3 shot 1 asks for the shift card on screen; no
+  ranking rule in §3.5 or this section moves it above the slot-4 Demo card, so it is
+  left as ranked. `weekly` has no signal time in §3.3 and keeps recency 1.0 and
+  personal 1.0.
+- **Assignee "me" (polish round):** `search_cases` and `case_stats` take assignee `me`,
+  resolved on the server to the signed-in analyst's username (`ChatToolContext.caller`,
+  `""` with auth off), matched like every assignee (trimmed, case-insensitive), the
+  normalisation the `my_cases` family uses. With nobody signed in, `search_cases`
+  returns an exact zero whose observation and summary say "No analyst is signed in
+  (sign-in is off), so assignee "me" matches no case" (no store read), and `case_stats`
+  refuses with the same sentence. Any other value is a username as before (case rows
+  already show every assignee to a caller who may read cases). The `search_cases`
+  signature (`assignee? (me = signed-in analyst)`) and the system prompt's "Choosing
+  lookups" (`"My cases": assignee "me".`) name it, so a model uses it for "my cases";
+  to keep the prompt under its 16,500-character budget, both case tool signatures drop
+  "(default all time)", which the prompt's windows section already states.
+- **Demo "my case" answers (polish round):** the Demo `my_cases` plan reads
+  `search_cases` with assignee `me` (status group active, by risk) and lists only those
+  cases; `my_cases_one` ("What should I do next on case X?") adds the same lookup beside
+  `get_case` and `explain_decision` and says whether the case is the caller's only open
+  case, lists the caller's others (at most 4, highest risk first), or says it is no longer
+  theirs; with nobody signed in it says chat cannot tell. The golden set checks with sign-in
+  on (Admin owning 3 open cases) that the card's count, the answer's count and its case
+  list agree, and that the near-target answers name the snapshot's nearest rows with
+  their owners.
+- **Close-to-target rows (polish round):** `shift_report`'s `sla` observation gains
+  `about_to_breach`: the open cases within three quarters of their response target, at
+  most 5 (the overdue list's bound), the least time left first, each with `case_id`,
+  `case_number` (when it differs), `minutes_left`, `target_minutes` and `assignee`; the
+  overdue rows gain `case_number` and `assignee` too (`engine/shift_report.sla_aging`
+  rows carry the assignee). The `sla` card and the tool count the same cases (both run
+  `sla_aging` over the whole open set; the card is skipped when the snapshot reads a
+  subset), and `sla.totals.about_to_breach` stays the full count.
 - **Case chips (amends §3.1 and §3.14):** the chips are the templates that apply to the
   case, at most three, not always three. The pick and the fill add only templates that
   apply (and that the caller's tools allow), so an open case that is not escalated or
@@ -1456,6 +1497,28 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   ignores it.
 - **Demo:** every intent a first question can reach has a title (a unit test enforces it);
   classified starters keep curated titles and investigation titles name the case's rule.
+- **Demo, distinct titles (Round 13 polish):** a Demo title is 2 to 6 words that
+  `parse_title` keeps, plus ONE detail that tells similar conversations apart where one
+  exists, each server-made or validated: the case's display number from `get_case` (never
+  the internal id, nor a number equal to it or with a long hex run: "CASE-000045 needs a
+  person", "Identity signin case CASE-000045", "Next step on CASE-000045"); an ATT&CK
+  technique id the bundled corpus knows ("ATT&CK hunt for T1078", "Cases with T1078"); the
+  window the answer's main lookup labelled, brackets dropped and only in a closed window
+  grammar ("Security posture, last 24 hours", "Cases by severity, October 2026"), else
+  the planner's own window phrase in that grammar; the two periods of a comparison
+  ("This month versus last month", "Q3 2026 versus Q2 2026"); the dimension and the
+  enumerated status, severity and verdict filters the lookup applied ("Open critical
+  cases, this week", "Open cases by severity, all time"); an indicator or entity KIND, never
+  its value ("IP address hunt, last 7 days", "Host deep dive, last 30 days"); a rule id
+  only when it passes the rule grammar `[A-Za-z0-9][A-Za-z0-9_.:-]{0,39}` ("Noisy rule
+  demo_noisy_scanner"). A case is named by its rule ids, never its title (case text). A
+  detail that would break the 6-word or 48-character bound is dropped, never cut. The
+  golden set checks that its first questions' data answers share a title at most 8 times
+  and that at least 65% of them are distinct (189 of 267 as built, from 84 distinct titles
+  across all 344 first questions before), that pairs differing in one detail differ, and
+  that no title repeats a value the question carries. Product-help and refusal titles
+  ("Console help", "Response actions") carry no detail; the live model's title sentence in
+  the prompt is unchanged (the prompt budget has no room).
 
 ### 10.5 Part B as built (T items)
 
@@ -1555,6 +1618,43 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
 - **T37:** the "case volume and false positives" report counts every case, gives the
   false-positive share first, breaks down by rule with each rule's false-positive rate,
   and draws next steps from its own figures.
+- **History rail row (polish round):** a row's time is hidden exactly while its ⋯ button
+  shows: on hover, on keyboard focus in the row (`:focus-visible`) and while the row menu
+  is open. A row focused by a click keeps its time (its ⋯ button stays hidden then), so
+  the time and the button are never hidden together.
+- **Focus handed back quietly (polish round):** focus that code returns to a control (a
+  sheet or panel closing, a rename ending, the feedback panel closing) no longer opens
+  that control's tooltip (`chat/quiet-focus.ts`: `focusQuietly` and the trigger's
+  `quietFocusGuard`). The History, Report and title buttons, the rail's strip and header
+  buttons, rail rows and the feedback buttons take it; focus the analyst moves (Tab, arrow
+  keys) still shows the tooltip. The collapsed rail's Search chats records itself as the
+  opener (the sheet's search field takes focus before the open event fires), and a sheet
+  closed by a pick no longer leaves the next open focusing that field first, so focus
+  returns to the strip button instead of the page.
+- **Running steps (polish round):** every chat tool has a present-progressive
+  `running_label` beside its past-tense `label` (`chat_tools/base.py`; a test holds both
+  for the whole catalogue, the engine's re-read step and the legacy log query).
+  `step.start` carries the running form ("Searching logs"); `step.end` and every stored
+  step keep the past form ("Searched logs"), so saved transcripts are unchanged. The
+  activity indicator (`chat.turn`, `GET /api/chat/turns/active`) follows the same rule. A
+  tool without a running label runs under its label.
+- **Case chat composer (polish round):** the resting token estimate beside the Case
+  Manager composer's field takes no width (`data-[meter-state=rest]:hidden`; it took
+  85 px), so "Ask about this case" stays on one line from a 320 px viewport up. The
+  estimate appears with a draft, once the placeholder has gone.
+- **Widen the search (polish round):** the zero-result chips wrap as one block after
+  "Widen the search:". When they do not all fit beside it (a phone), the label sits on its
+  own line and the chips wrap under it from the same edge; wide, they sit beside it as
+  before.
+- **Start skeleton height (polish round):** a skeleton card takes the card heights last
+  measured for this viewer and width class (`columns:width`, kept in the starters' module
+  cache and dropped with it on sign-out or another viewer). Before any measurement it
+  holds the line boxes of a typical question and its reason line at the type tokens
+  (`h-[1lh]`): at least two question lines, more where the card is narrow enough that a
+  typical question (about 65 characters in one column, about 75 where a row takes its
+  tallest card) needs them. On Demo first loads the grid changed by 0 px at 1440, 1920
+  and 390. A first load whose questions wrap to more lines than that still grows (one
+  column keeps each card's own height).
 
 ### 10.6 Demo (WP-DEMO13)
 
@@ -1572,12 +1672,15 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   Manager chat compares the case's main entity's log activity; "Show the same for
   {window}" after a comparison repeats the comparison. Case-chat chips name only the chat's
   own case and carry its id, because §4.1 rule 2 drops a model chip with no anchor.
-- Accepted deviations: "my cases" cannot filter by the signed-in analyst in chat's case
-  lookups, so the answer says so and shows the open queue by assignee; `shift_report`
-  returns only the 5 most overdue cases and no about-to-breach rows, so `sla_close`
-  answers are partial and filtered SLA questions say the filter was not applied; Demo
-  cases have no `case_number`, so answers lead with the case's readable title and the id
-  after it (a golden check refuses a line that leads with a bare id); the hunt follows the
+- Accepted deviations: `my_cases` asks `search_cases` with assignee `me` and lists the
+  caller's own open cases by risk; with sign-in off it says nobody is signed in and shows
+  the open queue by assignee instead (polish round). `sla_close` lists the nearest close
+  cases `shift_report` names (at most 5) with who has each and says how many more are
+  counted; `sla_close_one` says how long is left when the case is among them; filtered
+  SLA questions still say the filter was not applied. Every seeded Demo case has a
+  `case_number` (polish round, §10.7), so answers lead with the number then what the
+  case is about; a case without one leads with its readable title and the id after it
+  (a golden check refuses a line that leads with a bare id); the hunt follows the
   main entity of the riskiest matching case into the logs (Demo log rule names differ from
   case rule ids); triage plans through `search_cases` and adds `shift_report` only when
   allowed; the approvals answer reads "Change 1/2" with dates instead of proposal ids;
@@ -1598,21 +1701,32 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   because the chat case tools do not yet apply `can_object()` row scope (ROADMAP).
 - **No configured shift schedule (D4).** Shift cards follow the analyst's own visits (a
   first visit after 8 hours or more starts a shift; the handoff card 7 to 13 hours later).
-- **Case numbers on case lists:** `case_list` items and related cases carry no
-  `case_number` until `agents/blocks.py`, `case_list_item` and the shift report's "Needs
-  attention" items gain the field; starter case references resolve numbers only within
-  the newest 5,000 cases.
-- **"My cases":** chat's case lookups cannot filter by the signed-in analyst yet.
-- **About-to-breach cases:** `shift_report` returns no about-to-breach rows, so `sla_close`
-  and `sla_close_one` can only be answered partly.
+- **Case numbers (polish round):** `case_list` items (`case_list_item`, the shift
+  report's "Needs attention" list) and an entity card's related cases carry
+  `case_number` (`agents/blocks.py` `CaseListItem` and `RelatedCase` take it, up to 64
+  characters); related cases also carry their own title, read per case (at most 5
+  reads). Starter case references still resolve numbers only within the newest 5,000
+  cases. Every seeded Demo case is numbered through `engine/case_id.allocate_case_number`
+  (the pipeline's own path), oldest first, with the operator's template, prefix, reset
+  policy and start even when the custom format is off for real cases (the Demo
+  sandbox's `case_id_format.enabled` is forced on); the Demo pipeline continues the same
+  sequence on the Demo KV, and a fresh stack per enable gives every seeded case the same
+  number after a restart or reset.
+- **"My cases" with sign-in off:** there is no signed-in analyst, so assignee `me`
+  matches no case and the answer says so.
+- **Close-to-target cases:** `shift_report` names at most 5 of them (nearest first); the
+  rest are counted, not listed.
 - **Slow signals:** the hunt and auto-close health cards are missing for up to one refresh
   after a start or 10 idle minutes, and their figures are at most 60 seconds old.
 - **Speed at scale:** on the 20,000-case SQLite fixture with 15% of cases open, a request
   can exceed the 600 ms CI bound (305 to 681 ms measured) because of the open-case read.
-- **Related case titles** equal the case id in `chat_tools/cases.py` `related_cases`.
-- **Em dash in live case titles:** `agents/pipeline.py` still writes an em dash in the titles of
-  cases it creates (Demo simulator cases included); its owner should switch to " · "
-  (`_MACHINE_TITLE_RE` already accepts both).
+- **Related case titles** come from each related case's own record (polish round); a
+  related case the store no longer holds is named by its id.
+- **Case titles (polish round):** `agents/pipeline.py` writes new case titles as
+  "entity · rules" (`machine_case_title`, `CASE_TITLE_SEPARATOR`), Demo simulator cases
+  included, and rebuilds a re-investigated case's title the same way; stored titles keep
+  the em dash they were written with and are not migrated, and every title parser
+  (`engine/demo_chat._MACHINE_TITLE_RE`) reads both.
 - **Shell user chip:** it reads the profile once per sign-in, so after a save it shows the
   old name until a reload (fixing it needs a listener on first-paint code).
 - **Entry chunk:** the account-profile fix lives in `lib/api.ts`, which is on first paint;

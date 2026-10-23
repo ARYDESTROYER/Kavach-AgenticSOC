@@ -285,6 +285,8 @@ def sla_aging(
             "age_minutes": round(age, 1),
             "target_minutes": target,
             "overdue_minutes": round(age - target, 1) if age > target else 0.0,
+            # Who has it (Round 13 polish): the "close to their target" question asks.
+            "assignee": str(getattr(case, "assignee", "") or ""),
         }
         if age >= target:
             bucket["breached"] += 1

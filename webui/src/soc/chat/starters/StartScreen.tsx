@@ -13,8 +13,9 @@
  * 560 px, 2 columns and 4 cards from 560 px, 4 columns from 1,040 px. From two columns
  * every row is as tall as the tallest card (`auto-rows-fr`); one column keeps each
  * card's own height, so a short question carries no empty fill on a phone. The
- * skeleton shows exactly the visible count at the card's height, and a card swap is an
- * opacity cross-fade, so nothing shifts. Below a 480 px
+ * skeleton shows exactly the visible count at the cards' height (the heights last
+ * measured for this viewer and width, else a typical question and its reason line at
+ * the current card width), and a card swap is an opacity cross-fade, so nothing shifts. Below a 480 px
  * lane height the greeting is visually hidden (it still names the section). When the
  * stack is taller than the lane, the lane opens at its end.
  *
@@ -68,7 +69,9 @@ import {
   commitStarterDismissal,
   hideStarterLocally,
   pendingStarterDismissal,
+  rememberStarterCardHeights,
   restoreStarterLocally,
+  starterCardHeights,
   useHiddenStarters,
   type ChatStartersController,
   type HiddenStarters,
@@ -162,6 +165,46 @@ const GRID_COLUMNS: Record<1 | 2 | 4, string> = { 1: 'grid-cols-1', 2: 'grid-col
  */
 export function startGridClass(columns: 1 | 2 | 4): string {
   return cn('mt-4 grid gap-2', columns > 1 && 'auto-rows-fr', GRID_COLUMNS[columns]);
+}
+
+/** The start card's horizontal insets around its question (StarterCard: pl-3, the 16 px icon, gap-3, pr-9). */
+const CARD_TEXT_INSET_PX = 12 + 16 + 12 + 36;
+/** The grid's gap (`gap-2`). */
+const GRID_GAP_PX = 8;
+/**
+ * A typical start question's width on one line at text-base: about 65 characters where
+ * each card keeps its own height (one column), about 75 where a row takes its tallest
+ * card (two and four columns).
+ */
+const TYPICAL_QUESTION_PX = 455;
+const ROW_QUESTION_PX = 525;
+
+/**
+ * How many question lines a skeleton card holds before any card was measured here
+ * (Round 13 polish): at least two, more where the card is narrow enough that a typical
+ * question needs them, so the grid does not grow when the cards arrive.
+ */
+export function skeletonQuestionLines(width: number, columns: 1 | 2 | 4): number {
+  if (!(width > 0)) return 2;
+  const text = (width - GRID_GAP_PX * (columns - 1)) / columns - CARD_TEXT_INSET_PX;
+  if (!(text > 0)) return 2;
+  const reference = columns > 1 ? ROW_QUESTION_PX : TYPICAL_QUESTION_PX;
+  return Math.min(4, Math.max(2, Math.ceil(reference / text)));
+}
+
+/**
+ * The skeleton card's line boxes: the question's lines at text-base and the reason line
+ * at text-xs (each one line tall, `1lh`), so its height follows the type tokens.
+ */
+function SkeletonLines({ lines }: { lines: number }) {
+  return (
+    <>
+      {Array.from({ length: lines }, (_, index) => (
+        <span key={index} className="block h-[1lh] text-base" />
+      ))}
+      <span className="mt-1 block h-[1lh] text-xs" />
+    </>
+  );
 }
 
 /** The local identity a card is hidden under (its opaque key, else its family). */
@@ -582,6 +625,27 @@ export function StartScreen({
   }, [grid, floorSignature]);
   const gridMinHeight = gridFloor.signature === floorSignature && gridFloor.height > 0 ? gridFloor.height : undefined;
 
+  /* ------------------------------------------ the skeleton's height (polish) -- */
+  // The cards' heights on screen, kept per principal and width class in the starters'
+  // module cache: the next skeleton here takes them, so the grid does not grow when the
+  // cards arrive. Before any measurement it holds a typical question and its reason.
+  const widthClass = `${columns}:${width}`;
+  React.useLayoutEffect(() => {
+    if (!grid || !width) return undefined;
+    const measure = () => {
+      const heights = Array.from(grid.children, (child) => Math.round(child.getBoundingClientRect().height));
+      if (heights.length === count) rememberStarterCardHeights(principal, widthClass, heights);
+    };
+    measure();
+    if (typeof ResizeObserver !== 'function') return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(grid);
+    return () => observer.disconnect();
+  }, [grid, width, widthClass, count, principal, visibleSignature]);
+  const measuredHeights = loading ? starterCardHeights(principal, widthClass) : null;
+  const skeletonHeights = measuredHeights && measuredHeights.length === count ? measuredHeights : null;
+  const skeletonLines = skeletonQuestionLines(width, columns);
+
   /* ------------------------------------------------------------------ retry -- */
   // Retry keeps its row (busy) while the read runs, so focus is never dropped to <body>:
   // when cards land, the grid's tab stop takes it (the first pill when no card is
@@ -669,9 +733,20 @@ export function StartScreen({
           </Button>
         </div>
       ) : loading ? (
-        <div aria-hidden="true" data-testid="starter-skeletons" className={startGridClass(columns)}>
+        <div
+          aria-hidden="true"
+          data-testid="starter-skeletons"
+          data-skeleton-height={skeletonHeights ? 'measured' : 'estimated'}
+          className={startGridClass(columns)}
+        >
           {Array.from({ length: count }, (_, index) => (
-            <div key={index} className={cn(STARTER_CARD_FRAME, 'motion-safe:animate-pulse')} />
+            <div
+              key={index}
+              className={cn(STARTER_CARD_FRAME, 'py-3 motion-safe:animate-pulse')}
+              style={skeletonHeights ? { height: skeletonHeights[index] } : undefined}
+            >
+              {skeletonHeights ? null : <SkeletonLines lines={skeletonLines} />}
+            </div>
           ))}
         </div>
       ) : visible.length ? (

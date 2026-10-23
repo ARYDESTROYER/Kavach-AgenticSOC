@@ -163,8 +163,11 @@ async def test_starter_blocks_carry_the_numbers_the_answer_states(demo_state) ->
     paragraphs = shift.answer.split("\n\n")
     assert len(paragraphs) == 3 and paragraphs[-1] == "The brief below is ready to add to a report."
     attention = next(b for s in brief["sections"] for b in s["blocks"] if b.get("type") == "case_list")
-    # Round 13 A8: the case to start with by what it is about, its id after it.
-    assert paragraphs[1].startswith("Start with ") and f"(`{attention['items'][0]['case_id']}`)" in paragraphs[1]
+    # Round 13 A8: the case to start with by its display number, then what it is about
+    # (every seeded Demo case is numbered, Round 13 polish).
+    first = attention["items"][0]
+    assert first.get("case_number"), first
+    assert paragraphs[1].startswith(f"Start with `{first['case_number']}` (")
     assert "Needs attention first" not in shift.answer and "Posture:" not in shift.answer
 
 
@@ -331,7 +334,10 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
     assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
     case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
-    assert re.match(r"\*\*[A-Z][a-z ]+ on user `[^`]+`\*\* \(`demo-00000539-0004`\) needs human review",
+    # Round 13 A8: the case's display number leads, then what happened to which user.
+    number = (await demo_state.cases.get("demo-00000539-0004")).case_number
+    assert number, "every seeded Demo case is numbered"
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \([a-z ]+ on user `[^`]+`\) needs human review",
                     case.answer), case.answer
 
 
@@ -390,10 +396,12 @@ async def test_case_manager_chat_answers_about_its_case(demo_state) -> None:
                                                  tool_context=ctx, origin="user")
     tools = [(s.tool, s.status) for s in _tool_steps(response)]
     assert ("get_case", "ok") in tools and ("explain_decision", "ok") in tools
-    # The machine title reads as what happened to which entity (D6); with no case number
-    # it leads and the id follows (Round 13 A8).
-    assert re.match(rf"\*\*[A-Z][a-z ]+ on [A-Za-z ]+ `[^`]+`\*\* \(`{case_id}`\) is a true positive", response.answer), (
-        response.answer)
+    # The machine title reads as what happened to which entity (D6), after the case's
+    # display number (Round 13 A8; every seeded Demo case is numbered).
+    number = (await demo_state.cases.get(case_id)).case_number
+    assert number, "every seeded Demo case is numbered"
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \([a-z ]+ on [A-Za-z ]+ `[^`]+`\) is a true positive",
+                    response.answer), response.answer
     assert "How the policy sees it:" in response.answer
     assert response.case_id == case_id
 

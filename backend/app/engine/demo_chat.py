@@ -73,6 +73,7 @@ from ..agents.chat_events import (
     parse_tool_call_header,
 )
 from ..agents.chat_tools.base import granted_tool_names
+from ..agents.chat_tools.cases import ASSIGNEE_ME_NOBODY
 from ..agents.chat_tools.common import round_half_up, visible_text
 from ..agents.chat_tools.taint import REFUSED_TAINT
 from ..constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
@@ -3444,6 +3445,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         # "An investigation brief for the newest escalated case": the case is found
         # first (newest with the status named, escalated by default), then briefed.
         return ask("brief", case_status=_case_status(low) or "escalated", report="investigation_brief")
+    if (not view.case_scoped and _MY_CASES_RE.search(low) and win is None and compare is None
+            and not _HELP_RE.search(low)):
+        # "Which of my open cases should I work on first?", "cases assigned to me": the
+        # signed-in analyst's own open cases (assignee "me", Round 13 polish).
+        return ask("my_cases")
     # Explicit log-search phrasing that names a value runs a log lookup (wave-6 B5),
     # ahead of the hunt (a typed IP is a log filter here, not a reputation lookup the
     # analyst did not ask for) and of the case-scoped default; a how-to question ("can
@@ -3916,7 +3922,12 @@ def _plan_case(view: PromptView, ask: Ask, done: int) -> list[Call]:
     if ask.case_id or view.case_scoped and not ask.case_status:
         case_input = {"case_id": ask.case_id} if ask.case_id else {}
         if done == 0:
-            return [Call("get_case", dict(case_input)), Call("explain_decision", dict(case_input))]
+            calls = [Call("get_case", dict(case_input)), Call("explain_decision", dict(case_input))]
+            if ask.starter == "my_cases_one" and view.can("search_cases"):
+                # "What should I do next on my case?": the caller's own open cases beside
+                # it (assignee "me", Round 13 polish), so the answer can say where it stands.
+                calls.append(Call("search_cases", dict(_MY_OPEN_CASES)))
+            return calls
         if done == 1 and deep:
             entity = _entity_of(view.ok("get_case").obs if view.ok("get_case") else {})
             call = _entity_log_call(*entity, ask, view, default=24) if entity else None
@@ -4878,13 +4889,32 @@ def _plan_sla_case(view: PromptView, ask: Ask, done: int) -> list[Call]:
             Call("shift_report", {"attention_limit": 25})]
 
 
+#: The caller's own open cases by risk (assignee "me", which the lookup resolves to the
+#: signed-in analyst).
+_MY_OPEN_CASES: dict[str, Any] = {"status_group": "active", "assignee": "me", "sort_field": "risk_score",
+                                  "limit": 10}
+
+
 def _plan_my_cases(view: PromptView, ask: Ask, done: int) -> list[Call]:
-    """The open queue by risk with each case's assignee (chat's case lookups do not
-    know which analyst is signed in, so the answer lists every assignee)."""
-    if done:
-        return []
-    return [Call("search_cases", {"status_group": "active", "sort_field": "risk_score", "limit": 10}),
-            Call("case_stats", {"status_group": "active", "group_by": ["assignee"]})]
+    """The caller's own open cases by risk (assignee "me", which the lookup resolves to
+    the signed-in analyst). With nobody signed in "me" matches no case, so the open
+    queue by assignee follows instead."""
+    if done == 0:
+        return [Call("search_cases", dict(_MY_OPEN_CASES))]
+    if done == 1 and _nobody_signed_in(view.ok("search_cases")) and view.can("case_stats"):
+        return [Call("case_stats", {"status_group": "active", "group_by": ["assignee"]})]
+    return []
+
+
+def _nobody_signed_in(result: Result | None) -> bool:
+    """Did a case lookup with assignee "me" find nobody signed in?"""
+    return bool(result is not None and result.obs.get("assignee_me") == ASSIGNEE_ME_NOBODY)
+
+
+def _is_my_search(result: Result) -> bool:
+    """A case lookup for the caller's own cases (assignee "me")."""
+    assignee = result.input.get("assignee") if isinstance(result.input, Mapping) else None
+    return isinstance(assignee, str) and assignee.strip().lower() == "me"
 
 
 def _plan_shift_queue(view: PromptView, ask: Ask, done: int) -> list[Call]:
@@ -5305,6 +5335,10 @@ def _prior_indicator(view: PromptView) -> tuple[str, str] | None:
     return None
 
 
+#: A question about the caller's own cases ("my open cases", "assigned to me").
+_MY_CASES_RE = re.compile(
+    r"\bmy (?:own |open |active |current |assigned )*cases?\b|\b(?:cases?|work) (?:that are |currently )?"
+    r"assigned to me\b|\bassigned to me\b")
 _SLA_BREACH_RE = re.compile(
     r"\b(?:past|over|breach\w*|overdue)\b[^.?!]{0,30}\b(?:sla|response target)s?\b"
     r"|\b(?:sla|response target)s?\b[^.?!]{0,20}\b(?:breach\w*|overdue|oldest)\b")
@@ -8395,7 +8429,8 @@ def _final_case(view: PromptView, ask: Ask) -> Final | None:
         return missing
     got = view.ok("get_case")
     decision = view.ok("explain_decision")
-    search = view.ok("search_cases")
+    # The caller's own open cases (a "my case" starter) are said by the starter's line.
+    search = view.ok("search_cases", where=lambda r: not _is_my_search(r))
     status_word = (ask.case_status or "matching").replace("_", " ")
     if got is None and decision is None:
         if search is not None and not _num(search.obs.get("count")):
@@ -11335,6 +11370,11 @@ def _final_starter_case(view: PromptView, ask: Ask) -> Final | None:
         extra = ("What would settle it: an analyst's verdict. The policy will not close this case on its own, so "
                  "confirm it as a true or false positive, or escalate it, in Case Manager.")
     elif ask.starter == "my_cases_one" and not terminal:
+        mine = _my_cases_lines(view, case)
+        if mine:
+            final.body.extend(mine)
+            # As a report lead: the sentence alone, without the list it introduces.
+            final.lead = [*final.lead, mine[0].split(";", 1)[0].rstrip(".") + "."]
         extra = ("Next: check the evidence and activity below, then record a verdict or escalate it in Case "
                  "Manager.")
     elif ask.starter == "case_undecided":
@@ -11364,6 +11404,42 @@ def _final_starter_case(view: PromptView, ask: Ask) -> Final | None:
     return final
 
 
+def _my_cases_lines(view: PromptView, case: Mapping[str, Any]) -> list[str]:
+    """Where ONE case stands among the caller's own open cases (the "my case" starter):
+    their only one, one of several (the others listed, highest risk first), or no longer
+    theirs. Only the caller's own cases are named (assignee "me")."""
+    mine = view.ok("search_cases", where=_is_my_search)
+    if mine is None:
+        return []
+    if _nobody_signed_in(mine):
+        return ["No analyst is signed in (sign-in is off), so chat cannot tell whether this case is yours."]
+    count = int(_num(mine.obs.get("count")) or 0)
+    rows = [c for c in mine.obs.get("cases") or [] if isinstance(c, Mapping)]
+    refs = {str(case.get(k)) for k in ("case_id", "case_number") if case.get(k)}
+
+    def same(row: Mapping[str, Any]) -> bool:
+        return any(str(row.get(k)) in refs for k in ("case_id", "case_number") if row.get(k))
+
+    others = [r for r in rows if not same(r)]
+    if len(others) == len(rows):
+        if count > len(rows):
+            return []  # past the listed rows: whether it is still yours is not known here
+        if not count:
+            return ["It is no longer assigned to you, and no open case is assigned to you now."]
+        return [f"It is no longer assigned to you; **{_plural(count, 'open case')}** "
+                f"{'is' if count == 1 else 'are'} assigned to you now."]
+    if count <= 1:
+        return ["It is your only open case."]
+    shown = others[:4]
+    head = f"It is one of your **{_plural(count, 'open case')}**"
+    if not shown:
+        return [head + "."]
+    tail = ("the other one:" if count == 2 and len(shown) == 1
+            else "the others, highest risk first:" if count - 1 <= len(shown)
+            else f"the {_count(len(shown))} highest-risk of the other {_count(count - 1)}:")
+    return [f"{head}; {tail}", *(f"- {_case_line(c)}" for c in shown)]
+
+
 def _sla_rows(shift: Result | None) -> tuple[dict[str, float], int, int, bool]:
     """``({case_id: overdue minutes}, breached total, about-to-breach total, the
     breached list is complete)`` from a shift snapshot."""
@@ -11374,6 +11450,13 @@ def _sla_rows(shift: Result | None) -> tuple[dict[str, float], int, int, bool]:
     breached = int(_num(_dig(totals, "breached")) or 0)
     close = int(_num(_dig(totals, "about_to_breach")) or 0)
     return listed, breached, close, len(listed) >= breached
+
+
+def _near_rows(shift: Result | None) -> list[Mapping[str, Any]]:
+    """The open cases close to their response target the shift snapshot names, nearest
+    first (at most 5; ``sla.totals.about_to_breach`` counts every one)."""
+    rows = _dig(shift.obs, "sla", "about_to_breach") if shift else None
+    return [r for r in rows or [] if isinstance(r, Mapping) and r.get("case_id")]
 
 
 def _attention_row(shift: Result | None, case_id: Any) -> Mapping[str, Any] | None:
@@ -11418,16 +11501,26 @@ def _final_sla_case(view: PromptView, ask: Ask) -> Final | None:
     if shift is not None and not closed:
         listed, breached, close, complete = _sla_rows(shift)
         overdue = listed.get(str(case.get("case_id")))
+        near = {str(r.get("case_id")): r for r in _near_rows(shift)}
+        mine = near.get(str(case.get("case_id")))
         if not _dig(shift.obs, "sla", "enabled"):
             body.append("Response targets are switched off, so no case is measured against one.")
         elif overdue is not None:
             body.append(f"It is past its response target by {_age_words(overdue)}, one of "
                         f"{_plural(breached, 'case')} past their target.")
+        elif mine is not None:
+            left = _num(mine.get("minutes_left"))
+            body.append("It is close to its response target" + (
+                f", with {_age_words(left)} left." if left is not None else "."))
         elif complete:
-            body.append("It is not past its response target"
-                        + (f"; {_plural(close, 'open case')} {'is' if close == 1 else 'are'} close to theirs, and "
-                           "the shift snapshot counts them without naming them, so check this one's priority "
-                           "target in Case Manager." if close else "."))
+            if close and close > len(near):
+                body.append(f"It is not past its response target, and it is not among the {_count(len(near))} "
+                            f"nearest to theirs (of {_plural(close, 'open case')} close to their target), so "
+                            "check its priority target in Case Manager.")
+            elif close:
+                body.append("It is not past its response target, and it is not close to it.")
+            else:
+                body.append("It is not past its response target.")
         else:
             body.append(f"It is not among the {_plural(len(listed), 'most overdue case')} the shift snapshot names "
                         f"(of {_plural(breached, 'case')} past their target), so check its target in Case Manager.")
@@ -11442,25 +11535,37 @@ def _final_my_cases(view: PromptView, ask: Ask) -> Final | None:
     if cases is None and stats is None:
         return None
     body: list[str] = []
-    count = (cases or stats).obs.get("count") if cases else _dig(stats.obs, "totals", "count")
     said = _num(ask.slot("n"))
-    # Chat's case lookups cannot filter by the signed-in analyst (no "assigned to me"
-    # filter, and the prompt does not name the caller), so the answer says so first and
-    # never presents the whole queue as the analyst's own cases.
-    mine = (f"The suggestion counted {_plural(said, 'open case')} assigned to you. " if said is not None else "")
-    body.append(mine + "Chat's case lookups cannot filter by the signed-in analyst yet, so this shows the whole "
-                f"open queue (**{_plural(count, 'case')}**) by assignee: your own are in your row below.")
-    groups = _stats_groups(stats.obs) if stats else []
-    owners = [(_dig(g, "key", "assignee"), _num(_dig(g, "metrics", "count")) or 0) for g in groups]
-    if owners:
-        body.append("By assignee: " + _join([f"{_assignee_word(name)} {_count(n)}" for name, n in owners[:6]]) + ".")
-    rows = [c for c in (cases.obs.get("cases") if cases else None) or [] if isinstance(c, Mapping)]
+    if cases is None or _nobody_signed_in(cases):
+        # Nobody is signed in (sign-in is off), so "me" names no one: say so first and
+        # never present the whole queue as the analyst's own cases.
+        body.append("No analyst is signed in (sign-in is off), so chat cannot tell which open cases are yours.")
+        groups = _stats_groups(stats.obs) if stats else []
+        owners = [(_dig(g, "key", "assignee"), _num(_dig(g, "metrics", "count")) or 0) for g in groups]
+        if owners:
+            total = _dig(stats.obs, "totals", "count")
+            body.append(f"The open queue (**{_plural(total, 'case')}**) by assignee: "
+                        + _join([f"{_assignee_word(name)} {_count(n)}" for name, n in owners[:6]]) + ".")
+        return Final(body=body, blocks=_keep(
+            _block(stats, "categories", view="hbar", title="Open cases by assignee"),
+        ))
+    count = _num(cases.obs.get("count")) or 0
+    if not count:
+        body.append("No open case is assigned to you right now.")
+    else:
+        body.append(f"**{_plural(count, 'open case')}** {'is' if count == 1 else 'are'} assigned to you.")
+    moved = _counts_moved(said, count, "open case")
+    if moved:
+        body.append(moved)
+    rows = [c for c in cases.obs.get("cases") or [] if isinstance(c, Mapping)]
     if rows:
-        body.append("The highest-risk open cases, with who has them:")
-        body.extend(f"- {_case_line(c)}, {_owner(c)}" for c in rows[:5])
+        body.append(f"Start with {_case_head(rows[0])}: it has the highest risk of your open cases."
+                    if len(rows) > 1 else f"It is {_case_head(rows[0])}.")
+        if len(rows) > 1:
+            body.append("Your open cases, highest risk first:")
+            body.extend(f"- {_case_line(c)}" for c in rows[:5])
     return Final(body=body, blocks=_keep(
-        _block(cases, "case_list", view="case_list", title="Open cases by risk"),
-        _block(stats, "categories", view="hbar", title="Open cases by assignee"),
+        _block(cases, "case_list", view="case_list", title="Your open cases by risk") if rows else None,
     ))
 
 
@@ -11487,8 +11592,14 @@ def _final_sla(view: PromptView, ask: Ask) -> Final | None:
             body.append(moved)
         if listed:
             body.append("The most overdue:")
+            # The overdue rows carry their number and assignee; the attention queue adds
+            # what each case is about when it lists it.
+            overdue_rows = {str(b.get("case_id")): b for b in _dig(shift.obs, "sla", "breached") or []
+                            if isinstance(b, Mapping)}
             for case_id, overdue in list(listed.items())[:5]:
-                row = attention.get(case_id, {"case_id": case_id})
+                own = overdue_rows.get(case_id, {})
+                row = {**attention.get(case_id, {"case_id": case_id}),
+                       **{k: v for k, v in own.items() if k in ("case_number", "assignee") and v}}
                 body.append(f"- {_case_line(row)}, {_owner(row)}, {_age_words(overdue)} over target")
             held = [attention[c] for c in listed if c in attention]
             unassigned = sum(1 for r in held if not (isinstance(r.get("assignee"), str) and r.get("assignee").strip()))
@@ -11504,15 +11615,27 @@ def _final_sla(view: PromptView, ask: Ask) -> Final | None:
             if view.ok("get_case") is not None:
                 body.append("The most overdue case is shown below.")
     else:
+        near = _near_rows(shift)
         if not close:
             body.append("No open case is close to its response target right now.")
         else:
             body.append(f"**{_plural(close, 'case')}** {'is' if close == 1 else 'are'} close to {'its' if close == 1 else 'their'} response "
-                        "target (most of the response time used). The shift snapshot counts them without naming "
-                        "them, so here is who has the open work.")
+                        "target (most of the response time used).")
         moved = _counts_moved(ask.slot("n"), close, "case")
         if moved:
             body.append(moved)
+        if near:
+            body.append("Nearest to the target first, with who has each:" if len(near) > 1
+                        else "The case, with who has it:")
+            for row in near[:5]:
+                named = {**(_attention_row(shift, row.get("case_id")) or {}), **{
+                    k: v for k, v in row.items() if k in ("case_id", "case_number") and v}}
+                left = _num(row.get("minutes_left"))
+                body.append(f"- {_case_line(named)}, {_owner(row)}"
+                            + (f", {_age_words(left)} left" if left is not None else ""))
+            if close > len(near):
+                body.append(f"The shift snapshot names the {_count(len(near))} nearest; the other "
+                            f"{_count(close - len(near))} are counted above.")
         workload = [w for w in shift.obs.get("workload") or [] if isinstance(w, Mapping)]
         if workload:
             body.append("Open cases by analyst: " + _join([
@@ -12385,7 +12508,7 @@ _INTENT_TITLES: dict[str, str] = {
     "posture": "Security posture", "noise": "Noise reduction", "shift": "Shift brief", "cost": "AI spend",
     "brute": "Failed sign-ins", "tp": "True positives", "case": "Case investigation", "logs": "Log search",
     "log_count": "Log event counts", "hunt": "Indicator hunt", "pivot": "Hunt from a case",
-    "mitre": "ATT&CK techniques", "sources": "Log source health", "campaigns": "Campaigns", "cases": "Case list",
+    "mitre": "ATT&CK techniques", "sources": "Log source health", "campaigns": "Campaign list", "cases": "Case list",
     "help": "Console help", "explain_metric": "A metric explained", "change": "A settings change",
     "unsupported": "A question chat cannot answer", "respond": "Response actions",
     "out_of_scope": "Outside what chat does", "remember": "A note to remember", "breakdown": "Case breakdown",
@@ -12421,35 +12544,323 @@ _TREND_TITLES = {"timing": "Response time trend", "rates": "False-positive rate 
 
 def _conversation_title(view: PromptView, ask: Ask, final: Final) -> str:
     """The first answer's title (``""`` after earlier messages, in a case chat, or
-    when nothing fits the title rules)."""
+    when nothing fits the title rules): what the conversation is about, plus ONE
+    detail that tells it apart from others like it where one exists (Round 13
+    polish): the case number, a validated ATT&CK technique id, the window, the
+    dimension or a rule id that passes the rule grammar. Never an indicator, entity
+    value, log text or case title (untrusted)."""
     if view.case_scoped or view.prior_questions or view.prior_answers:
         return ""
-    title = ""
     # A console starter keeps its curated title, the classified ones too ("What Demo
-    # Mode simulates", not "Console help").
+    # Mode simulates", not "Console help"); a starter about one case, technique or
+    # rule names it.
     starter = ask.starter or (view.starter[0] if view.starter else None)
     if starter:
-        title = _STARTER_TITLES.get(starter, "")
-    if not title:
-        title = _specific_title(view, ask)
-        if parse_title({"title": title}) != title:
-            title = ""  # e.g. a rule id in capitals: the generic title follows
-    if not title:
+        title = _starter_title(view, ask, starter)
+        if title:
+            return title
+    title = _specific_title(view, ask)
+    if not title and ask.intent not in ("case", "brief"):
+        # (A case or brief is named by its rule and number below, not its report.)
         envelope = next((b for b in final.blocks if b.get("type") == "report"), None)
         if envelope is not None:
             # A report names itself ("Shift handoff", "Cases report, last 7 days");
             # its own title, without any case id after a colon.
-            title = display_text(envelope.get("title"), 80).split(":", 1)[0].strip()
-            if parse_title({"title": title}) != title:
-                title = title.split(",", 1)[0].strip()  # without its window when too long
-            if parse_title({"title": title}) != title:
-                title = ""
-        if not title and ask.intent == "metric":
+            title = _first_fit(display_text(envelope.get("title"), 80).split(":", 1)[0].strip(),
+                               display_text(envelope.get("title"), 80).split(":", 1)[0].split(",", 1)[0].strip())
+            if title:
+                return title
+    if not title:
+        if ask.intent == "metric":
             title = _METRIC_TITLES.get(ask.metric or "", "")
-        elif not title and ask.intent == "trend":
-            title = _TREND_TITLES.get(ask.subject or "", "")
+        elif ask.intent == "trend":
+            title = _trend_title(ask)
         title = title or _INTENT_TITLES.get(ask.intent, "")
-    return title if parse_title({"title": title}) == title else ""
+    return _first_fit(*_detailed(view, ask, title), title)
+
+
+# --------------------------------------------------------------------------- #
+# Round 13 polish: the one distinguishing detail a title may carry. Each is either
+# made by the server (a lookup's window label, the case's display number, the
+# console page a help answer points to) or validated against a closed grammar (a
+# technique id in the ATT&CK corpus, a rule id), never free text from a log or a case.
+# --------------------------------------------------------------------------- #
+_TITLE_MAX_WORDS = 6
+#: A case's display number (the operator's template: "CASE-000045", "INC-2026-00042"):
+#: letters and digits in up to five separated parts, at least one digit.
+_TITLE_CASE_NUMBER_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{0,11}(?:[-_/.][A-Za-z0-9]{1,12}){0,4}$")
+_TITLE_TECHNIQUE_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
+#: A detection rule id a title may name: the id characters the starter slots accept
+#: for a reference (no space, quote, Markdown or marker character), at most 40.
+_TITLE_RULE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,39}$")
+_TITLE_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September",
+                 "October", "November", "December")
+#: The window labels a title may carry, as the lookups word them (their dates in
+#: brackets dropped): a closed grammar, so nothing but a window can ride along.
+_TITLE_WINDOW_RE = re.compile(
+    r"^(?:all time|today|yesterday|(?:this|last) (?:hour|week|month|quarter|year)"
+    r"|last [1-9]\d? (?:minutes|hours|days|weeks|months|years)|last [1-9]\d{2} days"
+    rf"|(?:{'|'.join(_TITLE_MONTHS)}) 20\d\d|Q[1-4] 20\d\d|W[0-5]?\d 20\d\d|20\d\d(?: to date)?"
+    r"|(?:since|until) (?:[1-9]|[12]\d|3[01]) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) 20\d\d"
+    r"(?: (?:[01]\d|2[0-3]):[0-5]\d)?)$")
+#: Previous-period words for the relative windows a comparison names.
+_TITLE_PREVIOUS = {"today": "yesterday", "this week": "last week", "this month": "last month",
+                   "this quarter": "last quarter", "this year": "last year"}
+_TITLE_WINDOW_SPECS = {"today": "today", "this_week": "this week", "this_month": "this month",
+                       "this_quarter": "this quarter", "this_year": "this year"}
+#: An indicator or entity KIND in a title (the value never is).
+_TITLE_KINDS = {"ip": "IP address", "src_ip": "IP address", "source_ip": "IP address", "domain": "Domain",
+                "url": "URL", "hash": "File hash", "file_hash": "File hash", "email": "Email address",
+                "host": "Host", "user": "User"}
+_TITLE_LOG_KINDS = {"host": "Host", "user": "User", "ip": "IP", "src_ip": "IP", "source_ip": "IP",
+                    "contains": "Keyword"}
+#: A "my case" or one-case starter titled by its case number.
+_STARTER_CASE_TITLES = {"needs_human": "{n} needs a person", "my_cases_one": "Next step on {n}",
+                        "sla_breached_one": "{n} past its response target",
+                        "sla_close_one": "{n} near its response target"}
+#: Intents titled "<base>, <window>" (the window their main lookup read).
+_WINDOWED_INTENTS = frozenset({
+    "posture", "noise", "cost", "brute", "tp", "logs", "log_count", "top", "metric", "rate", "trend",
+    "breakdown", "regroup_cases", "cases", "summary", "deep", "hunt", "entity_cases", "audit", "verdict_cases",
+    "source_cases", "new_since", "these_open", "top_group_cases", "source_events", "regroup",
+})
+
+
+def _fits(title: str) -> bool:
+    """A title the rules accept: 2 to 6 words, and what ``parse_title`` keeps as
+    written (at most 48 characters, sentence case, no marker or quote)."""
+    return bool(title) and 2 <= len(title.split()) <= _TITLE_MAX_WORDS and parse_title({"title": title}) == title
+
+
+def _first_fit(*titles: str) -> str:
+    return next((t for t in titles if t and _fits(t)), "")
+
+
+def _title_case_number(view: PromptView) -> str:
+    """The case's display number, as the case lookup returned it, when it reads as a
+    number (never the internal id, never a long hex run)."""
+    got = view.ok("get_case")
+    case = _dig(got.obs, "case") if got else None
+    number = case.get("case_number") if isinstance(case, Mapping) else None
+    if not isinstance(number, str):
+        return ""
+    number = number.strip()
+    if (not number or len(number) > 24 or number == str(case.get("case_id") or "")
+            or not any(c.isdigit() for c in number) or not _TITLE_CASE_NUMBER_RE.fullmatch(number)
+            or re.search(r"[0-9a-fA-F]{12,}", number)):
+        return ""
+    return number
+
+
+def _title_technique(view: PromptView, ask: Ask) -> str:
+    """The one ATT&CK technique asked about, when it is a technique id the bundled
+    corpus (or this turn's ATT&CK lookup) knows."""
+    asked = [t for t in ask.techniques if isinstance(t, str)] or [str(ask.slot("technique") or "")]
+    if len(asked) != 1 or not _TITLE_TECHNIQUE_RE.fullmatch(asked[0]):
+        return ""
+    tid = asked[0]
+    looked = view.ok("mitre_lookup")
+    known = {str(t.get("id") or t.get("technique_id") or "") for t in (looked.obs.get("techniques") if looked
+                                                                      else None) or [] if isinstance(t, Mapping)}
+    if tid in known:
+        return tid
+    from . import mitre
+
+    return tid if mitre.technique(tid) is not None else ""
+
+
+def _title_rule(value: Any) -> str:
+    return value if isinstance(value, str) and _TITLE_RULE_RE.fullmatch(value) else ""
+
+
+def _title_window_words(label: Any) -> str:
+    """A window label as a title carries it ("last 30 days", "October 2026"), its
+    bracketed dates dropped, or "" when it is not one of the window forms."""
+    if not isinstance(label, str):
+        return ""
+    text = re.sub(r"^the ", "", label.split(" (", 1)[0].strip())
+    short = re.fullmatch(r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (20\d\d)", text)
+    if short:  # "Sep 2026" reads "September 2026", as the window label words it
+        text = f"{next(m for m in _TITLE_MONTHS if m.startswith(short.group(1)))} {short.group(2)}"
+    return text if _TITLE_WINDOW_RE.fullmatch(text) else ""
+
+
+def _title_window(view: PromptView, ask: Ask) -> str:
+    """The window the answer's main lookup read, as that lookup labelled it (else the
+    planner's own phrase for the window asked), when it is a window form. Planner
+    context lookups (the clock and the anchor) never name it."""
+    tools = _INTENT_TOOLS.get(ask.intent, ())
+    for result in view.results():
+        if not result.ok or result.tool not in tools or _is_clock(result) or (
+                result.input.get("window") == _ANCHOR_WINDOW and result.input.get("bucket") == "month"):
+            continue
+        words = _title_window_words(result.obs.get("window"))
+        if words:
+            return words
+    return _title_window_words(ask.win.phrase) if ask.win is not None else ""
+
+
+def _with_window(base: str, window: str) -> str:
+    return f"{base}, {window}" if base and window else ""
+
+
+def _upper(text: str) -> str:
+    return text[:1].upper() + text[1:]
+
+
+def _starter_title(view: PromptView, ask: Ask, starter: str) -> str:
+    """A starter's curated title; a starter about one case, technique or rule names it
+    (the number the case lookup returned, a corpus-known technique id, a rule id that
+    passes the rule grammar), else the curated title alone."""
+    curated = _STARTER_TITLES.get(starter, "")
+    if starter in _STARTER_CASE_TITLES:
+        number = _title_case_number(view)
+        return _first_fit(_STARTER_CASE_TITLES[starter].format(n=number) if number else "", curated)
+    if starter == "hunt":
+        tid = _title_technique(view, ask)
+        return _first_fit(f"ATT&CK hunt for {tid}" if tid else "", curated)
+    if starter == "noisy_rule":
+        rule = _title_rule(ask.slot("rule"))
+        return _first_fit(f"Noisy rule {rule}" if rule else "", curated)
+    if starter in ("new_cases", "new_cases_one"):
+        window = _title_window(view, ask)
+        return _first_fit(f"New cases {window}" if window.startswith("since ") else "", curated)
+    return _first_fit(curated)
+
+
+def _trend_title(ask: Ask) -> str:
+    """A trend's title: the response-time measure asked about by name (MTTR, MTTA,
+    MTTD: engine words picked from a closed list), else the subject's title."""
+    if ask.subject == "timing":
+        named = [m.upper() for m in ("mttr", "mtta", "mttd") if re.search(rf"\b{m}\b", ask.lowered)]
+        if len(named) == 1:
+            return f"{named[0]} trend"
+    return _TREND_TITLES.get(ask.subject or "", "")
+
+
+def _rule_title_words(case: Mapping[str, Any]) -> str:
+    """The case's first detection rule as title words ("identity_signin" →
+    "Identity signin"), from the case's rule ids only (never its title, which is case
+    text), when it passes the rule grammar."""
+    rules = [r for r in case.get("rules") or [] if isinstance(r, str)]
+    rule = _title_rule(rules[0]) if rules else ""
+    if not rule:
+        return ""
+    words = re.sub(r"[_]+", " ", rule).strip()
+    return _upper(words) if re.search(r"[A-Za-z]", words) else f"Rule {words}"
+
+
+def _filter_noun(inp: Mapping[str, Any]) -> str:
+    """Cases as a lookup's enumerated filters name them ("Open critical cases",
+    "Escalated false positives"): engine words for the status, severity and verdict
+    values the tool accepted, never a text, entity or assignee filter."""
+    words: list[str] = []
+    status = inp.get("status")
+    group = inp.get("status_group")
+    if isinstance(status, str) and status in (*OPEN_CASE_STATUSES, *TERMINAL_CASE_STATUSES):
+        words.append(status.replace("_", " "))
+    elif group == "active":
+        words.append("open")
+    elif group == "terminal":
+        words.append("closed")
+    severity = inp.get("severity")
+    if isinstance(severity, str) and severity in ("critical", "high", "medium", "low", "info"):
+        words.append(severity)
+    verdict = str(inp.get("verdict") or "").upper()
+    noun = {"FALSE_POSITIVE": "false positives", "TRUE_POSITIVE": "true positives"}.get(verdict, "cases")
+    return _upper(" ".join([*words, noun])) if words or noun != "cases" else ""
+
+
+def _first_input(view: PromptView, ask: Ask) -> Mapping[str, Any]:
+    tools = _INTENT_TOOLS.get(ask.intent, ())
+    found = next((r for r in view.results() if r.ok and r.tool in tools and not _is_clock(r)), None)
+    return found.input if found is not None else {}
+
+
+def _compare_titles(view: PromptView) -> list[str]:
+    """"This month versus last month", "This month, year over year", "September 2026
+    versus August 2026", else "Period comparison, last 30 days": the periods a
+    comparison read, in window words."""
+    found = next((r for r in view.results() if r.ok and _comparison_of(r.obs)), None)
+    if found is None:
+        return []
+    spec, against = found.input.get("window"), found.input.get("compare")
+    current = _TITLE_WINDOW_SPECS.get(spec) if isinstance(spec, str) else None
+    now = _title_window_words(found.obs.get("window"))
+    periods = (_comparison_of(found.obs) or {}).get("periods") or []
+    before = _title_window_words(periods[0]) if periods else ""
+    if current and (against == "previous_period" or (against == "same_period_last_year"
+                                                     and current == "this year")):
+        pair = f"{current} versus {_TITLE_PREVIOUS[current]}"
+    elif current and against == "same_period_last_year":
+        pair = f"{current}, year over year"
+    else:
+        pair = f"{now} versus {before}" if now and before and now != before else ""
+    noun = _filter_noun(found.input)
+    return [
+        f"{noun}, {pair}" if noun and pair else "",  # "Medium cases, today versus yesterday"
+        _upper(pair) if pair else "",
+        _with_window("Period comparison", now),
+    ]
+
+
+def _detailed(view: PromptView, ask: Ask, base: str) -> list[str]:
+    """Titles with one distinguishing detail, best first (each must still fit)."""
+    intent = ask.intent
+    number = _title_case_number(view) if intent in (
+        "case", "brief", "sla_case", "case_related", "case_entity", "pivot") else ""
+    if intent in ("case", "brief"):
+        got = view.ok("get_case")
+        case = _dig(got.obs, "case") if got else None
+        words = _rule_title_words(case) if isinstance(case, Mapping) else ""
+        kind = "brief" if intent == "brief" else "case"
+        if number:
+            return [f"{words} {kind} {number}" if words else "",
+                    f"Investigation brief {number}" if kind == "brief" else f"{number} investigation"]
+        return [f"{words} {kind}" if words else ""]
+    if number:
+        return [{"sla_case": f"{number} response target", "case_related": f"Cases related to {number}",
+                 "case_entity": f"{number} entity activity", "pivot": f"Hunt from {number}"}[intent]]
+    if intent in ("technique_hunt", "technique_cases", "mitre"):
+        tid = _title_technique(view, ask)
+        if tid:
+            return [{"technique_hunt": f"ATT&CK hunt for {tid}", "technique_cases": f"Cases with {tid}",
+                     "mitre": f"ATT&CK technique {tid}"}[intent]]
+        return []
+    if intent == "compare":
+        return _compare_titles(view)
+    if intent == "explain_metric" and ask.topic in {term[2] for term in _METRIC_TERMS}:
+        return [f"{_upper(ask.topic)} explained"]
+    if intent not in _WINDOWED_INTENTS:
+        return []
+    window = _title_window(view, ask)
+    subject = base
+    if intent == "hunt" and ask.indicator:
+        kind = _TITLE_KINDS.get(str(ask.indicator[1]))
+        subject = f"{kind} hunt" if kind else base
+    elif intent in ("deep", "entity_cases") and ask.entity:
+        kind = _TITLE_KINDS.get(str(ask.entity[0]))
+        if kind:
+            subject = f"{kind} deep dive" if intent == "deep" else f"{kind} cases"
+    elif intent == "logs" and ask.log_filter:
+        kind = _TITLE_LOG_KINDS.get(str(ask.log_filter[0][0]))
+        subject = f"{kind} log search" if kind else base
+    elif intent == "top" and ask.field in _FIELD_LABEL and ask.field not in ("severity", "action"):
+        label = _FIELD_LABEL[ask.field]
+        subject = f"Top {label}s" if not label.endswith("s") else f"Top {label}"
+    elif intent == "cases":
+        subject = _filter_noun(_first_input(view, ask)) or base
+    elif intent in ("breakdown", "regroup_cases") and base.startswith("Cases ") and (ask.group or ask.bucket):
+        # "Open cases by severity", "True positives per month": the filters the
+        # lookup applied, then the dimension.
+        noun = _filter_noun(_first_input(view, ask))
+        subject = f"{noun} {base[len('Cases '):]}" if noun else base
+    elif intent in ("breakdown", "regroup_cases") and not (ask.group or ask.bucket):
+        # A count: "Critical case count", "False positive count".
+        noun = _filter_noun(_first_input(view, ask))
+        subject = (f"{noun[:-len(' cases')]} case count" if noun.endswith(" cases")
+                   else f"{noun[:-1]} count" if noun else "Case count")
+    return [_with_window(subject, window), _with_window(base, window), subject]
 
 
 #: Breakdown titles for the groupings a "Cases by …" title would not read well for.
@@ -12460,21 +12871,8 @@ _GROUP_TITLES = {"closed_by": "Who closed the cases", "decided_by": "Who decided
 
 def _specific_title(view: PromptView, ask: Ask) -> str:
     """A title that names what this conversation is about where the intent alone is
-    generic (T6): the case's detection rule in words ("Identity signin case"), the
-    breakdown's dimension ("Cases by severity"). Engine words and rule names only,
-    never an entity value or other case text."""
-    if ask.intent in ("case", "brief"):
-        got = view.ok("get_case")
-        case = _dig(got.obs, "case") if got else None
-        title = case.get("title") if isinstance(case, Mapping) and isinstance(case.get("title"), str) else ""
-        match = _MACHINE_TITLE_RE.match(title.strip())
-        rules = [r for r in (case.get("rules") if isinstance(case, Mapping) else None) or [] if isinstance(r, str)]
-        # A free-text title is case text: the case's first detection rule names it then.
-        words = _rule_words(match.group(3) if match else (rules[0] if rules else ""))
-        if words and "`" not in words:
-            text = f"{words[:1].upper()}{words[1:]} {'brief' if ask.intent == 'brief' else 'case'}"
-            if len(text.split()) <= 6:
-                return text
+    generic (T6): the breakdown's dimension ("Cases by severity"); a case or brief is
+    named by :func:`_detailed` (its rule and number). Engine words only."""
     if ask.intent in ("breakdown", "regroup_cases"):
         if ask.group in _GROUP_TITLES:
             return _GROUP_TITLES[ask.group]

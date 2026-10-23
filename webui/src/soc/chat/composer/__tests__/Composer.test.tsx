@@ -893,8 +893,13 @@ describe('Composer — case variant', () => {
     expect(screen.queryByRole('button', { name: /Read-only/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Scope/ })).toBeNull();
     expect(screen.queryByRole('meter')).toBeNull();
-    // At rest the estimate keeps its slot unseen (SPEC-chat T13).
-    expect(screen.getByRole('button', { name: /Estimated next request/, hidden: true })).toHaveAttribute('tabindex', '-1');
+    // At rest the estimate is unseen (SPEC-chat T13) and, beside the field, takes no
+    // width either: a reserved slot wrapped the placeholder onto two lines on a phone.
+    const resting = screen.getByRole('button', { name: /Estimated next request/, hidden: true });
+    expect(resting).toHaveAttribute('tabindex', '-1');
+    const slot = resting.closest('[data-meter-state]') as HTMLElement;
+    expect(slot).toHaveAttribute('data-meter-state', 'rest');
+    expect(slot.className.split(/\s+/)).toContain('data-[meter-state=rest]:hidden');
     await user.click(screen.getByRole('button', { name: 'Composer options' }));
     await screen.findByRole('menu');
     expect(screen.getByRole('menuitem', { name: /Model/ })).toBeInTheDocument();

@@ -63,6 +63,7 @@ class AppHelpInput(ToolInput):
 class AppHelpTool(ChatTool):
     name: ClassVar[str] = "app_help"
     label: ClassVar[str] = "Searched the Help Center"
+    running_label: ClassVar[str] = "Searching the Help Center"
     scope: ClassVar[str] = "docs"
     requires: ClassVar[tuple[tuple[str, str], ...]] = ()
     signature: ClassVar[str] = (

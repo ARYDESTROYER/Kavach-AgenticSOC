@@ -257,6 +257,12 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     related cases read the case number then the title; until the server sends
     `case_number`, the title is followed by a muted mono middle-ellipsised id, with the full
     id in its tooltip and as sr-only text.
+34. **Case numbers in case lists and related cases (Round 13 polish; SPEC-chat §10.7).**
+    `case_list` items and an entity block's `related_cases` gain an optional
+    `case_number` (at most 64 characters, blank reads as absent). The server sends it
+    whenever the case has one, and a related case now carries its own title. The rendering
+    in amendment 33 is unchanged; a case without a number still shows its title and the
+    short id.
 
 ---
 

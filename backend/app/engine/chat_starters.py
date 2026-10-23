@@ -1839,7 +1839,13 @@ async def _family_shift(b: _Build) -> _Built:
         return _Built()
     if starter is None:
         return _Built()
-    return _Built(StarterCandidate("shift", starter, urgency=multiplier, urgency_level=level, signal_at=shift_at))
+    # §3.5 personal: the shift's signal time is the visit that started it, so a shift
+    # that began after the catch-up baseline (a new shift starts at this visit, which is
+    # always after the previous visit and after the Demo anchor) counts 1.5.
+    return _Built(StarterCandidate(
+        "shift", starter, urgency=multiplier, urgency_level=level, signal_at=shift_at,
+        newer_than_baseline=bool(b.baseline is not None and shift_at > b.baseline),
+    ))
 
 
 async def _family_weekly(b: _Build) -> _Built:

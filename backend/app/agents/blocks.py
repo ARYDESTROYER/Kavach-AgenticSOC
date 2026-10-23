@@ -528,6 +528,10 @@ Label = _text_type(MAX_LABEL)
 OptLabel = _opt_text_type(MAX_LABEL)
 OptKpiContext = _opt_text_type(MAX_KPI_CONTEXT)
 OptCaption = _opt_text_type(MAX_CAPTION)
+#: A case's display number (``Case.case_number``) in a case reference: the webui's
+#: ``CASE_NUMBER_CHARS`` (Round 13 polish; a case without one is named by its id).
+MAX_CASE_NUMBER = 64
+OptCaseNumber = _opt_text_type(MAX_CASE_NUMBER)
 Category = _text_type(MAX_CATEGORY_CHARS)
 Number = Union[int, float]
 OptNumber = Annotated[Union[int, float, None], BeforeValidator(finite_number)]
@@ -1209,6 +1213,7 @@ class TableBlock(_BlockBase):
 
 class CaseListItem(_Strict):
     case_id: str = Field(pattern=CASE_ID_PATTERN)
+    case_number: OptCaseNumber = None
     title: Title
     severity: OptSeverity = None
     verdict: OptVerdict = None
@@ -1309,6 +1314,7 @@ class ReputationRow(_Strict):
 
 class RelatedCase(_Strict):
     case_id: str = Field(pattern=CASE_ID_PATTERN)
+    case_number: OptCaseNumber = None
     title: Title
     severity: OptSeverity = None
 

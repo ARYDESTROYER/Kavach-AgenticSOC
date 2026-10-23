@@ -224,6 +224,7 @@ _SKIPPED_CAP = "Lookup limit for this question reached"
 _SKIPPED_INDICATOR_CAP = "Indicator lookup limit reached"
 _TOOL_FAILED = "The lookup failed"
 _LEGACY_LABEL = "Searched logs"
+_LEGACY_RUNNING_LABEL = "Searching logs"
 _LEGACY_FAILED = "The log search failed"
 # §4.8.1 compatibility carve-out: the caller may manage memory, but the turn read log
 # data, so the change waits for an explicit confirmation.
@@ -2803,7 +2804,7 @@ class _AgentTurn:
         for call in planned:
             yield StepStartEvent(step=StepStartInfo(
                 index=call.index, ordinal=call.ordinal, kind="tool", tool=call.request.tool,
-                label=self._label(call), params=self._display_params(call), group=call.group,
+                label=self._running_label(call), params=self._display_params(call), group=call.group,
             ))
         # Engine refusals end at once (an indicator refusal is audited like a tool
         # refusal); everything else goes through the toolbox, which re-checks grants
@@ -2974,6 +2975,13 @@ class _AgentTurn:
         if call.recall:
             return recall_tool.LABEL
         return getattr(call.tool, "label", None) or call.request.tool
+
+    def _running_label(self, call: _PlannedCall) -> str:
+        """The ``step.start`` label: what the lookup is doing while it runs ("Searching
+        logs"); ``step.end`` and stored steps keep :meth:`_label` ("Searched logs")."""
+        if call.recall:
+            return recall_tool.RUNNING_LABEL
+        return getattr(call.tool, "running_label", None) or self._label(call)
 
     def _display_params(self, call: _PlannedCall) -> dict[str, Any]:
         if call.recall:
@@ -3362,7 +3370,9 @@ class _AgentTurn:
         chips = self._legacy_display_params(tool, params)
         start = ChatStep(index=index, ordinal=self.ordinal, kind="tool", tool="search_logs",
                          label=getattr(tool, "label", None) or _LEGACY_LABEL, params=chips)
-        yield StepStartEvent(step=StepStartInfo.from_step(start))
+        # Present progressive while it runs; the stored step keeps the past-tense label.
+        running = getattr(tool, "running_label", None) or (start.label if tool is not None else _LEGACY_RUNNING_LABEL)
+        yield StepStartEvent(step=StepStartInfo.from_step(start).model_copy(update={"label": running}))
         header_text = json.dumps(reply.header or {}, ensure_ascii=True, default=str)
         self.messages.append({"role": "assistant", "content": neutralise_markers(
             header_text if self.unlimited else truncate(header_text, _MAX_ECHO_CHARS))})

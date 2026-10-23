@@ -715,6 +715,47 @@ describe('Workspace Chat page', () => {
     expect(document.activeElement).toBe(history);
   });
 
+  it('hands focus back without opening the opener\'s tooltip, after a pick too (phone and strip)', async () => {
+    const noTooltip = async () => {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    };
+    const pick = async (user: ReturnType<typeof userEvent.setup>) => {
+      const sheet = await screen.findByRole('dialog', { name: 'Conversations' });
+      await user.click(within(sheet).getByRole('button', { name: /^Older endpoint review/ }));
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Conversations' })).toBeNull());
+    };
+    frameWidth(600);
+    const user = userEvent.setup();
+    const phone = renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    const history = screen.getByRole('button', { name: /^History/ });
+    await user.click(history);
+    await pick(user);
+    expect(document.activeElement).toBe(history);
+    await noTooltip();
+    phone.unmount();
+
+    // The collapsed rail: Search chats focuses the sheet's search field as it opens, and
+    // a pick closes the sheet without onOpenChange; both openers still get focus back.
+    frameWidth(900);
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    expect(screen.getByTestId('workspace-chat-page')).toHaveAttribute('data-rail', 'strip');
+    const search = screen.getByRole('button', { name: 'Search chats' });
+    await user.click(search);
+    await pick(user);
+    expect(document.activeElement).toBe(search);
+    await noTooltip();
+    const show = screen.getByRole('button', { name: 'Show history' });
+    await user.click(show);
+    await pick(user);
+    expect(document.activeElement).toBe(show);
+    await noTooltip();
+  });
+
   it('confirms a delete and keeps the report', async () => {
     const user = userEvent.setup();
     renderChat();

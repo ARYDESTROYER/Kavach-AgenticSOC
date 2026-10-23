@@ -676,6 +676,7 @@ def _bucket_key(value: str, interval: str, tz: str = "UTC") -> str | None:
 class SearchLogsTool(ChatTool):
     name: ClassVar[str] = "search_logs"
     label: ClassVar[str] = "Searched logs"
+    running_label: ClassVar[str] = "Searching logs"
     scope: ClassVar[str] = "logs"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Connected log sources"
@@ -1045,6 +1046,7 @@ def _stats_from_rows(
 class LogStatsTool(ChatTool):
     name: ClassVar[str] = "log_stats"
     label: ClassVar[str] = "Counted log events"
+    running_label: ClassVar[str] = "Counting log events"
     scope: ClassVar[str] = "logs"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Connected log sources"

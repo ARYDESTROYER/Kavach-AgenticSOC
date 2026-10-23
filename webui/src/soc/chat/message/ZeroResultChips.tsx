@@ -99,9 +99,15 @@ export function ZeroResultChips({ chips, disabled = false, onPick, className }: 
       data-testid="zero-result-chips"
     >
       <span className="px-1 text-xs text-muted-foreground">{WIDEN_LABEL}</span>
-      {chips.map((chip) => (
-        <SuggestionChip key={chip.question} label={chip.label} title={chip.question} disabled={disabled} onClick={() => onPick(chip.question)} />
-      ))}
+      {/* The chips wrap as ONE block: when they do not all fit beside the label (a
+          phone), they move under it together and wrap there, so the row never reads
+          as one chip beside the label and the rest from the lane edge. Wide, they sit
+          beside the label as before. */}
+      <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1" data-testid="zero-result-chip-list">
+        {chips.map((chip) => (
+          <SuggestionChip key={chip.question} label={chip.label} title={chip.question} disabled={disabled} onClick={() => onPick(chip.question)} />
+        ))}
+      </div>
     </div>
   );
 }

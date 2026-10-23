@@ -34,6 +34,7 @@ import {
   StartScreen,
   hideToastStyle,
   isUndoHideKey,
+  skeletonQuestionLines,
   startGrid,
   startGridClass,
   starterHideKey,
@@ -47,6 +48,8 @@ import {
   clearChatStartersCache,
   flushStarterDismissals,
   pendingStarterDismissal,
+  rememberStarterCardHeights,
+  starterCardHeights,
   useChatStarters,
   type ChatStartersController,
 } from '../useChatStarters';
@@ -653,6 +656,69 @@ describe('StartScreen', () => {
     stackWidth = 900;
     renderStart({ starters: controller(null, { loading: true }) });
     expect(screen.getByTestId('starter-skeletons').children).toHaveLength(4);
+  });
+
+  it('sizes skeletons for a typical question at the current card width before any card was measured', () => {
+    // Two lines at least; more where the card is narrow (the tour's grids: 1440 two
+    // columns, 1920 four columns, 390 one column).
+    expect(skeletonQuestionLines(0, 1)).toBe(2);
+    expect(skeletonQuestionLines(869.2, 2)).toBe(2);
+    expect(skeletonQuestionLines(1325.2, 4)).toBe(3);
+    expect(skeletonQuestionLines(338, 1)).toBe(2);
+    expect(skeletonQuestionLines(560, 2)).toBe(3);
+    expect(skeletonQuestionLines(1040, 4)).toBe(3);
+    expect(skeletonQuestionLines(60, 1)).toBe(2);
+    stackWidth = 1325;
+    renderStart({ starters: controller(null, { loading: true }) });
+    const grid = screen.getByTestId('starter-skeletons');
+    expect(grid).toHaveAttribute('data-skeleton-height', 'estimated');
+    for (const card of Array.from(grid.children) as HTMLElement[]) {
+      // Three question line boxes at text-base and the reason line at text-xs, inside the
+      // card's own padding: the skeleton is as tall as a loaded card of that shape.
+      expect(card.className).toContain('py-3');
+      const lines = Array.from(card.children) as HTMLElement[];
+      expect(lines.map((line) => line.className)).toEqual([
+        'block h-[1lh] text-base',
+        'block h-[1lh] text-base',
+        'block h-[1lh] text-base',
+        'mt-1 block h-[1lh] text-xs',
+      ]);
+      expect(card.style.height).toBe('');
+    }
+  });
+
+  it('takes the card heights last measured for this viewer and width, so the grid does not grow on load', () => {
+    stackWidth = 400;
+    // The loaded cards are measured into the starters' module cache.
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === 'chat-start') return DOMRect.fromRect({ width: stackWidth, height: 300 });
+      if (this.dataset.testid === 'starter-card') return DOMRect.fromRect({ width: 400, height: 104 });
+      return DOMRect.fromRect();
+    });
+    const loaded = renderStart({ principal: 'alice' });
+    expect(starterCardHeights('alice', '1:400')).toEqual([104, 104, 104]);
+    // Another viewer or another width class has none.
+    expect(starterCardHeights('bob', '1:400')).toBeNull();
+    expect(starterCardHeights('alice', '2:800')).toBeNull();
+    loaded.unmount();
+    const loading = renderStart({ principal: 'alice', starters: controller(null, { loading: true }) });
+    const grid = screen.getByTestId('starter-skeletons');
+    expect(grid).toHaveAttribute('data-skeleton-height', 'measured');
+    for (const card of Array.from(grid.children) as HTMLElement[]) {
+      expect(card.style.height).toBe('104px');
+      expect(card.children).toHaveLength(0);
+    }
+    loading.unmount();
+    // A measurement of another card count never sizes this grid; nothing invalid is kept.
+    rememberStarterCardHeights('alice', '2:800', [90, 90, 90]);
+    rememberStarterCardHeights('alice', '4:1200', [0, 90, 90, 90]);
+    expect(starterCardHeights('alice', '4:1200')).toBeNull();
+    stackWidth = 800;
+    renderStart({ principal: 'alice', starters: controller(null, { loading: true }) });
+    expect(screen.getByTestId('starter-skeletons')).toHaveAttribute('data-skeleton-height', 'estimated');
+    // Signing out (or another viewer) drops the measurements with the starters.
+    clearChatStartersCache();
+    expect(starterCardHeights('alice', '1:400')).toBeNull();
   });
 
   it('says suggestions could not load, with Retry, and keeps the greeting and pills', async () => {

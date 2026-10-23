@@ -59,6 +59,7 @@ import {
 } from '@/ui/dropdown-menu';
 import { useNavigateOptional } from '@/soc/router';
 import { shortcutLabel } from '../shortcuts/shortcut-list';
+import { focusQuietly, quietFocusGuard } from '../quiet-focus';
 import {
   conversationReportErrorMessage,
   conversationReportRetryable,
@@ -277,7 +278,8 @@ export function ThreadToolbar({
 
   React.useEffect(() => {
     if (!refocusTitle || editing) return;
-    titleButtonRef.current?.focus();
+    // Handed back by code: not a reason to open the full-title tooltip.
+    focusQuietly(titleButtonRef.current);
     setRefocusTitle(false);
   }, [editing, refocusTitle]);
   const endEdit = (end: EditEnd) => {
@@ -296,6 +298,8 @@ export function ThreadToolbar({
               size="sm"
               className="h-8 shrink-0 gap-1.5 px-2"
               onClick={onOpenHistory}
+              // The History sheet hands focus back here when it closes (no tooltip then).
+              onFocus={quietFocusGuard}
               aria-label={narrow ? 'History' : undefined}
               aria-keyshortcuts={shortcuts?.history}
             >
@@ -328,6 +332,7 @@ export function ThreadToolbar({
                       type="button"
                       className="max-w-full truncate rounded-sm text-left hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => setEditing(true)}
+                      onFocus={quietFocusGuard}
                       aria-describedby={hintId}
                     >
                       {title}
@@ -361,6 +366,8 @@ export function ThreadToolbar({
               aria-pressed={report.open}
               aria-label={reportButtonLabel(report.count)}
               onClick={report.onToggle}
+              // The report sheet hands focus back here when it closes (no tooltip then).
+              onFocus={quietFocusGuard}
               data-testid="chat-report-toggle"
             >
               <FileText aria-hidden />

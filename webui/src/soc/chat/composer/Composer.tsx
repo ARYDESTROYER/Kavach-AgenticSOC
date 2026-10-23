@@ -801,7 +801,12 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
         >
           {textarea}
           <div className="flex h-8 shrink-0 items-center gap-0.5">
-            {meterContext ? <TokenMeter context={meterContext} draft={draft} showRing={false} /> : null}
+            {meterContext ? (
+              // Beside the field, a hidden meter would still take its width and wrap the
+              // placeholder on a phone: at rest it takes no space here (it appears with a
+              // draft, when the placeholder has gone).
+              <TokenMeter context={meterContext} draft={draft} showRing={false} className="data-[meter-state=rest]:hidden" />
+            ) : null}
             {options}
             {sendStop}
           </div>

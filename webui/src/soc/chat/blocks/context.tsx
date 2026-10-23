@@ -151,13 +151,13 @@ export const RefLink = React.forwardRef<HTMLAnchorElement, RefLinkProps>(functio
 
 /**
  * How a case is named in a block (Round 13, SPEC-chat T14): its display number (mono) then
- * its title, the internal id (`case-6b22d1…`) only in the number's tooltip. Until the
- * server sends a `case_number` (it does not yet), the title alone cannot tell two cases
- * apart, so the internal id stays VISIBLE after the title: muted, mono, middle-ellipsised
- * ("case-6b22…70b4", the Case Manager queue's form), with the full id in its tooltip and
- * for assistive tech. A case with neither a number nor a title shows its whole id, which
- * wraps instead of being cut. Titles wrap too (the hosts never truncate them), so the
- * whole title is always on screen.
+ * its title, the internal id (`case-6b22d1…`) only in the number's tooltip. The server
+ * sends `case_number` when a case has one (Round 13 polish); without it the title alone
+ * cannot tell two cases apart, so the internal id stays VISIBLE after the title: muted,
+ * mono, middle-ellipsised ("case-6b22…70b4", the Case Manager queue's form), with the
+ * full id in its tooltip and for assistive tech. A case with neither a number nor a title
+ * shows its whole id, which wraps instead of being cut. Titles wrap too (the hosts never
+ * truncate them), so the whole title is always on screen.
  */
 export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 'case_number' | 'title'> }) {
   const number = facts.case_number?.trim() || null;

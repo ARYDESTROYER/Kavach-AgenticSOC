@@ -56,6 +56,9 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
+const CARD_HEIGHTS_LIMIT = 16;
+/** principal + width class → the start cards' heights last measured, slot by slot. */
+const cardHeights = new Map<string, readonly number[]>();
 /** The last known principal any instance rendered with; a change drops the cache. */
 let lastPrincipal: string | null = null;
 
@@ -260,6 +263,7 @@ function clearHidden(): void {
 /** Test hook: forget every cached answer and every locally hidden card. */
 export function clearChatStartersCache(): void {
   cache.clear();
+  cardHeights.clear();
   lastPrincipal = null;
   clearHidden();
 }
@@ -277,10 +281,43 @@ function notePrincipal(principal: string | null): void {
   if (!principal || principal === lastPrincipal) return;
   if (lastPrincipal !== null) {
     cache.clear();
+    cardHeights.clear();
     // Another viewer: the previous one's hides (and any dismissal still waiting) go.
     clearHidden();
   }
   lastPrincipal = principal;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Measured card heights (the next skeleton's height).                         */
+/* -------------------------------------------------------------------------- */
+
+function cardHeightsKey(principal: string | null, widthClass: string): string {
+  return JSON.stringify([principal ?? '', widthClass]);
+}
+
+/**
+ * Record the start cards' measured heights (CSS px, slot order) for this principal and
+ * width class, so the next skeleton there takes the loaded height and the grid does
+ * not grow when the cards arrive (Round 13 polish). Numbers only; dropped with the cache.
+ */
+export function rememberStarterCardHeights(principal: string | null, widthClass: string, heights: readonly number[]): void {
+  if (!heights.length || heights.some((h) => !Number.isFinite(h) || h <= 0)) return;
+  const key = cardHeightsKey(principal, widthClass);
+  const previous = cardHeights.get(key);
+  if (previous && previous.length === heights.length && previous.every((h, i) => h === heights[i])) return;
+  cardHeights.delete(key);
+  cardHeights.set(key, [...heights]);
+  while (cardHeights.size > CARD_HEIGHTS_LIMIT) {
+    const oldest = cardHeights.keys().next().value;
+    if (oldest === undefined) break;
+    cardHeights.delete(oldest);
+  }
+}
+
+/** The card heights last measured for this principal and width class, if any. */
+export function starterCardHeights(principal: string | null, widthClass: string): readonly number[] | null {
+  return cardHeights.get(cardHeightsKey(principal, widthClass)) ?? null;
 }
 
 function remember(key: string, info: ChatStartersInfo, at: number): void {

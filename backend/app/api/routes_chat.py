@@ -455,9 +455,10 @@ _MODEL_LABELS = frozenset({
 })
 
 
-def _activity_label(step: Any) -> str | None:
+def _activity_label(step: Any, running: bool = False) -> str | None:
     """An ENGINE-template label for the activity indicator (never model or log text):
-    a registered tool's own label, or one of the engine's model-step labels."""
+    a registered tool's own label (its present-progressive ``running_label`` while the
+    lookup runs, ``step.start``), or one of the engine's model-step labels."""
     kind = getattr(step, "kind", None)
     if kind == "model":
         label = getattr(step, "label", "")
@@ -470,7 +471,9 @@ def _activity_label(step: Any) -> str | None:
             tool = get_tool(tool_name)
         except Exception:  # noqa: BLE001 -- the indicator degrades to a generic label
             tool = None
-        label = getattr(tool, "label", None) if tool is not None else None
+        label = None
+        if tool is not None:
+            label = (getattr(tool, "running_label", None) if running else None) or getattr(tool, "label", None)
         if isinstance(label, str) and label:
             return label[:120]
     return "Looking something up"
@@ -560,7 +563,7 @@ class ChatTurnHandle:
         changed = False
         if kind in ("step.start", "step.end"):
             step = getattr(event, "step", None)
-            label = _activity_label(step)
+            label = _activity_label(step, running=kind == "step.start")
             if label and label != self.label:
                 self.label, changed = label, True
             if kind == "step.end" and getattr(step, "kind", None) == "tool":

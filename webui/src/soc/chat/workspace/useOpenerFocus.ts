@@ -11,11 +11,15 @@
  * `onCloseAutoFocus`. An opener that is no longer in the document (the layout changed
  * while the Sheet was open) leaves Radix's default in place.
  *
+ * Focus goes back quietly (`focusQuietly`): a guarded opener does not open its tooltip
+ * over the content the reader just chose (the phone's History button, Round 13 polish).
+ *
  * Round 13 (SPEC-chat T27): passed the open event, `capture` also moves focus to an
  * element marked `data-autofocus` inside the content instead of Radix's first focusable
  * one (the History sheet's search field, so the New chat tooltip never opens over it).
  */
 import * as React from 'react';
+import { focusQuietly } from '../quiet-focus';
 
 export interface OpenerFocus {
   /** Record the opener; with the open event, focus the content's `[data-autofocus]`. */
@@ -40,7 +44,8 @@ export function useOpenerFocus(): OpenerFocus {
     openerRef.current = null;
     if (!opener || !opener.isConnected) return;
     event.preventDefault();
-    opener.focus();
+    // Without opening the opener's tooltip over what the reader just chose (Round 13).
+    focusQuietly(opener);
   }, []);
   return React.useMemo(() => ({ capture, restore }), [capture, restore]);
 }

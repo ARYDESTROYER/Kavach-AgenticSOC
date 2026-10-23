@@ -801,6 +801,7 @@ class AppState:
             "grants": frozenset(grants),
             "case_id": effective_case or None,
             "user": current_username(request) or "default",
+            "caller": current_username(request) or "",
             "time_range": getattr(body, "time_range", None),
             "context_time_range": _context_time_range(body),
             "app_version": __version__,
@@ -3238,10 +3239,6 @@ class AppState:
             new_demo.seed, org, history_days=new_demo.history_days,
             run_id=new_demo.run_id, now_millis=now_ms,
         )
-        seeded_counter_cases = list(cases)
-        for case in cases:
-            self._write_guard(case, demo=True)
-            await demo_stack.cases.save(case)
 
         # Pre-seed a tight "just happened" window: a varied trio of recent cases (1
         # TP-escalate, 1 NEEDS_HUMAN, 1 FP — not all terminal) + ~100 events already
@@ -3253,6 +3250,28 @@ class AppState:
             case_count=new_demo.preseed_case_count,
             event_count=new_demo.preseed_event_count,
         )
+        # The capability seed cases (generated here so every seeded case is numbered
+        # together; saved and acted on below).
+        hitl_cases: list = []
+        tuner_cases: list = []
+        if new_demo.force_capabilities:
+            try:
+                from .engine.demo_generator import generate_capability_seed_cases
+
+                hitl_cases, tuner_cases = generate_capability_seed_cases(
+                    new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
+                )
+            except Exception as exc:  # noqa: BLE001 — capability seeding never blocks enable
+                logger.warning("demo capability seeding failed: %s", exc)
+                hitl_cases, tuner_cases = [], []
+        # Every seeded case gets its display number before it is saved, oldest first,
+        # from the same nomenclature and sequence the demo pipeline continues.
+        await demo_stack.number_seeded_cases([*cases, *recent_cases, *hitl_cases, *tuner_cases])
+
+        seeded_counter_cases = list(cases)
+        for case in cases:
+            self._write_guard(case, demo=True)
+            await demo_stack.cases.save(case)
         for case in recent_cases:
             self._write_guard(case, demo=True)
             await demo_stack.cases.save(case)
@@ -3278,13 +3297,8 @@ class AppState:
         # records one bounded observation). Every write lands in the DEMO stores; the real
         # HITL/tuning/campaign ledgers are untouched. Gated on force_capabilities because
         # the seeded automation rule + the tuner/campaign blocks are only forced ON there.
-        if new_demo.force_capabilities:
+        if hitl_cases or tuner_cases:
             try:
-                from .engine.demo_generator import generate_capability_seed_cases
-
-                hitl_cases, tuner_cases = generate_capability_seed_cases(
-                    new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
-                )
                 for case in (*hitl_cases, *tuner_cases):
                     self._write_guard(case, demo=True)
                     await demo_stack.cases.save(case)
