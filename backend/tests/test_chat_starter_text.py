@@ -90,7 +90,9 @@ RENDERINGS = _renderings()
 
 def test_the_table_is_the_spec_table() -> None:
     sendable = [t for t in text.TEMPLATES.values() if t.sendable]
-    assert len(text.TEMPLATES) == 41 and len(sendable) == 38
+    # Polish round PB5 added the two wordings without a reference (noisy_rule_unnamed,
+    # silent_source_unnamed) the length rule falls back to.
+    assert len(text.TEMPLATES) == 43 and len(sendable) == 40
     assert set(text.DISPLAY_TEMPLATES) == {"continue", "saved_prompt", "saved_book"}
     assert text.CASE_CHIP_TEMPLATES == (
         "case_needs_person", "case_undecided", "case_closed_why", "case_entity", "case_related", "case_handoff",

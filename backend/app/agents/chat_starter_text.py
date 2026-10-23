@@ -73,6 +73,17 @@ REF_MAX_CHARS = 128
 #: A source display name in a catch-up clause ("{source} quiet for {age}"); longer
 #: names use the count form ("1 source quiet").
 CLAUSE_SOURCE_NAME_MAX = 24
+#: The length rule for a reference in a card's question, the same for every reference
+#: kind (polish round PB5, SPEC-chat §3.7): a reference is written into the question only
+#: when none of its words is longer than this. The web lets a word of 28 characters or
+#: more break anywhere (``starters/soft-breaks.tsx``), and the start stack holds still
+#: from skeleton to cards only while every reference word is shorter than that (§10.7).
+#: A family keeps a longer reference out of the question: it uses its wording without
+#: the reference (``noisy_rule_unnamed``, ``silent_source_unnamed``), or names the item
+#: by a shorter reference (a case by its number, the campaign by one of its cases, a
+#: source by its id when its name does not fit). The reference itself still travels
+#: fenced wherever the question names one (:func:`render_starter_turn`).
+QUESTION_REF_WORD_MAX = 27
 
 StarterAction = Literal["send", "open_conversation", "use_prompt"]
 TemplateSurface = Literal["home", "case"]
@@ -230,6 +241,14 @@ def _source_ok(value: str) -> bool:
     if _SOURCE_ID_RE.fullmatch(value):
         return True
     return bool(_SOURCE_NAME_RE.fullmatch(value)) and "  " not in value and value == value.rstrip()
+
+
+def ref_fits_question(value: Any) -> bool:
+    """True when ``value`` may be written into a card's question: a non-empty string
+    none of whose words (split at spaces) is longer than :data:`QUESTION_REF_WORD_MAX`.
+    The one length rule for every reference kind; a value is never cut to fit."""
+    return isinstance(value, str) and bool(value) and all(
+        len(word) <= QUESTION_REF_WORD_MAX for word in value.split(" "))
 
 
 def ref_value(kind: Any, raw: Any) -> str | None:
@@ -392,6 +411,13 @@ _TABLE: tuple[StarterTemplate, ...] = (
        "Why did detection rule {rule} create {n} of the {m} cases in the last 24 hours?",
        "Noisy rule", ("case_stats", "search_cases"), minimums={"n": 1, "m": 2},
        reasons="{pct}% of new cases"),
+    # The rule's id does not fit the question line (:data:`QUESTION_REF_WORD_MAX`, an
+    # Elastic rule id is a 36-character UUID) or cannot be named: the count names the
+    # same rule, the one that created {n} of the {m} cases in that window (polish PB5).
+    _t("noisy_rule_unnamed", "noisy_rule",
+       "Which detection rule created {n} of the {m} cases in the last 24 hours, and why?",
+       "Noisy rule", ("case_stats", "search_cases"), minimums={"n": 1, "m": 2},
+       reasons="{pct}% of new cases"),
     # The campaign is named by one of its cases, never by its internal id
     # ("campaign-4039d3c5…" broke mid-word on a phone card, polish PB3): the case
     # number is the analyst's own reference, it is fenced like every case reference,
@@ -409,6 +435,15 @@ _TABLE: tuple[StarterTemplate, ...] = (
        "Quiet log source", ("source_health",),
        reasons={"default": "No events for {age}",
                 # No event time to measure from: the closed-vocabulary state instead.
+                "poll_failed": "Last poll failed",
+                "no_events": "No events received yet",
+                "flagged": "Flagged by the source health check"}),
+    # The one quiet source has neither a name nor an id that fits the question line
+    # (or passes the grammar): the question names it as the one quiet source (PB5).
+    _t("silent_source_unnamed", "silent_source",
+       "Which log source has gone quiet, and is ingestion working?",
+       "Quiet log source", ("source_health",),
+       reasons={"default": "No events for {age}",
                 "poll_failed": "Last poll failed",
                 "no_events": "No events received yet",
                 "flagged": "Flagged by the source health check"}),
@@ -1022,6 +1057,7 @@ __all__ = [
     "NUMBER_SLOTS",
     "ONBOARDING_TEMPLATES",
     "QUESTION_MAX_CHARS",
+    "QUESTION_REF_WORD_MAX",
     "REASON_MAX_CHARS",
     "REF_MAX_CHARS",
     "REF_NOUNS",
@@ -1047,6 +1083,7 @@ __all__ = [
     "format_since",
     "parse_starter_question",
     "parse_starter_turn",
+    "ref_fits_question",
     "ref_value",
     "render_question",
     "render_reason",

@@ -44,10 +44,13 @@
  * then, while the session is still the hiding viewer's, and its toasts close. A hidden
  * card's catch-up clause leaves the line above the grid with it (the clause sends the
  * same question), and Undo brings both back.
- * Within one applied result and card count the grid's box never gets shorter (a shorter
- * card taking a slot does not move the bottom-anchored stack). The spare height sits in
- * that box above the cards, which keep their natural height (re-shoot PW3-5: a floor on
- * the grid itself stretched every card, leaving an empty band under each reason line). While the pointer is over the
+ * Within one applied result and card count the stack's box never gets shorter (a shorter
+ * card taking a slot, or cards landing shorter than their skeleton, keeps its height).
+ * The spare height sits at the TOP of the stack, above the greeting: the cards keep their
+ * natural height (re-shoot PW3-5: a floor on the grid stretched every card) and the gap
+ * under the catch-up line is always 16 px (third re-shoot PW4-5: spare height kept above
+ * the cards left 36 px on a phone when a two-line first card replaced a three-line
+ * skeleton). While the pointer is over the
  * grid or focus is inside it, a fresh result is held (never reorder under the analyst).
  * Retry keeps its row, busy, until the read lands, then hands focus to the cards only
  * when focus was still on Retry (never one the analyst moved elsewhere). Nothing here is
@@ -170,11 +173,21 @@ export function startGridClass(columns: 1 | 2 | 4): string {
 }
 
 /**
- * The box the card grid sits in (re-shoot PW3-5): it carries the stack's height floor
- * and puts any spare height ABOVE the grid, so the cards keep their natural height and
- * stay just above the pills while the greeting holds still.
+ * The box the card grid sits in, 16 px under the catch-up line whatever the cards'
+ * heights. The stack's height floor is NOT on this box (third re-shoot PW4-5): spare
+ * height here sat between the catch-up line and the cards. It is the stack's top padding
+ * ({@link gridSpare}), above the greeting.
  */
-export const START_GRID_FLOOR_CLASS = 'mt-4 flex flex-col justify-end';
+export const START_GRID_FLOOR_CLASS = 'mt-4';
+
+/**
+ * The height the stack keeps above the greeting: the grid's floor (its tallest height
+ * within one applied result and card count, or the skeleton it replaced) less its
+ * natural height now; 0 when the grid is at least as tall as its floor.
+ */
+export function gridSpare(floor: number, natural: number): number {
+  return floor > natural && natural > 0 ? Math.round(floor - natural) : 0;
+}
 
 /** The start card's horizontal insets around its question (StarterCard: pl-3, the 16 px icon, gap-3, pr-9). */
 const CARD_TEXT_INSET_PX = 12 + 16 + 12 + 36;
@@ -624,20 +637,25 @@ export function StartScreen({
 
   /* ------------------------------------------- the grid never gets shorter -- */
   // Within one applied result at one width, a hide or an Undo can bring a shorter card
-  // into a row: the grid keeps the tallest height it had, so the bottom-anchored stack
-  // never jumps down and back. A new result, another width, or another number of cards
+  // into a row: the stack keeps the grid's tallest height it had (as top padding, above
+  // the greeting), so its box never shrinks and grows back. A new result, another width, or another number of cards
   // (a slot closed with no card left to take it, or an Undo reopened one) starts from
   // its own height, so the cards left are never stretched over the rows that went.
   // The skeleton the cards replace (Round 13 polish) hands its height over once: when the
-  // cards land shorter than it, the grid's box keeps its height instead of shrinking, so
-  // the stack holds still from skeleton to cards. Only for the same width and a full
-  // grid: fewer cards than skeletons start from their own height. The floor is the box's
-  // `min-height`, never the grid's: a grid taller than its rows stretches them (`1fr`
-  // rows, and auto rows under `align-content: normal`), and the cards with them. The
-  // grid is measured at its natural height.
+  // cards land shorter than it, the stack keeps the skeleton's height instead of
+  // shrinking. Only for the same width and a full grid: fewer cards than skeletons start
+  // from their own height. The floor becomes the stack's spare height, never a height on
+  // the grid: a grid taller than its rows stretches them
+  // (`1fr` rows, and auto rows under `align-content: normal`), and the cards with them.
+  // The grid is measured at its natural height, and the spare goes above the greeting so
+  // the cards stay 16 px under the catch-up line (PW4-5).
   const skeletonFloor = React.useRef<{ widthClass: string; height: number } | null>(null);
   const floorSignature = `${info?.as_of ?? ''}|${info?.expires_at ?? ''}|${width}|${columns}|${visibleCount}`;
-  const [gridFloor, setGridFloor] = React.useState<{ signature: string; height: number }>({ signature: '', height: 0 });
+  const [gridFloor, setGridFloor] = React.useState<{ signature: string; height: number; natural: number }>({
+    signature: '',
+    height: 0,
+    natural: 0,
+  });
   React.useLayoutEffect(() => {
     if (!grid) return undefined;
     const measure = () => {
@@ -645,21 +663,20 @@ export function StartScreen({
       const handed = skeletonFloor.current;
       skeletonFloor.current = null;
       const seed = handed && handed.widthClass === `${columns}:${width}` && visibleCount === count ? handed.height : 0;
-      setGridFloor((prev) =>
-        prev.signature === floorSignature
-          ? height > prev.height
-            ? { signature: floorSignature, height }
-            : prev
-          : { signature: floorSignature, height: Math.max(height, seed) },
-      );
+      setGridFloor((prev) => {
+        if (prev.signature !== floorSignature) return { signature: floorSignature, height: Math.max(height, seed), natural: height };
+        const floor = Math.max(prev.height, height);
+        return floor === prev.height && height === prev.natural ? prev : { signature: floorSignature, height: floor, natural: height };
+      });
     };
     measure();
     if (typeof ResizeObserver !== 'function') return undefined;
     const observer = new ResizeObserver(() => measure());
     observer.observe(grid);
     return () => observer.disconnect();
-  }, [grid, floorSignature, columns, width, visibleCount, count]);
-  const gridMinHeight = gridFloor.signature === floorSignature && gridFloor.height > 0 ? gridFloor.height : undefined;
+    // `visibleSignature`: a stand-in card of another height updates the spare at once.
+  }, [grid, floorSignature, columns, width, visibleCount, count, visibleSignature]);
+  const spare = gridFloor.signature === floorSignature ? gridSpare(gridFloor.height, gridFloor.natural) : 0;
 
   /* ------------------------------------------ the skeleton's height (polish) -- */
   // The cards' heights on screen, kept per principal and width class in the starters'
@@ -750,6 +767,8 @@ export function StartScreen({
       aria-labelledby={headingId}
       data-testid="chat-start"
       data-columns={columns}
+      // The grid's floor less its height, above the greeting (PW4-5), only while cards show.
+      style={spare && visible.length && !loading && !showError ? { paddingTop: spare } : undefined}
       // `flow-root`: the narrow pill row's negative block margin (room for its focus rings
       // inside its scroll clip) stays inside the stack, so the stack's edge is the pills'.
       // Proportional numerals: the stack is prose (tabular ones set hyphens wide).
@@ -806,7 +825,7 @@ export function StartScreen({
           ))}
         </div>
       ) : visible.length ? (
-        <div className={START_GRID_FLOOR_CLASS} style={gridMinHeight ? { minHeight: gridMinHeight } : undefined} data-testid="starter-grid-floor">
+        <div className={START_GRID_FLOOR_CLASS} data-testid="starter-grid-floor">
           <ul
             ref={setGrid}
             aria-label="Suggested questions"

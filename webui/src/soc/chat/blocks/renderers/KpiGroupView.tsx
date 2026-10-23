@@ -202,7 +202,7 @@ export function KpiItemCell({ item, testId, staticMode = false }: { item: KpiIte
     return (
       <div role="listitem" className="flex min-w-0 flex-col px-3 py-2" data-testid={`kpi-${testId}`}>
         {/* Wrap, never truncate: a cut label or caption hides what the figure means. */}
-        <span className="break-words text-2xs font-semibold uppercase tracking-wide text-muted-foreground">{item.label}</span>
+        <span className="break-words text-2xs font-semibold uppercase tracking-wide text-muted-foreground proportional-nums">{item.label}</span>
         {/* The figure as text beside a decorative arc: never drawn under the arc. One line
             (no wrap): only the arc may narrow. 2 px less above than a figure, so the 28 px
             arc keeps the 26 px numeral line's height. */}

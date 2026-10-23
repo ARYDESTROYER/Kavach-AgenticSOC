@@ -582,21 +582,26 @@ describe('StartScreen', () => {
     const four = [NEEDS_HUMAN, NEW_CASES, SILENT_SOURCE, CONTINUE].map((st) => ({ ...st }));
     renderStart({ starters: controller(makeInfo({ starters: four })) });
     const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
-    // The floor is on the grid's box, never on the grid: its rows (and cards) keep their
-    // natural height and the spare height sits above them (re-shoot PW3-5).
+    // The floor is never a height on the grid or its box: the rows (and cards) keep their
+    // natural height (re-shoot PW3-5), and any spare height is the stack's top padding,
+    // above the greeting, so the cards stay 16 px under the catch-up line (PW4-5).
+    const stack = () => screen.getByTestId('chat-start');
     const floor = () => screen.getByTestId('starter-grid-floor');
-    expect(floor().style.minHeight).toBe('328px');
+    expect(stack().style.paddingTop).toBe('');
+    expect(floor().style.minHeight).toBe('');
     expect(grid().style.minHeight).toBe('');
-    // A shorter stand-in (CONTINUE) takes slot 1: the grid's box keeps its height.
+    // A shorter stand-in (CONTINUE, 24 px shorter) takes slot 1: the stack keeps its
+    // height, with the 24 px above the greeting.
     act(() => mainCards()[1].focus());
     await user.keyboard('{Delete}');
     expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'continue', 'silent_source']);
-    expect(floor().style.minHeight).toBe('328px');
+    expect(stack().style.paddingTop).toBe('24px');
+    expect(floor().style.minHeight).toBe('');
     expect(grid().style.minHeight).toBe('');
     // Hidden again with no reserve left: the slot closes and two cards keep their own height.
     await user.keyboard('{Delete}');
     expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'silent_source']);
-    expect(floor().style.minHeight).toBe('216px');
+    expect(stack().style.paddingTop).toBe('');
   });
 
   it('hides a card from its Hide button, which stays out of the tab order and shows only on hover or keyboard focus', async () => {
@@ -709,13 +714,14 @@ describe('StartScreen', () => {
     }
   });
 
-  it('hands the skeleton height to the grid box, so the stack holds still and shorter cards keep their own height', () => {
+  it('hands the skeleton height to the stack above the greeting, so shorter cards keep their own height and their 16 px gap', () => {
     // Round 13 polish (re-shoot PW2-5): the skeleton is sized before the questions are
     // known; when the cards land shorter, the grid's box keeps the skeleton's height and
     // the bottom-anchored stack holds still. Cards taller than it grow the grid as before.
-    // Re-shoot PW3-5: the spare height sits in the box ABOVE the grid (`justify-end`), so
-    // the cards keep their natural height instead of stretching (90.7 px for a 72 px card
-    // at 390 px, an empty band under each reason line).
+    // Re-shoot PW3-5: the cards keep their natural height instead of stretching (90.7 px
+    // for a 72 px card at 390 px, an empty band under each reason line). Third re-shoot
+    // PW4-5: the spare height is the stack's top padding, above the greeting, never a box
+    // between the catch-up line and the cards (a 36 px gap there on a phone).
     stackWidth = 338; // one column, three cards
     let cardsTotal = 268;
     vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
@@ -739,26 +745,30 @@ describe('StartScreen', () => {
     view.rerender(loaded(makeInfo({ starters: three })));
     const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
     const floor = () => screen.getByTestId('starter-grid-floor');
-    expect(floor().style.minHeight).toBe('288px');
+    const stack = () => screen.getByTestId('chat-start');
+    // 288 px of skeleton, 268 px of cards: the 20 px go above the greeting.
+    expect(stack().style.paddingTop).toBe('20px');
+    expect(floor().style.minHeight).toBe('');
     expect(floor()).toHaveClass(...START_GRID_FLOOR_CLASS.split(' '));
-    expect(floor().className.split(' ')).toEqual(expect.arrayContaining(['flex', 'flex-col', 'justify-end']));
+    // The box only sets the 16 px gap under the catch-up line: no flex, no spare inside it.
+    expect(floor().className.split(' ')).toEqual(['mt-4']);
     expect(grid().style.minHeight).toBe('');
     expect(grid().parentElement).toBe(floor());
     view.unmount();
 
-    // Taller cards than the skeleton: the grid takes the cards' height.
+    // Taller cards than the skeleton: the grid takes the cards' height and nothing is spare.
     cardsTotal = 308;
     const taller = renderStart({ starters: controller(null, { loading: true }) });
     taller.rerender(loaded(makeInfo({ starters: three.map((st) => ({ ...st })) })));
-    expect(floor().style.minHeight).toBe('308px');
+    expect(stack().style.paddingTop).toBe('');
     taller.unmount();
 
     // Fewer cards than skeletons: they keep their own height (never stretched over a slot
-    // no card took).
+    // no card took) and the stack keeps no spare.
     cardsTotal = 176;
     const fewer = renderStart({ starters: controller(null, { loading: true }) });
     fewer.rerender(loaded(makeInfo({ starters: [NEEDS_HUMAN, NEW_CASES].map((st) => ({ ...st })) })));
-    expect(floor().style.minHeight).toBe('176px');
+    expect(stack().style.paddingTop).toBe('');
     expect(grid().style.minHeight).toBe('');
   });
 
@@ -907,7 +917,9 @@ describe('StartScreen', () => {
     const hostile: ChatStarter = { ...NEEDS_HUMAN, prompt: '<img src=x onerror=alert(1)> and <b>bold</b>?', reason: '<i>x</i>' };
     const { container } = renderStart({ starters: controller(makeInfo({ starters: [hostile] })) });
     expect(container.querySelector('img, b, i')).toBeNull();
-    expect(screen.getByText(hostile.prompt)).toBeInTheDocument();
+    // The question is the exact server string (a short token such as "<b>bold</b>?" may
+    // sit in its own no-wrap span, PW4-1, so it is read from the question element).
+    expect(container.querySelector('[data-starter] [id$="-q"]')?.textContent).toBe(hostile.prompt);
   });
 
   it('marks urgency with a decorative dot only', () => {

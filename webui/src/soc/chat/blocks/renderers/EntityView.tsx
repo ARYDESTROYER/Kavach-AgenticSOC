@@ -7,7 +7,9 @@
  * mono, and never turned into a link (G7). Facts are mono only when the server marks
  * that fact attacker-derived; product values are sans captions. A provider's reputation
  * note is a sans caption unless the block is marked untrusted (it can hold third-party
- * tags), when it stays mono.
+ * tags), when it stays mono. Sans text values (facts, provider names such as
+ * "demo-synthetic", notes) set proportional numerals, whose hyphen is not set wide
+ * (PW4-8); dates and scores keep tabular ones.
  */
 import * as React from 'react';
 import { Check, Copy, Search } from 'lucide-react';
@@ -127,7 +129,7 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
                   {/* Mono only for a fact the server marked attacker-derived (G7); product
                       values ("1 of 1 answered") are prose (browser-QA D7). The indicator
                       itself is already InlineCode above. */}
-                  <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground')}>{f.value}</dd>
+                  <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground proportional-nums')}>{f.value}</dd>
                 </React.Fragment>
               ))}
             </dl>
@@ -149,7 +151,7 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
               const Icon = SEMANTIC_ICON[meta.icon];
               return (
                 <li key={i} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1 text-sm">
-                  <span className="min-w-0 flex-1 truncate">{r.provider}</span>
+                  <span className="min-w-0 flex-1 truncate proportional-nums">{r.provider}</span>
                   <span className={cn('inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-2xs font-medium', meta.cls)}>
                     {Icon ? <Icon className="size-3" aria-hidden /> : null}
                     {meta.label}
@@ -163,7 +165,7 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
                     <span
                       className={cn(
                         'w-full break-words text-muted-foreground',
-                        block.untrusted ? 'font-mono text-2xs' : 'text-xs',
+                        block.untrusted ? 'font-mono text-2xs' : 'text-xs proportional-nums',
                       )}
                     >
                       {r.detail}

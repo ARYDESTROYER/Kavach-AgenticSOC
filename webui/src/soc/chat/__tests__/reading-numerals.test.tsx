@@ -60,7 +60,9 @@ describe('reading surfaces set proportional numerals', () => {
         <StarterCard starter={NEEDS_HUMAN} tabIndex={0} onActivate={vi.fn()} />
       </TooltipProvider>,
     );
-    const question = screen.getByText(NEEDS_HUMAN.prompt);
+    // The question element holds the exact prompt ("case-0042" sits in its own no-wrap span).
+    const question = document.querySelector('[data-starter] [id$="-q"]') as HTMLElement;
+    expect(question.textContent).toBe(NEEDS_HUMAN.prompt);
     expect(question.parentElement).toHaveClass(PROPORTIONAL);
     expect(screen.getByText(NEEDS_HUMAN.reason!).closest(`.${PROPORTIONAL}`)).not.toBeNull();
   });

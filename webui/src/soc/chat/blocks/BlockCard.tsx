@@ -504,11 +504,18 @@ export function BlockCard({
     [block, rebin, rebinOptions],
   );
 
-  // Bare blocks: prose and notes carry no chrome of their own.
+  // Bare blocks: prose and notes carry no chrome of their own. Inside a Brief (a wide
+  // block) they keep the measures the answer's own prose keeps (`lane.ts`): 38rem for
+  // prose, 42rem for a note, so "Next steps" no longer ran 178 characters a line at 1920
+  // (PW4-7). The lane caps top-level ones; print keeps the page's width.
   if (block.type === 'markdown' || block.type === 'callout') {
     return (
       <div
-        className={cn('min-w-0', !staticMode && '[contain-intrinsic-size:auto_80px] [content-visibility:auto]')}
+        className={cn(
+          'min-w-0',
+          !staticMode && '[contain-intrinsic-size:auto_80px] [content-visibility:auto]',
+          nested && !staticMode && (block.type === 'markdown' ? 'max-w-[38rem]' : 'max-w-[42rem]'),
+        )}
         data-block-type={block.type}
         data-block-width={width}
       >

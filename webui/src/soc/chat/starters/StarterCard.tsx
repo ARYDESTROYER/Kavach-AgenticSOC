@@ -7,7 +7,8 @@
  * sits left of the text; the QUESTION itself is the card text (for a `send` card it is
  * exactly what will be sent), wrapping freely and never truncated or clamped (a long id or
  * hash breaks where its line ends, never leaving a one or two character scrap on a line of
- * its own: `softBreakLongTokens`); under it
+ * its own, and a case number or rule id never breaks at its hyphen: `softBreakLongTokens`;
+ * `text-wrap: pretty` keeps a last word from standing alone on its line); under it
  * the muted reason line, after a decorative urgency dot (critical or attention; the
  * words carry the meaning). The accessible name is the question and the description the
  * reason line. Under `prefers-contrast: more` and forced colours the card gains a 1 px
@@ -102,7 +103,7 @@ export const StarterCard = React.forwardRef<HTMLButtonElement, StarterCardProps>
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         {/* Proportional numerals: the question and reason are prose (tabular ones set hyphens wide). */}
         <span className="min-w-0 flex-1 proportional-nums">
-          <span id={questionId} className="block break-words text-base font-medium text-foreground">
+          <span id={questionId} className="block text-pretty break-words text-base font-medium text-foreground">
             {softBreakLongTokens(starter.prompt)}
           </span>
           {reason ? (

@@ -7,7 +7,11 @@
  * Cells are TYPED by the column's enum, never by sniffing the value: badges for
  * severity/verdict/status, `RiskBadge` for risk, a router link for a case id, InlineCode
  * for entities and code, a validated ATT&CK id for mitre, UTC for time, tabular numbers.
- * Untrusted text (log/source-derived, G7) renders mono and is NEVER linkified.
+ * Untrusted text (log/source-derived, G7) renders mono and is NEVER linkified. A short
+ * reference in a cell ("T1078", "CASE-000089", "LP-ES-RISK-1001") never breaks inside,
+ * not even in a mono cell set `break-all` (PW4-1: "T107" / "8"); a longer value still may,
+ * and a table wider than its frame scrolls inside it, with a fade on the side that has
+ * more (PW4-2). Sans text cells are prose: proportional numerals (figures stay tabular).
  *
  * A case list shown as a table ("Show table", Expand) passes its items as `caseRefs`: the
  * Case column then names each case as the list view does, by its number with the internal
@@ -29,9 +33,11 @@ import { DataTable, type DataTableColumn, type SortState } from '@/soc/component
 import { RiskBadge, SeverityBadge, StatusBadge, VerdictBadge } from '@/soc/components/badges';
 import { isSafeCaseId } from '@/soc/case-result-route';
 
+import { softBreakLongTokens as keepShortTokens } from '../../starters/soft-breaks';
 import { CaseHoverArm, CaseLink, shortCaseId, type CaseLinkFacts } from '../context';
 import { DASH, formatUtc, formatValue } from '../format';
 import type { Cell, TableBlock, TableColumn } from '../schema';
+import { TABLE_SCROLL_FADE, useTableScrollEdges } from '../scroll-edges';
 import { CASE_STATUS_KEYS, PATTERN_SOURCES, SEVERITY_KEYS, VERDICT_KEYS } from '../schema';
 
 export const INLINE_ROWS = 10;
@@ -79,7 +85,7 @@ function TableCaseRef({ facts, staticMode }: { facts: CaseLinkFacts; staticMode:
     </span>
   ) : staticMode || short === facts.case_id ? (
     <span className="break-all" data-case-ref="id">
-      {facts.case_id}
+      {staticMode ? facts.case_id : keepShortTokens(facts.case_id, { all: true, breakLong: false })}
     </span>
   ) : (
     <span className="whitespace-nowrap" title={facts.case_id} data-case-ref="id">
@@ -118,6 +124,9 @@ export function TypedCell({
     return <span className="tabular-nums">{formatValue(value, column.unit ?? 'count')}</span>;
   }
   const text = value as string;
+  // Short references stay whole on screen (a long value keeps the cell's own wrapping);
+  // print wraps every cell anywhere instead.
+  const kept = (all: boolean) => (staticMode ? text : keepShortTokens(text, { all, breakLong: false }));
   switch (column.type) {
     case 'severity':
       if (has(SEVERITY_KEYS, text)) return <SeverityBadge severity={text.trim().toLowerCase()} />;
@@ -130,12 +139,12 @@ export function TypedCell({
       break;
     case 'case':
       if (isSafeCaseId(text) && !staticMode) return <CaseLink facts={{ case_id: text }} className="font-mono text-xs" />;
-      return <span className="break-all font-mono text-xs">{text}</span>;
+      return <span className="break-all font-mono text-xs">{kept(true)}</span>;
     case 'entity':
     case 'code':
-      return <InlineCode className="text-xs">{text}</InlineCode>;
+      return <InlineCode className="text-xs">{kept(true)}</InlineCode>;
     case 'mitre':
-      return TECHNIQUE_RE.test(text) ? <InlineCode className="text-xs">{text}</InlineCode> : <span className="font-mono text-xs">{text}</span>;
+      return TECHNIQUE_RE.test(text) ? <InlineCode className="text-xs">{kept(true)}</InlineCode> : <span className="font-mono text-xs">{kept(true)}</span>;
     case 'time':
       return <span className={cn('tabular-nums', !staticMode && 'whitespace-nowrap')}>{formatUtc(text)}</span>;
     default:
@@ -143,10 +152,13 @@ export function TypedCell({
   }
   return (
     <span
-      className={cn(staticMode ? 'whitespace-pre-wrap [overflow-wrap:anywhere]' : 'line-clamp-3 break-words', untrusted && 'font-mono text-xs')}
+      className={cn(
+        staticMode ? 'whitespace-pre-wrap [overflow-wrap:anywhere]' : 'line-clamp-3 break-words',
+        untrusted ? 'font-mono text-xs' : 'proportional-nums',
+      )}
       title={!staticMode && text.length > 80 ? text : undefined}
     >
-      {text}
+      {kept(false)}
     </span>
   );
 }
@@ -182,6 +194,9 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(25);
   const [viewAll, setViewAll] = React.useState(false);
+  // A table wider than its frame scrolls inside it, faded on the side with more (PW4-2).
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  useTableScrollEdges(rootRef, !staticMode, block);
 
   const order = React.useMemo(() => {
     if (!sort) return block.rows.map((_, i) => i);
@@ -249,7 +264,7 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
   );
 
   return (
-    <div className="min-w-0" data-testid="block-table" data-static={staticMode || undefined}>
+    <div ref={rootRef} className={cn('min-w-0', !staticMode && TABLE_SCROLL_FADE)} data-testid="block-table" data-static={staticMode || undefined}>
       {hasCase && !staticMode ? <CaseHoverArm>{table}</CaseHoverArm> : table}
       {!paged && !staticMode && order.length > INLINE_ROWS ? (
         <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">

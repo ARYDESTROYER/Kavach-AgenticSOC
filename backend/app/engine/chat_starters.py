@@ -630,12 +630,22 @@ def starter_from_template(
     ``key_ref`` names what the card is about for its opaque ``key`` when that is not
     its reference (the campaign card names one of the campaign's cases but is keyed
     per campaign, so novelty and "Hide for a day" are per campaign); it is never shown,
-    sent or put in ``ref``."""
+    sent or put in ``ref``.
+
+    The length rule (``chat_starter_text.QUESTION_REF_WORD_MAX``, polish round PB5)
+    holds for every reference kind: a reference with a word longer than it is refused
+    (``ValueError``), and the family words the card without it or names the item by a
+    shorter reference. The one exception is a case without a display number that fits
+    (a deployment with case numbering off names a case by its 37-character internal
+    id): no wording without the reference names one case among several, so the case
+    keeps its id rather than the card being lost."""
     spec = text.template(template_id)
     prompt = text.render_question(template_id, slots)
     ref_slot = spec.ref_slot
     if ref_slot is not None:
         value = (slots or {}).get(ref_slot)
+        if ref_slot != "case" and not text.ref_fits_question(value):
+            raise ValueError("the reference does not fit the question line")
         if ref is None:
             ref = ChatStarterRef(kind=ref_slot, value=value)
         elif ref.kind != ref_slot or ref.value != value:
@@ -1191,9 +1201,13 @@ class _Build:
 
     async def case_value(self, case: Any) -> str | None:
         """The case reference a card names: its display number when ``get_case`` can
-        resolve that number, else its id; ``None`` when neither passes the grammar."""
+        resolve that number, else its id; ``None`` when neither passes the grammar.
+        Under the PB5 length rule the first of the two that fits the question line wins
+        (a long custom number gives way to a short id); when neither fits, the number,
+        else the id (the case kind's last resort, ``starter_from_template``)."""
         number = getattr(case, "case_number", "") or ""
         case_id = getattr(case, "case_id", "") or ""
+        usable: list[str] = []
         if number and text.ref_value("case", number) == number:
             if self._scan_cutoff is None:
                 self._scan_cutoff = asyncio.ensure_future(self._cutoff())
@@ -1203,8 +1217,10 @@ class _Build:
                 cutoff = self.now
             created = _ts(getattr(case, "created_at", None))
             if cutoff is None or (created is not None and created > cutoff):
-                return number
-        return case_id if case_id and text.ref_value("case", case_id) == case_id else None
+                usable.append(number)
+        if case_id and text.ref_value("case", case_id) == case_id:
+            usable.append(case_id)
+        return next((v for v in usable if text.ref_fits_question(v)), usable[0] if usable else None)
 
     def close(self) -> None:
         for task in (self._population, self._scan_cutoff):
@@ -1664,9 +1680,18 @@ async def _family_noisy_rule(b: _Build) -> _Built:
             continue  # this id cannot be named; a smaller rule may still qualify
         multiplier, level = family_urgency("noisy_rule")
         reason = _first_reason(b, "noisy_rule", [("default", {"pct": _round_half_up(100 * n / m)})])
-        starter = b.card("noisy_rule", {"rule": rule, "n": n, "m": m}, reason=reason, urgency=level)
+        starter = None
+        if text.ref_fits_question(rule):
+            starter = b.card("noisy_rule", {"rule": rule, "n": n, "m": m}, reason=reason, urgency=level)
         if starter is None:
-            continue  # the question would not fit: try the next qualifying rule
+            # The id is too long for the question line (an Elastic rule id is a
+            # 36-character UUID), or the named question would not fit: the count names
+            # the same rule, the one that created n of the m cases in the window (polish
+            # round PB5). The card stays keyed per rule.
+            starter = b.card("noisy_rule_unnamed", {"n": n, "m": m}, reason=reason, urgency=level,
+                             key_ref=ChatStarterRef(kind="rule", value=rule))
+        if starter is None:
+            continue
         return _Built(StarterCandidate("noisy_rule", starter, urgency=multiplier, urgency_level=level))
     return _Built()
 
@@ -1718,11 +1743,15 @@ async def _campaign_case(b: _Build, case_ids: Sequence[str]) -> str | None:
     floor = datetime.min.replace(tzinfo=timezone.utc)
     newest = sorted((case for case in members.values() if case is not None),
                     key=lambda c: (_ts(getattr(c, "created_at", None)) or floor, str(c.case_id)), reverse=True)
+    fallback: str | None = None
     for case in newest[:CAMPAIGN_CASE_CANDIDATES]:
         value = await b.case_value(case)
-        if value is not None:
+        if value is not None and text.ref_fits_question(value):
             return value
-    return None
+        fallback = fallback or value
+    # Only internal ids too long for the question line (case numbering off): the
+    # newest of them, the case kind's last resort (``starter_from_template``).
+    return fallback
 
 
 async def _family_campaign(b: _Build) -> _Built:
@@ -1831,16 +1860,19 @@ def _source_reasons(problems: Sequence[Mapping[str, Any]], age: str | None) -> l
 
 def _quiet_source_ref(row: Mapping[str, Any], others: list[Mapping[str, Any]]) -> str | None:
     """The value a one-source quiet card names its source by (SPEC-chat §10.2): the
-    display name when it passes the ``source`` grammar and names only this row, else
-    the source id. The chat tools match an id before a display name (``source_health``,
+    display name when it passes the ``source`` grammar, names only this row and fits the
+    question line (the PB5 length rule), else the source id when it passes and fits;
+    ``None`` when neither does (the card then asks about the one quiet source without
+    naming it). The chat tools match an id before a display name (``source_health``,
     and ``plan_sources`` for ``search_logs`` and ``log_stats``), so a name that is also
     another row's id, or that another row shares, would answer about another source."""
     name = row.get("source_name")
-    if isinstance(name, str) and text.ref_value("source", name) == name and not any(
-            name in (other.get("source_id"), other.get("source_name")) for other in others):
+    if isinstance(name, str) and text.ref_value("source", name) == name and text.ref_fits_question(name) \
+            and not any(name in (other.get("source_id"), other.get("source_name")) for other in others):
         return name
     sid = row.get("source_id")
-    return sid if isinstance(sid, str) and text.ref_value("source", sid) == sid else None
+    return sid if isinstance(sid, str) and text.ref_value("source", sid) == sid and text.ref_fits_question(sid) \
+        else None
 
 
 async def _family_silent_source(b: _Build) -> _Built:
@@ -1868,13 +1900,20 @@ async def _family_silent_source(b: _Build) -> _Built:
         row = problems[0]
         value = _quiet_source_ref(row, [r for r in (rows or []) if isinstance(r, dict) and r is not row])
         clause = text.clause_quiet_sources(1)
-        if value is None:
-            return _Built(clause=clause)
         age = text.format_age(longest) if longest is not None else None
-        if age is not None:
-            clause = text.clause_quiet_source(value, age) or clause
-        reason = _first_reason(b, "silent_source", _source_reasons(problems, age))
-        starter = b.card("silent_source", {"source": value}, reason=reason, urgency=level)
+        if value is None:
+            # No name or id that fits the question line: "which log source has gone
+            # quiet" names the one quiet source just as well (PB5), keyed per source.
+            sid = row.get("source_id")
+            key_ref = (ChatStarterRef(kind="source", value=sid)
+                       if isinstance(sid, str) and text.ref_value("source", sid) == sid else None)
+            reason = _first_reason(b, "silent_source_unnamed", _source_reasons(problems, age))
+            starter = b.card("silent_source_unnamed", reason=reason, urgency=level, key_ref=key_ref)
+        else:
+            if age is not None:
+                clause = text.clause_quiet_source(value, age) or clause
+            reason = _first_reason(b, "silent_source", _source_reasons(problems, age))
+            starter = b.card("silent_source", {"source": value}, reason=reason, urgency=level)
     else:
         clause = text.clause_quiet_sources(len(problems))
         age = text.format_age(longest) if longest is not None else None

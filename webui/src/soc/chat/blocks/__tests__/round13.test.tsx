@@ -451,7 +451,11 @@ describe('case references (T14)', () => {
     const number = within(list).getByText('CASE-0042');
     expect(number).toHaveClass('font-mono');
     expect(number).toHaveAttribute('title', 'case-6b22d1999bf94f3a91c10ab2a23e6e7c');
-    expect(within(list).getByText('Brute force on vpn-gw-2')).toBeInTheDocument();
+    // The title is whole; its host name never breaks at a hyphen (PW4-1: its own no-wrap span).
+    const titleRef = list.querySelector('[data-case-ref="title"]') as HTMLElement;
+    expect(titleRef.textContent).toBe('Brute force on vpn-gw-2');
+    expect(Array.from(titleRef.querySelectorAll('[data-kept-token]'), (n) => n.textContent)).toEqual(['vpn-gw-2']);
+    expect(number).toHaveClass('whitespace-nowrap');
     // With a number, the internal id is no longer a visible line under each row.
     expect(within(list).queryByText('case-6b22d1999bf94f3a91c10ab2a23e6e7c')).toBeNull();
     // A case with neither a number nor a title is named by its whole id, which wraps.
@@ -493,13 +497,13 @@ describe('case references (T14)', () => {
     expect(links[0].textContent).not.toBe(links[1].textContent);
     expect(links[0]).toHaveClass('break-words');
     expect(links[0].className).not.toMatch(/truncate/);
-    expect(within(rows[0]).getByText(title)).toBeInTheDocument();
+    expect(rows[0].querySelector('[data-case-ref="title"]')?.textContent).toBe(title);
   });
 
   it('names an indicator’s related case by its title, with its id as a muted secondary', () => {
     render(<AnswerBlocks blocks={[galleryBlock('ioc')]} messageId="m1" />);
     const entity = screen.getByTestId('block-entity');
-    expect(within(entity).getByText('Brute force against vpn-gw-2')).toBeInTheDocument();
+    expect(entity.querySelector('[data-case-ref="title"]')?.textContent).toBe('Brute force against vpn-gw-2');
     const id = entity.querySelector('[data-case-ref="id"]') as HTMLElement;
     expect(id).toHaveTextContent('case-1052');
     expect(id).toHaveClass('text-muted-foreground');

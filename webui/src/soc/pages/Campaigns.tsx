@@ -580,9 +580,11 @@ function CampaignDetailSheet({
         {campaign ? (
           <div className="flex h-full flex-col">
             <SheetHeader>
-              <SheetTitle className="flex items-center gap-2">
-                <Network className="h-5 w-5 text-primary" aria-hidden />
-                {campaign.name || campaign.id}
+              {/* The icon keeps its size beside a title that wraps (PW4-3: at 390 px a long
+                  id squeezed it to 0 px). */}
+              <SheetTitle className="flex items-start gap-2">
+                <Network className="mt-1 h-5 w-5 shrink-0 text-primary" aria-hidden />
+                <span className="min-w-0 break-words">{campaign.name || campaign.id}</span>
               </SheetTitle>
               <SheetDescription>
                 {fmtNumber(campaign.case_count)} case
@@ -591,7 +593,8 @@ function CampaignDetailSheet({
               </SheetDescription>
             </SheetHeader>
 
-            <div className="mt-4 flex flex-wrap items-center gap-2">
+            {/* The body is inset like the sheet header (p-6): it started 1 px from the edge (PW4-3). */}
+            <div className="mt-4 flex flex-wrap items-center gap-2 px-6">
               <Badge variant={statusVariant(campaign.status)}>
                 {humanizeToken(CAMPAIGN_STATUS_LABELS[campaign.status] ?? campaign.status)}
               </Badge>
@@ -600,7 +603,7 @@ function CampaignDetailSheet({
               ) : null}
             </div>
 
-            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-muted-foreground">
+            <div className="mt-4 grid grid-cols-2 gap-3 px-6 text-xs text-muted-foreground">
               <div>
                 <div className="font-medium text-foreground">First seen</div>
                 {humanizeAge(campaign.first_seen)}
@@ -613,7 +616,7 @@ function CampaignDetailSheet({
 
             <Separator className="my-4" />
 
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-6">
               {/* Shared entities */}
               <section className="space-y-2">
                 <h3 className="text-sm font-semibold text-foreground">Shared entities</h3>

@@ -260,7 +260,7 @@ export function ReportView({ block, blockIndex, renderLeaf, staticMode = false, 
   return (
     <div className="flex min-w-0 flex-col gap-3" data-testid="block-report" data-layout={layout} data-template={block.template}>
       {subtitleRest ? (
-        <p className="text-sm text-muted-foreground" data-testid="report-subtitle">
+        <p className={cn('text-sm text-muted-foreground proportional-nums', !staticMode && 'max-w-[38rem]')} data-testid="report-subtitle">
           {subtitleRest}
         </p>
       ) : null}
@@ -341,7 +341,9 @@ export function ReportView({ block, blockIndex, renderLeaf, staticMode = false, 
             {s.summary ? (
               <p
                 className={cn(
-                  'whitespace-pre-line break-words',
+                  // Prose at the answer's prose measure, however wide the Brief (PW4-7).
+                  'whitespace-pre-line break-words proportional-nums',
+                  !staticMode && 'max-w-[38rem]',
                   lead && si === 0 ? 'text-md text-foreground' : 'text-sm text-muted-foreground',
                 )}
                 data-testid={lead && si === 0 ? 'report-lead' : undefined}

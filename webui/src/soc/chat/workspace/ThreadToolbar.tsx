@@ -31,6 +31,9 @@
  *
  * Width (Round 12 SPEC D12): the viewer's conversation width, Comfortable / Wide /
  * Full width, offered on drafts too (it is a viewer preference, not a thread action).
+ * The host passes it only where a choice changes the lane (`laneWidthChoiceMatters`,
+ * PW4-9): on a phone, or beside a docked rail at 1440, all three are the same lane, so
+ * the menu has no View group there.
  *
  * Inline rename returns focus to the title when it ends from the keyboard (Enter /
  * Escape); a blur commit leaves focus wherever the reader moved it.

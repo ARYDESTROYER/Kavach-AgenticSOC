@@ -60,7 +60,6 @@ import {
 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
-import { formatTimestamp } from '@/lib/format';
 import type { ChatConversationSearchHit, ChatConversationSummary } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -79,6 +78,7 @@ import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 import { isChatActivityViewed, useChatActivity } from '@/soc/chat-activity/activity';
 import { IconButton, type IconButtonProps } from '@/soc/components/IconButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
+import { formatUtc } from '../blocks/format';
 import { UNTITLED_CONVERSATION } from '../chat-api';
 import { shortcutLabel, type ShortcutKey } from '../shortcuts/shortcut-list';
 import { isPendingThreadRow, type ChatRetentionInfo } from '../useChatConversations';
@@ -236,7 +236,7 @@ export function railTitleClass(inSheet: boolean): string {
 function rowName(conversation: ChatConversationSummary): string {
   const count = conversation.message_count;
   const status = rowActivity(conversation);
-  const head = `${conversation.title || UNTITLED_CONVERSATION}${status ? `, ${ROW_STATUS_TEXT[status]}` : ''}, ${formatTimestamp(conversation.updated_at)}`;
+  const head = `${conversation.title || UNTITLED_CONVERSATION}${status ? `, ${ROW_STATUS_TEXT[status]}` : ''}, ${formatUtc(conversation.updated_at)}`;
   // The New chat's temporary row (T21) holds the question on screen but nothing saved
   // yet: no count, which would read "0 messages".
   if (isPendingThreadRow(conversation)) return head;
@@ -678,12 +678,20 @@ export function HistoryRail({
                                   </span>
                                 </button>
                               </TooltipTrigger>
-                              {/* The full title (rows truncate) and the exact date (SPEC §10.2). */}
-                              <TooltipContent side="right" className="max-w-xs break-words">
+                              {/* The full title (rows truncate) and the exact date (SPEC §10.2), in
+                                  the answers' form ("2026-10-23 15:45 UTC"). In the History sheet
+                                  the row fills the width, so the tip opens below it, kept 16 px
+                                  inside the screen like the other popovers (PW4-6). */}
+                              <TooltipContent
+                                side={inSheet ? 'bottom' : 'right'}
+                                align={inSheet ? 'start' : 'center'}
+                                collisionPadding={16}
+                                className="max-w-xs break-words"
+                              >
                                 <span className="block font-medium">{conversation.title || UNTITLED_CONVERSATION}</span>
-                                <span className="block text-muted-foreground">
+                                <span className="block tabular-nums text-muted-foreground">
                                   {status ? `${ROW_STATUS_TEXT[status].replace(/^./, (c) => c.toUpperCase())} · ` : ''}
-                                  {formatTimestamp(conversation.updated_at)}
+                                  {formatUtc(conversation.updated_at)}
                                 </span>
                               </TooltipContent>
                             </Tooltip>
@@ -842,7 +850,7 @@ function SearchResults({ search, headingPrefix, inSheet }: { search: HistoryRail
                     ) : null}
                   </button>
                 </TooltipTrigger>
-                <TooltipContent side="right" className="max-w-xs break-words">
+                <TooltipContent side={inSheet ? 'bottom' : 'right'} align={inSheet ? 'start' : 'center'} collisionPadding={16} className="max-w-xs break-words">
                   {title}
                 </TooltipContent>
               </Tooltip>

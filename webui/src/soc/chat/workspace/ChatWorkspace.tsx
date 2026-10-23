@@ -41,7 +41,7 @@ import { BudgetAlert } from '../composer/BudgetAlert';
 import { Composer, type ComposerHandle } from '../composer/Composer';
 import { pickPromptFromLibrary } from '../composer/library-events';
 import { EmptyState } from '../empty/EmptyState';
-import { LANE_COL, LANE_GRID, laneVars } from '../message/lane';
+import { LANE_COL, LANE_GRID, laneVars, laneWidthChoiceMatters } from '../message/lane';
 import { NoticeCallout } from '../message/NoticeCallout';
 import { Transcript } from '../message/Transcript';
 import { announcedLookupBound, useTurnAnnouncer } from '../message/useTurnAnnouncer';
@@ -616,7 +616,9 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           onExport={(format) => activeId && void exportThread(activeId, format)}
           onDelete={() => summary && void conv.remove(summary)}
           shortcuts={{ newChat: CHAT_KEYSHORTCUTS.newChat, history: CHAT_KEYSHORTCUTS.toggleHistory }}
-          laneWidth={{ value: laneWidth.width, onChange: laneWidth.setWidth }}
+          // The widths only where one would change the lane (PW4-9: at 390 px they all gave
+          // the same lane).
+          laneWidth={laneWidthChoiceMatters(geometry.conversationWidth) ? { value: laneWidth.width, onChange: laneWidth.setWidth } : null}
         />
 
         <Transcript

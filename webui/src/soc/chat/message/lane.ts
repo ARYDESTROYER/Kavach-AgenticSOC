@@ -188,6 +188,19 @@ export const LANE_WIDTH_HINT: Record<ChatLaneWidth, string> = {
   full: 'Fills the space (default)',
 };
 
+/** The narrowest lane cap (Comfortable, 64rem) in px. */
+export const LANE_CHOICE_FROM_PX = 1024;
+
+/**
+ * Whether a width choice changes anything at a conversation width (third re-shoot PW4-9):
+ * only when the lane (the conversation less its two gutters) is wider than Comfortable's
+ * 64rem cap. Narrower (a phone, a docked rail at 1440), Comfortable, Wide and Full width
+ * all give the same lane, so the thread menu leaves its View group out.
+ */
+export function laneWidthChoiceMatters(conversation: number): boolean {
+  return conversation - 2 * laneGutterPx(conversation) > LANE_CHOICE_FROM_PX;
+}
+
 export function isLaneWidth(value: unknown): value is ChatLaneWidth {
   return value === 'comfortable' || value === 'wide' || value === 'full';
 }

@@ -3147,6 +3147,100 @@ def _deep_entity(question: str) -> tuple[str, str] | None:
     return None
 
 
+#: An investigation of what one named thing did (polish round PB5): "investigate user
+#: pnair", "look into host dc01", "the activity of user pnair", "pnair's activity",
+#: "what did user pnair do yesterday". Such a question is about that entity, never
+#: about whichever case happens to be newest.
+_INVESTIGATION_CUE_RE = re.compile(
+    r"\binvestigat\w*\b|\b(?:look|looking|dig|digging|delve|delving) into\b|"
+    r"\b(?:activit(?:y|ies)|behaviou?rs?|actions?|movements?)\s+(?:of|for|by|from)\b|"
+    r"'s\s+(?:recent\s+)?(?:activit(?:y|ies)|behaviou?rs?|actions?|movements?)\b|"
+    r"\bwhat (?:did|has|have|had|was|is|were)\b.{1,80}?\b(?:do|done|doing|been up to|up to)\b")
+#: "domain bad.example", "hash 44d8…": a kind word for an indicator kind.
+_INDICATOR_KIND_WORD_RE = re.compile(
+    r"\b(?:domain(?: name)?|(?:file )?hash|sha-?256|sha-?1|md5|url)\s+[\"'`]?(\S+?)[\"'`]?(?=[\s,;:?!]|\.?$)",
+    re.IGNORECASE)
+#: An untyped actor named by its activity: "pnair's activity", "the activity of pnair",
+#: "what did pnair do", or the object of the verb itself: "investigate pnair".
+_ACTOR = r"[\"'`]?([A-Za-z0-9][A-Za-z0-9._@\\-]{1,62}?)[\"'`]?"
+_UNTYPED_SUBJECT_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(rf"(?<![\w.@\\-]){_ACTOR}'s\s+(?:recent\s+)?(?:activit|behaviou?r|action|movement|event|log|"
+               r"log-?in|log-?on|sign-?in|session|traffic)", re.IGNORECASE),
+    re.compile(rf"\b(?:activit(?:y|ies)|behaviou?rs?|actions?|movements?)\s+(?:of|for|by|from)\s+(?:the\s+)?"
+               rf"{_ACTOR}(?=$|[\s?.!,;:])", re.IGNORECASE),
+    re.compile(rf"\bwhat\s+(?:did|has|have|had|was|is)\s+{_ACTOR}\s+(?:do|done|doing|been doing|been up to|up to)\b",
+               re.IGNORECASE),
+    re.compile(rf"^\s*(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:investigate|look into|dig into|delve into)\s+"
+               rf"{_ACTOR}(?=\s*$|\s*[?.!,;:]|\s+(?:in|over|during|since|from|for|today|tonight|yesterday|this|last|"
+               r"and|between|on|before|after|until)\b)", re.IGNORECASE),
+)
+#: Words that never name an actor of an investigation: pronouns, quantities, time
+#: words, the people of the console and the record nouns a case question names.
+_SUBJECT_NOT_NAME = frozenset({
+    "everything", "anything", "something", "nothing", "everyone", "anyone", "someone", "nobody", "everybody",
+    "further", "more", "deeper", "closely", "carefully", "manually", "now", "today", "tonight", "yesterday",
+    "overnight", "again", "first", "next", "later", "agent", "agents", "analyst", "analysts", "people", "admin",
+    "admins", "ai", "llm", "model", "models", "team", "soc", "system", "systems", "network", "console", "chat",
+    "i", "escalation", "escalations", "ticket", "tickets", "investigation", "investigations", "detection",
+    "detections", "spike", "spikes", "anomaly", "anomalies", "outage", "outages", "queue", "backlog",
+    "week", "month", "day", "days", "hour", "hours", "morning", "evening", "night", "weekend",
+})
+
+
+def _actor_word(value: str) -> bool:
+    low = value.lower().strip(".,;:")
+    return bool(low) and not (
+        low in _SUBJECT_NOT_NAME or low in _TARGET_STOP or low in _TARGET_NOT_NAME or low in _DEEP_STOP
+        or low in _LOG_TERM_GENERIC or low in _DEEP_KINDS or low.isdigit() or _keyword(low) is not None
+        or _metric(low) is not None or _CASE_ID_RE.fullmatch(low) is not None)
+
+
+def _investigated(question: str, lowered: str) -> tuple[str, str] | None:
+    """``(kind, value)`` of the entity an investigation names (polish round PB5), or
+    None. The first one named wins: a host or user after its kind word ("user pnair",
+    "the host srv-db-01"), an IP, URL, hash or domain by its shape or after its kind
+    word, else a name of no stated kind ("pnair's activity", "investigate pnair"),
+    whose kind is ``keyword``. A question with no investigation cue, or a failed sign-in
+    question (the brute-force plan reads those), names none here."""
+    if not _INVESTIGATION_CUE_RE.search(lowered) or _BRUTE_RE.search(lowered):
+        return None
+    found: list[tuple[int, str, str]] = []
+    spans: list[tuple[int, int]] = []
+    for match in _DEEP_ENTITY_RE.finditer(question):
+        kind = _DEEP_KINDS.get(match.group(1).lower(), "host")
+        if kind == "ip":
+            continue  # an address is read by its shape below
+        named = _target_after(question, match.start(1), match.start(2), match.group(2))
+        if named is None:
+            continue
+        at, value = named
+        if value.lower().endswith("'s"):
+            value = value[:-2]
+        found.append((at, kind, value))
+        spans.append((at, at + len(value)))
+    indicator = _indicator(question, lowered)
+    if indicator is None:
+        for match in _INDICATOR_KIND_WORD_RE.finditer(question):
+            shaped = _indicator(match.group(1), "check " + match.group(1).lower())
+            if shaped is not None:
+                indicator = shaped
+                break
+    if indicator is not None:
+        value, kind = indicator
+        at = question.lower().find(value.lower())
+        at = at if at >= 0 else len(question)
+        if not any(start <= at < end for start, end in spans):
+            found.append((at, kind, value))
+    if found:
+        _at, kind, value = min(found)
+        return kind, value
+    for pattern in _UNTYPED_SUBJECT_RES:
+        match = pattern.search(question)
+        if match is not None and _actor_word(match.group(1)):
+            return "keyword", match.group(1).strip(".,;:")
+    return None
+
+
 #: Trend subjects: what a "trend" or "over time" question is about.
 _TREND_SUBJECTS: tuple[tuple[str, str], ...] = (
     (r"\bmtt[adr]\b|\bmean time\b|\bresponse times?\b|\btime to (?:acknowledge|resolve|detect|respond)\b|"
@@ -3480,6 +3574,17 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         if entity is not None:
             # No window named: the plan defaults to the last 30 days (the chip wins).
             return ask("deep", entity=entity)
+    investigated = None if view.case_scoped else _investigated(q, low)
+    if investigated is not None:
+        # An investigation that names an entity is about that entity (polish round
+        # PB5): a host or user gets the in-depth look (logs, its cases, decisions,
+        # ATT&CK), an indicator or a name of no stated kind the hunt (reputation where
+        # the kind has one, its log events, the cases that carry it). A case is chosen
+        # only when the question names one (the rules above).
+        kind, value = investigated
+        if kind in ("host", "user"):
+            return ask("deep", entity=(kind, value))
+        return ask("hunt", indicator=(value, kind))
     indicator = _indicator(q, low)
     if indicator:
         return ask("hunt", indicator=indicator)
@@ -4852,8 +4957,9 @@ _CASE_CHIP_INTENTS: dict[str, str] = {
 _STARTER_INTENTS: dict[str, str] = {
     "my_cases": "my_cases", "sla_breached": "sla", "sla_close": "sla", "new_cases": "new_since",
     "new_cases_one": "new_since", "volume_spike": "volume", "volume_drop": "volume", "noisy_rule": "noisy_rule",
-    "campaign": "campaign", "campaign_by_id": "campaign", "campaign_latest": "campaign",
-    "silent_source": "source", "silent_sources": "source", "approvals": "approvals",
+    "noisy_rule_unnamed": "noisy_rule", "campaign": "campaign", "campaign_by_id": "campaign",
+    "campaign_latest": "campaign", "silent_source": "source", "silent_source_unnamed": "source",
+    "silent_sources": "source", "approvals": "approvals",
     "approvals_one": "approvals", "platform": "auto_close", "triage": "triage",
 }
 #: Starters about ONE case the console expected to be open: the answer says so plainly
@@ -5096,13 +5202,57 @@ def _volume_usual(view: PromptView) -> int | None:
     return int(windows[3])
 
 
+#: The new cases of the last 24 hours by rule, the lookup a noisy-rule card without
+#: its rule's id (``noisy_rule_unnamed``, polish round PB5) finds the rule with.
+_NOISY_BY_RULE: dict[str, Any] = {"window": "now-24h", "group_by": ["rule"], "top_n": 10}
+
+
+@dataclass(frozen=True)
+class _RulePick:
+    """The rule a noisy-rule card without its id is about (polish round PB5)."""
+
+    rule: str
+    count: float
+    tied: tuple[str, ...]      # other rules with the same count (the answer says so)
+    by_count: bool             # it created exactly the number of cases the card counted
+
+
+def _noisy_rule_pick(view: PromptView, ask: Ask) -> _RulePick | None:
+    """The rule a noisy-rule card that does not name its rule is about: the rule that
+    created the number of cases the card counted (``n``), else, when the counts have
+    moved, the rule that created the most now. Rules with the same count are kept as
+    ``tied`` so the answer never presents one of them as the only one."""
+    by_rule = view.ok("case_stats", where=lambda r: r.input == _NOISY_BY_RULE)
+    groups = [(str(_dig(g, "key", "rule") or ""), _num(_dig(g, "metrics", "count")) or 0)
+              for g in (_stats_groups(by_rule.obs) if by_rule else []) if g.get("bucket") is None]
+    groups = [(rule, n) for rule, n in groups if rule]
+    if not groups:
+        return None
+    said = _num(ask.slot("n"))
+    matching = [(rule, n) for rule, n in groups if said is not None and n == said]
+    pool = matching or [(rule, n) for rule, n in groups if n == max(c for _r, c in groups)]
+    rule, count = pool[0]
+    return _RulePick(rule=rule, count=count, tied=tuple(r for r, _n in pool[1:]), by_count=bool(matching))
+
+
 def _plan_noisy_rule(view: PromptView, ask: Ask, done: int) -> list[Call]:
-    if done:
+    named = ask.slot("rule") is not None
+    if named and done:
         return []
-    rule = str(ask.slot("rule") or "")
-    return [Call("case_stats", {"window": "now-24h", "rule": rule, "group_by": ["verdict"]}),
-            Call("case_stats", {"window": "now-24h"}),
-            Call("search_cases", {"window": "now-24h", "rule": rule, "sort_field": "risk_score", "limit": 5})]
+    if not named and done == 0:
+        # The card counted the rule without naming it: find it by its count first.
+        return [Call("case_stats", dict(_NOISY_BY_RULE)), Call("case_stats", {"window": "now-24h"})]
+    if not named and done > 1:
+        return []
+    pick = _noisy_rule_pick(view, ask) if not named else None
+    if not named and pick is None:
+        return []
+    rule = str(ask.slot("rule") or "") if named or pick is None else pick.rule
+    calls = [Call("case_stats", {"window": "now-24h", "rule": rule, "group_by": ["verdict"]}),
+             Call("search_cases", {"window": "now-24h", "rule": rule, "sort_field": "risk_score", "limit": 5})]
+    if named:
+        calls.insert(1, Call("case_stats", {"window": "now-24h"}))
+    return calls
 
 
 def _campaign_row(view: PromptView, campaign_id: Any) -> Mapping[str, Any] | None:
@@ -11948,14 +12098,31 @@ def _final_noisy_rule(view: PromptView, ask: Ask) -> Final | None:
     verdicts = view.ok("case_stats", where=lambda r: r.input.get("group_by") == ["verdict"])
     everything = view.ok("case_stats", where=lambda r: not r.input.get("group_by") and not r.input.get("rule"))
     cases = view.ok("search_cases")
+    named = ask.slot("rule") is not None
+    pick = None if named else _noisy_rule_pick(view, ask)
+    if not named and pick is None:
+        if view.ok("case_stats", where=lambda r: r.input == _NOISY_BY_RULE) is None:
+            return None
+        # The card counted a rule without naming it, and no rule created a case since.
+        return Final(body=["No detection rule created a case in the last 24 hours."])
     if verdicts is None and cases is None:
         return None
-    rule = _code(ask.slot("rule"))
+    rule = _code(ask.slot("rule") if pick is None else pick.rule)
     n = _num(_dig(verdicts.obs, "totals", "count")) if verdicts else _num(cases.obs.get("count"))
     m = _num(_dig(everything.obs, "totals", "count")) if everything else None
     body: list[str] = []
     if not n:
         body.append(f"Detection rule {rule} created no case in the last 24 hours.")
+    elif pick is not None and pick.tied:
+        # Several rules created that many cases: all of them are named, and the answer
+        # says which one it goes on with (tie wording, polish round PB5).
+        rules = [rule] + [_code(r) for r in pick.tied[:3]] + (
+            [_plural(len(pick.tied) - 3, "other rule")] if len(pick.tied) > 3 else [])
+        share = f" ({_dec(n * 100 / m)}% each)" if m else ""
+        of = f" of the {_count(m)}" if m else ""
+        tie = "tied at that count" if pick.by_count else "tied for the most"
+        body.append(f"Detection rules {_join(rules)} each created **{_plural(n, 'case')}**{of} in the last 24 "
+                    f"hours{share}, {tie}; the rest of this answer is about {rule}, listed first.")
     else:
         lead = f"Detection rule {rule} created **{_plural(n, 'case')}**"
         if m:
@@ -11963,9 +12130,15 @@ def _final_noisy_rule(view: PromptView, ask: Ask) -> Final | None:
         else:
             lead += " in the last 24 hours"
         body.append(lead + ".")
-    moved = _counts_moved(ask.slot("n"), n, "case")
-    if moved:
-        body.append(moved)
+    if pick is not None and not pick.by_count and _num(ask.slot("n")) is not None:
+        # No rule has the count the card showed now, so this may be a different rule:
+        # never presented as the same rule's count having moved (as PB4's campaigns).
+        body.append(f"No rule has exactly {_plural(ask.slot('n'), 'case')} in the last 24 hours now, the count the "
+                    f"suggestion showed; {rule} is the rule with the most.")
+    else:
+        moved = _counts_moved(ask.slot("n"), n, "case")
+        if moved:
+            body.append(moved)
     groups = {str(_dig(g, "key", "verdict") or ""): _num(_dig(g, "metrics", "count")) or 0
               for g in (_stats_groups(verdicts.obs) if verdicts else [])}
     false = next((v for k, v in groups.items() if "false" in k.lower()), 0)
@@ -12555,7 +12728,7 @@ def _asked_sources(view: PromptView) -> list[str]:
     if template == "silent_source":
         wanted = str(slots.get("source") or "")
         return [str(s.get("name")) for s in rows if wanted in (s.get("source_id"), s.get("name")) and s.get("name")]
-    if template == "silent_sources":
+    if template in ("silent_sources", "silent_source_unnamed"):
         return [str(s.get("name")) for s in rows if (s.get("silent") or s.get("last_poll_failed")) and s.get("name")]
     return []
 
@@ -12743,7 +12916,8 @@ _STARTER_TITLES: dict[str, str] = {
     "sla_close": "Cases near their response target", "sla_close_one": "Case near its response target",
     "new_cases": "New cases to triage", "new_cases_one": "New cases to triage",
     "volume_spike": "Rise in new cases", "volume_drop": "Drop in new cases", "noisy_rule": "Noisy detection rule",
-    "campaign": "Campaign links", "silent_source": "Quiet log source", "silent_sources": "Quiet log sources",
+    "noisy_rule_unnamed": "Noisy detection rule", "campaign": "Campaign links", "silent_source": "Quiet log source",
+    "silent_source_unnamed": "Quiet log source", "silent_sources": "Quiet log sources",
     "budget_ai": "Today's AI spend", "budget_chat": "Today's chat spend", "shift_start": "Shift brief",
     "shift_handoff": "Shift handoff", "weekly": "Last week compared", "hunt": "ATT&CK technique hunt",
     "approvals": "Changes waiting for approval", "approvals_one": "Change waiting for approval",
@@ -12862,7 +13036,7 @@ _TITLE_WINDOW_SPECS = {"today": "today", "this_week": "this week", "this_month":
 #: An indicator or entity KIND in a title (the value never is).
 _TITLE_KINDS = {"ip": "IP address", "src_ip": "IP address", "source_ip": "IP address", "domain": "Domain",
                 "url": "URL", "hash": "File hash", "file_hash": "File hash", "email": "Email address",
-                "host": "Host", "user": "User"}
+                "host": "Host", "user": "User", "keyword": "Keyword"}
 _TITLE_LOG_KINDS = {"host": "Host", "user": "User", "ip": "IP", "src_ip": "IP", "source_ip": "IP",
                     "contains": "Keyword"}
 #: A "my case" or one-case starter titled by its case number.
@@ -12992,8 +13166,11 @@ def _starter_title(view: PromptView, ask: Ask, starter: str) -> str:
     if starter == "hunt":
         tid = _title_technique(view, ask)
         return _first_fit(f"ATT&CK hunt for {tid}" if tid else "", curated)
-    if starter == "noisy_rule":
-        rule = _title_rule(ask.slot("rule"))
+    if starter in ("noisy_rule", "noisy_rule_unnamed"):
+        # The card without the rule's id names it here only once the lookup found ONE
+        # rule (never one of several tied, PB5).
+        pick = _noisy_rule_pick(view, ask) if starter == "noisy_rule_unnamed" else None
+        rule = _title_rule(ask.slot("rule") if pick is None else (pick.rule if not pick.tied else ""))
         return _first_fit(f"Noisy rule {rule}" if rule else "", curated)
     if starter in ("new_cases", "new_cases_one"):
         window = _title_window(view, ask)

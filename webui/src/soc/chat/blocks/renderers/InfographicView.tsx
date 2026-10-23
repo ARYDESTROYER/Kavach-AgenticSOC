@@ -285,7 +285,9 @@ export function InfographicView({ block, blockIndex, renderLeaf, staticMode = fa
             >
               {s.heading}
             </h5>
-            {s.summary ? <p className="whitespace-pre-line break-words text-sm text-muted-foreground">{s.summary}</p> : null}
+            {s.summary ? (
+              <p className={cn('whitespace-pre-line break-words text-sm text-muted-foreground proportional-nums', !staticMode && 'max-w-[38rem]')}>{s.summary}</p>
+            ) : null}
             {leaves.length ? (
               <div className="@container min-w-0">
                 <div className={cn('grid grid-cols-1 gap-x-5 gap-y-4', !staticMode && '@[44rem]:grid-cols-2')} data-testid="infographic-grid">

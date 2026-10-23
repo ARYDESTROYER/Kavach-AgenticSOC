@@ -89,7 +89,7 @@ export function TimelineView({ block }: { block: TimelineBlock }) {
                 </span>
               </span>
               <div className="min-w-0">
-                <p className={cn('break-words text-sm text-foreground', block.untrusted && !transition && 'font-mono text-xs')}>
+                <p className={cn('break-words text-sm text-foreground', block.untrusted && !transition ? 'font-mono text-xs' : 'proportional-nums')}>
                   {ev.kind ? <span className="sr-only">{TIMELINE_KIND_LABEL[ev.kind]}: </span> : null}
                   {transition ?? ev.label}
                   {ev.ref ? (
@@ -103,13 +103,13 @@ export function TimelineView({ block }: { block: TimelineBlock }) {
                 </p>
                 {ev.detail ? (
                   reason ? (
-                    <p className="mt-0.5 break-words text-xs text-muted-foreground" data-testid="timeline-reason">
+                    <p className="mt-0.5 break-words text-xs text-muted-foreground proportional-nums" data-testid="timeline-reason">
                       {reason}
                     </p>
                   ) : block.untrusted ? (
                     <CodeBlock value={ev.detail} copyable={false} wrap maxHeightClassName="max-h-32" className="mt-1 [&_pre]:p-2 [&_pre]:text-xs" />
                   ) : (
-                    <p className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground">{ev.detail}</p>
+                    <p className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground proportional-nums">{ev.detail}</p>
                   )
                 ) : null}
               </div>

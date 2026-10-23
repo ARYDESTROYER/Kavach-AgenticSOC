@@ -19,6 +19,7 @@ import type { Case } from '@/lib/types';
 import { focusRing } from '@/lib/ui-recipes';
 import { pageHash, settingsSectionHash, useNavigateOptional } from '@/soc/router';
 import { isSafeCaseId } from '@/soc/case-result-route';
+import { softBreakLongTokens } from '../starters/soft-breaks';
 
 import type { BlockRef, CaseStatusKey, InternalRef, SeverityKey, VerdictKey } from './schema';
 import { isDocRef, parseDocRef, parseInternalRef } from './schema';
@@ -157,7 +158,9 @@ export const RefLink = React.forwardRef<HTMLAnchorElement, RefLinkProps>(functio
  * mono, middle-ellipsised ("case-6b22…70b4", the Case Manager queue's form), with the
  * full id in its tooltip and for assistive tech. A case with neither a number nor a title
  * shows its whole id, which wraps instead of being cut. Titles wrap too (the hosts never
- * truncate them), so the whole title is always on screen.
+ * truncate them), so the whole title is always on screen. The number never breaks at its
+ * hyphen, nor does a short reference in the title ("LP-ES-RISK-1001", PW4-1), and the
+ * title is prose (proportional numerals, so Inter's tabular hyphen is not set wide).
  */
 export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 'case_number' | 'title'> }) {
   const number = facts.case_number?.trim() || null;
@@ -173,8 +176,8 @@ export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 
     const short = shortCaseId(facts.case_id);
     return (
       <>
-        <span className="break-words" data-case-ref="title">
-          {title}
+        <span className="break-words proportional-nums" data-case-ref="title">
+          {title ? softBreakLongTokens(title) : null}
         </span>{' '}
         <span className="whitespace-nowrap font-mono text-2xs font-normal text-muted-foreground" title={facts.case_id} data-case-ref="id">
           {short === facts.case_id ? (
@@ -191,12 +194,12 @@ export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 
   }
   return (
     <>
-      <span className="mr-1.5 font-mono text-xs" title={facts.case_id} data-case-ref="number">
+      <span className="mr-1.5 whitespace-nowrap font-mono text-xs" title={facts.case_id} data-case-ref="number">
         {number}
       </span>
       {title ? (
-        <span className="break-words" data-case-ref="title">
-          {title}
+        <span className="break-words proportional-nums" data-case-ref="title">
+          {softBreakLongTokens(title)}
         </span>
       ) : null}
     </>

@@ -145,6 +145,9 @@ export function CaseChat({ caseId, displayId, caseManager, starters }: CaseChatP
           <EmptyState
             context={ctx}
             variant="case"
+            // The reading column, like the composer below (CONTENT_COL, 42rem): the chip row
+            // ran 32 to 108 px past the composer's right edge (PW4-4).
+            className="max-w-[42rem]"
             disabled={busy}
             error={context.error}
             onRetry={context.refresh}
