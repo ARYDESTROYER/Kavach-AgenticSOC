@@ -127,7 +127,13 @@ async def standup_report(
     now = now_utc()
     win_label = _current_window(now)
     try:
-        snapshot = await state.standup_service.shift_snapshot(prefs, window_hours=window, now=now)
+        # ``needs_human_verdict``: the page's "Needs human" tile counts the open cases
+        # whose verdict is Needs human, the same figure chat's shift report shows; the
+        # legacy ``needs_human`` STATUS count is the "Awaiting analyst" tile (Round 13
+        # close). The standup's model aggregate (``generate()``) is unchanged.
+        snapshot = await state.standup_service.shift_snapshot(
+            prefs, window_hours=window, now=now, needs_human_verdict=True
+        )
     except Exception as exc:  # noqa: BLE001 — the handoff page must never 500
         logger.warning("shift report failed (%s); degrading", exc)
         snapshot = {}

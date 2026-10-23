@@ -890,12 +890,32 @@ def fmt_int(value: Any) -> str:
     return f"{value if isinstance(value, int) else round_half_up(value):,}"
 
 
-def fmt_pct(value: Any, *, ratio: bool = False, digits: int = 1) -> str:
-    """A percentage string from a 0..100 value (or a 0..1 ``ratio``); ``not available``
-    for a missing value."""
+def console_num(number: float, places: int) -> str:
+    """``number`` as the console writes it (``toLocaleString`` with at most ``places``
+    decimals, rounded half up): "78", "7.5", "1,284"; trailing zeros dropped."""
+    step = Decimal(1).scaleb(-places)
+    # Binary noise first (0.145 * 100 is 14.499999999999998, a tile's 14.5): the tools
+    # round a rate to two decimals before the console rounds it again.
+    quantized = Decimal(str(round(number, 6))).quantize(step, rounding=ROUND_HALF_UP)
+    if quantized.is_zero():
+        quantized = abs(quantized)  # never "-0"
+    text = f"{quantized:,.{places}f}"
+    return text.rstrip("0").rstrip(".") if places and "." in text else text
+
+
+def fmt_pct(value: Any, *, ratio: bool = False, missing: str = NOT_AVAILABLE) -> str:
+    """A rate exactly as the console's figures show it (Round 13 close: one figure, one
+    form), from a 0..100 value or a 0..1 ``ratio``: a whole percent from 10% up, one
+    decimal under 10%, "<1%" for a sliver, rounded half up ("75.6" reads "76%", "7.45"
+    reads "7.5%"). A step summary and the planner's prose share it, so neither says
+    "75.6%" beside a tile that says "76%". ``missing`` (``not available``) for a missing
+    value."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return NOT_AVAILABLE
-    return f"{(value * 100 if ratio else value):.{digits}f}%"
+        return missing
+    number = float(value) * 100 if ratio else float(value)
+    if 0 < number < 1:
+        return "<1%"
+    return f"{console_num(number, 1 if abs(number) < 10 else 0)}%"
 
 
 def finite(value: Any) -> float | None:
@@ -1191,6 +1211,7 @@ __all__ = [
     "enum_value",
     "finite",
     "NOT_AVAILABLE",
+    "console_num",
     "fmt_int",
     "fmt_pct",
     "iso_or_none",

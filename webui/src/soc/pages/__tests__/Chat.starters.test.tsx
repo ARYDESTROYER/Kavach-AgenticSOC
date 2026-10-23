@@ -283,7 +283,12 @@ describe('Workspace Chat — starters', () => {
     const view = renderChat();
     await settle();
     expect(starterReads()).toHaveLength(0);
-    expect(screen.getByTestId('starter-skeletons')).toBeInTheDocument();
+    // Loading: the stack waits, laid out but unseen, for its cards (closing pass); the
+    // skeleton only shows after STARTERS_SKELETON_DELAY_MS.
+    expect(screen.getByTestId('chat-start')).toHaveAttribute('data-waiting', 'true');
+    expect(screen.getByTestId('chat-start')).toHaveClass('invisible');
+    expect(await screen.findByTestId('starter-skeletons', undefined, { timeout: 2000 })).toBeInTheDocument();
+    expect(starterReads()).toHaveLength(0);
     prefsState.value = { ready: true, prefs: { misc: {} }, patchMisc: vi.fn() };
     view.rerender(
       <AnnouncerProvider>

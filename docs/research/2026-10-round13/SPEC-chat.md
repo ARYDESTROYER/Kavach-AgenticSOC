@@ -475,7 +475,8 @@ Demo always has a catch-up line on its first visit.
   bundled corpus) and configured source names. Never a case title, rule name, entity value or any
   other log-derived free text.
 - Numbers: thousands separators ("1,284"); counts agree in number ("1 case", "2 cases"); a ratio
-  has one decimal ("2.4 times").
+  has at most one decimal, rounded half up, and a whole multiple none ("2.4 times", "15
+  times"; close round BF, was "15.0 times").
 - Durations (`{age}`): "40 min", "3 hours", "2 days" (under 1 hour: minutes; under 48 hours:
   whole hours; otherwise whole days).
 - Times (`{since}`), operator time zone, 24-hour: "09:12" today, "yesterday 18:40", "Mon 18:40"
@@ -1994,7 +1995,8 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   stay 16 px under the catch-up line, and only the space under the last card grows. Live,
   starters read held 2.5 s: at 390 the greeting stays at 300 px and the pills at 690 px from
   skeleton to cards, with 20 px of spare under the cards; at 1440 and 1920 nothing moves and
-  there is no spare.
+  there is no spare. (Superseded below, "Start stack waits for its cards": that spare
+  left 32 px between the last card and the pills on a phone.)
 - **KPI tile labels (review of the third re-shoot, completes PW4-8):** a chat `kpi_group`
   tile's label inherited tabular numerals, so "FALSE-POSITIVE RATE" set a 7.41 px hyphen at
   11 px beside the proportional gauge label. `KpiItemCell` sets `proportional-nums` on the
@@ -2007,6 +2009,74 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   `ENTITY_OPTIONS` by a test; importing that module added a shared chunk to the entry's
   preload lists, 46 B), and the sheet title sets proportional numerals (its hyphen 7.28 px
   at 16 px). Live at 390, 1440 and 1920: "IP:". The entry chunk is unchanged (371,863 B).
+- **Start stack waits for its cards (closing pass, supersedes "Spare height under the
+  cards"):** on a phone the first skeleton card holds three lines and the others two, so
+  cards of two lines left 20 px of spare between the last card and the pills (32 px there
+  against 12 px at 1440 and 1920), and cards of three lines grew the stack and moved the
+  bottom-anchored greeting up 20 px. A loading start stack is now laid out but unseen
+  (`invisible`, `data-waiting`, so its width is measured and the cards land at the right
+  column count) for up to `STARTERS_SKELETON_DELAY_MS` (600 ms; live on the Demo a read
+  landed in 10 to 350 ms), and appears once, whole, with its cards, fading in (200 ms).
+  Only a slower read shows the skeleton. Spare height (a skeleton that showed, or a shorter
+  stand-in after Hide) is now the stack's last box, under the pills: the greeting, the
+  catch-up line and the cards' top hold still, the last card stays 12 px above the pills,
+  and the pills move up with the cards' end (the room above the composer takes the
+  difference). Live at 390: a 0 ms and a 250 ms read showed the stack once with its three
+  cards (greeting at 320 px, last card 12 px above the pills, no spare); a read held
+  1,500 ms and 2,500 ms showed the skeleton after 600 ms, and from skeleton to cards the
+  greeting stayed at 300 px, the cards' top at 386 px, the pills moved up 20 px and the
+  20 px sat under them. At 1440 nothing moves either way.
+- **Technique chips and blank cells in chat tables (closing pass):** a Techniques cell
+  ("T1021, T1048, T1078") was one inline code run, so at 390 it wrapped over three lines
+  with its fill cut at each line end. A code or mitre cell that lists ATT&CK ids (with the
+  server's "and K more", §10.6 close round) is now one chip per technique
+  (`TableView` `techniqueList`, `whitespace-nowrap` chips in a `flex-wrap` row, ", "
+  separators for assistive tech only, the tail in muted text); a single id stays one chip.
+  A blank cell (`null` or empty) showed an em dash; it now draws nothing, and assistive
+  tech reads "None", or "Not measured" for a number or risk column (`blankCellText`, BLOCKS
+  G3: a `null` figure is not measured, never 0). Print leaves it blank too. A report
+  download keeps its own marker for a value not measured, which its methodology line
+  explains, and only for that value (closing re-shoot, "Blank cells in report downloads"
+  below). Live at 390 and 1440: every chip on one line, blank Techniques cells empty, no
+  em dash in any chat table.
+- **Page name in the console header (closing pass):** at 360 the breadcrumb leaf broke
+  "Workspace" as "Workspac" / "e" (`break-words`), because the release chip's channel
+  label ("· Testing", shown from a 360 px viewport) left it 69 of its 71 px. The leaf now
+  wraps between words only (no `break-words`), a single word wider than its room ends in
+  an ellipsis (`text-ellipsis`, full name in `title`; `line-clamp` makes the leaf a scroll
+  container, so its `min-w-0` went), and the bar's gaps are 6 px below `sm` (`gap-1.5`,
+  8 px from `sm` as before), which gives the name the 4 px it lacked. A content-aware fold
+  of the channel label was tried and dropped: it added 302 B to the entry chunk, and this
+  change takes 4 B off it (371,859 B). Live at 320, 360 and 390 on Chat, Overview and
+  Case Manager: no word broken, "Workspace" and "Dashboard" whole on one line, "Case
+  Manager" on two lines at 320 and 360 and one at 390; "Documentation" injected at 360
+  reads "Documen…" on one line.
+- **Pill gap on a phone (closing re-shoot):** at 390 the last card still sat 16 px above
+  the first category pill, against 12 px at 1440. StartScreen's `mt-3` was merged onto the
+  narrow pill row, and tailwind-merge let it replace the top half of the row's `-my-1`, so
+  the 4 px of padding that keeps a focused pill's ring inside the scroll clip was no
+  longer pulled back (margin-top 12 px, padding-top 4 px). `CategoryPills` now puts the
+  caller's `className` on an outer box and keeps the ring room on the row itself; in the
+  stack's block flow the two top margins collapse (12 px and -4 px give 8 px, plus the
+  4 px padding), so the gap to a pill is 12 px at every width. The StartScreen test
+  resolves the card-to-pill offset from the classes as CSS does (it read 16 px on the old
+  structure). Live at 320 to 390 and at 1440 and 1920: 12 px to the first pill, the stack
+  still ends at the pills' bottom, a read held 1,500 ms keeps 12 px with the 20 px spare
+  under the pills, and a keyboard-focused pill shows its whole ring.
+- **Blank cells in report downloads (closing re-shoot):** the Word, HTML and Markdown
+  exports still wrote "—" for every blank table cell, so a campaign with no technique
+  exported an em dash that the methodology line ("N values were not measured and are
+  shown as "—"") did not count. The walker (`report/export/walker.ts`) now writes "—"
+  only for a value not measured, `notMeasuredTableCell` in `report/model.ts`: a blank
+  (`null` or empty) cell in a `number` or `risk` column, and a case list's missing risk
+  score. `notMeasuredCount` counts exactly those, so every dash in a download is one the
+  methodology line counts. Any other blank cell (Techniques, a case list's Verdict or
+  Created, a reputation row's Score or Detail) is empty, as on screen, and Markdown, HTML
+  and Word never wrap an empty cell in a code span (`codeCellText`), which drew a blank
+  chip. Excel and CSV already wrote no cell. Live on the Demo shift brief with two
+  Techniques cells blanked and one Cases figure removed: Markdown, HTML and Word leave the
+  Techniques cells empty and write "—" for the Cases figure, Excel writes no cell for
+  either, and the methodology line reads "1 value was not measured".
 
 ### 10.6 Demo (WP-DEMO13)
 
@@ -2135,6 +2205,85 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   tie when their figures read the same ("$0.0027" each). The in-depth look's rankings
   after a dated window ("(since 24 Sep 2026; 5 of 5 sources answered)") start at their
   field ("By rule, …") instead of inside the bracket.
+- **Close round (CB, the final re-shoot's backend findings):** one answer states each figure
+  once, in one form, and its blocks and text describe the same things.
+  - *Techniques and entities:* `list_campaigns` lists up to 12 techniques and 5 shared
+    entities per campaign with `mitre_count` and `entity_count`; a table cell names all of
+    them up to 4, else the first 3 and "and K more" (`with_more`); the Demo prose does the
+    same (`_campaign_techniques`, `_campaign_entities`). The fourth technique of a campaign
+    was dropped without a word.
+  - *One read for the count and the rows:* `search_cases` with an in-memory filter
+    (assignee, verdict, text, …) lists from the shared case page (5 s cache) but counts
+    with an exact aggregate; when the page's matches disagree with that count (total, or
+    cases by verdict and status) it reads the page again now
+    (`metrics_shared.fetch_case_page(fresh=True)`, which also refreshes the cache), and if
+    a page that holds every case still differs, the stated figures come from that page,
+    the same read as the rows (`_page_agrees`, `_page_counts`). "My cases" right after an
+    assignment said "3 open cases are assigned to you" and listed none.
+  - *Needs human:* `shift_report.headline_counts(needs_human_verdict=True)` adds
+    `needs_human_verdict` (open cases whose verdict is Needs human), asked for by chat's
+    `shift_report` through `StandupService.shift_snapshot(needs_human_verdict=True)`; the
+    Standup page, its payload and its model aggregate are unchanged (the legacy
+    `needs_human` status count; the Standup page and payload changed in "Close round
+    (BF)" below). The chat shift headline's "Needs human" tile and the
+    Demo lead and step ("Give a verdict on the 10 open cases marked Needs human.") use
+    it, so they agree with the Needs attention list's badges; "Status: Needs human 0"
+    is gone.
+  - *One form:* the Demo planner writes a rate as the console's tiles do (`_pct`: whole
+    from 10%, one decimal under 10%, "<1%" for a sliver, half up after the tools' two
+    decimals), a change in a rate in points the same way (`_points`, "+36 points"), and a
+    score as "7/100" (`_score`; average risk in breakdowns and the case mix). The shift
+    brief's step read "77.5%" under a "78%" tile, and a rule breakdown "7.4" beside
+    "7/100". A golden check refuses an unsigned percent of 10 or more with decimals, a
+    "0.x%", and an average risk not written as "N/100", in the text and in a report's own
+    text.
+  - *Widening chips widen:* a zero-result log lookup offers "Last 7 days" or "Last 30
+    days" only when its window covers fewer days (`logs.covered_days`: a window aligned
+    to whole days, the last in progress, covers its whole number of days); "last 30
+    days" by day was offered "Last 30 days".
+  - *The entity's campaigns:* `list_campaigns(entity=…)` (additive) lists the campaigns
+    that involve a user, host or IP: a shared entity with that value (compared without
+    case) or a member case about it (one `list_window(entity_value=…)` read of at most
+    500 cases; `entity_filter` gives the counts, never the value), each row with `match`
+    (`shared_entity` or `member_case`). The in-depth look asks for it and titles the
+    table "Campaigns involving this user" (host, IP); a lookup without the filter (an
+    older answer replayed) is titled for the entity only when every campaign it listed
+    involves it, else "All campaigns". The pnair look's "All campaigns" table held two
+    campaigns about other IPs.
+- **Close round (BF, the closing review's backend findings):** one label, one figure; one
+  figure, one form.
+  - *Needs human on every surface:* `GET /api/standup/report` asks
+    `shift_snapshot(needs_human_verdict=True)` too (additive: `headline_counts` and
+    `deltas` gain `needs_human_verdict`; `needs_human` stays). The Standup page shows that
+    figure under "Needs human", the same figure and label as chat's shift headline, and
+    labels the legacy `needs_human` status count "Awaiting analyst" (the console's word
+    for that status, "Open · awaiting analyst"); its workload badge reads "N awaiting"
+    (was "N NH") and its empty queue says "awaiting-analyst". Chat's `shift_report`
+    observation names the workload's status count `awaiting_analyst`. The standup
+    writer's aggregate (`generate()`) keeps its keys: its 16,000-character fence had under
+    100 characters to spare in the fullest test
+    (`test_standup_aggregate_reaches_model_untruncated`), so
+    `SHIFT_STANDUP_SYSTEM` says instead that its `needs_human` is the awaiting-analyst
+    status, never to be called "needs human". The live Demo showed "Needs human 13" in
+    chat and "Needs human 0" on the Standup page for the same 24 hours.
+  - *Rates in step summaries:* `chat_tools.common.fmt_pct` writes a rate the console's
+    way (whole from 10%, one decimal under 10%, "<1%" for a sliver, half up;
+    `console_num`), and the Demo planner's `_pct` is that helper, so the run log's
+    "Posture, last 24 hours: … FP rate 76%" matches its tile (was "75.6%"). The golden
+    figure-form check reads the step summaries too.
+  - *A case's techniques:* the case brief ("ATT&CK: …") and the hunt answer ("The
+    source case maps to ATT&CK …") name every technique up to 4, else the first 3 and
+    "and K more techniques" (`_case_techniques`); the hunt said 3 of a case's 4 and the
+    brief 4 of 5 without a word. A golden check compares those sentences with the
+    answer's ATT&CK block.
+  - *Nouns on "K more":* a campaign's tails read "and 6 more shared entities" and "and 3
+    more techniques" (`_campaign_entities`, `_campaign_techniques`), and the campaign
+    answer states its shared entities and its techniques as two clauses ("… links **9
+    cases** through IP `198.51.100.1`, IP `198.51.100.2` and 5 more shared entities. It
+    maps to ATT&CK T1021, T1048, T1078 and 3 more techniques."). "9 cases sharing IP …
+    and 6 more" read as six more cases.
+  - *Starter ratio:* `chat_starter_text.format_ratio` rounds half up to at most one
+    decimal and drops ".0": "15 times the usual daily level" (was "15.0 times").
 - Limits: the planner has no clock, so a window-less case-chat chip falls back to the last
   24 hours when no earlier question named a window (the answer states it); a chip
   comparison over a "since" window shows the tool's period label with an en dash. A
@@ -2174,6 +2323,11 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   matches no case and the answer says so.
 - **Close-to-target cases:** `shift_report` names at most 5 of them (nearest first); the
   rest are counted, not listed.
+- **The standup writer's needs-human figure (close round BF):** the Standup page's model
+  summary reads only the awaiting-analyst status count (`needs_human`), not the Needs
+  human verdict count its tile shows, because the writer's fenced aggregate has no room
+  for a second count; its prompt tells it to call that figure "awaiting analyst", so its
+  prose does not state the Needs human figure.
 - **Slow signals:** the hunt and auto-close health cards are missing for up to one refresh
   after a start or 10 idle minutes, and their figures are at most 60 seconds old.
 - **Speed at scale:** on the 20,000-case SQLite fixture with 15% of cases open, a request
@@ -2204,21 +2358,31 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   names a case by its 37-character internal id (needs a person, my case, response target
   and campaign cards), because no wording without the reference names one case among
   several; there the stack can still move on a first view at a width. Turning case
-  numbering on removes it. Holding still means the greeting, the catch-up line, the cards'
-  top and the pills: cards that land shorter than their skeleton leave the difference under
-  the last card, above the pills (review of the third re-shoot; spare height above the
-  greeting had moved the greeting 20 px down on every cold load on a phone, §10.5 "Spare
-  height under the cards"). A kept reference wider than a card's whole line (27 characters
-  of capitals on a 360 px phone or a four-column card) wraps inside its own box, so that
-  card can still be a line taller than its skeleton.
+  numbering on removes it. The stack shows its cards at once when the read lands within
+  600 ms, and nothing moves (§10.5 "Start stack waits for its cards"). After a slower read,
+  holding still means the greeting, the catch-up line and the cards' top: cards that land
+  shorter than their skeleton leave the difference under the pills (the last card stays
+  12 px above them), and cards that land taller grow the stack, which moves the greeting up
+  by the difference. A kept reference wider than a card's whole line (27 characters of
+  capitals on a 360 px phone or a four-column card) wraps inside its own box, so that card
+  can still be a line taller than its skeleton.
 - **Demo investigations of a bare vendor or provider name (PB6):** the Demo planner knows
   the console's own words, not every vendor or provider name, so "Investigate wazuh" or
   "What did VirusTotal do?" is hunted as a keyword (the log events and cases that carry
   it). "Investigate source Wazuh" names the source, and "What is VirusTotal?" reaches the
   Help Center.
+- **Campaigns have no short display name.** Chat tables (All campaigns, Campaign, Open
+  campaigns), the Campaign sheet title and the Case Manager "Part of campaign" chip show
+  the internal `campaign-<32 hex>` id: at 390 it takes most of a table's first column and
+  wraps the sheet title over three lines. A short campaign number, allocated like case
+  numbers, is the follow-up (ROADMAP, Round-13 chat deferred items).
 - **Old Demo source names** (with an em dash) remain in four test fixtures, three webui
   (`Composer.test.tsx`, `command-note.test.tsx`, `ChatComposerDefaults.test.tsx`) and one
   backend (`backend/tests/test_reports_routes.py`); they are not live data.
+- **One form for a figure (close round CB)** is written by the Demo planner and checked by
+  the golden set. The live model's system prompt sits 2 characters under its 16,500
+  character bound, so it gains no formatting rule; a live answer can still write a rate
+  with a decimal that its tile rounds ("77.5%" beside "78%").
 
 ### 10.8 Verification record
 
@@ -2232,3 +2396,13 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
 - WP-DOC13 regenerated `webui/openapi.json` and `webui/src/lib/api-types.gen.ts`
   (`npm run gen:types`), the console map (`npm run gen:console-map`) and the app-knowledge
   corpus (`python scripts/build_app_knowledge.py`).
+- Closing gates (2026-10-23, after the close rounds CB, CW, BF and WF): the backend full
+  suite passed 8,674 tests with 4 skipped; ruff 0.12.5 with the CI fatal selection was
+  clean; `npm run test:strict` passed 5,425 tests, 1 skipped, in 520 files with no stderr;
+  `tsc --noEmit`, `npm run lint` (0 errors, 0 warnings), `npm run gates`,
+  `npm run check:types`, `scripts/check_docs.py`, `npm run docs:check`,
+  `scripts/build_app_knowledge.py --check` (750 chunks), `scripts/check_ci_contract.py`
+  with its 62 unit tests and `scripts/check_version.py` were green; `npm run build`
+  transformed 3,406 modules with no warnings and an entry chunk of 371,859 B, and
+  `bundle-first-paint.test.ts` with `REQUIRE_DIST_BUILD=1` passed 23 tests. Regenerating
+  the API types, the console map and the knowledge corpus changed nothing.

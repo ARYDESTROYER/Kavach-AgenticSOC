@@ -9,6 +9,13 @@
  * is scrolled clear of the fade with its whole focus ring (scroll margins of the ring's
  * 4 px on the left and the 24 px fade plus the ring on the right), so the focused pill
  * is never half hidden.
+ *
+ * The caller's `className` (its margin from the cards) goes on an outer box, never on the
+ * pill row itself: the narrow row's 4 px of ring room is padding pulled back by negative
+ * margins, and a caller's `mt-3` merged onto it replaced the top one (closing re-shoot: the
+ * last card sat 16 px above the pills on a phone, 12 px at desktop). In a block flow the
+ * outer box's margin and the row's negative one collapse, so the gap to a pill is the
+ * caller's margin at every width.
  */
 import { BookOpen, Crosshair, FileText, Gauge, Library, ScanSearch } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -60,50 +67,51 @@ export interface CategoryPillsProps {
 export function CategoryPills({ context, narrow = false, className }: CategoryPillsProps) {
   const pills = visiblePills(context);
   return (
-    <div
-      role="group"
-      aria-label="Prompt library categories"
-      data-testid="category-pills"
-      className={cn(
-        'flex gap-1.5',
-        narrow
-          ? // The 4 px padding (pulled back by the negative margins) keeps a pill's focus
-            // ring inside the scroll box's clip without moving the pills off the lane edge.
-            '-mx-1 -my-1 flex-nowrap overflow-x-auto overscroll-x-contain py-1 pl-1 pr-6 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] [scrollbar-width:none]'
-          : 'flex-wrap',
-        className,
-      )}
-    >
-      {pills.map((pill) => {
-        const Icon = pill.icon;
-        return (
-          <button
-            key={pill.id}
-            type="button"
-            data-pill={pill.id}
-            onClick={() => openPromptLibrary(pill.categories.length ? { categories: pill.categories } : {})}
-            onFocus={
-              narrow
-                ? (event) => {
-                    // Honours the scroll margins below; a browser's own focus scroll may
-                    // leave a partly clipped pill where it is.
-                    const pillEl = event.currentTarget;
-                    if (typeof pillEl.scrollIntoView === 'function') pillEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                  }
-                : undefined
-            }
-            className={cn(
-              'inline-flex h-7 min-w-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 text-xs text-muted-foreground transition-colors',
-              'hover:bg-hover hover:text-foreground',
-              narrow && 'scroll-ml-1 scroll-mr-7',
-              focusRing,
-            )}
-          >
-            <Icon className="size-3.5" aria-hidden="true" />
-            {pill.label}
-          </button>
-        );
-      })}
+    <div className={className}>
+      <div
+        role="group"
+        aria-label="Prompt library categories"
+        data-testid="category-pills"
+        className={cn(
+          'flex gap-1.5',
+          narrow
+            ? // The 4 px padding (pulled back by the negative margins) keeps a pill's focus
+              // ring inside the scroll box's clip without moving the pills off the lane edge.
+              '-mx-1 -my-1 flex-nowrap overflow-x-auto overscroll-x-contain py-1 pl-1 pr-6 [mask-image:linear-gradient(to_right,black_calc(100%-1.5rem),transparent)] [scrollbar-width:none]'
+            : 'flex-wrap',
+        )}
+      >
+        {pills.map((pill) => {
+          const Icon = pill.icon;
+          return (
+            <button
+              key={pill.id}
+              type="button"
+              data-pill={pill.id}
+              onClick={() => openPromptLibrary(pill.categories.length ? { categories: pill.categories } : {})}
+              onFocus={
+                narrow
+                  ? (event) => {
+                      // Honours the scroll margins below; a browser's own focus scroll may
+                      // leave a partly clipped pill where it is.
+                      const pillEl = event.currentTarget;
+                      if (typeof pillEl.scrollIntoView === 'function') pillEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                    }
+                  : undefined
+              }
+              className={cn(
+                'inline-flex h-7 min-w-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-2.5 text-xs text-muted-foreground transition-colors',
+                'hover:bg-hover hover:text-foreground',
+                narrow && 'scroll-ml-1 scroll-mr-7',
+                focusRing,
+              )}
+            >
+              <Icon className="size-3.5" aria-hidden="true" />
+              {pill.label}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

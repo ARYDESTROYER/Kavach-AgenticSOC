@@ -116,8 +116,9 @@ so the dashboard never blanks; only a first load, with nothing yet to show, says
 selector is accepted; a slower earlier request cannot repaint those tiles beneath a new
 range.
 
-Below the strip the page has two titled bands. **Alert flow** holds the Noise
-Reduction ribbon and Human vs AI. **Cases and response** holds the Open cases and Cases
+Below the strip the page has two titled bands. Each module sits on its own soft tinted
+panel (no border, no shadow), with the band titles outside the panels. **Alert flow**
+holds the Noise Reduction ribbon and Human vs AI. **Cases and response** holds the Open cases and Cases
 resolved severity rings, **Response time** (MTTD paired with Respond, the first human
 action), and exactly five **Latest cases**; hovering or keyboard-focusing a latest row
 reveals bounded case detail without changing the selection. On very wide screens the

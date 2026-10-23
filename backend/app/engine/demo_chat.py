@@ -76,7 +76,7 @@ from ..agents.chat_events import (
 )
 from ..agents.chat_tools.base import granted_tool_names
 from ..agents.chat_tools.cases import ASSIGNEE_ME_NOBODY, ASSIGNEE_ME_OWN
-from ..agents.chat_tools.common import round_half_up, visible_text
+from ..agents.chat_tools.common import console_num, fmt_pct, round_half_up, visible_text
 from ..agents.chat_tools.taint import REFUSED_TAINT
 from ..constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from ..models import ChatStarter
@@ -724,11 +724,35 @@ def _dec(value: Any, places: int = 1) -> str:
     return text[:-2] if places == 1 and text.endswith(".0") else text
 
 
+#: ``number`` as the console writes it, rounded half up (the one helper the tools' step
+#: summaries use too).
+_console_num = console_num
+
+
 def _pct(value: Any, *, ratio: bool = False) -> str:
+    """A rate exactly as the console's figures show it (Round 13 close: one figure,
+    one form): a whole percent from 10% up, one decimal under 10%, "<1%" for a sliver,
+    rounded half up, so the prose beside a key-figure tile never says "77.5%" where the
+    tile says "78%". The tools' step summaries share the helper (``fmt_pct``)."""
+    return fmt_pct(value, ratio=ratio, missing="not measured")
+
+
+def _points(value: Any) -> str:
+    """A change in percentage points as the console's comparison shows it: one decimal
+    under 10 points, whole points from 10 up, rounded half up."""
     number = _num(value)
     if number is None:
         return "not measured"
-    return f"{_dec(number * 100 if ratio else number)}%"
+    return _console_num(number, 1 if abs(number) < 10 else 0)
+
+
+def _score(value: Any) -> str:
+    """A 0 to 100 score (an average risk) as the console's tables and tiles show it:
+    "7/100", rounded half up."""
+    number = _num(value)
+    if number is None:
+        return "not measured"
+    return f"{_console_num(number, 0)}/100"
 
 
 def _usd(value: Any) -> str:
@@ -5054,7 +5078,9 @@ def _plan_deep(view: PromptView, ask: Ask, done: int) -> list[Call]:
                 Call("log_stats", {fld: value, "group_by": ["action"], "top_n": 10, **logs})]
     if done == 2:
         case = _newest_case(view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity"))))
-        calls = [Call("list_campaigns", {"limit": 10}), Call("source_health", {})]
+        # Only the campaigns that involve the entity (Round 13 close: the table listed
+        # every campaign while the text named the one about it).
+        calls = [Call("list_campaigns", {"entity": value, "limit": 10}), Call("source_health", {})]
         if case is not None:
             calls[:0] = [Call("get_case", {"case_id": _case_read_ref(case)}),
                          Call("explain_decision", {"case_id": _case_read_ref(case)})]
@@ -7362,7 +7388,7 @@ def _say_case_mix(r: Result) -> str:
     if parts:
         text += f" ({_join(parts)})"
     if _num(o.get("avg_risk_score")) is not None:
-        text += f", average risk {_dec(o.get('avg_risk_score'))}"
+        text += f", average risk {_score(o.get('avg_risk_score'))}"
     return text + "."
 
 
@@ -7454,12 +7480,12 @@ def _say_cost(r: Result) -> list[str]:
 def _say_shift(r: Result, *, with_window: bool = True) -> list[str]:
     o = r.obs
     head = o.get("headline") if isinstance(o.get("headline"), Mapping) else {}
-    # ``needs_human`` counts cases whose STATUS is Needs human (shift_report), not
-    # every case with a needs-human verdict (those can be escalated or on hold).
+    # ``needs_human_verdict`` counts the open cases whose VERDICT is Needs human, the
+    # badge the Needs attention list shows (Round 13 close), never the legacy status.
     when = f" at the end of the {_window(o)}" if with_window else ""
     out = [f"**{_plural(head.get('open'), 'open case')}**{when}: "
-           f"{_count(head.get('escalated'))} escalated, {_count(head.get('needs_human'))} in Needs human "
-           f"status, {_count(head.get('unassigned'))} unassigned and {_count(head.get('sla_breached'))} past SLA."]
+           f"{_count(head.get('escalated'))} escalated, {_count(head.get('needs_human_verdict'))} marked Needs "
+           f"human, {_count(head.get('unassigned'))} unassigned and {_count(head.get('sla_breached'))} past SLA."]
     changes = o.get("changes_vs_prior_window") if isinstance(o.get("changes_vs_prior_window"), Mapping) else {}
     moved = []
     for key, name in (("open", "open"), ("escalated", "escalated"), ("sla_breached", "past SLA")):
@@ -7482,6 +7508,60 @@ def _shift_takeaway(r: Result) -> str:
     return text + ", none past SLA, escalated or unassigned." if _num(head.get("open")) else text + "."
 
 
+def _named_with_more(names: Sequence[str], total: Any, limit: int) -> tuple[list[str], int]:
+    """``(names to say, how many more)``: every name when there are at most ``limit``,
+    else the first ``limit - 1`` and the count of the rest, so a list is never cut
+    without saying so (Round 13 close). ``total`` is how many there are (the lookup's
+    count, which can exceed the names it lists), else ``len(names)``."""
+    count = max(len(names), int(_num(total) or 0))
+    if count <= limit:
+        return list(names), 0
+    keep = list(names[:max(1, limit - 1)])
+    return keep, count - len(keep)
+
+
+def _campaign_entities(c: Mapping[str, Any], limit: int) -> list[str]:
+    """A campaign's shared entities in words, "K more shared entities" last when it has
+    more than ``limit`` (for :func:`_join`). The tail names its noun: a bare "6 more"
+    after "9 cases sharing IP …" read as six more cases (Round 13 close BF)."""
+    names = [_entity_phrase(e) for e in c.get("entities") or [] if isinstance(e, str)]
+    shown, more = _named_with_more(names, c.get("entity_count"), limit)
+    return shown + ([_plural(more, "more shared entity", "more shared entities")] if more else [])
+
+
+def _more_techniques(more: int) -> str:
+    """The tail of a cut technique list, its noun named: "3 more techniques"."""
+    return _plural(more, "more technique")
+
+
+def _campaign_techniques(c: Mapping[str, Any], limit: int = 4) -> str:
+    """"ATT&CK T1021, T1048, T1078, T1566": every technique of a campaign up to
+    ``limit``, else the first ones and "and K more techniques" (a fourth one was
+    dropped without a word, Round 13 close); "" when it has none."""
+    ids = [display_text(m, 12) for m in c.get("mitre") or [] if isinstance(m, str)]
+    shown, more = _named_with_more(ids, c.get("mitre_count"), limit)
+    if not shown:
+        return ""
+    # The ids read as the table cell lists them ("T1021, T1048, T1078, T1566").
+    return "ATT&CK " + ", ".join(shown) + (f" and {_more_techniques(more)}" if more else "")
+
+
+#: How many of a case's ATT&CK techniques the prose names before "and K more
+#: techniques" (the case's ATT&CK block lists every one).
+_CASE_TECHNIQUES_SAID = 4
+
+
+def _case_techniques(mitre: Sequence[Mapping[str, Any]], *, tactic: bool) -> str:
+    """A case's ATT&CK techniques in words ("T1566 Phishing (Initial Access)"): every one
+    up to :data:`_CASE_TECHNIQUES_SAID`, else the first ones and "and K more techniques",
+    never a silent cut beside a block that lists them all (Round 13 close BF)."""
+    named = [f"{display_text(m.get('id'), 12)} {display_text(m.get('name'), 60)}".strip()
+             + (f" ({display_text(m.get('tactic'), 40)})" if tactic and m.get("tactic") else "")
+             for m in mitre]
+    shown, more = _named_with_more(named, None, _CASE_TECHNIQUES_SAID)
+    return _join(shown + ([_more_techniques(more)] if more else []))
+
+
 def _say_campaigns(r: Result, rows: Sequence[Mapping[str, Any]] | None = None) -> str:
     """The campaigns a lookup listed (or ``rows``, a subset of them: their count then
     leads, without the status filter)."""
@@ -7500,16 +7580,16 @@ def _say_campaigns(r: Result, rows: Sequence[Mapping[str, Any]] | None = None) -
         # is stored text, so it is inline code like a case id (exact, lookalikes visible).
         name = _code(c.get("name")) if isinstance(c.get("name"), str) and c.get("name").strip() else ""
         what = _plural(c.get("case_count"), "case")
-        entities = [e for e in c.get("entities") or [] if isinstance(e, str)][:2]
+        entities = _campaign_entities(c, 2)
         if entities:
             # Said whole: ``list_campaigns`` already bounds a value (operator ask 3).
-            what += " sharing " + _join([_entity_phrase(e) for e in entities])
+            what += " sharing " + _join(entities)
         bits = []
         if c.get("severity"):
             bits.append(display_text(c.get("severity"), 20))
-        mitre = [m for m in c.get("mitre") or [] if isinstance(m, str)][:3]
-        if mitre:
-            bits.append("ATT&CK " + ", ".join(display_text(m, 12) for m in mitre))
+        techniques = _campaign_techniques(c)
+        if techniques:
+            bits.append(techniques)
         detail = f" ({'; '.join(bits)})" if bits else ""
         parts.append(f"{name} with {what}{detail}" if name else f"{what}{detail}")
     return f"{text}: {_join(parts)}."
@@ -7594,9 +7674,7 @@ def _say_get_case(r: Result, *, lead: bool = True) -> list[str]:
         out.append(f"Recorded evidence: {_plain(evidence[0].get('summary'), _NARRATED_CHARS)}")
     mitre = [m for m in o.get("mitre") or [] if isinstance(m, Mapping) and m.get("id")]
     if mitre:
-        out.append("ATT&CK: " + _join([
-            f"{display_text(m.get('id'), 12)} {display_text(m.get('name'), 60)}"
-            + (f" ({display_text(m.get('tactic'), 40)})" if m.get("tactic") else "") for m in mitre[:4]]) + ".")
+        out.append("ATT&CK: " + _case_techniques(mitre, tactic=True) + ".")
     return out
 
 
@@ -8255,14 +8333,17 @@ def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None
         else:
             most = "the most overdue" if len(shown) == 1 else f"the {_count(len(shown))} most overdue"
             steps.append(f"Work the {_plural(total, 'case')} past SLA first, starting with {most}: {names}.")
-    if _num(head.get("needs_human")):
-        steps.append(f"Decide the {_plural(head.get('needs_human'), 'case')} in Needs human status.")
+    if _num(head.get("needs_human_verdict")):
+        steps.append(f"Give a verdict on the {_plural(head.get('needs_human_verdict'), 'open case')} marked "
+                     "Needs human.")
     if _num(head.get("escalated")):
         steps.append(f"Confirm an owner and containment for the {_plural(head.get('escalated'), 'escalated case')}.")
     if _num(head.get("unassigned")):
         steps.append(f"Assign the {_plural(head.get('unassigned'), 'unassigned open case')}.")
     if camps and _num(camps.obs.get("total")):
-        steps.append(f"Track the {_plural(camps.obs.get('total'), 'open campaign')} that link related cases.")
+        total = camps.obs.get("total")
+        steps.append(f"Track the {_plural(total, 'open campaign')} that {'links' if _num(total) == 1 else 'link'} "
+                     "related cases.")
     fp = _num(_dig(post.obs if post else {}, "quality", "false_positive_rate"))
     if fp is not None and fp >= 0.7:
         steps.append(f"The false-positive rate is {_pct(fp, ratio=True)}: review tuning proposals for the "
@@ -8274,8 +8355,8 @@ def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None
                         "case queue in the console before handing over.")
     elif not steps:
         if _num(head.get("open")):
-            steps.append(f"Review the {_plural(head.get('open'), 'open case')}; none is past SLA, escalated, in "
-                         "Needs human status or unassigned.")
+            steps.append(f"Review the {_plural(head.get('open'), 'open case')}; none is past SLA, escalated, marked "
+                         "Needs human or unassigned.")
         else:
             steps.append("No open work needs attention right now; keep watching the queue.")
     return steps[:5]
@@ -9265,8 +9346,7 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
     if got:
         mitre = [m for m in got.obs.get("mitre") or [] if isinstance(m, Mapping) and m.get("id")]
         if mitre:
-            body.append("The source case maps to ATT&CK " + _join([
-                f"{display_text(m.get('id'), 12)} {display_text(m.get('name'), 60)}" for m in mitre[:3]]) + ".")
+            body.append("The source case maps to ATT&CK " + _case_techniques(mitre, tactic=False) + ".")
         blocks += _keep(_block(got, "mitre", view="mitre", title="ATT&CK techniques"))
     if not indicator_lines and got and entity:
         body.append("The follow-up lookups did not run.")
@@ -10202,7 +10282,7 @@ def _value_text(value: Any, unit: Any) -> str:
     if unit == "usd":
         return _usd(value)
     if unit == "score":
-        return _dec(value)
+        return _score(value)
     return _count(value)
 
 
@@ -10218,7 +10298,7 @@ def _change_text(row: Mapping[str, Any]) -> str:
     sign = "+" if change > 0 else "−"
     unit = row.get("unit")
     if unit == "percent":
-        return f"{sign}{_dec(abs(change))} points"
+        return f"{sign}{_points(abs(change))} points"
     if unit == "minutes":
         return f"{sign}{_minutes(abs(change))}"
     if unit == "usd":
@@ -11788,8 +11868,10 @@ def _final_brief(view: PromptView, ask: Ask) -> Final | None:
 
 def _campaigns_involving(camps: Result, value: str, cases: Result | None) -> list[Mapping[str, Any]]:
     """The listed campaigns that involve ``value``: it is one of their shared entities,
-    or one of their cases is a case the entity search found."""
+    one of their cases is a case the entity search found, or the lookup itself listed
+    the campaigns involving ``value`` and says how each one does (``match``)."""
     wanted = value.strip().lower()
+    filtered = str(camps.input.get("entity") or "").strip().lower() == wanted
     case_ids = {str(c.get("case_id")) for c in (cases.obs.get("cases") if cases else None) or []
                 if isinstance(c, Mapping) and c.get("case_id")}
     out = []
@@ -11798,7 +11880,8 @@ def _campaigns_involving(camps: Result, value: str, cases: Result | None) -> lis
             continue
         entities = [str(e).split(":", 1)[-1].strip().lower() for e in camp.get("entities") or [] if isinstance(e, str)]
         ids = {str(i) for i in camp.get("case_ids") or [] if isinstance(i, str)}
-        if wanted in entities or ids & case_ids:
+        vouched = filtered and camp.get("match") in ("shared_entity", "member_case")
+        if wanted in entities or ids & case_ids or vouched:
             out.append(camp)
     return out
 
@@ -11866,12 +11949,18 @@ def _final_deep(view: PromptView, ask: Ask) -> Final | None:
         body.extend(_say_mitre(mitre)[:2])
     camps = view.ok("list_campaigns")
     involved = _campaigns_involving(camps, value, cases) if camps is not None else []
+    # The table shows the campaigns the lookup listed: titled for the entity when each
+    # of them involves it (the lookup asked for those), else honestly as every campaign.
+    listed_rows = [c for c in (camps.obs.get("campaigns") if camps else None) or [] if isinstance(c, Mapping)]
+    only_involved = bool(involved) and len(involved) == len(listed_rows)
     if camps is not None:
         listed = _num(camps.obs.get("total")) or 0
         if involved:
             body.append("Campaigns involving it: " + _say_campaigns(camps, involved))
         elif listed:
             body.append(f"None of the {_plural(listed, 'campaign')} involves {noun} {_code(value)}.")
+        elif camps.input.get("entity"):
+            body.append(f"No campaign involves {noun} {_code(value)}.")
         else:
             body.append("No campaign is recorded.")
     audit = view.ok("audit_search")
@@ -11890,7 +11979,8 @@ def _final_deep(view: PromptView, ask: Ask) -> Final | None:
         _block(stats, "categories", view="donut", title="Its cases by verdict") if stats and _num(stats.obs.get("total")) else None,
         _block(got, "timeline", view="timeline", title="Riskiest case: status history"),
         _block(mitre, "mitre", view="mitre", title="ATT&CK techniques"),
-        _block(camps, "table", view="table", title="All campaigns") if involved else None,
+        _block(camps, "table", view="table", title=f"Campaigns involving this {noun}" if only_involved
+               else "All campaigns") if involved else None,
     )
     riskiest = _dig(got.obs, "case") if got is not None else None
     follow = [f"Give me an investigation brief for {display_text(_case_read_ref(riskiest), 60)}"
@@ -12417,7 +12507,7 @@ def _final_noisy_rule(view: PromptView, ask: Ask) -> Final | None:
         # says which one it goes on with (tie wording, polish round PB5).
         rules = [rule] + [_code(r) for r in pick.tied[:3]] + (
             [_plural(len(pick.tied) - 3, "other rule")] if len(pick.tied) > 3 else [])
-        share = f" ({_dec(n * 100 / m)}% each)" if m else ""
+        share = f" ({_pct(n * 100 / m)} each)" if m else ""
         of = f" of the {_count(m)}" if m else ""
         tie = "tied at that count" if pick.by_count else "tied for the most"
         body.append(f"Detection rules {_join(rules)} each created **{_plural(n, 'case')}**{of} in the last 24 "
@@ -12425,7 +12515,7 @@ def _final_noisy_rule(view: PromptView, ask: Ask) -> Final | None:
     else:
         lead = f"Detection rule {rule} created **{_plural(n, 'case')}**"
         if m:
-            lead += f" of the {_count(m)} in the last 24 hours ({_dec(n * 100 / m)}%)"
+            lead += f" of the {_count(m)} in the last 24 hours ({_pct(n * 100 / m)})"
         else:
             lead += " in the last 24 hours"
         body.append(lead + ".")
@@ -12503,14 +12593,19 @@ def _final_campaign(view: PromptView, ask: Ask) -> Final | None:
             _block(shared, "case_list", view="case_list", title="Cases on the shared entity"),
         ))
     entities = [e for e in row.get("entities") or [] if isinstance(e, str)][:3]
-    mitre = [m for m in row.get("mitre") or [] if isinstance(m, str)][:3]
-    links = _join([_entity_phrase(e) for e in entities] + [f"ATT&CK {display_text(m, 12)}" for m in mitre])
+    # The shared entities and the techniques are two clauses (Round 13 close BF): one
+    # list held both, so "IP …, 5 more and ATT&CK T1021 … and 3 more" left two
+    # dangling tails and no noun on either.
+    links = _join(_campaign_entities(row, 3))
+    techniques = _campaign_techniques(row)
     if case_ref:
         subject = f"The campaign that includes {_code(case_ref)}"
     else:
         subject = "The most recently active open campaign" if newest else f"Campaign {_code(campaign_id)}"
     lead = (f"{subject} links **{_plural(row.get('case_count'), 'case')}**"
             + (f" through {links}" if links else "") + ".")
+    if techniques:
+        lead += f" It maps to {techniques}."
     body.append(lead)
     moved = _counts_moved(ask.slot("n"), row.get("case_count"), "case")
     if moved and newest:
@@ -14391,6 +14486,8 @@ def _digest_value(value: Any, unit: Any) -> str:
         return _pct(number)
     if unit == "usd":
         return _usd(number)
+    if unit == "score":
+        return _score(number)
     return _dec(number)
 
 

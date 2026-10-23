@@ -48,6 +48,7 @@ import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone, tzinfo
+from decimal import ROUND_HALF_UP, Decimal
 from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping, Sequence, TypeVar
 
@@ -948,8 +949,13 @@ def format_money(usd: float) -> str:
 
 
 def format_ratio(ratio: float) -> str:
-    """A ratio with one decimal: ``2.43`` → ``"2.4"`` (used as "{x} times")."""
-    return f"{ratio:.1f}"
+    """A ratio as the start screen's other figures read (used as "{x} times"): at most
+    one decimal, rounded half up, a whole multiple without ".0" (``2.43`` → ``"2.4"``,
+    ``15.0`` → ``"15"``, ``2.45`` → ``"2.5"``; Round 13 close BF: "15.0 times" sat beside
+    "65% of new cases")."""
+    quantized = Decimal(str(round(float(ratio), 6))).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    shown = f"{quantized:,.1f}"
+    return shown[:-2] if shown.endswith(".0") else shown
 
 
 def render_reason(template_id: str, variant: str = "default",

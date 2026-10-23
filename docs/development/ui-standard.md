@@ -561,7 +561,9 @@ prompt library filtered to its categories (`openPromptLibrary({categories})`); a
 whose categories hold no allowed prompt is hidden (all show while the catalogue is
 unavailable), cancelling the library returns focus to the pill, and below 560 px the row
 scrolls sideways under a right-edge fade with scroll margins that keep a focused pill and
-its ring clear of the fade. The start screen has no "What can the assistant access?" or
+its ring clear of the fade. The 12 px above the pills is a margin on an outer box, never
+one merged onto the scrolling row, whose 4 px of ring padding its negative margins pull
+back, so the gap is 12 px at every width. The start screen has no "What can the assistant access?" or
 "Browse the prompt library" link (the Read-only chip and the All prompts pill do those
 jobs). Every card, reason and clause is server text rendered as React text only; a send
 card's question goes out byte for byte with `origin: "starter"` and nothing from a card
@@ -962,18 +964,22 @@ do not hand-build a second nav list.
   `TOP_BAR_TIERS` in `soc/AppShell.tsx`), never the viewport, because the rail decides
   its width as much as the window does. The current page name has priority: it never
   wraps on a desktop bar and is never squeezed while anything else can give (a phone may
-  give a long name a second line). The search field shrinks first, down to 11rem, and
-  becomes its icon opener below 46rem of bar; below 62rem the chips (Demo mode, platform
-  health, update, source notice, account name) go icon-only, each with a tooltip and its
-  full accessible name; below 72rem the product name leaves the breadcrumb (the rail
-  carries the logo); below 40rem appearance, the account menu and a source notice move
-  into the Console controls sheet. Width tiers cannot know which chips are present, so
-  the bar also measures itself (`useTopBarFold`, `soc/top-bar-fold.ts`): while the field
-  would get less than 11rem, labels fold one at a time, least important first (product
-  name, account name, source, update, health, Demo mode), and only when every label has
-  folded may the field narrow further. The field reads by its own width (its own size
-  container): the full placeholder from 19rem, "Search…" and the shortcut from 9.5rem,
-  below that only its icon, never a clipped word. Nothing in the bar wraps or squeezes:
+  give a long name a second line, breaking only between words; a single word wider than
+  its room ends in an ellipsis, with the full name in its tooltip, and never breaks
+  inside). Below `sm` the bar's gaps are 6px, so "Workspace" stays whole beside
+  "v0.1.13 · Testing" on a 360px phone. The search field shrinks first, down to 11rem,
+  and becomes its icon opener below 46rem of bar; below 62rem the chips
+  (Demo mode, platform health, update, source notice, account name) go icon-only, each
+  with a tooltip and its full accessible name; below 72rem the product name leaves the
+  breadcrumb (the rail carries the logo); below 40rem appearance, the account menu and a
+  source notice move into the Console controls sheet. Width tiers cannot know which
+  chips are present, so the bar also measures itself (`useTopBarFold`,
+  `soc/top-bar-fold.ts`): while the field would get less than 11rem, labels fold one at
+  a time, least important first (product name, account name, source, update, health,
+  Demo mode), and only when every label has folded may the field narrow further. The
+  field reads by its own width (its own size container): the full placeholder from
+  19rem, "Search…" and the shortcut from 9.5rem, below that only its icon, never a
+  clipped word. Nothing in the bar wraps or squeezes:
   the cluster and every chip are `shrink-0` and `whitespace-nowrap`. Release identity,
   the notification bell (with its unread, jobs and health marks), the demo chip and an
   actionable update stay in the bar at every desktop width. One chip says "Demo mode": while

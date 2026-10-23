@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -1405,6 +1406,17 @@ def _calendar_axis_data(axis: list[str], interval: str, window: Window) -> dict[
     return {"x_labels": labels, "tz": window.tz} if labels else {}
 
 
+def covered_days(window: Window) -> float:
+    """How many days ``window`` covers as asked: a window aligned to whole days ("last
+    30 days" since local midnight 29 days ago, the last day in progress) covers its
+    whole number of days, though fewer have run; any other window its span."""
+    if window.all_time:
+        return math.inf
+    if window.aligned_to == "day":
+        return float(math.ceil(window.span_days - 1e-6))
+    return window.span_days
+
+
 def zero_log_suggestions(tool: str, args: Any, window: Window, plan: _Plan) -> list[dict[str, Any]]:
     """Engine-built next lookups for a zero-match log question (SPEC D10): each a VALID
     call of ``tool`` — a wider window, every source, and the query without one filter
@@ -1414,9 +1426,13 @@ def zero_log_suggestions(tool: str, args: Any, window: Window, plan: _Plan) -> l
     if getattr(args, "group_by", None):
         keep["group_by"] = list(args.group_by)
     out: list[dict[str, Any]] = []
-    if window.span_days < 7 and window.source != "request":
+    # A wider window only when it really is wider: "last 30 days" counted in whole days
+    # (the last in progress) has run less than 30 days but already covers them, so it
+    # is never offered "Last 30 days" again (Round 13 close).
+    covered = covered_days(window)
+    if covered < 7 and window.source != "request":
         out.append({"label": "Last 7 days", "tool": tool, "input": {**base, **keep, "window": "now-7d"}})
-    elif window.span_days < 30 and window.source != "request":
+    elif covered < 30 and window.source != "request":
         out.append({"label": "Last 30 days", "tool": tool, "input": {**base, **keep, "window": "now-30d"}})
     window_input_: dict[str, Any] = {}
     if getattr(args, "window", None) is not None:

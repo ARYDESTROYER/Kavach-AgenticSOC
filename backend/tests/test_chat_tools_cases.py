@@ -256,7 +256,8 @@ async def test_shift_report_uses_the_snapshot_only() -> None:
         async def shift_snapshot(self, prefs, *, window_hours=None, now=None):
             self.calls.append(window_hours)
             return {
-                "headline_counts": {"open": 3, "escalated": 1, "needs_human": 0, "unassigned": 2, "sla_breached": 1},
+                "headline_counts": {"open": 3, "escalated": 1, "needs_human": 0, "needs_human_verdict": 2,
+                                    "unassigned": 2, "sla_breached": 1},
                 "deltas": {"open": {"current": 3, "prior": 1, "delta": 2}},
                 "attention_queue": [{"case_id": "case-1", "title": "x", "status": "escalated",
                                      "verdict": "TRUE_POSITIVE", "risk_score": 80, "severity_band": "high",
@@ -276,10 +277,11 @@ async def test_shift_report_uses_the_snapshot_only() -> None:
     assert out.ok and standup.calls == [12]
     assert out.observation["headline"]["open"] == 3
     assert [a.kind for a in out.artifacts] == ["kpis", "case_list", "categories", "table"]
-    # The needs_human headline counts a STATUS; its label says so, so it never reads
-    # as the needs-human VERDICT badges in the case list beside it.
-    labels = [item.get("label") for item in out.artifacts[0].data.get("items", [])]
-    assert "Status: Needs human" in labels and "Needs a human" not in labels
+    # "Needs human" counts the open cases with a needs-human VERDICT, the badge the
+    # case list beside it shows (Round 13 close), never the legacy status count.
+    items = {item.get("label"): item.get("value") for item in out.artifacts[0].data.get("items", [])}
+    assert items.get("Needs human") == 2 and "Status: Needs human" not in items, items
+    assert out.observation["headline"]["needs_human_verdict"] == 2 and "needs_human" not in out.observation["headline"]
     assert out.summary.startswith("Shift snapshot (last 12 hours)") and out.coverage is None
     # The Round 12 window words, as every other caption states them (a saved report
     # lists the shift's window once, never "last 12h; last 12 hours").

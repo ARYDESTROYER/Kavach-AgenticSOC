@@ -12,14 +12,17 @@
  * the MEASURED width of the stack (never a viewport query): 1 column and 3 cards below
  * 560 px, 2 columns and 4 cards from 560 px, 4 columns from 1,040 px. From two columns
  * every row is as tall as the tallest card (`auto-rows-fr`); one column keeps each
- * card's own height, so a short question carries no empty fill on a phone. The
- * skeleton shows exactly the visible count at the cards' height (the heights last
- * measured for this viewer and width, else a typical question and its reason line at
- * the current card width), and a card swap is an opacity cross-fade, so nothing shifts. Below a 480 px
- * lane height the greeting is visually hidden (it still names the section). When the
- * stack is taller than the lane, the lane opens at its end.
+ * card's own height, so a short question carries no empty fill on a phone. While the
+ * cards load, the stack is laid out but not shown for up to
+ * {@link STARTERS_SKELETON_DELAY_MS} (a read usually lands well within it), so it
+ * appears once, whole, with its cards and nothing moves (closing pass). Only a slower
+ * read shows the skeleton: exactly the visible count at the cards' height (the heights
+ * last measured for this viewer and width, else a typical question and its reason line
+ * at the current card width), and a card swap is an opacity cross-fade, so nothing
+ * shifts. Below a 480 px lane height the greeting is visually hidden (it still names
+ * the section). When the stack is taller than the lane, the lane opens at its end.
  *
- * States (§3.11): loading (skeletons), loaded, nothing allowed (no grid), read failed
+ * States (§3.11): loading (nothing shown, then skeletons), loaded, nothing allowed (no grid), read failed
  * ("Couldn't load suggestions." with Retry), switched off by the viewer (`starters`
  * null: no request was made). The cards are paused, with the composer's reason, while
  * a turn runs, a thread restores or a promptbook runs.
@@ -45,15 +48,17 @@
  * card's catch-up clause leaves the line above the grid with it (the clause sends the
  * same question), and Undo brings both back.
  * Within one applied result and card count the stack's box never gets shorter (a shorter
- * card taking a slot, or cards landing shorter than their skeleton, keeps its height).
- * The spare height sits UNDER the cards, above the category pills: the cards keep their
- * natural height (re-shoot PW3-5: a floor on the grid stretched every card), the gap
- * under the catch-up line is always 16 px (third re-shoot PW4-5: spare height kept above
- * the cards left 36 px on a phone when a two-line first card replaced a three-line
- * skeleton), and the greeting, the catch-up line, the cards' top and the pills all hold
- * still (third re-shoot review: spare height above the greeting moved it 20 px down on
- * every cold load on a phone); only the space under the last card grows. While the pointer is over the
- * grid or focus is inside it, a fresh result is held (never reorder under the analyst).
+ * card taking a slot, or cards landing shorter than a skeleton that showed, keeps its
+ * height). The spare height sits UNDER the category pills, as the stack's last box: the
+ * cards keep their natural height (re-shoot PW3-5: a floor on the grid stretched every
+ * card), the gap under the catch-up line is always 16 px (third re-shoot PW4-5: spare
+ * height kept above the cards left 36 px on a phone), the cards stay 12 px above the
+ * pills (closing pass: a spacer between them left 32 px on a phone), and the greeting,
+ * the catch-up line and the cards' top hold still (third re-shoot review: spare height
+ * above the greeting moved it 20 px down on every cold load on a phone); the pills move
+ * up with the cards' end and the room above the composer takes the difference. While
+ * the pointer is over the grid or focus is inside it, a fresh result is held (never
+ * reorder under the analyst).
  * Retry keeps its row, busy, until the read lands, then hands focus to the cards only
  * when focus was still on Retry (never one the analyst moved elsewhere). Nothing here is
  * a live region.
@@ -157,6 +162,15 @@ export const FOUR_COLUMNS_FROM = 1040;
 /** Below this lane height the greeting is visually hidden (§3.11). */
 export const GREETING_MIN_LANE_HEIGHT = 480;
 
+/**
+ * How long a loading start stack stays laid out but unseen before it shows skeletons
+ * (closing pass). Live on the Demo a starters read landed in 10 to 350 ms (the cold
+ * case-starter budget is 600 ms, PB3-6); within this wait the stack appears once, with
+ * its cards, and nothing on it moves. A slower read shows the skeleton, and cards that
+ * land at another height than it are the one case left where the stack changes height.
+ */
+export const STARTERS_SKELETON_DELAY_MS = 600;
+
 /** Columns and visible cards for a measured lane width (0 = not measured yet: narrow). */
 export function startGrid(width: number): { columns: 1 | 2 | 4; count: 3 | 4 } {
   if (width >= FOUR_COLUMNS_FROM) return { columns: 4, count: 4 };
@@ -177,8 +191,9 @@ export function startGridClass(columns: 1 | 2 | 4): string {
 /**
  * The box the card grid sits in, 16 px under the catch-up line whatever the cards'
  * heights. The stack's height floor is NOT on this box (third re-shoot PW4-5): spare
- * height here sat between the catch-up line and the cards. It is a spacer under the cards
- * ({@link gridSpare}), above the pills.
+ * height here sat between the catch-up line and the cards. It is a spacer under the
+ * pills ({@link gridSpare}), the stack's last box (closing pass: under the cards it left
+ * 32 px between the last card and the pills on a phone).
  */
 export const START_GRID_FLOOR_CLASS = 'mt-4';
 
@@ -409,6 +424,17 @@ export function StartScreen({
   const info = starters?.info ?? null;
   const loading = !!starters && starters.loading;
   const failed = !!starters && !!starters.error && !info;
+  // A loading stack is laid out but unseen until its cards land, or until
+  // STARTERS_SKELETON_DELAY_MS has passed and the skeleton shows (closing pass).
+  const [skeletonDue, setSkeletonDue] = React.useState(false);
+  React.useEffect(() => {
+    if (!loading) {
+      setSkeletonDue(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setSkeletonDue(true), STARTERS_SKELETON_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
   const visible = React.useMemo(() => starterSlots(info?.starters ?? [], hidden, count), [info, hidden, count]);
   const visibleSignature = visible.map(starterHideKey).join(',');
   const catchUp = React.useMemo(() => visibleCatchUp(info, hidden.keys), [info, hidden]);
@@ -640,7 +666,7 @@ export function StartScreen({
   /* ------------------------------------------- the grid never gets shorter -- */
   // Within one applied result at one width, a hide or an Undo can bring a shorter card
   // into a row: the stack keeps the grid's tallest height it had (as a spacer under the
-  // cards, above the pills), so its box never shrinks and grows back. A new result, another width, or another number of cards
+  // pills), so its box never shrinks and grows back. A new result, another width, or another number of cards
   // (a slot closed with no card left to take it, or an Undo reopened one) starts from
   // its own height, so the cards left are never stretched over the rows that went.
   // The skeleton the cards replace (Round 13 polish) hands its height over once: when the
@@ -649,9 +675,10 @@ export function StartScreen({
   // from their own height. The floor becomes the stack's spare height, never a height on
   // the grid: a grid taller than its rows stretches them
   // (`1fr` rows, and auto rows under `align-content: normal`), and the cards with them.
-  // The grid is measured at its natural height, and the spare goes under the cards so
-  // they stay 16 px under the catch-up line (PW4-5) and nothing above them moves: the
-  // stack is anchored at its bottom, so spare above the greeting moved the greeting.
+  // The grid is measured at its natural height, and the spare goes under the pills so
+  // the cards stay 16 px under the catch-up line (PW4-5) and 12 px above the pills
+  // (closing pass), and nothing above them moves: the stack is anchored at its bottom,
+  // so spare above the greeting moved the greeting.
   const skeletonFloor = React.useRef<{ widthClass: string; height: number } | null>(null);
   const floorSignature = `${info?.as_of ?? ''}|${info?.expires_at ?? ''}|${width}|${columns}|${visibleCount}`;
   const [gridFloor, setGridFloor] = React.useState<{ signature: string; height: number; natural: number }>({
@@ -740,6 +767,10 @@ export function StartScreen({
     starters.retry();
   };
   const showError = failed || retryBusy;
+  const waiting = loading && !skeletonDue && !showError;
+  // A stack that waited unseen fades in when it shows, once.
+  const waited = React.useRef(false);
+  if (waiting) waited.current = true;
 
   /* --------------------------------------- open at the end when it overflows -- */
   const phase = showError ? 'failed' : loading ? 'loading' : 'ready';
@@ -756,7 +787,8 @@ export function StartScreen({
   React.useLayoutEffect(() => {
     const lane = node?.closest<HTMLElement>('[data-chat-scroll-lane]');
     if (lane && lane.scrollHeight > lane.clientHeight) lane.scrollTop = lane.scrollHeight;
-  }, [node, phase, laneHeight]);
+    // `waiting`: the skeleton of a slow read arrives after the wait, in the same phase.
+  }, [node, phase, laneHeight, waiting]);
 
   const shortLane = laneHeight > 0 && laneHeight < GREETING_MIN_LANE_HEIGHT;
   // While the cards load in one column (a phone), the capability line keeps the room of
@@ -773,7 +805,14 @@ export function StartScreen({
       // `flow-root`: the narrow pill row's negative block margin (room for its focus rings
       // inside its scroll clip) stays inside the stack, so the stack's edge is the pills'.
       // Proportional numerals: the stack is prose (tabular ones set hyphens wide).
-      className={cn('flow-root w-full proportional-nums', className)}
+      // Unseen while it waits for its cards (`invisible` keeps its layout, so its width is
+      // measured and the grid lands at the right column count); it fades in when shown.
+      data-waiting={waiting || undefined}
+      className={cn(
+        'flow-root w-full proportional-nums',
+        waiting ? 'invisible' : waited.current && 'animate-in fade-in-0 duration-200 ease-spring',
+        className,
+      )}
     >
       <h3 id={headingId} className={cn('text-2xl font-semibold text-foreground', shortLane && 'sr-only')}>
         {greetingLine(name)}
@@ -807,7 +846,7 @@ export function StartScreen({
             Retry
           </Button>
         </div>
-      ) : loading ? (
+      ) : waiting ? null : loading ? (
         <div
           ref={setSkeletonGrid}
           aria-hidden="true"
@@ -861,14 +900,14 @@ export function StartScreen({
           {PROMPTBOOK_RUNNING_REASON}
         </p>
       ) : null}
-      {/* The grid's floor less its height, under the cards and above the pills, only while
-          cards show: the greeting, the catch-up line, the cards' top and the pills hold
-          still (third re-shoot review). */}
+      <CategoryPills context={context} narrow={width > 0 && width < TWO_COLUMNS_FROM} className="mt-3" />
+
+      {/* The grid's floor less its height, under the pills (the stack's last box), only
+          while cards show: the greeting, the catch-up line and the cards' top hold still,
+          and the last card stays 12 px above the pills (closing pass). */}
       {spare > 0 && visible.length > 0 && !loading && !showError ? (
         <div aria-hidden="true" data-testid="starter-spare" style={{ height: spare }} />
       ) : null}
-
-      <CategoryPills context={context} narrow={width > 0 && width < TWO_COLUMNS_FROM} className="mt-3" />
     </section>
   );
 }

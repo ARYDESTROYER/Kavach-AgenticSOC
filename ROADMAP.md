@@ -358,6 +358,11 @@ engineering sequence is ordered by data safety and measurable outcomes, not scre
 - ☐ **Starter speed at scale**: the open-case read can take a request past 600 ms on a
   20,000-case SQLite store with 15% of cases open; the hunt and auto-close health cards
   are missing for up to one refresh after a start or 10 idle minutes.
+- ☐ **A short display name for campaigns**: campaigns have no short name, so chat tables
+  (All campaigns, Campaign, Open campaigns), the Campaign sheet title and the Case
+  Manager "Part of campaign" chip show the internal `campaign-<32 hex>` id (at 390 it
+  takes most of a table's first column and wraps the sheet title over three lines). The
+  follow-up is a short campaign number, allocated like case numbers.
 - ☐ **Small leftovers**: `related_cases` titles equal the case id
   (`chat_tools/cases.py`); live case titles from `agents/pipeline.py` still use an em
   dash separator (switch to " · "); the shell user chip shows a saved display name

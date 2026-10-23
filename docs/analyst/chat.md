@@ -151,8 +151,10 @@ its place and the other cards stay where they are. A notice "Hidden for a day" o
 Mac) on the start screen does the same. The card is hidden on the server only
 when the notice closes without **Undo**; that kind of card then stays away for 24 hours.
 
-If the suggestions cannot be loaded, the start screen says "Couldn't load suggestions."
-with **Retry**; the message box works as usual. When there is little height, the greeting
+The start screen appears with its suggestions, so nothing on it moves as they arrive;
+when they take longer than about half a second, placeholder cards hold their place
+until they do. If the suggestions cannot be loaded, the start screen says "Couldn't
+load suggestions." with **Retry**; the message box works as usual. When there is little height, the greeting
 is hidden and the rest stays.
 
 ### Catching up in an open conversation
@@ -517,7 +519,9 @@ Options `⋯`.
 When a lookup finds nothing, the answer says so in words, and one-click suggestions widen
 the search: a longer time window, every source, or the same lookup without one filter,
 for example "Without the source IP filter", "Open and closed cases", "Any severity", or
-"All sources". They join the follow-ups' row after a muted "Widen the search:" label (on
+"All sources". A longer window is offered only when it covers more than the search did:
+a search of the last 30 days, counted in whole days, is never offered "Last 30 days"
+again. They join the follow-ups' row after a muted "Widen the search:" label (on
 a narrow screen the label sits on its own line with the suggestions under it) and stay
 even when you turned follow-ups off, because they only repeat the lookup more
 widely. Selecting one sends it as your next question, for example "Show the same without
@@ -545,6 +549,12 @@ caption, because a block can travel alone.
 Cases are named by their case number and title. A case without a number shows its title
 followed by a short form of its ID (the full ID is in its tooltip). Verdicts, statuses,
 and kinds read in words, such as "True positive", "Open → Escalated", and "IP".
+
+Figures in an answer's text read the way its blocks show them, so one figure never
+appears in two forms: a rate is a whole percent from 10% up ("78%"), with one decimal
+under 10% and "<1%" for a sliver, rounded half up; a change in a rate is in points the
+same way ("+36 points"); an average risk reads "7/100". The run log's step summaries
+write a rate the same way ("FP rate 76%").
 
 Case counts in chat are exact across your whole case store, however large: chat never
 presents a sample as a total. If the store fails part-way through a count, the answer
@@ -604,7 +614,9 @@ without a number shows its case ID. The CSV writes the number under **Case** and
 **Case ID** column with the internal ID, so other tools can match it; JSON keeps the
 stored values.
 
-A table shows ten rows inline, and **View all** opens the rest. A lookup that returns
+A table shows ten rows inline, and **View all** opens the rest. A cell with no value is
+left blank (a screen reader reads "None", or "Not measured" for a number), and a list of
+ATT&CK techniques in a cell shows one chip per technique. A lookup that returns
 no rows adds no empty chart or table; the answer says so in words. A count of zero is
 still a figure and is shown, and a duration of zero reads in its unit, such as "0 min";
 a duration measured in minutes or hours that is under one second reads "< 1 min". You
@@ -912,6 +924,12 @@ Word, Excel, Markdown, HTML, and the CSV's **Case** column; a case without a num
 its case ID. The CSV adds a **Case ID** column with the internal ID, and JSON keeps it as
 stored, so other tools can match it.
 
+A table cell with no value is left blank in every format, as on screen, such as a
+campaign with no ATT&CK technique. In Word, Markdown, and HTML, a dash (`—`) marks only
+a figure that was not measured, such as a missing count or risk score, and the
+**Methodology & limitations** section says how many there are. Excel and CSV leave both
+kinds of cell empty, never 0.
+
 PDF, Word, Markdown, and HTML exports, and the Excel **Report** sheet, carry a header
 (title, author, time generated, app version, source conversations, and each item's
 window and sources), the AI summary, the items with their notes, a **Methodology &
@@ -1026,12 +1044,27 @@ be narrowed to your cases; an answer from them says so. With sign-in turned off,
 cannot tell which cases are yours, so it says so and shows the open queue by assignee
 instead. The suggestion "What should I do next on case …?" reads your own open cases
 too, so its answer can say whether the case is your only one and list your others.
+Asked right after you assign a case, it already counts and lists that case: the count
+and the list always describe the same cases.
 
 The shift report names the 5 most overdue open cases and the 5 closest to their response
 target (nearest first), each with who has it; its totals count every one. An answer from
 it states the total once and then says how many it lists, for example "Work the 10 cases
 past SLA first, starting with the 3 most overdue: …". The brief's opening line starts
-with the same case as that step, the most overdue one.
+with the same case as that step, the most overdue one. Its **Needs human** figure counts
+the open cases whose verdict is Needs human, the same badge its **Needs attention** list
+shows, and the same figure the Standup page shows under **Needs human** (the Standup
+page's **Awaiting analyst** counts a status instead; see
+[Analytics and standup](analytics.md#standup-and-handoff)).
+
+Campaigns are listed with every ATT&CK technique and shared entity, or the first few and
+how many more ("T1021, T1048, T1078 and 2 more"), in the table and in the text, where the
+count names what it counts ("and 2 more techniques", "and 6 more shared entities"). A
+case's own techniques read the same way: every one up to four, else the first three and
+how many more, beside the ATT&CK block that lists them all. An
+in-depth look at a user, host, or IP lists only the campaigns that involve it: one of
+their shared entities is that value, or one of their cases is about it. The table is
+titled for it, for example "Campaigns involving this user".
 
 Chat cannot read users, roles, sessions, jobs, notifications, dashboards, or secrets,
 and it cannot change anything. For those, it answers from the Help Center and links the

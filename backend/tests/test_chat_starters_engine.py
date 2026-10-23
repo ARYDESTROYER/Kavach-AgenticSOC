@@ -413,7 +413,8 @@ async def test_volume_spike_card_from_the_store(app_state, as_alice) -> None:
     card = _card(await _build(app_state, now=now), "volume_change")
     assert card is not None and card.template == "volume_spike"
     assert card.prompt == "Why did new cases rise to 12 in the last 24 hours, against a usual 1?"
-    assert card.reason == "12.0 times the usual daily level"
+    # A whole multiple reads "12 times", never "12.0 times" (Round 13 close BF).
+    assert card.reason == "12 times the usual daily level"
 
 
 async def test_noisy_rule_needs_ten_cases_and_thirty_percent(app_state, as_alice) -> None:

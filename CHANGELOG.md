@@ -30,7 +30,21 @@ Mode answers every suggestion from its data. A suggestion never writes an id lon
 many cases), except a case's internal id when case numbering is off, Demo Mode investigates the host, user, email address, IP address, domain,
 file hash, detection rule, log source or attack type a question names rather than the
 newest case, and its answers say when cases, rules or periods tie for the highest, the
-most or the oldest. The Help Center chat, settings,
+most or the oldest. Every figure in an answer reads the way its blocks show it ("78%",
+"7/100"), in the run log too; the shift brief's Needs human figure counts the cases its
+list badges as Needs human, and the Standup page shows the same figure under Needs human,
+with its old status count renamed Awaiting analyst; an investigation of a user, host or IP
+lists only the campaigns that involve it; campaign tables and text name every ATT&CK
+technique or say how many more ("and 3 more techniques", "and 6 more shared entities"),
+and so does a case's brief; "my cases" asked right after an assignment lists every case
+it counts; and a suggestion to widen a search always widens it. A suggestion's "times the
+usual" figure reads "15 times", never "15.0 times". The start screen appears once its
+suggestions arrive (a skeleton only after 600 ms), so on a phone nothing on it moves and the last card sits
+12 px above the category pills; a chat table shows one chip per ATT&CK technique and
+leaves a blank cell blank instead of a dash, and so does a report download, which keeps
+a dash only for a figure that was not measured; and the console header never breaks a page
+name inside a word (a word too long for a phone's header ends in an ellipsis). The Help
+Center chat, settings,
 configuration, permissions and API pages are updated to match.
 
 **Round 12: chat without limits, a working indicator, Remember me, reliable report

@@ -51,14 +51,18 @@ changing any case or detection policy.
    a quiet "No trend data yet" line instead of inventing a trend when the series has
    no measured buckets. Total Critical deliberately has no trendline, because no
    per-severity bucket series exists for it.
-3. **Read the two bands** — below the strip, the page has two titled bands separated
-   by space rather than cards. **Alert flow** holds the Noise Reduction flow and Human
-   vs AI, which attributes the window's closes to the agent, an analyst, or system
-   routing. **Cases and response** holds the case state (the Open cases and Cases
-   resolved composition rings, which show severity mix), **Response time** (MTTD paired
-   with Respond, the first human action), and Latest cases, which shows exactly five
-   recent records and reveals bounded detail on hover or keyboard focus. On very wide
-   screens the two bands sit side by side with a narrower rail.
+3. **Read the two bands.** Below the strip, the page has two titled bands. Each module
+   sits on its own soft tinted panel, with no border and no shadow, so you can see at a
+   glance where one ends and the next begins; the KPI strip and the Deeper analytics
+   header sit on panels too. The band titles stay outside the panels, on the page, and
+   each module's own title sits inside its panel. **Alert flow** holds the Noise
+   Reduction flow and Human vs AI, which attributes the window's closes to the agent, an
+   analyst, or system routing. **Cases and response** holds the case state (the Open
+   cases and Cases resolved composition rings, which show severity mix and share one
+   panel, split by a thin line), **Response time** (MTTD paired with Respond, the first
+   human action), and Latest cases, which shows exactly five recent records and reveals
+   bounded detail on hover or keyboard focus. On very wide screens the two bands sit
+   side by side with a narrower rail.
 4. **Inspect Noise Reduction** — follow the horizontal ribbon from alerts ingested
    through clustering and cases opened. Opened cases then split into
    AI auto-cleared and escalated work; human closure is an overlapping analyst-owned

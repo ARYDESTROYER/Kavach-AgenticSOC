@@ -1818,7 +1818,12 @@ fields, apart from the top `notice`.
   lookups; indicator lookups and model steps are kept longest, so the run log and the stored
   egress count never lose a lookup that left the deployment (`models._bounded_steps`).
 - **Copy.** The shift brief headline labels the status KPI "Status: Needs human", which counts
-  cases in that status, not cases with a needs-human verdict; the posture trend says "in hourly
+  cases in that status, not cases with a needs-human verdict (**superseded in the Round 13
+  close round**, SPEC-chat §10.6 "Close round (CB)" and "Close round (BF)": the shift
+  headline's "Needs human" counts the open cases whose verdict is Needs human, the badge its
+  Needs attention list shows, and the Standup page shows that same figure under the same
+  label; the legacy `needs_human` status count is the Standup page's "Awaiting analyst");
+  the posture trend says "in hourly
   buckets" (a 24-hour window spans 25 hourly buckets) instead of "24h (25 hours)"; case facts show friendly labels next to badges, not raw enum values; Help Center
   citation snippets are plain text and a section is cited once.
 - **History rail.** The rail requests 60 rows so up to ten pinned conversations never fall off

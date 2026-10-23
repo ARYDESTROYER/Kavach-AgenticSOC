@@ -26,6 +26,7 @@
 import { maybeDefang } from '@/lib/defang';
 
 import {
+  DASH,
   INVESTIGATION_BRIEF_ADVISORY,
   INVESTIGATION_BRIEF_ADVISORY_NOTE,
   IN_PROGRESS_SUFFIX,
@@ -64,6 +65,7 @@ import {
   TEMPLATE_LABEL,
   blockTitle,
   itemKindLabel,
+  notMeasuredTableCell,
   type DocItem,
   type ReportDoc,
 } from '../model';
@@ -158,6 +160,17 @@ const TONE_LABEL: Record<ToneKey, string> = {
   warning: 'Warning',
   critical: 'Important',
 };
+
+/** The mark for a value not measured (BLOCKS.md G3), which the methodology line explains. */
+export const NOT_MEASURED = DASH;
+
+/**
+ * Whether a table cell's text is a value a serialiser may set as code: an empty cell or
+ * the not-measured mark never is (an empty code span would draw a blank chip).
+ */
+export function codeCellText(text: string): boolean {
+  return text !== '' && text !== NOT_MEASURED;
+}
 
 const NUMERIC_TYPES: readonly ColumnType[] = ['number', 'risk'];
 const CODE_TYPES: readonly ColumnType[] = ['entity', 'code', 'mitre'];
@@ -373,7 +386,18 @@ class Walker {
           ]),
           [false, false, false, false, false, true, false],
           [true, block.untrusted, false, false, false, false, false],
-          (cell, col) => (cell === null ? '—' : col === 5 && typeof cell === 'number' ? formatValue(cell, 'score') : String(cell)),
+          // Only a missing risk score is not measured ("—", counted by the methodology
+          // line); any other missing value is an empty cell, as on screen.
+          (cell, col) =>
+            col === 5
+              ? notMeasuredTableCell('risk', cell)
+                ? NOT_MEASURED
+                : typeof cell === 'number'
+                  ? formatValue(cell, 'score')
+                  : String(cell)
+              : cell === null
+                ? ''
+                : String(cell),
           undefined,
           { units: [null, null, null, null, null, 'score', null] },
         );
@@ -413,7 +437,8 @@ class Walker {
             block.reputation.map((r) => [r.provider, REPUTATION_LABEL[r.verdict], r.score ?? null, r.detail ?? null]),
             [false, false, true, false],
             [false, false, false, true],
-            (cell) => (cell === null ? '—' : String(cell)),
+            // A provider without a score or detail shows none on screen either.
+            (cell) => (cell === null ? '' : String(cell)),
           );
         }
         if (block.related_cases.length) {
@@ -508,7 +533,11 @@ class Walker {
       block.columns.map((c) => c.untrusted || CODE_TYPES.includes(c.type)),
       (cell, col) => {
         const column = block.columns[col];
-        if (cell === null || cell === undefined || cell === '') return '—';
+        // A blank figure is not measured: "—", which the methodology line counts. Any
+        // other blank cell (a campaign with no technique) is empty, as on screen
+        // (BLOCKS.md amendment 35), never an unexplained not-measured mark.
+        if (notMeasuredTableCell(column?.type, cell)) return NOT_MEASURED;
+        if (cell === null || cell === undefined || cell === '') return '';
         if (typeof cell === 'number') {
           if (column?.type === 'risk') return formatValue(cell, 'score');
           return formatValue(cell, column?.unit ?? 'count');

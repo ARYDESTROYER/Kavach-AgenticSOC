@@ -263,6 +263,18 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     whenever the case has one, and a related case now carries its own title. The rendering
     in amendment 33 is unchanged; a case without a number still shows its title and the
     short id.
+35. **Blank table cells and technique lists (Round 13 closing pass; SPEC-chat §10.5;
+    amends G3 for table cells).** A `table` cell that is `null` or empty draws nothing on
+    screen and in print (no em dash); assistive tech reads "None", or "Not measured" in a
+    `number` or `risk` column (a `null` figure is not measured, never 0). G3's em dash
+    still marks a value not measured elsewhere (KPI tiles, comparisons, charts' text). A
+    report download (Markdown, HTML, Word) writes it in a table only for a value not
+    measured, a blank `number` or `risk` cell or a case list's missing risk score, which
+    its methodology line counts; any other blank cell is empty, never a code span, and
+    Excel and CSV write no cell for either (closing re-shoot). A `code` or `mitre` cell
+    that lists ATT&CK ids ("T1021, T1048", optionally followed by "and K more") renders one
+    `InlineCode` chip per id, each on one line, in a wrapping row; a single id stays one
+    chip.
 
 ---
 

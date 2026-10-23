@@ -1195,6 +1195,10 @@ def _t15_forms(item: dict[str, Any]) -> set[str]:
         return {f"{_t15_dec(value)} min", f"{_t15_dec(value / 60)} h", f"{_t15_dec(value)} minutes"}
     if unit in ("seconds", "ms", "hours"):
         return {f"{_t15_dec(value)} {u}" for u in ("s", "ms", "h", "seconds", "hours")}
+    if unit == "score":
+        # The prose writes a score as the console does, "7/100" (Round 13 close).
+        whole = int(_t15_quantize(value))
+        return {_t15_dec(value), f"{whole:,}", str(whole)}
     if value == int(value) or item.get("display") == "gauge":
         whole = int(_t15_quantize(value))
         return {f"{whole:,}", str(whole)}
@@ -1277,6 +1281,89 @@ def _t15_violations(answer: str, blocks: Any) -> list[tuple[Any, list[Any]]]:
     return bad
 
 
+# Round 13 close (one figure, one form): the console writes a percent whole from 10%
+# up, with one decimal under 10% and "<1%" for a sliver, rounded half up, and a 0 to 100
+# score (an average risk) as "N/100". The prose and a report's own text state each figure
+# the same way, so "77.5%" never sits under a "78%" tile. A signed change ("+12.5%",
+# "+3.5 points") keeps the comparison's own form. Inline code (log values, rule names)
+# is not prose.
+_LONG_PERCENT = re.compile(r"(?<![\d.,+−-])(?:[1-9]\d+\.\d+|0\.\d+)%")
+_DECIMAL_SCORE = re.compile(r"\baverage risk \**(\d+(?:\.\d+)?)(?!\d|\.\d|/100)")
+
+
+def _report_texts(blocks: Any) -> Iterator[str]:
+    """The text a report envelope writes itself: section summaries and markdown items."""
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "markdown" and isinstance(block.get("text"), str):
+            yield block["text"]
+        elif block.get("type") == "report":
+            for section in block.get("sections") or []:
+                if isinstance(section.get("summary"), str):
+                    yield section["summary"]
+                yield from _report_texts((section.get("blocks") or []) + (section.get("items") or []))
+
+
+def _figure_form_violations(response: dict[str, Any]) -> list[str]:
+    # The run log's step summaries too (Round 13 close BF): a live model reads them, so
+    # "FP rate 75.6%" there under a "76%" tile is the same figure stated two ways.
+    texts = [response.get("answer") or "", *_report_texts(response.get("blocks")),
+             *(s.get("summary") or "" for s in _tool_steps(response))]
+    bad: list[str] = []
+    for text in texts:
+        prose = re.sub(r"`[^`]*`", " ", text)
+        bad += _LONG_PERCENT.findall(prose)
+        bad += [f"average risk {m}" for m in _DECIMAL_SCORE.findall(prose)]
+    return bad
+
+
+# Round 13 close (BF): a case's ATT&CK techniques in the prose ("ATT&CK: …" in a case
+# brief, "The source case maps to ATT&CK …" in a hunt) are every technique its ATT&CK
+# block lists, or the first ones and "and K more techniques"; never a silent cut.
+_TECHNIQUE_SENTENCE = re.compile(r"(?:^|\n|\. )(?:ATT&CK: |The source case maps to ATT&CK )([^\n]*?\.)(?=\s|$)")
+_TECHNIQUE_ID = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+_MORE_TECHNIQUES = re.compile(r" and (\d+) more techniques\.$")
+
+
+def _technique_violations(response: dict[str, Any]) -> list[str]:
+    blocks = [b for b in _report_blocks(response.get("blocks")) if b.get("type") == "mitre"]
+    if len(blocks) != 1:
+        return []
+    listed = [str(t.get("id")) for t in blocks[0].get("techniques") or [] if isinstance(t, dict)]
+    bad: list[str] = []
+    for text in [response.get("answer") or "", *_report_texts(response.get("blocks"))]:
+        for sentence in _TECHNIQUE_SENTENCE.findall(text):
+            named = _TECHNIQUE_ID.findall(sentence)
+            more = _MORE_TECHNIQUES.search(sentence)
+            if not set(named) <= set(listed) or len(named) + (int(more.group(1)) if more else 0) != len(listed):
+                bad.append(f"{sentence} (block: {', '.join(listed)})")
+    return bad
+
+
+def test_the_technique_check_itself() -> None:
+    block = {"type": "mitre", "techniques": [{"id": t} for t in ("T1566", "T1078", "T1021", "T1048")]}
+    def check(answer: str) -> list[str]:
+        return _technique_violations({"answer": answer, "blocks": [block]})
+    assert not check("The source case maps to ATT&CK T1566 Phishing, T1078 Valid Accounts, T1021 Remote "
+                     "Services and T1048 Exfiltration.")
+    assert check("The source case maps to ATT&CK T1566 Phishing, T1078 Valid Accounts and T1021 Remote Services.")
+    assert not check("ATT&CK: T1566 Phishing (initial-access), T1078 Valid Accounts and 2 more techniques.")
+    assert check("ATT&CK: T1566 Phishing and 2 more techniques.")
+
+
+def test_the_figure_form_check_itself() -> None:
+    def check(text: str) -> list[str]:
+        return _figure_form_violations({"answer": text})
+    assert check("The false-positive rate is 77.5%.") == ["77.5%"]
+    assert check("FP rate **78%**, automation 7.5%, change +12.5%, −35.6%; <1% left; 0.4% of them") == ["0.4%"]
+    assert check("average risk 7.4 and average risk 27/100") == ["average risk 7.4"]
+    assert check("average risk **7** in the window") == ["average risk 7"]
+    assert not check("rule `t1-77.5%-rule` and 100% done")
+    step = {"kind": "tool", "tool": "soc_metrics", "summary": "Posture, last 24 hours: 45 cases, FP rate 75.6%"}
+    assert _figure_form_violations({"answer": "", "steps": [step]}) == ["75.6%"]
+
+
 def _match(expected: Any, actual: Any) -> bool:
     """One expected parameter value against a step's display value."""
     if expected is None:
@@ -1341,6 +1428,11 @@ def _check(g: G, response: dict[str, Any], client: TestClient | None = None) -> 
     # the takeaway and names at most two of them.
     assert not _t15_violations(answer, response.get("blocks")), (_t15_violations(answer, response.get("blocks")),
                                                                   context)
+    # Round 13 close: every figure in the form the console's tiles show it (one figure,
+    # one form), in the prose and in the report text beside the blocks.
+    assert not _figure_form_violations(response), (_figure_form_violations(response), context)
+    # Round 13 close (BF): the prose names a case's techniques as its ATT&CK block lists them.
+    assert not _technique_violations(response), (_technique_violations(response), context)
     # "Product help" is shown only for answers about the console (SPEC D9).
     kind = response.get("answer_kind")
     if kind == "product_help":
@@ -3331,3 +3423,147 @@ def test_a_half_risk_is_one_integer_on_the_card_the_steps_and_the_answer(half_ri
     assert "risk 99/100" in answer, answer[:500]
     assert not re.search(r"\brisk 98\b", answer), answer[:500]
     assert all(not re.search(r"\brisk 98\b", s) for s in summaries.values()), summaries
+
+
+# --------------------------------------------------------------------------- #
+# Round 13 close (CB): the figures of one answer agree; an entity investigation's
+# campaigns are its own; "my cases" right after an assignment lists what it counts.
+# --------------------------------------------------------------------------- #
+def _console_percent(value: float) -> str:
+    """The console's percent tile (``format.ts`` ``pct``): "<1%" for a sliver, one
+    decimal under 10%, whole from 10% up, rounded half up."""
+    if 0 < value < 1:
+        return "<1%"
+    places = 1 if abs(value) < 10 else 0
+    quantized = Decimal(str(round(value, 6))).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+    text = f"{quantized:,.{places}f}"
+    return (text.rstrip("0").rstrip(".") if places else text) + "%"
+
+
+def _kpi_items(blocks: Any, title: str) -> dict[str, dict[str, Any]]:
+    """The items of the key-figure group titled ``title`` (inside a report too), by key."""
+    group = next((g for g in _t15_groups(blocks) if g.get("title") == title), None)
+    return {str(i.get("key")): i for i in (group or {}).get("items") or [] if isinstance(i, dict)}
+
+
+def _report_blocks(blocks: Any) -> Iterator[dict[str, Any]]:
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        yield block
+        if block.get("type") == "report":
+            for section in block.get("sections") or []:
+                yield from _report_blocks((section.get("blocks") or []) + (section.get("items") or []))
+
+
+def test_the_shift_brief_states_each_figure_as_its_tiles_do(starter_client: TestClient) -> None:
+    """The shift headline's "Needs human" counts the open cases whose verdict is Needs
+    human (the badge the Needs attention list shows), never a status count of 0 beside
+    ten such badges; the Next steps state the false-positive rate as the posture tile
+    shows it ("78%", never "77.5%")."""
+    response = _stream(starter_client, "Give me a shift handover report")
+    blocks = response.get("blocks")
+    headline = _kpi_items(blocks, "Shift headline")
+    assert "needs_human_verdict" in headline and "needs_human" not in headline, sorted(headline)
+    store = _store_cases(starter_client)
+    awaiting = sum(1 for c in store if _status(c) in ACTIVE_STATUSES
+                   and str(getattr(c.verdict, "value", c.verdict) or "").upper() == "NEEDS_HUMAN")
+    assert headline["needs_human_verdict"]["label"] == "Needs human"
+    assert headline["needs_human_verdict"]["value"] == awaiting, (headline["needs_human_verdict"], awaiting)
+    attention = next(b for b in _report_blocks(blocks) if b.get("type") == "case_list"
+                     and b.get("title") == "Needs attention")
+    badges = sum(1 for i in attention.get("items") or [] if i.get("verdict") == "needs_human")
+    assert badges <= awaiting, (badges, awaiting)
+    posture = _kpi_items(blocks, "Security posture")
+    steps = "\n".join(t for t in _report_texts(blocks) if t.lstrip().startswith("1. "))
+    assert steps, list(_report_texts(blocks))
+    said = re.search(r"false-positive rate is ([^:]+):", steps)
+    if said is not None:
+        assert said.group(1) == _console_percent(posture["fp_rate"]["value"]), (said.group(1), posture["fp_rate"])
+    if awaiting:
+        assert f"Give a verdict on the {awaiting:,} open case" in steps, steps
+    assert "Needs human status" not in steps + response["answer"], steps
+    assert not _figure_form_violations(response), _figure_form_violations(response)
+
+
+def test_an_entity_investigation_lists_only_the_campaigns_that_involve_it(starter_client: TestClient) -> None:
+    """The pnair deep dive's campaign table holds only the campaigns that involve user
+    pnair (a shared entity, or a member case about pnair), titled for the user, and the
+    prose counts the same campaigns; other campaigns stay out of it."""
+    from app.models import Campaign, CampaignEntity
+
+    state = _state(starter_client)
+    pnair_cases = [c for c in _store_cases(starter_client) if str(getattr(c.entity, "value", "")) == "pnair"]
+    other_cases = [c for c in _store_cases(starter_client) if str(getattr(c.entity, "value", "")) not in ("pnair", "")]
+    assert pnair_cases and len(other_cases) >= 4
+    now = datetime.now(UTC).isoformat()
+    seeded = [
+        Campaign(id="campaign-close-shared", case_ids=[other_cases[0].case_id, other_cases[1].case_id],
+                 entities=[CampaignEntity(entity_type="user", value="pnair")], mitre=["T1078"],
+                 first_seen=now, last_seen=now, created_at=now),
+        Campaign(id="campaign-close-member", case_ids=[pnair_cases[0].case_id, other_cases[2].case_id],
+                 entities=[CampaignEntity(entity_type="ip", value="198.51.100.230")],
+                 first_seen=now, last_seen=now, created_at=now),
+        Campaign(id="campaign-close-other", case_ids=[other_cases[3].case_id, other_cases[1].case_id],
+                 entities=[CampaignEntity(entity_type="ip", value="203.0.113.230")],
+                 first_seen=now, last_seen=now, created_at=now),
+    ]
+    starter_client.portal.call(lambda: state.campaign_store.upsert_many(seeded))
+    try:
+        response = _stream(starter_client, "Investigate the activity of user pnair in the last 3 days")
+        steps = [s for s in _tool_steps(response) if s["tool"] == "list_campaigns"]
+        assert steps and all((s.get("params") or {}).get("entity") == "pnair" for s in steps), steps
+        tables = [b for b in _report_blocks(response.get("blocks")) if b.get("type") == "table"
+                  and "campaign" in str(b.get("title") or "").lower()]
+        assert len(tables) == 1 and tables[0]["title"] == "Campaigns involving this user", \
+            [b.get("title") for b in tables]
+        every, _total = starter_client.portal.call(lambda: state.campaign_store.list())
+        by_label = {(c.name or c.id): c for c in every}
+        about = {c.case_id for c in pnair_cases}
+        listed = [by_label[str(row[0])] for row in tables[0].get("rows") or []]
+        assert listed, tables[0]
+        for camp in listed:
+            assert (any(e.value.lower() == "pnair" for e in camp.entities) or about & set(camp.case_ids)), camp.id
+        ids = {c.id for c in listed}
+        assert {"campaign-close-shared", "campaign-close-member"} <= ids and "campaign-close-other" not in ids, ids
+        said = re.search(r"Campaigns involving it: \*\*(\d+) campaigns?\*\*", response["answer"])
+        assert said is not None and int(said.group(1)) == len(listed), response["answer"][-800:]
+    finally:
+        async def drop() -> None:
+            for camp in seeded:
+                await state.campaign_store.delete(camp.id)
+        starter_client.portal.call(drop)
+
+
+def test_my_cases_right_after_an_assignment_lists_every_case_it_counts(signed_in_client: TestClient) -> None:
+    """The count of "my cases" and the cases listed under it describe the same cases
+    when the question follows an assignment within seconds (the shared case page is
+    read again when it predates the count): never "4 open cases are assigned to you"
+    with three listed."""
+    mine = _my_open_cases(signed_in_client)
+    starters = signed_in_client.get("/api/chat/starters", params={"surface": "home"}).json()["starters"]
+    card = next(c for c in starters if c.get("template") == "my_cases")
+    _stream(signed_in_client, card["prompt"], origin="starter")  # the shared case page is now warm
+    spare = next(c for c in sorted(_store_cases(signed_in_client), key=lambda c: c.case_id)
+                 if _status(c) in ACTIVE_STATUSES and not str(c.assignee or "").strip())
+    try:
+        assigned = signed_in_client.post(f"/api/cases/{spare.case_id}/assign", json={"assignee": _ME})
+        assert assigned.status_code == 200, assigned.text
+        response = _stream(signed_in_client, card["prompt"], origin="starter")
+        now_mine = _my_open_cases(signed_in_client)
+        assert len(now_mine) == len(mine) + 1
+        (step,) = [s for s in _tool_steps(response) if s["tool"] == "search_cases"]
+        assert step["status"] == "ok", step
+        assert response["answer"].startswith(f"**{len(now_mine)} open cases** are assigned to you."), \
+            response["answer"][:300]
+        (listed,) = [b for b in response["blocks"] if b.get("type") == "case_list"]
+        assert sorted(i.get("case_number") for i in listed.get("items") or []) == \
+            sorted(c.case_number for c in now_mine), listed
+    finally:
+        async def release() -> None:
+            case = await _state(signed_in_client).cases.get(spare.case_id)
+            await _state(signed_in_client).cases.save(case.model_copy(update={"assignee": ""}))
+        signed_in_client.portal.call(release)
+        from app.api.metrics_shared import invalidate_case_page_cache
+
+        invalidate_case_page_cache()

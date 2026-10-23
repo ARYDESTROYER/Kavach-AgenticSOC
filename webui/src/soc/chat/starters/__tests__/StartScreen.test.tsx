@@ -32,6 +32,7 @@ import {
   HIDE_TOAST_POSITION,
   STARTERS_LOAD_ERROR,
   START_GRID_FLOOR_CLASS,
+  STARTERS_SKELETON_DELAY_MS,
   StartScreen,
   hideToastStyle,
   isUndoHideKey,
@@ -94,10 +95,23 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   resetPromptbookForTests();
 });
+
+/**
+ * A loading stack waits unseen for its cards (closing pass); the skeleton shows once
+ * STARTERS_SKELETON_DELAY_MS has passed. Call `vi.useFakeTimers` before rendering.
+ */
+function passSkeletonWait() {
+  act(() => {
+    vi.advanceTimersByTime(STARTERS_SKELETON_DELAY_MS);
+  });
+}
+
+const fakeTimeouts = () => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 
 type Box = { x: number; y: number; width: number; height: number };
 
@@ -206,6 +220,57 @@ describe('StartScreen', () => {
     } finally {
       (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView = original;
     }
+  });
+
+  it('keeps the last card 12 px above the first pill at every width, the narrow row\'s ring room included', () => {
+    // Closing re-shoot: StartScreen's `mt-3` was merged onto the narrow row and replaced
+    // the top half of its `-my-1`, so the row's 4 px of ring padding was no longer pulled
+    // back: 16 px from the last card to a pill on a phone, 12 at desktop. The caller's
+    // margin now sits on an outer box and collapses with the row's negative margin.
+    // jsdom has no layout, so the offset is resolved from the classes as CSS would:
+    // Tailwind's order (`m` < `my` < `mt`), adjoining margins collapsed (largest positive
+    // plus most negative), then the row's top padding.
+    const SPACING: Record<string, number> = { '0': 0, '0.5': 2, '1': 4, '1.5': 6, '2': 8, '2.5': 10, '3': 12, '4': 16, '6': 24 };
+    const side = (el: Element, prefixes: string[]): number => {
+      const classes = (el.getAttribute('class') ?? '').split(/\s+/);
+      for (const prefix of prefixes) {
+        const hit = classes.find((c) => new RegExp(`^-?${prefix}-[\\d.]+$`).test(c));
+        if (hit) return (hit.startsWith('-') ? -1 : 1) * SPACING[hit.slice(hit.lastIndexOf('-') + 1)];
+      }
+      return 0;
+    };
+    const marginTop = (el: Element) => side(el, ['mt', 'my', 'm']);
+    const marginBottom = (el: Element) => side(el, ['mb', 'my', 'm']);
+    const paddingTop = (el: Element) => side(el, ['pt', 'py', 'p']);
+    const cardToPill = () => {
+      const stack = screen.getByTestId('chat-start');
+      const row = screen.getByTestId('category-pills');
+      // The row and every box between it and the stack, outermost first; their top
+      // margins adjoin (none of the outer boxes has top padding or a border).
+      const chain: Element[] = [];
+      for (let el: Element | null = row; el && el !== stack; el = el.parentElement) chain.unshift(el);
+      for (const el of chain.slice(0, -1)) expect(paddingTop(el)).toBe(0);
+      const above = chain[0].previousElementSibling!;
+      expect(above).toBe(screen.getByTestId('starter-grid-floor'));
+      const margins = [marginBottom(above), ...chain.map(marginTop)];
+      const collapsed = Math.max(0, ...margins) + Math.min(0, ...margins);
+      return collapsed + paddingTop(row);
+    };
+
+    stackWidth = 358; // one column: the row scrolls sideways
+    const narrow = renderStart();
+    const row = screen.getByTestId('category-pills');
+    expect(row.className).toMatch(/flex-nowrap.*overflow-x-auto/);
+    // The ring room is intact: its padding and both pulled-back margins.
+    expect(row.className.split(' ')).toEqual(expect.arrayContaining(['-mx-1', '-my-1', 'py-1']));
+    expect(row.className).not.toMatch(/(^|\s)mt-/);
+    expect(cardToPill()).toBe(12);
+    narrow.unmount();
+
+    stackWidth = 1200; // four columns: the row wraps, no ring room needed
+    renderStart();
+    expect(screen.getByTestId('category-pills').className).toContain('flex-wrap');
+    expect(cardToPill()).toBe(12);
   });
 
   it('never truncates or clamps a question, a reason or a pill', () => {
@@ -487,11 +552,14 @@ describe('StartScreen', () => {
     expect(rows(600)).toContain('auto-rows-fr');
     expect(rows(1100)).toContain('auto-rows-fr');
     stackWidth = 400;
+    fakeTimeouts();
     const loading = renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     expect(screen.getByTestId('starter-skeletons').className).not.toContain('auto-rows-fr');
     loading.unmount();
     stackWidth = 1100;
     renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     expect(screen.getByTestId('starter-skeletons').className).toContain('auto-rows-fr');
   });
 
@@ -583,9 +651,9 @@ describe('StartScreen', () => {
     renderStart({ starters: controller(makeInfo({ starters: four })) });
     const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
     // The floor is never a height on the grid or its box: the rows (and cards) keep their
-    // natural height (re-shoot PW3-5), and any spare height is a spacer under the cards,
-    // above the pills, so the cards stay 16 px under the catch-up line (PW4-5) and the
-    // greeting holds still (third re-shoot review).
+    // natural height (re-shoot PW3-5), and any spare height is a spacer under the pills,
+    // so the cards stay 16 px under the catch-up line (PW4-5) and 12 px above the pills
+    // (closing pass), and the greeting holds still (third re-shoot review).
     const stack = () => screen.getByTestId('chat-start');
     const floor = () => screen.getByTestId('starter-grid-floor');
     const spacer = () => screen.queryByTestId('starter-spare');
@@ -594,11 +662,12 @@ describe('StartScreen', () => {
     expect(floor().style.minHeight).toBe('');
     expect(grid().style.minHeight).toBe('');
     // A shorter stand-in (CONTINUE, 24 px shorter) takes slot 1: the stack keeps its
-    // height, with the 24 px under the cards and nothing above the greeting.
+    // height, with the 24 px under the pills and nothing above the greeting.
     act(() => mainCards()[1].focus());
     await user.keyboard('{Delete}');
     expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'continue', 'silent_source']);
     expect(spacer()?.style.height).toBe('24px');
+    expect(stack().lastElementChild).toBe(spacer());
     expect(stack().style.paddingTop).toBe('');
     expect(floor().style.minHeight).toBe('');
     expect(grid().style.minHeight).toBe('');
@@ -662,9 +731,75 @@ describe('StartScreen', () => {
     expect(setHeld).toHaveBeenLastCalledWith(false);
   });
 
-  it('shows exactly the visible count of skeletons while loading', () => {
+  it('waits unseen for its cards, and shows them at once when the read lands within the wait', () => {
+    // Closing pass: on a phone a skeleton taller or shorter than the cards that replaced
+    // it either moved the bottom-anchored greeting or left 32 px between the last card
+    // and the pills. A read usually lands in 10 to 50 ms: the stack now waits, laid out
+    // (so its width is measured) but unseen, and appears once, whole.
+    stackWidth = 338;
+    fakeTimeouts();
+    const view = renderStart({ starters: controller(null, { loading: true }) });
+    const stack = () => screen.getByTestId('chat-start');
+    expect(stack()).toHaveAttribute('data-waiting', 'true');
+    expect(stack()).toHaveClass('invisible');
+    expect(screen.queryByTestId('starter-skeletons')).toBeNull();
+    // Still waiting just before the delay ends.
+    act(() => {
+      vi.advanceTimersByTime(STARTERS_SKELETON_DELAY_MS - 1);
+    });
+    expect(screen.queryByTestId('starter-skeletons')).toBeNull();
+    // The cards land: the stack shows, fading in once, with no skeleton height to keep.
+    view.rerender(
+      <TooltipProvider>
+        <div data-chat-scroll-lane="true">
+          <StartScreen context={makeContext()} starters={controller(makeInfo())} onActivate={vi.fn()} />
+        </div>
+      </TooltipProvider>,
+    );
+    expect(stack()).not.toHaveAttribute('data-waiting');
+    expect(stack()).not.toHaveClass('invisible');
+    expect(stack()).toHaveClass('animate-in', 'fade-in-0');
+    expect(mainCards()).toHaveLength(3);
+    expect(screen.queryByTestId('starter-spare')).toBeNull();
+    // Nothing more happens when the wait would have ended.
+    passSkeletonWait();
+    expect(screen.queryByTestId('starter-skeletons')).toBeNull();
+    expect(stack()).not.toHaveClass('invisible');
+  });
+
+  it('opens a short lane at its end when a slow read\'s skeleton shows after the wait', () => {
+    // The skeleton arrives in the same loading phase, after the wait: the lane still opens
+    // at its end, where the pills sit above the composer.
+    stackWidth = 338;
+    laneHeight = 300;
+    vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.dataset.chatScrollLane ? 900 : 0;
+    });
+    fakeTimeouts();
+    renderStart({ starters: controller(null, { loading: true }) });
+    const lane = screen.getByTestId('chat-start').closest<HTMLElement>('[data-chat-scroll-lane]')!;
+    lane.scrollTop = 0;
+    passSkeletonWait();
+    expect(screen.getByTestId('starter-skeletons')).toBeInTheDocument();
+    expect(lane.scrollTop).toBe(900);
+  });
+
+  it('shows the stack at once, without waiting, when its cards are already there or suggestions are off', () => {
+    fakeTimeouts();
+    const loaded = renderStart();
+    expect(screen.getByTestId('chat-start')).not.toHaveAttribute('data-waiting');
+    expect(screen.getByTestId('chat-start').className).not.toContain('animate-in');
+    loaded.unmount();
+    renderStart({ starters: null });
+    expect(screen.getByTestId('chat-start')).not.toHaveClass('invisible');
+  });
+
+  it('shows exactly the visible count of skeletons once the wait is over', () => {
     stackWidth = 400;
+    fakeTimeouts();
     const { unmount } = renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
+    expect(screen.getByTestId('chat-start')).not.toHaveClass('invisible');
     const skeletons = screen.getByTestId('starter-skeletons');
     expect(skeletons).toHaveAttribute('aria-hidden', 'true');
     expect(skeletons.children).toHaveLength(3);
@@ -673,6 +808,7 @@ describe('StartScreen', () => {
     unmount();
     stackWidth = 900;
     renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     expect(screen.getByTestId('starter-skeletons').children).toHaveLength(4);
   });
 
@@ -701,7 +837,9 @@ describe('StartScreen', () => {
     expect(skeletonQuestionLines(1040, 4)).toBe(3);
     expect(skeletonQuestionLines(60, 1)).toBe(2);
     stackWidth = 1325;
+    fakeTimeouts();
     renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     const grid = screen.getByTestId('starter-skeletons');
     expect(grid).toHaveAttribute('data-skeleton-height', 'estimated');
     for (const card of Array.from(grid.children) as HTMLElement[]) {
@@ -719,7 +857,7 @@ describe('StartScreen', () => {
     }
   });
 
-  it('hands the skeleton height to a spacer under the cards, so the greeting holds still and the cards keep their own height and their 16 px gap', () => {
+  it('hands a skeleton\'s height to a spacer under the pills, so the greeting holds still, the cards keep their own height, 16 px under the catch-up line and 12 px above the pills', () => {
     // Round 13 polish (re-shoot PW2-5): the skeleton is sized before the questions are
     // known; when the cards land shorter, the grid's box keeps the skeleton's height and
     // the bottom-anchored stack holds still. Cards taller than it grow the grid as before.
@@ -727,8 +865,11 @@ describe('StartScreen', () => {
     // for a 72 px card at 390 px, an empty band under each reason line). Third re-shoot
     // PW4-5: the spare height is never a box between the catch-up line and the cards (a
     // 36 px gap there on a phone). Third re-shoot review: nor the stack's top padding,
-    // which moved the bottom-anchored greeting 20 px down on every cold load on a phone;
-    // it is a spacer under the cards, above the pills, so nothing above the cards moves.
+    // which moved the bottom-anchored greeting 20 px down on every cold load on a phone.
+    // Closing pass: nor a spacer between the cards and the pills (32 px there on a
+    // phone); it is the stack's last box, under the pills, so nothing above the cards
+    // moves and the last card stays 12 px above the pills. (A skeleton shows only after
+    // the wait, for a slow read.)
     stackWidth = 338; // one column, three cards
     let cardsTotal = 268;
     vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
@@ -740,7 +881,9 @@ describe('StartScreen', () => {
       return DOMRect.fromRect();
     });
     const three = [NEEDS_HUMAN, NEW_CASES, SILENT_SOURCE].map((st) => ({ ...st }));
+    fakeTimeouts();
     const view = renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     expect(screen.getByTestId('starter-skeletons')).toBeInTheDocument();
     const loaded = (info: ChatStartersInfo) => (
       <TooltipProvider>
@@ -753,16 +896,17 @@ describe('StartScreen', () => {
     const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
     const floor = () => screen.getByTestId('starter-grid-floor');
     const stack = () => screen.getByTestId('chat-start');
-    // 288 px of skeleton, 268 px of cards: the 20 px go under the cards, before the pills.
+    // 288 px of skeleton, 268 px of cards: the 20 px go under the pills, the stack's end.
     const spacer = () => screen.queryByTestId('starter-spare');
     expect(spacer()?.style.height).toBe('20px');
     expect(spacer()).toHaveAttribute('aria-hidden', 'true');
     expect(stack().style.paddingTop).toBe('');
-    // In order: the greeting, the catch-up line, the cards, the spare, then the pills.
-    expect(floor().compareDocumentPosition(spacer()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // In order: the greeting, the catch-up line, the cards, the pills, then the spare.
     const pill = stack().querySelector('[data-pill]');
     expect(pill).not.toBeNull();
-    expect(spacer()!.compareDocumentPosition(pill!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(floor().compareDocumentPosition(pill!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(pill!.compareDocumentPosition(spacer()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(stack().lastElementChild).toBe(spacer());
     expect(floor().style.minHeight).toBe('');
     expect(floor()).toHaveClass(...START_GRID_FLOOR_CLASS.split(' '));
     // The box only sets the 16 px gap under the catch-up line: no flex, no spare inside it.
@@ -774,6 +918,7 @@ describe('StartScreen', () => {
     // Taller cards than the skeleton: the grid takes the cards' height and nothing is spare.
     cardsTotal = 308;
     const taller = renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     taller.rerender(loaded(makeInfo({ starters: three.map((st) => ({ ...st })) })));
     expect(spacer()).toBeNull();
     expect(stack().style.paddingTop).toBe('');
@@ -783,6 +928,7 @@ describe('StartScreen', () => {
     // no card took) and the stack keeps no spare.
     cardsTotal = 176;
     const fewer = renderStart({ starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     fewer.rerender(loaded(makeInfo({ starters: [NEEDS_HUMAN, NEW_CASES].map((st) => ({ ...st })) })));
     expect(spacer()).toBeNull();
     expect(stack().style.paddingTop).toBe('');
@@ -794,7 +940,11 @@ describe('StartScreen', () => {
     // critical) and 3 new campaigns.") wraps to two lines and replaced a one-line
     // capability line, pushing the bottom-anchored greeting up as the cards arrived.
     stackWidth = 338;
+    fakeTimeouts();
     const phone = renderStart({ starters: controller(null, { loading: true }) });
+    // A slow read: the skeleton shows after the wait, under a two-line capability line.
+    passSkeletonWait();
+    expect(screen.getByTestId('starter-skeletons')).toBeInTheDocument();
     expect(screen.getByText(CAPABILITY_LINE)).toHaveClass('min-h-[2lh]');
     phone.unmount();
     // Loaded, the line takes its own height.
@@ -821,7 +971,9 @@ describe('StartScreen', () => {
     expect(starterCardHeights('bob', '1:400')).toBeNull();
     expect(starterCardHeights('alice', '2:800')).toBeNull();
     loaded.unmount();
+    fakeTimeouts();
     const loading = renderStart({ principal: 'alice', starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     const grid = screen.getByTestId('starter-skeletons');
     expect(grid).toHaveAttribute('data-skeleton-height', 'measured');
     for (const card of Array.from(grid.children) as HTMLElement[]) {
@@ -835,6 +987,7 @@ describe('StartScreen', () => {
     expect(starterCardHeights('alice', '4:1200')).toBeNull();
     stackWidth = 800;
     renderStart({ principal: 'alice', starters: controller(null, { loading: true }) });
+    passSkeletonWait();
     expect(screen.getByTestId('starter-skeletons')).toHaveAttribute('data-skeleton-height', 'estimated');
     // Signing out (or another viewer) drops the measurements with the starters.
     clearChatStartersCache();

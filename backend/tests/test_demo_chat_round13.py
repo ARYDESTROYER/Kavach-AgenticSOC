@@ -276,14 +276,14 @@ def test_a_volume_and_false_positives_report_counts_every_case_and_steps_from_it
                                  "unit": "count"}, "Cases by day")]),
     ]))
     header, body = final_of(reply)
-    assert body.startswith("**42 cases** in the last 7 days (since 11 Oct 2026), 33 of them false positives (78.6%).")
+    assert body.startswith("**42 cases** in the last 7 days (since 11 Oct 2026), 33 of them false positives (79%).")
     (envelope,) = header["blocks"]
     assert envelope["title"].startswith("Case volume and false positives report")
     steps = next(i["text"] for s in envelope["sections"] if s["heading"] == "Next steps" for i in s["items"]
                  if i.get("type") == "markdown")
     assert steps.splitlines() == [
         "1. Decide the 5 cases still waiting for a person (Needs human).",
-        "2. Review the rules behind the 33 false positives (78.6% of 42 cases) for tuning.",
+        "2. Review the rules behind the 33 false positives (79% of 42 cases) for tuning.",
         "3. Confirm containment for the 4 true positives.",
         "4. Check what drove 17 Oct 2026, the busiest day with 36 cases.",
     ]
@@ -309,7 +309,7 @@ def test_report_summary_steps_come_from_the_digest() -> None:
 # T15 on the planner's own finals.
 # --------------------------------------------------------------------------- #
 def test_the_shift_brief_lead_names_two_figures() -> None:
-    shift_obs = {"window": "last 24h", "headline": {"open": 5, "escalated": 2, "needs_human": 1,
+    shift_obs = {"window": "last 24h", "headline": {"open": 5, "escalated": 2, "needs_human_verdict": 1,
                                                     "unassigned": 3, "sla_breached": 1},
                  "attention": [{"case_id": "case-0042", "case_number": "CASE-0042", "title": "x",
                                 "status": "escalated"}],
@@ -446,7 +446,7 @@ def test_posture_names_the_two_figures_asked_in_their_order() -> None:
     lines = demo_chat._say_posture(demo_chat.Result(ordinal=1, tool="soc_metrics", status="ok", summary="",
                                                     observation=POSTURE_OBS, input={"kind": "posture"}),
                                    focus=focus)
-    assert lines[0].startswith("False-positive rate **79.1%**") and lines[1].startswith("Automation rate **90%**")
+    assert lines[0].startswith("False-positive rate **79%**") and lines[1].startswith("Automation rate **90%**")
 
 
 def test_an_earlier_starters_value_never_reaches_the_question_words() -> None:

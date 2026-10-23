@@ -369,7 +369,7 @@ def test_posture_final_has_gauge_kpis_trend_and_numbers_from_observations() -> N
     # the takeaway and names at most two of them (the risk index and the open count);
     # the window's new-case total is the block's "Cases" figure, so the trend names
     # only its peak.
-    for shown_in_block in ("43 cases", "79.1%", "90%", "MTTA", "MTTR", "10 new and"):
+    for shown_in_block in ("43 cases", "79.1%", "79%", "90%", "MTTA", "MTTR", "10 new and"):
         assert shown_in_block not in body, shown_in_block
     assert header["answer_kind"] == "data"
     # Round 13 T4: the chips name what this answer shows (its window, its figures).
@@ -379,7 +379,7 @@ def test_posture_final_has_gauge_kpis_trend_and_numbers_from_observations() -> N
 
 
 def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> None:
-    shift_obs = {"window": "last 24h", "headline": {"open": 5, "escalated": 2, "needs_human": 1,
+    shift_obs = {"window": "last 24h", "headline": {"open": 5, "escalated": 2, "needs_human_verdict": 1,
                                                     "unassigned": 3, "sla_breached": 1},
                  "attention": [{"case_id": "case-0042", "title": "x", "status": "escalated"}],
                  "sla": {"breached": [{"case_id": "case-0042"}]}}
@@ -399,10 +399,12 @@ def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> Non
     # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
     assert steps.startswith("1. Work the 1 case past SLA first: `x` (`case-0042`).")
     # The lead names the window once and (Round 13 T15) at most two of the headline's
-    # figures, which the Shift headline block shows in full; needs_human counts cases
-    # in Needs human STATUS (the next steps say so).
+    # figures, which the Shift headline block shows in full; needs_human_verdict counts
+    # the open cases with a Needs human VERDICT, the badge the case list shows (Round 13
+    # close), and the next steps say so.
     assert body.startswith("**Shift brief, last 24h.** **5 open cases**, 1 of them past SLA.")
-    assert "Decide the 1 case in Needs human status." in steps
+    assert "Give a verdict on the 1 open case marked Needs human." in steps
+    assert "Needs human status" not in steps
     # The brief holds the detail; the prose is its lead (browser-QA D5): the headline,
     # the first case to work (the step's first case: polish round PB4), and the ready
     # sentence.
@@ -487,7 +489,7 @@ def test_noise_final_is_a_funnel_with_the_reduction() -> None:
     msgs = prompt("Show the noise funnel", [call("soc_metrics", NOISE_OBS, artifacts=NOISE_ARTS)])
     header, body = final_of(plan_turn(msgs))
     assert header["blocks"][0] == {"ref": "t1.a1", "view": "funnel", "title": "Noise reduction"}
-    assert body.startswith("**98.4% noise reduction** in the last 24h: 500 alerts ingested")
+    assert body.startswith("**98% noise reduction** in the last 24h: 500 alerts ingested")
     assert "**8 needed a human**" in body
 
 
@@ -544,7 +546,7 @@ def test_explain_metric_combines_help_citations_with_our_numbers() -> None:
     header, body = final_of(plan_turn(msgs))
     assert header["answer_kind"] == "mixed" and header["citations"] == ["D1"]
     assert "[D1]: The Noise Reduction funnel shows how raw alert volume becomes a small number of cases." in body
-    assert "**Ours:** **98.4% noise reduction**" in body
+    assert "**Ours:** **98% noise reduction**" in body
 
 
 def test_reshape_uses_a_stored_block_and_regroup_reruns_the_digest_filters() -> None:
@@ -735,7 +737,7 @@ def test_report_summary_is_json_built_only_from_the_digest() -> None:
     summary, steps = parse_report_summary(text)
     assert summary.startswith("This shift report holds 2 items: Security posture and Needs attention.")
     assert "Night shift" not in summary and "check this" not in summary   # user text is not echoed
-    assert "Key figures: Active Risk Index 61." in summary
+    assert "Key figures: Active Risk Index 61/100." in summary
     assert "It references 1 case: 1 critical." in summary
     # Round 13 T37: every step comes from the report's own figures.
     assert steps[0] == "Review the 1 critical case first."
@@ -1369,7 +1371,7 @@ def test_tp_cost_mitre_sources_and_campaign_finals_state_their_figures() -> None
     _, body = final_of(plan_turn(prompt("Summarise today's true positives", [
         call("search_cases", tps, artifacts=CASES_ARTS), call("soc_metrics", mix)])))
     assert body.startswith("**2 true positives** in the last 24h: 1 closed and 1 escalated.")
-    assert "For context, 41 cases in the last 24h (33 false positive and 2 true positive), average risk 26.7." in body
+    assert "For context, 41 cases in the last 24h (33 false positive and 2 true positive), average risk 27/100." in body
 
     cost = {"window": "last 24h", "total_cost_usd": 0.053, "calls": 6, "total_tokens": 14669, "simulated": True,
             "by_role": [{"key": "chat", "cost": 0.0503, "calls": 5}]}
@@ -1481,7 +1483,7 @@ def test_a_report_whose_main_lookups_failed_keeps_the_failure_lines() -> None:
     header, body = final_of(plan_turn(msgs))
     assert header["blocks"][0]["type"] == "report"
     paragraphs = body.split("\n\n")
-    assert paragraphs[0].startswith("**98.4% noise reduction**")
+    assert paragraphs[0].startswith("**98% noise reduction**")
     assert paragraphs[-2] == ("Lookups that did not complete:\n- `soc_metrics` error: The case store did not answer\n"
                               "- `soc_metrics` error: The case store did not answer")
     assert paragraphs[-1] == SAVED

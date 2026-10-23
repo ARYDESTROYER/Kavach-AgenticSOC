@@ -38,7 +38,7 @@ import {
   xmlText,
   type Relationship,
 } from './ooxml';
-import { documentNodes, type DocNode, type Line, type WalkOptions } from './walker';
+import { codeCellText, documentNodes, type DocNode, type Line, type WalkOptions } from './walker';
 import { zipStore } from './zip';
 
 /** A4 in twentieths of a point, with 15 mm side and 18 mm top/bottom margins. */
@@ -279,7 +279,7 @@ class DocxWriter {
       case 'table': {
         const cells = n.rows.map((row, r) =>
           row.map((c, i) => {
-            const code = (n.cellCode?.[r]?.[i] ?? n.code[i] ?? false) && c !== '—';
+            const code = (n.cellCode?.[r]?.[i] ?? n.code[i] ?? false) && codeCellText(c);
             return run(c, { code });
           }),
         );

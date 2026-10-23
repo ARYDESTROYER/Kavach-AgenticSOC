@@ -111,7 +111,7 @@ describe('PW4-1: short references never break inside', () => {
     expect(kept(row.querySelector('[data-case-ref="title"]')!)).toEqual(['LP-ES-RISK-1001']);
   });
 
-  it('keeps every technique id in a mono table cell whole, and sets sans text cells as prose', () => {
+  it('keeps every technique id in a table cell whole, one chip each, and sets sans text cells as prose', () => {
     show([
       parseBlock({
         id: 't',
@@ -128,9 +128,13 @@ describe('PW4-1: short references never break inside', () => {
       }),
     ]);
     const table = screen.getByTestId('block-table');
-    const code = table.querySelector('td code') as HTMLElement;
-    expect(code).toHaveTextContent('T1021, T1048, T1078');
-    expect(kept(code)).toEqual(['T1021,', 'T1048,', 'T1078']);
+    // One chip per technique, each on one line (closing pass: a single code run wrapped
+    // over three lines with its fill cut at each line end); the cell still reads as a list.
+    const chips = Array.from(table.querySelectorAll('td [data-technique-chips] code'));
+    expect(chips.map((c) => c.textContent)).toEqual(['T1021', 'T1048', 'T1078']);
+    for (const chip of chips) expect(chip).toHaveClass('whitespace-nowrap');
+    expect(table.querySelector('[data-technique-chips]')).toHaveClass('flex-wrap');
+    expect(table.querySelector('[data-technique-chips]')).toHaveTextContent('T1021, T1048, T1078');
     const textCell = within(table).getAllByRole('cell')[0].firstElementChild as HTMLElement;
     expect(textCell).toHaveClass('proportional-nums');
     expect(kept(textCell)).toEqual(['vpn-gw-2']);

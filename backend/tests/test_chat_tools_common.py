@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from pydantic import Field
 
 from app.agents.chat_tools.common import (
@@ -268,5 +269,22 @@ def test_missing_figures_read_not_available() -> None:
     for missing in (None, "12", True, False, float("nan"), float("inf"), [], {}):
         assert fmt_int(missing) == "not available", missing
         assert fmt_pct(missing) == "not available", missing
-    assert fmt_pct(12.345) == "12.3%" and fmt_pct(0.5, ratio=True) == "50.0%"
+    # Round 13 close: a rate reads as the console's tile shows it (one figure, one form).
+    assert fmt_pct(12.345) == "12%" and fmt_pct(0.5, ratio=True) == "50%"
     assert "—" not in fmt_int(None) + fmt_pct(None)
+
+
+@pytest.mark.parametrize("value, ratio, shown", [
+    (75.6, False, "76%"), (0.756, True, "76%"), (58.6, False, "59%"), (0.775, True, "78%"),
+    (0.145, True, "15%"), (14.5, False, "15%"), (7.45, False, "7.5%"), (7.0, False, "7%"),
+    (9.96, False, "10%"), (0.004, True, "<1%"), (0.5, False, "<1%"), (0, False, "0%"),
+    (-0.0, False, "0%"), (100, False, "100%"), (1234.5, False, "1,235%"),
+])
+def test_a_rate_in_a_step_summary_reads_as_the_console_tile(value: float, ratio: bool, shown: str) -> None:
+    from app.agents.chat_tools.common import fmt_pct
+    from app.engine import demo_chat
+
+    assert fmt_pct(value, ratio=ratio) == shown
+    # The planner's prose and the tools' step summaries share the one helper.
+    assert demo_chat._pct(value, ratio=ratio) == shown
+    assert fmt_pct(None, missing="not measured") == demo_chat._pct(None) == "not measured"
