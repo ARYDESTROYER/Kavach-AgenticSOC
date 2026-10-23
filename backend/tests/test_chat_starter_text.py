@@ -127,21 +127,55 @@ def test_a_case_value_that_reads_as_a_case_drops_the_word() -> None:
     assert text.parse_starter_question("Why does 4821 need a person, and what would settle it?") is None
 
 
-def test_a_campaign_value_that_reads_as_a_campaign_drops_the_word() -> None:
-    # Campaign ids are minted as "campaign-<hash>": the noun is not repeated (review A-2).
-    named = "campaign-1e57287ac9b19e21b96010721158e58e"
-    question = text.render_question("campaign", {"n": 2, "campaign": named})
-    assert question == f"What links the 2 cases in {named}?"
-    assert text.parse_starter_question(question) == ("campaign", {"n": 2, "campaign": named})
-    assert text.render_question("campaign", {"n": 2, "campaign": "CMP-3"}) == "What links the 2 cases in campaign CMP-3?"
-    # The doubled form is never produced, so it is never recognised; nor the short one with a plain id.
-    assert text.parse_starter_question(f"What links the 2 cases in campaign {named}?") is None
-    assert text.parse_starter_question("What links the 2 cases in CMP-3?") is None
-    # Both forms send the same prompt form: the value only inside the fence.
+def test_the_campaign_card_names_the_campaign_by_one_of_its_cases() -> None:
+    """Round 13 polish PB3 and PB4: a campaign has no short display label, and its
+    internal id ("campaign-4039d3c5…") broke mid-word on a phone card; "the most
+    recently active campaign" became a different campaign once a newer one appeared. The
+    card names the campaign by one of its cases (the analyst's own reference), fenced
+    like every case reference, so the answer finds the campaign that holds it now."""
+    spec = text.TEMPLATES["campaign"]
+    assert spec.slots == ("n", "case") and spec.ref_slot == "case"
+    question = text.render_question("campaign", {"n": 2, "case": "CASE-000046"})
+    assert question == "What links the 2 cases in the campaign that includes CASE-000046?"
+    assert text.render_question("campaign", {"n": 2, "case": "demo-0004"}) == \
+        "What links the 2 cases in the campaign that includes case demo-0004?"
+    assert text.parse_starter_question(question) == ("campaign", {"n": 2, "case": "CASE-000046"})
+    with pytest.raises(ValueError):
+        text.render_question("campaign", {"n": 2, "campaign": "campaign-1e57287ac9b19e21b96010721158e58e"})
     turn = text.render_starter_turn(question)
-    assert turn is not None and turn.split("\n")[0] == "What links the 2 cases in the campaign in the reference below?"
-    assert named not in turn.split("\n")[0]
-    assert text.parse_starter_turn(turn) == ("campaign", {"n": 2, "campaign": named})
+    assert turn is not None
+    lines = turn.split("\n")
+    assert lines[0] == "What links the 2 cases in the campaign that includes the case in the reference below?"
+    assert '{"kind": "case", "value": "CASE-000046"}' in lines and "CASE-000046" not in lines[0]
+    assert text.STARTER_REF_NOTE in lines and lines[-1] == text.STARTER_COUNTS_NOTE
+    assert text.parse_starter_turn(turn) == ("campaign", {"n": 2, "case": "CASE-000046"})
+    assert text.starter_turn_question(turn) == question
+
+
+@pytest.mark.parametrize("question, template_id, slots, kind", [
+    # The Round 13 build's wording (an id, named form and plain form).
+    ("What links the 2 cases in campaign-1e57287ac9b19e21?", "campaign_by_id",
+     {"n": 2, "campaign": "campaign-1e57287ac9b19e21"}, "campaign"),
+    ("What links the 2 cases in campaign CMP-3?", "campaign_by_id", {"n": 2, "campaign": "CMP-3"}, "campaign"),
+    # Polish round PB3's wording (no reference: the counts note only).
+    ("What links the 2 cases in the most recently active campaign?", "campaign_latest", {"n": 2}, None),
+])
+def test_an_earlier_campaign_wording_is_read_back_but_never_offered(question, template_id, slots, kind) -> None:
+    """A stored starter turn with an earlier wording replays as it did live (SPEC
+    §3.8.4): its value fenced, its notes kept. The wording is never built again."""
+    assert template_id in text.LEGACY_TEMPLATES and template_id not in text.TEMPLATES
+    with pytest.raises(KeyError):
+        text.template(template_id)
+    assert text.parse_starter_question(question) == (template_id, slots)
+    turn = text.render_starter_turn(question)
+    assert turn is not None and turn.split("\n")[-1] == text.STARTER_COUNTS_NOTE
+    if kind is None:
+        assert turn.split("\n")[0] == question and "entity_ref" not in turn
+    else:
+        assert turn.split("\n")[0] == "What links the 2 cases in the campaign in the reference below?"
+        assert f'"kind": "{kind}"' in turn and text.STARTER_REF_NOTE in turn
+        assert slots["campaign"] not in turn.split("\n")[0]
+    assert text.parse_starter_turn(turn) == (template_id, slots)
     assert text.starter_turn_question(turn) == question
 
 

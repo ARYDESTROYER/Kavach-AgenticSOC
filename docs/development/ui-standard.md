@@ -53,10 +53,13 @@ and `src/ui/__tests__/foundations.round12.test.tsx`. Compose them; do not restat
 **Spacing.** Tailwind's 4px scale on an 8px rhythm, in `rem` so zoom and text size
 scale the layout. Dense inside, generous between: `1` (4px) inside chips and menu
 insets, `2`–`3` (8–12px) between related controls and for row padding, `4`–`5`
-(16–20px) for instrument and pane insets, `6` (24px) for column gutters, `8`–`10`
-(32–40px) between bands, `12` (48px) only for sparse identity screens. The container
-sets rhythm with `gap-*`/`space-y-*`; children never add sibling margins. One 16–24px
-rail per pane; never stack page, pane, and panel padding.
+(16–20px) for instrument and pane insets (a grouped dashboard panel grows to `6`, 24px,
+from 1920px), `6` (24px) for column gutters (between grouped panels the gutter matches
+the panel padding: 16, 20, then 24px), `8`–`10` (32–40px) between bands (a grouped
+dashboard's bands sit 48px apart from 1920px), and otherwise `12` (48px) only for sparse
+identity screens. The container sets rhythm with `gap-*`/`space-y-*`; children never add
+sibling margins, and a run of siblings that needs a different rhythm gets its own group
+container. One 16–24px rail per pane; never stack page, pane, and panel padding.
 
 **Radii.** One concentric scale on the brandable `--radius` (10px by default):
 inner radius = outer radius − inset.
@@ -67,7 +70,8 @@ inner radius = outer radius − inset.
 | Buttons, inputs, selects, segmented rails, cards | 8px | `rounded-md` |
 | Menus, popovers, hover cards, tooltips, toasts | 10px | `rounded-lg` |
 | Dialogs, sheets (leading edge only, from `sm`), the command palette | 14px | `rounded-xl` |
-| Bands, list rows, tables, the KPI strip, split panes | 0 | divider-led |
+| Grouped dashboard panels (`.surface-panel`: each primary-dashboard module and its KPI strip) | 14px | `rounded-xl` (in the recipe) |
+| Bands, list rows, tables, flat KPI strips, split panes | 0 | divider-led |
 
 A 10px menu with a `p-1` inset holds 6px items; a 14px dialog holds its own 8px
 controls. Focus rings follow the element's radius. Use the `rounded-tr-xl
@@ -84,6 +88,10 @@ step: +0.005em at 11px, 0 at 12px, −0.003 to −0.011em from 13 to 16px, tight
 −0.022em at 32px. Do not add `tracking-tight`/`tracking-wide` on top of a size step.
 Leading is inverse (looser body, tighter display); `leading-none` only on single-line
 numerals. Hierarchy comes from weight + size + leading together; weights stay 400–650.
+Reading prose (chat answers, questions, suggestion text, conversation titles, answer
+block titles and captions, and the answer's scope line) sets `proportional-nums`: the
+body's tabular figures also widen Inter's hyphen ("Read - only", "Highest - risk").
+Figures, tables, meta rows and KPI values keep tabular numerals.
 11px (`text-2xs`) is for badges, axis ticks and timestamps only; content text,
 legends, captions and stat context are 12px or larger.
 
@@ -1010,7 +1018,8 @@ authority. Rule preview sends the same single authoritative predicate that Save 
 ## Operational metric and tuning surfaces
 
 Operational summaries use one continuous strip rather than a row of independent
-cards. The strip owns its outer hairlines; each metric supplies only the responsive
+cards. The strip owns its outer hairlines (on the primary dashboard its grouped panel
+takes their place, see "Dashboard bands"); each metric supplies only the responsive
 internal divider needed for the current column count. At every column count a strip
 uses — they differ per surface, and the primary dashboard runs one, two, three and six
 — no cell may acquire both a left and top divider or lose the line that separates it
@@ -1038,31 +1047,67 @@ level with its neighbours' and nothing is left to a mouse-only `title`. Never pu
 beside the numeral: at six columns flex shrinks the numeral first. Hero numerals are
 neutral ink; only a non-zero critical count is red. Hero tiles carry no icon, and their help and drill-down marks
 appear on hover or focus beside the numeral (always shown on devices without hover).
-A strip is followed by the next band after the normal band gap; its own bottom rule
-closes the strip, and the band below draws no second rule against it.
+A strip on the canvas is followed by the next band after the normal band gap; its own
+bottom rule closes the strip, and the band below draws no second rule against it. The
+primary dashboard's strip sits on its own grouped panel instead (see "Dashboard bands").
 
-**Dashboard bands.** The primary dashboard is a sequence of flat, TITLED bands on the
-canvas, separated by whitespace rather than boxes: 32px between bands (40px from 1920px),
-24px gutters between instruments inside a band (32px from 1920px). Instruments are
-transparent — no card per instrument, no lattice hairlines between cells, no cell padding;
-the gutters do the separating. A band draws at most one rule. Instruments in one band row
-share one height (`items-stretch`, instruments `h-full flex flex-col`), and a list fills its
-share of that height (a queue shows as many rows as fit, within a floor and a cap) instead of
-driving the row taller. The floor is set in rem, so a larger browser text size grows it with
-the rows, and a wider screen never shows fewer rows than a narrower one. From 1920px the
-queue holds eight rows: its band becomes two rows (the snapshots over the response pair on
-the left, the queue spanning both on the right — the rail at `4xl`) and the snapshot rings
-grow to 192px, so the instruments, not blank space, take the height the queue sets. On paper
-the queue is laid out in flow and kept on one page with its header. Instruments
-side by side that share a structure (two snapshots) share their rows (`grid-rows-subgrid`),
-so a caption that wraps in one moves both donuts and both footnotes together. The dashbar
-pins from `sm` up; on a phone it scrolls away with the page. Above 1920px a dashboard widens by COLUMN COUNT, not by stretching:
-`wide` width, rising to 2400px at `4xl` (≥2200px), where bands share one track template
-with a 460px rail. A secondary fold is ONE disclosure — flat inside, with no nested cards or
-collapsibles — whose open/closed choice is remembered and whose collapsed header states what
-it holds. That summary wraps (beside the title from `md`, under it below) and never
-truncates; a long item label in it is capped so the count after it stays visible, and the
-whole sentence is the header's tooltip.
+**Dashboard bands.** The primary dashboard is a sequence of TITLED bands whose modules sit
+on **grouped panels**, so where one module ends and the next begins reads at a glance,
+without a line or a box edge. Every module (each instrument, the KPI strip, and the Deeper
+analytics header and, open, its timing strip and instruments) sits on its own soft tinted
+panel: the `.surface-panel` recipe in `theme.css`, the `--panel` fill (a step deeper than the
+canvas in light, a step lighter in dark), a 14px `rounded-xl` corner, no border and no resting
+shadow. Band and sub-band titles stay outside the panels, on the canvas; module titles sit
+inside them. Panel padding and the gutters between panels grow together: 16px, 20px from
+1280px, 24px from 1920px. The bands sit 40px under the KPI strip and 40px apart (48px from
+1920px), and the Deeper analytics header sits 40px under the last band (the strip, the
+bands and the fold are one group with that rhythm). Never nest a panel in a panel, and never
+add a border, a resting shadow or a lattice of hairlines between modules: the panels do the
+separating. Two modules that share one panel (the two case snapshots) are split by one thin
+hairline centred in the gap between them. The first KPI tile of each strip row (the page's
+strip and the Deeper analytics timing strip, whose rows follow its own width) starts at the
+panel padding, so the KPI labels and the module titles share one left edge, and from 1280px
+the strip's column rules stop 12px short of the panel's top and bottom edges. A module's
+inner layout follows the panel, not the viewport: a ring and its legend sit side by side only
+when the panel holds both (a container query), and stack otherwise. Inside a panel every
+neutral step that paints on it moves with it, in the canvas's own order: muted (progress
+tracks, `hover:bg-muted`, secondary badges), hover and the selected wash each one notch deeper
+(`--panel-muted`, `--panel-hover`, `--panel-accent`), the structural line one step deeper
+(`--panel-border-strong`, the panel's `--input` and `--border-strong`), and the semantic text
+retuned (`--panel-<axis>-text`: two notches darker in light, critical one notch lighter in
+dark), so nothing that shows on the canvas (a track, a hovered row, a KPI hover wash, a
+selected item) vanishes into the panel, a control edge clears 3:1 against the panel, and a
+badge clears 4.5:1 on a resting panel and on a hovered row. A chip that lifts on hover uses
+the hover step, never `--popover`. MEASURED by the contrast gate: the panel against the canvas
+is 1.09:1 in light and 1.12:1 in dark (a grouping cue, not a WCAG bar), muted 1.08:1 and
+1.11:1 against the panel, and body, muted and link text clear AA on the panel and on its
+hovered row in both themes. No
+operator-writable brand token is redefined inside a panel. Increased contrast gives every
+panel a solid 1px structural edge (3.46:1 against the light canvas, 3.17:1 against the panel)
+and turns every rule inside it into a ≥3:1 line against the panel; forced colours give it a
+system-colour edge. Nothing on a panel is translucent or moves, so reduced transparency and
+reduced motion change nothing. On paper a panel prints as its fill. The dashbar is clear at
+rest and takes the Console material once content scrolls under it, so the top of the page
+shows two surface levels, canvas and panel.
+
+Modules in one band row share one height (`items-stretch`, modules `h-full flex flex-col`),
+and a list fills its share of that height (a queue shows as many rows as fit, within a floor
+and a cap) instead of driving the row taller. The floor is set in rem, so a larger browser
+text size grows it with the rows, and a wider screen never shows fewer rows than a narrower
+one. A module with spare height spreads it between its parts rather than pooling it at the
+bottom (the response pair). From 1920px the queue holds eight rows: its band becomes two rows
+(the snapshots over the response pair on the left, the queue spanning both on the right, the
+rail at `4xl`) and the snapshot rings grow to 192px, so the modules, not blank space, take the
+height the queue sets. On paper the queue is laid out in flow and kept on one page with its
+header. Modules side by side that share a structure (two snapshots) share their rows
+(`grid-rows-subgrid`), so a caption that wraps in one moves both donuts and both footnotes
+together. The dashbar pins from `sm` up; on a phone it scrolls away with the page. Above
+1920px a dashboard widens by COLUMN COUNT, not by stretching: `wide` width, rising to 2400px
+at `4xl` (≥2200px), where bands share one track template with a 460px rail. A secondary fold
+is ONE disclosure, with no nested panels or collapsibles, whose open/closed choice is
+remembered and whose collapsed header states what it holds. That summary wraps (beside the
+title from `md`, under it below) and never truncates; a long item label in it is capped so
+the count after it stays visible, and the whole sentence is the header's tooltip.
 
 Dashboard type ladder: page title 30px at `2xl` (the `4xl` step; 24px below); band titles 15px semibold
 with a 13px muted caption; instrument titles 14px; KPI numerals fluid (24 → 44px);

@@ -58,8 +58,6 @@ def _header(reply: str) -> dict[str, Any]:
     ("needs_human", {"case": "demo-00000539-0004"}, "demo-00000539-0004"),
     ("noisy_rule", {"rule": "demo_noisy_scanner", "n": 30, "m": 36}, "demo_noisy_scanner"),
     ("silent_source", {"source": "demo-wazuh"}, "demo-wazuh"),
-    ("campaign", {"n": 2, "campaign": "campaign-1e57287ac9b19e21b96010721158e58e"},
-     "campaign-1e57287ac9b19e21b96010721158e58e"),
     ("hunt", {"technique": "T1078", "n": 3}, "T1078"),
 ])
 def test_a_starter_turn_is_read_from_its_template_and_fence(template_id: str, slots: dict[str, Any],
@@ -213,7 +211,7 @@ def test_a_case_with_a_number_is_named_by_its_number() -> None:
     # Without a number, what the case is about leads and the internal id follows it.
     assert demo_chat._case_line({"case_id": "demo-1", "title": "x"}).startswith("`x` · `demo-1`")
     assert demo_chat._case_line({"case_id": "demo-2", "title": "user:pnair · identity_signin"}).startswith(
-        "Identity signin on user `pnair` · `demo-2`")
+        "`identity_signin` on user `pnair` · `demo-2`")
 
 
 # --------------------------------------------------------------------------- #
@@ -776,11 +774,21 @@ def test_a_campaign_answer_counts_the_cases_on_its_entity_outside_the_campaign()
                               for c in ids]}
         return run
 
-    _rounds, _header, body = drive(_starter("campaign", {"campaign": "campaign-1", "n": 2}), obs([]))
+    rounds, _header, body = drive(_starter("campaign", {"n": 2, "case": "demo-2"}), obs([]))
+    # The card names the campaign by one of its cases, never by its id (Round 13 polish
+    # PB3, PB4): the campaign that holds that case is looked up.
+    assert rounds[0][0]["tool"] == "list_campaigns" and rounds[0][0]["input"] == {"case_id": "demo-2"}
+    assert body.startswith("The campaign that includes `demo-2` links **2 cases**"), body
+    assert "campaign-1" not in body
     assert "No case outside the campaign involves IP `203.0.113.77`." in body, body
     assert "**2 cases** involve" not in body
-    _rounds, _header, body = drive(_starter("campaign", {"campaign": "campaign-1", "n": 2}), obs(["demo-9"]))
+    _rounds, _header, body = drive(_starter("campaign", {"n": 2, "case": "demo-2"}), obs(["demo-9"]))
     assert "**1 case** outside the campaign involves IP `203.0.113.77`." in body, body
+    # Polish round PB3's wording, sent again from an older conversation: the newest open
+    # campaign is looked up and named as such.
+    rounds, _header, body = drive(_starter("campaign_latest", {"n": 2}), obs([]))
+    assert rounds[0][0]["input"] == {"status": "open", "limit": 1}
+    assert body.startswith("The most recently active open campaign links **2 cases**"), body
 
 
 # --------------------------------------------------------------------------- #

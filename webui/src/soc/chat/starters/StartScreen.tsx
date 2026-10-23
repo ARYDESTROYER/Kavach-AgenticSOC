@@ -44,8 +44,10 @@
  * then, while the session is still the hiding viewer's, and its toasts close. A hidden
  * card's catch-up clause leaves the line above the grid with it (the clause sends the
  * same question), and Undo brings both back.
- * Within one applied result and card count the grid never gets shorter (a shorter card
- * taking a slot does not move the bottom-anchored stack). While the pointer is over the
+ * Within one applied result and card count the grid's box never gets shorter (a shorter
+ * card taking a slot does not move the bottom-anchored stack). The spare height sits in
+ * that box above the cards, which keep their natural height (re-shoot PW3-5: a floor on
+ * the grid itself stretched every card, leaving an empty band under each reason line). While the pointer is over the
  * grid or focus is inside it, a fresh result is held (never reorder under the analyst).
  * Retry keeps its row, busy, until the read lands, then hands focus to the cards only
  * when focus was still on Retry (never one the analyst moved elsewhere). Nothing here is
@@ -164,8 +166,15 @@ const GRID_COLUMNS: Record<1 | 2 | 4, string> = { 1: 'grid-cols-1', 2: 'grid-col
  * a row holds several cards; one column keeps each card's own height (§5.2 phone budget).
  */
 export function startGridClass(columns: 1 | 2 | 4): string {
-  return cn('mt-4 grid gap-2', columns > 1 && 'auto-rows-fr', GRID_COLUMNS[columns]);
+  return cn('grid gap-2', columns > 1 && 'auto-rows-fr', GRID_COLUMNS[columns]);
 }
+
+/**
+ * The box the card grid sits in (re-shoot PW3-5): it carries the stack's height floor
+ * and puts any spare height ABOVE the grid, so the cards keep their natural height and
+ * stay just above the pills while the greeting holds still.
+ */
+export const START_GRID_FLOOR_CLASS = 'mt-4 flex flex-col justify-end';
 
 /** The start card's horizontal insets around its question (StarterCard: pl-3, the 16 px icon, gap-3, pr-9). */
 const CARD_TEXT_INSET_PX = 12 + 16 + 12 + 36;
@@ -180,7 +189,12 @@ const GRID_GAP_PX = 8;
  * and wraps to three at 375 and 360.
  */
 const TYPICAL_QUESTION_PX = 455;
-const LONG_QUESTION_PX = 520;
+/**
+ * One column's long question (Round 13 polish, measured live on Demo): "What do the 2
+ * changes waiting for approval do, and what would each one change?" (78 characters) is
+ * 545 px on one line and wraps to three 262 px lines at a 390 px phone.
+ */
+const LONG_QUESTION_PX = 560;
 /** Two and four columns: a row takes its tallest card, so every row holds a long one. */
 const ROW_QUESTION_PX = 525;
 
@@ -614,14 +628,29 @@ export function StartScreen({
   // never jumps down and back. A new result, another width, or another number of cards
   // (a slot closed with no card left to take it, or an Undo reopened one) starts from
   // its own height, so the cards left are never stretched over the rows that went.
+  // The skeleton the cards replace (Round 13 polish) hands its height over once: when the
+  // cards land shorter than it, the grid's box keeps its height instead of shrinking, so
+  // the stack holds still from skeleton to cards. Only for the same width and a full
+  // grid: fewer cards than skeletons start from their own height. The floor is the box's
+  // `min-height`, never the grid's: a grid taller than its rows stretches them (`1fr`
+  // rows, and auto rows under `align-content: normal`), and the cards with them. The
+  // grid is measured at its natural height.
+  const skeletonFloor = React.useRef<{ widthClass: string; height: number } | null>(null);
   const floorSignature = `${info?.as_of ?? ''}|${info?.expires_at ?? ''}|${width}|${columns}|${visibleCount}`;
   const [gridFloor, setGridFloor] = React.useState<{ signature: string; height: number }>({ signature: '', height: 0 });
   React.useLayoutEffect(() => {
     if (!grid) return undefined;
     const measure = () => {
       const height = Math.round(grid.getBoundingClientRect().height);
+      const handed = skeletonFloor.current;
+      skeletonFloor.current = null;
+      const seed = handed && handed.widthClass === `${columns}:${width}` && visibleCount === count ? handed.height : 0;
       setGridFloor((prev) =>
-        prev.signature === floorSignature ? (height > prev.height ? { signature: floorSignature, height } : prev) : { signature: floorSignature, height },
+        prev.signature === floorSignature
+          ? height > prev.height
+            ? { signature: floorSignature, height }
+            : prev
+          : { signature: floorSignature, height: Math.max(height, seed) },
       );
     };
     measure();
@@ -629,7 +658,7 @@ export function StartScreen({
     const observer = new ResizeObserver(() => measure());
     observer.observe(grid);
     return () => observer.disconnect();
-  }, [grid, floorSignature]);
+  }, [grid, floorSignature, columns, width, visibleCount, count]);
   const gridMinHeight = gridFloor.signature === floorSignature && gridFloor.height > 0 ? gridFloor.height : undefined;
 
   /* ------------------------------------------ the skeleton's height (polish) -- */
@@ -651,6 +680,19 @@ export function StartScreen({
   }, [grid, width, widthClass, count, principal, visibleSignature]);
   const measuredHeights = loading ? starterCardHeights(principal, widthClass) : null;
   const skeletonHeights = measuredHeights && measuredHeights.length === count ? measuredHeights : null;
+  // The skeleton grid's height, for the cards' floor above.
+  const [skeletonGrid, setSkeletonGrid] = React.useState<HTMLDivElement | null>(null);
+  React.useLayoutEffect(() => {
+    if (!skeletonGrid) return undefined;
+    const measure = () => {
+      skeletonFloor.current = { widthClass, height: Math.round(skeletonGrid.getBoundingClientRect().height) };
+    };
+    measure();
+    if (typeof ResizeObserver !== 'function') return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(skeletonGrid);
+    return () => observer.disconnect();
+  }, [skeletonGrid, widthClass]);
 
   /* ------------------------------------------------------------------ retry -- */
   // Retry keeps its row (busy) while the read runs, so focus is never dropped to <body>:
@@ -710,7 +752,8 @@ export function StartScreen({
       data-columns={columns}
       // `flow-root`: the narrow pill row's negative block margin (room for its focus rings
       // inside its scroll clip) stays inside the stack, so the stack's edge is the pills'.
-      className={cn('flow-root w-full', className)}
+      // Proportional numerals: the stack is prose (tabular ones set hyphens wide).
+      className={cn('flow-root w-full proportional-nums', className)}
     >
       <h3 id={headingId} className={cn('text-2xl font-semibold text-foreground', shortLane && 'sr-only')}>
         {greetingLine(name)}
@@ -746,10 +789,11 @@ export function StartScreen({
         </div>
       ) : loading ? (
         <div
+          ref={setSkeletonGrid}
           aria-hidden="true"
           data-testid="starter-skeletons"
           data-skeleton-height={skeletonHeights ? 'measured' : 'estimated'}
-          className={startGridClass(columns)}
+          className={cn('mt-4', startGridClass(columns))}
         >
           {Array.from({ length: count }, (_, index) => (
             <div
@@ -762,34 +806,35 @@ export function StartScreen({
           ))}
         </div>
       ) : visible.length ? (
-        <ul
-          ref={setGrid}
-          aria-label="Suggested questions"
-          aria-describedby={bookRunning ? reasonId : undefined}
-          className={startGridClass(columns)}
-          style={gridMinHeight ? { minHeight: gridMinHeight } : undefined}
-        >
-          {visible.map((starter, index) => (
-            <li
-              key={starterHideKey(starter)}
-              className="min-w-0 animate-in fade-in-0 duration-200 ease-spring"
-              data-testid="starter-card"
-            >
-              <StarterCard
-                ref={(el) => {
-                  cardRefs.current[index] = el;
-                }}
-                starter={starter}
-                tabIndex={index === activeIndex ? 0 : -1}
-                disabled={paused}
-                onActivate={onActivate}
-                onHide={(chosen) => hide(chosen, index, false)}
-                onKeyDown={onCardKeyDown(index, starter)}
-                onFocus={() => setActive(index)}
-              />
-            </li>
-          ))}
-        </ul>
+        <div className={START_GRID_FLOOR_CLASS} style={gridMinHeight ? { minHeight: gridMinHeight } : undefined} data-testid="starter-grid-floor">
+          <ul
+            ref={setGrid}
+            aria-label="Suggested questions"
+            aria-describedby={bookRunning ? reasonId : undefined}
+            className={startGridClass(columns)}
+          >
+            {visible.map((starter, index) => (
+              <li
+                key={starterHideKey(starter)}
+                className="min-w-0 animate-in fade-in-0 duration-200 ease-spring"
+                data-testid="starter-card"
+              >
+                <StarterCard
+                  ref={(el) => {
+                    cardRefs.current[index] = el;
+                  }}
+                  starter={starter}
+                  tabIndex={index === activeIndex ? 0 : -1}
+                  disabled={paused}
+                  onActivate={onActivate}
+                  onHide={(chosen) => hide(chosen, index, false)}
+                  onKeyDown={onCardKeyDown(index, starter)}
+                  onFocus={() => setActive(index)}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
       ) : null}
       {bookRunning && visible.length > 0 && !showError && !loading ? (
         <p id={reasonId} className="mt-2 text-xs text-muted-foreground">

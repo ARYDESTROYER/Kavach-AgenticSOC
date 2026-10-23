@@ -166,7 +166,9 @@ export function viewAs(block: AnswerBlock, view: BlockView): AnswerBlock {
 }
 
 const COLUMN_FOR_TYPE: Partial<Record<AnswerBlock['type'], ColumnType[]>> = {
-  // Times arrive already formatted in UTC by blockTabular, so they are text here.
+  // Times arrive already formatted in UTC by blockTabular, so they are text here. A case
+  // list's Case cells are case numbers (the id when there is none); the table view links
+  // them by id through its `caseRefs`.
   case_list: ['case', 'text', 'severity', 'verdict', 'status', 'risk', 'text'],
   timeline: ['text', 'text', 'text', 'text'],
   kpi_group: ['text', 'number', 'text', 'text'],

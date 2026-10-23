@@ -1,5 +1,6 @@
 /**
- * ThreadToolbar — the conversation zone's single 44 px band (chat revamp SPEC §10.1a).
+ * ThreadToolbar — the conversation zone's single 44 px band (chat revamp SPEC §10.1a),
+ * taller only while a long title wraps.
  *
  * Left to right: [History] (only when the rail is a Sheet) · the thread title as the
  * page's `<h2>` (inline rename, full text in a tooltip) · [Report n] (Workspace only) ·
@@ -33,6 +34,12 @@
  *
  * Inline rename returns focus to the title when it ends from the keyboard (Enter /
  * Escape); a blur commit leaves focus wherever the reader moved it.
+ *
+ * Long titles (re-shoot PW3-2): with room and a pointer that hovers, the title keeps one
+ * line and the whole of it is in a tooltip on hover and keyboard focus. Under 480 px
+ * (`narrow`) or on a touch screen (no hover, so no tooltip) it wraps to up to three
+ * lines and the band grows to hold them: a generated title (48 characters at most) or a
+ * rename (80) is read whole on a phone.
  */
 import * as React from 'react';
 import { Download, FilePlus2, FileText, History, MoreHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
@@ -162,6 +169,17 @@ export function useSaveConversationAsReport(conversationId: string | null) {
   return { save, saving };
 }
 
+/**
+ * The title's text box: one line cut with an ellipsis where a tooltip can show the rest,
+ * up to three wrapped lines under 480 px and on a touch screen (no hover, no tooltip).
+ * (No `block` with the clamp: it would override line-clamp's box.)
+ */
+export function titleTextClass(narrow: boolean): string {
+  return narrow
+    ? 'line-clamp-3 break-words'
+    : 'block truncate [@media(hover:none)]:line-clamp-3 [@media(hover:none)]:whitespace-normal [@media(hover:none)]:break-words';
+}
+
 /** How an inline rename ended: from the keyboard (refocus the title) or by blur. */
 type EditEnd = 'keyboard' | 'blur';
 
@@ -288,7 +306,7 @@ export function ThreadToolbar({
   };
 
   return (
-    <div className={cn('flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-3', className)} data-testid="chat-thread-toolbar">
+    <div className={cn('flex min-h-11 shrink-0 items-center gap-1.5 border-b border-border px-3 py-1', className)} data-testid="chat-thread-toolbar">
       {railInSheet && !caseScoped ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -323,19 +341,21 @@ export function ThreadToolbar({
           />
         ) : (
           <div className="flex min-w-0 items-baseline gap-2">
-            <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">
+            <h2 className="min-w-0 text-sm font-semibold text-foreground proportional-nums">
               {saved ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       ref={titleButtonRef}
                       type="button"
-                      className="max-w-full truncate rounded-sm text-left hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="max-w-full rounded-sm text-left hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => setEditing(true)}
                       onFocus={quietFocusGuard}
                       aria-describedby={hintId}
                     >
-                      {title}
+                      <span className={titleTextClass(narrow)} data-testid="thread-title-text">
+                        {title}
+                      </span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-md break-words">
@@ -343,7 +363,9 @@ export function ThreadToolbar({
                   </TooltipContent>
                 </Tooltip>
               ) : (
-                title
+                <span className={titleTextClass(narrow)} data-testid="thread-title-text">
+                  {title}
+                </span>
               )}
             </h2>
             {saved ? (

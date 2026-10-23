@@ -17,7 +17,9 @@ import { MessageSquare } from 'lucide-react';
 import type { Case } from '@/lib/types';
 import { LoadingState } from '@/design-system';
 import { Button } from '@/ui/button';
+import { useAuth } from '@/soc/auth';
 import type { Navigate } from '@/soc/router';
+import { prefetchCaseStarters } from './case-starters-prefetch';
 
 import { caseDisplayId } from './caseFacts';
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
@@ -34,6 +36,15 @@ export const CASE_MANAGER_CHAT_STARTERS = ['Summarise the case', 'Check indicato
 
 const CaseChat = React.lazy(() => import('./CaseChat'));
 
+/** The signed-in username, or null where no auth provider is mounted (as `CaseChat` reads it). */
+function useOptionalPrincipal(): string | null {
+  try {
+    return useAuth().username ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** The lazy chat body with the console's one blocking-load grammar while it arrives. */
 function LazyCaseChat(props: { caseId: string; displayId: string; caseManager: boolean; starters: readonly string[] }) {
   return (
@@ -49,6 +60,16 @@ export const ChatTab: React.FC<{
   onClose: () => void;
   presentation?: CasePanelPresentation;
 }> = ({ c, onNavigate, onClose, presentation = 'default' }) => {
+  // The case's suggested questions are read as soon as the tab is chosen, beside the
+  // chat's own lazy import, instead of after it (`case-starters-prefetch.ts`, Round 13
+  // polish).
+  // A layout effect: it runs before every passive effect of the commit, so when the
+  // chat's code is already loaded its hook (a child's passive effect) still finds this
+  // read instead of starting a second one.
+  const principal = useOptionalPrincipal();
+  React.useLayoutEffect(() => {
+    prefetchCaseStarters(c.case_id, principal);
+  }, [c.case_id, principal]);
   if (presentation === 'case-manager') {
     return (
       <div

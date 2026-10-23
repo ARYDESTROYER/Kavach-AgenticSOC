@@ -615,6 +615,7 @@ def starter_from_template(
     reason_variant: str = "default", reason_slots: Mapping[str, Any] | None = None,
     ref: ChatStarterRef | None = None, urgency: StarterUrgency = "none",
     as_of: str | None = None, expires_at: str | None = None,
+    key_ref: ChatStarterRef | None = None,
 ) -> ChatStarter:
     """A :class:`ChatStarter` worded by ``chat_starter_text``.
 
@@ -625,7 +626,11 @@ def starter_from_template(
     or does not fit). A ``send`` template with a reference slot builds its ``ref`` from
     that slot; one without carries no ``ref``. A display-only template needs ``ref``:
     ``conversation`` for ``open_conversation``, ``prompt`` for ``use_prompt``. Raises
-    ``ValueError`` when the template refuses the slots or the reference does not fit."""
+    ``ValueError`` when the template refuses the slots or the reference does not fit.
+    ``key_ref`` names what the card is about for its opaque ``key`` when that is not
+    its reference (the campaign card names one of the campaign's cases but is keyed
+    per campaign, so novelty and "Hide for a day" are per campaign); it is never shown,
+    sent or put in ``ref``."""
     spec = text.template(template_id)
     prompt = text.render_question(template_id, slots)
     ref_slot = spec.ref_slot
@@ -653,7 +658,7 @@ def starter_from_template(
     return ChatStarter(
         id=spec.family, label=spec.label, description=reason, prompt=prompt,
         tools=list(spec.tools), template=template_id, reason=reason, action=spec.action,
-        ref=ref, key=starter_key(spec.family, ref), urgency=urgency,
+        ref=ref, key=starter_key(spec.family, key_ref or ref), urgency=urgency,
         as_of=as_of, expires_at=expires_at,
     )
 
@@ -1241,7 +1246,8 @@ class _Build:
     def card(self, template_id: str, slots: Mapping[str, Any] | None = None, *,
              variant: str = "default", reason_slots: Mapping[str, Any] | None = None,
              urgency: StarterUrgency = "none", reason: str | None = None,
-             ref: ChatStarterRef | None = None) -> ChatStarter | None:
+             ref: ChatStarterRef | None = None,
+             key_ref: ChatStarterRef | None = None) -> ChatStarter | None:
         """A stamped card, or None when the template refuses the slots, the reason does
         not fit, or the caller cannot run every tool the card lists (never altered)."""
         if not self.template_ok(template_id):
@@ -1249,7 +1255,7 @@ class _Build:
         try:
             return starter_from_template(
                 template_id, slots, reason=reason, reason_variant=variant, reason_slots=reason_slots,
-                ref=ref, urgency=urgency, as_of=self.as_of, expires_at=self.expires_at,
+                ref=ref, urgency=urgency, as_of=self.as_of, expires_at=self.expires_at, key_ref=key_ref,
             )
         except ValueError:  # pydantic's ValidationError is a ValueError too
             return None
@@ -1376,9 +1382,16 @@ async def _family_my_cases(b: _Build) -> _Built:
         elif past > 1:
             options.append(("past_target", {"k": past}))
         if pop.complete:
-            oldest = min((t for t in (_case_age_from(c) for c in mine) if t is not None), default=None)
-            if oldest is not None:
-                options.append(("oldest", {"age": b.age(oldest) or ""}))
+            # How long the oldest of them has been the caller's, when every case's
+            # history records its assignment; else how long ago the oldest was opened,
+            # said as such (Round 13 polish PB3: the case age is not its assignment age).
+            assigned = await _assignment_times(b, mine)
+            if assigned:
+                options.append(("oldest", {"age": b.age(min(assigned)) or ""}))
+            else:
+                oldest = min((t for t in (_case_age_from(c) for c in mine) if t is not None), default=None)
+                if oldest is not None:
+                    options.append(("opened", {"age": b.age(oldest) or ""}))
         # Over the population bound neither figure is known: say why the card is here.
         options.append(("assigned", {}))
         starter = b.card("my_cases", {"n": n}, reason=_first_reason(b, "my_cases", options), urgency=level)
@@ -1387,6 +1400,53 @@ async def _family_my_cases(b: _Build) -> _Built:
     return _Built(StarterCandidate(
         "my_cases", starter, urgency=multiplier, urgency_level=level, assigned_to_caller=True,
     ), clause)
+
+
+#: The "my cases" card reads the history of at most this many of the caller's cases
+#: (one batch read) for their assignment times; more than that says "Oldest opened".
+MY_CASES_HISTORY_READ_LIMIT = 20
+#: The history events that record a case's owner: the assign route's own event, and an
+#: analyst action that set an owner (``assignee`` on the entry).
+_ASSIGNMENT_EVENTS = frozenset({"assigned", "analyst_action"})
+
+
+def assigned_at(case: Any) -> datetime | None:
+    """When the case's CURRENT owner was given it, from its append-only history; None
+    when the history records no assignment, or its latest recorded assignment names
+    someone else (the owner then changed by a path that keeps no record)."""
+    owner = str(getattr(case, "assignee", "") or "").strip().casefold()
+    if not owner:
+        return None
+    for entry in reversed(list(getattr(case, "history", None) or [])):
+        if not isinstance(entry, Mapping) or entry.get("event") not in _ASSIGNMENT_EVENTS or "assignee" not in entry:
+            continue
+        if str(entry.get("assignee") or "").strip().casefold() != owner:
+            return None
+        return _ts(entry.get("ts"))
+    return None
+
+
+async def _assignment_times(b: _Build, cases: Sequence[Any]) -> list[datetime] | None:
+    """The assignment time of every one of ``cases`` (one batch read of their whole
+    documents: the population read projects no history), or None when any is unknown,
+    there are too many to read, or the store failed."""
+    if not cases or len(cases) > MY_CASES_HISTORY_READ_LIMIT:
+        return None
+    ids = [str(c.case_id) for c in cases]
+    try:
+        batch = getattr(b.ctx.cases, "get_many", None)
+        found: dict[str, Any] = dict(await batch(ids)) if callable(batch) else {
+            cid: await b.ctx.cases.get(cid) for cid in ids}
+    except Exception:  # noqa: BLE001 -- the reason falls back to the case age
+        logger.debug("assignment history read failed", exc_info=True)
+        return None
+    times: list[datetime] = []
+    for cid in ids:
+        at = assigned_at(found.get(cid))
+        if at is None:
+            return None
+        times.append(at)
+    return times
 
 
 def _shift_snapshot_reads_whole(cases: Sequence[Any]) -> bool:
@@ -1611,13 +1671,15 @@ async def _family_noisy_rule(b: _Build) -> _Built:
     return _Built()
 
 
-async def _member_times(b: _Build, case_ids: Sequence[str]) -> dict[str, datetime | None] | None:
-    """Creation times of a campaign's member cases (one batch read), or None when there
-    are too many to read or the store failed."""
+async def _member_cases(b: _Build, case_ids: Sequence[str]) -> dict[str, Any] | None:
+    """A campaign's member cases by id (the population's projection, then one batch
+    read of the rest; a case the store does not hold maps to None), or None when there
+    are too many to read."""
     if len(case_ids) > CAMPAIGN_MEMBER_READ_LIMIT:
         return None
+    wanted = set(case_ids)
     pop = await b.population()
-    known = {c.case_id: _ts(c.created_at) for c in pop.cases if c.case_id in set(case_ids)}
+    known: dict[str, Any] = {c.case_id: c for c in pop.cases if c.case_id in wanted}
     missing = [cid for cid in case_ids if cid not in known]
     if missing:
         batch = getattr(b.ctx.cases, "get_many", None)
@@ -1626,11 +1688,52 @@ async def _member_times(b: _Build, case_ids: Sequence[str]) -> dict[str, datetim
             case = found.get(cid)
             if case is None and not callable(batch):
                 case = await b.ctx.cases.get(cid)
-            known[cid] = _ts(getattr(case, "created_at", None)) if case is not None else None
+            known[cid] = case
     return known
 
 
+async def _member_times(b: _Build, case_ids: Sequence[str]) -> dict[str, datetime | None] | None:
+    """Creation times of a campaign's member cases (one batch read), or None when there
+    are too many to read or the store failed."""
+    members = await _member_cases(b, case_ids)
+    if members is None:
+        return None
+    return {cid: _ts(getattr(case, "created_at", None)) if case is not None else None
+            for cid, case in members.items()}
+
+
+#: The campaign card names its campaign by one of these many newest member cases (the
+#: first whose number or id the chat tools resolve).
+CAMPAIGN_CASE_CANDIDATES = 5
+
+
+async def _campaign_case(b: _Build, case_ids: Sequence[str]) -> str | None:
+    """The case the campaign card names its campaign by: the newest member the chat
+    tools can name (its number, else its id), or None (polish round PB4). A case is the
+    analyst's own reference and the answer finds the campaign that holds it now
+    (``list_campaigns(case_id=…)``), never "whichever campaign is newest"."""
+    members = await _member_cases(b, list(dict.fromkeys(case_ids)))
+    if not members:
+        return None
+    floor = datetime.min.replace(tzinfo=timezone.utc)
+    newest = sorted((case for case in members.values() if case is not None),
+                    key=lambda c: (_ts(getattr(c, "created_at", None)) or floor, str(c.case_id)), reverse=True)
+    for case in newest[:CAMPAIGN_CASE_CANDIDATES]:
+        value = await b.case_value(case)
+        if value is not None:
+            return value
+    return None
+
+
 async def _family_campaign(b: _Build) -> _Built:
+    """A campaign that is new since the baseline or gained a case since then: a new
+    one first, then the one that gained most, then the larger. The card names it by one
+    of its cases (:func:`_campaign_case`), never by its internal id ("campaign-4039d3c5…"
+    broke mid-word on a phone card, polish PB3), and never as "the most recently active
+    campaign" (a newer campaign made that a different one by the time the question was
+    sent, polish PB4). Its key is per campaign. The catch-up clause counts every
+    campaign (open or monitoring) new since the baseline, whether or not a card is
+    built."""
     start = b.count_start
     if start is None or b.ctx.campaigns is None:
         return _Built()
@@ -1638,7 +1741,7 @@ async def _family_campaign(b: _Build) -> _Built:
     picks: list[tuple[int, int, int, str, Any, bool, int]] = []
     new_count = 0
     for campaign in campaigns:
-        if _enum(campaign.status) == "resolved" or text.ref_value("campaign", campaign.id) != campaign.id:
+        if _enum(campaign.status) == "resolved":
             continue
         members = list(campaign.case_ids or [])
         if len(members) < 2:
@@ -1646,7 +1749,7 @@ async def _family_campaign(b: _Build) -> _Built:
         first = _ts(campaign.first_seen) or _ts(campaign.created_at)
         if first is not None and first >= start:
             new_count += 1
-            picks.append((1, len(members), len(members), campaign.id, campaign, True, len(members)))
+            picks.append((1, len(members), len(members), str(campaign.id), campaign, True, len(members)))
             continue
         last = _ts(campaign.last_seen)
         if last is None or last < start:
@@ -1656,27 +1759,34 @@ async def _family_campaign(b: _Build) -> _Built:
             continue
         grown = sum(1 for t in times.values() if t is not None and t >= start)
         if grown >= 1:
-            picks.append((0, grown, len(members), campaign.id, campaign, False, grown))
-    if not picks:
-        return _Built()
+            picks.append((0, grown, len(members), str(campaign.id), campaign, False, grown))
+    clause = text.clause_new_campaigns(new_count) if new_count else None
     picks.sort(key=lambda p: (-p[0], -p[1], -p[2], p[3]))
-    _new, _k, n, campaign_id, campaign, is_new, grown = picks[0]
     since = b.since_label(b.baseline)
-    if is_new:
-        options: list[tuple[str, Mapping[str, Any]]] = [("new", {"since": since})]
-    elif grown == 1:
-        options = [("grown_one", {"since": since})]
-    else:
-        options = [("grown", {"k": grown, "since": since})]
-    multiplier, level = family_urgency("campaign", cases=n)
-    starter = b.card("campaign", {"n": n, "campaign": campaign_id},
-                     reason=_first_reason(b, "campaign", options), urgency=level)
-    if starter is None:
-        return _Built()
-    return _Built(StarterCandidate(
-        "campaign", starter, urgency=multiplier, urgency_level=level,
-        signal_at=_ts(campaign.last_seen), newer_than_baseline=True,
-    ), text.clause_new_campaigns(new_count) if new_count else None)
+    for _new, _k, n, campaign_id, campaign, is_new, grown in picks:
+        case = await _campaign_case(b, list(campaign.case_ids or []))
+        if case is None:
+            continue
+        if is_new:
+            options: list[tuple[str, Mapping[str, Any]]] = [("new", {"since": since})]
+        elif grown == 1:
+            options = [("grown_one", {"since": since})]
+        else:
+            options = [("grown", {"k": grown, "since": since})]
+        multiplier, level = family_urgency("campaign", cases=n)
+        try:
+            key_ref = ChatStarterRef(kind="campaign", value=campaign_id)
+        except ValueError:
+            key_ref = None
+        starter = b.card("campaign", {"n": n, "case": case}, reason=_first_reason(b, "campaign", options),
+                         urgency=level, key_ref=key_ref)
+        if starter is None:
+            continue
+        return _Built(StarterCandidate(
+            "campaign", starter, urgency=multiplier, urgency_level=level,
+            signal_at=_ts(campaign.last_seen), newer_than_baseline=True,
+        ), clause)
+    return _Built(clause=clause)
 
 
 def _poll_failed(row: Mapping[str, Any]) -> bool:

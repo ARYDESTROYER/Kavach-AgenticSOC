@@ -39,7 +39,7 @@ from app.engine.chat_starters import (
     visit_view,
     volume_change,
 )
-from app.models import Campaign, Case, ChatPrompt, Entity, StatusHistoryEntry
+from app.models import Campaign, Case, ChatPrompt, ChatStarterRef, Entity, StatusHistoryEntry
 
 UTC = timezone.utc
 
@@ -439,12 +439,18 @@ async def test_noisy_rule_absent_under_ten(app_state, as_alice) -> None:
 async def test_campaign_new_since_the_baseline(app_state, as_alice, established) -> None:
     now = datetime.now(UTC)
     first = (now - timedelta(minutes=20)).isoformat()
+    await _seed(app_state, *[_case(cid, created=now - timedelta(minutes=minutes), number=f"CASE-00000{i}")
+                             for i, (cid, minutes) in enumerate((("a", 20), ("b", 15), ("c", 10)), start=1)])
     await app_state.campaign_store.upsert_many([Campaign(id="camp-abc123", case_ids=["a", "b", "c"], first_seen=first,
                                                       last_seen=first, created_at=first)])
     info = await _build(app_state, now=now, user_state=_visited(now, gap=timedelta(hours=1)))
     card = _card(info, "campaign")
-    assert card is not None and card.prompt == "What links the 3 cases in campaign camp-abc123?"
-    assert card.reason.startswith("New since ") and card.ref is not None and card.ref.kind == "campaign"
+    # Named by its newest case, never by its internal id (Round 13 polish PB3, PB4); the
+    # case is the card's fenced reference and its opaque key is still per campaign.
+    assert card is not None and card.prompt == "What links the 3 cases in the campaign that includes CASE-000003?"
+    assert "camp-abc123" not in card.prompt and card.reason.startswith("New since ")
+    assert card.ref == ChatStarterRef(kind="case", value="CASE-000003")
+    assert card.key == starter_key("campaign", ChatStarterRef(kind="campaign", value="camp-abc123"))
     assert info.catch_up is not None and "1 new campaign" in [c.text for c in info.catch_up.clauses]
     # Without a baseline there is no campaign card.
     assert "campaign" not in _ids(await _build(app_state, now=now))
@@ -970,7 +976,7 @@ def test_assigned_beats_unassigned() -> None:
 
 
 def test_a_stale_signal_decays() -> None:
-    fresh = _cand("campaign", "campaign", {"n": 2, "campaign": "c-1"}, signal_at=NOW)
+    fresh = _cand("campaign", "campaign", {"n": 2, "case": "CASE-000001"}, signal_at=NOW)
     stale = _cand("new_cases", "new_cases", {"n": 3, "since": "09:12"}, signal_at=NOW - timedelta(hours=12))
     ranked = rank([stale, fresh], role="", user_state=None, now=NOW)
     assert ranked[0].family == "campaign"  # 65 > 85 * 0.25

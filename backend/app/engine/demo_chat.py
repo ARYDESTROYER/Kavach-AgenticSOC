@@ -55,6 +55,7 @@ from ..agents.chat_entity import entity_turn_question, entity_value, parse_entit
 from ..agents.chat_followups import suggestion_question
 from ..agents.chat_protocol import parse_title
 from ..agents.chat_starter_text import (
+    LEGACY_TEMPLATES as LEGACY_STARTER_TEMPLATES,
     TEMPLATES as STARTER_TEMPLATES,
     format_age,
     parse_starter_question,
@@ -4851,7 +4852,8 @@ _CASE_CHIP_INTENTS: dict[str, str] = {
 _STARTER_INTENTS: dict[str, str] = {
     "my_cases": "my_cases", "sla_breached": "sla", "sla_close": "sla", "new_cases": "new_since",
     "new_cases_one": "new_since", "volume_spike": "volume", "volume_drop": "volume", "noisy_rule": "noisy_rule",
-    "campaign": "campaign", "silent_source": "source", "silent_sources": "source", "approvals": "approvals",
+    "campaign": "campaign", "campaign_by_id": "campaign", "campaign_latest": "campaign",
+    "silent_source": "source", "silent_sources": "source", "approvals": "approvals",
     "approvals_one": "approvals", "platform": "auto_close", "triage": "triage",
 }
 #: Starters about ONE case the console expected to be open: the answer says so plainly
@@ -4869,7 +4871,8 @@ def _starter_ask(view: PromptView, ask: Callable[..., Ask]) -> Ask | None:
     any question. The fenced value only ever lands in a typed field (a case id, a rule
     filter, a technique id, a source to find in a list)."""
     template_id, slots = view.starter or ("", {})
-    if template_id in _CLASSIFIED_STARTERS or template_id not in STARTER_TEMPLATES:
+    if template_id in _CLASSIFIED_STARTERS or (template_id not in STARTER_TEMPLATES
+                                                and template_id not in LEGACY_STARTER_TEMPLATES):
         return None
     fields: dict[str, Any] = {
         "starter": template_id, "starter_slots": tuple(sorted(slots.items())), "no_lookup": True,
@@ -5112,10 +5115,44 @@ def _campaign_row(view: PromptView, campaign_id: Any) -> Mapping[str, Any] | Non
     return None
 
 
+def _held_campaign(view: PromptView, case_ref: str) -> Result | None:
+    """The listing of the campaigns that hold the starter's case."""
+    return view.ok("list_campaigns", where=lambda r: r.input.get("case_id") == case_ref)
+
+
+def _first_row(result: Result | None) -> Mapping[str, Any] | None:
+    rows = [c for c in (result.obs.get("campaigns") if result else None) or [] if isinstance(c, Mapping)]
+    return rows[0] if rows else None
+
+
 def _plan_campaign(view: PromptView, ask: Ask, done: int) -> list[Call]:
     """The campaign itself, then the cases that share its first entity (or, when it is
-    gone, the campaigns open now)."""
+    gone, the campaigns open now). The starter card names the campaign by one of its
+    cases (polish round PB4): the campaign that holds that case now, whatever newer
+    campaigns exist. The legacy wordings name it by id, or as "the most recently active
+    campaign" (the first open one ``list_campaigns`` lists)."""
+    case_ref = str(ask.slot("case") or "")
+    if case_ref:
+        if done == 0:
+            return [Call("list_campaigns", {"case_id": case_ref})]
+        row = _first_row(_held_campaign(view, case_ref))
+        if done == 1 and row is None:
+            return [Call("list_campaigns", {"status": "open", "limit": 5})]
+        if done == 1:
+            entity = _campaign_entity(row)
+            return [Call("search_cases", {"entity": entity.split(":", 1)[1].strip(), "sort_field": "risk_score",
+                                          "limit": 10})] if entity else []
+        return []
     campaign_id = str(ask.slot("campaign") or "")
+    if not campaign_id:
+        if done == 0:
+            return [Call("list_campaigns", {"status": "open", "limit": 1})]
+        row = _open_campaign(view)
+        entity = _campaign_entity(row) if row is not None else None
+        if done == 1 and entity:
+            return [Call("search_cases", {"entity": entity.split(":", 1)[1].strip(), "sort_field": "risk_score",
+                                          "limit": 10})]
+        return []
     if done == 0:
         return [Call("list_campaigns", {"campaign_id": campaign_id})]
     row = _campaign_row(view, campaign_id)
@@ -6438,29 +6475,36 @@ def _entity_phrase(raw: Any, limit: int = _NARRATED_CHARS) -> str:
     return f"{noun} {_code(value.strip(), limit)}"
 
 
-def _rule_words(rules: str, limit: int = _NARRATED_CHARS) -> str:
-    """Detection rule ids as plain words ("identity_signin" → "identity signin"),
-    Markdown-neutral. Nothing is deleted, so no lookalike can form: invisible
-    characters are written as visible ``\\uXXXX`` escapes (:func:`visible_text`, as
-    :func:`_code` does), and a rule text carrying any other Markdown character
-    (``ad*min_login``, ``ad<min>_login``) is shown exactly, as inline code."""
-    text = rules if isinstance(rules, str) else ""
-    if _MARKDOWN_SPECIALS_RE.search(text.replace("_", "")):
-        return _code(text, limit)
-    return visible_text(re.sub(r"[_\s]+", " ", text), limit).strip()
+#: A seeded machine title's trailing ordinal (" #2"): it tells two titles of one rule
+#: and entity apart; in prose the case number does that, so it is not part of the rule.
+_TITLE_ORDINAL_RE = re.compile(r"\s+#\d{1,4}$")
+
+
+def _rule_ids(rules: str, limit: int = _NARRATED_CHARS) -> str:
+    """Detection rule ids exactly as written, each as inline code (``demo_impossible_travel``),
+    joined as the title joins them. This is the one display form a rule has in an
+    answer: the case list, the case card's Rules fact, the tables, the conversation
+    title and every other sentence show the id itself (Round 13 polish PB3; it replaces
+    browser-QA D6's plain words, "demo impossible travel", which put two spellings of one
+    rule in one answer). :func:`_code` keeps invisible characters as visible escapes, so
+    no lookalike can form."""
+    text = _TITLE_ORDINAL_RE.sub("", rules.strip()) if isinstance(rules, str) else ""
+    ids = [part.strip() for part in text.split(",") if part.strip()]
+    return ", ".join(_code(rule, limit) for rule in ids)
 
 
 def _case_name(case: Mapping[str, Any], *, with_entity: bool = True) -> str:
     """A case in words for the narration (browser-QA D6): the machine title
-    ``user:dsingh — identity_signin`` reads "identity signin on user `dsingh`". The
-    case id and the exact title stay in the blocks and links. Any other title is
+    ``user:dsingh — identity_signin`` reads "`identity_signin` on user `dsingh`" (the
+    rule id as every block shows it, :func:`_rule_ids`). The case id and the exact
+    title stay in the blocks and links. Any other title is
     free text from the case, so it stays inline code (:func:`_code`): exact, with
     its punctuation (``srv_db_01``) and any lookalike character visible."""
     title = case.get("title") if isinstance(case.get("title"), str) else ""
     match = _MACHINE_TITLE_RE.match(title.strip())
     if match:
         kind, value, rules = match.groups()
-        what = _rule_words(rules) or "activity"
+        what = _rule_ids(rules) or "activity"
         return f"{what} on {_entity_phrase(f'{kind}:{value}')}" if with_entity else what
     if title.strip() and title.strip() != case.get("case_id"):
         return _code(title)
@@ -7791,15 +7835,36 @@ def _final_metric(view: PromptView, ask: Ask) -> Final | None:
                  follow_ups=_follow_ups(view, "metric", charts=True))
 
 
+def _sla_first(shift: Result | None) -> tuple[int, list[Mapping[str, Any]]]:
+    """``(total past SLA, the most overdue cases the brief names)``: the headline's total
+    (the snapshot lists at most five of them, most overdue first) and at most three of
+    them, each as its attention-queue row when it has one (that row says what the case is
+    about). The step and the lead name the same cases, so the brief has one starting
+    point (polish round PB4)."""
+    o = shift.obs if shift else {}
+    head = o.get("headline") if isinstance(o.get("headline"), Mapping) else {}
+    breached = [b for b in _dig(o, "sla", "breached") or [] if isinstance(b, Mapping)]
+    total = int(max(_num(head.get("sla_breached")) or _num(_dig(o, "sla", "totals", "breached")) or 0,
+                    len(breached)))
+    named = {str(a.get("case_id")): a for a in o.get("attention") or [] if isinstance(a, Mapping)}
+    return total, [named.get(str(b.get("case_id")), b) for b in breached[:3]] if total else []
+
+
 def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None) -> list[str]:
     steps: list[str] = []
     o = shift.obs if shift else {}
     head = o.get("headline") if isinstance(o.get("headline"), Mapping) else {}
-    breached = [b for b in _dig(o, "sla", "breached") or [] if isinstance(b, Mapping)]
-    if breached:
-        named = {str(a.get("case_id")): a for a in o.get("attention") or [] if isinstance(a, Mapping)}
-        steps.append(f"Work the {_plural(len(breached), 'case')} past SLA first: "
-                     + _join([_case_head(named.get(str(b.get("case_id")), b), bold=False) for b in breached[:3]]) + ".")
+    # The total past SLA is stated once, then exactly the cases named (PB3).
+    total, shown = _sla_first(shift)
+    if total:
+        names = _join([_case_head(row, bold=False) for row in shown])
+        if not shown:
+            steps.append(f"Work the {_plural(total, 'case')} past SLA first.")
+        elif len(shown) == total:
+            steps.append(f"Work the {_plural(total, 'case')} past SLA first: {names}.")
+        else:
+            most = "the most overdue" if len(shown) == 1 else f"the {_count(len(shown))} most overdue"
+            steps.append(f"Work the {_plural(total, 'case')} past SLA first, starting with {most}: {names}.")
     if _num(head.get("needs_human")):
         steps.append(f"Decide the {_plural(head.get('needs_human'), 'case')} in Needs human status.")
     if _num(head.get("escalated")):
@@ -7862,15 +7927,24 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
         # steps); the prose is its 1–3 sentence lead (browser-QA D5). A Case Manager
         # turn keeps the full narration: its brief is unwrapped into plain blocks.
         lead = [body[0] if shift else posture_line]
-        if attention:
-            first = attention[0]
+        # One starting point (polish round PB4): with cases past SLA the Next steps
+        # start with the most overdue, so the lead does too; when the snapshot names
+        # none of them the lead only says what tops the attention queue.
+        total, overdue = _sla_first(shift)
+        first = overdue[0] if overdue else attention[0] if attention else None
+        if first is not None:
             why = []
             if first.get("status"):
                 why.append(display_text(first.get("status"), 20).replace("_", " "))
             if _num(first.get("risk_score")) is not None:
                 why.append(f"risk {_count(first.get('risk_score'))}")
-            lead.append(f"Start with {_case_head(first, bold=False)}" + (f", {', '.join(why)}" if why else "")
-                        + ".")
+            said = _case_head(first, bold=False) + (f", {', '.join(why)}" if why else "")
+            if overdue:
+                past = (f"the most overdue of the {_plural(total, 'case')} past SLA" if total > 1
+                        else "the one case past SLA")
+                lead.append(f"Start with {said}: {past}.")
+            else:
+                lead.append(f"{'Top of the attention queue:' if total else 'Start with'} {said}.")
         body = [line for line in lead if line]
     # One figure shown once (A34): the Summary's own text states only what no block
     # of the brief already shows. The Shift headline KPIs (beside it) carry the five
@@ -8936,7 +9010,7 @@ def _explained_cases(r: Result, limit: int) -> list[str]:
         line = (f"- {_case_head(case, bold=False, name=name, start=True)} {_case_facts(case)}"
                 + (f", status {status}" if status else ""))
         rules = [x for x in case.get("rules") or [] if isinstance(x, str)][:2]
-        shown = [x for x in rules if _rule_words(x) not in name]
+        shown = [x for x in rules if _code(x) not in name]
         if shown:
             line += ("; rule " if len(shown) == 1 else "; rules ") + _join([_code(x) for x in shown])
         lines.append(line + ".")
@@ -11684,7 +11758,11 @@ def _final_sla(view: PromptView, ask: Ask) -> Final | None:
         if moved:
             body.append(moved)
         if listed:
-            body.append("The most overdue:")
+            # Exactly the cases listed below (the snapshot names at most five of the
+            # total stated above): "the 5 most overdue", never a different count (PB3).
+            shown_n = min(len(listed), 5)
+            body.append("Most overdue first:" if shown_n >= breached else
+                        "The most overdue:" if shown_n == 1 else f"The {_count(shown_n)} most overdue:")
             # The overdue rows carry their number and assignee; the attention queue adds
             # what each case is about when it lists it.
             overdue_rows = {str(b.get("case_id")): b for b in _dig(shift.obs, "sla", "breached") or []
@@ -11694,7 +11772,8 @@ def _final_sla(view: PromptView, ask: Ask) -> Final | None:
                 row = {**attention.get(case_id, {"case_id": case_id}),
                        **{k: v for k, v in own.items() if k in ("case_number", "assignee") and v}}
                 body.append(f"- {_case_line(row)}, {_owner(row)}, {_age_words(overdue)} over target")
-            held = [attention[c] for c in listed if c in attention]
+            shown_ids = list(listed)[:5]
+            held = [attention[c] for c in shown_ids if c in attention]
             unassigned = sum(1 for r in held if not (isinstance(r.get("assignee"), str) and r.get("assignee").strip()))
             on_hold = sum(1 for r in held if r.get("status") == "on_hold")
             human = sum(1 for r in held if str(r.get("verdict") or "").upper() == "NEEDS_HUMAN")
@@ -11704,7 +11783,11 @@ def _final_sla(view: PromptView, ask: Ask) -> Final | None:
                 f"{_count(unassigned)} {'has' if unassigned == 1 else 'have'} no assignee" if unassigned else "",
             ) if p]
             if causes:
-                body.append(f"What is holding them up, among these {_count(len(held))}: {_join(causes)}.")
+                # "These" are the cases listed above; when the snapshot describes only
+                # some of them, the count says which (never a different "these").
+                among = (f"among these {_count(len(held))}" if len(held) == len(shown_ids) else
+                         f"among the {_count(len(held))} of these the shift snapshot describes")
+                body.append(f"What is holding them up, {among}: {_join(causes)}.")
             if view.ok("get_case") is not None:
                 body.append("The most overdue case is shown below.")
     else:
@@ -11900,12 +11983,34 @@ def _final_noisy_rule(view: PromptView, ask: Ask) -> Final | None:
 
 
 def _final_campaign(view: PromptView, ask: Ask) -> Final | None:
+    case_ref = str(ask.slot("case") or "")
     campaign_id = ask.slot("campaign")
-    row = _campaign_row(view, campaign_id)
-    lookup = view.ok("list_campaigns")
+    lookup = _held_campaign(view, case_ref) if case_ref else view.ok("list_campaigns")
     if lookup is None:
         return None
+    # The card names the campaign by one of its cases (polish round PB4): the answer is
+    # about the campaign that holds that case now, named the same way, never by its
+    # internal id (the Campaign table shows it), and it says plainly when none does.
+    # The legacy wordings: by id, or "the most recently active campaign" (PB3).
+    newest = not campaign_id and not case_ref
+    if case_ref:
+        row = _first_row(lookup)
+    else:
+        row = _open_campaign(view) if newest else _campaign_row(view, campaign_id)
     body: list[str] = []
+    if row is None and case_ref:
+        found = (lookup.obs.get("case_filter") or {}).get("found") is not False
+        body.append(f"No campaign holds {_code(case_ref)} now: campaigns are rebuilt from shared entities every "
+                    "day, and this one may have been resolved since the suggestion was made." if found else
+                    f"Case {_code(case_ref)} was not found: it may have been deleted since the suggestion was made.")
+        current = view.ok("list_campaigns", where=lambda r: r.input.get("status") == "open")
+        if current is not None and current.obs.get("campaigns"):
+            body.append("Open now: " + _say_campaigns(current))
+        return Final(body=body, blocks=_keep(_block(current, "table", view="table", title="Open campaigns")))
+    if row is None and newest:
+        body.append("No campaign is open right now: campaigns are rebuilt from shared entities every day, and "
+                    "this one may have been resolved or merged since the suggestion was made.")
+        return Final(body=body)
     if row is None:
         body.append(f"Campaign {_code(campaign_id)} is no longer listed: campaigns are rebuilt from shared entities "
                     "every day, and one that gains cases gets a new id.")
@@ -11924,10 +12029,21 @@ def _final_campaign(view: PromptView, ask: Ask) -> Final | None:
     entities = [e for e in row.get("entities") or [] if isinstance(e, str)][:3]
     mitre = [m for m in row.get("mitre") or [] if isinstance(m, str)][:3]
     links = _join([_entity_phrase(e) for e in entities] + [f"ATT&CK {display_text(m, 12)}" for m in mitre])
-    lead = (f"Campaign {_code(campaign_id)} links **{_plural(row.get('case_count'), 'case')}**"
+    if case_ref:
+        subject = f"The campaign that includes {_code(case_ref)}"
+    else:
+        subject = "The most recently active open campaign" if newest else f"Campaign {_code(campaign_id)}"
+    lead = (f"{subject} links **{_plural(row.get('case_count'), 'case')}**"
             + (f" through {links}" if links else "") + ".")
     body.append(lead)
     moved = _counts_moved(ask.slot("n"), row.get("case_count"), "case")
+    if moved and newest:
+        # The legacy "most recently active" wording names a position, not a campaign:
+        # a newer campaign may hold it now, so a different count is never said to be
+        # this campaign's growth.
+        said = _num(ask.slot("n"))
+        moved = (f"The suggestion counted {_plural(said, 'case')} in the campaign that was most recently "
+                 "active then; a newer campaign may have taken its place since." if said is not None else "")
     if moved:
         body.append(moved)
     members = [c for c in row.get("case_ids") or [] if isinstance(c, str)]
@@ -12308,28 +12424,59 @@ _RESULT_LABELS: dict[tuple[str, str | None], tuple[str, ...]] = {
 }
 
 
-def _shown_results(view: PromptView, final: Final) -> list[Result]:
-    """The lookups whose artifacts the answer shows (by ``tN.aK`` refs, report
-    sections included); an answer that shows none is about every data lookup it ran
-    (the engine anchors it the same way)."""
-    ordinals: list[int] = []
+def _shown_refs(final: Final) -> list[str]:
+    """The ``tN.aK`` refs the answer's blocks show, report sections included."""
+    refs: list[str] = []
 
     def walk(blocks: Any) -> None:
         for block in blocks or []:
             if not isinstance(block, Mapping):
                 continue
-            match = _REF_ORDINAL_RE.match(str(block.get("ref") or ""))
-            if match:
-                ordinals.append(int(match.group(1)))
+            ref = str(block.get("ref") or "")
+            if _REF_ORDINAL_RE.match(ref):
+                refs.append(ref)
             for section in block.get("sections") or []:
                 if isinstance(section, Mapping):
                     walk(section.get("items"))
 
     walk(final.blocks)
+    return refs
+
+
+def _shown_results(view: PromptView, final: Final) -> list[Result]:
+    """The lookups whose artifacts the answer shows (by ``tN.aK`` refs, report
+    sections included); an answer that shows none is about every data lookup it ran
+    (the engine anchors it the same way)."""
+    ordinals = [int(m.group(1)) for m in (_REF_ORDINAL_RE.match(ref) for ref in _shown_refs(final)) if m]
     by_ordinal = {r.ordinal: r for r in view.results()}
     shown = [by_ordinal[o] for o in dict.fromkeys(ordinals) if o in by_ordinal]
     return shown or [r for r in view.results()
                      if r.ok and r.tool not in _REFERENCE_TOOLS and not _is_clock(r) and not _is_anchor_call(r)]
+
+
+def _shown_case_handles(view: PromptView, final: Final) -> set[str]:
+    """The cases the answer's blocks show: the rows of a shown case list and the case
+    of a shown case card."""
+    refs = set(_shown_refs(final))
+    out: set[str] = set()
+    for r in view.results():
+        if not r.ok:
+            continue
+        if r.tool == "search_cases":
+            entry = r.artifact("case_list")
+            if entry is not None and entry.ref in refs:
+                out.update(h for h in (_case_handle(c) for c in r.obs.get("cases") or []) if h)
+        elif r.tool == "get_case":
+            entry = r.artifact("entity")
+            handle = _case_handle(_dig(r.obs, "case"))
+            if entry is not None and entry.ref in refs and handle:
+                out.add(handle)
+    return out
+
+
+def _names_handle(text: str, handle: str) -> bool:
+    """Whether ``text`` names the case ``handle`` as a whole token."""
+    return bool(handle) and re.search(rf"(?<![\w.:-]){re.escape(handle)}(?![\w:-]|\.\w)", text) is not None
 
 
 def _case_handle(row: Any) -> str | None:
@@ -12372,7 +12519,14 @@ def _chip_context(view: PromptView, final: Final) -> _ChipContext:
             ctx.sources += [s.get("name") for s in o.get("sources") or []
                             if isinstance(s, Mapping) and isinstance(s.get("name"), str)
                             and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 _.()/&-]{0,59}", s.get("name"))]
-    ctx.cases = list(dict.fromkeys(ctx.cases))
+    # A chip names a case only when this answer shows it: a shown case list or case
+    # card holds it, or the answer's own words name it. A case the lookup merely
+    # observed (the shift snapshot's attention queue behind an "Open cases by analyst"
+    # chart, when no case is near its target) is never offered (the engine drops such
+    # a chip too, chat_followups).
+    shown = _shown_case_handles(view, final)
+    words = "\n".join([*final.body, *final.lead, *final.notes, final.closing])
+    ctx.cases = [c for c in dict.fromkeys(ctx.cases) if c in shown or _names_handle(words, c)]
     if view.case_scoped:
         # A Case Manager chat is about ONE case: its chips name that case only, never
         # another case a lookup of this turn listed.

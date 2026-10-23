@@ -99,7 +99,8 @@ export function EmptyState({
 }: EmptyStateProps) {
   if (variant === 'case') {
     return (
-      <div className={cn('space-y-2 py-2', className)} data-testid="case-chat-start">
+      // Proportional numerals: the line and chips are prose (tabular ones set hyphens wide).
+      <div className={cn('space-y-2 py-2 proportional-nums', className)} data-testid="case-chat-start">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <p className="text-sm text-muted-foreground">{CASE_CAPABILITY_LINE}</p>
           <AccessLink context={context} error={error} onRetry={onRetry} />

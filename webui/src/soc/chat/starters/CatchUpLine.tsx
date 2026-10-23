@@ -45,7 +45,8 @@ export function CatchUpLine({ catchUp, onSend, disabled = false, variant = 'home
   const line = (
     <p
       className={cn(
-        variant === 'home' ? 'text-base text-muted-foreground' : 'min-w-0 flex-1 text-sm text-muted-foreground',
+        // Proportional numerals: the line is prose (tabular ones set hyphens wide).
+        variant === 'home' ? 'text-base text-muted-foreground proportional-nums' : 'min-w-0 flex-1 text-sm text-muted-foreground proportional-nums',
         variant === 'home' && className,
       )}
       data-testid={variant === 'home' ? 'catch-up-line' : 'thread-catch-up-line'}

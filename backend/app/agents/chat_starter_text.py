@@ -142,9 +142,9 @@ _SINCE_RE = re.compile(_SINCE_PATTERN)
 _MONTH_RE = re.compile(_MONTH_PATTERN)
 _PLACEHOLDER_RE = re.compile(r"\{([a-z_]+)\}")
 # A case id that already reads as one ("case-0042") is not called a case twice (the
-# ``chat_entity`` rule): "Why does case {case} …" becomes "Why does {case} …". The same
-# rule covers a campaign id ("campaign-1e57…", the form the campaign engine mints):
-# "… in campaign {campaign}?" becomes "… in {campaign}?".
+# ``chat_entity`` rule): "Why does case {case} …" becomes "Why does {case} …". The
+# same rule covers a campaign id ("campaign-1e57…", the form the campaign engine
+# mints) in the legacy campaign wording, which is only read back, never offered.
 _CASE_NAMED_RE = re.compile(r"case", re.IGNORECASE)
 _CASE_SLOT = "case {case}"
 #: ``(slot phrase, slot, value prefix)``: the noun is dropped when the value already
@@ -343,7 +343,10 @@ _TABLE: tuple[StarterTemplate, ...] = (
     _t("my_cases", "my_cases",
        "Which of my {n} open cases should I work on first?",
        "My cases", ("search_cases",), minimums={"n": 2},
+       # "oldest" only when every case's history records when it was assigned (the
+       # assign route's "assigned" event); else the case age, said as such (PB3).
        reasons={"oldest": "Oldest assigned {age} ago",
+                "opened": "Oldest opened {age} ago",
                 "past_target": "{k} past their response target",
                 "past_target_one": "1 past its response target",
                 # Neither figure is known (more open cases than the population holds).
@@ -389,8 +392,14 @@ _TABLE: tuple[StarterTemplate, ...] = (
        "Why did detection rule {rule} create {n} of the {m} cases in the last 24 hours?",
        "Noisy rule", ("case_stats", "search_cases"), minimums={"n": 1, "m": 2},
        reasons="{pct}% of new cases"),
+    # The campaign is named by one of its cases, never by its internal id
+    # ("campaign-4039d3c5…" broke mid-word on a phone card, polish PB3): the case
+    # number is the analyst's own reference, it is fenced like every case reference,
+    # and the answer finds the campaign that holds that case now
+    # (``list_campaigns(case_id=…)``), so it is about the campaign the card counted
+    # even after newer campaigns appear or this one grows (polish PB4).
     _t("campaign", "campaign",
-       "What links the {n} cases in campaign {campaign}?",
+       "What links the {n} cases in the campaign that includes case {case}?",
        "Campaign", ("list_campaigns", "search_cases"), minimums={"n": 2},
        reasons={"new": "New since {since}",
                 "grown": "{k} more cases since {since}",
@@ -514,6 +523,25 @@ _TABLE: tuple[StarterTemplate, ...] = (
        "Handoff note", ("get_case",), surface="case"),
 )
 
+#: Earlier wordings that are read back but never offered (SPEC §3.8.4: a stored
+#: starter turn renders on replay as it did live, fenced and with its notes). The
+#: Round 13 build named a campaign by its internal id; polish round PB3 named "the most
+#: recently active campaign". Neither is ever built again (``template`` does not know
+#: them); a conversation saved with one still replays in its prompt form, and the
+#: Demo planner still answers one sent again.
+_LEGACY_TABLE: tuple[StarterTemplate, ...] = (
+    _t("campaign_by_id", "campaign",
+       "What links the {n} cases in campaign {campaign}?",
+       "Campaign", ("list_campaigns", "search_cases"), minimums={"n": 2}),
+    _t("campaign_latest", "campaign",
+       "What links the {n} cases in the most recently active campaign?",
+       "Campaign", ("list_campaigns", "search_cases"), minimums={"n": 2}),
+)
+#: The read-back-only templates by id (never in :data:`TEMPLATES`, never offered).
+LEGACY_TEMPLATES: Mapping[str, StarterTemplate] = MappingProxyType({t.id: t for t in _LEGACY_TABLE})
+#: Every template the parsers know: the offered ones, then the legacy ones.
+_KNOWN: Mapping[str, StarterTemplate] = MappingProxyType({**{t.id: t for t in _TABLE}, **LEGACY_TEMPLATES})
+
 #: Every template by id.
 TEMPLATES: Mapping[str, StarterTemplate] = MappingProxyType({t.id: t for t in _TABLE})
 TEMPLATE_IDS: tuple[str, ...] = tuple(t.id for t in _TABLE)
@@ -582,8 +610,8 @@ def _fill(text: str, parts: Mapping[str, str]) -> str:
 
 
 def _question_for(spec: StarterTemplate, slots: Mapping[str, Any]) -> str:
-    """The template text for these slots: the named variant when the case (or
-    campaign) value already reads as one ("case-0042", "campaign-1e57…")."""
+    """The template text for these slots: the named variant when the case value
+    already reads as one ("case-0042")."""
     for phrase, slot, prefix in _NAMED_SLOTS:
         value = slots.get(slot)
         if isinstance(value, str) and phrase in spec.question and prefix.match(value):
@@ -602,7 +630,7 @@ def render_question(template_id: str, slots: Mapping[str, Any] | None = None) ->
     result over :data:`QUESTION_MAX_CHARS` (:data:`DISPLAY_MAX_CHARS` for a display-only
     card): the caller then tries the ``_one`` or count-only variant, or drops the card.
     Never truncates."""
-    spec = TEMPLATES.get(template_id) if isinstance(template_id, str) else None
+    spec = _KNOWN.get(template_id) if isinstance(template_id, str) else None
     if spec is None:
         raise ValueError("unknown starter template")
     given = dict(slots or {})
@@ -648,7 +676,7 @@ def _patterns(spec: StarterTemplate) -> tuple[re.Pattern[str], ...]:
 
 
 _SENDABLE: tuple[tuple[StarterTemplate, tuple[re.Pattern[str], ...]], ...] = tuple(
-    (spec, _patterns(spec)) for spec in _TABLE if spec.sendable
+    (spec, _patterns(spec)) for spec in (*_TABLE, *_LEGACY_TABLE) if spec.sendable
 )
 
 
@@ -664,8 +692,10 @@ def parse_starter_question(text: Any) -> tuple[str, dict[str, Any]] | None:
     :func:`render_question` words (surrounding whitespace aside, as
     ``chat_entity.parse_entity_question``), else ``None``. The slots render back to the
     same text, so any edit, extra character, extra line or forged marker is
-    unrecognised. Display-only templates are never recognised (they are never sent).
-    Pure; templates are pairwise unambiguous, so at most one template matches."""
+    unrecognised. Display-only templates are never recognised (they are never sent);
+    the read-back-only :data:`LEGACY_TEMPLATES` are, so an older stored turn still
+    renders in its prompt form. Pure; templates are pairwise unambiguous, so at most one
+    template matches."""
     if not isinstance(text, str):
         return None
     text = text.strip()
@@ -714,7 +744,7 @@ def _ref_form(spec: StarterTemplate) -> str:
 
 
 _REF_PATTERNS: Mapping[str, re.Pattern[str]] = MappingProxyType({
-    spec.id: _compile(_ref_form(spec)) for spec in _TABLE if spec.sendable and spec.ref_slot
+    spec.id: _compile(_ref_form(spec)) for spec in (*_TABLE, *_LEGACY_TABLE) if spec.sendable and spec.ref_slot
 })
 
 
@@ -752,7 +782,7 @@ def render_starter_turn(text: Any) -> str | None:
     if parsed is None:
         return None
     template_id, slots = parsed
-    return _render_turn(TEMPLATES[template_id], slots)
+    return _render_turn(_KNOWN[template_id], slots)
 
 
 def parse_starter_turn(text: Any) -> tuple[str, dict[str, Any]] | None:
@@ -785,7 +815,7 @@ def parse_starter_turn(text: Any) -> tuple[str, dict[str, Any]] | None:
     kind, value = ref["kind"], ref["value"]
     if kind not in REF_SLOTS or ref_value(kind, value) != value:
         return None
-    for spec in _TABLE:
+    for spec in (*_TABLE, *_LEGACY_TABLE):
         pattern = _REF_PATTERNS.get(spec.id)
         if pattern is None or spec.ref_slot != kind:
             continue
@@ -988,6 +1018,7 @@ __all__ = [
     "DISPLAY_SLOTS",
     "DISPLAY_TEMPLATES",
     "EVERGREEN_TEMPLATES",
+    "LEGACY_TEMPLATES",
     "NUMBER_SLOTS",
     "ONBOARDING_TEMPLATES",
     "QUESTION_MAX_CHARS",

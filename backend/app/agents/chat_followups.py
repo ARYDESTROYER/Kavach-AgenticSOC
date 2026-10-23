@@ -235,8 +235,21 @@ _NON_FILTER_INPUTS = frozenset({
 })
 _LOOKUP_VALUES = 12
 #: At most this many case id and number pairs of one lookup anchor (a case list
-#: anchors at most twenty rows the same way).
+#: anchors at most twenty rows the same way), read from at most
+#: :data:`_CASE_PAIRS_SCANNED` pairs (the engine keeps at most 100 per lookup).
 _CASE_PAIRS = 20
+_CASE_PAIRS_SCANNED = 100
+#: At most this much of an answer's text is read for the cases it names.
+ANSWER_SCANNED_CHARS = 64_000
+#: A case number or id stands as a whole token: no word character, ".", ":", "/", "#"
+#: or "-" joined to either side ("." may end a sentence after it). A number from any
+#: valid template matches ("INC/2026/0042", "SOC#0042", "IR 0042"); a part of a longer
+#: reference never does (``demo_chat._names_handle`` reads case handles the same way).
+_REF_BEFORE = r"(?<![\w.:/#-])"
+_REF_AFTER = r"(?![\w:/#-]|\.\w)"
+#: Case-shaped whatever the numbering template: the default display number
+#: ("CASE-000042") and the internal id the pipeline mints ("case-" and 32 hex digits).
+_DEFAULT_CASE_SHAPES = (r"case-[0-9]+", r"case-[0-9a-f]{32}")
 #: Entity facts whose values name what the card is about (the case, its rules, source
 #: and assignee); the other facts are closed-vocabulary words.
 _ANCHOR_FACTS = frozenset({"case", "rules", "rule", "source", "assignee"})
@@ -337,7 +350,54 @@ def _case_refs(case_id: Any, info: ArtifactInfo, number: Any = None) -> list[str
     return out
 
 
-def _artifact_anchors(info: ArtifactInfo) -> list[str]:
+def _answer_words(answer_text: Any) -> str:
+    """An answer's prose as the selector reads it: normalised, at most
+    :data:`ANSWER_SCANNED_CHARS` read."""
+    return normalise(answer_text[:ANSWER_SCANNED_CHARS]) if isinstance(answer_text, str) else ""
+
+
+def _whole_refs(values: Iterable[str], *patterns: str) -> re.Pattern[str] | None:
+    """ONE pattern matching any of ``values`` (normalised literals, longest first) or
+    ``patterns`` (case-insensitive) as a whole case reference, or None for nothing."""
+    unique = sorted({v for v in values if v}, key=lambda v: (-len(v), v))
+    options = [re.escape(v) for v in unique] + [p for p in patterns if p]
+    if not options:
+        return None
+    return re.compile(_REF_BEFORE + "(?:" + "|".join(options) + ")" + _REF_AFTER, re.IGNORECASE)
+
+
+def _observed_pairs(artifacts: Sequence[ArtifactInfo]) -> list[tuple[str, str]]:
+    """The normalised case id and number pairs the turn's lookups observed (at most
+    :data:`_CASE_PAIRS_SCANNED` per lookup), in order."""
+    out: list[tuple[str, str]] = []
+    for info in artifacts:
+        for case_id, number in list(info.case_numbers.items())[:_CASE_PAIRS_SCANNED]:
+            if isinstance(case_id, str) and isinstance(number, str) and len(case_id) <= 160 and len(number) <= 160:
+                out.append((normalise(case_id), normalise(number)))
+    return out
+
+
+def named_cases(answer_text: Any, candidates: Iterable[Any]) -> frozenset[str]:
+    """The ``candidates`` (case numbers and ids, normalised) that an answer's own words
+    name as whole tokens, Markdown marks around them or not ("**`CASE-000046`** (…)"
+    names "case-000046"; so does "Start with `INC/2026/0042`" name "inc/2026/0042").
+    Only the case number and id pairs the turn's lookups observed are candidates, so a
+    case the prose invents never anchors anything."""
+    words = _answer_words(answer_text)
+    pattern = _whole_refs(normalise(c) for c in candidates if isinstance(c, str) and len(c) <= 160) if words else None
+    if pattern is None:
+        return frozenset()
+    return frozenset(match.group(0) for match in pattern.finditer(words))
+
+
+def _asked_cases(params: Mapping[str, Any]) -> set[str]:
+    """The case a lookup was asked about (``get_case(case_id=…)``): its answer is about
+    that case even when it shows only the case's figures."""
+    value = params.get("case_id") if isinstance(params, Mapping) else None
+    return {normalise(value)} if isinstance(value, str) and value.strip() else set()
+
+
+def _artifact_anchors(info: ArtifactInfo, named: frozenset[str] = frozenset()) -> list[str]:
     data, kind = info.data, info.kind
     raw: list[str] = []
     if kind == "categories":
@@ -398,33 +458,51 @@ def _artifact_anchors(info: ArtifactInfo) -> list[str]:
         raw.append(_DIMENSION_ANCHORS[dimension])
     elif isinstance(data.get("dimension"), str):
         raw.append(data["dimension"])
-    # The cases the same lookup observed, by display number AND internal id: a case
-    # card or row names the number, while the question, a starter, an Ask AI chip or
-    # the model may name the id ("Why does case case-0042 need a person?").
-    for case_id, number in list(info.case_numbers.items())[:_CASE_PAIRS]:
-        raw += _case_refs(case_id, info, number)
+    # A case the same lookup observed anchors by display number AND internal id (a
+    # case card or row names the number, while the question, a starter, an Ask AI chip
+    # or the model may name the id: "Why does case case-0042 need a person?"), but only
+    # when this answer shows it: this artifact names it, the lookup was asked about it,
+    # or the answer's own words name it. A case the lookup merely observed (the shift
+    # snapshot's attention queue behind an "Open cases by analyst" chart) is never an
+    # anchor, so no chip offers to investigate a case the answer never mentions.
+    shown = {normalise(v) for v in raw if isinstance(v, str)} | named | _asked_cases(info.params)
+    kept = 0
+    for case_id, number in list(info.case_numbers.items())[:_CASE_PAIRS_SCANNED]:
+        if kept >= _CASE_PAIRS:
+            break
+        if not (isinstance(case_id, str) and isinstance(number, str)):
+            continue
+        if normalise(case_id) in shown or normalise(number) in shown:
+            raw += _case_refs(case_id, info, number)
+            kept += 1
     raw += _window_labels(info.window)
     raw += list(info.sources)
     return raw
 
 
-def answer_anchors(artifacts: Sequence[ArtifactInfo]) -> list[str]:
+def _anchor_values(artifacts: Sequence[ArtifactInfo], answer_text: Any) -> list[str]:
+    """Every raw anchor value of the data and reference artifacts, in order (unbounded
+    in count, each artifact bounded by its own limits)."""
+    shown = [info for info in artifacts if info.is_data or info.is_reference]
+    named = named_cases(answer_text, (v for pair in _observed_pairs(shown) for v in pair))
+    return [value for info in shown for value in _artifact_anchors(info, named)]
+
+
+def answer_anchors(artifacts: Sequence[ArtifactInfo], *, answer_text: str = "") -> list[str]:
     """The anchors of an answer: normalised, between :data:`ANCHOR_MIN_CHARS` and
     :data:`ANCHOR_MAX_CHARS` long, never an engine placeholder label ("Other",
     "Unassigned"), deduplicated in order and at most :data:`MAX_ANCHORS`. Data and
-    reference artifacts contribute; product help does not."""
+    reference artifacts contribute; product help does not. ``answer_text`` (the
+    answer's prose) decides which observed cases the answer names (:func:`named_cases`)."""
     seen: dict[str, None] = {}
-    for info in artifacts:
-        if not (info.is_data or info.is_reference):
+    for value in _anchor_values(artifacts, answer_text):
+        if not isinstance(value, str) or len(value) > ANCHOR_MAX_CHARS * 2:
             continue
-        for value in _artifact_anchors(info):
-            if not isinstance(value, str) or len(value) > ANCHOR_MAX_CHARS * 2:
-                continue
-            anchor = normalise(value)
-            if ANCHOR_MIN_CHARS <= len(anchor) <= ANCHOR_MAX_CHARS and anchor not in PLACEHOLDER_LABELS:
-                seen.setdefault(anchor, None)
-                if len(seen) >= MAX_ANCHORS:
-                    return list(seen)
+        anchor = normalise(value)
+        if ANCHOR_MIN_CHARS <= len(anchor) <= ANCHOR_MAX_CHARS and anchor not in PLACEHOLDER_LABELS:
+            seen.setdefault(anchor, None)
+            if len(seen) >= MAX_ANCHORS:
+                return list(seen)
     return list(seen)
 
 
@@ -645,6 +723,58 @@ def _clean_chip(value: Any) -> str:
     return text if 0 < len(text) <= FOLLOW_UP_MAX_CHARS else ""
 
 
+def _compiles(pattern: Any) -> bool:
+    """A non-empty regular expression that compiles (a bad one is ignored)."""
+    if not isinstance(pattern, str) or not pattern or len(pattern) > 2_000:
+        return False
+    try:
+        re.compile(pattern)
+    except re.error:
+        return False
+    return True
+
+
+class _CaseRefs:
+    """The cases an answer shows, for the rule that a follow-up names a case only when
+    this answer shows it (SPEC §4.1, polish round PB4): a case an artifact names (a case
+    list row, an entity card's Case fact or related case, a case cell), the case a
+    lookup was asked about, and a case the answer's own words name. A case is one
+    observed number and id pair (either form shows it), else the reference itself."""
+
+    def __init__(self, artifacts: Sequence[ArtifactInfo], answer_text: Any,
+                 case_number_pattern: str | None) -> None:
+        self.words = _answer_words(answer_text)
+        self.shown = {normalise(v) for v in _anchor_values(artifacts, answer_text) if isinstance(v, str)}
+        self.pairs: dict[str, tuple[str, str]] = {}
+        for pair in _observed_pairs(artifacts):
+            for value in pair:
+                self.pairs.setdefault(value, pair)
+        shapes = list(_DEFAULT_CASE_SHAPES)
+        if _compiles(case_number_pattern):
+            shapes.insert(0, f"(?:{case_number_pattern})")
+        self.pattern = _whole_refs(self.pairs, *shapes)
+
+    def _said(self, value: str) -> bool:
+        pattern = _whole_refs((value,))
+        return bool(self.words) and pattern is not None and pattern.search(self.words) is not None
+
+    def names_unshown(self, chip: str) -> bool:
+        """True when ``chip`` names a case reference this answer does not show."""
+        text = normalise(chip)
+        if not text or self.pattern is None:
+            return False
+        for match in self.pattern.finditer(text):
+            ref = match.group(0)
+            if ref.isdigit():
+                # A bare number ("{seq}" numbering) cannot be told from a count in a
+                # chip's words ("the top 5 rules"): it is never taken for a case here.
+                continue
+            forms = self.pairs.get(ref, (ref,))
+            if not any(form in self.shown or self._said(form) for form in forms):
+                return True
+        return False
+
+
 def select_follow_ups(
     model_chips: list[str],
     artifacts: Sequence[ArtifactInfo],
@@ -654,11 +784,15 @@ def select_follow_ups(
     allowed_tools: frozenset[str],
     answer_kind: str,
     widening: Sequence[str] = (),
+    answer_text: str = "",
+    case_number_pattern: str | None = None,
 ) -> list[str]:
     """Up to three follow-up chips for one answer (SPEC §4.1):
 
     1. anchors come from the data and reference artifacts the answer shows, and from
-       the lookups it ran that show nothing (``ArtifactInfo.from_lookup``);
+       the lookups it ran that show nothing (``ArtifactInfo.from_lookup``); a case a
+       lookup observed anchors only when the answer shows it (an artifact or
+       ``answer_text`` names it, or the lookup was asked about it);
     2. a model chip is kept only when anchored; without data artifacts (product help,
        conversation, or reference only: runbooks, playbooks, knowledge) model chips are
        kept unchecked, at most two. A chip that asks one of ``widening`` (the questions
@@ -670,7 +804,11 @@ def select_follow_ups(
        "out" chip, else the next anchored model chip;
     5. a chip equal (normalised) to the current question, an earlier question or
        another chip is dropped, and so is a deterministic chip whose tools the caller
-       cannot run.
+       cannot run;
+    6. a model chip that names a case this answer does not show (an artifact or the
+       answer's words) is dropped, checked or not: a case a lookup observed, by number
+       or id, and any case-shaped reference (``case_number_pattern``, the configured
+       numbering template's numbers, the default "CASE-000042" and the internal id).
     """
     blocked = {_same_key(question)} | {_same_key(q) for q in earlier_questions if isinstance(q, str)}
     blocked.discard("")
@@ -700,15 +838,20 @@ def select_follow_ups(
     # shows nothing (``ArtifactInfo.from_lookup``) still makes it a data answer.
     data_artifacts = [] if answer_kind == "product_help" else [a for a in artifacts if a.is_data]
     if not data_artifacts:
-        return model[:MAX_UNCHECKED]
+        # Unchecked, but never about a case the answer does not show (product help and
+        # conversation show none, so only a case their words name stays).
+        cases = _CaseRefs([a for a in artifacts if a.is_reference], answer_text, case_number_pattern)
+        return [c for c in model if not cases.names_unshown(c)][:MAX_UNCHECKED]
 
     widen_list = [w for w in list(widening)[:MODEL_CHIPS_SCANNED] if isinstance(w, str)]
     widen = {_same_key(w) for w in widen_list}
     # The zero-result chips are shown in the same row, so what they name anchors too
     # ("Same for the last 7 days" names the "Last 7 days" suggestion).
-    index = _AnchorIndex(_widening_anchors(widen_list)
-                         + answer_anchors([a for a in artifacts if a.is_data or a.is_reference]))
-    anchored = [c for c in model if _same_key(c) in widen or index.anchored(c, question=question)]
+    shown = [a for a in artifacts if a.is_data or a.is_reference]
+    cases = _CaseRefs(shown, answer_text, case_number_pattern)
+    index = _AnchorIndex(_widening_anchors(widen_list) + answer_anchors(shown, answer_text=answer_text))
+    anchored = [c for c in model if (_same_key(c) in widen or index.anchored(c, question=question))
+                and not cases.names_unshown(c)]
     usable = [c for c in deterministic_chips(data_artifacts)
               if all(t in allowed_tools for t in c.tools)]
     inward = [c.text for c in usable if c.direction == "in"]
@@ -749,6 +892,7 @@ __all__ = [
     "answer_anchors",
     "deterministic_chips",
     "is_anchored",
+    "named_cases",
     "normalise",
     "select_follow_ups",
     "suggestion_question",

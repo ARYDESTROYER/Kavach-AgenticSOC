@@ -219,7 +219,7 @@ def test_the_demo_sla_close_answer_names_the_nearest_cases_and_their_owners() ->
                           "target_minutes": 120, "assignee": None}]}}
     _rounds, _header, body = drive(_starter("sla_close", {"n": 7}), lambda t, i: shift)
     assert body.startswith("**7 cases** are close to their response target (most of the response time used).")
-    assert "- `CASE-000041` · identity signin on user `dsingh`, assigned to `dana`, 10 min left" in body
+    assert "- `CASE-000041` · `identity_signin` on user `dsingh`, assigned to `dana`, 10 min left" in body
     assert "- `CASE-000042`, not assigned, 25 min left" in body
     assert "The shift snapshot names the 2 nearest; the other 5 are counted above." in body
     assert "without naming" not in body
@@ -413,7 +413,7 @@ def test_new_case_titles_use_a_middle_dot_and_parsers_read_both() -> None:
     title = machine_case_title(cluster)
     assert title == "user:dsingh · identity_signin" and "—" not in title
     for stored in (title, "user:dsingh — identity_signin"):
-        assert demo_chat._case_name({"title": stored}) == "identity signin on user `dsingh`"
+        assert demo_chat._case_name({"title": stored}) == "`identity_signin` on user `dsingh`"
     no_rules = Cluster(signature="s2", entity=Entity(type=EntityType.IP, value="10.0.0.1"),
                        group_by=EntityType.IP)
     assert machine_case_title(no_rules) == "ip:10.0.0.1 · activity"

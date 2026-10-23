@@ -15,6 +15,7 @@ import { CornerDownRight } from 'lucide-react';
 import type { ChatStarter } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
+import { softBreakLongTokens } from './soft-breaks';
 import { useChatStarters, type ChatStartersController } from './useChatStarters';
 
 /** At most three chips (§3.14). */
@@ -63,13 +64,14 @@ export function CaseStarterChips({
               if (!disabled) onSend(starter);
             }}
             className={cn(
-              'inline-flex min-h-7 max-w-full items-start gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-foreground transition-colors',
+              // Proportional numerals: the chip is prose (tabular ones set hyphens wide).
+              'inline-flex min-h-7 max-w-full items-start gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-foreground proportional-nums transition-colors',
               'hover:bg-hover aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-transparent',
               focusRing,
             )}
           >
             <CornerDownRight className="mt-px size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 break-words">{starter.prompt}</span>
+            <span className="min-w-0 break-words">{softBreakLongTokens(starter.prompt)}</span>
           </button>
         </li>
       ))}

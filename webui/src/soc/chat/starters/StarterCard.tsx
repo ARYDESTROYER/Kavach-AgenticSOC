@@ -5,7 +5,9 @@
  * A borderless `button` on a soft resting fill (`bg-muted/40`, hover `bg-hover`,
  * pressed `bg-accent`, the shared focus ring), at least 72 px tall. A 16 px family icon
  * sits left of the text; the QUESTION itself is the card text (for a `send` card it is
- * exactly what will be sent), wrapping freely and never truncated or clamped; under it
+ * exactly what will be sent), wrapping freely and never truncated or clamped (a long id or
+ * hash breaks where its line ends, never leaving a one or two character scrap on a line of
+ * its own: `softBreakLongTokens`); under it
  * the muted reason line, after a decorative urgency dot (critical or attention; the
  * words carry the meaning). The accessible name is the question and the description the
  * reason line. Under `prefers-contrast: more` and forced colours the card gains a 1 px
@@ -30,6 +32,7 @@ import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import { ariaKeyShortcuts } from '../shortcuts/shortcut-list';
+import { softBreakLongTokens } from './soft-breaks';
 import { starterIcon } from './starter-icons';
 
 /** The Hide button's tooltip and accessible name stem (§5.5). */
@@ -97,9 +100,10 @@ export const StarterCard = React.forwardRef<HTMLButtonElement, StarterCardProps>
         )}
       >
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="min-w-0 flex-1">
+        {/* Proportional numerals: the question and reason are prose (tabular ones set hyphens wide). */}
+        <span className="min-w-0 flex-1 proportional-nums">
           <span id={questionId} className="block break-words text-base font-medium text-foreground">
-            {starter.prompt}
+            {softBreakLongTokens(starter.prompt)}
           </span>
           {reason ? (
             <span id={reasonId} className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -110,7 +114,7 @@ export const StarterCard = React.forwardRef<HTMLButtonElement, StarterCardProps>
                   className={cn('size-1.5 shrink-0 rounded-full', urgency === 'critical' ? 'bg-critical' : 'bg-warning')}
                 />
               ) : null}
-              <span className="min-w-0 break-words">{reason}</span>
+              <span className="min-w-0 break-words">{softBreakLongTokens(reason)}</span>
             </span>
           ) : null}
         </span>

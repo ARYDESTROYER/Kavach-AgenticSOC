@@ -634,7 +634,10 @@ def test_case_pairs_anchor_a_bounded_number_of_cases() -> None:
 
     pairs = {f"case-{i:04d}": f"CASE-{i:06d}" for i in range(60)}
     info = ArtifactInfo(kind="kpis", tool="get_case", data={"items": []}, case_numbers=pairs)
-    anchors = answer_anchors([info])
+    # Observed but neither shown nor named: no case anchors (Round 13 polish PB3).
+    assert answer_anchors([info]) == []
+    # The prose names all 60 by number: at most _CASE_PAIRS of them anchor.
+    anchors = answer_anchors([info], answer_text=" ".join(f"**`{n}`**," for n in pairs.values()))
     assert "case-0000" in anchors and f"case-{_CASE_PAIRS - 1:06d}" in anchors
     assert f"case-{_CASE_PAIRS:04d}" not in anchors and len(anchors) == 2 * _CASE_PAIRS
 

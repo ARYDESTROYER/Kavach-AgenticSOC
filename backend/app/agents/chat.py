@@ -3669,7 +3669,7 @@ class _AgentTurn:
         model_chips = header.get("follow_ups") if protocol_header else None
         answer_kind = self._answer_kind(header if protocol_header else None, unsupported)
         # Round 13 (SPEC-chat §4.1, T4): anchored follow-ups for every answer.
-        follow_ups = self._follow_ups(model_chips, shown_refs, answer_kind)
+        follow_ups = self._follow_ups(model_chips, shown_refs, answer_kind, answer_text=text)
         proposal = _memory_proposal(header) if header is not None else None
         # D11: the report request, only for an answer that completed normally (never
         # one the analyst stopped, or one a failure cut short: the client's "Save as
@@ -3701,7 +3701,8 @@ class _AgentTurn:
         self.outcome.response = response
         yield TurnDoneEvent(response=response)
 
-    def _follow_ups(self, model_chips: Any, shown_refs: Sequence[str], answer_kind: str) -> list[str]:
+    def _follow_ups(self, model_chips: Any, shown_refs: Sequence[str], answer_kind: str,
+                    *, answer_text: str = "") -> list[str]:
         """The answer's follow-up chips (SPEC-chat §4.1): the model's own chips that are
         anchored in what the answer shows, plus deterministic value-free chips from its
         artifacts. ``shown_refs`` are the artifact refs its blocks show; an answer that
@@ -3709,8 +3710,10 @@ class _AgentTurn:
         a default block would show (never an empty one). A lookup that ran but has
         nothing to show (zero results, a failure, a denial) anchors by what it asked
         for, so an answer about a lookup that found nothing is still a data answer and
-        an off-topic chip is still dropped. Chips are presentation: a selector failure
-        never fails the answer (no chips instead)."""
+        an off-topic chip is still dropped. ``answer_text`` is the answer's prose: a case
+        a lookup observed anchors a chip only when the answer shows or names it.
+        Chips are presentation: a selector failure never fails the answer (no chips
+        instead)."""
         try:
             entries = [self.artifacts[r] for r in dict.fromkeys(shown_refs) if r in self.artifacts]
             showable = {e.ref for e in self.artifacts.values()
@@ -3747,7 +3750,8 @@ class _AgentTurn:
             return select_follow_ups(
                 [c for c in chips if isinstance(c, str)], infos, question=self.message,
                 earlier_questions=self.earlier_questions, allowed_tools=allowed, answer_kind=answer_kind,
-                widening=self._widening,
+                widening=self._widening, answer_text=answer_text,
+                case_number_pattern=_case_number_pattern(self.prefs),
             )
         except Exception:  # noqa: BLE001 -- chips are presentation; an answer never fails on them
             logger.warning("follow-up selection failed", exc_info=True)
@@ -3840,6 +3844,20 @@ class _LookupNote:
 _FOLLOW_UP_CHIPS_READ = 24
 #: Case number pairs read from one observation (a case list shows at most 50 cases).
 _CASE_NUMBERS_MAX = 100
+
+
+def _case_number_pattern(prefs: Any) -> str | None:
+    """The configured numbering template's display numbers as a pattern, for the
+    follow-up rule that a chip names a case only when the answer shows it (None when
+    there is none; the selector still knows the default "CASE-000042" shape)."""
+    fmt = getattr(prefs, "case_id_format", None)
+    template = getattr(fmt, "template", None)
+    if not isinstance(template, str):
+        return None
+    from ..engine.case_id import number_pattern
+
+    prefix = getattr(fmt, "prefix", "CASE")
+    return number_pattern(template, prefix=prefix if isinstance(prefix, str) else "CASE")
 
 
 def _case_numbers(observation: Any) -> dict[str, str]:

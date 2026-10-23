@@ -51,6 +51,7 @@ import { clearChatActivity } from '@/soc/chat-activity/activity';
 import { clearChatStartersCache } from '@/soc/chat/starters/useChatStarters';
 import { CASE_HANDOFF, CASE_NEEDS_PERSON, makeInfo } from '@/soc/chat/starters/__tests__/fixtures';
 import { CASE_MANAGER_CHAT_STARTERS, ChatTab } from '../CaseChatPanel';
+import { clearCaseStartersPrefetch } from '../case-starters-prefetch';
 
 const CASE = { case_id: 'case-9' } as unknown as Case;
 
@@ -72,6 +73,7 @@ beforeEach(() => {
   caseInfo = makeInfo({ surface: 'case', starters: [{ ...CASE_NEEDS_PERSON }, { ...CASE_HANDOFF }] });
   clearChatContextCache();
   clearChatStartersCache();
+  clearCaseStartersPrefetch();
   resetTurnRunnerForTests();
   clearChatActivity();
   vi.stubGlobal('BroadcastChannel', undefined);

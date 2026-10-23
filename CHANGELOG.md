@@ -413,6 +413,59 @@ and, just as importantly, makes each of these conditions a state an operator can
   number. On the visit that starts a shift the shift card comes before the Demo Mode
   card, and the weekly card counts as newer than your catch-up point. New candidate
   summaries read "Candidate awaiting analysis: …" without an em dash.
+- **Round 13 polish re-shoot: case numbers in exports and campaigns, prose hyphens,
+  long ids, history titles.** Word, Excel, Markdown, HTML and PDF report and conversation
+  exports name a case by its case number, as the screen does (a case without one keeps
+  its internal id); CSV adds a Case ID column and JSON keeps the internal id. The Campaigns detail sheet lists
+  member cases by number, with the internal id in the tooltip and in each Open button's
+  description (`GET /api/campaigns/{id}` adds `case_numbers`). Chat prose, your questions,
+  suggestion cards, the catch-up line, follow-up chips and history titles use
+  proportional numerals, so hyphens no longer read wide ("Read - only"); figures, tables
+  and meta rows keep tabular numerals. A long id or hash in a suggested question breaks
+  where its line ends, never leaving one or two characters alone on a line, and the
+  start-screen placeholders hand their height to the cards, so the greeting holds still
+  as suggestions arrive. A history search result shows its whole title in a tooltip, as
+  a history row does. Case Manager asks for a case's suggested questions as soon as its
+  Chat tab opens, beside loading the chat, instead of after the chat has loaded.
+- **Round 13 polish re-shoot: follow-ups, the campaign card, assignment time, shift
+  counts, rule names, cold case chips.** A follow-up names a case only when the answer
+  shows or names it, so an empty "close to their response target" answer no longer offers
+  "Investigate CASE-000005". The campaign card reads "What links the 5 cases in the most
+  recently active campaign?" and never shows the campaign's internal id; its answer looks
+  up that campaign. Assigning a case records when it was assigned on the case history, and
+  the "my cases" card says "Oldest assigned 2 min ago" only from that record, else "Oldest
+  opened 8 min ago". The shift brief states the total past SLA once, then exactly the
+  cases it names ("Work the 10 cases past SLA first, starting with the 3 most overdue:
+  …"), and the response-target answer says "The 5 most overdue:". Demo answers write a
+  detection rule one way, its id as the case list shows it (`demo_impossible_travel`).
+  The first chat request after a restart no longer imports every chat tool module on the
+  server's event loop, so a cold Case Manager chip read takes about 14 ms instead of 350.
+- **Round 13 polish review: the campaign card, assignment time, follow-ups, the shift
+  brief.** The campaign card names its campaign by one of its cases ("What links the 5
+  cases in the campaign that includes CASE-000046?"), so the answer is about the campaign
+  that holds that case even when a newer campaign has appeared, and it says plainly when
+  no campaign holds the case any more; `list_campaigns` gains a `case_id` filter. A new
+  campaign gets the card even when an older one was active more recently, and the
+  "since" line keeps "1 new campaign". Older campaign questions in saved chats still
+  replay with their reference kept apart from the question. Assigning a case to the person
+  who already owns it (Assign again, or a bulk assign over their own cases) no longer
+  resets "Oldest assigned". A follow-up about a case the answer names by a custom case
+  number ("INC/2026/0042", "SOC#0042", "IR 0042") is kept, and a follow-up about a case
+  the answer does not show is dropped, on help and conversation answers too. The shift
+  brief and handoff have one starting point: with cases past SLA they start with the
+  most overdue one, the first case the next steps name.
+- **Round 13 polish second re-shoot: case tables, long titles on a phone, block titles,
+  the start stack, case chips, campaign members.** A list of cases shown as a table (Show
+  table, Expand), copied with Copy data or downloaded as CSV names each case by its case
+  number, as the list does, and its link still opens that case; a CSV adds a Case ID
+  column with the internal id. On a phone, in the history sheet and on any touch screen,
+  a long conversation title wraps to up to three lines in the history and the toolbar
+  instead of being cut, since no tooltip can show there. Answer block titles, captions
+  and the answer's scope line use proportional numerals ("Highest-risk", not
+  "Highest - risk"). When suggestion cards arrive shorter than their placeholders, the
+  spare height sits above the cards instead of stretching them. Choosing a case's Chat
+  tab again within a minute no longer sends a suggestions request nobody uses. Campaign
+  members are listed in case-number order.
 - **Round 13 chat fixes.** Risk figures in chat step summaries round half up, the same
   integer the Overview gauge shows (47.5 reads 48, not 47). The token meter no longer says
   "last 12 exchanges" on a new chat ("History: none yet"; "History: 3 exchanges,
@@ -1474,6 +1527,12 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Changed
 
+- **Overview modules on grouped panels (Round 13).** Each Overview module, the KPI strip and
+  the Deeper analytics header sit on a soft tinted panel (a step deeper than the page in
+  light, a step lighter in dark) with rounded corners and no border or shadow, so where one
+  card ends and the next begins is plain at a glance; band titles stay on the page. The
+  panel is the new `--panel` theme token (`.surface-panel`, `bg-panel`), measured by the
+  contrast gate, and the temporary `?separation=` preview switch is gone.
 - **A neater chat (Round 13).** Answers keep one 42rem reading column on the lane's left
   edge (prose at a 38rem measure and 15/24, about 85 characters a line), and small results
   (up to four key figures, an indicator, a case list, ATT&CK techniques, a short table, a

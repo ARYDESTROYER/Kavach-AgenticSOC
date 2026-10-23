@@ -516,6 +516,52 @@ export function CampaignsInner({ onNavigate }: CampaignsProps) {
 /* Detail slide-over                                                          */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * The member cases' display numbers for the open campaign (`GET /api/campaigns/{id}`
+ * `case_numbers`, Round 13 polish), so the sheet names members as the rest of the
+ * console does ("CASE-000045"). `null` while the read is in flight; on a failed read,
+ * or for a member without a number, the internal id stands in.
+ */
+function useMemberNumbers(campaignId: string | null): Record<string, string> | null {
+  const [numbers, setNumbers] = React.useState<{ id: string; map: Record<string, string> } | null>(null);
+  React.useEffect(() => {
+    if (!campaignId) return undefined;
+    let live = true;
+    const settle = (map: Record<string, string>) => {
+      if (live) setNumbers({ id: campaignId, map });
+    };
+    // Through a resolved promise, so even a synchronous throw falls back to the ids.
+    Promise.resolve()
+      .then(() => campaignsApi.get(campaignId))
+      .then((res) => settle(res && typeof res.case_numbers === 'object' && res.case_numbers ? res.case_numbers : {}))
+      .catch(() => settle({}));
+    return () => {
+      live = false;
+    };
+  }, [campaignId]);
+  return numbers && numbers.id === campaignId ? numbers.map : null;
+}
+
+/**
+ * The member cases in reading order (re-shoot PW3-7): the campaign stores its members by
+ * internal id, so in that order the numbers read shuffled (CASE-000085, CASE-000087,
+ * CASE-000086). Once the numbers are known, numbered members come first in number order
+ * (digit runs compared as numbers, so CASE-9 precedes CASE-10), then members without a
+ * number, by id. While the numbers load, the stored order holds each row's place.
+ */
+function orderMembers(caseIds: readonly string[], numbers: Record<string, string> | null): string[] {
+  if (!numbers) return [...caseIds];
+  const numberOf = (id: string) => numbers[id]?.trim() || null;
+  const natural = (a: string, b: string) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  return [...caseIds].sort((a, b) => {
+    const na = numberOf(a);
+    const nb = numberOf(b);
+    if (na && nb) return natural(na, nb) || natural(a, b);
+    if (na || nb) return na ? -1 : 1;
+    return natural(a, b);
+  });
+}
+
 function CampaignDetailSheet({
   campaign,
   onClose,
@@ -525,6 +571,9 @@ function CampaignDetailSheet({
   onClose: () => void;
   onNavigate?: Navigate;
 }) {
+  const numbers = useMemberNumbers(campaign?.id ?? null);
+  const members = React.useMemo(() => orderMembers(campaign?.case_ids ?? [], numbers), [campaign?.case_ids, numbers]);
+  const memberIdBase = React.useId();
   return (
     <Sheet open={Boolean(campaign)} onOpenChange={(o) => (o ? undefined : onClose())}>
       <SheetContent side="right" className="w-full sm:max-w-xl">
@@ -606,26 +655,52 @@ function CampaignDetailSheet({
               {/* Member cases */}
               <section className="space-y-2">
                 <h3 className="text-sm font-semibold text-foreground">Member cases</h3>
-                {campaign.case_ids.length ? (
+                {members.length ? (
                   <ul className="space-y-1.5">
-                    {campaign.case_ids.map((cid) => (
-                      <li
-                        key={cid}
-                        className="flex items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2"
-                      >
-                        <InlineCode>{cid}</InlineCode>
-                        {onNavigate ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => onNavigate('cases', { caseId: cid })}
-                          >
-                            Open
-                            <ArrowRight className="ml-1 h-3.5 w-3.5" aria-hidden />
-                          </Button>
-                        ) : null}
-                      </li>
-                    ))}
+                    {members.map((cid, index) => {
+                      // The case number, as the rest of the console names a case; the
+                      // internal id only in the tooltip and the accessible description.
+                      const number = numbers?.[cid]?.trim() || null;
+                      const label = number ?? cid;
+                      const idNoteId = `${memberIdBase}-m${index}`;
+                      return (
+                        <li
+                          key={cid}
+                          className="flex items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2"
+                          data-member-case={cid}
+                        >
+                          {numbers === null ? (
+                            // The skeleton's look without its module: the page's preload list
+                            // (in the entry chunk) gains no file for one placeholder bar.
+                            <span aria-hidden="true" className="block h-4 w-28 rounded-md bg-muted/75" data-testid="member-case-pending" />
+                          ) : number ? (
+                            <span className="font-mono text-xs text-foreground" title={`Internal id: ${cid}`}>
+                              {number}
+                            </span>
+                          ) : (
+                            <InlineCode>{cid}</InlineCode>
+                          )}
+                          {onNavigate ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="shrink-0"
+                              aria-label={`Open ${label}`}
+                              aria-describedby={number ? idNoteId : undefined}
+                              onClick={() => onNavigate('cases', { caseId: cid })}
+                            >
+                              Open
+                              <ArrowRight className="ml-1 h-3.5 w-3.5" aria-hidden />
+                            </Button>
+                          ) : null}
+                          {number ? (
+                            <span id={idNoteId} hidden>
+                              {`Internal id ${cid}`}
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
                   </ul>
                 ) : (
                   <p className="text-xs text-muted-foreground">None.</p>

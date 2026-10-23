@@ -257,7 +257,18 @@ export function BlockBody({
   const inCardFrame = !nested && !bare && !expanded;
   if (showTable) {
     const t = tableBlockOf(block);
-    if (t) return <TableView block={t} title={title} paged={expanded} staticMode={staticMode} />;
+    // A case list's table names each case by number and links by its id (`caseRefs`).
+    if (t) {
+      return (
+        <TableView
+          block={t}
+          title={title}
+          paged={expanded}
+          staticMode={staticMode}
+          caseRefs={block.type === 'case_list' ? block.items : undefined}
+        />
+      );
+    }
   }
   switch (block.type) {
     case 'markdown':
@@ -801,9 +812,11 @@ export function BlockCard({
     >
       <figcaption className="mb-2 flex items-start gap-2">
         <div className="min-w-0 flex-1">
+          {/* Title and caption are prose: proportional numerals, so Inter's tabular hyphen
+              does not read "Highest - risk" under the answer (re-shoot PW3-3). */}
           <Heading
             id={titleId}
-            className={cn('text-sm font-semibold text-foreground', staticMode ? 'break-words' : 'truncate')}
+            className={cn('text-sm font-semibold text-foreground proportional-nums', staticMode ? 'break-words' : 'truncate')}
             title={staticMode ? undefined : shownTitle}
             data-brief={isBrief || undefined}
           >
@@ -813,12 +826,16 @@ export function BlockCard({
             captionShortened ? (
               // The answer's scope line says the rest once: the card shows its own parts,
               // while assistive tech still reads the whole caption with the card.
-              <p className={cn('break-words text-xs text-muted-foreground', !shownCaption.length && 'sr-only')} data-testid="block-caption" data-scoped="">
+              <p
+                className={cn('break-words text-xs text-muted-foreground proportional-nums', !shownCaption.length && 'sr-only')}
+                data-testid="block-caption"
+                data-scoped=""
+              >
                 {shownCaption.length ? <span aria-hidden>{shownCaption.join(CAPTION_SEPARATOR)}</span> : null}
                 <span className="sr-only">{viewCaption.join(CAPTION_SEPARATOR)}</span>
               </p>
             ) : (
-              <p className="break-words text-xs text-muted-foreground" data-testid="block-caption">
+              <p className="break-words text-xs text-muted-foreground proportional-nums" data-testid="block-caption">
                 {viewCaption.join(CAPTION_SEPARATOR)}
               </p>
             )

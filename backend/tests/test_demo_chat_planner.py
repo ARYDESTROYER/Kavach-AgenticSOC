@@ -404,8 +404,9 @@ def test_shift_brief_final_is_a_report_envelope_with_the_shift_sections() -> Non
     assert body.startswith("**Shift brief, last 24h.** **5 open cases**, 1 of them past SLA.")
     assert "Decide the 1 case in Needs human status." in steps
     # The brief holds the detail; the prose is its lead (browser-QA D5): the headline,
-    # the first case to work, and the ready sentence.
-    assert body.split("\n\n")[1:] == ["Start with `x` (`case-0042`), escalated.",
+    # the first case to work (the step's first case: polish round PB4), and the ready
+    # sentence.
+    assert body.split("\n\n")[1:] == ["Start with `x` (`case-0042`), escalated: the one case past SLA.",
                                         "The brief below is ready to add to a report."]
     assert "Posture:" not in body and "Needs attention first" not in body
     # One figure shown once (A34): the Shift headline KPIs carry the five counts and
@@ -448,18 +449,19 @@ def test_report_answers_keep_a_short_lead_and_close_after_their_notes() -> None:
 
 
 def test_case_lines_and_pivots_name_cases_in_words_not_machine_titles() -> None:
-    """Browser-QA D6: ``user:dsingh — identity_signin`` reads "identity signin on user
-    `dsingh`"; a title in another form is plain text; the id stays as the handle."""
+    """Browser-QA D6: ``user:dsingh — identity_signin`` reads "`identity_signin` on user
+    `dsingh`" (the rule id as every block shows it, Round 13 polish PB3); a title in
+    another form is plain text; the id stays as the handle."""
     machine = {"case_id": "case-1", "title": "user:dsingh — identity_signin", "severity": "high",
                "verdict": "NEEDS_HUMAN", "risk_score": 64, "status": "escalated"}
     # Plain punctuation, and the verdict as the case badge words it (never an em dash or
     # "needs-human", Round 12 final polish).
     # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
-    assert demo_chat._case_line(machine) == ("Identity signin on user `dsingh` · `case-1` (high, needs human, "
+    assert demo_chat._case_line(machine) == ("`identity_signin` on user `dsingh` · `case-1` (high, needs human, "
                                              "risk 64, escalated)")
     assert demo_chat._case_name({"title": "ip:203.0.113.9 — demo_sqli_webshell, web_shell"}) == (
-        "demo sqli webshell, web shell on IP `203.0.113.9`")
-    assert demo_chat._case_name({"title": "ip:203.0.113.9 — x"}, with_entity=False) == "x"
+        "`demo_sqli_webshell`, `web_shell` on IP `203.0.113.9`")
+    assert demo_chat._case_name({"title": "ip:203.0.113.9 — x"}, with_entity=False) == "`x`"
     # Any other title is free case text: inline code, exact (no Markdown stripped).
     assert demo_chat._case_name({"case_id": "c", "title": "Mailbox *rule* [added]"}) == "`Mailbox *rule* [added]`"
     assert demo_chat._case_name({"case_id": "c", "title": "Brute force on srv_db_01"}) == (
@@ -1567,7 +1569,7 @@ def test_a_case_report_lead_names_the_case_by_what_happened() -> None:
         call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])
     header, body = final_of(plan_turn(msgs))
     assert header["blocks"][0]["type"] == "report"
-    assert body.startswith("**Phish click on user `amy`** (`case-0042`) is a true positive at 90% confidence")
+    assert body.startswith("**`phish_click` on user `amy`** (`case-0042`) is a true positive at 90% confidence")
     summary = header["blocks"][0]["sections"][0]["items"][0]["text"]
     assert "amy" not in summary and "`" not in summary      # the Summary leaf carries no case value
 
@@ -1577,8 +1579,8 @@ def test_narrated_rule_ids_keep_lookalike_characters_visible() -> None:
     must not read as the rule ``admin_login``."""
     lookalike = {"case_id": "case-1", "title": "user:bob — ad​min_login"}
     name = demo_chat._case_name(lookalike)
-    assert name == "ad\\u200bmin login on user `bob`" and "admin login" not in name
-    assert demo_chat._rule_words("ad​min_login") == "ad\\u200bmin login"
+    assert name == "`ad\\u200bmin_login` on user `bob`" and "admin_login" not in name
+    assert demo_chat._rule_ids("ad​min_login") == "`ad\\u200bmin_login`"
     camps = {"total": 1, "campaigns": [{"name": "ops​_wave", "case_count": 2, "entities": []}]}
     _, body = final_of(plan_turn(prompt("Which campaigns are open?", [call("list_campaigns", camps)])))
     assert "`ops\\u200b_wave` with 2 cases" in body
@@ -1707,8 +1709,8 @@ def test_rule_words_never_merge_characters_around_markdown_specials() -> None:
     for rule in ("ad*min_login", "ad<min>_login", "ad[min]_login", "ad#min_login"):
         name = demo_chat._case_name({"title": f"user:bob — {rule}"})
         assert name == f"`{rule}` on user `bob`" and "admin login" not in name
-        assert demo_chat._rule_words(rule) == f"`{rule}`"
-    assert demo_chat._rule_words("identity_signin") == "identity signin"
+        assert demo_chat._rule_ids(rule) == f"`{rule}`"
+    assert demo_chat._rule_ids("identity_signin") == "`identity_signin`"
     assert demo_chat._entity_phrase("pro*cess:x") == "`pro*cess:x`"
     assert demo_chat._entity_phrase("file_hash:abc") == "file hash `abc`"
 
@@ -1718,7 +1720,7 @@ def test_a_case_answer_names_its_entity_once() -> None:
     _, body = final_of(plan_turn(prompt("Tell me about case-0042", [
         call("get_case", machine, artifacts=GET_CASE_ARTS, inp={"case_id": "case-0042"}),
         call("explain_decision", DECISION_OBS, artifacts=DECISION_ARTS, inp={"case_id": "case-0042"})])))
-    assert "**Phish click on user `amy`** (`case-0042`)" in body and body.count("user `amy`") == 1
+    assert "**`phish_click` on user `amy`** (`case-0042`)" in body and body.count("user `amy`") == 1
     assert "It covers rule `phish`." in body
     # A free-text title does not name the entity, so the facts still do.
     _, body = final_of(plan_turn(prompt("Tell me about case-0042", [

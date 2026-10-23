@@ -237,7 +237,7 @@ def test_explain_each_explains_every_listed_case_in_a_table() -> None:
     # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
     lines = [line for line in body.splitlines() if re.match(r"^- .+ \(`demo-\d{4}`\)", line)]
     assert len(lines) == 10, body
-    assert lines[0] == ("- Identity signin on user `u0` (`demo-0000`) is a true positive at 90% confidence, "
+    assert lines[0] == ("- `identity_signin` on user `u0` (`demo-0000`) is a true positive at 90% confidence, "
                         "risk 90/100, severity critical, status escalated.")
     assert "ask to explain that case" in body and "From the Help Center" not in body
     # "… with a table": the case list in its table view, titled for the ranking.

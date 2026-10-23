@@ -142,7 +142,7 @@ export function AnswerBlocks({
   // muted, never framed: the lane caps it and never hangs it).
   const scopeLine = (key: string) =>
     scope ? (
-      <p key={key} className="text-xs text-muted-foreground" data-scope-line="" data-testid="answer-scope-line">
+      <p key={key} className="text-xs text-muted-foreground proportional-nums" data-scope-line="" data-testid="answer-scope-line">
         {scope.line}
       </p>
     ) : null;

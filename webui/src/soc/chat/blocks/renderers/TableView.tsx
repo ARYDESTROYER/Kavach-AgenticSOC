@@ -9,6 +9,11 @@
  * for entities and code, a validated ATT&CK id for mitre, UTC for time, tabular numbers.
  * Untrusted text (log/source-derived, G7) renders mono and is NEVER linkified.
  *
+ * A case list shown as a table ("Show table", Expand) passes its items as `caseRefs`: the
+ * Case column then names each case as the list view does, by its number with the internal
+ * id in the tooltip (a case without a number shows its id, middle-ellipsised, in full for
+ * assistive tech and in print), and links by the id.
+ *
  * `staticMode` (print / static export) shows EVERY row with no paging and no "View all"
  * button: a printed page cannot open a dialog. Its headers are plain text (a sortable
  * header is a button, and a printed sort control means nothing), a case id is plain
@@ -24,7 +29,7 @@ import { DataTable, type DataTableColumn, type SortState } from '@/soc/component
 import { RiskBadge, SeverityBadge, StatusBadge, VerdictBadge } from '@/soc/components/badges';
 import { isSafeCaseId } from '@/soc/case-result-route';
 
-import { CaseHoverArm, CaseLink } from '../context';
+import { CaseHoverArm, CaseLink, shortCaseId, type CaseLinkFacts } from '../context';
 import { DASH, formatUtc, formatValue } from '../format';
 import type { Cell, TableBlock, TableColumn } from '../schema';
 import { CASE_STATUS_KEYS, PATTERN_SOURCES, SEVERITY_KEYS, VERDICT_KEYS } from '../schema';
@@ -60,18 +65,52 @@ export function sortRows(rows: readonly Cell[][], col: number, dir: 'asc' | 'des
   });
 }
 
+/**
+ * A case-list row's case in the table (the list view's `CaseRefText` without the title,
+ * which has its own column): the number, the internal id in its tooltip; without a
+ * number, the id middle-ellipsised on screen and whole for assistive tech and in print.
+ */
+function TableCaseRef({ facts, staticMode }: { facts: CaseLinkFacts; staticMode: boolean }) {
+  const number = facts.case_number?.trim() || null;
+  const short = shortCaseId(facts.case_id);
+  const label = number ? (
+    <span className="whitespace-nowrap" title={facts.case_id} data-case-ref="number">
+      {number}
+    </span>
+  ) : staticMode || short === facts.case_id ? (
+    <span className="break-all" data-case-ref="id">
+      {facts.case_id}
+    </span>
+  ) : (
+    <span className="whitespace-nowrap" title={facts.case_id} data-case-ref="id">
+      <span aria-hidden>{short}</span>
+      <span className="sr-only">{facts.case_id}</span>
+    </span>
+  );
+  if (staticMode) return <span className="font-mono text-xs">{label}</span>;
+  return (
+    <CaseLink facts={facts} className="font-mono text-xs">
+      {label}
+    </CaseLink>
+  );
+}
+
 export function TypedCell({
   value,
   column,
   untrusted,
   staticMode = false,
+  caseRef,
 }: {
   value: Cell;
   column: TableColumn;
   untrusted: boolean;
   /** Print / static export: no link, no clamp, no forced single line. */
   staticMode?: boolean;
+  /** The row's case when the table shows a case list (a `case` column only). */
+  caseRef?: CaseLinkFacts;
 }) {
+  if (column.type === 'case' && caseRef) return <TableCaseRef facts={caseRef} staticMode={staticMode} />;
   if (blank(value)) return <span className="text-muted-foreground">{DASH}</span>;
   if (typeof value === 'boolean') return <span>{value ? 'Yes' : 'No'}</span>;
   if (typeof value === 'number') {
@@ -124,9 +163,14 @@ export interface TableViewProps {
   compact?: boolean;
   /** Print / static export: every row, no paging, no "View all" button. */
   staticMode?: boolean;
+  /**
+   * A case list shown as a table: each row's case, by row index. Its Case column then
+   * names the case by number and links by the internal id ({@link TypedCell}).
+   */
+  caseRefs?: readonly CaseLinkFacts[];
 }
 
-export function TableView({ block, title, paged: pagedProp = false, staticMode = false }: TableViewProps) {
+export function TableView({ block, title, paged: pagedProp = false, staticMode = false, caseRefs }: TableViewProps) {
   const paged = pagedProp && !staticMode;
   const cols = React.useMemo(() => visibleColumns(block), [block]);
   const initialSort = React.useMemo<SortState | null>(() => {
@@ -160,7 +204,13 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
       align: col.align ?? (numeric ? 'right' : 'left'),
       className: 'align-top text-sm',
       cell: (row: number) => (
-        <TypedCell value={block.rows[row][i] ?? null} column={col} untrusted={columnUntrusted(col, block)} staticMode={staticMode} />
+        <TypedCell
+          value={block.rows[row][i] ?? null}
+          column={col}
+          untrusted={columnUntrusted(col, block)}
+          staticMode={staticMode}
+          caseRef={caseRefs?.[row]}
+        />
       ),
     };
   });
@@ -220,7 +270,7 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
                 {order.length} rows{block.truncated ? ' (the source returned more; this is the bounded set)' : ''}.
               </DialogDescription>
             </DialogHeader>
-            <TableView block={block} title={title} paged />
+            <TableView block={block} title={title} paged caseRefs={caseRefs} />
           </DialogContent>
         </Dialog>
       ) : null}

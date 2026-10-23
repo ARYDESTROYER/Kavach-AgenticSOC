@@ -31,6 +31,7 @@ import {
   HIDE_TOAST_MS,
   HIDE_TOAST_POSITION,
   STARTERS_LOAD_ERROR,
+  START_GRID_FLOOR_CLASS,
   StartScreen,
   hideToastStyle,
   isUndoHideKey,
@@ -217,7 +218,9 @@ describe('StartScreen', () => {
     for (const el of Array.from(section.querySelectorAll('*'))) {
       expect(el.getAttribute('class') ?? '', el.outerHTML.slice(0, 80)).not.toMatch(/\btruncate\b|line-clamp|text-ellipsis|text-clip/);
     }
-    expect(screen.getByText(long.prompt)).toBeInTheDocument();
+    // The whole question is on screen; its long rule id may break between characters
+    // (`break-all`, with its ends kept together), so the text spans an inner element.
+    expect(screen.getByText((_, el) => !!el?.id.endsWith('-q') && el.textContent === long.prompt)).toBeInTheDocument();
   });
 
   it('hands a chosen card to the host exactly as served', async () => {
@@ -579,16 +582,21 @@ describe('StartScreen', () => {
     const four = [NEEDS_HUMAN, NEW_CASES, SILENT_SOURCE, CONTINUE].map((st) => ({ ...st }));
     renderStart({ starters: controller(makeInfo({ starters: four })) });
     const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
-    expect(grid().style.minHeight).toBe('328px');
-    // A shorter stand-in (CONTINUE) takes slot 1: the grid keeps its height.
+    // The floor is on the grid's box, never on the grid: its rows (and cards) keep their
+    // natural height and the spare height sits above them (re-shoot PW3-5).
+    const floor = () => screen.getByTestId('starter-grid-floor');
+    expect(floor().style.minHeight).toBe('328px');
+    expect(grid().style.minHeight).toBe('');
+    // A shorter stand-in (CONTINUE) takes slot 1: the grid's box keeps its height.
     act(() => mainCards()[1].focus());
     await user.keyboard('{Delete}');
     expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'continue', 'silent_source']);
-    expect(grid().style.minHeight).toBe('328px');
+    expect(floor().style.minHeight).toBe('328px');
+    expect(grid().style.minHeight).toBe('');
     // Hidden again with no reserve left: the slot closes and two cards keep their own height.
     await user.keyboard('{Delete}');
     expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'silent_source']);
-    expect(grid().style.minHeight).toBe('216px');
+    expect(floor().style.minHeight).toBe('216px');
   });
 
   it('hides a card from its Hide button, which stays out of the tab order and shows only on hover or keyboard focus', async () => {
@@ -664,13 +672,15 @@ describe('StartScreen', () => {
     expect(skeletonQuestionLines(0, 1)).toBe(2);
     expect(skeletonQuestionLines(869.2, 2)).toBe(2);
     expect(skeletonQuestionLines(1325.2, 4)).toBe(3);
-    expect(skeletonQuestionLines(338, 1)).toBe(2);
+    expect(skeletonQuestionLines(338, 1)).toBe(3);
     // One column at common phone widths (Round 13 polish): the first card holds a long
-    // question (about 75 characters: two lines at 390 and 414, stacks of 338 and 362 px;
-    // three at 375 and 360, 323 and 308 px), the others a typical one (two lines down to
-    // 360), so a usual first load (84, 84 and 104 px at 375 and 360) keeps its height.
+    // question, the others a typical one (two lines down to 360). Measured live on Demo,
+    // a 78-character question (545 px on one line) takes three lines at 390 (a 338 px
+    // stack) and two at 414 (362 px), so a usual load (two cards of two lines and one of
+    // three) keeps its height; a load of shorter cards keeps the skeleton's height too
+    // (the hand-over test below).
     const column = (width: number) => [0, 1, 2].map((slot) => skeletonQuestionLines(width, 1, slot));
-    expect(column(338)).toEqual([2, 2, 2]);
+    expect(column(338)).toEqual([3, 2, 2]);
     expect(column(362)).toEqual([2, 2, 2]);
     expect(column(323)).toEqual([3, 2, 2]);
     expect(column(308)).toEqual([3, 2, 2]);
@@ -697,6 +707,59 @@ describe('StartScreen', () => {
       ]);
       expect(card.style.height).toBe('');
     }
+  });
+
+  it('hands the skeleton height to the grid box, so the stack holds still and shorter cards keep their own height', () => {
+    // Round 13 polish (re-shoot PW2-5): the skeleton is sized before the questions are
+    // known; when the cards land shorter, the grid's box keeps the skeleton's height and
+    // the bottom-anchored stack holds still. Cards taller than it grow the grid as before.
+    // Re-shoot PW3-5: the spare height sits in the box ABOVE the grid (`justify-end`), so
+    // the cards keep their natural height instead of stretching (90.7 px for a 72 px card
+    // at 390 px, an empty band under each reason line).
+    stackWidth = 338; // one column, three cards
+    let cardsTotal = 268;
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === 'chat-start') return DOMRect.fromRect({ width: stackWidth, height: 300 });
+      if (this.dataset.testid === 'starter-skeletons') return DOMRect.fromRect({ width: stackWidth, height: 288 });
+      if (this.tagName === 'UL' && this.getAttribute('aria-label') === 'Suggested questions') {
+        return DOMRect.fromRect({ width: stackWidth, height: cardsTotal });
+      }
+      return DOMRect.fromRect();
+    });
+    const three = [NEEDS_HUMAN, NEW_CASES, SILENT_SOURCE].map((st) => ({ ...st }));
+    const view = renderStart({ starters: controller(null, { loading: true }) });
+    expect(screen.getByTestId('starter-skeletons')).toBeInTheDocument();
+    const loaded = (info: ChatStartersInfo) => (
+      <TooltipProvider>
+        <div data-chat-scroll-lane="true">
+          <StartScreen context={makeContext()} starters={controller(info)} onActivate={vi.fn()} />
+        </div>
+      </TooltipProvider>
+    );
+    view.rerender(loaded(makeInfo({ starters: three })));
+    const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
+    const floor = () => screen.getByTestId('starter-grid-floor');
+    expect(floor().style.minHeight).toBe('288px');
+    expect(floor()).toHaveClass(...START_GRID_FLOOR_CLASS.split(' '));
+    expect(floor().className.split(' ')).toEqual(expect.arrayContaining(['flex', 'flex-col', 'justify-end']));
+    expect(grid().style.minHeight).toBe('');
+    expect(grid().parentElement).toBe(floor());
+    view.unmount();
+
+    // Taller cards than the skeleton: the grid takes the cards' height.
+    cardsTotal = 308;
+    const taller = renderStart({ starters: controller(null, { loading: true }) });
+    taller.rerender(loaded(makeInfo({ starters: three.map((st) => ({ ...st })) })));
+    expect(floor().style.minHeight).toBe('308px');
+    taller.unmount();
+
+    // Fewer cards than skeletons: they keep their own height (never stretched over a slot
+    // no card took).
+    cardsTotal = 176;
+    const fewer = renderStart({ starters: controller(null, { loading: true }) });
+    fewer.rerender(loaded(makeInfo({ starters: [NEEDS_HUMAN, NEW_CASES].map((st) => ({ ...st })) })));
+    expect(floor().style.minHeight).toBe('176px');
+    expect(grid().style.minHeight).toBe('');
   });
 
   it('keeps two lines for the catch-up line while the cards load in one column, so the greeting holds still', () => {

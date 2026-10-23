@@ -36,6 +36,11 @@
  *    by `useOpenerFocus`), so no New chat tooltip covers it; every search hit shows its
  *    snippet under the title, two lines, the matching words in `font-medium`.
  *  - Row time labels keep their distance from the title (`shrink-0 pl-3 tabular-nums`).
+ *  - Long titles (re-shoot PW3-2): in the History sheet (a phone or a narrow window) and
+ *    on any touch screen, where no tooltip can show, a row's and a search hit's title wrap
+ *    to up to three lines instead of one ({@link railTitleClass}), so a rename (80
+ *    characters at most) is read whole; the docked rail on a pointer that hovers keeps one
+ *    line with the tooltip.
  */
 import * as React from 'react';
 import {
@@ -216,6 +221,17 @@ const ROW_STATUS_TEXT = {
   failed: 'answer failed',
   unread: 'new answer',
 } as const;
+
+/**
+ * A row or search hit title: one line cut with an ellipsis where a tooltip can show the
+ * rest; up to three wrapped lines in the History sheet and on a touch screen (no hover,
+ * no tooltip). (No `block` with the clamp: it would override line-clamp's box.)
+ */
+export function railTitleClass(inSheet: boolean): string {
+  return inSheet
+    ? 'line-clamp-3 break-words'
+    : 'truncate [@media(hover:none)]:line-clamp-3 [@media(hover:none)]:whitespace-normal [@media(hover:none)]:break-words';
+}
 
 function rowName(conversation: ChatConversationSummary): string {
   const count = conversation.message_count;
@@ -548,7 +564,7 @@ export function HistoryRail({
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label="Chat history" aria-busy={loading || search.searching}>
         {searching ? (
-          <SearchResults search={search} headingPrefix={headingPrefix} />
+          <SearchResults search={search} headingPrefix={headingPrefix} inSheet={inSheet} />
         ) : (
           <>
             {loading && conversations.length === 0 ? (
@@ -626,13 +642,16 @@ export function HistoryRail({
                                     // No reserved gutter: the ⋯ menu takes the time's place on
                                     // hover/focus (the time keeps a 28 px box for it), so titles use
                                     // the full row at rest.
-                                    'flex h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-sm outline-none transition-colors motion-reduce:transition-none',
+                                    // At least 32 px; taller only while a long title wraps.
+                                    'flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-sm outline-none transition-colors motion-reduce:transition-none',
                                     'hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                                     'disabled:cursor-not-allowed disabled:opacity-60',
                                     active ? 'bg-accent font-medium text-accent-foreground' : 'text-foreground',
                                   )}
                                 >
-                                  <span className="min-w-0 flex-1 truncate">{conversation.title || UNTITLED_CONVERSATION}</span>
+                                  <span className={cn('min-w-0 flex-1 proportional-nums', railTitleClass(inSheet))} data-testid="rail-row-title">
+                                    {conversation.title || UNTITLED_CONVERSATION}
+                                  </span>
                                   <span
                                     // Hidden exactly when the ⋯ trigger shows (ROW_MENU_SHOWN):
                                     // on hover, on keyboard focus in the row, and while its menu
@@ -767,7 +786,7 @@ export function snippetSegments(text: string, query: string): SnippetSegment[] {
   return out;
 }
 
-function SearchResults({ search, headingPrefix }: { search: HistoryRailSearch; headingPrefix: string }) {
+function SearchResults({ search, headingPrefix, inSheet }: { search: HistoryRailSearch; headingPrefix: string; inSheet: boolean }) {
   const results = search.results;
   const headingId = `${headingPrefix}-results`;
   return (
@@ -795,28 +814,38 @@ function SearchResults({ search, headingPrefix }: { search: HistoryRailSearch; h
           const spoken = distinctSnippet(title, snippet);
           return (
             <li key={hit.id}>
-              <button
-                type="button"
-                onClick={() => search.openHit(hit)}
-                aria-label={`${title}${spoken ? `: ${spoken}` : ''}`}
-                className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60"
-              >
-                <span className="block truncate text-sm text-foreground">{title}</span>
-                {snippet ? (
-                  // No `block`: it would override line-clamp's box and show a third line.
-                  <span className="mt-0.5 line-clamp-2 break-words text-xs text-muted-foreground" data-testid="hit-snippet">
-                    {snippetSegments(snippet, search.query).map((segment, index) =>
-                      segment.match ? (
-                        <span key={index} className="font-medium text-foreground" data-match="">
-                          {segment.text}
-                        </span>
-                      ) : (
-                        <React.Fragment key={index}>{segment.text}</React.Fragment>
-                      ),
-                    )}
-                  </span>
-                ) : null}
-              </button>
+              {/* The full title on hover and keyboard focus, as on a history row (one line here). */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={() => search.openHit(hit)}
+                    aria-label={`${title}${spoken ? `: ${spoken}` : ''}`}
+                    className="block w-full min-w-0 rounded-md px-2 py-1.5 text-left outline-none hover:bg-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-60"
+                  >
+                    <span className={cn('text-sm text-foreground proportional-nums', inSheet ? railTitleClass(true) : `block ${railTitleClass(false)}`)} data-testid="hit-title">
+                      {title}
+                    </span>
+                    {snippet ? (
+                      // No `block`: it would override line-clamp's box and show a third line.
+                      <span className="mt-0.5 line-clamp-2 break-words text-xs text-muted-foreground" data-testid="hit-snippet">
+                        {snippetSegments(snippet, search.query).map((segment, index) =>
+                          segment.match ? (
+                            <span key={index} className="font-medium text-foreground" data-match="">
+                              {segment.text}
+                            </span>
+                          ) : (
+                            <React.Fragment key={index}>{segment.text}</React.Fragment>
+                          ),
+                        )}
+                      </span>
+                    ) : null}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="right" className="max-w-xs break-words">
+                  {title}
+                </TooltipContent>
+              </Tooltip>
             </li>
           );
         })}

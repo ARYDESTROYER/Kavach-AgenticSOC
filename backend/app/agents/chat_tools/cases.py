@@ -1164,9 +1164,13 @@ def display(value: Any) -> str:
 class ListCampaignsInput(ToolInput):
     status: Literal["open", "monitoring", "resolved"] | None = None
     campaign_id: str | None = Field(default=None, max_length=128)
+    #: The campaigns that hold this case (its id or display number), so a question
+    #: about "the campaign that includes CASE-000046" finds that campaign now, whatever
+    #: newer campaigns exist and whatever id it has after growing (polish round PB4).
+    case_id: str | None = Field(default=None, max_length=128)
     limit: int = Field(default=10, ge=1, le=25)
 
-    @field_validator("status", "campaign_id", mode="before")
+    @field_validator("status", "campaign_id", "case_id", mode="before")
     @classmethod
     def _blank(cls, value: Any) -> Any:
         value = none_if_blank(value)
@@ -1181,10 +1185,10 @@ class ListCampaignsTool(ChatTool):
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Campaign correlation"
     signature: ClassVar[str] = (
-        "list_campaigns(status?=open|monitoring|resolved, campaign_id?, limit?=10) -- cross-case "
-        "campaigns: related cases grouped by shared entities and ATT&CK techniques"
+        "list_campaigns(status?=open|monitoring|resolved, campaign_id?, case_id?, limit?=10) -- campaigns, "
+        "latest activity first: cases sharing entities and ATT&CK techniques"
     )
-    display_keys: ClassVar[tuple[str, ...]] = ("status", "campaign_id", "limit")
+    display_keys: ClassVar[tuple[str, ...]] = ("status", "campaign_id", "case_id", "limit")
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
         args, error = parse_input(ListCampaignsInput, inp)
@@ -1194,10 +1198,21 @@ class ListCampaignsTool(ChatTool):
             return ToolOutcome.failure("Campaign correlation is not available")
         from ...engine.views import campaign_json
 
+        member: Any = None
+        if args.case_id:
+            member = await find_case(ctx, args.case_id)
         try:
             if args.campaign_id:
                 one = await ctx.campaigns.get(args.campaign_id)
                 campaigns, total = ([one], 1) if one is not None else ([], 0)
+            elif args.case_id:
+                # The campaigns that hold the case now (status filter applied), most
+                # recently active first; none when the case is not found.
+                held: list[Any] = []
+                if member is not None:
+                    every, _total = await ctx.campaigns.list(status=args.status)
+                    held = [c for c in every if member.case_id in (c.case_ids or [])]
+                campaigns, total = held[:args.limit], len(held)
             else:
                 campaigns, total = await ctx.campaigns.list(status=args.status, limit=args.limit)
         except Exception as exc:  # noqa: BLE001
@@ -1212,8 +1227,18 @@ class ListCampaignsTool(ChatTool):
             shown = [numbers.get(str(c)) for c in ids[:5]]
             return {"case_numbers": shown} if any(shown) else {}
 
+        case_filter: dict[str, Any] = {}
+        if args.case_id:
+            # Which case the listing is about, as the analyst knows it (its number),
+            # and whether it was found at all ("no campaign holds it" vs "no such case").
+            case_filter = {"case_filter": {
+                "found": member is not None,
+                "case_id": text(member.case_id, 128) if member is not None else None,
+                "case_number": opt_text(getattr(member, "case_number", None), 64) if member is not None else None,
+            }}
         observation = {
             "status_filter": args.status,
+            **case_filter,
             "total": total,
             "returned": len(rows),
             "campaigns": [
@@ -1253,10 +1278,13 @@ class ListCampaignsTool(ChatTool):
                      ]}, provenance="code"),
         ]
         summary = f"{fmt_int(total)} campaigns" + (f" with status {args.status}" if args.status else "")
+        if args.case_id:
+            summary += " holding the case" if member is not None else " (the case was not found)"
         summary += f"; {fmt_int(len(rows))} listed"
+        untrusted = {key: value for key, value in (("campaign_id", args.campaign_id), ("case_id", args.case_id))
+                     if value}
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
-                           rows=len(rows), basis="exact",
-                           untrusted_params={"campaign_id": args.campaign_id} if args.campaign_id else {})
+                           rows=len(rows), basis="exact", untrusted_params=untrusted)
 
 
 #: The most member cases a campaign listing reads display numbers for (one bounded read

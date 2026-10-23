@@ -736,9 +736,16 @@ class AppState:
     async def chat_grants(self, request) -> frozenset[tuple[str, str]]:
         """The caller's grants over every pair a chat turn can need: the tool
         catalogue, the console map and the route-level grants (case comments,
-        memory, model choice, cost). Resolved once, WITHOUT audit rows (SPEC §5.1)."""
+        memory, model choice, cost). Resolved once, WITHOUT audit rows (SPEC §5.1).
+        The first call of a process builds the tool catalogue and the Help Center index
+        off the event loop (Round 13 polish PB3: a cold Case Manager chip read paid both
+        on the loop, about 0.3 s); both are no-ops once built."""
+        from .agents.chat_tools.registry import warm_catalogue
         from .api.deps import resolve_grants
+        from .knowledge import warm_app_knowledge
 
+        await warm_catalogue()
+        await warm_app_knowledge()
         return await resolve_grants(request, chat_grant_pairs())
 
     async def build_chat_tool_context(

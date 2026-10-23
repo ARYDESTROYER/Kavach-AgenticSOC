@@ -825,7 +825,7 @@ function BlockView({ block, ctx }: { block: MdBlock; ctx: RenderContext }): Reac
     case 'table':
       return (
         <div className="max-w-full overflow-x-auto rounded-md border border-border">
-          <table className="w-full border-collapse text-sm">
+          <table className="w-full border-collapse text-sm tabular-nums">
             <thead>
               <tr className="border-b border-border bg-surface">
                 {block.header.map((cell, index) => (
@@ -918,7 +918,9 @@ export const ChatMarkdown = React.memo(function ChatMarkdown({
   );
   if (!blocks.length) return null;
   return (
-    <div className={cn('min-w-0 space-y-2 break-words text-md leading-6 text-foreground', className)} data-chat-markdown="">
+    // Prose sets proportional numerals (Round 13 polish): the body's tabular numerals
+    // widen Inter's hyphen by about 40 % ("Read - only"); tables inside keep tabular ones.
+    <div className={cn('min-w-0 space-y-2 break-words text-md leading-6 text-foreground proportional-nums', className)} data-chat-markdown="">
       {blocks.map((block, index) => (
         <MemoBlock key={index} block={block} ctx={ctx} />
       ))}

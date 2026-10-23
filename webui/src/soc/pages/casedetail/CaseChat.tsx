@@ -41,6 +41,7 @@ import { announcedLookupBound, useTurnAnnouncer } from '@/soc/chat/message/useTu
 import { useChatContext } from '@/soc/chat/useChatContext';
 import { useChatEngine } from '@/soc/chat/useChatEngine';
 import { useChatStarters } from '@/soc/chat/starters/useChatStarters';
+import { takeCaseStartersPrefetch } from './case-starters-prefetch';
 import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 
 const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -105,7 +106,9 @@ export function CaseChat({ caseId, displayId, caseManager, starters }: CaseChatP
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };
   // The case chips (one read, shared with the empty state through the module cache).
-  const caseStarters = useChatStarters({ surface: 'case', caseId, principal, enabled: !!caseId });
+  // The read the Chat tab started as it mounted (`case-starters-prefetch.ts`), if any.
+  const takePrefetched = React.useCallback(() => takeCaseStartersPrefetch(caseId, principal), [caseId, principal]);
+  const caseStarters = useChatStarters({ surface: 'case', caseId, principal, enabled: !!caseId, takePrefetched });
   const chipsOffered =
     caseStarters.loading || (caseStarters.info?.starters ?? []).some((starter) => (starter.action ?? 'send') === 'send');
   // The quick actions join once the conversation has started, or when no chip is offered.

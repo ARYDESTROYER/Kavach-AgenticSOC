@@ -1266,18 +1266,59 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   `my_cases`, `sla`, `campaign`) start their 0.8-second limit only after that read
   arrives; the read is bounded by the time left in the build. A degraded build (a family
   raised or timed out, a shared read failed) is served but not cached.
+- **Cold reads (polish round PB3):** the first chat request of a process (often the first
+  Case Manager chip read) imported every chat tool module on the event loop while
+  resolving grants (349 ms measured on Demo; 0.3 s more where the Help Center index was
+  not yet built). The app lifespan now builds the tool catalogue off the loop next to the
+  Help Center index (`registry.warm_catalogue`), and `AppState.chat_grants` does both off
+  the loop when a process skipped that; a cold case read measured 13.6 ms on Demo, later
+  ones 3 to 8 ms. When the client sends the read is recorded in §10.5 ("Case chips read
+  with the tab").
 - **Fresh install:** with no enabled source and no case, only the onboarding cards are
   built (no data card at all).
 - **Dismissed families** are also left out of the catch-up line and the thread line.
 - **Case references** use the case number only when the chat tools can resolve it
   (`get_case` finds numbers among the newest 5,000 cases); an older case is named by its
   internal id.
-- **Families:** "Oldest assigned {age} ago" uses the oldest assigned case's age (the store
-  records no assignment time). Campaign "new" and "grown" are decided from member case
+- **Families:** "Oldest assigned {age} ago" uses the assignment time the case history
+  records (polish round PB3: the assign route appends an `assigned` event with the owner,
+  and an analyst action that sets a new owner carries `assignee` on its entry); it is used
+  only when every one of the caller's open cases (at most 20, one batch read of their
+  documents) has a record for its current owner, else the reason reads "Oldest opened
+  {age} ago" (the case age, said as such; the earlier wording called the case age the
+  assignment age). Both paths record an assignment only when the owner changes (trimmed,
+  compared without case, as usernames are; polish round PB4): assigning a case to its
+  current owner, by Assign again or a bulk assign job over cases the person already
+  holds, keeps the earlier time. Campaign "new" and "grown" are decided from member case
   dates (a campaign id hashes its members, so a grown campaign gets a new id): new when its
   first member was created after the baseline, grown when some members were (checked for
-  campaigns of up to 200 cases); the card prefers a new campaign. A campaign value that
-  starts with "campaign" drops the repeated word, like the case rule. A quiet source is an
+  campaigns of up to 200 cases). **Campaign card (polish rounds PB3 and PB4, amends
+  §3.4):** a campaign has no short display label (`Campaign.name` is always empty), and its
+  internal id ("campaign-4039d3c5…") broke mid-word on a phone card and grew the grid by
+  20 px. PB3 named "the most recently active campaign" with no reference; a newer campaign
+  then took that place before the question was sent (the review answered about a 5-case
+  campaign the 2-case card never counted, and said the campaign had grown). PB4 names the
+  campaign by one of its cases: "What links the {n} cases in the campaign that includes
+  case {case}?" (the case-named form drops "case": "… that includes CASE-000046?"). The
+  case is the newest member the chat tools can name (`case_value`: its number, else its
+  id; the first of the five newest that passes), a `case` reference fenced as
+  `entity_ref` live and on replay like every case card, and the answer finds the
+  campaign that holds it now (`list_campaigns(case_id=…)`, additive: the campaigns whose
+  members include the case, found by id or number, with a `case_filter` saying whether
+  the case exists), so it is the campaign the card counted even after it grows and gets a
+  new id, and the answer says plainly when no campaign holds the case. The family again
+  weighs every open or monitoring campaign that is new or grew since the baseline (a new
+  one first, then the one that gained most, then the larger; PB3 had looked only at the
+  most recently active one, so a new campaign behind an older active one got no card and
+  the line lost its clause), tries the next when one has no nameable case, and returns
+  the "N new campaigns" clause whenever one is new (the line shows a clause only beside
+  its card's question, §3.6). The card's key stays per campaign (`key_ref`), so novelty
+  and Hide stay per campaign. **Earlier wordings are read back, never offered**
+  (`chat_starter_text.LEGACY_TEMPLATES`): the Round 13 build's "What links the {n} cases
+  in campaign {campaign}?" (an id fenced as `campaign`) and PB3's "… in the most recently
+  active campaign?" (counts note only), so a stored turn replays as it ran live; Demo
+  answers them by id, or as "the most recently active open campaign" without calling a
+  different count growth. A quiet source is an
   enabled source that is silent, failed its last poll, is marked unhealthy, or is in an
   error or degraded state, named by display name when that passes the grammar and no
   other source has it as its id or display name, else by id (the tools match an id
@@ -1454,6 +1495,27 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   anchor; placeholder labels ("Other", "Unassigned", "No verdict") never anchor; empty
   artifacts anchor nothing; a prose-only answer is anchored in every non-empty artifact
   of the turn.
+- **Cases anchor only when shown (polish round PB3, amends the bullet above):** a case
+  number and id pair from a lookup's observation anchors only when this answer shows that
+  case: the artifact names it (a case list row, an entity card's Case fact, a related
+  case), the lookup was asked about it (`get_case(case_id=…)`), or the answer's own words
+  name it (`select_follow_ups(answer_text=…)`, at most 64,000 characters read, matched
+  only against the observed pairs). A case the lookup merely observed, such as the shift
+  snapshot's attention queue behind an "Open cases by analyst" chart, no longer anchors:
+  the empty sla_close answer offered "Investigate CASE-000005". The Demo planner applies
+  the same rule before it fills a `{case}` chip.
+- **Named cases and unshown cases (polish round PB4, amends the bullet above):** the
+  answer's words name an observed case when its number or id appears as a whole reference
+  (one pattern over the observed pairs; no word character, ".", ":", "/", "#" or "-"
+  joined to either side), so a number from any valid template anchors
+  ("INC/2026/0042", "SOC#0042", "IR 0042"); PB3 split the text into `[\w.:-]+` tokens and
+  missed them. A model chip that names a case this answer does not show is dropped in
+  both branches: on a data answer even when something else anchors it, and on an answer
+  without data artifacts (product help, conversation), which keeps model chips unchecked
+  otherwise, unless the answer's words name the case. A case reference is an observed
+  number or id (either form of the pair shows it), the default number ("CASE-000042"),
+  the internal id ("case-" and 32 hex digits), or a number of the configured template
+  (`case_id.number_pattern`, which the engine passes in).
 - **Technique guard:** a technique is one only when it stands alone and exists in the
   bundled ATT&CK data (`t1000-web01` is not one); a model chip naming a technique the answer
   does not show and the question did not name is never anchored, even beside a shown
@@ -1722,6 +1784,97 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   159 px at 390). The status line and the transcript's name use the case number the
   header shows (`caseDisplayId`), falling back to the internal id; turns still carry the
   id.
+- **Case numbers in exports (re-shoot round):** the export walker names a `case_list`
+  row's Case column and an entity card's related cases by `case_number`, the internal id
+  only when there is none (`caseDisplayRef`), so Word, Excel, Markdown, HTML and the
+  conversation exports match the screen; Print already drew the screen renderers, and
+  its defang pass now skips `case_number` like `case_id`. CSV and JSON keep the id. The
+  Campaigns detail sheet names members by number from `GET /api/campaigns/{id}`
+  `case_numbers` (additive; at most 200 bounded reads, a member without a number keeps its
+  id), with the id in the tooltip and in Open's description; the rows hold their place
+  while the read runs.
+- **Prose numerals (re-shoot round):** measured in Chromium with the shipped Inter, the
+  body's `tabular-nums` widens the hyphen from 5.91 to 8.36 px at 13 px ("Read - only").
+  The chat's reading surfaces set `proportional-nums`: answer prose (`ChatMarkdown`, whose
+  Markdown tables keep `tabular-nums`), the user bubble, the start stack (greeting,
+  capability and catch-up lines, cards, pills), the thread catch-up line, the case chat
+  start line and chips, follow-up and zero-result chips, history row and search titles and
+  the toolbar title. Live: prose 9.59 to 6.78 px at 15 px, a card 9.00 to 6.41 px at 14 px.
+  Figures, meta rows, KPI values and tables keep tabular numerals; `theme.css` is unchanged.
+- **Long ids in starter text (re-shoot round):** a token of 28 characters or more (an id
+  or a hash) in a card's question or reason, or a case chip, may break between any two
+  characters (`starters/soft-breaks.tsx`: `break-all`, its first 4 and last 6 characters
+  `nowrap`), so it fills the line it starts on, breaks where that line ends and never
+  leaves one or two characters on a line. CSS only: Chromium reads a `<wbr>` as a space in the accessible
+  name ("campaign-40 39…"); with the spans the name is the exact question (checked in the
+  accessibility tree). Shorter words, rule names included, wrap whole.
+- **Skeleton hand-over (re-shoot round):** the start skeleton's height is the cards'
+  first floor when they land at the same width and count, so shorter cards share its
+  height (the rows stretch evenly) and the stack holds still; taller cards grow it as
+  before, and fewer cards than skeletons keep their own height. One column's long
+  reference is now 560 px (`LONG_QUESTION_PX`; a 78-character question is 545 px on one
+  line and three lines at 390), so the first skeleton card holds three lines at 360, 375
+  and 390 and two at 414. Measured live on Demo, real cards and with a campaign id or a SHA-256 question
+  injected: grid and stack top 0 px at 390, 1440 and 1920.
+- **History titles (re-shoot round):** rows keep one line; the full title stays in the row's
+  name and its hover and keyboard-focus tooltip, and search results gain the same tooltip.
+  Live at 1440 and 1920 a 32-character title is cut by 12 px in the rail and shown whole
+  in the toolbar (also at 390).
+- **Case chips read with the tab (re-shoot round):** the case chips' read waited for the
+  lazy case chat to load and mount (0.5 to 4 s after the tab click under the Demo dev
+  server, against a server answer of about 10 ms once warm). The Chat tab's shell
+  (`CaseChatPanel`) now starts `GET /api/chat/starters?surface=case` in a layout effect as
+  it mounts (`casedetail/case-starters-prefetch.ts`, beside the shell and importing only
+  the request helper, so the shell keeps its no-static-chat-import rule and the module
+  stays in the Case Detail chunk: no new chunk, the entry chunk byte-identical). `CaseChat`
+  hands it to `useChatStarters` (`takePrefetched`), which uses it for the same viewer and
+  case within 30 s instead of asking again; its failure is the hook's one read failing
+  (Retry reads again; a failed read is not kept for the next open), a forced refresh reads
+  anew, and a sign-out drops it. Live on Demo the read now leaves 74 to 124 ms after the
+  tab click, before the chat's code.
+- **Case lists as tables (second re-shoot):** the shared projection (`blocks/export-helpers.ts`
+  `blockTabular`) names a `case_list` row's case as the screen does (`caseDisplayRef`,
+  moved here from the export walker and shared): its `case_number`, the internal id only
+  when there is none. The projection carries each row's id beside it (`Tabular.caseIds`),
+  so "Show table" and the Expand sheet's table (`TableView` `caseRefs`, passed by
+  `BlockBody` for a case list) show the number, keep the id in the number's tooltip,
+  shorten an unnumbered id in the middle (whole for assistive tech and in print) and link
+  by the id. Copy data (TSV, a human format) writes the number; a CSV (`toCSV`, so the
+  card's Download CSV, `blockToCsv` and `reportTablesCsv` alike) adds a **Case ID** column
+  after **Case** with the internal id, instead of overloading **Case**. A Case column is an
+  identifier: never defanged. A `table` block a server sends keeps its own columns.
+- **Long titles on a phone (second re-shoot):** a 47-character title was cut at 390 px
+  (214 against 284 px) and a touch screen cannot show the tooltip. The thread toolbar's
+  title wraps to up to three lines under 480 px (`narrow`) and under
+  `@media (hover: none)` (`titleTextClass`), and the band is `min-h-11 py-1`, 44 px until a
+  title wraps; History sheet rows and search hits wrap to up to three lines, as do docked
+  rows on a touch screen (`railTitleClass`; rows `min-h-8 py-1`). Live at 390, touch and
+  mouse: a 47-character title takes 2 lines (band 49 px) and an 80-character rename 3
+  (band 67 px) in the toolbar, and the sheet row shows both whole; nothing is cut. With a
+  hovering pointer and room, titles keep one line and the tooltip (1440: toolbar band
+  44 px). This supersedes "rows keep one line" above for the sheet and touch screens.
+- **Block titles and captions (second re-shoot):** an answer block's heading, its caption
+  and the answer's shared scope line set `proportional-nums` (the heading's hyphen measured
+  8.38 px at 13 px with the body's tabular figures, 5.98 px without); KPI values, tables,
+  axis ticks and the meta row keep tabular numerals.
+- **Grid floor outside the cards (second re-shoot):** the start stack's height floor (the
+  skeleton hand-over and "never gets shorter") is the `min-height` of a box around the
+  grid (`START_GRID_FLOOR_CLASS`, `flex flex-col justify-end`), never of the grid: a grid
+  taller than its rows stretched them (`1fr` rows, and auto rows under `align-content:
+  normal`), so three one-line cards at 390 were 90.7 px with an empty band under each
+  reason line instead of 72 px. The spare height now sits above the cards, which keep
+  their natural height (and are measured at it). This supersedes "shorter cards share its
+  height" in the skeleton hand-over above.
+- **Case chips on reopening the tab (second re-shoot):** once the chat has taken a
+  prefetched read, choosing the Chat tab again within `HOOK_CACHE_MS` (60 s, pinned equal
+  to `STARTERS_CACHE_TTL_MS` by a test; a constant so the module still imports nothing
+  from `soc/chat`) starts no read: the hook answers from its cache. The window runs from
+  the take, which precedes the answer, so it never outlasts the hook's cache; a failed
+  read is forgotten at once, and another viewer or case reads at once.
+- **Campaign members in number order (second re-shoot):** the Campaigns detail sheet sorts
+  members by case number once the numbers arrive (digit runs compared as numbers), members
+  without a number last by id; React keys stay the case id, and while the numbers load the
+  stored order holds each row's place.
 
 ### 10.6 Demo (WP-DEMO13)
 
@@ -1757,6 +1910,32 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
 - T36 seed strings: Demo source names read "Splunk Enterprise Security (HEC)", "Wazuh
   Manager (endpoint telemetry)" and "Network & Linux (RFC 5424 Syslog)"; seed case titles
   use " · " and the title parser accepts both separators.
+- **Polish round PB3 (Demo answers):** a rule has one display form in an answer, its id
+  exactly as written in inline code (`demo_impossible_travel`), the form the case list,
+  the Rules fact, the tables and the conversation title show; a machine title's trailing
+  " #2" (it tells seeded titles apart) is left out, as the case number does that. This
+  amends browser-QA D6's plain words ("demo impossible travel"), which put two spellings
+  of one rule in one answer. The shift brief's step states the total past SLA once, then
+  exactly the cases it names ("Work the 10 cases past SLA first, starting with the 3 most
+  overdue: …"; it said "the 5 cases past SLA" from the snapshot's list and named 3); the
+  response-target answer says "The 5 most overdue:" (or "Most overdue first:" when all are
+  listed) and "among the 3 of these the shift snapshot describes" when the snapshot
+  describes only some. The campaign card's answer looks up the most recently active open
+  campaign (`list_campaigns(status="open", limit=1)`) and names it that way, never by id.
+- **Polish round PB4 (Demo answers):** the campaign card's answer looks up the campaign
+  that holds the card's case (`list_campaigns(case_id=…)`) and leads with "The campaign
+  that includes `CASE-000046` links **N cases** through …"; a moved count reads "The
+  suggestion counted 2 cases; there are 3 now." because it is the same campaign. When no
+  campaign holds the case it says "No campaign holds `CASE-000046` now: …" (or that the
+  case was not found) and lists the open campaigns, never counting another campaign as
+  this one. PB3's "most recently active" wording, sent again, leads with "The most
+  recently active open campaign …" and says a newer campaign may have taken its place
+  instead of calling a different count growth. The shift brief and handoff have one
+  starting point: with cases past SLA the lead starts with the step's first case ("Start
+  with `CASE-000004` (…), escalated, risk 64: the most overdue of the 10 cases past
+  SLA."); when the snapshot names none of them the lead reads "Top of the attention
+  queue: …" and only the step says what to work first; with none past SLA it starts with
+  the top of the attention queue as before.
 - Limits: the planner has no clock, so a window-less case-chat chip falls back to the last
   24 hours when no earlier question named a window (the answer states it); a chip
   comparison over a "since" window shows the tool's period label with an en dash.
@@ -1811,6 +1990,18 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
 - **Entry chunk:** the account-profile fix lives in `lib/api.ts`, which is on first paint;
   it grew the entry chunk by 157 B (371,706 to 371,863 B against the 372,027 B budget),
   the one exception to "the entry chunk must not grow". Every chat module stays lazy.
+- **Long references in start questions (second re-shoot):** the start stack holds still
+  (within 8 px) from skeleton to cards only while a question's references are shorter than
+  28 characters. The `{rule}` slot takes up to 128 non-space characters, and an Elastic rule
+  id is a 36-character UUID, so a noisy-rule card such as "Why did detection rule
+  sigma_win_susp_powershell_encoded_command_execution create 12 of the 40 cases in the last
+  24 hours?" adds a line and moves the greeting 20 to 40 px at 390, 1440 and 1920 when it is
+  new since the heights last measured at that width (a repeat visit's skeleton uses those
+  measured heights and holds still). A card's question is exactly what it sends and is
+  never truncated (§5.2), so the web cannot shorten it; the fix is in the server's wording
+  (`agents/chat_starter_text.py`): keep a long reference out of the question line, as the
+  campaign card does, for example "Why did the detection rule below create 12 of the 40
+  cases…" with the rule id in the reason line. Open, for the backend.
 - **Old Demo source names** (with an em dash) remain in four test fixtures, three webui
   (`Composer.test.tsx`, `command-note.test.tsx`, `ChatComposerDefaults.test.tsx`) and one
   backend (`backend/tests/test_reports_routes.py`); they are not live data.

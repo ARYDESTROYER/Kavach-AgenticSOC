@@ -338,7 +338,7 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     # the internal id the question named is stated once beside the number (polish).
     number = (await demo_state.cases.get("demo-00000539-0004")).case_number
     assert number, "every seeded Demo case is numbered"
-    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`demo-00000539-0004`, [a-z ]+ on user `[^`]+`\) "
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`demo-00000539-0004`, `[a-z_]+` on user `[^`]+`\) "
                     r"needs human review", case.answer), case.answer
 
 
@@ -401,7 +401,7 @@ async def test_case_manager_chat_answers_about_its_case(demo_state) -> None:
     # display number (Round 13 A8; every seeded Demo case is numbered).
     number = (await demo_state.cases.get(case_id)).case_number
     assert number, "every seeded Demo case is numbered"
-    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \([a-z ]+ on [A-Za-z ]+ `[^`]+`\) is a true positive",
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`[a-z_, `]+` on [A-Za-z ]+ `[^`]+`\) is a true positive",
                     response.answer), response.answer
     assert "How the policy sees it:" in response.answer
     assert response.case_id == case_id

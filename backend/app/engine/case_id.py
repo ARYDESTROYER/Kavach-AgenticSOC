@@ -108,6 +108,46 @@ def render(template: str, ctx: dict[str, Any]) -> str:
     return _TOKEN_RE.sub(_sub, template)
 
 
+#: What each placeholder renders, as a pattern (``number_pattern``).
+_PLACEHOLDER_PATTERNS = {
+    "seq": "[0-9]+", "year": "[0-9]{4}", "yy": "[0-9]{2}", "mm": "[0-9]{2}", "dd": "[0-9]{2}",
+    "source": "[a-z0-9-]{0,40}", "verdict": "[a-z_]{0,32}",
+}
+_DIGIT_PLACEHOLDERS = frozenset({"seq", "year", "yy", "mm", "dd"})
+
+
+def number_pattern(template: str, *, prefix: str = "CASE") -> str | None:
+    """A regular expression (unanchored; match it case-insensitively) for the display
+    numbers ``template`` renders with ``prefix``: the chat's follow-up chips use it to
+    recognise a case number they name ("INC/{year}/{seq:04d}" matches "INC/2026/0042").
+    Literal runs of whitespace match one space (the chat reads text normalised). None
+    when the template is invalid or renders no digits (nothing then tells two numbers
+    apart)."""
+    ok, _err = validate_template(template)
+    if not ok:
+        return None
+
+    def literal(text: str) -> str:
+        return re.escape(re.sub(r"\s+", " ", text))
+
+    parts: list[str] = []
+    pos = 0
+    digits = False
+    for m in _TOKEN_RE.finditer(template):
+        parts.append(literal(template[pos:m.start()]))
+        name = m.group(1)
+        if name == "prefix":
+            parts.append(literal(str(prefix if prefix is not None else "CASE")))
+        elif name == "sep":
+            parts.append(literal("-"))
+        else:
+            parts.append(f"(?:{_PLACEHOLDER_PATTERNS[name]})")
+            digits = digits or name in _DIGIT_PLACEHOLDERS
+        pos = m.end()
+    parts.append(literal(template[pos:]))
+    return "".join(parts) if digits else None
+
+
 def reset_bucket(reset_period: str, now: Any | None = None) -> str:
     """The sequence bucket key suffix for a reset policy. The counter is per bucket,
     so changing periods rolls a fresh sequence at each boundary."""

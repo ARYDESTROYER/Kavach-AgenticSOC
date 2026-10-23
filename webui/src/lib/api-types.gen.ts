@@ -960,6 +960,11 @@ export interface paths {
          * Get Campaign
          * @description One campaign by its (content-hash) id — its member case ids, shared entities,
          *     MITRE union and severity rollup. 404 when absent. Read-only advisory (#3/#4).
+         *
+         *     ``case_numbers`` (Round 13 polish, additive) maps a member case id to its display
+         *     number ("CASE-000045"), so the Campaigns detail sheet names members the way the rest
+         *     of the console does. Bounded (:data:`_MEMBER_NUMBER_READS` reads); a member without
+         *     a number, past the bound or whose read fails is simply absent and keeps its id.
          */
         get: operations["get_campaign_api_campaigns__campaign_id__get"];
         put?: never;

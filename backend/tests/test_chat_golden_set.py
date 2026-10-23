@@ -940,7 +940,7 @@ OUT_OF_SCOPE = [
     G("Tell me the story of this case", tools=("get_case",), fields={"case_id": "demo-00000539-0004"},
       # A8: the case's display number leads (every seeded Demo case has one), then what
       # it is about.
-      contains=("re:^\\*\\*`CASE-\\d{6}`\\*\\* \\(identity signin on user `dsingh`\\)",),
+      contains=("re:^\\*\\*`CASE-\\d{6}`\\*\\* \\(`identity_signin` on user `dsingh`\\)",),
       absent=("I can't write",)),
     G("Tell me the story of what happened today", any_of=("search_cases",), absent=("I can't write",)),
     # A response answer names only what reads as a host or user name, never "of" or "out".
@@ -1144,6 +1144,9 @@ def test_the_bare_id_check_itself() -> None:
     assert _bare_id_leads("- `case-062c11bc99b64c92853d96a798730094`, `case-3f6c7a7091e643edaddc9728b7d6e873`")
     assert not _bare_id_leads("**identity signin on user `dsingh`** (`demo-00000539-0004`) is open.")
     assert not _bare_id_leads("- `CASE-000042` · identity signin on user `dsingh` (high, risk 80, open)")
+    # A rule id leads as inline code since Round 13 polish PB3; it is not a case id.
+    assert not _bare_id_leads("**`identity_signin` on user `dsingh`** (`demo-00000539-0004`) is open.")
+    assert not _bare_id_leads("- `demo_impossible_travel` on user `pnair` (`demo-hitl-0`) (high, risk 62)")
 
 
 def test_the_takeaway_check_reads_label_and_value_as_one_clause() -> None:
@@ -1973,7 +1976,11 @@ def _starter_slots(client: TestClient) -> dict[str, dict[str, Any]]:
     assert technique_n >= 2 and rule_n >= 1 and len(day) >= 2, (technique_n, rule_n, len(day))
     campaigns, _total = client.portal.call(  # type: ignore[union-attr]
         lambda: _state(client).campaign_store.list(status="open", limit=5))
-    campaign = campaigns[0]
+    # Not the most recently active campaign when Demo has several (polish PB4): the
+    # answer must be about the campaign its case names, not whichever is newest.
+    campaign = campaigns[-1]
+    by_id = {c.case_id: c for c in cases}
+    member = max((by_id[cid] for cid in campaign.case_ids if cid in by_id), key=lambda c: (_created(c), c.case_id))
     yesterday = starter_text.format_since(now - timedelta(hours=26), now=now, tz=UTC)
     last_month = (now.replace(day=1) - timedelta(days=1))
     close = int(_sla_totals(client).get("about_to_breach") or 0)
@@ -1988,7 +1995,9 @@ def _starter_slots(client: TestClient) -> dict[str, dict[str, Any]]:
         "new_cases_one": {"since": yesterday},
         "volume_drop": {"n": max(2, len(day) // 4), "m": len(day)},
         "noisy_rule": {"rule": rule, "n": rule_n, "m": len(day)},
-        "campaign": {"n": max(2, len(campaign.case_ids)), "campaign": campaign.id},
+        # The card names the campaign by one of its cases, never by its id (Round 13
+        # polish PB3, PB4).
+        "campaign": {"n": max(2, len(campaign.case_ids)), "case": _handle(member)},
         "silent_source": {"source": "demo-wazuh"}, "silent_sources": {"n": 2},
         "budget_ai": {"pct": 85}, "budget_chat": {"pct": 90},
         "shift_start": {"h": 24}, "shift_handoff": {}, "weekly": {},
@@ -1997,6 +2006,16 @@ def _starter_slots(client: TestClient) -> dict[str, dict[str, Any]]:
         "approvals": {"n": 2}, "approvals_one": {}, "platform": {}, "demo": {}, "triage": {}, "posture": {},
         "report": {}, "explain_metric": {}, "learn_app": {}, "connect_source": {},
     }
+
+
+def _report_section_text(response: dict[str, Any], heading: str) -> str:
+    """The Markdown text of a report envelope's section named ``heading``."""
+    for block in response.get("blocks") or []:
+        for section in (block.get("sections") or []) if isinstance(block, dict) else []:
+            if section.get("heading") == heading:
+                return "\n".join(str(i.get("text") or "") for i in section.get("blocks") or section.get("items") or []
+                                 if isinstance(i, dict) and i.get("type") == "markdown")
+    return ""
 
 
 def _handle(case: Any) -> str:
@@ -2053,6 +2072,12 @@ def _check_starter(template_id: str, response: dict[str, Any], prompts: _Planner
         assert value not in unfenced, (value, template_id)
         assert any(ref.get("value") == value for ref in prompts.fenced_refs()), (value, template_id)
     assert not _bare_id_leads(answer), (_bare_id_leads(answer), context)
+    # A follow-up names a case only when this answer shows it (its words or its
+    # blocks), never a case a lookup merely observed (Round 13 polish PB3).
+    shown = answer + json.dumps(response.get("blocks") or [])
+    for chip in response.get("follow_ups") or []:
+        for ref in re.findall(r"\bCASE-\d+\b", chip):
+            assert ref in shown, (chip, context)
     # The takeaway rule (T15): a key-figure block of three or more figures, and the
     # prose names at most two of them.
     assert not _t15_violations(answer, response.get("blocks")), (_t15_violations(answer, response.get("blocks")),
@@ -2217,6 +2242,10 @@ def test_every_starter_template_answers_from_demo_data(starter_client: TestClien
     # answer states it and never says it moved.
     cases = _store_cases(starter_client)
     now = datetime.now(UTC)
+    # One display form per rule (Round 13 polish PB3): a rule id is never also spelled
+    # as words ("demo impossible travel") beside the id the blocks show.
+    for rule in {r for c in cases for r in (c.rule_ids or []) if "_" in r}:
+        assert rule.replace("_", " ") not in answer, (rule, answer[:300])
     if template_id == "my_cases":
         # Sign-in is off here, so assignee "me" names no one: the answer says so and
         # shows the whole open queue by assignee, never as the analyst's own cases.
@@ -2252,8 +2281,12 @@ def test_every_starter_template_answers_from_demo_data(starter_client: TestClien
         assert f"against {before:,} in the 24 hours before" in answer, answer[:300]
         assert f"The usual daily level is {_usual_daily(cases, now):,}" in answer, answer[:300]
     if template_id == "campaign":
-        campaign = next(iter(c for c in client_campaigns(starter_client) if c.id == slots["campaign"]))
-        assert f"**{len(campaign.case_ids):,} cases**" in answer, answer[:300]
+        # The campaign that holds the named case, whichever campaign is newest.
+        member = next(c for c in cases if _handle(c) == slots["case"])
+        campaign = next(c for c in client_campaigns(starter_client) if member.case_id in c.case_ids)
+        assert answer.startswith(f"The campaign that includes `{slots['case']}` links "
+                                 f"**{len(campaign.case_ids):,} cases**"), answer[:300]
+        assert campaign.id not in answer and _COUNTED not in answer, answer[:300]
     if template_id == "hunt":
         # The slot holds the store's count of the technique's cases in the hunt window.
         assert f"**{slots['n']:,} cases**" in answer and _COUNTED not in answer, answer[:400]
@@ -2262,6 +2295,29 @@ def test_every_starter_template_answers_from_demo_data(starter_client: TestClien
     if template_id == "silent_sources":
         # The store has no quiet source: the answer says so, and that the card's count moved.
         assert "No log source is quiet now" in answer and _COUNTED in answer, answer[:300]
+    if template_id in ("shift_start", "shift_handoff"):
+        # Round 13 polish PB3: the total past SLA is the store's, stated the same in the
+        # lead and the steps, and the step lists exactly the cases it says it names.
+        breached = int(_sla_totals(starter_client).get("breached") or 0)
+        steps = _report_section_text(response, "Next steps")
+        step = re.search(r"Work the ([\d,]+) cases? past SLA first(?:, starting with the (?:(\d+) )?most "
+                         r"overdue)?(?:: (.*?))?\.(?:\n|$)", steps)
+        if breached:
+            assert f"{breached:,} of them past SLA" in answer, answer[:300]
+            assert step is not None and int(step.group(1).replace(",", "")) == breached, steps
+            listed = re.findall(r"CASE-\d+", step.group(3) or "")
+            said = (int(step.group(2)) if step.group(2) else 1 if "starting with the most overdue" in step.group(0)
+                    else breached)
+            assert len(listed) == said, steps
+        else:
+            assert step is None, steps
+        # Polish round PB4: one starting point. When the step names the cases past SLA,
+        # the lead starts with its first one; otherwise only one of them says "start".
+        lead = re.search(r"Start with `(CASE-\d+)`", answer)
+        first = re.findall(r"CASE-\d+", (step.group(3) or "") if step else "")
+        if lead and first:
+            assert lead.group(1) == first[0], (answer[:400], steps)
+        assert not (lead and step and not first and "starting with" in step.group(0)), (answer[:400], steps)
     if template_id == "approvals":
         pending = next(s for s in _tool_steps(response) if s["tool"] == "automation_status")
         stated = re.match(r"\*\*(\d+) changes?\*\*", answer)
@@ -2392,6 +2448,10 @@ def test_the_my_cases_card_and_its_answer_count_only_the_callers_cases(signed_in
     numbers = [i.get("case_number") for i in listed.get("items") or []]
     assert numbers == [c.case_number for c in mine], (numbers, [c.case_number for c in mine])
     assert f"Start with **`{mine[0].case_number}`**" in answer, answer[:300]
+    # Each rule one way across the answer (Round 13 polish PB3): its id, as the list shows it.
+    for rule in {r for c in mine for r in (c.rule_ids or [])}:
+        assert f"`{rule}`" in answer and rule.replace("_", " ") not in answer.replace(f"`{rule}`", ""), \
+            (rule, answer[:600])
 
 
 def test_the_my_case_answer_lists_only_the_callers_other_cases(signed_in_client: TestClient) -> None:

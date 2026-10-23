@@ -85,6 +85,12 @@ async def lifespan(app: FastAPI):
     from .knowledge import warm_app_knowledge
 
     await warm_app_knowledge()
+    # The chat tool catalogue too (its module imports, ~0.25 s of CPU): every chat
+    # route and the first Case Manager chip read resolve grants against it (Round 13
+    # polish PB3). Never raises.
+    from .agents.chat_tools.registry import warm_catalogue
+
+    await warm_catalogue()
     try:
         yield
     finally:

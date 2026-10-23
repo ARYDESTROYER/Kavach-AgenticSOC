@@ -37,7 +37,7 @@ import {
   truncationNote,
   unitLabel,
 } from '../../blocks/format';
-import { blockTabular } from '../../blocks/export-helpers';
+import { blockTabular, caseDisplayRef } from '../../blocks/export-helpers';
 import {
   CITATION_KIND_LABEL,
   ENTITY_KIND_LABEL,
@@ -359,9 +359,11 @@ class Walker {
       case 'case_list':
         this.table(
           ['Case', 'Title', 'Severity', 'Verdict', 'Status', 'Risk', 'Created (UTC)'],
-          // The badge words the case list shows ("Critical", "True positive", "Escalated").
+          // The badge words the case list shows ("Critical", "True positive", "Escalated"),
+          // and the case as the screen names it: its number ("CASE-000045"), the internal
+          // id only when it has none.
           block.items.map((it) => [
-            it.case_id,
+            caseDisplayRef(it),
             it.title,
             it.severity ? semanticText('severity', it.severity) : null,
             it.verdict ? semanticText('verdict', it.verdict) : null,
@@ -418,7 +420,7 @@ class Walker {
           this.para('Related cases:', true);
           this.list(
             false,
-            block.related_cases.map((c) => [{ text: c.case_id, code: true }, { text: ': ' }, { text: c.title, code: block.untrusted }]),
+            block.related_cases.map((c) => [{ text: caseDisplayRef(c), code: true }, { text: ': ' }, { text: c.title, code: block.untrusted }]),
           );
         }
         return;

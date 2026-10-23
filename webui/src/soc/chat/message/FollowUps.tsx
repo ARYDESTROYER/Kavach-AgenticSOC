@@ -17,7 +17,8 @@ import { focusRing } from '@/lib/ui-recipes';
 
 /** The ghost chip every answer suggestion shares (follow-ups and zero-result chips). */
 export const SUGGESTION_CHIP = cn(
-  'inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-foreground transition-colors hover:bg-hover disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none',
+  // Proportional numerals: chip labels are prose (tabular ones set hyphens wide).
+  'inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-sm px-2 py-1 text-left text-xs text-foreground proportional-nums transition-colors hover:bg-hover disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none',
   focusRing,
 );
 

@@ -26,6 +26,9 @@ const SKIP_KEYS = new Set([
   'drill',
   'doc',
   'case_id',
+  // The display number is an identity like the id ("CASE-000045"; an operator template
+  // such as "SOC.IR-0042" would otherwise be read as a host name and print "SOC[.]IR").
+  'case_number',
   'as_of',
   'at',
   'created_at',

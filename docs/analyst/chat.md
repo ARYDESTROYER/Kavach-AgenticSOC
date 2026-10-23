@@ -92,12 +92,12 @@ see.
 | A card about | When it appears |
 |---|---|
 | A case that needs a person | An escalated case, one waiting for review, or an open case whose AI verdict is Needs human, that is unassigned or assigned to you; the most urgent one |
-| Your cases | Open cases are assigned to you |
+| Your cases | Open cases are assigned to you; the card says how long ago the oldest was assigned when every case's history records its assignment, else how long ago the oldest was opened |
 | Response targets | SLA targets are on and open cases are past, or close to, their response target |
 | New cases | Cases have opened since your last visit |
 | Case volume | New cases in the last 24 hours are at least twice the usual daily level (and 5 or more above it), or half of it or less |
 | A noisy detection rule | One rule created at least 10 cases, and 30% or more of all new cases, in the last 24 hours |
-| A campaign | A campaign is new, or has grown, since your last visit |
+| A campaign | A campaign is new, or has grown, since your last visit (a new one first); the card names it by one of its cases ("the campaign that includes CASE-000046"), never by its internal id, and the answer is about the campaign that holds that case now |
 | A quiet log source | A log source has gone quiet or is failing its polls |
 | AI spending | Today's AI budget, or the chat spending limit, is mostly used (needs `models:read` and `cost:view`) |
 | Your shift | The start of your shift (your first visit after 8 hours or more away), or a handoff 7 to 13 hours after it |
@@ -117,7 +117,7 @@ console. On a fresh install with no source and no case, the first card is "How d
 connect my first log source?".
 
 Selecting a card sends its question as written, at once; nothing is typed into your
-message box. A card that names a case, rule, source, campaign, or technique sends that
+message box. A card that names a case, rule, source, or technique sends that
 value to the assistant marked as data from your systems, not as your own words, so an
 indicator in it is looked up with an enrichment provider only when the answer's own
 lookups return it (see [What chat can read](#what-chat-can-read)). Two cards act
@@ -484,8 +484,13 @@ whether other cases show it", "What else did this host do in the last 7 days?",
 "Compare this with the previous week", or "Show the same for the last 30 days".
 
 The assistant's own suggestions are kept only when they name something the answer
-shows, so a hunt for one technique never suggests a different one. An answer about the
-product, or a conversation without data, keeps at most two of them. A suggestion that
+shows, so a hunt for one technique never suggests a different one. A suggestion names a
+case only when the answer shows or names that case: a case a lookup merely read, such as
+the first row of the shift report behind an "Open cases by analyst" chart, is never
+offered. A case named in the answer counts in any numbering, including your own
+template ("INC/2026/0042"). An answer about the
+product, or a conversation without data, keeps at most two of them, and none that names
+a case the answer does not name. A suggestion that
 repeats a question already asked in the conversation, or that needs a lookup you may not
 run, is left out. Suggestions are chosen by code from the answer and the assistant's own
 list, with no extra model call.
@@ -581,6 +586,12 @@ point at or tab into the block, and stays while the block is in the report. The 
 | Download PNG / Download SVG | Saves the chart as shown, with its grouping, zoom, and hidden series stated on the image |
 | Copy query | Copies the exact query behind the block |
 | Open in Logs / Open in Cases | Opens the console view of exactly this data, with the same query, source, and absolute time window. Offered only when the console can show the same filter. |
+
+A list of cases names each case by its case number (**CASE-000045**) in **Show table**,
+**Expand**, and **Copy data**, as the list does, and its link opens that case. A case
+without a number shows its case ID. The CSV writes the number under **Case** and adds a
+**Case ID** column with the internal ID, so other tools can match it; JSON keeps the
+stored values.
 
 A table shows ten rows inline, and **View all** opens the rest. A lookup that returns
 no rows adds no empty chart or table; the answer says so in words. A count of zero is
@@ -885,6 +896,10 @@ shows on screen, such as **Critical**, **True positive**, **Needs human**, and *
 Yes/no values read **Yes** and **No**, in the CSV too, and a query is labelled with its
 language as the screen names it, such as **ES|QL** or **Query DSL**. JSON keeps the stored
 values (`true_positive`, `on_hold`, `true`, `esql`) so other tools can read them.
+Cases are named as the report shows them, by case number (**CASE-000045**), in PDF,
+Word, Excel, Markdown, HTML, and the CSV's **Case** column; a case without a number keeps
+its case ID. The CSV adds a **Case ID** column with the internal ID, and JSON keeps it as
+stored, so other tools can match it.
 
 PDF, Word, Markdown, and HTML exports, and the Excel **Report** sheet, carry a header
 (title, author, time generated, app version, source conversations, and each item's
@@ -931,6 +946,14 @@ history row show the first words of your question. The name comes with the answe
 extra cost. A name that is too long, written all in upper case, or not in sentence case
 is not used, and the conversation keeps your question as its title. A name you choose with
 **Rename** is never replaced, and a Case Manager chat is never named this way.
+
+In the docked history rail, each row and search result keeps its title on one line. A
+title too long for the rail is cut at the end; point at the row or move to it with the
+keyboard to see the whole title in a tooltip. The toolbar above the conversation shows the
+whole title where it has room, and in a tooltip where it does not. On a phone, in the
+history sheet, and on any touch screen, where there is no pointer to show a tooltip, a
+title wraps to up to three lines in the history and in the toolbar, so the whole title is
+on screen.
 
 - **Search** looks through titles, your questions, answer text, and block titles. Every
   result shows its matching snippet under the title, as plain text with the matching
@@ -993,7 +1016,10 @@ instead. The suggestion "What should I do next on case …?" reads your own open
 too, so its answer can say whether the case is your only one and list your others.
 
 The shift report names the 5 most overdue open cases and the 5 closest to their response
-target (nearest first), each with who has it; its totals count every one.
+target (nearest first), each with who has it; its totals count every one. An answer from
+it states the total once and then says how many it lists, for example "Work the 10 cases
+past SLA first, starting with the 3 most overdue: …". The brief's opening line starts
+with the same case as that step, the most overdue one.
 
 Chat cannot read users, roles, sessions, jobs, notifications, dashboards, or secrets,
 and it cannot change anything. For those, it answers from the Help Center and links the
@@ -1091,7 +1117,8 @@ while it runs continue the same sequence (one sequence for the demo, whatever yo
 period, so no two demo cases share a number; each number keeps its case's own date);
 turning Demo Mode off and on again, or resetting it, gives each case the same number
 again. A case you name by its internal id is answered by its number, with the id you
-used beside it once. Demo answers cover the same ground as a live model, including any time window, breakdowns,
+used beside it once. A detection rule is written the same way everywhere in an answer: its
+id exactly as written (for example `demo_impossible_travel`), as the case list shows it. Demo answers cover the same ground as a live model, including any time window, breakdowns,
 comparisons, reports, and clarifying questions. A demo conversation's name carries one
 detail that tells it apart from similar ones where there is one: the case number (first,
 so a narrow history list still shows it), the ATT&CK technique, the period, the breakdown

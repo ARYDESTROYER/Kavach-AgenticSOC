@@ -71,7 +71,7 @@ def _case(rule: str, *, case_id: str = "case-1c85aa", title: str | None = None) 
 def test_a_case_name_says_a_long_rule_in_full(rule: str) -> None:
     row = _case(rule)
     name = demo_chat._case_name(row)
-    assert name == f"{rule} on IP `203.0.113.77`"
+    assert name == f"`{rule}` on IP `203.0.113.77`"
     assert "…" not in name
 
 
@@ -87,7 +87,7 @@ def test_explaining_a_case_names_its_rule_and_source_in_full(rule: str) -> None:
     rounds, _header, body = drive("Explain case case-1c85aa", obs)
     assert ("get_case", {"case_id": "case-1c85aa"}) in ran(rounds)
     # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
-    assert f"**{rule} on IP `203.0.113.77`** (`case-1c85aa`)" in body
+    assert f"**`{rule}` on IP `203.0.113.77`** (`case-1c85aa`)" in body
     assert f"It covers rule `{rule}` and source `Microsoft Entra ID Protection — Graph security alerts`." in body
     assert "…" not in body
 
@@ -102,7 +102,7 @@ def test_a_case_list_names_long_rules_and_titles_in_full() -> None:
                                   lambda tool, inp: found if tool == "search_cases" else _generic_obs(tool, inp))
     assert [tool for tool, _inp in ran(rounds)] == ["search_cases"]
     # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
-    assert f"{LONG_RULES[0]} on IP `203.0.113.77` (`case-a`)" in body
+    assert f"`{LONG_RULES[0]}` on IP `203.0.113.77` (`case-a`)" in body
     assert f"`{free_title}` (`case-b`)" in body
     # A rule the name does not already say is listed whole too.
     assert f"rule `{LONG_RULES[2]}`" in body
@@ -116,7 +116,7 @@ def test_the_narration_bound_never_clips_tighter_than_the_shared_case_projection
     row = _case("r" * 200, title="t" * 200)
     assert len(row["title"]) == 160 and len(row["rules"][0]) == 120
     assert demo_chat._code(row["title"]) == f"`{row['title']}`"
-    assert demo_chat._rule_words(row["rules"][0]) == row["rules"][0]
+    assert demo_chat._rule_ids(row["rules"][0]) == f"`{row['rules'][0]}`"
     assert demo_chat._entity_phrase(f"host:{long_value}") == f"host `{long_value}`"
     assert demo_chat._NARRATED_CHARS >= 300
 

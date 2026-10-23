@@ -37,7 +37,7 @@ import * as React from 'react';
 
 import type { ChatStartersInfo, StarterSurface } from '@/lib/types';
 import { onChatActivity } from '../../chat-activity/activity';
-import { getChatStarters, postChatStarterEvent } from '../chat-api';
+import { getChatStarters, normaliseChatStartersInfo, postChatStarterEvent } from '../chat-api';
 
 /** Mirrors the server's per-caller cache window (`CACHE_TTL_S`). */
 export const STARTERS_CACHE_TTL_MS = 60_000;
@@ -356,6 +356,12 @@ export interface UseChatStartersArgs {
   enabled?: boolean;
   /** Re-read every 120 s while the page is visible (the mounted home stack). */
   poll?: boolean;
+  /**
+   * The raw answer a caller already asked for (Case Manager's Chat tab starts the case
+   * read as it mounts, `casedetail/case-starters-prefetch.ts`), read when the hook would
+   * ask the server; null asks the server. Not used by a forced refresh.
+   */
+  takePrefetched?: (() => Promise<unknown> | null) | null;
 }
 
 export interface ChatStartersController {
@@ -379,6 +385,8 @@ interface Applied {
 
 export function useChatStarters(args: UseChatStartersArgs): ChatStartersController {
   const { surface, conversationId = null, caseId = null, principal = null, enabled = true, poll = false } = args;
+  const takePrefetchedRef = React.useRef(args.takePrefetched ?? null);
+  takePrefetchedRef.current = args.takePrefetched ?? null;
   const instanceId = React.useId();
   const known = typeof principal === 'string' && principal.length > 0;
   const namespace = known ? `principal:${principal}` : `instance:${instanceId}`;
@@ -418,7 +426,13 @@ export function useChatStarters(args: UseChatStartersArgs): ChatStartersControll
       return undefined;
     }
     const controller = new AbortController();
-    getChatStarters({ surface, conversationId, caseId }, controller.signal)
+    // The caller may have started this read already (Case Manager's Chat tab): it is
+    // this read, its failure included (one read per case, as before; Retry asks again).
+    const prefetched = force ? null : (takePrefetchedRef.current?.() ?? null);
+    const read: Promise<ChatStartersInfo> = prefetched
+      ? prefetched.then((raw) => normaliseChatStartersInfo(raw, surface))
+      : getChatStarters({ surface, conversationId, caseId }, controller.signal);
+    read
       .then((info) => {
         if (controller.signal.aborted) return;
         remember(key, info, Date.now());
