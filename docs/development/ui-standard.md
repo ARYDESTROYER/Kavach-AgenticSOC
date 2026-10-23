@@ -91,7 +91,18 @@ numerals. Hierarchy comes from weight + size + leading together; weights stay 40
 Reading prose (chat answers, questions, suggestion text, conversation titles, answer
 block titles and captions, and the answer's scope line) sets `proportional-nums`: the
 body's tabular figures also widen Inter's hyphen ("Read - only", "Highest - risk").
-Figures, tables, meta rows and KPI values keep tabular numerals.
+So do text values on answer blocks: an indicator card's facts and provider names
+("demo-synthetic"), case titles, table text cells, timeline lines, notes, Brief section
+summaries and KPI tile labels. Figures, dates, scores, meta rows and KPI values keep
+tabular numerals. A short reference in chat text (a case number, technique id or rule id of up to
+27 characters, its punctuation not counted: "CASE-000089?", "sigma-win-proc-creation-01")
+never breaks inside, not even at its hyphen; the sentence wraps between words, and a word
+of 28 characters or more breaks where its line ends, its ends kept
+(`starters/soft-breaks.tsx`; 27 is also the longest reference the server writes into a
+start question). On start cards and case chips a kept reference is an inline block no
+wider than its line, so one wider than the whole card line wraps inside it instead of
+running past the card. A start card's question is `text-wrap: balance`, so its last word
+never stands alone.
 11px (`text-2xs`) is for badges, axis ticks and timestamps only; content text,
 legends, captions and stat context are 12px or larger.
 
@@ -424,7 +435,10 @@ conversation's usage line, "This chat: 12.4k tokens · $0.03" (`tabular-nums`, m
 (Unpin), Export ▸, Save conversation as report and Delete once the thread is saved (the
 rail's words), a separator, and a **View** group whose conversation width is three radio
 items described in words, not pixels: Comfortable ("Narrower, easier to read"), Wide
-("Wider, centred") and Full width ("Fills the space (default)"), offered on drafts too.
+("Wider, centred") and Full width ("Fills the space (default)"), offered on drafts too,
+but only where a choice changes the lane (`laneWidthChoiceMatters`: the lane, the
+conversation less its gutters, is wider than Comfortable's 64rem; not on a phone or beside
+a docked rail at 1440).
 While a New chat's first answer is written, the title is the client title (the
 question's first 48 characters cut at a word boundary, with an ellipsis after the last
 whole word) and the thread has no actions until it is saved; the title the model names
@@ -525,7 +539,11 @@ the 15 px strip above it that also takes clicks covers the console header, the t
 navigation, the history rail or the composer. The `dismissed` event is
 posted only when the toast closes without Undo (or the page hides, or after 60 seconds),
 so Undo posts nothing. A swap is an opacity cross-fade (no translate or scale on cards);
-within one applied result and card count the grid never gets shorter, and a fresh result
+within one applied result and card count the stack never gets shorter (cards landing
+shorter than their skeleton, or a shorter stand-in, leave their spare height as a spacer
+under the cards, above the pills, so the greeting, the catch-up line, the cards' top and
+the pills hold still and the cards keep their 16 px under the catch-up line; the stack is
+anchored at its bottom, so spare height above the greeting would move it), and a fresh result
 is held while the pointer is over the grid or focus is inside it, so nothing reorders
 under the analyst. Nothing on the start screen is a live region and a refresh is never
 announced. States: skeletons of exactly the visible count at the cards' height (the heights last
@@ -572,7 +590,12 @@ Brief reads "Brief: {title}" (no prefix when the title already says brief), stat
 window once, from engine text only (a model subtitle never becomes the scope line), shows
 its provenance counter only when model-stated figures exist ("Includes 2 figures stated
 by the model"), and shows its on-screen Contents from 4 sections (the static and print
-Contents from 2); an infographic hero inside a Brief draws no inner frame. The Active
+Contents from 2); an infographic hero inside a Brief draws no inner frame. However wide a
+Brief, its prose keeps the reading measures: a `markdown` leaf and a section summary 38rem,
+a note 42rem (print keeps the page width). A block table wider than its frame scrolls
+inside it, and the side that holds more columns fades out over 1.5rem (`data-x-scroll`,
+`blocks/scroll-edges.ts`, the start pills' fade), so a cut column reads as more, not as
+clipped. The Active
 Risk Index tile in a `kpi_group` is a 56×28 decorative arc beside a text numeral with the
 band word stacked over "/100", and its context line holds only the context ("Right now"
 for a figure that is not windowed), so the tile has a captioned neighbour's three lines at

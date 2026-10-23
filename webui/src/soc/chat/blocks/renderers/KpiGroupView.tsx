@@ -234,7 +234,11 @@ export function KpiItemCell({ item, testId, staticMode = false }: { item: KpiIte
   }
 
   return (
-    <div role="listitem" className="flex min-w-0 flex-col">
+    // Proportional numerals for what the tile inherits: its label is prose, set like the
+    // gauge label beside it (tabular figures set its hyphens wide, "FALSE-POSITIVE RATE").
+    // The numeral, the delta chip and the caption set their own tabular figures in
+    // `KpiTile`, which the Overview shares and which is not changed here.
+    <div role="listitem" className="flex min-w-0 flex-col proportional-nums">
       <KpiTile
         label={item.label}
         value={valueNode(item)}

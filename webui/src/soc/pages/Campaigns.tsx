@@ -76,6 +76,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/tabs';
 import { useConfigEditor } from '@/soc/components/rules';
 import {
   campaignsApi,
+  CAMPAIGN_ENTITY_KIND_LABELS,
   CAMPAIGN_STATUS_LABELS,
   type Campaign,
 } from './Campaigns.api';
@@ -92,6 +93,15 @@ const CAMPAIGN_CADENCES: NonNullable<CampaignConfig['cadence']>[] = [
   'weekly',
   'manual',
 ];
+
+/**
+ * A shared entity's kind in the console's words ("IP", "File hash"; `humanizeToken` turned
+ * "ip" into "Ip"). An unknown kind reads in sentence case.
+ */
+function entityKindLabel(type: string): string {
+  const key = type.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(CAMPAIGN_ENTITY_KIND_LABELS, key) ? CAMPAIGN_ENTITY_KIND_LABELS[key] : humanizeToken(type);
+}
 
 /** Map a campaign status to a Badge variant. */
 function statusVariant(status: string): 'success' | 'info' | 'secondary' {
@@ -584,7 +594,9 @@ function CampaignDetailSheet({
                   id squeezed it to 0 px). */}
               <SheetTitle className="flex items-start gap-2">
                 <Network className="mt-1 h-5 w-5 shrink-0 text-primary" aria-hidden />
-                <span className="min-w-0 break-words">{campaign.name || campaign.id}</span>
+                {/* Proportional numerals: the name is text, and tabular figures set the
+                    hyphen of an id ("campaign-4039d3c5…") wide. */}
+                <span className="min-w-0 break-words proportional-nums">{campaign.name || campaign.id}</span>
               </SheetTitle>
               <SheetDescription>
                 {fmtNumber(campaign.case_count)} case
@@ -628,7 +640,7 @@ function CampaignDetailSheet({
                         className="inline-flex items-center gap-1"
                       >
                         <span className="text-xs text-muted-foreground">
-                          {humanizeToken(e.entity_type)}:
+                          {entityKindLabel(e.entity_type)}:
                         </span>
                         <InlineCode>{e.value}</InlineCode>
                       </span>

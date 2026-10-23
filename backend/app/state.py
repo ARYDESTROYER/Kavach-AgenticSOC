@@ -1761,10 +1761,14 @@ class AppState:
             from .engine.event_detection import pre_aggregate
 
             seen.update(summary.signature for summary in pre_aggregate(events, prefs))
+            # One store write for the batch: a write per signature re-encoded the whole
+            # series document each time (quadratic, and a stalled event loop, PW4-10).
+            updates = {}
             for sig in seen:
                 snap = baseline.snapshot(sig)
                 if snap:
-                    await self.baseline_store.put(sig, snap)
+                    updates[sig] = snap
+            await self.baseline_store.put_many(updates)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
             logger.debug("funnel baseline flush failed (%s)", exc)
 

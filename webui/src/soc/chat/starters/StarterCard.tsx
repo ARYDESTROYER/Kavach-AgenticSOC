@@ -7,8 +7,10 @@
  * sits left of the text; the QUESTION itself is the card text (for a `send` card it is
  * exactly what will be sent), wrapping freely and never truncated or clamped (a long id or
  * hash breaks where its line ends, never leaving a one or two character scrap on a line of
- * its own, and a case number or rule id never breaks at its hyphen: `softBreakLongTokens`;
- * `text-wrap: pretty` keeps a last word from standing alone on its line); under it
+ * its own, and a case number or rule id of up to 27 characters never breaks at its hyphen
+ * unless it is wider than the whole line: `softBreakLongTokens` with `fit`;
+ * `text-wrap: balance` evens its lines, so a last word never stands alone on its line, at
+ * the same line count: `pretty` still left "CASE-000089?" alone in a 1920 px card); under it
  * the muted reason line, after a decorative urgency dot (critical or attention; the
  * words carry the meaning). The accessible name is the question and the description the
  * reason line. Under `prefers-contrast: more` and forced colours the card gains a 1 px
@@ -103,8 +105,8 @@ export const StarterCard = React.forwardRef<HTMLButtonElement, StarterCardProps>
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
         {/* Proportional numerals: the question and reason are prose (tabular ones set hyphens wide). */}
         <span className="min-w-0 flex-1 proportional-nums">
-          <span id={questionId} className="block text-pretty break-words text-base font-medium text-foreground">
-            {softBreakLongTokens(starter.prompt)}
+          <span id={questionId} className="block text-balance break-words text-base font-medium text-foreground">
+            {softBreakLongTokens(starter.prompt, { fit: true })}
           </span>
           {reason ? (
             <span id={reasonId} className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -115,7 +117,7 @@ export const StarterCard = React.forwardRef<HTMLButtonElement, StarterCardProps>
                   className={cn('size-1.5 shrink-0 rounded-full', urgency === 'critical' ? 'bg-critical' : 'bg-warning')}
                 />
               ) : null}
-              <span className="min-w-0 break-words">{softBreakLongTokens(reason)}</span>
+              <span className="min-w-0 break-words">{softBreakLongTokens(reason, { fit: true })}</span>
             </span>
           ) : null}
         </span>

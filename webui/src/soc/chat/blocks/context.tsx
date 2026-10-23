@@ -158,9 +158,12 @@ export const RefLink = React.forwardRef<HTMLAnchorElement, RefLinkProps>(functio
  * mono, middle-ellipsised ("case-6b22…70b4", the Case Manager queue's form), with the
  * full id in its tooltip and for assistive tech. A case with neither a number nor a title
  * shows its whole id, which wraps instead of being cut. Titles wrap too (the hosts never
- * truncate them), so the whole title is always on screen. The number never breaks at its
- * hyphen, nor does a short reference in the title ("LP-ES-RISK-1001", PW4-1), and the
- * title is prose (proportional numerals, so Inter's tabular hyphen is not set wide).
+ * truncate them), so the whole title is always on screen. A number of up to 27 characters
+ * never breaks at its hyphen, nor does a short reference in the title ("LP-ES-RISK-1001",
+ * PW4-1), and the title is prose (proportional numerals, so Inter's tabular hyphen is not
+ * set wide). A longer number (an operator template may write up to 200 characters) breaks
+ * where its line ends, its ends kept, so it never runs past the row on a phone: both
+ * through `softBreakLongTokens`, the one length rule.
  */
 export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 'case_number' | 'title'> }) {
   const number = facts.case_number?.trim() || null;
@@ -194,8 +197,8 @@ export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 
   }
   return (
     <>
-      <span className="mr-1.5 whitespace-nowrap font-mono text-xs" title={facts.case_id} data-case-ref="number">
-        {number}
+      <span className="mr-1.5 font-mono text-xs" title={facts.case_id} data-case-ref="number">
+        {softBreakLongTokens(number)}
       </span>
       {title ? (
         <span className="break-words proportional-nums" data-case-ref="title">

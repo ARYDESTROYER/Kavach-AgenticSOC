@@ -407,6 +407,98 @@ DEEP = [
       may_fail=("lookup_indicator",), notices=("denied", "policy"), params=(P("search_logs", host="jumpbox01"),)),
 ]
 
+#: Polish round PB5: an investigation that names an entity investigates THAT entity
+#: (a host or user gets the in-depth look, an indicator or a name of no stated kind the
+#: hunt), over the window it names; a case is chosen only when the question names one.
+#: The re-shoot's misrouted question first, then each entity kind and window phrasing.
+_NO_CASE_PICK = (P("search_cases", status="escalated"),)
+_HASH = "44d88612fea8a8f36de82e1278abb02f"
+ENTITY_INVESTIGATIONS = [
+    G("Investigate the activity of user pnair in the last 3 days and the cases it appears in",
+      tools=("log_stats", "search_logs", "search_cases", "case_stats"), min_lookups=10,
+      may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", user="pnair", time_from="now-3d"), P("search_cases", entity="pnair", window="now-3d")),
+      forbid=_NO_CASE_PICK, contains=("In-depth investigation of user `pnair` in the last 3 days",)),
+    G("Investigate host dc01 yesterday", tools=("log_stats", "search_logs", "search_cases"), min_lookups=10,
+      may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", host="dc01", window="yesterday"),), forbid=_NO_CASE_PICK,
+      contains=("In-depth investigation of host `dc01` yesterday",)),
+    G("Look into account svc_backup this week", tools=("log_stats", "search_logs", "search_cases"), min_lookups=10,
+      may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", user="svc_backup", window="this_week"),), forbid=_NO_CASE_PICK),
+    G("What did user pnair do over the last week?", tools=("log_stats", "search_logs", "search_cases"),
+      min_lookups=10, may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", user="pnair", time_from="now-7d"),), forbid=_NO_CASE_PICK),
+    G("Dig into host appsrv01 this month", tools=("log_stats", "search_logs", "search_cases"), min_lookups=10,
+      may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", host="appsrv01", window="this_month"),), forbid=_NO_CASE_PICK),
+    G("Investigate user pnair", tools=("log_stats", "search_logs", "search_cases"), min_lookups=10,
+      may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", user="pnair", time_from="now-30d"),), forbid=_NO_CASE_PICK),
+    G("Investigate the activity of IP 192.0.2.90 in the last 3 days and the cases it appears in",
+      tools=("lookup_indicator", "search_logs", "search_cases"),
+      params=(P("lookup_indicator", indicator="192.0.2.90", kind="ip"),
+              P("search_logs", ip="192.0.2.90", time_from="now-3d"), P("search_cases", entity="192.0.2.90")),
+      forbid=_NO_CASE_PICK),
+    G("Investigate domain bad.example.com this week", tools=("lookup_indicator", "search_logs", "search_cases"),
+      params=(P("lookup_indicator", indicator="bad.example.com", kind="domain"),
+              P("search_logs", contains="bad.example.com", window="this_week")), forbid=_NO_CASE_PICK),
+    G(f"Investigate file hash {_HASH} over the past 2 weeks", tools=("lookup_indicator", "search_logs", "search_cases"),
+      params=(P("lookup_indicator", indicator=_HASH, kind="hash"), P("search_logs", contains=_HASH, window="now-2w")),
+      forbid=_NO_CASE_PICK),
+    G("Investigate pnair's activity since yesterday", tools=("search_logs", "search_cases"),
+      params=(P("search_logs", contains="pnair", window="yesterday..now"), P("search_cases", entity="pnair")),
+      forbid=_NO_CASE_PICK),
+]
+
+#: Polish round PB6: a word another rule reads is never hunted as a name, an email
+#: address is a user, and "Investigate …" picks a case only when it picks one (a named
+#: rule, a named source, an attack type and a request for records get their own plans).
+INVESTIGATION_ROUTES = [
+    G("Investigate T1059.001", tools=("mitre_lookup",), params=(P("mitre_lookup", ids="T1059.001"),),
+      forbid=(P("search_logs"),), absent=("No log events match",)),
+    G("Investigate T1110", tools=("mitre_lookup",), forbid=(P("search_logs"),)),
+    G("What is ingestion doing?", tools=("source_health",), forbid=(P("search_logs"),)),
+    G("Investigate costs", tools=("cost_usage",), forbid=(P("search_logs"),)),
+    G("What did spend do this week?", tools=("cost_usage",), params=(P("cost_usage", window="this_week"),),
+      forbid=(P("search_logs"),)),
+    G("What did tuning do?", tools=("automation_status",), params=(P("automation_status", kind="tuning"),),
+      forbid=(P("search_logs"),)),
+    G("Investigate approvals", tools=("automation_status",), params=(P("automation_status", kind="approvals"),),
+      forbid=(P("search_logs"),)),
+    G("What has autopilot been doing?", kind="product_help", tools=("app_help",), max_lookups=1),
+    G("What did enrichment do?", kind="product_help", tools=("app_help",), max_lookups=1),
+    G("What is risk doing?", kind="product_help", tools=("app_help",), max_lookups=1),
+    G("Show activity by severity", tools=("log_stats",), params=(P("log_stats", group_by="severity"),),
+      forbid=(P("search_logs", contains="severity"),)),
+    # A plain name is still searched for (its log events and the cases that carry it).
+    G("What did alice do today?", tools=("search_logs", "search_cases"),
+      params=(P("search_logs", contains="alice", window="today"),), forbid=_NO_CASE_PICK),
+    G("Look into the activity of admin@corp.example", tools=("log_stats", "search_logs", "search_cases"),
+      min_lookups=10, may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", user="admin@corp.example"),),
+      forbid=(*_NO_CASE_PICK, P("search_logs", contains="re:^admin@corp$|^corp\\.example$"))),
+    G("Investigate email jdoe@corp.example", tools=("log_stats", "search_logs", "search_cases"), min_lookups=10,
+      may_fail=("lookup_indicator",), notices=("denied", "policy"),
+      params=(P("search_logs", user="jdoe@corp.example"),),
+      forbid=(*_NO_CASE_PICK, P("lookup_indicator", indicator="corp.example"),
+              P("search_logs", contains="corp.example"))),
+    G("Investigate rule demo_impossible_travel this week", tools=("case_stats",),
+      params=(P("case_stats", rule="demo_impossible_travel", group_by="verdict", window="this_week"),),
+      forbid=_NO_CASE_PICK, contains=("from rule `demo_impossible_travel` this week",)),
+    G("Investigate source Wazuh", tools=("source_health", "search_logs"),
+      params=(P("search_logs", source_id="demo-wazuh"),), forbid=_NO_CASE_PICK,
+      contains=("Recent events from `Wazuh Manager (endpoint telemetry)`",)),
+    G("Investigate source wazuh-prod", tools=("source_health",), forbid=_NO_CASE_PICK,
+      contains=("No log source named `wazuh-prod` is configured", "Configured sources: ")),
+    G("Investigate ransomware", tools=("search_cases",), params=(P("search_cases", text="ransom"),),
+      forbid=_NO_CASE_PICK),
+    G("Investigate the false positives from yesterday", tools=("search_cases",),
+      params=(P("search_cases", verdict="FALSE_POSITIVE", window="yesterday"),), forbid=_NO_CASE_PICK),
+    G("Investigate today's alerts", tools=("search_cases",), params=(P("search_cases", window="today"),),
+      forbid=_NO_CASE_PICK),
+]
+
 APP_HELP = [
     G("How do I configure SSO?", kind="product_help", tools=("app_help",), max_lookups=1),
     G("How do I connect a new log source?", kind="product_help", tools=("app_help",), max_lookups=1),
@@ -999,7 +1091,7 @@ CLOSING = [
 ]
 
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,
-                   *CASES, *DEEP, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2,
+                   *CASES, *DEEP, *ENTITY_INVESTIGATIONS, *INVESTIGATION_ROUTES, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2,
                    *EXPLAIN_RECORDS, *OUT_OF_SCOPE, *CLOSING]
 
 
@@ -1995,10 +2087,11 @@ def _starter_slots(client: TestClient) -> dict[str, dict[str, Any]]:
         "new_cases_one": {"since": yesterday},
         "volume_drop": {"n": max(2, len(day) // 4), "m": len(day)},
         "noisy_rule": {"rule": rule, "n": rule_n, "m": len(day)},
+        "noisy_rule_unnamed": {"n": rule_n, "m": len(day)},
         # The card names the campaign by one of its cases, never by its id (Round 13
         # polish PB3, PB4).
         "campaign": {"n": max(2, len(campaign.case_ids)), "case": _handle(member)},
-        "silent_source": {"source": "demo-wazuh"}, "silent_sources": {"n": 2},
+        "silent_source": {"source": "demo-wazuh"}, "silent_sources": {"n": 2}, "silent_source_unnamed": {},
         "budget_ai": {"pct": 85}, "budget_chat": {"pct": 90},
         "shift_start": {"h": 24}, "shift_handoff": {}, "weekly": {},
         "monthly": {"month": starter_text.format_month(last_month.year, last_month.month)},
@@ -2095,7 +2188,9 @@ def test_every_send_template_is_covered() -> None:
                "sla_breached_one", "sla_close", "sla_close_one", "new_cases_one", "volume_drop", "noisy_rule",
                "campaign", "silent_source", "silent_sources", "budget_ai", "budget_chat", "shift_start",
                "shift_handoff", "weekly", "monthly", "hunt", "approvals", "approvals_one", "platform", "demo",
-               "triage", "posture", "report", "explain_metric", "learn_app", "connect_source"}
+               "triage", "posture", "report", "explain_metric", "learn_app", "connect_source",
+               # Polish round PB5: the wordings without a reference the length rule uses.
+               "noisy_rule_unnamed", "silent_source_unnamed"}
     assert set(_SEND_TEMPLATES) == covered, set(_SEND_TEMPLATES) ^ covered
 
 
@@ -2292,6 +2387,20 @@ def test_every_starter_template_answers_from_demo_data(starter_client: TestClien
         assert f"**{slots['n']:,} cases**" in answer and _COUNTED not in answer, answer[:400]
     if template_id == "noisy_rule":
         assert f"`{slots['rule']}`" in answer and _COUNTED not in answer, answer[:400]
+    if template_id == "noisy_rule_unnamed":
+        # The card counted the rule without naming it (PB5): the answer finds it by that
+        # count and names every rule that created that many cases in the last 24 hours.
+        day = [c for c in cases if _created(c) >= now - timedelta(hours=24)]
+        counts: dict[str, int] = {}
+        for case in day:
+            for rule_id in dict.fromkeys(case.rule_ids or []):
+                counts[rule_id] = counts.get(rule_id, 0) + 1
+        named = sorted(r for r, n in counts.items() if n == slots["n"])
+        assert named and all(f"`{r}`" in answer for r in named), (named, answer[:400])
+        assert _COUNTED not in answer and "No rule has exactly" not in answer, answer[:400]
+        assert ("each created" in answer) == (len(named) > 1), answer[:400]
+    if template_id == "silent_source_unnamed":
+        assert "No log source is quiet now" in answer, answer[:300]
     if template_id == "silent_sources":
         # The store has no quiet source: the answer says so, and that the card's count moved.
         assert "No log source is quiet now" in answer and _COUNTED in answer, answer[:300]

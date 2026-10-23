@@ -741,9 +741,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green) — latest recorded full run: 8,368 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green) — latest recorded full run: 8,610 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 8,463 passed, 4 skipped (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 8,606 passed, 4 skipped (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -751,7 +751,7 @@ uvicorn app.main:app --port 8088
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
 npm run docs:check                         # validate app 0.1.13 ↔ bundled docs 0.1
-npm run test:strict                        # -> latest recorded full run: 5,368 passed, 1 skipped / 514 files; zero stderr/console output
+npm run test:strict                        # -> latest recorded full run: 5,409 passed, 1 skipped / 518 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -813,8 +813,8 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 8,463 passed, 4 skipped) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 5,368 passed, 1 skipped / 514 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 8,606 passed, 4 skipped) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 5,409 passed, 1 skipped / 518 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
@@ -977,9 +977,9 @@ identity, process privilege, or frozen-base bytes. Repository-level branch
 protection, required-check, and `github-pages` environment policy remain administrator
 controls and must be verified independently of source changes.
 
-**Current baseline (2026-10-23, Round 13 chat, closing polish gates):** backend **8,463 pytest** passed, 4 skipped (0 failures);
-webui **5,368 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 514 files
-with zero stderr or captured console output, full docs+app build clean (3,405 modules; entry chunk
+**Current baseline (2026-10-23, Round 13 chat, closing polish gates):** backend **8,606 pytest** passed, 4 skipped (0 failures);
+webui **5,409 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 518 files
+with zero stderr or captured console output, full docs+app build clean (3,406 modules; entry chunk
 371,863 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
 371,003 B and under the 400,000 B ceiling;
 motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime

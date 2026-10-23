@@ -25,7 +25,12 @@ Follow-up chips now name something the answer shows, new conversations are named
 their first answer, and answers read in one calm column with small results beside the
 text, quiet block headers, one shared scope line, the cost on the meta row and tokens in
 its usage card. The composer, run log, history rail and report panel are tidier, and Demo
-Mode answers every suggestion from its data. The Help Center chat, settings,
+Mode answers every suggestion from its data. A suggestion never writes an id longer than
+27 characters into its question (a noisy-rule card then asks which rule created that
+many cases), except a case's internal id when case numbering is off, Demo Mode investigates the host, user, email address, IP address, domain,
+file hash, detection rule, log source or attack type a question names rather than the
+newest case, and its answers say when cases, rules or periods tie for the highest, the
+most or the oldest. The Help Center chat, settings,
 configuration, permissions and API pages are updated to match.
 
 **Round 12: chat without limits, a working indicator, Remember me, reliable report
@@ -347,6 +352,48 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **Round 13 polish: Demo investigations, third pass.** In Demo Mode, a question about a
+  technique id, cost, sources and ingestion, tuning or approvals keeps its own answer
+  instead of a log search for the word ("Investigate T1059.001" describes the technique,
+  "What is ingestion doing?" shows source health, "What did spend do this week?" the AI
+  cost), and product words such as autopilot, enrichment or risk get the Help Center
+  again. A name keeps the dots inside it ("admin@corp.example", "T1059.001"), and an
+  email address is investigated as a user rather than as its domain. "Investigate" with
+  a detection rule counts that rule's cases by verdict, with a log source shows its
+  newest events (and says if it is silent or disabled, or lists the configured sources
+  when none has that name), with an attack type runs the hunt, and with a request for
+  records lists them ("the false positives from yesterday"); only a question that names
+  nothing Demo can look up still starts from the newest escalated case, and says so.
+  "Show activity by severity" counts log events by severity. Rules tied for the most are
+  never called "the rule with the most", periods of spend tie when their figures read the
+  same, and an in-depth look's rankings after a dated window no longer start inside the
+  window's brackets.
+- **Round 13 polish: chat layout, third pass.** A case number, technique id or rule id (up
+  to 27 characters, not counting the punctuation after it: the same limit the suggestions
+  use for the names they write) no longer breaks at its hyphen or inside its digits in
+  suggestion cards, case chips, case lists and table cells ("CASE-" / "000089?", "T107" /
+  "8", "sigma-" / "win-proc-creation-01?"); the sentence still wraps between words, and
+  on a card too narrow for the whole id it wraps inside the id rather than running past
+  the card. A longer case number from a custom format now wraps where its line ends
+  instead of running past the row on a phone. A start card's
+  question balances its lines so a case number is never left alone on the last one. A
+  table in an answer that is wider than its frame scrolls inside it and fades out on the
+  side that holds more columns, instead of looking clipped. Text inside a Brief (its
+  Next steps, section summaries and notes) keeps the answer's reading measure however wide
+  the Brief is. Indicator facts, provider names such as "demo-synthetic", case titles,
+  table text and KPI tile labels ("False-positive rate") set normal hyphens; figures keep
+  their aligned digits. On a phone the suggestion cards sit 16 px under the catch-up line
+  whatever their heights, and the greeting no longer moves down when the suggestions load
+  (spare height now sits under the cards, above the category pills). The History sheet's tooltip stays on screen and its date
+  reads like the answers' (2026-10-23 15:45 UTC). The thread menu offers the conversation
+  widths only where one changes the lane. The Campaign detail sheet's body is inset like
+  its header, its icon keeps its size beside a long name, its title sets normal hyphens,
+  and its shared entities read "IP:" rather than "Ip:". Case Manager chat's
+  suggestions end on the composer's right edge. In a running Demo, the event funnel's
+  baseline is saved in one write per batch instead of one per signature (each rewrote the
+  whole baseline document), which had stalled every request, the Case Manager
+  suggestions included, for 4 to 8 seconds every 15 to 20 seconds; a live deployment's
+  event funnel uses the same single write.
 - **Round 13 polish: chat workspace details.** A running lookup reads in the present
   tense ("Searching logs", "Looking up an indicator") and switches to the past tense once
   it ends; saved answers keep their labels. A history row you clicked keeps its time

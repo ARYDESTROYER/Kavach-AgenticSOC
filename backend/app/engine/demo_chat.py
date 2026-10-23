@@ -46,7 +46,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -1056,6 +1056,9 @@ class Ask:
     # cases", "assigned to me"): every case lookup the plan sends carries assignee
     # "me", and an answer whose lookups cannot filter by assignee says so.
     mine: bool = False
+    # Polish round PB6: a detection rule an "Investigate rule …" question names; its
+    # case lookups filter on it (as "detection rule X" does, :func:`_case_rule`).
+    rule: str | None = None
 
     def slot(self, name: str) -> Any:
         return next((value for key, value in self.starter_slots if key == name), None)
@@ -3156,6 +3159,9 @@ _INVESTIGATION_CUE_RE = re.compile(
     r"\b(?:activit(?:y|ies)|behaviou?rs?|actions?|movements?)\s+(?:of|for|by|from)\b|"
     r"'s\s+(?:recent\s+)?(?:activit(?:y|ies)|behaviou?rs?|actions?|movements?)\b|"
     r"\bwhat (?:did|has|have|had|was|is|were)\b.{1,80}?\b(?:do|done|doing|been up to|up to)\b")
+#: An email address ("jdoe@corp.example", "j.smith@corp.example"), whole.
+_EMAIL_RE = re.compile(r"(?<![\w.%+@-])[A-Za-z0-9][A-Za-z0-9._%+-]{0,63}@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}"
+                       r"[A-Za-z0-9])?\.)+[A-Za-z]{2,24}\b")
 #: "domain bad.example", "hash 44d8…": a kind word for an indicator kind.
 _INDICATOR_KIND_WORD_RE = re.compile(
     r"\b(?:domain(?: name)?|(?:file )?hash|sha-?256|sha-?1|md5|url)\s+[\"'`]?(\S+?)[\"'`]?(?=[\s,;:?!]|\.?$)",
@@ -3163,16 +3169,20 @@ _INDICATOR_KIND_WORD_RE = re.compile(
 #: An untyped actor named by its activity: "pnair's activity", "the activity of pnair",
 #: "what did pnair do", or the object of the verb itself: "investigate pnair".
 _ACTOR = r"[\"'`]?([A-Za-z0-9][A-Za-z0-9._@\\-]{1,62}?)[\"'`]?"
+#: A full stop ends a name only where the sentence ends ("investigate dc01."): inside
+#: a name it is part of it ("admin@corp.example", "T1059.001", "j.smith"), so the lazy
+#: name match never stops at its first dot (polish round PB6).
+_NAME_END_DOT = r"\.(?=\s|$)"
 _UNTYPED_SUBJECT_RES: tuple[re.Pattern[str], ...] = (
     re.compile(rf"(?<![\w.@\\-]){_ACTOR}'s\s+(?:recent\s+)?(?:activit|behaviou?r|action|movement|event|log|"
                r"log-?in|log-?on|sign-?in|session|traffic)", re.IGNORECASE),
     re.compile(rf"\b(?:activit(?:y|ies)|behaviou?rs?|actions?|movements?)\s+(?:of|for|by|from)\s+(?:the\s+)?"
-               rf"{_ACTOR}(?=$|[\s?.!,;:])", re.IGNORECASE),
+               rf"{_ACTOR}(?=$|[\s?!,;:]|{_NAME_END_DOT})", re.IGNORECASE),
     re.compile(rf"\bwhat\s+(?:did|has|have|had|was|is)\s+{_ACTOR}\s+(?:do|done|doing|been doing|been up to|up to)\b",
                re.IGNORECASE),
     re.compile(rf"^\s*(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:investigate|look into|dig into|delve into)\s+"
-               rf"{_ACTOR}(?=\s*$|\s*[?.!,;:]|\s+(?:in|over|during|since|from|for|today|tonight|yesterday|this|last|"
-               r"and|between|on|before|after|until)\b)", re.IGNORECASE),
+               rf"{_ACTOR}(?=\s*$|\s*[?!,;:]|\s*{_NAME_END_DOT}|\s+(?:in|over|during|since|from|for|today|tonight|"
+               r"yesterday|this|last|and|between|on|before|after|until)\b)", re.IGNORECASE),
 )
 #: Words that never name an actor of an investigation: pronouns, quantities, time
 #: words, the people of the console and the record nouns a case question names.
@@ -3187,21 +3197,38 @@ _SUBJECT_NOT_NAME = frozenset({
 })
 
 
+#: Words another rule of the planner reads (polish round PB6): an ATT&CK id (the
+#: technique plan), cost and spend (the cost plan), sources and ingestion (source
+#: health), tuning, approvals and autopilot (automation status), and the product,
+#: measure and breakdown words a Help Center or metric answer is about. "Investigate
+#: T1059.001", "What did spend do this week?" or "What is ingestion doing?" asks about
+#: that, never for a log hunt of the word.
+_PRODUCT_WORD_RE = re.compile(
+    r"t\d{4}(?:\.\d{3})?|costs?|spend|spent|spending|tokens?|budgets?|billing|money|pric(?:e|es|ing)|"
+    r"silent|sources?|ingest\w*|connectors?|feeds?|coverage|poll(?:s|er|ers|ing)?|"
+    r"approvals?|proposals?|tun(?:e|er|ers|ing)|thresholds?|baselines?|schedulers?|telemetry|autopilot|"
+    r"automations?|auto-?clos\w*|risk|risks|enrich\w*|reputation|sla|slas|mtt[adr]|severity|severities|"
+    r"priority|priorities|verdicts?|posture|kpis?|metrics?|runbooks?|playbooks?|reports?|dashboards?|audit")
+
+
 def _actor_word(value: str) -> bool:
     low = value.lower().strip(".,;:")
     return bool(low) and not (
         low in _SUBJECT_NOT_NAME or low in _TARGET_STOP or low in _TARGET_NOT_NAME or low in _DEEP_STOP
         or low in _LOG_TERM_GENERIC or low in _DEEP_KINDS or low.isdigit() or _keyword(low) is not None
-        or _metric(low) is not None or _CASE_ID_RE.fullmatch(low) is not None)
+        or _metric(low) is not None or _CASE_ID_RE.fullmatch(low) is not None
+        or _PRODUCT_WORD_RE.fullmatch(low) is not None)
 
 
 def _investigated(question: str, lowered: str) -> tuple[str, str] | None:
     """``(kind, value)`` of the entity an investigation names (polish round PB5), or
     None. The first one named wins: a host or user after its kind word ("user pnair",
-    "the host srv-db-01"), an IP, URL, hash or domain by its shape or after its kind
-    word, else a name of no stated kind ("pnair's activity", "investigate pnair"),
-    whose kind is ``keyword``. A question with no investigation cue, or a failed sign-in
-    question (the brute-force plan reads those), names none here."""
+    "the host srv-db-01"), an email address as a user (PB6), an IP, URL, hash or domain
+    by its shape or after its kind word, else a name of no stated kind ("pnair's
+    activity", "investigate pnair"), whose kind is ``keyword``, unless another rule
+    reads that word (an ATT&CK id, cost, sources, tuning: :data:`_PRODUCT_WORD_RE`). A
+    question with no investigation cue, or a failed sign-in question (the brute-force
+    plan reads those), names none here."""
     if not _INVESTIGATION_CUE_RE.search(lowered) or _BRUTE_RE.search(lowered):
         return None
     found: list[tuple[int, str, str]] = []
@@ -3218,6 +3245,14 @@ def _investigated(question: str, lowered: str) -> tuple[str, str] | None:
             value = value[:-2]
         found.append((at, kind, value))
         spans.append((at, at + len(value)))
+    for match in _EMAIL_RE.finditer(question):
+        # An email address names a user (polish round PB6), never its domain:
+        # "jdoe@corp.example" is jdoe's activity, not corp.example's. One after "user"
+        # is that user already.
+        at = match.start()
+        if not any(start <= at < end for start, end in spans):
+            found.append((at, "user", match.group(0)))
+            spans.append((at, match.end()))
     indicator = _indicator(question, lowered)
     if indicator is None:
         for match in _INDICATOR_KIND_WORD_RE.finditer(question):
@@ -3239,6 +3274,62 @@ def _investigated(question: str, lowered: str) -> tuple[str, str] | None:
         if match is not None and _actor_word(match.group(1)):
             return "keyword", match.group(1).strip(".,;:")
     return None
+
+
+#: "Investigate …" (or "look into …") at the start of a question, and what it asks to
+#: investigate.
+_INVESTIGATE_LEAD_RE = re.compile(r"^\s*(?:please\s+)?(?:(?:can|could|would) you\s+)?(?:investigate|look into|dig "
+                                  r"into|delve into)\s+(?P<rest>\S.*)$", re.IGNORECASE | re.DOTALL)
+#: An investigation that picks a case as the case plan does: by recency or status ("the
+#: newest escalated case", "the escalations"). A reference back to what the conversation
+#: is about ("it", "this", "further") picks one too (:data:`_BACK_REFERENCE_RE`); "the
+#: riskiest case" or "the top 5 cases" is a list, planned as "Show …" plans it.
+_PICKS_A_CASE_RE = re.compile(
+    r"\b(?:newest|latest|most recent|last)\b[^.?!]{0,40}\b(?:cases?|incidents?)\b|\bescalat\w*\b")
+_BACK_REFERENCE_RE = re.compile(r"^(?:it|this|that|these|those|them|further|more|deeper|again|everything|anything)\b"
+                                r"(?!\s+(?:rule|source)\b)")
+#: "rule LP-ES-RISK-1001", "the noisy rule demo_impossible_travel", "detection rule
+#: `web_portal_auth`": a detection rule an investigation names by its id.
+_NAMED_RULE_RE = re.compile(
+    r"\b(?P<detection>detection\s+)?rule\s+(?:id\s+|named\s+|called\s+)?(?P<quote>[\"'`])?"
+    r"(?P<id>[A-Za-z0-9_][\w.:/@#+$\\-]{0,255}?)[\"'`]?(?=[\s,;:?!]|\.?$)", re.IGNORECASE)
+#: "source wazuh-prod", "the log source named Wazuh": a log source an investigation names.
+_NAMED_SOURCE_RE = re.compile(
+    r"\b(?:log\s+)?source\s+(?:named\s+|called\s+)?[\"'`]?(?P<name>[A-Za-z0-9][\w.:/@\\-]{0,119}?)[\"'`]?"
+    r"(?=[\s,;:?!]|\.?$)", re.IGNORECASE)
+#: Words after "source" that describe it rather than name it.
+_SOURCE_NOT_NAME = frozenset({"health", "status", "state", "events", "event", "logs", "log", "data", "type", "types",
+                              "named", "called", "list", "ips", "addresses"})
+
+
+def _named_rule(question: str) -> str | None:
+    """The detection rule an investigation names: an identifier with a digit, "_",
+    "-", ".", ":" or "/" in it, a quoted one, or any one after "detection rule" (as
+    :func:`_case_rule` reads it). "Rule versions" or "the rule that fired" name none."""
+    for match in _NAMED_RULE_RE.finditer(question):
+        value = match.group("id").rstrip(".")
+        low = value.lower()
+        if not value or low in _DEEP_STOP or low in _TARGET_NOT_NAME or low in _TARGET_STOP or low in _LOG_TERM_GENERIC:
+            continue
+        if match.group("detection") or match.group("quote") or re.search(r"[\d_.:/@#+$\\-]", value):
+            return value
+    return None
+
+
+def _named_log_source(question: str) -> str | None:
+    """The log source an investigation names after the word "source" ("source wazuh-prod"),
+    or None ("the source that went quiet", "source IP 10.0.0.5")."""
+    for match in _NAMED_SOURCE_RE.finditer(question):
+        value = match.group("name").rstrip(".")
+        if value and value.lower() not in _SOURCE_NOT_NAME and _actor_word(value):
+            return value
+    return None
+
+
+#: What a rewritten investigation must not become: an answer that names nothing the
+#: question asked about.
+_UNMAPPED_INTENTS = frozenset({"fallback", "help", "unsupported", "clarify", "out_of_scope", "change", "respond",
+                               "empty", "case"})
 
 
 #: Trend subjects: what a "trend" or "over time" question is about.
@@ -3410,6 +3501,50 @@ _REAL_COUNT_CUE_RE = re.compile(
     r"distribution|segregat\w*|group(?:ed)? by|per|tally)\b")
 
 
+def _investigated_rule(q: str, low: str, ask: Callable[..., Ask]) -> Ask | None:
+    """"Investigate rule LP-ES-RISK-1001" (polish round PB6): that rule's cases by
+    verdict, or None when the investigation names no detection rule or picks a case.
+    Read before the planner's word rules, because a rule id carries words of its own
+    ("cost" in LP-COST-7, "risk" in LP-ES-RISK-1001) that ask for nothing."""
+    if _INVESTIGATE_LEAD_RE.match(q) is None or _PICKS_A_CASE_RE.search(low):
+        return None
+    rule = _named_rule(q)
+    if rule is None:
+        return None
+    # The id is a value, never words of the question (the plan reads ``lowered``).
+    return ask("breakdown", group="verdict", rule=rule, lowered=low.replace(rule.lower(), "the rule"))
+
+
+def _investigation_subject(q: str, low: str, view: PromptView, ask: Callable[..., Ask]) -> Ask | None:
+    """The plan for "Investigate …" when it names something other than a case (polish
+    round PB6), or None to investigate a case (the newest with the status it names,
+    escalated by default). A case is picked only when the question picks one (by
+    recency or status, "the escalations") or points back at what the
+    conversation is about ("investigate it", "investigate further"). Otherwise a named
+    detection rule gets its cases by verdict, a named log source its health and newest
+    events, an attack type the keyword hunt, and anything else the plan the same words
+    get as a request to show them ("the false positives from yesterday", "today's
+    alerts"). Only what none of those read still starts from the newest escalated case
+    (the answer names it as that)."""
+    lead = _INVESTIGATE_LEAD_RE.match(q)
+    if lead is None or _PICKS_A_CASE_RE.search(low):
+        return None
+    rest = lead.group("rest").strip()
+    if _BACK_REFERENCE_RE.match(rest.lower()):
+        return None
+    named = _investigated_rule(q, low, ask)
+    if named is not None:
+        return named
+    source = _named_log_source(q)
+    if source is not None:
+        return ask("source_events", starter_slots=(("source", display_text(source, 120)),))
+    found = _keyword(low)
+    if found is not None:
+        return ask("pivot", keyword=found[0], topic=found[1])
+    shown = classify(f"Show {rest}", view)
+    return None if shown.intent in _UNMAPPED_INTENTS else shown
+
+
 def classify(question: str, view: PromptView | None = None) -> Ask:
     """The intent of ``question`` (deterministic regex rules; order matters)."""
     view = view or PromptView()
@@ -3574,6 +3709,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         if entity is not None:
             # No window named: the plan defaults to the last 30 days (the chip wins).
             return ask("deep", entity=entity)
+    named_rule = None if view.case_scoped else _investigated_rule(q, low, ask)
+    if named_rule is not None:
+        return named_rule
     investigated = None if view.case_scoped else _investigated(q, low)
     if investigated is not None:
         # An investigation that names an entity is about that entity (polish round
@@ -3725,6 +3863,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("pivot", keyword=found[0] if found else None, topic=found[1] if found else "")
     if re.search(r"\binvestigat\w*\b|\b(newest|latest|most recent)\b.*\bcase\b|\bwhy (?:was|is|did)\b.*\bcase\b",
                  low):
+        named = None if view.case_scoped else _investigation_subject(q, low, view, ask)
+        if named is not None:
+            return named
         return ask("case", case_status=_case_status(low) or "escalated")
     if re.search(r"(att&ck|mitre) coverage|technique coverage", low):
         return ask("metric", metric="mitre_coverage")
@@ -3780,8 +3921,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if _UNSUPPORTED_RE.search(low) and _LIST_CUE_RE.search(low) and not re.search(r"\b(logs?|events?|cases?)\b", low):
         return ask("unsupported", save=False)
     log_field = _group_field(low)
-    if log_field and re.search(r"\b(events?|alerts?|logs?|log volume)\b", low) and not _CASE_SUBJECT_RE.search(low):
-        # "Events by severity this week": a log count by that field.
+    if log_field and re.search(r"\b(events?|alerts?|logs?|log volume|activit(?:y|ies))\b", low) and not (
+            _CASE_SUBJECT_RE.search(low)):
+        # "Events by severity this week", "activity by severity": a log count by that field.
         return ask("top", field=log_field)
     if re.search(r"\b(top|most|noisiest|busiest|loudest|which)\b", low) and re.search(
             r"\b(hosts?|machines?|servers?|endpoints?|users?|accounts?|ips?|ip addresses|rules?)\b", low):
@@ -4583,7 +4725,7 @@ def _case_filters_for(ask: Ask) -> dict[str, Any]:
         inp["assignee"] = _ASSIGNEE_ME
     # Round 12 WP-ASK: "cases from detection rule X" filters on that rule; a keyword
     # read out of the rule's own name ("brute" in demo_rdp_bruteforce) is not a filter.
-    rule = _case_rule(ask.question)
+    rule = ask.rule or _case_rule(ask.question)
     if rule:
         inp["rule"] = rule
     found = _keyword(low)
@@ -6077,12 +6219,21 @@ def _plan_source_cases(view: PromptView, ask: Ask, done: int) -> list[Call]:
 
 
 def _named_source(view: PromptView, name: str) -> Mapping[str, Any] | None:
+    """The configured source named ``name``: by its whole name, else (an analyst's own
+    words, "investigate source wazuh", polish round PB6) the one source whose name has
+    that word or whose type it is."""
     health = view.ok("source_health")
     wanted = name.strip().lower()
-    for row in (health.obs.get("sources") if health else None) or []:
-        if isinstance(row, Mapping) and str(row.get("name") or "").strip().lower() == wanted:
+    rows = [r for r in (health.obs.get("sources") if health else None) or [] if isinstance(r, Mapping)]
+    for row in rows:
+        if str(row.get("name") or "").strip().lower() == wanted:
             return row
-    return None
+    if not wanted:
+        return None
+    word = re.compile(rf"(?<![\w-]){re.escape(wanted)}(?![\w-])")
+    loose = [r for r in rows if word.search(str(r.get("name") or "").lower())
+             or str(r.get("type") or "").strip().lower() == wanted]
+    return loose[0] if len(loose) == 1 else None
 
 
 def _cost_inputs(ask: Ask, view: PromptView) -> dict[str, Any]:
@@ -6737,6 +6888,76 @@ def _case_line(case: Mapping[str, Any]) -> str:
     return _upper_first(" · ".join(bits) + (f" ({', '.join(facts)})" if facts else ""))
 
 
+# --------------------------------------------------------------------------- #
+# Ties (polish round PB5). An answer calls one item the highest, the most, the oldest
+# or the top only when no other item shares that figure as the answer shows it (risk
+# and counts rounded the way they are written). When others do, it names them ("tied
+# with `CASE-000043` for the highest risk (62)") and says how it picked the one it goes
+# on with, so a tie never reads as a lead.
+# --------------------------------------------------------------------------- #
+def _peers(names: Sequence[str], limit: int = 3) -> str:
+    """Tied items as words: "`b`", "`b` and `c`", "`b`, `c`, `d` and 2 others"."""
+    names = [n for n in names if n]
+    shown = list(names[:limit]) + ([_plural(len(names) - limit, "other")] if len(names) > limit else [])
+    return _join(shown)
+
+
+def _shown_risk(case: Mapping[str, Any]) -> str | None:
+    """A case's risk as the answer writes it ("62"), or None when it has none."""
+    return _count(case.get("risk_score")) if _num(case.get("risk_score")) is not None else None
+
+
+def _risk_ties(rows: Sequence[Mapping[str, Any]], first: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The listed cases other than ``first`` whose shown risk equals ``first``'s."""
+    mark = _shown_risk(first)
+    return [] if mark is None else [r for r in rows if r is not first and _shown_risk(r) == mark]
+
+
+def _instant(value: Any) -> datetime | None:
+    """An ISO timestamp a lookup returned as an aware datetime, else None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _highest_risk_lead(rows: Sequence[Mapping[str, Any]], scope: str) -> str:
+    """"Start with X: it has the highest risk of your open cases." (rows ranked by
+    risk). When other listed cases share that risk, the first listed is still where to
+    start (the list, its block and its follow-ups all lead with it), and the lead says it
+    is a tie and what sets it apart: "Start with X: it is tied with Y for the highest
+    risk of your open cases (62); it was opened more recently." Without an opening time
+    for each, it names the tie and nothing more."""
+    first = rows[0]
+    tied = _risk_ties(rows, first)
+    if not tied:
+        return f"Start with {_case_head(first)}: it has the highest risk {scope}."
+    group = [first, *tied]
+    opened = [_instant(c.get("created_at")) for c in group]
+    fact = ""
+    if all(t is not None for t in opened) and len(set(opened)) == len(opened):
+        two = len(group) == 2
+        if opened[0] == max(opened):  # type: ignore[type-var]
+            fact = f"; it was opened {'more' if two else 'most'} recently"
+        elif opened[0] == min(opened):  # type: ignore[type-var]
+            fact = f"; it has been open {'longer' if two else 'the longest'}"
+    return (f"Start with {_case_head(first)}: it is tied with {_peers([_case_ref(c) for c in tied])} for the "
+            f"highest risk {scope} ({_shown_risk(first)}){fact}.")
+
+
+def _top_ties(items: Sequence[tuple[str, Any]]) -> list[str]:
+    """The labels of ``(label, value)`` pairs that share the largest value, in order."""
+    values = [_num(v) for _l, v in items]
+    known = [v for v in values if v is not None]
+    if not known:
+        return []
+    best = max(known)
+    return [label for (label, _v), v in zip(items, values) if v == best]
+
+
 def _case_noun(filters: Mapping[str, Any], noun: str) -> str:
     """"open case", "escalated case", "critical false positive case"… from the search
     filters: every status, severity and verdict filter the lookup applied is named, so
@@ -7062,12 +7283,18 @@ def _say_trends(r: Result, *, totals: bool = True) -> str:
                  else f"{_plural(len(new) - 1 - peak_at, size)} before the latest")
     span = _in(_window(o))
     span = "over the " + span[len("in the "):] if span.startswith("in the ") else span
+    peaks = sum(1 for v in new if v == peak)
+    if peaks > 1:
+        # Several buckets reached the peak: never one of them alone as "the peak" (PB5).
+        recent = where if labels or peak_at != len(new) - 1 else f"in {where}"
+        peak_text = f"the peak, {_plural(peak, 'new case')}, came in {peaks} {kind}s, most recently {recent}"
+    else:
+        peak_text = f"the peak was {where}, with {_plural(peak, 'new case')}"
     if totals:
         text = (f"Trend {span} in {kind}s: {_count(sum(measured))} new and "
-                f"{_count(sum(v for v in closed if v is not None))} closed cases; the peak was {where}, with "
-                f"{_plural(peak, 'new case')}.")
+                f"{_count(sum(v for v in closed if v is not None))} closed cases; {peak_text}.")
     else:
-        text = f"Trend {span} in {kind}s: the peak was {where}, with {_plural(peak, 'new case')}."
+        text = f"Trend {span} in {kind}s: {peak_text}."
     alerts = [v for v in (_num(a) for a in o.get("alerts") or []) if v is not None]
     if alerts:
         text += (f" Alert ingest was recorded in {len(alerts)} of the {len(new)} {kind}s "
@@ -8000,6 +8227,19 @@ def _sla_first(shift: Result | None) -> tuple[int, list[Mapping[str, Any]]]:
     return total, [named.get(str(b.get("case_id")), b) for b in breached[:3]] if total else []
 
 
+def _overdue_ties(shift: Result | None) -> list[Mapping[str, Any]]:
+    """The cases past SLA overdue by exactly as long as the most overdue one (whole
+    minutes), which the brief would otherwise present as second (PB5)."""
+    breached = [b for b in _dig(shift.obs if shift else {}, "sla", "breached") or [] if isinstance(b, Mapping)]
+    minutes = [_num(b.get("overdue_minutes")) for b in breached]
+    if len(breached) < 2 or minutes[0] is None:
+        return []
+    named = {str(a.get("case_id")): a for a in (shift.obs.get("attention") if shift else None) or []
+             if isinstance(a, Mapping)}
+    return [named.get(str(b.get("case_id")), b) for b, m in zip(breached[1:], minutes[1:])
+            if m is not None and round_half_up(m) == round_half_up(minutes[0])]
+
+
 def _shift_steps(shift: Result | None, post: Result | None, camps: Result | None) -> list[str]:
     steps: list[str] = []
     o = shift.obs if shift else {}
@@ -8090,7 +8330,10 @@ def _final_shift(view: PromptView, ask: Ask) -> Final | None:
                 why.append(f"risk {_count(first.get('risk_score'))}")
             said = _case_head(first, bold=False) + (f", {', '.join(why)}" if why else "")
             if overdue:
-                past = (f"the most overdue of the {_plural(total, 'case')} past SLA" if total > 1
+                tied = _overdue_ties(shift) if total > 1 else []
+                past = (f"tied with {_peers([_case_ref(t) for t in tied])} as the most overdue of the "
+                        f"{_plural(total, 'case')} past SLA" if tied
+                        else f"the most overdue of the {_plural(total, 'case')} past SLA" if total > 1
                         else "the one case past SLA")
                 lead.append(f"Start with {said}: {past}.")
             else:
@@ -8325,15 +8568,25 @@ def _figure_steps(view: PromptView, ask: Ask) -> list[str]:
         rules = _group_counts(r, "rule")
         if rules and total and not any(s.startswith("Review the rules behind") for s in steps):
             top = max(rules.values())
+            tops = sum(1 for n in rules.values() if n == top)
             if top / total >= 0.25:
-                steps.append(f"Review the top rule, which created {_count(top)} of the {_plural(total, 'case')}.")
+                # Rules tied at the top are all "the top" (PB5).
+                steps.append(f"Review the top rule, which created {_count(top)} of the {_plural(total, 'case')}."
+                             if tops == 1 else
+                             f"Review the {_count(tops)} rules tied at the top, which created {_count(top)} of the "
+                             f"{_plural(total, 'case')} each.")
         if r.obs.get("bucket") and not r.input.get("group_by"):
             counts = [(str(g.get("bucket")), _num(_dig(g, "metrics", "count")) or 0) for g in _stats_groups(r.obs)
                       if g.get("bucket") is not None and not g.get("key")]
             if len(counts) > 1:
                 label, n = max(counts, key=lambda kv: kv[1])
-                if n and _BUCKET_DATE_RE.match(label):
-                    steps.append(f"Check what drove {label}, the busiest {r.obs.get('bucket')} with "
+                busiest = [lbl for lbl in _top_ties(counts) if _BUCKET_DATE_RE.match(lbl)]
+                unit = r.obs.get("bucket")
+                if n and _BUCKET_DATE_RE.match(label) and len(busiest) > 1:
+                    steps.append(f"Check what drove {_peers(busiest)}, the busiest {unit}s with "
+                                 f"{_plural(n, 'case')} each.")
+                elif n and _BUCKET_DATE_RE.match(label):
+                    steps.append(f"Check what drove {label}, the busiest {unit} with "
                                  f"{_plural(n, 'case')}.")
     for r in view.results():
         if r.ok and r.tool == "search_cases":
@@ -8566,8 +8819,13 @@ def _say_spend_buckets(o: Mapping[str, Any]) -> str:
         return ""
     peak = max(range(len(values)), key=lambda i: (values[i] or 0, i))
     unit = o.get("bucket") if isinstance(o.get("bucket"), str) else "period"
-    return (f"By {unit}: the most was spent in {labels[peak]} ({_usd(values[peak])}); "
-            f"{sum(1 for v in values if v)} of {_plural(len(values), unit)} had any spend.")
+    # Periods that spent the same as the most, as the answer writes it ($0.0027 and
+    # $0.0027 are a tie whatever their raw values), are all named (PB5, PB6).
+    shown = _usd(values[peak])
+    tops = [labels[i] for i, v in enumerate(values) if v is not None and _usd(v) == shown]
+    most = (f"the most was spent in {labels[peak]} ({shown})" if len(tops) == 1
+            else f"the most was spent in {_peers(tops, limit=4)} ({shown} each)")
+    return f"By {unit}: {most}; {sum(1 for v in values if v)} of {_plural(len(values), unit)} had any spend."
 
 
 def _final_cost(view: PromptView, ask: Ask) -> Final | None:
@@ -8980,6 +9238,16 @@ def _final_pivot(view: PromptView, ask: Ask) -> Final | None:
             # the riskiest open case that carries an indicator entity, and says so.
             anchor = ("The question names no indicator or known attack type, so this hunt is anchored on the "
                       "highest-risk open case with an indicator entity,")
+            # Others with an indicator entity at the same risk: named, the first listed
+            # is the one followed (PB5).
+            rows = [c for c in (search.obs.get("cases") if search else None) or [] if isinstance(c, Mapping)
+                    and (_entity_of({"case": c}) or ("", ""))[0] in _LOOKUP_KIND]
+            read = next((c for c in rows if c.get("case_id") == source.get("case_id")), None)
+            tied = _risk_ties(rows, read) if read is not None else []
+            if tied and read is not None:
+                anchor = ("The question names no indicator or known attack type, so this hunt is anchored on the "
+                          f"first listed of the open cases with an indicator entity tied for the highest risk "
+                          f"({_shown_risk(read)}, with {_peers([_case_ref(c) for c in tied])}),")
         name = _case_name(source, with_entity=False)
         body.append(f"{anchor} {_case_head(source, bold=False, name=name)}"
                     + f", which {_case_facts(source)}; its {_ENTITY_WORDS.get(entity[0], entity[0])} is "
@@ -10602,9 +10870,17 @@ def _final_breakdown(view: PromptView, ask: Ask) -> Final | None:
         if cases:
             first = cases[0]
             created = _date_text(first.get("created_at"))
-            body.append(f"The oldest still open is {_case_head(first, bold=False)}, opened "
-                        f"{created}." if created else f"The oldest still open is {_case_head(first, bold=False)}.")
-            rest = _case_bullets(oldest, limit=5)[1:]
+            # Opened at the same moment: the oldest are all of them, said as a tie (PB5).
+            at = _instant(first.get("created_at"))
+            tied = [c for c in cases[1:] if at is not None and _instant(c.get("created_at")) == at]
+            if tied:
+                body.append(f"The oldest still open are {_case_head(first, bold=False)} and "
+                            f"{_peers([_case_ref(c) for c in tied])}, opened at the same time"
+                            + (f" ({created})." if created else "."))
+            else:
+                body.append(f"The oldest still open is {_case_head(first, bold=False)}, opened {created}."
+                            if created else f"The oldest still open is {_case_head(first, bold=False)}.")
+            rest = _case_bullets(oldest, limit=5)[1 + len(tied):]
             if rest:
                 body.append("The next oldest:")
                 body.extend(rest)
@@ -10898,7 +11174,11 @@ def _say_bucket_automation(o: Mapping[str, Any]) -> str:
     latest = measured[-1]
     lowest = min(measured, key=lambda p: p[1])  # type: ignore[arg-type,return-value]
     text = f"Automation rate per {unit}: latest {said(latest)}"
-    if lowest is not latest:
+    # Periods at the same lowest rate (as written) are all named, never one (PB5).
+    lows = [p for p in measured if _pct(p[1]) == _pct(lowest[1])]
+    if len(lows) > 1:
+        text += f"; lowest {_pct(lowest[1])} in {_peers([p[0] for p in lows], limit=4)}"
+    elif lowest is not latest:
         text += f"; lowest {said(lowest)}"
     return text + f" ({len(measured)} of {len(points)} periods measured)."
 
@@ -10917,8 +11197,11 @@ def _say_bucket_metric(o: Mapping[str, Any], metric: str, name: str) -> str:
     unit = units.get(metric)
     latest = measured[-1]
     best = max(measured, key=lambda p: p[1])
-    text = (f"{name} per {o.get('bucket') or 'period'}: latest {latest[0]} {_value_text(latest[1], unit)}; "
-            f"highest {best[0]} {_value_text(best[1], unit)}")
+    # Periods at the same highest value (as written) are all named, never one (PB5).
+    highs = [p for p in measured if _value_text(p[1], unit) == _value_text(best[1], unit)]
+    high = (f"highest {best[0]} {_value_text(best[1], unit)}" if len(highs) == 1
+            else f"highest {_value_text(best[1], unit)} in {_peers([p[0] for p in highs], limit=4)}")
+    text = f"{name} per {o.get('bucket') or 'period'}: latest {latest[0]} {_value_text(latest[1], unit)}; {high}"
     return text + f" ({len(measured)} of {len(points)} periods measured)."
 
 
@@ -11543,9 +11826,11 @@ def _final_deep(view: PromptView, ask: Ask) -> Final | None:
             continue
         sentence = _say_log_stats(r, subject=f"for {_code(value)}")
         if said_total:
-            # The total is the same for every grouping: say it once, then each ranking.
-            sentence = sentence.split("; ", 1)[1] if "; " in sentence else ""
-            sentence = sentence[:1].upper() + sentence[1:]
+            # The total is the same for every grouping: say it once, then each ranking
+            # ("By rule, …"). The ranking clause starts at "; by ": a window label with
+            # its dates ("(since 24 Sep 2026; 5 of 5 sources answered)") has its own "; ".
+            _total, by, ranking = sentence.partition("; by ")
+            sentence = f"By {ranking}" if by else ""
         if sentence:
             body.append(f"- {sentence}")
             said_total = True
@@ -11561,7 +11846,16 @@ def _final_deep(view: PromptView, ask: Ask) -> Final | None:
         body.append(_say_search_cases(cases))
     got = view.ok("get_case")
     if got is not None:
-        body.append("Riskiest related case: " + " ".join(_say_get_case(got)[:2]))
+        # The case read is the first of the risk-ranked related cases; others at the same
+        # risk are named so it never reads as the only riskiest one (PB5).
+        related = view.ok("search_cases", where=lambda r: bool(_dig(r.obs, "filters", "entity")))
+        rows = [c for c in (related.obs.get("cases") if related else None) or [] if isinstance(c, Mapping)]
+        read = next((c for c in rows if c.get("case_id") == _dig(got.obs, "case", "case_id")), None)
+        tied = _risk_ties(rows, read) if read is not None else []
+        head = (f"One of the riskiest related cases (tied at risk {_shown_risk(read)} with "
+                f"{_peers([_case_ref(c) for c in tied])}): " if tied and read is not None
+                else "Riskiest related case: ")
+        body.append(head + " ".join(_say_get_case(got)[:2]))
         decision = view.ok("explain_decision")
         if decision is not None:
             sentence = _say_decision(decision)
@@ -11876,8 +12170,8 @@ def _final_my_cases(view: PromptView, ask: Ask) -> Final | None:
         body.append(moved)
     rows = [c for c in cases.obs.get("cases") or [] if isinstance(c, Mapping)]
     if rows:
-        body.append(f"Start with {_case_head(rows[0])}: it has the highest risk of your open cases."
-                    if len(rows) > 1 else f"It is {_case_head(rows[0])}.")
+        body.append(_highest_risk_lead(rows, "of your open cases") if len(rows) > 1
+                    else f"It is {_case_head(rows[0])}.")
         if len(rows) > 1:
             body.append("Your open cases, highest risk first:")
             body.extend(f"- {_case_line(c)}" for c in rows[:5])
@@ -12017,8 +12311,11 @@ def _final_new_since(view: PromptView, ask: Ask) -> Final | None:
         body.append("Needs attention first, highest risk among those still open:")
         body.extend(f"- {_case_line(c)}" for c in still_open[:3])
     elif rows:
-        body.append("All of them are closed already; the highest risk was:")
-        body.extend(f"- {_case_line(c)}" for c in rows[:1])
+        # Cases that share the highest risk are all listed, never one of them alone (PB5).
+        tied = _risk_ties(rows, rows[0])
+        body.append("All of them are closed already; the highest risk was:" if not tied
+                    else f"All of them are closed already; {_count(len(tied) + 1)} shared the highest risk:")
+        body.extend(f"- {_case_line(c)}" for c in [rows[0], *tied][:3])
     return Final(body=body, blocks=_keep(
         _block(cases, "case_list", view="case_list", title="New cases by risk"),
         _block(stats, "categories", view="hbar", title="New cases by severity"),
@@ -12060,7 +12357,9 @@ def _final_volume(view: PromptView, ask: Ask) -> Final | None:
             rule = _dig(top, "key", "rule")
             share = (_num(_dig(top, "metrics", "count")) or 0) / total
             fell = _volume_falls(by_rule) if ask.starter == "volume_drop" else []
-            if ask.starter == "volume_spike" and share >= 0.5:
+            if ask.starter == "volume_spike" and share > 0.5:
+                # "Most" only for a real majority: at exactly half another rule can hold the
+                # other half, a tie the "By rule" line below shows instead (PB5).
                 body.append(f"Why: one rule drove most of it. {_code(rule)} created "
                             f"{_count(_dig(top, 'metrics', 'count'))} of them.")
             elif fell:
@@ -12133,8 +12432,12 @@ def _final_noisy_rule(view: PromptView, ask: Ask) -> Final | None:
     if pick is not None and not pick.by_count and _num(ask.slot("n")) is not None:
         # No rule has the count the card showed now, so this may be a different rule:
         # never presented as the same rule's count having moved (as PB4's campaigns).
+        # With rules tied for the most, the one the answer goes on with is one of them,
+        # never "the rule with the most" (the opening sentence named them all).
+        most = (f"{rule}, listed first, is one of the rules tied for the most" if pick.tied
+                else f"{rule} is the rule with the most")
         body.append(f"No rule has exactly {_plural(ask.slot('n'), 'case')} in the last 24 hours now, the count the "
-                    f"suggestion showed; {rule} is the rule with the most.")
+                    f"suggestion showed; {most}.")
     else:
         moved = _counts_moved(ask.slot("n"), n, "case")
         if moved:
@@ -12403,7 +12706,11 @@ def _final_triage(view: PromptView, ask: Ask) -> Final | None:
         total = _num(found.obs.get("count")) or 0
         if not total:
             return Final(body=["No open case needs attention right now."])
-        body = [f"**{_plural(total, 'open case')}**; start with the highest risk:", *_case_bullets(found, limit=3)]
+        rows = [c for c in found.obs.get("cases") or [] if isinstance(c, Mapping)]
+        tied = _risk_ties(rows, rows[0]) if rows else []
+        start = ("start with the highest risk:" if not tied else
+                 f"start with the highest risk ({_count(len(tied) + 1)} share risk {_shown_risk(rows[0])}):")
+        body = [f"**{_plural(total, 'open case')}**; {start}", *_case_bullets(found, limit=3)]
         return Final(body=body, blocks=_keep(_block(found, "case_list", view="case_list", title="Open cases by risk")))
     head = shift.obs.get("headline") if isinstance(shift.obs.get("headline"), Mapping) else {}
     attention = [a for a in shift.obs.get("attention") or [] if isinstance(a, Mapping)]
@@ -13357,7 +13664,12 @@ def _detailed(view: PromptView, ask: Ask, base: str, final: Final | None = None)
     # "My …" says whose cases they are, which tells conversations apart more than the
     # window does when both do not fit.
     mine = subject if subject.startswith("My ") else ""
-    return [_with_window(subject, window), mine, _with_window(base, window), subject]
+    titles = [_with_window(subject, window), mine, _with_window(base, window), subject]
+    rule = _title_rule(ask.rule) if intent == "breakdown" and ask.rule else ""
+    if rule:
+        # "Investigate rule X" (PB6) is about that rule, named as the title rules allow.
+        titles.insert(0, f"Rule {rule} cases")
+    return titles
 
 
 #: Breakdown titles for the groupings a "Cases by …" title would not read well for.
@@ -13398,7 +13710,16 @@ def _final_top_entity(view: PromptView, ask: Ask) -> Final | None:
     exact_logs = logs is not None and not _log_total_is_lower_bound(logs.obs)
     shown = "" if not count or (merged and exact_logs) else (
         f", with {'at least ' if merged else ''}{_plural(count, 'event')} {_in(_window(ranking.obs))}")
-    lead = f"The top {noun} in that answer is {_code(value)}{shown}."
+    # Values with the same count share the top: all are named, and the answer says it
+    # follows the first listed (PB5).
+    tied = [str(r.get("value")) for r in rows if isinstance(r, Mapping) and isinstance(r.get("value"), str)
+            and r.get("value") != value and count is not None and _num(r.get("count")) == count]
+    if tied:
+        each = "" if not shown else shown.replace(_plural(count, "event"), _plural(count, "event") + " each", 1)
+        lead = (f"{_code(value)} and {_peers([_code(t) for t in tied])} share the top of that answer{each}; this "
+                f"answer follows {_code(value)}, listed first.")
+    else:
+        lead = f"The top {noun} in that answer is {_code(value)}{shown}."
     body = [lead]
     phrase = _entity_phrase(f"{kind}:{value}") if kind in ("ip", "user", "host") else _code(value)
     if cases is not None and ask.slot("cases_first"):
@@ -13522,8 +13843,15 @@ def _final_verdict_cases(view: PromptView, ask: Ask) -> Final | None:
                     key=lambda g: -(_num(_dig(g, "metrics", "count")) or 0))
     if groups:
         top = groups[0]
-        body[0] = body[0].rstrip(".") + (f"; most came from rule {_code(_dig(top, 'key', 'rule'))} "
-                                         f"({_count(_dig(top, 'metrics', 'count'))}).")
+        # Rules tied for the most are all named (PB5).
+        tied = [g for g in groups[1:] if _count(_dig(g, "metrics", "count")) == _count(_dig(top, "metrics", "count"))]
+        if tied:
+            names = _peers([_code(_dig(g, "key", "rule")) for g in [top, *tied]], limit=4)
+            body[0] = body[0].rstrip(".") + (f"; most came from rules {names} "
+                                             f"({_count(_dig(top, 'metrics', 'count'))} each).")
+        else:
+            body[0] = body[0].rstrip(".") + (f"; most came from rule {_code(_dig(top, 'key', 'rule'))} "
+                                             f"({_count(_dig(top, 'metrics', 'count'))}).")
     if found is not None and not ask.slot("by_rule"):
         body.extend(_case_bullets(found, limit=5))
     return Final(body=body, blocks=_keep(
@@ -13543,11 +13871,22 @@ def _final_top_group_cases(view: PromptView, ask: Ask) -> Final | None:
     label = _dig(best, "key", dim) if best else None
     if found is None or not isinstance(label, str):
         return Final(body=[f"That breakdown has no single top {dim} to list cases for."])
-    shown = _code(label) if dim in ("rule", "assignee", "source") else f"**{display_text(label, 40)}**"
+    def name(value: Any) -> str:
+        return _code(value) if dim in ("rule", "assignee", "source") else f"**{display_text(value, 40)}**"
+
+    shown = name(label)
     # One sentence for the top group (its exact count), then its cases: the search's
-    # own count would repeat the same figure (Round 13 copy review).
-    body = [f"The top {dim} {_in(_window(stats.obs))} is {shown}, with "
-            f"**{_plural(_dig(best, 'metrics', 'count'), 'case')}**; the highest risk of them:"]
+    # own count would repeat the same figure (Round 13 copy review). Groups tied with it
+    # are named, and the cases listed are the first one's (PB5).
+    top_n = _count(_dig(best, "metrics", "count"))
+    tied = [_dig(g, "key", dim) for g in groups if g is not best and _count(_dig(g, "metrics", "count")) == top_n
+            and isinstance(_dig(g, "key", dim), str)]
+    if tied:
+        body = [f"{shown} and {_peers([name(t) for t in tied])} tie as the top {dim} {_in(_window(stats.obs))}, "
+                f"with **{_plural(_dig(best, 'metrics', 'count'), 'case')}** each; the highest-risk cases of {shown}:"]
+    else:
+        body = [f"The top {dim} {_in(_window(stats.obs))} is {shown}, with "
+                f"**{_plural(_dig(best, 'metrics', 'count'), 'case')}**; the highest risk of them:"]
     body.extend(_case_bullets(found, limit=5))
     return Final(body=body, blocks=_keep(_block(found, "case_list", view="case_list", title=f"Cases, top {dim}")))
 
@@ -13559,11 +13898,22 @@ def _final_source_events(view: PromptView, ask: Ask) -> Final | None:
     if view.ok("source_health") is None:
         return None
     if row is None:
-        return Final(body=[f"No log source named {_code(name)} is configured, so there are no events to show."])
+        # The configured sources by name, so the analyst can ask about the right one.
+        health = view.ok("source_health")
+        names = [_code(display_text(r.get("name"), 80)) for r in (health.obs.get("sources") if health else None) or []
+                 if isinstance(r, Mapping) and r.get("name")]
+        body = [f"No log source named {_code(name)} is configured, so there are no events to show."]
+        if names:
+            body.append(f"Configured sources: {_peers(names, limit=5)}.")
+        return Final(body=body)
     shown = _code(display_text(row.get("name"), 80))
+    # Its health, when something is wrong with it (silent, a failed poll, disabled).
+    state = [w for w, on in (("silent", row.get("silent")), ("disabled", not row.get("enabled", True))) if on]
+    health_line = ([f"{shown} is {_join(state)}."] if state else []) + (
+        [f"The last poll of {shown} failed."] if row.get("last_poll_failed") else [])
     if logs is None:
-        return Final(body=[f"The events of {shown} could not be read."])
-    return Final(body=[f"Recent events from {shown}: " + _say_search_logs(logs)], blocks=_keep(
+        return Final(body=[*health_line, f"The events of {shown} could not be read."])
+    return Final(body=[*health_line, f"Recent events from {shown}: " + _say_search_logs(logs)], blocks=_keep(
         _block(logs, "table", view="table", title="Recent events") if _num(logs.obs.get("total")) else None,
         _block(logs, "series", view="bar", title="Events over time") if _num(logs.obs.get("total")) else None,
     ))
@@ -14110,9 +14460,16 @@ def _summarise_report(messages: Sequence[Mapping[str, Any]]) -> str:
                     figures.append(f"{_plain(kpi.get('label'), 60)} {_digest_value(kpi.get('value'), kpi.get('unit'))}")
             categories = [c for c in leaf.get("categories") or [] if isinstance(c, Mapping)]
             if categories and len(leaders) < 2:
-                leaders.append(f"{_plain(leaf.get('title'), 60) or 'a chart'} is led by "
-                               f"{_plain(categories[0].get('label'), 60) or 'an unnamed value'} "
-                               f"({_digest_value(categories[0].get('value'), leaf.get('unit'))})")
+                # The largest category leads; categories tied with it lead together (PB5).
+                best = max((_num(c.get("value")) for c in categories if _num(c.get("value")) is not None),
+                           default=None)
+                tops = [c for c in categories if best is not None and _num(c.get("value")) == best] or categories[:1]
+                names = [_plain(c.get("label"), 60) or "an unnamed value" for c in tops]
+                value_text = _digest_value(tops[0].get("value"), leaf.get("unit"))
+                leaders.append(f"{_plain(leaf.get('title'), 60) or 'a chart'} is led by {names[0]} ({value_text})"
+                               if len(tops) == 1 else
+                               f"{_plain(leaf.get('title'), 60) or 'a chart'} is led jointly by "
+                               f"{_peers(names)} ({value_text} each)")
             for series in leaf.get("series") or []:
                 if isinstance(series, Mapping) and series.get("trend") in ("up", "down") and len(trends) < 2:
                     trends.append(f"{_plain(series.get('series'), 60) or _plain(leaf.get('title'), 60)} is trending "

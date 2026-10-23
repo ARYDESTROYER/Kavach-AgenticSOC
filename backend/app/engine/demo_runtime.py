@@ -557,12 +557,16 @@ class DemoStack:
 
     async def _flush_funnel_baseline(self, baseline, summaries) -> None:
         """Persist EVERY observed signature's sketch back to the demo baseline_store so
-        the base visibly warms across ticks. Best-effort; never raises."""
+        the base visibly warms across ticks, in ONE store write (a write per signature
+        re-encoded the whole document each time and stalled the event loop for seconds,
+        PW4-10). Best-effort; never raises."""
         try:
+            updates = {}
             for s in summaries:
                 snap = baseline.snapshot(s.signature)
                 if snap:
-                    await self.baseline_store.put(s.signature, snap)
+                    updates[s.signature] = snap
+            await self.baseline_store.put_many(updates)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
             logger.debug("demo funnel baseline flush failed (%s)", exc)
 

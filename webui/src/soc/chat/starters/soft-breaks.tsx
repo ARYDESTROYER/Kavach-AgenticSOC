@@ -14,14 +14,28 @@
  *
  * Short reference tokens (third re-shoot, PW4-1): a browser breaks a word after its
  * hyphen, so a case number, a technique id or a rule id split across two lines ("CASE-" /
- * "000089?", "LP-" / "ES-RISK-1001"). A token of at most {@link KEEP_TOKEN} characters
- * that a browser could break inside (a hyphen, a dash or a slash) is `nowrap`, with its
- * punctuation ("CASE-000089?" stays whole), so the sentence still wraps between words
- * and the token moves to the next line whole. `keepShortTokens` with `all` keeps EVERY
+ * "000089?", "LP-" / "ES-RISK-1001"). A token whose word is at most {@link KEEP_TOKEN}
+ * characters and that a browser could break inside (a hyphen, a dash or a slash) is kept
+ * whole, with its punctuation ("CASE-000089?" stays whole), so the sentence still wraps
+ * between words and the token moves to the next line whole. With `all` it keeps EVERY
  * short token whole: for text inside `word-break: break-all` (an InlineCode table cell,
  * where "T1078" broke into "T107" / "8"), where a token needs no hyphen to be cut.
- * Tokens between the two lengths are left to the browser. Ordinary words are left
- * alone, and text without such a token is returned as the same string.
+ *
+ * One length rule (third re-shoot review): a token's length is that of its WORD, the punctuation
+ * around it not counted ("sigma-win-proc-creation-01?" is 26), and the two limits meet:
+ * a word of up to {@link KEEP_TOKEN} (27) characters is kept whole and one of
+ * {@link LONG_TOKEN} (28) or more breaks anywhere but at its ends. The server writes a
+ * reference into a start question only when it is at most 27 characters
+ * (`chat_starter_text.QUESTION_REF_WORD_MAX`), so every reference a card names is whole.
+ * Before, a 25 to 27 character rule id was left to the browser and broke at its hyphen.
+ *
+ * How a token is kept: `nowrap` by default, so a table cell's column grows to the whole
+ * token and a link's underline runs under it. Where the text is prose on a card or chip
+ * (`fit`), a kept token is an inline block no wider than its line instead: it moves to the
+ * next line whole when it fits there, and only a token wider than the whole line (a 27
+ * character id of capitals on a narrow phone) wraps inside, at its hyphens, rather than
+ * running past the card. Ordinary words are left alone, and text without such a token is
+ * returned as the same string.
  *
  * CSS only, never a `<wbr>` or a zero-width space: Chromium reads a `<wbr>` as a space in
  * the accessible name ("campaign-40 39…"), and an invisible character would travel with a
@@ -40,14 +54,19 @@ export const HEAD_KEEP = 4;
 /** Characters kept together at the end of a long token (its trailing punctuation included). */
 export const TAIL_KEEP = 6;
 /**
- * The longest token kept on one line: a case number ("CASE-000089?"), a technique id
- * ("T1059.001"), a short rule id ("LP-ES-RISK-1001"), with its punctuation. At 24
- * characters it fits the narrowest line it is set on (a 390 px phone card or chip).
+ * The longest word kept on one line, its punctuation not counted: a case number
+ * ("CASE-000089?"), a technique id ("T1059.001"), a rule id ("sigma-win-proc-creation-01").
+ * One less than {@link LONG_TOKEN}, so every token is either kept or breakable, and the
+ * same limit as the server's `QUESTION_REF_WORD_MAX`. Measured live at 390 px: a 27
+ * character id of capitals with its "?" is 226 to 258 px on a start card's 262 px line.
  */
-export const KEEP_TOKEN = 24;
+export const KEEP_TOKEN = LONG_TOKEN - 1;
 
 /** Characters a browser breaks a word after: hyphens, dashes and a slash. */
 const INNER_BREAK = /[-/‐‒-―]/u;
+/** Punctuation before a word ("(CASE-000089") and after it ("CASE-000089?", "vpn-gw-2,"). */
+const LEADING_PUNCT = /^[(\[{"'‘“«]+/u;
+const TRAILING_PUNCT = /[?!.,;:)\]}"'’”»…]+$/u;
 
 export interface TokenBreakOptions {
   /** Keep every short token whole, not only one with a hyphen (text set `break-all`). */
@@ -57,6 +76,13 @@ export interface TokenBreakOptions {
    * breaks anywhere (an InlineCode cell) or a table cell may simply grow its column.
    */
   breakLong?: boolean;
+  /**
+   * Prose on a card or chip: keep a short token as an inline block no wider than its line
+   * (whole when it fits, wrapped inside only when it is wider than the whole line) instead
+   * of `nowrap`. Not for a table cell (its column must grow to the whole token) or a link
+   * (an underline does not reach into an inline block).
+   */
+  fit?: boolean;
 }
 
 /**
@@ -79,7 +105,7 @@ export function softBreakLongTokens(text: string, options: TokenBreakOptions = {
     plain = '';
     if (k === 'keep') {
       out.push(
-        <span key={index} className="whitespace-nowrap" data-kept-token="">
+        <span key={index} className={options.fit ? 'inline-block max-w-full' : 'whitespace-nowrap'} data-kept-token="">
           {part}
         </span>,
       );
@@ -99,14 +125,18 @@ export function softBreakLongTokens(text: string, options: TokenBreakOptions = {
   return out;
 }
 
-/** The same rule under the name the block renderers use (`all` for `break-all` text). */
-export const keepShortTokens = softBreakLongTokens;
+/** A token's word: the token without the punctuation around it (all of it when that is all it is). */
+export function tokenWord(part: string): string {
+  return part.replace(LEADING_PUNCT, '').replace(TRAILING_PUNCT, '') || part;
+}
 
 function tokenKind(part: string, { all = false, breakLong = true }: TokenBreakOptions): 'keep' | 'long' | null {
   if (!part || /\s/.test(part)) return null;
+  const word = tokenWord(part);
   // Code points, like the spans: an emoji counts once.
-  const length = Array.from(part).length;
+  const length = Array.from(word).length;
   if (length >= LONG_TOKEN) return breakLong ? 'long' : null;
-  if (length > KEEP_TOKEN || length < 2) return null;
-  return all || INNER_BREAK.test(part.slice(0, -1)) ? 'keep' : null;
+  if (Array.from(part).length < 2) return null;
+  // A hyphen that ends the word is no break inside it.
+  return all || INNER_BREAK.test(word.slice(0, -1)) ? 'keep' : null;
 }

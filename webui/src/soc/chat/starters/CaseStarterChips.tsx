@@ -71,7 +71,7 @@ export function CaseStarterChips({
             )}
           >
             <CornerDownRight className="mt-px size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <span className="min-w-0 break-words">{softBreakLongTokens(starter.prompt)}</span>
+            <span className="min-w-0 break-words">{softBreakLongTokens(starter.prompt, { fit: true })}</span>
           </button>
         </li>
       ))}

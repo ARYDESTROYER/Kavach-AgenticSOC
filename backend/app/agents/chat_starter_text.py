@@ -36,7 +36,9 @@ case, no em dash, ending with "?" or "."; a ``send`` card is at most
 :data:`QUESTION_MAX_CHARS`, a display-only card at most :data:`DISPLAY_MAX_CHARS`, a
 reason line at most :data:`REASON_MAX_CHARS`; numbers carry thousands separators; a
 template that would not fit falls back to its ``_one`` or count-only variant, or the
-card is dropped (never truncated).
+card is dropped (never truncated). A reference is written into a question only when it
+passes :func:`ref_fits_question` (the one length rule for every reference kind, polish
+round PB5); a longer one is kept out of the question by the family's wording without it.
 """
 
 from __future__ import annotations

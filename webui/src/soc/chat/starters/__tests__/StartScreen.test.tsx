@@ -583,24 +583,29 @@ describe('StartScreen', () => {
     renderStart({ starters: controller(makeInfo({ starters: four })) });
     const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
     // The floor is never a height on the grid or its box: the rows (and cards) keep their
-    // natural height (re-shoot PW3-5), and any spare height is the stack's top padding,
-    // above the greeting, so the cards stay 16 px under the catch-up line (PW4-5).
+    // natural height (re-shoot PW3-5), and any spare height is a spacer under the cards,
+    // above the pills, so the cards stay 16 px under the catch-up line (PW4-5) and the
+    // greeting holds still (third re-shoot review).
     const stack = () => screen.getByTestId('chat-start');
     const floor = () => screen.getByTestId('starter-grid-floor');
+    const spacer = () => screen.queryByTestId('starter-spare');
     expect(stack().style.paddingTop).toBe('');
+    expect(spacer()).toBeNull();
     expect(floor().style.minHeight).toBe('');
     expect(grid().style.minHeight).toBe('');
     // A shorter stand-in (CONTINUE, 24 px shorter) takes slot 1: the stack keeps its
-    // height, with the 24 px above the greeting.
+    // height, with the 24 px under the cards and nothing above the greeting.
     act(() => mainCards()[1].focus());
     await user.keyboard('{Delete}');
     expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'continue', 'silent_source']);
-    expect(stack().style.paddingTop).toBe('24px');
+    expect(spacer()?.style.height).toBe('24px');
+    expect(stack().style.paddingTop).toBe('');
     expect(floor().style.minHeight).toBe('');
     expect(grid().style.minHeight).toBe('');
     // Hidden again with no reserve left: the slot closes and two cards keep their own height.
     await user.keyboard('{Delete}');
     expect(mainCards().map((b) => b.dataset.starter)).toEqual(['needs_human', 'silent_source']);
+    expect(spacer()).toBeNull();
     expect(stack().style.paddingTop).toBe('');
   });
 
@@ -714,14 +719,16 @@ describe('StartScreen', () => {
     }
   });
 
-  it('hands the skeleton height to the stack above the greeting, so shorter cards keep their own height and their 16 px gap', () => {
+  it('hands the skeleton height to a spacer under the cards, so the greeting holds still and the cards keep their own height and their 16 px gap', () => {
     // Round 13 polish (re-shoot PW2-5): the skeleton is sized before the questions are
     // known; when the cards land shorter, the grid's box keeps the skeleton's height and
     // the bottom-anchored stack holds still. Cards taller than it grow the grid as before.
     // Re-shoot PW3-5: the cards keep their natural height instead of stretching (90.7 px
     // for a 72 px card at 390 px, an empty band under each reason line). Third re-shoot
-    // PW4-5: the spare height is the stack's top padding, above the greeting, never a box
-    // between the catch-up line and the cards (a 36 px gap there on a phone).
+    // PW4-5: the spare height is never a box between the catch-up line and the cards (a
+    // 36 px gap there on a phone). Third re-shoot review: nor the stack's top padding,
+    // which moved the bottom-anchored greeting 20 px down on every cold load on a phone;
+    // it is a spacer under the cards, above the pills, so nothing above the cards moves.
     stackWidth = 338; // one column, three cards
     let cardsTotal = 268;
     vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
@@ -746,8 +753,16 @@ describe('StartScreen', () => {
     const grid = () => screen.getByRole('list', { name: 'Suggested questions' });
     const floor = () => screen.getByTestId('starter-grid-floor');
     const stack = () => screen.getByTestId('chat-start');
-    // 288 px of skeleton, 268 px of cards: the 20 px go above the greeting.
-    expect(stack().style.paddingTop).toBe('20px');
+    // 288 px of skeleton, 268 px of cards: the 20 px go under the cards, before the pills.
+    const spacer = () => screen.queryByTestId('starter-spare');
+    expect(spacer()?.style.height).toBe('20px');
+    expect(spacer()).toHaveAttribute('aria-hidden', 'true');
+    expect(stack().style.paddingTop).toBe('');
+    // In order: the greeting, the catch-up line, the cards, the spare, then the pills.
+    expect(floor().compareDocumentPosition(spacer()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const pill = stack().querySelector('[data-pill]');
+    expect(pill).not.toBeNull();
+    expect(spacer()!.compareDocumentPosition(pill!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(floor().style.minHeight).toBe('');
     expect(floor()).toHaveClass(...START_GRID_FLOOR_CLASS.split(' '));
     // The box only sets the 16 px gap under the catch-up line: no flex, no spare inside it.
@@ -760,6 +775,7 @@ describe('StartScreen', () => {
     cardsTotal = 308;
     const taller = renderStart({ starters: controller(null, { loading: true }) });
     taller.rerender(loaded(makeInfo({ starters: three.map((st) => ({ ...st })) })));
+    expect(spacer()).toBeNull();
     expect(stack().style.paddingTop).toBe('');
     taller.unmount();
 
@@ -768,6 +784,7 @@ describe('StartScreen', () => {
     cardsTotal = 176;
     const fewer = renderStart({ starters: controller(null, { loading: true }) });
     fewer.rerender(loaded(makeInfo({ starters: [NEEDS_HUMAN, NEW_CASES].map((st) => ({ ...st })) })));
+    expect(spacer()).toBeNull();
     expect(stack().style.paddingTop).toBe('');
     expect(grid().style.minHeight).toBe('');
   });

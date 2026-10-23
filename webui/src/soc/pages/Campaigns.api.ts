@@ -93,3 +93,18 @@ export const CAMPAIGN_STATUS_LABELS: Record<string, string> = {
   monitoring: 'Monitoring',
   resolved: 'Resolved',
 };
+
+/**
+ * A shared entity's kind in the console's words (the backend `EntityType`): the labels the
+ * rules editor shows (`rules/constants.ts` `ENTITY_OPTIONS`; a test keeps the two equal).
+ * Kept here rather than imported from there, so this page and Case Detail, which shows the
+ * campaign chip, take no extra chunk and the entry chunk's preload lists do not grow.
+ */
+export const CAMPAIGN_ENTITY_KIND_LABELS: Readonly<Record<string, string>> = {
+  ip: 'IP',
+  user: 'User',
+  host: 'Host',
+  file_hash: 'File hash',
+  domain: 'Domain',
+  rule: 'Rule',
+};

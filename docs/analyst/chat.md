@@ -54,7 +54,10 @@ the whole width. Choose how wide the conversation may grow under `⋯` → **Vie
 
 The choice is saved to your account and follows you to other devices; if you chose
 Comfortable or Wide before, your choice is kept. With Comfortable or Wide, a single chart
-or table can also take the full width from its own `⋯` menu (**Full width**).
+or table can also take the full width from its own `⋯` menu (**Full width**). **View**
+appears only where the conversation is wider than Comfortable allows: on a phone, or
+beside the history rail on a laptop screen, all three widths would look the same, so the
+menu leaves them out until there is room.
 
 A result stays in the reading column when it is small: up to four key figures, an
 indicator card, a case list, ATT&CK techniques, a table of up to three columns, or a
@@ -96,9 +99,9 @@ see.
 | Response targets | SLA targets are on and open cases are past, or close to, their response target |
 | New cases | Cases have opened since your last visit |
 | Case volume | New cases in the last 24 hours are at least twice the usual daily level (and 5 or more above it), or half of it or less |
-| A noisy detection rule | One rule created at least 10 cases, and 30% or more of all new cases, in the last 24 hours |
+| A noisy detection rule | One rule created at least 10 cases, and 30% or more of all new cases, in the last 24 hours; when the rule's id is too long to show (see below), the card asks "Which detection rule created 12 of the 40 cases in the last 24 hours, and why?" and the answer finds the rule by that count |
 | A campaign | A campaign is new, or has grown, since your last visit (a new one first); the card names it by one of its cases ("the campaign that includes CASE-000046"), never by its internal id, and the answer is about the campaign that holds that case now |
-| A quiet log source | A log source has gone quiet or is failing its polls |
+| A quiet log source | A log source has gone quiet or is failing its polls; the card names it by its display name, or by its id when the name does not fit, and otherwise asks "Which log source has gone quiet, and is ingestion working?" |
 | AI spending | Today's AI budget, or the chat spending limit, is mostly used (needs `models:read` and `cost:view`) |
 | Your shift | The start of your shift (your first visit after 8 hours or more away), or a handoff 7 to 13 hours after it |
 | The week or the month | The first visit of a new week (Monday) or a new month (the 1st) |
@@ -115,6 +118,14 @@ everyday questions fill the rest: which open cases need attention first, posture
 executive report for the last 7 days, the Active Risk Index explained, and a tour of the
 console. On a fresh install with no source and no case, the first card is "How do I
 connect my first log source?".
+
+A card names a case, rule, source or technique in its question only when no word of
+that name is longer than 27 characters, so a long id (an Elastic rule id has 36
+characters) never adds a line to the start screen; the card is never cut short, it asks
+without the name instead. The one exception is a case without a display number, which keeps its internal
+id: with case numbering switched off, no other words name one case among several. A name
+the card does show is kept whole: it moves to the next line rather than breaking at a
+hyphen, unless it is wider than the whole card.
 
 Selecting a card sends its question as written, at once; nothing is typed into your
 message box. A card that names a case, rule, source, or technique sends that
@@ -949,7 +960,8 @@ is not used, and the conversation keeps your question as its title. A name you c
 
 In the docked history rail, each row and search result keeps its title on one line. A
 title too long for the rail is cut at the end; point at the row or move to it with the
-keyboard to see the whole title in a tooltip. The toolbar above the conversation shows the
+keyboard to see the whole title in a tooltip, with the time of its last change in UTC
+(2026-10-23 15:45 UTC), as answers write times. The toolbar above the conversation shows the
 whole title where it has room, and in a tooltip where it does not. On a phone, in the
 history sheet, and on any touch screen, where there is no pointer to show a tooltip, a
 title wraps to up to three lines in the history and in the toolbar, so the whole title is
@@ -1119,7 +1131,22 @@ turning Demo Mode off and on again, or resetting it, gives each case the same nu
 again. A case you name by its internal id is answered by its number, with the id you
 used beside it once. A detection rule is written the same way everywhere in an answer: its
 id exactly as written (for example `demo_impossible_travel`), as the case list shows it. Demo answers cover the same ground as a live model, including any time window, breakdowns,
-comparisons, reports, and clarifying questions. A demo conversation's name carries one
+comparisons, reports, and clarifying questions. A question that asks to investigate or
+look into a named host, user, email address, IP address, domain or file hash
+("Investigate the activity of user pnair in the last 3 days") is about that entity over
+the window it names. "Investigate" with a detection rule ("Investigate rule
+demo_impossible_travel") counts that rule's cases by verdict; with a log source
+("Investigate source Wazuh") it shows the source's newest events and says if it is
+silent or disabled; with an attack type ("Investigate ransomware") it runs the hunt; and
+with records Demo can list ("Investigate the false positives from yesterday") it lists
+them. A technique id, cost, sources, tuning and other console words keep their own
+answers ("Investigate T1059.001" describes the technique). A case is picked when the
+question picks one ("Investigate the newest escalated case", "Investigate it"); a
+question that names nothing else Demo can look up also starts from the newest escalated
+case, and the answer says that is how it was chosen. When cases, rules or periods tie
+for the highest risk, the most or the oldest, as the answer writes the figure, the
+answer says so and names each of them rather than presenting one as the only one. A
+demo conversation's name carries one
 detail that tells it apart from similar ones where there is one: the case number (first,
 so a narrow history list still shows it), the ATT&CK technique, the period, the breakdown
 or the console page a product question is about, such as "CASE-000045 needs a person",

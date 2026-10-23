@@ -316,8 +316,10 @@ starts with "case" drops the word "case" before it (the `_CASE_NAMED` rule of `c
 | `volume_spike` | Why did new cases rise to {n} in the last 24 hours, against a usual {m}? | {x} times the usual daily level |
 | `volume_drop` | Why did new cases fall to {n} in the last 24 hours, against a usual {m}? | Less than half the usual daily level |
 | `noisy_rule` | Why did detection rule {rule} create {n} of the {m} cases in the last 24 hours? | {pct}% of new cases |
+| `noisy_rule_unnamed` (polish PB5) | Which detection rule created {n} of the {m} cases in the last 24 hours, and why? | {pct}% of new cases |
 | `campaign` | What links the {n} cases in campaign {campaign}? | New since {since} / {k} more cases since {since} |
 | `silent_source` | Why has log source {source} gone quiet, and is ingestion working? | No events for {age} |
+| `silent_source_unnamed` (polish PB5) | Which log source has gone quiet, and is ingestion working? | No events for {age} |
 | `silent_sources` | Which {n} log sources have gone quiet, and is ingestion working? | Longest quiet for {age} |
 | `budget_ai` | What is using today's AI budget? It is {pct}% spent. | {spent} of {limit} today |
 | `budget_chat` | What is using today's chat spending limit? It is {pct}% spent. | {spent} of {limit} today |
@@ -453,6 +455,21 @@ Demo always has a catch-up line on its first visit.
   that would exceed it uses its `_one` or count-only variant, or the card is dropped. A display-only
   card (`open_conversation`, `use_prompt`) renders at most 120 characters, else it is dropped.
   Cards are never truncated or clamped (§5.2).
+- **Reference length (polish PB5), one rule for every reference kind:** a reference is
+  written into a question only when none of its words is longer than 27 characters
+  (`chat_starter_text.QUESTION_REF_WORD_MAX`). The web applies the same limit
+  (`starters/soft-breaks.tsx` `KEEP_TOKEN`, 27, its punctuation not counted, review of the
+  third re-shoot): a word of up to 27 characters is kept whole, never broken at its hyphen,
+  and one of 28 or more (`LONG_TOKEN`) may break anywhere but at its ends; the start stack
+  holds still only below that (§10.7). A longer reference is
+  kept out of the question and never cut: the rule card uses `noisy_rule_unnamed` (the
+  count names the rule), the source card names the source by its id when its name does not
+  fit and otherwise uses `silent_source_unnamed`, a case is named by its display number
+  when that fits, and the campaign card prefers a member case whose reference fits.
+  `starter_from_template` refuses any other kind's long reference; the one exception is a
+  case with no display number that fits (case numbering off: a 37-character internal id),
+  because no wording without it names one case among several, so it keeps its id rather
+  than the card being lost.
 - Reason lines are at most 60 characters, muted, and say why the card is here. They contain only
   numbers, durations, times, closed-vocabulary words (status, severity, technique names from the
   bundled corpus) and configured source names. Never a case title, rule name, entity value or any
@@ -1875,6 +1892,121 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   members by case number once the numbers arrive (digit runs compared as numbers), members
   without a number last by id; React keys stay the case id, and while the numbers load the
   stored order holds each row's place.
+- **Short references stay whole (third re-shoot, PW4-1):** a browser breaks a word after
+  its hyphen, so a case number split across lines in a start card ("CASE-" / "000089?" at
+  1920), a case-list title ("LP-" / "ES-RISK-1001") and a table cell ("T107" / "8": a mono
+  `InlineCode` cell is `break-all`). `starters/soft-breaks.tsx` now also keeps a token of
+  at most 24 characters (`KEEP_TOKEN`) that holds a hyphen, dash or slash in a `nowrap`
+  span, with its punctuation ("CASE-000089?"); with `all` it keeps every short token (the
+  `break-all` table cells), and `breakLong: false` leaves a long value to the cell's own
+  wrapping. Tokens of 25 to 27 characters are left to the browser (superseded: one limit
+  of 27 below, "One length rule"); 28 and more still break anywhere but at their ends. Used by the start cards and case chips, the case number
+  (`nowrap`) and title of every case reference (`CaseRefText`) and table cells (not in
+  print, which wraps every cell anywhere). A start card's question is `text-wrap:
+  balance` (`pretty` still left "CASE-000089?" alone on a 1920 card's third line); balance
+  keeps the line count, so card heights and skeletons are unchanged. Live: no kept token
+  split at 390, 1440 or 1920 (cards, case lists, the shift brief's Techniques cells).
+- **Wide tables scroll with a fade (third re-shoot, PW4-2):** a block table already scrolled
+  inside `ui/table`'s `overflow-auto` box, but overlay scrollbars hid it, so at 390 the
+  Status column read as clipped. `blocks/scroll-edges.ts` marks the box `data-x-scroll`
+  (`start`, `end` or `both`) from its scroll position and size (set on the element, no
+  React state), and `TableView`'s root fades that side over 1.5rem, the start pills' mask.
+  Live at 390: the Open campaigns table 1,202 px in a 310 px box reads `end` with the mask.
+- **Campaign sheet insets (third re-shoot, PW4-3):** the sheet body sits on the header's
+  `p-6` (25 px from the sheet edge with its border, before 1 px) and the title icon is
+  `shrink-0` beside a title that wraps in its own `min-w-0` box (it was squeezed to 0 px
+  at 390). Live at 390, 1440 and 1920: icon 20 × 20, every section 25 px in.
+- **Case chat edges (third re-shoot, PW4-4):** the case chat's start line and chips take the
+  composer's reading column (`max-w-[42rem]`, `CONTENT_COL`). Live: last chip edge 1,327 px
+  against the composer's 1,336 at 1440, 1,428 against 1,437 at 1920, inside at 390.
+- **Start stack spare height (third re-shoot, PW4-5, supersedes "Grid floor outside the
+  cards"):** spare height kept in the grid's box sat between the catch-up line and the
+  cards (36 px at 390 when a two-line first card replaced a three-line skeleton). The floor
+  rules are unchanged (the skeleton hand-over, and within one applied result and card count
+  the stack never gets shorter), but the spare is now the stack's top padding
+  (`gridSpare`), above the greeting, so the cards sit 16 px under the catch-up line
+  whatever their heights; the greeting moves down by the spare instead. Live: 16 px at
+  390 (20 px of spare above the greeting), 1440 and 1920. (Superseded below, "Spare
+  height under the cards": the greeting moved 20 px on every cold load on a phone.)
+- **History tooltip (third re-shoot, PW4-6):** in the History sheet a row's tooltip opens
+  below it, start-aligned, with `collisionPadding` 16 like the other popovers (it ran
+  134 px off a 390 screen); its date and the row's name use `formatUtc`, the answers' form
+  ("2026-10-23 15:45 UTC"; the chat's times are UTC). Live at 390: 16 to 182 px.
+- **Brief prose measure (third re-shoot, PW4-7):** inside a Brief, a `markdown` leaf keeps
+  38rem and a note 42rem (the answer's own caps, `lane.ts`), and section summaries (both
+  layouts) and the subtitle 38rem; the Brief stays wide. Print keeps the page width. Live
+  at 1920: Next steps 608 px wide, at most 81 characters a line (178 before).
+- **Text values set proportional numerals (third re-shoot, PW4-8):** an indicator card's
+  sans facts, reputation provider and note, case titles, sans table text cells, timeline
+  lines, notes, citations, guide steps, the KPI gauge label and the bar chart's sans labels
+  set `proportional-nums`; dates, scores, counts and KPI values keep tabular numerals.
+  `theme.css` is unchanged. Live: "demo-synthetic" 5.95 px at 13 px (8.41 before).
+- **Width choice only where it matters (third re-shoot, PW4-9):** the thread menu's View
+  group shows only when the lane (the conversation less its gutters) is wider than
+  Comfortable's 64rem (`laneWidthChoiceMatters`, from 1,078 px of conversation): at 390,
+  and at 1440 beside the docked rail (936 px), the three widths give the same lane. Live:
+  no View group at 390 and 1440, three widths at 1920 (1,416 px).
+- **Case chips on a running Demo (third re-shoot, PW4-10):** measured on a production
+  build (`vite build`, served by `vite preview` with the dev `/api` proxy) at 1440, cold
+  cache, a case never opened, six runs, Chat tab click to first chip: 310, 7,961, 167,
+  4,220, 167 and 160 ms. The web side was not the cause: the chunks were in by 124 to
+  350 ms and the first chip followed the starters response by 5 to 30 ms. The two slow
+  runs waited for the response (7,954 and 4,215 ms) during backend-wide stalls: `/api/health`
+  took 7.3 to 8.1 s every 15 to 20 s on a Demo up 25 minutes. py-spy put 94 % of the
+  samples in the Demo ticker's `_flush_funnel_baseline`: a `BaselineStore.put` per observed
+  signature, each decoding and re-encoding the WHOLE series document (quadratic, and no
+  `await` that yields on the in-memory KV). `BaselineStore.put_many` now writes the batch
+  in one read-modify-write that encodes only the touched signatures and keeps the others as
+  stored; both the Demo ticker and `AppState._flush_funnel_baseline` (the realtime EVENT
+  funnel) use it. Offline, a flush of 100 signatures × 42 buckets took 12,431 ms one by
+  one and 99 ms batched (200: 57,613 against 135 ms). After the fix, on a Demo up 22
+  minutes: starters reads 13 to 61 ms and `/api/health` at most 410 ms over 35 s, and the
+  six cold runs 152, 156, 166, 137, 139 and 161 ms (response at 107 to 156 ms).
+- **One length rule (review of the third re-shoot, supersedes the 24 of PW4-1):** the server
+  wrote references of up to 27 characters into start questions (§3.7) while the web kept a
+  token whole only up to 24, so a 26-character rule id broke at its hyphen ("sigma-" /
+  "win-proc-creation-01?") at 390, 1440 and 1920. `soft-breaks.tsx` now measures a token by
+  its word, the punctuation around it not counted (`tokenWord`), and the two limits meet:
+  a word of up to 27 characters is kept (`KEEP_TOKEN = LONG_TOKEN - 1`, the server's
+  `QUESTION_REF_WORD_MAX`, pinned by a web test that reads the backend constant) and one of
+  28 or more breaks anywhere but at its ends; no length is left to the browser. On start
+  cards and case chips (`fit`) a kept token is an inline block no wider than its line
+  instead of `nowrap`: it moves to the next line whole, and only a token wider than the
+  whole line wraps inside, at its hyphens, rather than running past the card (27-character
+  ids of capitals with their "?" measured 226 to 258 px at 16 px; a phone card's line is
+  262 px at 390 and 232 px at 360, and a four-column card's line 249 px at 1920 and less
+  on narrower lanes down to 1,040 px). Case lists and tables keep `nowrap` (a column grows to the
+  token, a link's underline reaches it). Live, questions injected on Demo: the 26-character
+  rule id whole on one line at 360, 390, 1440 and 1920; "LUMENPAY-SOC-PROD-2026-0089?" whole
+  at 390, 1440 and 1920 and wrapped inside its box on a 360 phone; nothing past a card or the
+  page; the cards' accessible names are the exact questions (accessibility tree).
+- **Long case numbers wrap (review of the third re-shoot):** `CaseRefText` set the case
+  number `nowrap` at any length, and an operator template may write up to 200 characters.
+  The number now goes through `softBreakLongTokens`: whole up to 27 characters, and a
+  longer one breaks where its line ends. Live at 390, a 41-character number in a case list
+  takes two lines and ends at 304 px against the row's 350; no page overflow.
+- **Spare height under the cards (review of the third re-shoot, supersedes PW4-5's top
+  padding):** the start stack is anchored at its bottom, so spare height above the greeting
+  moved the greeting down 20 px on every cold load on a phone (the first skeleton card holds
+  three lines at 390 and a first card of two landed). The spare (`gridSpare`, same floor
+  rules) is now a spacer under the cards, above the pills (`data-testid="starter-spare"`):
+  the greeting, the catch-up line, the cards' top and the pills all hold still, the cards
+  stay 16 px under the catch-up line, and only the space under the last card grows. Live,
+  starters read held 2.5 s: at 390 the greeting stays at 300 px and the pills at 690 px from
+  skeleton to cards, with 20 px of spare under the cards; at 1440 and 1920 nothing moves and
+  there is no spare.
+- **KPI tile labels (review of the third re-shoot, completes PW4-8):** a chat `kpi_group`
+  tile's label inherited tabular numerals, so "FALSE-POSITIVE RATE" set a 7.41 px hyphen at
+  11 px beside the proportional gauge label. `KpiItemCell` sets `proportional-nums` on the
+  tile's cell; the numeral, the delta chip and the caption keep their own tabular figures,
+  and the Overview's shared `KpiTile` is unchanged. Live: 5.41 px.
+- **Campaign sheet words (review of the third re-shoot):** the Shared entities line read
+  "Ip: 192.0.2.90" (`humanizeToken`); it now names each kind in the words the rules editor
+  uses for the backend `EntityType` ("IP", "User", "Host", "File hash", "Domain":
+  `Campaigns.api.ts` `CAMPAIGN_ENTITY_KIND_LABELS`, kept equal to `rules/constants.ts`
+  `ENTITY_OPTIONS` by a test; importing that module added a shared chunk to the entry's
+  preload lists, 46 B), and the sheet title sets proportional numerals (its hyphen 7.28 px
+  at 16 px). Live at 390, 1440 and 1920: "IP:". The entry chunk is unchanged (371,863 B).
 
 ### 10.6 Demo (WP-DEMO13)
 
@@ -1936,9 +2068,78 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   SLA."); when the snapshot names none of them the lead reads "Top of the attention
   queue: …" and only the step says what to work first; with none past SLA it starts with
   the top of the attention queue as before.
+- **Polish round PB5 (Demo answers):** an investigation that names an entity investigates
+  that entity (`demo_chat._investigated`, before the indicator and case rules): a cue
+  ("investigate", "look into", "dig into", "the activity of", "pnair's activity", "what did
+  user pnair do") with a host or user named after its kind word gets the in-depth look
+  (`deep`) over the window the question names (30 days when none), an IP, URL, hash or
+  domain (by its shape or after its kind word) the indicator hunt, and a name of no stated
+  kind ("investigate pnair", "pnair's activity") the hunt with kind `keyword` (its log
+  events and the cases that carry it, no reputation lookup). A case is chosen only when
+  the question names one (an id or number, "the newest escalated case"); a failed sign-in
+  question keeps the brute-force plan, "what did the agents do" the audit, and a Case
+  Manager chat stays about its case. The re-shoot's "Investigate the activity of user
+  pnair in the last 3 days and the cases it appears in" now reads pnair's logs and cases
+  over 3 days instead of "CASE-000089 investigation".
+- **Tie wording (PB5):** an answer calls one item the highest, the most, the oldest or the
+  top only when no other shares its figure as the answer writes it (risk and counts
+  rounded as shown). "My cases" with two cases at 62 says "Start with `CASE-000046`: it is
+  tied with `CASE-000043` for the highest risk of your open cases (62); it was opened more
+  recently" (the first listed stays where to start, so the list, its block and its
+  follow-ups agree; the fact is its opening time against the others, and without opening
+  times the lead names the tie only). The same rule covers the oldest open case, a trend's peak
+  bucket, the shift lead's most overdue case, the top rule and busiest period in report
+  steps, the period with the most spend, the highest response time and lowest automation
+  rate per period, the rule most false or true positives came from, the top group and the
+  top value of an earlier answer, the riskiest related case of an in-depth look, the
+  pivot's anchor case, a closed list's highest risk, the triage list, a report summary's
+  chart leaders and the volume card's "one rule drove most of it" (now a real majority,
+  more than half).
+- **The rule card without its id (PB5):** `noisy_rule_unnamed` looks the rule up by the
+  card's count (`case_stats` by rule over the last 24 hours, then the rule's verdicts and
+  cases): the rule that created exactly `n` cases, else the rule with the most now, said
+  as "No rule has exactly 12 cases in the last 24 hours now, the count the suggestion
+  showed; `rule_b` is the rule with the most" and never as the same rule's count having
+  moved. Rules tied at that count are all named, and the title then stays "Noisy detection
+  rule". `silent_source_unnamed` is answered like `silent_sources`.
+- **Polish round PB6 (the final re-shoot's planner findings):** a name of no stated kind
+  is hunted only when no other rule reads the word (`_PRODUCT_WORD_RE` in `_actor_word`):
+  an ATT&CK id goes to the technique plan ("Investigate T1059.001", "Investigate T1110"),
+  cost and spend to the cost plan, sources and ingestion to source health, tuning and
+  approvals to automation status, MTTR to its metric, and autopilot, enrichment or risk to
+  the Help Center, as before PB5; "Show activity by severity" is a log count by severity.
+  A full stop ends a name only where the sentence ends (`_NAME_END_DOT`), so
+  "admin@corp.example" and "T1059.001" are read whole, and an email address is
+  investigated as a user (the in-depth look), never as its domain. "Investigate …" picks
+  a case only when it picks one, by recency or status ("the newest escalated case",
+  "the escalations") or by pointing back ("it", "further") (`_investigation_subject`);
+  "the riskiest case" or "the top 5 cases" is a list. Otherwise a named detection rule
+  (an identifier with a digit, `_`, `-`, `.` or `:` after "rule", a quoted one, or any
+  after "detection rule") gets its cases by verdict (`case_stats` with the rule filter,
+  `Ask.rule`; titled "Rule <id> cases" when the title rules accept the id), "look into"
+  included, read before the planner's word rules so that a word inside the id ("cost" in
+  LP-COST-7, "risk" in LP-ES-RISK-1001) asks for nothing (`_investigated_rule`); a
+  named log source its newest events (`source_events`: the source by its whole name,
+  else the one source whose name has that word or whose type it is; silent, disabled or a
+  failed last poll is said first, and an unknown name lists the configured sources); an
+  attack type the keyword hunt (`pivot`); and anything else the plan the same words get
+  after "Show"
+  ("the false positives from yesterday" lists them, "today's alerts" lists today's
+  cases). Only a question that none of those read ("Investigate lateral movement") still
+  starts from the newest escalated case, which the answer names as "the newest of N
+  escalated cases"; a Case Manager chat stays about its case. A plain name is still
+  hunted: "What did alice do today?" cannot tell an analyst from a user in the logs, and
+  its log events and the cases that carry it answer either reading, where the Help Center
+  answered neither. Ties: a rule card whose count moved, with rules tied for the most,
+  says "`rule_b`, listed first, is one of the rules tied for the most"; periods of spend
+  tie when their figures read the same ("$0.0027" each). The in-depth look's rankings
+  after a dated window ("(since 24 Sep 2026; 5 of 5 sources answered)") start at their
+  field ("By rule, …") instead of inside the bracket.
 - Limits: the planner has no clock, so a window-less case-chat chip falls back to the last
   24 hours when no earlier question named a window (the answer states it); a chip
-  comparison over a "since" window shows the tool's period label with an en dash.
+  comparison over a "since" window shows the tool's period label with an en dash. A
+  weekday bound ("since Monday") is not read as a window, so an investigation that names
+  one uses its default window and says which.
 
 ### 10.7 Known limitations
 
@@ -1990,18 +2191,31 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
 - **Entry chunk:** the account-profile fix lives in `lib/api.ts`, which is on first paint;
   it grew the entry chunk by 157 B (371,706 to 371,863 B against the 372,027 B budget),
   the one exception to "the entry chunk must not grow". Every chat module stays lazy.
-- **Long references in start questions (second re-shoot):** the start stack holds still
-  (within 8 px) from skeleton to cards only while a question's references are shorter than
-  28 characters. The `{rule}` slot takes up to 128 non-space characters, and an Elastic rule
-  id is a 36-character UUID, so a noisy-rule card such as "Why did detection rule
-  sigma_win_susp_powershell_encoded_command_execution create 12 of the 40 cases in the last
-  24 hours?" adds a line and moves the greeting 20 to 40 px at 390, 1440 and 1920 when it is
-  new since the heights last measured at that width (a repeat visit's skeleton uses those
-  measured heights and holds still). A card's question is exactly what it sends and is
-  never truncated (§5.2), so the web cannot shorten it; the fix is in the server's wording
-  (`agents/chat_starter_text.py`): keep a long reference out of the question line, as the
-  campaign card does, for example "Why did the detection rule below create 12 of the 40
-  cases…" with the rule id in the reason line. Open, for the backend.
+- **Long references in start questions (second re-shoot): closed in polish round PB5.**
+  The start stack holds still (within 8 px) from skeleton to cards only while a question's
+  references are shorter than 28 characters, and an Elastic rule id is a 36-character
+  UUID. The server now applies one length rule to every reference kind (§3.7, at most 27
+  characters per word, the limit up to which the web keeps a word whole, §10.5 "One length
+  rule"): a long rule id gives the count-only `noisy_rule_unnamed` card,
+  keyed per rule, and its answer finds the rule by the count; a quiet source falls back to
+  its id, then to `silent_source_unnamed`. The id is not put in the reason line (reason
+  lines never carry log-derived text, §3.7, and a reason line is never sent, so the
+  question would not name the rule). Remaining: a deployment with case numbering off
+  names a case by its 37-character internal id (needs a person, my case, response target
+  and campaign cards), because no wording without the reference names one case among
+  several; there the stack can still move on a first view at a width. Turning case
+  numbering on removes it. Holding still means the greeting, the catch-up line, the cards'
+  top and the pills: cards that land shorter than their skeleton leave the difference under
+  the last card, above the pills (review of the third re-shoot; spare height above the
+  greeting had moved the greeting 20 px down on every cold load on a phone, §10.5 "Spare
+  height under the cards"). A kept reference wider than a card's whole line (27 characters
+  of capitals on a 360 px phone or a four-column card) wraps inside its own box, so that
+  card can still be a line taller than its skeleton.
+- **Demo investigations of a bare vendor or provider name (PB6):** the Demo planner knows
+  the console's own words, not every vendor or provider name, so "Investigate wazuh" or
+  "What did VirusTotal do?" is hunted as a keyword (the log events and cases that carry
+  it). "Investigate source Wazuh" names the source, and "What is VirusTotal?" reaches the
+  Help Center.
 - **Old Demo source names** (with an em dash) remain in four test fixtures, three webui
   (`Composer.test.tsx`, `command-note.test.tsx`, `ChatComposerDefaults.test.tsx`) and one
   backend (`backend/tests/test_reports_routes.py`); they are not live data.

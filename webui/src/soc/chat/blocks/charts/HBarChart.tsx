@@ -115,7 +115,7 @@ function BarListView({ block, title, staticMode }: { block: ChartBlock; title: s
           const share = Math.max(0, Math.min(1, values[i] / max));
           return (
             <li key={`${label}-${i}`} className="min-w-0" data-bar-row={i}>
-              <span className={cn('block truncate text-sm text-foreground', block.untrusted && 'font-mono')} title={label}>
+              <span className={cn('block truncate text-sm text-foreground', block.untrusted ? 'font-mono' : 'proportional-nums')} title={label}>
                 {label}
               </span>
               <span className="mt-1 flex items-center gap-2">

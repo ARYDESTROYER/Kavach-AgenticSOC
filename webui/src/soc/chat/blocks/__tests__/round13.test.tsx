@@ -448,14 +448,18 @@ describe('case references (T14)', () => {
     });
     render(<AnswerBlocks blocks={[block]} messageId="m1" />);
     const list = screen.getByTestId('block-case-list');
-    const number = within(list).getByText('CASE-0042');
+    const number = list.querySelector('[data-case-ref="number"]') as HTMLElement;
+    expect(number).toHaveTextContent('CASE-0042');
     expect(number).toHaveClass('font-mono');
     expect(number).toHaveAttribute('title', 'case-6b22d1999bf94f3a91c10ab2a23e6e7c');
     // The title is whole; its host name never breaks at a hyphen (PW4-1: its own no-wrap span).
     const titleRef = list.querySelector('[data-case-ref="title"]') as HTMLElement;
     expect(titleRef.textContent).toBe('Brute force on vpn-gw-2');
     expect(Array.from(titleRef.querySelectorAll('[data-kept-token]'), (n) => n.textContent)).toEqual(['vpn-gw-2']);
-    expect(number).toHaveClass('whitespace-nowrap');
+    // The number never breaks at its hyphen: its own no-wrap span (a number longer than
+    // 27 characters breaks where its line ends instead, third re-shoot review).
+    expect(number.querySelector('[data-kept-token]')).toHaveTextContent('CASE-0042');
+    expect(number.querySelector('[data-kept-token]')).toHaveClass('whitespace-nowrap');
     // With a number, the internal id is no longer a visible line under each row.
     expect(within(list).queryByText('case-6b22d1999bf94f3a91c10ab2a23e6e7c')).toBeNull();
     // A case with neither a number nor a title is named by its whole id, which wraps.
