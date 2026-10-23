@@ -743,6 +743,18 @@ describe('the Overview renders on grouped panels', () => {
     expect(funnel).not.toContain('hover:bg-popover');
   });
 
+  it('keeps link text at full strength on hover (a dimmed primary fell below 4.5:1)', async () => {
+    await mount();
+    const detail = screen.getByRole('button', { name: /Detail/ });
+    const viewAll = screen.getByRole('button', { name: 'View all' });
+    for (const link of [detail, viewAll]) {
+      expect(link).toHaveClass('text-primary');
+      expect(link.className).not.toMatch(/hover:text-primary\/\d/);
+    }
+    // The ghost button's own hover would turn it to body text: it stays the link colour.
+    expect(detail).toHaveClass('hover:text-primary');
+  });
+
   it('keeps a forced-colours backplate under the KPI label: the fluid numerals get an inset', () => {
     const forced = Array.from(stripComments(css).matchAll(/@media \(forced-colors: active\) \{/g)).map((m) =>
       bodyAfter(stripComments(css).slice(m.index!), '@media (forced-colors: active)'),

@@ -96,9 +96,9 @@
        5.34:1 and primary 5.24:1 on the panel. The structural line (`--input`,
        `--border-strong`, and `--border` under increased contrast) is one step deeper
        too: 220 15% 58% measured 2.85:1 on the panel, 55% measures 3.17:1 on it and
-       3.46:1 on the canvas. The semantic text steps are two notches deeper, so a badge on
-       its 10% wash clears 4.5:1 on a resting panel AND on a hovered row (worst 4.60:1,
-       low over the hover). */
+       3.46:1 on the canvas. The semantic text steps are deeper still (1 to 2 points of
+       lightness), so a badge on its 10% wash clears 4.5:1 on a resting panel AND on a
+       hovered row (worst 4.60:1, low over the hover). */
     --panel: 230 22% 94.5%;
     --panel-muted: 230 12% 91%;
     --panel-hover: var(--slate-5);

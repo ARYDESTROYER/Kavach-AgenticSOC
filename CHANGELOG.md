@@ -1532,7 +1532,11 @@ and, just as importantly, makes each of these conditions a state an operator can
   light, a step lighter in dark) with rounded corners and no border or shadow, so where one
   card ends and the next begins is plain at a glance; band titles stay on the page. The
   panel is the new `--panel` theme token (`.surface-panel`, `bg-panel`), measured by the
-  contrast gate, and the temporary `?separation=` preview switch is gone.
+  contrast gate, and the temporary `?separation=` preview switch is gone. Inside a panel the
+  progress tracks, hover and selected states, control edges and badge text step with it, so
+  nothing that showed on the page fades into the panel (measured in both themes, under
+  increased contrast too), and the Case outcomes legend stacks under its ring when its panel
+  is narrow.
 - **A neater chat (Round 13).** Answers keep one 42rem reading column on the lane's left
   edge (prose at a 38rem measure and 15/24, about 85 characters a line), and small results
   (up to four key figures, an indicator, a case list, ATT&CK techniques, a short table, a

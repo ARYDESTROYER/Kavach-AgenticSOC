@@ -1118,7 +1118,7 @@ function TopCasesPanel({
         {navigate ? (
           <button
             type="button"
-            className="shrink-0 rounded-sm px-1 py-0.5 text-sm font-medium text-primary transition-colors hover:text-primary/80 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="shrink-0 rounded-sm px-1 py-0.5 text-sm font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => navigate('cases', { window: navWindow })}
           >
             View all
@@ -4120,7 +4120,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="-mr-2 h-7 shrink-0 px-2 text-sm font-medium text-primary hover:text-primary/80"
+                          className="-mr-2 h-7 shrink-0 px-2 text-sm font-medium text-primary hover:text-primary"
                           onClick={() => navigate('metrics', { tab: 'posture' })}
                         >
                           Detail →

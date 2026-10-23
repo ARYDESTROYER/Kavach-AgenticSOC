@@ -1074,9 +1074,9 @@ neutral step that paints on it moves with it, in the canvas's own order: muted (
 tracks, `hover:bg-muted`, secondary badges), hover and the selected wash each one notch deeper
 (`--panel-muted`, `--panel-hover`, `--panel-accent`), the structural line one step deeper
 (`--panel-border-strong`, the panel's `--input` and `--border-strong`), and the semantic text
-retuned (`--panel-<axis>-text`: two notches darker in light, critical one notch lighter in
-dark), so nothing that shows on the canvas (a track, a hovered row, a KPI hover wash, a
-selected item) vanishes into the panel, a control edge clears 3:1 against the panel, and a
+retuned (`--panel-<axis>-text`: darker in light, critical one notch lighter in dark), so
+nothing that shows on the canvas (a track, a hovered row, a KPI hover wash, a selected
+item) vanishes into the panel, a control edge clears 3:1 against the panel, and a
 badge clears 4.5:1 on a resting panel and on a hovered row. A chip that lifts on hover uses
 the hover step, never `--popover`. MEASURED by the contrast gate: the panel against the canvas
 is 1.09:1 in light and 1.12:1 in dark (a grouping cue, not a WCAG bar), muted 1.08:1 and

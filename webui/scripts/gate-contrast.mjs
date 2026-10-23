@@ -118,8 +118,9 @@ export const SEMANTIC_FILL_AXES = TEXT_WASH_AXES;
  *  `--primary` is the default brand's link colour ("Review →", "View all", a case id); a
  *  custom brand is the operator's own. */
 export const PANEL_TEXT_AXES = ['--foreground', '--muted-foreground', '--secondary-foreground', '--primary'];
-/** Text measured on the panel's muted step (secondary badges, the flow's count chip). */
-export const PANEL_MUTED_TEXT_AXES = ['--muted-foreground', '--secondary-foreground'];
+/** Text measured on the panel's muted step: secondary badges and the flow's count chip
+ *  (muted text), and a ghost link button's hover (`hover:bg-muted`, primary text). */
+export const PANEL_MUTED_TEXT_AXES = ['--muted-foreground', '--secondary-foreground', '--primary'];
 /** The panel against the canvas it sits on. */
 export const PANEL_SEPARATION = 1.08;
 /** The panel's muted step against the panel (the canvas's own muted step is 1.07:1). */
