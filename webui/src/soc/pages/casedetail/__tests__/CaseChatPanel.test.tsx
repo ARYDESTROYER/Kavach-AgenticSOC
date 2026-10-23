@@ -166,6 +166,19 @@ async function renderTab(props: Partial<React.ComponentProps<typeof ChatTab>> = 
 const streamBodies = () => calls.filter((call) => call.url === '/api/chat/stream').map((call) => call.body);
 
 describe('ChatTab — the case-scoped chat', () => {
+  it('names the case by the number its header shows, and still scopes turns by its id', async () => {
+    // Round 13 polish: the status line read "Scoped to case-f0a80e8d…" under a header
+    // that says CASE-000086.
+    await renderTab({ c: { case_id: 'case-9', case_number: ' CASE-000086 ' } as unknown as Case, presentation: 'case-manager' });
+    const status = screen.getByRole('group', { name: 'AI analyst status' });
+    expect(status).toHaveTextContent(/Scoped to\s*CASE-000086/);
+    expect(status).not.toHaveTextContent('case-9');
+    fireEvent.click(await screen.findByRole('button', { name: 'Summarise the case' }));
+    await settle();
+    expect(streamBodies()[0]).toMatchObject({ case_id: 'case-9' });
+    expect(screen.getByRole('log', { name: 'Case CASE-000086 messages' })).toBeInTheDocument();
+  });
+
   it('scopes every turn to this case and never saves it to personal history', async () => {
     await renderTab();
     expect(screen.getByRole('group', { name: 'AI analyst status' })).toHaveTextContent(/Scoped to\s*case-9/);

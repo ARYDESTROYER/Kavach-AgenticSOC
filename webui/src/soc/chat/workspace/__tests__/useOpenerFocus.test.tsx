@@ -6,8 +6,8 @@
  * focus to the opener.
  */
 import { describe, expect, it } from 'vitest';
-import { renderHook } from '@testing-library/react';
-import { useOpenerFocus } from '../useOpenerFocus';
+import { act, renderHook } from '@testing-library/react';
+import { useFocusAfterSwap, useOpenerFocus } from '../useOpenerFocus';
 
 function content(html: string): HTMLElement {
   const el = document.createElement('div');
@@ -45,5 +45,31 @@ describe('useOpenerFocus', () => {
     expect(open.defaultPrevented).toBe(false);
     expect(() => result.current.capture()).not.toThrow();
     sheet.remove();
+  });
+});
+
+describe('useFocusAfterSwap', () => {
+  it('focuses the replacement only when the swap dropped focus to the page', () => {
+    const { result } = renderHook(() => useFocusAfterSwap());
+    const pressed = content('<button>Collapse history</button>');
+    const replacement = content('<button>Show history</button>');
+    (pressed.querySelector('button') as HTMLButtonElement).focus();
+    // The pressed button leaves the page with the swap: focus goes to the replacement.
+    act(() => {
+      pressed.remove();
+      result.current(() => replacement.querySelector('button'));
+    });
+    expect(document.activeElement).toBe(replacement.querySelector('button'));
+    // Focus kept elsewhere (the composer) stays where it is.
+    const field = content('<textarea aria-label="Message"></textarea>');
+    (field.querySelector('textarea') as HTMLTextAreaElement).focus();
+    act(() => result.current(() => replacement.querySelector('button')));
+    expect(document.activeElement).toBe(field.querySelector('textarea'));
+    // Nothing to focus: no error, focus is not moved.
+    act(() => (field.querySelector('textarea') as HTMLTextAreaElement).blur());
+    expect(() => act(() => result.current(() => null))).not.toThrow();
+    expect(document.activeElement).toBe(document.body);
+    replacement.remove();
+    field.remove();
   });
 });

@@ -1331,7 +1331,8 @@ async def _assigned_count(b: _Build) -> int | None:
 
     result = await aggregate_cases(b.ctx.cases, CaseAggregateSpec(
         window=resolve_window("all", tz=b.tz_name, now=b.now),
-        filters={"status_group": "active", "assignee": b.username}, prefs=b.prefs,
+        # An exact username (never an unassigned keyword: a user may be called "none").
+        filters={"status_group": "active", "assignee_user": b.username}, prefs=b.prefs,
     ))
     return int(result.total) if result.exact and not result.partial else None
 
@@ -1860,7 +1861,10 @@ async def _family_weekly(b: _Build) -> _Built:
         starter = b.card("weekly")
     if starter is None:
         return _Built()
-    return _Built(StarterCandidate("weekly", starter))
+    # §3.5 personal: the card fires only when the catch-up baseline is before the
+    # period's first midnight, so the period it reports is newer than the baseline by
+    # construction (1.5). It has no signal time (§3.3), so recency stays 1.0.
+    return _Built(StarterCandidate("weekly", starter, newer_than_baseline=baseline is not None))
 
 
 async def _family_continue(b: _Build) -> _Built:
@@ -2296,12 +2300,16 @@ def _catch_up(b: _Build, results: Mapping[str, _Built], baseline: datetime) -> C
 
 
 #: In Demo Mode the ``demo`` card is always among the first cards a wide lane shows
-#: (§3.11 "the same families over the seeded stores, plus the demo card").
+#: (§3.11 "the same families over the seeded stores, plus the demo card"): slot 4.
 DEMO_CARD_SLOT = 3
 
 
 def _keep_demo_card(ranked: list[StarterCandidate], candidates: Sequence[StarterCandidate],
                     user_state: StarterUserState | None, now: datetime) -> list[StarterCandidate]:
+    """The Demo card in slot 4, except on the visit that starts a shift: a shift-start
+    card ranked fourth keeps slot 4 and the Demo card takes slot 5 (Round 13 polish
+    decision, §10.2), so a first Demo visit shows the shift card among the first four
+    (§8.3 shot 1)."""
     demo = next((c for c in candidates if c.family == "demo"), None)
     if demo is None or (user_state is not None and "demo" in user_state.dismissed_families(now)):
         return ranked
@@ -2309,7 +2317,11 @@ def _keep_demo_card(ranked: list[StarterCandidate], candidates: Sequence[Starter
     position = next((i for i, c in enumerate(ranked) if c.family == "demo"), None)
     if position is not None and position <= DEMO_CARD_SLOT:
         return ranked
-    others.insert(min(DEMO_CARD_SLOT, len(others)), demo)
+    slot = DEMO_CARD_SLOT
+    if (len(others) > slot and others[slot].family == "shift"
+            and getattr(others[slot].starter, "template", None) == "shift_start"):
+        slot += 1
+    others.insert(min(slot, len(others)), demo)
     return others[:MAX_STARTERS]
 
 

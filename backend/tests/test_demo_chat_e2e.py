@@ -334,11 +334,12 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
     assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
     case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
-    # Round 13 A8: the case's display number leads, then what happened to which user.
+    # Round 13 A8: the case's display number leads, then what happened to which user;
+    # the internal id the question named is stated once beside the number (polish).
     number = (await demo_state.cases.get("demo-00000539-0004")).case_number
     assert number, "every seeded Demo case is numbered"
-    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \([a-z ]+ on user `[^`]+`\) needs human review",
-                    case.answer), case.answer
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`demo-00000539-0004`, [a-z ]+ on user `[^`]+`\) "
+                    r"needs human review", case.answer), case.answer
 
 
 @pytest.mark.parametrize("question", ["Build a posture report", "Build a noise reduction report"])

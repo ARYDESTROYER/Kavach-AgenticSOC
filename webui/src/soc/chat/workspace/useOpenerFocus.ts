@@ -49,3 +49,32 @@ export function useOpenerFocus(): OpenerFocus {
   }, []);
   return React.useMemo(() => ({ capture, restore }), [capture, restore]);
 }
+
+/**
+ * useFocusAfterSwap — hand focus on when a control takes itself off the page (Round 13
+ * polish). Collapse history and Show history swap the rail and the strip, and the docked
+ * report panel's Close button leaves with the panel, so the button that had focus is
+ * gone and the browser drops focus to `<body>`.
+ *
+ * Call the returned function with a finder in the same handler that changes the layout:
+ * after that commit (a layout effect, before paint) the finder's element takes focus,
+ * quietly (`focusQuietly`, so its tooltip stays shut), but only when focus was dropped.
+ * Focus the analyst kept somewhere else (the composer, a Safari click that never focused
+ * the button) stays where it is.
+ */
+export function useFocusAfterSwap(): (find: () => HTMLElement | null | undefined) => void {
+  const finder = React.useRef<(() => HTMLElement | null | undefined) | null>(null);
+  const [request, setRequest] = React.useState(0);
+  React.useLayoutEffect(() => {
+    const find = finder.current;
+    finder.current = null;
+    if (!find || typeof document === 'undefined') return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    focusQuietly(find());
+  }, [request]);
+  return React.useCallback((find: () => HTMLElement | null | undefined) => {
+    finder.current = find;
+    setRequest((n) => n + 1);
+  }, []);
+}

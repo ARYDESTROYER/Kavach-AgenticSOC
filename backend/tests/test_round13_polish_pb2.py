@@ -131,9 +131,11 @@ def test_a_case_title_carries_its_display_number_never_its_internal_id(number: A
     title = _title("Investigate case demo-1", lambda tool, inp: {"case": case} if tool == "get_case" else {})
     assert parse_title({"title": title}) == title
     if shown:
-        assert title == f"Identity signin case {number}"
+        # The number leads (a narrow history rail still shows it); the rule id as written.
+        assert title == f"{number} identity_signin case"
+        assert title.index(number) + len(number) <= 24
     else:
-        assert title == "Identity signin case"
+        assert title == "Rule identity_signin case"
         assert "demo-1" not in title and "case-9ae3" not in title
 
 

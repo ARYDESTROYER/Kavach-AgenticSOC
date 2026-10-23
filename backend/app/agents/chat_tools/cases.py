@@ -20,7 +20,7 @@ import math
 from collections import Counter
 from typing import Any, ClassVar, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, PrivateAttr, field_validator
 
 from ...constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, CaseStatus, Verdict
 from ...models import Citation, humanise_relative_window
@@ -110,6 +110,9 @@ class CaseFilters(ToolInput):
     rule: str | None = Field(default=None, max_length=128)
     window: str | dict[str, Any] | None = None
     window_hours: int | None = Field(default=None, ge=1)
+    #: Set by :func:`resolve_assignee_me`: ``assignee`` is the signed-in analyst's
+    #: username, matched as that exact name (never as an unassigned keyword).
+    _assignee_exact: bool = PrivateAttr(default=False)
 
     @field_validator("text", "entity", "assignee", "rule", "window_hours", mode="before")
     @classmethod
@@ -154,6 +157,15 @@ class CaseFilters(ToolInput):
         keys = ("text", "status", "status_group", "verdict", "entity", "severity", "priority", "assignee", "rule")
         return {k: getattr(self, k) for k in keys if getattr(self, k) is not None}
 
+    def aggregate_filters(self) -> dict[str, Any]:
+        """:meth:`filters` as the case aggregator takes them: the signed-in analyst's
+        username goes as ``assignee_user`` (an exact name), so a username such as
+        "nobody" or "none" never reads as the unassigned keyword."""
+        out = self.filters()
+        if self._assignee_exact and "assignee" in out:
+            out["assignee_user"] = out.pop("assignee")
+        return out
+
     def has_window(self) -> bool:
         return self.window is not None or self.window_hours is not None
 
@@ -165,6 +177,8 @@ class CaseFilters(ToolInput):
 #: before: the case rows already show every case's assignee to anyone who may read cases.
 ASSIGNEE_ME = "me"
 ASSIGNEE_ME_NOBODY = 'No analyst is signed in (sign-in is off), so assignee "me" matches no case'
+#: The observation note of a lookup that resolved assignee "me" (search_cases, case_stats).
+ASSIGNEE_ME_OWN = "the signed-in analyst's own cases"
 
 
 def resolve_assignee_me(ctx: ChatToolContext, args: Any) -> tuple[Any, bool | None]:
@@ -177,7 +191,9 @@ def resolve_assignee_me(ctx: ChatToolContext, args: Any) -> tuple[Any, bool | No
     caller = (getattr(ctx, "caller", "") or "").strip()
     if not caller:
         return args, False
-    return args.model_copy(update={"assignee": caller}), True
+    resolved = args.model_copy(update={"assignee": caller})
+    resolved._assignee_exact = True
+    return resolved, True
 
 
 class SearchCasesInput(CaseFilters):
@@ -208,7 +224,11 @@ def _case_matches(case: Any, args: SearchCasesInput, prefs: Any, window: Any) ->
     if args.assignee is not None:
         wanted = args.assignee.strip().lower()
         actual = (case.assignee or "").strip().lower()
-        if wanted in ("unassigned", "none", "nobody", "(unassigned)"):
+        if getattr(args, "_assignee_exact", False):
+            # The signed-in analyst: an exact username, even "nobody" or "none".
+            if actual != wanted:
+                return False
+        elif wanted in ("unassigned", "none", "nobody", "(unassigned)"):
             if actual:
                 return False
         elif actual != wanted:
@@ -351,13 +371,25 @@ class SearchCasesTool(ChatTool):
         outcome = self._outcome(ctx, args, window, page, listed_count, listed_exact, scanned, counts,
                                 unlisted=unlisted)
         if me:
-            outcome.observation["assignee_me"] = "the signed-in analyst's own cases"
+            outcome.observation["assignee_me"] = ASSIGNEE_ME_OWN
         return outcome
 
     def _nobody_signed_in(self, ctx: ChatToolContext, args: SearchCasesInput, window: Any) -> ToolOutcome:
-        """Assignee "me" with nobody signed in: an exact zero, said plainly (no read)."""
+        """Assignee "me" with nobody signed in: an exact zero, said plainly (no read).
+
+        No block: a "Matching cases 0" figure or an empty case list would read as a
+        fact about the queue, when the lookup could not ask the question at all. The
+        only next lookup offered drops the assignee filter (any other would still
+        carry "me" and be refused the same way)."""
         outcome = self._outcome(ctx, args, window, [], 0, True, None, None)
         outcome.observation["assignee_me"] = ASSIGNEE_ME_NOBODY
+        outcome.observation["suggestions"] = [
+            s for s in outcome.observation.get("suggestions") or []
+            if isinstance(s, dict) and "assignee" not in (s.get("input") or {})
+        ]
+        if not outcome.observation["suggestions"]:
+            outcome.observation.pop("suggestions")
+        outcome.artifacts = []
         outcome.summary = f"{ASSIGNEE_ME_NOBODY} ({window.label})"
         outcome.coverage = ASSIGNEE_ME_NOBODY
         return outcome
@@ -439,7 +471,7 @@ class SearchCasesTool(ChatTool):
 
         try:
             return await run_case_aggregate(
-                ctx, window, filters=args.filters(), group_by=("verdict", "status"),
+                ctx, window, filters=args.aggregate_filters(), group_by=("verdict", "status"),
                 metrics=("count", "mean_risk"),
             )
         except Exception as exc:  # noqa: BLE001 — degrade to the listing's count
@@ -1172,6 +1204,14 @@ class ListCampaignsTool(ChatTool):
             logger.warning("list_campaigns failed: %s", exc)
             return ToolOutcome.failure("The campaign store did not answer")
         rows = [campaign_json(c) for c in campaigns]
+        numbers = await _case_numbers(ctx, [c for r in rows for c in r["case_ids"][:5]])
+
+        def member_numbers(ids: list[Any]) -> dict[str, Any]:
+            # Each listed member's display number beside its id (Round 13 A8), so an
+            # answer names the cases as the analyst knows them; omitted when none has one.
+            shown = [numbers.get(str(c)) for c in ids[:5]]
+            return {"case_numbers": shown} if any(shown) else {}
+
         observation = {
             "status_filter": args.status,
             "total": total,
@@ -1179,6 +1219,7 @@ class ListCampaignsTool(ChatTool):
             "campaigns": [
                 {"id": text(r["id"], 128), "name": opt_text(r["name"], 120), "status": r["status"],
                  "case_count": r["case_count"], "case_ids": [text(c, 128) for c in r["case_ids"][:5]],
+                 **member_numbers(r["case_ids"]),
                  "entities": [f"{text(e['entity_type'], 20)}:{text(e['value'], 120)}" for e in r["entities"][:5]],
                  "mitre": [text(t, 16) for t in r["mitre"][:5]],
                  "severity": r["severity_rollup"], "first_seen": r["first_seen"], "last_seen": r["last_seen"]}
@@ -1216,6 +1257,29 @@ class ListCampaignsTool(ChatTool):
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            rows=len(rows), basis="exact",
                            untrusted_params={"campaign_id": args.campaign_id} if args.campaign_id else {})
+
+
+#: The most member cases a campaign listing reads display numbers for (one bounded read
+#: each; the rest keep their id alone).
+_CAMPAIGN_NUMBER_READS = 25
+
+
+async def _case_numbers(ctx: ChatToolContext, case_ids: list[Any]) -> dict[str, str]:
+    """``{case_id: display number}`` for up to :data:`_CAMPAIGN_NUMBER_READS` distinct
+    cases (a case without a number, or a failed read, is left out)."""
+    out: dict[str, str] = {}
+    if ctx.cases is None:
+        return out
+    for cid in list(dict.fromkeys(str(c) for c in case_ids if c))[:_CAMPAIGN_NUMBER_READS]:
+        try:
+            case = await ctx.cases.get(cid)
+        except Exception as exc:  # noqa: BLE001 -- the id alone still names it
+            logger.info("campaign member read failed: %s", exc)
+            continue
+        number = opt_text(getattr(case, "case_number", ""), 64) if case is not None else None
+        if number and number != cid:
+            out[cid] = number
+    return out
 
 
 # --------------------------------------------------------------------------- #

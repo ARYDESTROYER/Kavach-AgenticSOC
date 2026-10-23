@@ -426,6 +426,12 @@ class DemoStack:
         pipeline uses for a new case), oldest first, so the numbers read in creation
         order and the demo pipeline's next case continues after the last of them.
 
+        Every seeded case draws from the CURRENT reset bucket (its own creation date
+        still fills the date placeholders), so seeded cases either side of a reset
+        boundary never share a number, whatever the operator's reset period and
+        template: one sequence, one number per case, and the live pipeline continues
+        it in the same bucket.
+
         Deterministic: the generators are seeded and every enable builds a fresh demo
         KV, so a restart or a reset gives each seeded case the same number again. A case
         that already carries a number keeps it. Call it once, before the cases are saved.
@@ -450,6 +456,7 @@ class DemoStack:
             try:
                 number = await allocate_case_number(
                     self.case_seq, fmt, source=getattr(case, "source_name", "") or "", at=created(case),
+                    bucket_at=fallback,
                 )
             except Exception as exc:  # noqa: BLE001 -- numbering never breaks a demo enable
                 logger.warning("demo case-number allocation failed for %s: %s",

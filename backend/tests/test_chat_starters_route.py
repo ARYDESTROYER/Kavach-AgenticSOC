@@ -497,7 +497,14 @@ def test_demo_returns_dynamic_cards_from_the_seeded_data(monkeypatch: pytest.Mon
             best = min(best, time.perf_counter() - started)
         assert best < 0.6, best
         families = _families(info)
-        assert "demo" in families[:4]  # always among the cards a wide lane shows
+        # The Demo card takes slot 4 (among the cards a wide lane shows), except that a
+        # shift-start card ranked fourth keeps slot 4 on the visit that starts a shift
+        # and the Demo card follows it in slot 5 (Round 13 polish decision, §10.2).
+        templates = [c.get("template") for c in info["starters"]]
+        if templates[3:4] == ["shift_start"]:
+            assert families[4] == "demo", families
+        else:
+            assert "demo" in families[:4], families
         signals = [f for f in families if f in cs.BASE and f != "demo"]
         assert signals, families
         # A catch-up line on the first Demo visit (the Demo anchor stands in for a baseline).

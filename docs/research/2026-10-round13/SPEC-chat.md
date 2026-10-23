@@ -1288,19 +1288,22 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   is skipped and a one-step book reads "Promptbook, 1 step". The `needs_human` urgency dot
   uses the same rounded risk as its reason line.
 - **Demo:** the `demo` card takes slot 4 unless the viewer hid it (with base 20 it was
-  always ranked out of the six).
+  always ranked out of the six). Review decision (polish round): on the visit that starts
+  a shift, a `shift_start` card ranked fourth keeps slot 4 and the Demo card takes slot 5,
+  so §8.3 shot 1 (the shift card on screen on a first Demo visit) holds; this narrows
+  §3.11's "among the first cards a wide lane shows" for that one visit, and the route test
+  encodes both cases.
 - **Shift card personal factor (polish round):** the shift family's signal time is the
   start of the shift (the visit that started it), and the card now counts §3.5's
   `personal = 1.5` when that start is newer than the catch-up baseline, as every other
   timed family does: a shift-start card on a new shift scores 80 × 1.5 × 1.5 = 180
   (recency 1.0), a handoff whose shift began before the baseline keeps 1.0. On a first
   Demo visit it ranks fourth among the signals (after new cases, a case that needs a
-  person and response targets) and is served in the six, but the Demo card's slot 4
-  rule above puts it fifth, so it fills the first slot a hidden card frees rather than
-  showing among the first four. §8.3 shot 1 asks for the shift card on screen; no
-  ranking rule in §3.5 or this section moves it above the slot-4 Demo card, so it is
-  left as ranked. `weekly` has no signal time in §3.3 and keeps recency 1.0 and
-  personal 1.0.
+  person and response targets) and is served fourth, with the Demo card after it (the
+  Demo rule above). `weekly` has no signal time in §3.3 and keeps recency 1.0; it fires
+  only when the catch-up baseline is before the period's first midnight, so with a
+  baseline it counts personal 1.5 (newer than the baseline by construction) and without
+  one (a first visit) 1.0, like every other family.
 - **Assignee "me" (polish round):** `search_cases` and `case_stats` take assignee `me`,
   resolved on the server to the signed-in analyst's username (`ChatToolContext.caller`,
   `""` with auth off), matched like every assignee (trimmed, case-insensitive), the
@@ -1322,6 +1325,28 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   on (Admin owning 3 open cases) that the card's count, the answer's count and its case
   list agree, and that the near-target answers name the snapshot's nearest rows with
   their owners.
+- **"My cases" questions (polish review):** the Demo planner marks a question about the
+  analyst's own cases (`Ask.mine`: "my … cases" with up to three words between, or
+  "assigned to me") and classifies it as usual; every case lookup its plan sends
+  (`search_cases`, `case_stats`, comparisons, entity case counts, the automation trend)
+  carries assignee `me` beside the filters the question names. The fixed `my_cases` plan
+  (open cases by risk) is used only when the question names no other status, verdict,
+  severity, entity, rule or text, no breakdown, bucket, window or comparison, no report
+  and no shift, posture, trend, SLA, campaign or noise subject. An answer whose case
+  lookups carried no `me` (the shift snapshot, posture, trends) says "These figures cannot
+  be narrowed to the cases assigned to you, so they cover every case, not only yours" (the
+  SLA answer keeps its own sentence). Answers say "assigned to you" and titles start "My"
+  for the analyst's own cases (`case_stats` observations now carry `assignee_me` too). The
+  golden set checks ten such questions with sign-in on (filters kept, `me` on every case
+  lookup, only the caller's cases listed) and the snapshot sentence.
+- **Assignee "me" edge cases (polish review):** the resolved username is matched as that
+  exact name, in the in-memory matcher and in the aggregator (a new filter key
+  `assignee_user` in `engine/case_aggregate.CASE_FILTER_FIELDS`, never read as an
+  unassigned keyword; the `my_cases` card's exact count uses it too), so a user called
+  "nobody", "none" or "unassigned" gets their own cases, not the unassigned queue. A
+  zero result's next lookups keep assignee `me`. With nobody signed in, `search_cases`
+  returns no artifacts (no "Matching cases 0" figure, no empty list) and only the lookup
+  without the assignee filter is suggested.
 - **Close-to-target rows (polish round):** `shift_report`'s `sla` observation gains
   `about_to_breach`: the open cases within three quarters of their response target, at
   most 5 (the overdue list's bound), the least time left first, each with `case_id`,
@@ -1501,7 +1526,10 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   `parse_title` keeps, plus ONE detail that tells similar conversations apart where one
   exists, each server-made or validated: the case's display number from `get_case` (never
   the internal id, nor a number equal to it or with a long hex run: "CASE-000045 needs a
-  person", "Identity signin case CASE-000045", "Next step on CASE-000045"); an ATT&CK
+  person", "CASE-000045 identity_signin case", "CASE-000045 brief, identity_signin",
+  "Next step on CASE-000045"; review fix: case and brief titles lead with the number,
+  which the golden set checks ends within the first 24 characters, because the 264 px
+  history rail cuts a title after about 26); an ATT&CK
   technique id the bundled corpus knows ("ATT&CK hunt for T1078", "Cases with T1078"); the
   window the answer's main lookup labelled, brackets dropped and only in a closed window
   grammar ("Security posture, last 24 hours", "Cases by severity, October 2026"), else
@@ -1510,15 +1538,25 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   enumerated status, severity and verdict filters the lookup applied ("Open critical
   cases, this week", "Open cases by severity, all time"); an indicator or entity KIND, never
   its value ("IP address hunt, last 7 days", "Host deep dive, last 30 days"); a rule id
-  only when it passes the rule grammar `[A-Za-z0-9][A-Za-z0-9_.:-]{0,39}` ("Noisy rule
-  demo_noisy_scanner"). A case is named by its rule ids, never its title (case text). A
+  exactly as written (never re-cased or re-spaced) and only when it passes the rule
+  grammar `[A-Za-z0-9][A-Za-z0-9_.:-]{0,39}`, the starter reference grammar unchanged
+  (`chat_starter_text.ref_value("rule", …)`, which refuses a role marker such as
+  `SYSTEM:x` and its look-alikes) and is not shaped like an IP address, domain, hash, URL
+  or email ("Noisy rule demo_noisy_scanner", "Rule identity_signin case"); for "my cases"
+  questions, "My" before the filters ("My closed cases, all time"); the console page a
+  product-help or settings-change answer links first, as the console map labels it and
+  only when the reference names it by the map's own breadcrumb ("Sources help",
+  "Appearance & customization change"); the request a refusal is about, from closed
+  lists ("Isolation request", "Code request, outside chat"). A case is named by its rule
+  ids, never its title (case text). A
   detail that would break the 6-word or 48-character bound is dropped, never cut. The
   golden set checks that its first questions' data answers share a title at most 8 times
   and that at least 65% of them are distinct (189 of 267 as built, from 84 distinct titles
   across all 344 first questions before), that pairs differing in one detail differ, and
-  that no title repeats a value the question carries. Product-help and refusal titles
-  ("Console help", "Response actions") carry no detail; the live model's title sentence in
-  the prompt is unchanged (the prompt budget has no room).
+  that no title repeats a value the question carries. Product-help and refusal titles fall
+  back to "Console help", "A settings change" or "Response actions" only when no console
+  page or request word applies; the live model's title sentence in the prompt is unchanged
+  (the prompt budget has no room).
 
 ### 10.5 Part B as built (T items)
 
@@ -1655,6 +1693,35 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   tallest card) needs them. On Demo first loads the grid changed by 0 px at 1440, 1920
   and 390. A first load whose questions wrap to more lines than that still grows (one
   column keeps each card's own height).
+- **Phone start stack (review of the polish round):** rendered start questions run from
+  about 40 to 90 characters, most near 65, and a first load usually brings one long one,
+  so in one column the first skeleton card holds a long question (about 75 characters,
+  `LONG_QUESTION_PX` 520) and the others a typical one (455): three, two and two lines at
+  375 and 360, two each at 390 and 414 (only the column's total moves the stack). A
+  uniform 520 was rejected: it reserves three lines for every card at 375 and 360, where
+  most questions take two. While the cards load in one column the capability line keeps
+  two lines (`min-h-[2lh]`) for the catch-up line that usually replaces it on a phone.
+  Re-measured on Demo first loads (questions of 62, 61 and 75 characters): grid 0 px and
+  stack top 0 px at 320, 360, 375, 390 and 414, and 0 px at 1440 and 1920. A set with two
+  or more long questions still grows by a line per extra long card.
+- **Focus that leaves with its control (review of the polish round):** the Read-only
+  chip guards its tooltip, and the access popover returns focus to it quietly on Escape
+  (`onCloseAutoFocus` with `focusQuietly`; a click or tap outside keeps the focus it
+  placed, as Radix does). Collapse history and Show history (and the history shortcut)
+  swap the rail and the strip, and the docked report's Close leaves with its panel, so
+  the focused button left the page and focus fell to `<body>`: `useFocusAfterSwap`
+  (`workspace/useOpenerFocus.ts`) then focuses the toggle on screen (`data-history-toggle`,
+  the toolbar's Report toggle), quietly and only when focus was dropped.
+- **Run log chips (review of the polish round):** a step's chips keep one order while it
+  runs and once it ends (`stepParamChips`: the started `step.params` order, then keys only
+  the result names, then untrusted-only keys; an untrusted key once, in mono). An ended
+  step used to list plain chips first and untrusted ones last.
+- **Case chat (review of the polish round):** below 560 px the Case Manager composer's
+  estimate shows as the context ring alone (`compact`, the estimate and the context in
+  the button's name), so the first keystroke takes 55 px, not 85, from the field (216 to
+  159 px at 390). The status line and the transcript's name use the case number the
+  header shows (`caseDisplayId`), falling back to the internal id; turns still carry the
+  id.
 
 ### 10.6 Demo (WP-DEMO13)
 
@@ -1711,7 +1778,18 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   policy and start even when the custom format is off for real cases (the Demo
   sandbox's `case_id_format.enabled` is forced on); the Demo pipeline continues the same
   sequence on the Demo KV, and a fresh stack per enable gives every seeded case the same
-  number after a restart or reset.
+  number after a restart or reset. Review fix: seeding draws every case's sequence value
+  from the CURRENT reset bucket (`allocate_case_number(bucket_at=now)`) while its own
+  creation date still fills the date placeholders, so seeded cases either side of a
+  reset boundary never share a number (a test checks every reset period). A Demo case
+  asked for by its internal id is answered by its number with that id beside it once;
+  Demo case reads planned from a listed row, and the "investigation brief" follow-up,
+  name the case by its number; the report summary digest carries `case_numbers` (and
+  `related_case_numbers`) beside the ids; `list_campaigns` rows carry `case_numbers` for
+  their listed members (at most 25 member reads per call). Open (web): the Word, Excel,
+  Markdown and HTML report exporters (`webui/src/soc/chat/report/export/walker.ts`) and
+  the Campaigns page's member list still print internal ids; the PDF and on-screen blocks
+  show numbers.
 - **"My cases" with sign-in off:** there is no signed-in analyst, so assignee `me`
   matches no case and the answer says so.
 - **Close-to-target cases:** `shift_report` names at most 5 of them (nearest first); the
@@ -1726,7 +1804,8 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   "entity · rules" (`machine_case_title`, `CASE_TITLE_SEPARATOR`), Demo simulator cases
   included, and rebuilds a re-investigated case's title the same way; stored titles keep
   the em dash they were written with and are not migrated, and every title parser
-  (`engine/demo_chat._MACHINE_TITLE_RE`) reads both.
+  (`engine/demo_chat._MACHINE_TITLE_RE`) reads both. New candidate summaries read
+  "Candidate awaiting analysis: {reason}." (review fix); stored summaries are unchanged.
 - **Shell user chip:** it reads the profile once per sign-in, so after a save it shows the
   old name until a reload (fixing it needs a listener on first-paint code).
 - **Entry chunk:** the account-profile fix lives in `lib/api.ts`, which is on first paint;

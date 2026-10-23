@@ -908,6 +908,33 @@ describe('Composer — case variant', () => {
     expect(screen.queryByRole('menuitem', { name: /Keyboard shortcuts/ })).toBeNull();
   });
 
+  it('shows only the ring beside a narrow field once there is a draft, so the field keeps its width', async () => {
+    // Round 13 polish: on a phone the "≈ 4.1k tokens" estimate took 85 px from the field
+    // on the first keystroke, and a typical question wrapped to four lines.
+    stubServer();
+    const user = userEvent.setup();
+    const wide = render(<Harness spies={spies} context={makeContext()} variant="case" />);
+    await user.type(screen.getByRole('textbox', { name: 'Ask about this case' }), 'W');
+    let estimate = screen.getByRole('button', { name: /Estimated next request/ });
+    expect(estimate).toHaveTextContent(/^≈ .+ tokens$/);
+    expect(screen.queryByTestId('context-ring')).toBeNull();
+    wide.unmount();
+    stubComposerWidth(358);
+    render(<Harness spies={spies} context={makeContext()} variant="case" />);
+    const field = screen.getByRole('textbox', { name: 'Ask about this case' });
+    expect(screen.getByRole('button', { name: /Estimated next request/, hidden: true }).closest('[data-meter-state]')).toHaveAttribute(
+      'data-meter-state',
+      'rest',
+    );
+    await user.type(field, 'W');
+    estimate = screen.getByRole('button', { name: /Estimated next request/ });
+    // The ring alone (decorative: the button's name carries the estimate and the context).
+    expect(estimate).not.toHaveTextContent(/tokens/);
+    expect(within(estimate).getByTestId('context-ring')).toHaveAttribute('aria-hidden', 'true');
+    expect(estimate.getAttribute('aria-label')).toMatch(/^Estimated next request: ≈ .+ tokens\. /);
+    expect(screen.queryByRole('meter')).toBeNull();
+  });
+
   it('does not open the / menu', async () => {
     stubServer();
     const user = userEvent.setup();

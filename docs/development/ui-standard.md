@@ -426,8 +426,11 @@ their shortcut (Ctrl/⌘+Shift+S, Ctrl/⌘+Shift+O); `aria-keyshortcuts` carries
 machine form. An inline rename (title or rail row) returns focus to what it replaced,
 and a rename started from a menu begins only after the menu has closed, so the menu's
 focus trap cannot pull focus out of the field. Focus handed back by code (a rename
-ending, a sheet or panel closing) never opens that control's tooltip; focus the analyst
-moves (Tab, arrow keys) still shows it.
+ending, a sheet, panel or popover closing, such as the Read-only chip's) never opens that
+control's tooltip; focus the analyst moves (Tab, arrow keys) still shows it. When the
+control that had focus leaves the page (Collapse history and Show history swap the rail
+and the strip; the docked report's Close leaves with its panel), focus moves quietly to
+the toggle on screen then; focus kept elsewhere stays where it is.
 
 **Lane.** One lane, two edges (`message/lane.ts`). The conversation zone is an
 `@container`; the lane is `min(conversation − 2·gutter, cap)` with the gutter
@@ -519,7 +522,9 @@ is held while the pointer is over the grid or focus is inside it, so nothing reo
 under the analyst. Nothing on the start screen is a live region and a refresh is never
 announced. States: skeletons of exactly the visible count at the cards' height (the heights last
 measured for this viewer and width, else a typical question and its reason line at the
-current card width; no pulse under reduced motion); "Couldn't load suggestions." with **Retry**, which keeps its
+current card width, the first card of one column a long one; no pulse under reduced
+motion), and while they load in one column the capability line keeps two lines for the
+catch-up line that usually replaces it; "Couldn't load suggestions." with **Retry**, which keeps its
 row busy until the read lands and hands focus to the first card only when focus was still
 on Retry; a viewer who switched suggestions off gets the greeting, the capability line and
 the pills, and no request is made; below a 480 px lane height the greeting is visually
@@ -757,7 +762,8 @@ to read sources (sources:read)"), so an administrator can still grant it.
 Below 560 px of composer width the Scope and `@` chips merge into "Scope · n", the
 **Read-only** chip shows only its lock (its accessible name is unchanged), and a
 non-default model chip turns icon-only but stays visible and removable. The Case Manager composer has no menus and
-reads "Ask about this case" on one line (its resting estimate takes no width). In the `/` and `@` menus only Enter chooses; Tab keeps its focus
+reads "Ask about this case" on one line (its resting estimate takes no width; below
+560 px its estimate shows as the context ring, the estimate in the button's name). In the `/` and `@` menus only Enter chooses; Tab keeps its focus
 meaning and never sends a command or adds a scope, and the `@` menu waits for the tool
 catalogue. The `/` menu has one icon per group heading, sticky headings
 (`sticky top-0 bg-popover`), rows that put the label (`text-sm`) over a wrapping

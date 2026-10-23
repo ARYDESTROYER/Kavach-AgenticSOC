@@ -47,6 +47,7 @@ from .cases import (
     _STATUS_LABELS,
     _VERDICT_LABELS,
     ASSIGNEE_ME_NOBODY,
+    ASSIGNEE_ME_OWN,
     CaseFilters,
     resolve_assignee_me,
 )
@@ -472,6 +473,10 @@ def zero_case_suggestions(args: CaseFilters, window: Window, tool: str) -> list[
     """Engine-built next lookups for a zero-match case question (SPEC D10): each is a
     VALID call of ``tool`` — widen to all time, then drop one filter at a time."""
     base = {k: v for k, v in args.filters().items()}
+    if getattr(args, "_assignee_exact", False) and "assignee" in base:
+        # The signed-in analyst stays "me", so the next lookup resolves it the same way
+        # (an exact username, never an unassigned keyword).
+        base["assignee"] = "me"
     out: list[dict[str, Any]] = []
     if not window.all_time and window.source == "tool":
         out.append({"label": "All time", "tool": tool, "input": {**base, "window": "all"}})
@@ -801,7 +806,7 @@ class CaseStatsTool(ChatTool):
         periods = resolve_periods(ctx, window, args.compare, now=ref, minutes_ok=False)
         if isinstance(periods, str):
             return ToolOutcome.failure(periods)
-        filters = args.filters()
+        filters = args.aggregate_filters()
         coarsened: dict[str, Any] | None = None
         series_result: Any = None
         try:
@@ -839,7 +844,7 @@ class CaseStatsTool(ChatTool):
                         compared.append(result)
                         continue
                     compared.append(await run_case_aggregate(
-                        ctx, period.window, filters=args.filters(), group_by=tuple(fields[:1]),
+                        ctx, period.window, filters=filters, group_by=tuple(fields[:1]),
                         metrics=metrics, top_n=None,
                     ))
         except NotImplementedError:
@@ -851,8 +856,11 @@ class CaseStatsTool(ChatTool):
         except Exception as exc:  # noqa: BLE001 — engine template only
             logger.warning("case_stats aggregate failed: %s", exc)
             return ToolOutcome.failure("The case store did not answer")
-        return _outcome(args, window, fields, bucket, metrics, result, periods, compared,
-                        series_result=series_result, coarsened=coarsened)
+        outcome = _outcome(args, window, fields, bucket, metrics, result, periods, compared,
+                           series_result=series_result, coarsened=coarsened)
+        if me and outcome.ok:
+            outcome.observation["assignee_me"] = ASSIGNEE_ME_OWN
+        return outcome
 
 
 def _auto_bucket(window: Window) -> str:

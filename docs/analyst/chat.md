@@ -360,8 +360,9 @@ row shows:
   Denied, Skipped, or Stopped;
 - what it is doing while it runs, such as "Searching logs", then what it did, such as
   "Searched logs" or "Counted cases", and how long it took;
-- chips for the effective parameters in words, including the time window and source; a
-  lookup over several sources reads "3 sources", and selecting it lists them;
+- chips for the effective parameters in words, including the time window and source,
+  in the same order while the lookup runs and once it has finished; a lookup over
+  several sources reads "3 sources", and selecting it lists them;
 - a short result with row counts, the basis (exact, newest N, sample, or cached), and
   coverage such as "newest 200 of 1,284,113" or "3 of 4 sources answered";
 - the exact query behind a disclosure, shown as untrusted code; and
@@ -982,10 +983,14 @@ Each lookup needs the same permission as the console page that shows the same da
 | `docs` | The bundled Help Center and the status of this deployment |
 
 Questions about "my cases" or cases "assigned to me" read the open cases assigned to
-you, the signed-in analyst. With sign-in turned off, chat cannot tell which cases are
-yours, so it says so and shows the open queue by assignee instead. The suggestion "What
-should I do next on case …?" reads your own open cases too, so its answer can say whether
-the case is your only one and list your others.
+you, the signed-in analyst. A question that names more keeps it: "my closed cases", "my
+critical cases", "my cases by severity", "my cases this week" or "compare my cases this
+week with last week" read only the cases assigned to you, with that status, severity,
+breakdown, period or comparison. The shift report, the posture and other figures cannot
+be narrowed to your cases; an answer from them says so. With sign-in turned off, chat
+cannot tell which cases are yours, so it says so and shows the open queue by assignee
+instead. The suggestion "What should I do next on case …?" reads your own open cases
+too, so its answer can say whether the case is your only one and list your others.
 
 The shift report names the 5 most overdue open cases and the 5 closest to their response
 target (nearest first), each with who has it; its totals count every one.
@@ -1032,8 +1037,10 @@ why the AI was not used.
 ## Case-scoped chat
 
 The **Chat** tab in Case Manager uses the same assistant with the selected case as its
-context. It is compact: no history, no report panel, no **Add to report**, and no `/`
-or `@` menus. Its transcript stays when you switch to another tab of the case and back,
+context; its status line names the case by the number the case header shows (for
+example "Scoped to CASE-000086"). It is compact: no history, no report panel, no **Add
+to report**, and no `/` or `@` menus. On a phone, its token estimate shows as the
+context ring alone once you type, so the question keeps most of the field's width. Its transcript stays when you switch to another tab of the case and back,
 and an answer keeps running if you leave the case. Case chat keeps no running summary:
 once its conversation is long, only the newest exchanges that fit are sent with each
 question, and older ones are left out of what the model sees (see
@@ -1074,18 +1081,26 @@ enter your personal Workspace history.
 
 With Demo Mode on (**Settings → Organization → Experimental & Demo**), chat answers from
 the synthetic demo data at no cost: the suggested questions are built from the demo
-cases and sources (with a Demo Mode card, and a "Since …" line on your first visit),
+cases and sources (with a Demo Mode card, and a "Since …" line on your first visit; on
+the visit that starts your shift, the shift card comes before the Demo Mode card),
 every suggestion and case chat question gets a real answer from that data, lookups and
 answers are deterministic, and money figures are marked "simulated". Every demo case is
 numbered with your numbering template (CASE-000001 onwards by default), the oldest first,
 even when custom numbering is switched off for real cases, and cases the demo creates
-while it runs continue the same sequence; turning Demo Mode off and on again, or
-resetting it, gives each case the same number again. Demo answers cover the same ground as a live model, including any time window, breakdowns,
+while it runs continue the same sequence (one sequence for the demo, whatever your reset
+period, so no two demo cases share a number; each number keeps its case's own date);
+turning Demo Mode off and on again, or resetting it, gives each case the same number
+again. A case you name by its internal id is answered by its number, with the id you
+used beside it once. Demo answers cover the same ground as a live model, including any time window, breakdowns,
 comparisons, reports, and clarifying questions. A demo conversation's name carries one
-detail that tells it apart from similar ones where there is one: the case number, the
-ATT&CK technique, the period or the breakdown, such as "CASE-000045 needs a person" or
-"Cases by severity, last 7 days". A name never repeats a value from your logs or cases,
-such as an address, a host or user name, or a case title. Report summaries are
+detail that tells it apart from similar ones where there is one: the case number (first,
+so a narrow history list still shows it), the ATT&CK technique, the period, the breakdown
+or the console page a product question is about, such as "CASE-000045 needs a person",
+"CASE-000005 identity_signin case", "Cases by severity, last 7 days" or "Sources help".
+A name can carry a detection rule id exactly as written, but only one that the
+suggestion rules accept and that does not look like an address, domain or file hash. It
+never repeats any other value from your logs or cases, such as an address, a host or
+user name, or a case title. Report summaries are
 deterministic too and are not rate limited. Demo conversations and reports are kept apart from your real
 ones and are removed when Demo Mode is turned off.
 

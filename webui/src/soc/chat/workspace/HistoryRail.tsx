@@ -523,6 +523,8 @@ export function HistoryRail({
               hint={SHORTCUT_HINT_KEYS.toggleHistory}
               onClick={onCollapse}
               aria-keyshortcuts={shortcuts?.toggle}
+              // The host focuses the strip's Show history after a collapse, and this after an expand.
+              data-history-toggle=""
             >
               <PanelLeftClose aria-hidden />
             </HintedIconButton>
@@ -863,6 +865,7 @@ export function HistoryStrip({ onNewChat, onSearch, onExpand, shortcuts }: Histo
         tooltipSide="right"
         onClick={onExpand}
         aria-keyshortcuts={shortcuts?.toggle}
+        data-history-toggle=""
         aria-description={elsewhere ? (elsewhere.status === 'running' ? 'An answer is being written in another chat' : 'Another chat has news') : undefined}
         className="relative"
       >

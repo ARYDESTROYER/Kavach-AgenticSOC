@@ -19,6 +19,7 @@ import { LoadingState } from '@/design-system';
 import { Button } from '@/ui/button';
 import type { Navigate } from '@/soc/router';
 
+import { caseDisplayId } from './caseFacts';
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
 import type { CasePanelPresentation } from './shared';
 
@@ -34,7 +35,7 @@ export const CASE_MANAGER_CHAT_STARTERS = ['Summarise the case', 'Check indicato
 const CaseChat = React.lazy(() => import('./CaseChat'));
 
 /** The lazy chat body with the console's one blocking-load grammar while it arrives. */
-function LazyCaseChat(props: { caseId: string; caseManager: boolean; starters: readonly string[] }) {
+function LazyCaseChat(props: { caseId: string; displayId: string; caseManager: boolean; starters: readonly string[] }) {
   return (
     <React.Suspense fallback={<LoadingState layout="panel" label="Loading chat" className="h-full w-full" />}>
       <CaseChat {...props} />
@@ -56,7 +57,13 @@ export const ChatTab: React.FC<{
         data-presentation="case-manager"
       >
         {/* Keyed per case: case A's transcript never shows under case B. */}
-        <LazyCaseChat key={c.case_id} caseId={c.case_id} caseManager starters={CASE_MANAGER_CHAT_STARTERS} />
+        <LazyCaseChat
+          key={c.case_id}
+          caseId={c.case_id}
+          displayId={caseDisplayId(c)}
+          caseManager
+          starters={CASE_MANAGER_CHAT_STARTERS}
+        />
       </div>
     );
   }
@@ -87,7 +94,13 @@ export const ChatTab: React.FC<{
         {/* A definite height gives the transcript its own scroll lane and keeps the
             composer docked at the bottom of the card. */}
         <div className="h-[60dvh] min-h-[24rem]">
-          <LazyCaseChat key={c.case_id} caseId={c.case_id} caseManager={false} starters={CASE_CHAT_STARTERS} />
+          <LazyCaseChat
+            key={c.case_id}
+            caseId={c.case_id}
+            displayId={caseDisplayId(c)}
+            caseManager={false}
+            starters={CASE_CHAT_STARTERS}
+          />
         </div>
       </PanelCard>
     </div>

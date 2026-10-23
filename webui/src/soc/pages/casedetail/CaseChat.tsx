@@ -68,13 +68,19 @@ function useOptionalAuth(): { principal: string | null; canChooseModel: boolean 
 /** The case chat body: status, transcript, quick actions, compact composer. */
 export interface CaseChatProps {
   caseId: string;
+  /**
+   * The case number the case header shows ("CASE-000086"); the status line and the
+   * transcript's name use it, falling back to the internal id. Turns still carry `caseId`.
+   */
+  displayId?: string;
   /** Case Manager's embedded frame (its quick-action icons and presentation tag). */
   caseManager: boolean;
   /** The quick questions shown above the composer. */
   starters: readonly string[];
 }
 
-export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
+export function CaseChat({ caseId, displayId, caseManager, starters }: CaseChatProps) {
+  const caseLabel = displayId?.trim() || caseId;
   const [model, setModel] = React.useState<string | null>(null);
   const [busyMirror, setBusyMirror] = React.useState(false);
   const { principal, canChooseModel } = useOptionalAuth();
@@ -122,7 +128,7 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" aria-hidden />
         )}
         <span className="min-w-0 truncate">
-          Scoped to <span className="font-mono text-foreground">{caseId}</span>
+          Scoped to <span className="font-mono text-foreground">{caseLabel}</span>
         </span>
         <span className="ml-auto shrink-0">{busy ? 'Working…' : 'Ready'}</span>
       </div>
@@ -130,7 +136,7 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
       <Transcript
         engine={engine}
         compact
-        label={`Case ${caseId} messages`}
+        label={`Case ${caseLabel} messages`}
         onFocusComposer={focusComposer}
         empty={
           <EmptyState

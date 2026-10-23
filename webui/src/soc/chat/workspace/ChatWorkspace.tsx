@@ -59,7 +59,7 @@ import { ThreadToolbar } from './ThreadToolbar';
 import { useChatLaneWidth } from './useChatLaneWidth';
 import { useConversationReport } from './useConversationReport';
 import { useConversationExport } from './useConversationExport';
-import { useOpenerFocus } from './useOpenerFocus';
+import { useFocusAfterSwap, useOpenerFocus } from './useOpenerFocus';
 import {
   C_MIN,
   PANEL_MAX,
@@ -104,6 +104,12 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
     if (!historyOpen) setHistorySearchFocus(false);
   }, [historyOpen]);
   const historyOpener = useOpenerFocus();
+  // Collapse history / Show history (and the shortcut) swap the rail and the strip, and
+  // the docked report's Close button leaves with the panel: focus that went with them
+  // moves to the toggle that is on screen now, quietly (Round 13 polish).
+  const focusAfterSwap = useFocusAfterSwap();
+  const railZoneRef = React.useRef<HTMLDivElement>(null);
+  const conversationRef = React.useRef<HTMLElement>(null);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [pendingReportFor, setPendingReportFor] = React.useState<string | null>(null);
   const geometry = useChatGeometry(panelOpen && !caseScoped);
@@ -290,12 +296,21 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       panelOpen: panelOpen && !caseScoped,
       panelWidth: geometry.panelWidth,
     }).rail === 'docked';
+  // Docked ↔ strip: the toggle on screen afterwards (Show history or Collapse history)
+  // takes a focus the swap dropped.
+  const setRailCollapsed = React.useCallback(
+    (collapsed: boolean) => {
+      geometry.setRailCollapsed(collapsed);
+      focusAfterSwap(() => railZoneRef.current?.querySelector<HTMLElement>('[data-history-toggle]'));
+    },
+    [focusAfterSwap, geometry],
+  );
   const toggleHistory = React.useCallback(() => {
     if (caseScoped) return;
-    if (geometry.rail === 'docked') geometry.setRailCollapsed(true);
-    else if (geometry.rail === 'strip' && geometry.railCollapsed && dockable) geometry.setRailCollapsed(false);
+    if (geometry.rail === 'docked') setRailCollapsed(true);
+    else if (geometry.rail === 'strip' && geometry.railCollapsed && dockable) setRailCollapsed(false);
     else setHistoryOpen((open) => !open);
-  }, [caseScoped, dockable, geometry]);
+  }, [caseScoped, dockable, geometry, setRailCollapsed]);
 
   useChatShortcuts(
     {
@@ -534,11 +549,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
 
       {rail === 'docked' ? (
         // Not a landmark of its own: the rail's <nav> ("Chat history") is the landmark.
-        <div className="flex w-[264px] shrink-0 flex-col border-r border-border bg-surface/40" data-testid="chat-history-rail">
-          <HistoryRail {...railProps} onCollapse={() => geometry.setRailCollapsed(true)} />
+        <div ref={railZoneRef} className="flex w-[264px] shrink-0 flex-col border-r border-border bg-surface/40" data-testid="chat-history-rail">
+          <HistoryRail {...railProps} onCollapse={() => setRailCollapsed(true)} />
         </div>
       ) : rail === 'strip' ? (
-        <div className="w-12 shrink-0 border-r border-border bg-surface/40">
+        <div ref={railZoneRef} className="w-12 shrink-0 border-r border-border bg-surface/40">
           <HistoryStrip
             busy={busy}
             onNewChat={newChat}
@@ -550,7 +565,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
               setHistorySearchFocus(true);
               setHistoryOpen(true);
             }}
-            onExpand={() => (geometry.railCollapsed && dockable ? geometry.setRailCollapsed(false) : setHistoryOpen(true))}
+            onExpand={() => (geometry.railCollapsed && dockable ? setRailCollapsed(false) : setHistoryOpen(true))}
             shortcuts={railProps.shortcuts}
           />
         </div>
@@ -580,6 +595,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       ) : null}
 
       <section
+        ref={conversationRef}
         className="@container flex min-w-0 flex-1 flex-col"
         aria-label="Conversation"
         style={laneVars(laneWidth.width) as React.CSSProperties}
@@ -678,7 +694,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           width={geometry.panelWidth}
           maxWidth={panelMax}
           onResize={geometry.setPanelWidth}
-          onClose={() => setPanelOpen(false)}
+          onClose={() => {
+            setPanelOpen(false);
+            // Its Close button leaves with the panel: back to the toolbar's Report toggle.
+            focusAfterSwap(() => conversationRef.current?.querySelector<HTMLElement>('[data-testid="chat-report-toggle"]'));
+          }}
           conversationId={activeId}
           reportId={report.reportId}
         />

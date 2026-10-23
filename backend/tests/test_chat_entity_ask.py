@@ -386,6 +386,26 @@ def test_every_kind_answers_in_demo_without_sending_the_value_out(demo: TestClie
         assert {"search_logs", "search_cases"} <= tools, context
 
 
+def test_a_case_asked_by_its_internal_id_names_that_id_beside_its_number(demo: TestClient) -> None:
+    """The chip sends the internal id for a case with no number (``c.case_number ||
+    c.case_id``), and an analyst may type one: the answer names the case by its number
+    and states the id they used once beside it, so the two are tied together."""
+    async def read() -> tuple[str, str]:
+        rows, _cursor, _snapshot, _consistency = await demo.app.state.tlsoc.cases.export_page(limit=50)
+        case = next(c for c in rows if c.case_number)
+        return case.case_id, case.case_number
+
+    case_id, number = demo.portal.call(read)  # type: ignore[union-attr]
+    for response in (_ask(demo, "case", case_id), _turn(demo, f"Explain case {case_id}", origin="user")):
+        answer = response.get("answer") or ""
+        assert f"`{number}`" in answer and f"`{case_id}`" in answer, answer[:400]
+        assert answer.index(f"`{number}`") < answer.index(f"`{case_id}`"), answer[:400]
+        assert answer.count(f"`{case_id}`") == 1, answer[:400]
+    # Asked by its number, the internal id is not added.
+    by_number = _ask(demo, "case", number).get("answer") or ""
+    assert f"`{number}`" in by_number and case_id not in by_number, by_number[:400]
+
+
 def test_the_rule_count_is_the_rules_own_not_the_window_total(demo: TestClient) -> None:
     rule = _demo_entities(demo)["rule"]
     filtered = _ask(demo, "rule", rule)

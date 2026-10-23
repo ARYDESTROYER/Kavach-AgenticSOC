@@ -16,6 +16,11 @@
  *
  * The trigger is the caller's element (`asChild`), so the composer's Read-only chip
  * and the empty state's link open the same surface.
+ *
+ * Closing with Escape (or from inside) hands focus back to the trigger quietly
+ * (`focusQuietly`, Round 13 polish), so a guarded trigger's tooltip (the Read-only chip's)
+ * does not open over the composer; a close by a click or tap outside leaves focus where
+ * that interaction put it, as Radix does.
  */
 import * as React from 'react';
 import { Check, CircleSlash, Lock, RotateCcw } from 'lucide-react';
@@ -23,6 +28,7 @@ import type { ChatContextInfo, ChatScope, ChatToolInfo } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
+import { focusQuietly } from '../quiet-focus';
 import { CHAT_SCOPES } from '../stream-events';
 import { SCOPE_LABELS } from './format';
 import { capabilityLabel, permissionNeed, type PermissionNeed } from './access-copy';
@@ -186,9 +192,15 @@ export function AccessPopover({
   align = 'start',
 }: AccessPopoverProps) {
   const titleId = React.useId();
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  // Radix's non-modal rule: an interaction outside (a click, a tap, focus moved away)
+  // keeps the focus it placed; any other close returns focus to the trigger.
+  const interactedOutside = React.useRef(false);
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverTrigger asChild ref={triggerRef}>
+        {children}
+      </PopoverTrigger>
       <PopoverContent
         side={side}
         align={align}
@@ -196,6 +208,16 @@ export function AccessPopover({
         className="w-[min(24rem,calc(100vw-2rem))] p-0"
         // The 16 px screen-edge gap every composer layer keeps (SPEC-chat T23, audit C8).
         collisionPadding={16}
+        onInteractOutside={() => {
+          interactedOutside.current = true;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const outside = interactedOutside.current;
+          interactedOutside.current = false;
+          // Back to the chip without opening its tooltip over the composer (Round 13 polish).
+          if (!outside) focusQuietly(triggerRef.current);
+        }}
       >
         <div className="border-b border-border px-4 py-3">
           <h2 id={titleId} className="text-sm font-semibold text-foreground">

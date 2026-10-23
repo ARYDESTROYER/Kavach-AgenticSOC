@@ -696,13 +696,13 @@ def test_titles_name_the_classified_starter_and_the_case_rule() -> None:
                                                  "rules": ["identity_signin"]}})
     view.rounds = [[got]]
     ask = classify(view.question, view)
-    # Round 13 polish: the case's first detection rule (its rule ids, never its title)
-    # and its display number.
-    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Identity signin case CASE-000041"
+    # Round 13 polish: the case's display number first, then its first detection rule
+    # id as written (its rule ids, never its title).
+    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "CASE-000041 identity_signin case"
     # The title is case text and never names the conversation; the rule ids do.
     got.observation["case"] = {"case_id": "demo-1", "title": "ip · demo_noisy_scanner #1",
                                "rules": ["demo_noisy_scanner"]}
-    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Demo noisy scanner case"
+    assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Rule demo_noisy_scanner case"
     got.observation["case"] = {"case_id": "demo-1", "title": "user:pnair · identity_signin"}
     assert demo_chat._conversation_title(view, ask, demo_chat.Final(body=[])) == "Case investigation"
 

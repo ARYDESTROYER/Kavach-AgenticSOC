@@ -291,6 +291,36 @@ function InspectButton({ step, onInspect }: { step: RunLogStep; onInspect: (step
   );
 }
 
+/** One parameter chip of a step: plain, or untrusted text (mono). */
+export type StepParamChip =
+  | { key: string; untrusted: true; value: string }
+  | { key: string; untrusted: false; value: ChatStep['params'][string] };
+
+/**
+ * A step's parameter chips in ONE order that holds while it runs and after it ends (Round
+ * 13 polish): the order the step started with (`step.params`), then keys only its result
+ * names, then untrusted-only keys. Most tools put an input in both maps: a key shown as
+ * untrusted text (mono) is shown once, never also as a plain chip (it read as if applied
+ * twice). Before, an ended step listed its plain chips first and its untrusted ones last,
+ * so "Indicator 203.0.113.77 · Kind IP" turned into "Kind IP · Indicator 203.0.113.77".
+ */
+export function stepParamChips(step: Pick<RunLogStep, 'params' | 'result'>): StepParamChip[] {
+  const result = step.result;
+  const untrusted = result?.untrusted_params ?? {};
+  const plain = result?.params ?? step.params ?? {};
+  const has = (map: object, key: string) => Object.prototype.hasOwnProperty.call(map, key);
+  const order: string[] = [];
+  for (const key of [...Object.keys(step.params ?? {}), ...Object.keys(plain), ...Object.keys(untrusted)]) {
+    if (!order.includes(key)) order.push(key);
+  }
+  const chips: StepParamChip[] = [];
+  for (const key of order) {
+    if (has(untrusted, key)) chips.push({ key, value: untrusted[key], untrusted: true });
+    else if (has(plain, key)) chips.push({ key, value: plain[key], untrusted: false });
+  }
+  return chips;
+}
+
 interface StepRowProps {
   step: RunLogStep;
   idPrefix: string;
@@ -301,24 +331,17 @@ function StepRow({ step, idPrefix, onInspect = null }: StepRowProps) {
   const result = step.result;
   const summary = result?.summary ?? '';
   const scope = scopeLine(result);
-  const untrustedMap = result?.untrusted_params ?? {};
-  const untrusted = Object.entries(untrustedMap);
-  // Most tools put the same input in both maps: a key shown as untrusted text (mono) is
-  // shown ONCE, never also as a plain chip (it read as if applied twice).
-  const params = Object.entries(result?.params ?? step.params).filter(
-    ([key]) => !Object.prototype.hasOwnProperty.call(untrustedMap, key),
-  );
+  // One order while running and once ended; an untrusted key shown once, as mono text.
+  const paramChips = stepParamChips(step);
   const sources = result?.sources ?? [];
-  const sourceInParams = [...params, ...untrusted].some(
-    ([key]) => key === 'source' || key === 'sources' || key === 'source_id',
-  );
+  const sourceInParams = paramChips.some(({ key }) => key === 'source' || key === 'sources' || key === 'source_id');
   const sourceChip = !sourceInParams && sources.length ? sources : null;
   const duration = result && step.status !== 'running' ? formatDuration(result.duration_ms) : null;
   // A long lookup's count while it runs ("Counted 42,000 of 118,402 cases…").
   const progress = step.status === 'running' && step.progress ? progressLine(step.progress) : null;
   const inspectable = !!onInspect && step.kind === 'tool' && step.status !== 'running' && !!result;
   const word = STEP_STATUS_LABEL[step.status];
-  const chips = params.length || untrusted.length || sourceChip;
+  const chips = paramChips.length || sourceChip;
   return (
     <div className="flex min-w-0 items-start gap-2" data-step-status={step.status}>
       <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
@@ -347,13 +370,14 @@ function StepRow({ step, idPrefix, onInspect = null }: StepRowProps) {
         </div>
         {chips ? (
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1" data-testid="run-log-chips">
-            {params.map(([key, value]) => (
-              <Chip key={key} name={paramKeyLabel(key)} value={paramValue(value, key)} />
-            ))}
+            {paramChips.map((chip) =>
+              chip.untrusted ? (
+                <Chip key={`u-${chip.key}`} name={paramKeyLabel(chip.key)} value={chip.value} mono />
+              ) : (
+                <Chip key={chip.key} name={paramKeyLabel(chip.key)} value={paramValue(chip.value, chip.key)} />
+              ),
+            )}
             {sourceChip ? <SourcesChip names={sourceChip} id={`${idPrefix}-s${step.index}-sources`} /> : null}
-            {untrusted.map(([key, value]) => (
-              <Chip key={`u-${key}`} name={paramKeyLabel(key)} value={value} mono />
-            ))}
           </div>
         ) : null}
         {progress ? (

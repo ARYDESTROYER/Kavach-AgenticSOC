@@ -1270,8 +1270,9 @@ class InvestigationPipeline:
             verdict=None,
             status=CaseStatus.OPEN,
             title=truncate(machine_case_title(cluster), 200),
+            # No em dash on screen (T36); summaries stored earlier keep their text.
             summary=truncate(
-                f"Candidate awaiting analysis — {awaiting_reason}." if awaiting_reason
+                f"Candidate awaiting analysis: {awaiting_reason}." if awaiting_reason
                 else "Candidate cluster awaiting investigation.", 300),
             awaiting_reason=awaiting_reason,
             history=(existing.history if existing else []),

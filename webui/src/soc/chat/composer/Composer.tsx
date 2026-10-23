@@ -66,6 +66,7 @@ import { useAnnouncer } from '@/soc/components/announcer';
 import { getSavedPrompts } from '../chat-api';
 import type { ChatEngine } from '../useChatEngine';
 import { anyLayerOpen } from '../shortcuts/useChatShortcuts';
+import { quietFocusGuard } from '../quiet-focus';
 import { AccessPopover } from './AccessPopover';
 import { chipButton } from './chip';
 import {
@@ -804,8 +805,16 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
             {meterContext ? (
               // Beside the field, a hidden meter would still take its width and wrap the
               // placeholder on a phone: at rest it takes no space here (it appears with a
-              // draft, when the placeholder has gone).
-              <TokenMeter context={meterContext} draft={draft} showRing={false} className="data-[meter-state=rest]:hidden" />
+              // draft, when the placeholder has gone). Below 560 px it shows only the ring
+              // (the estimate is in the button's name), so the first keystroke does not
+              // take 85 px from the field (Round 13 polish).
+              <TokenMeter
+                context={meterContext}
+                draft={draft}
+                showRing={narrow}
+                compact={narrow}
+                className="data-[meter-state=rest]:hidden"
+              />
             ) : null}
             {options}
             {sendStop}
@@ -854,6 +863,8 @@ export const Composer = React.forwardRef<ComposerHandle, ComposerProps>(function
                         type="button"
                         className={cn(chipButton, narrow && 'w-7 justify-center px-0')}
                         aria-label="Read-only. What can the assistant access?"
+                        // Escape hands focus back here quietly: no tooltip over the composer.
+                        onFocus={quietFocusGuard}
                       >
                         <Lock aria-hidden="true" />
                         {narrow ? null : <span>Read-only</span>}

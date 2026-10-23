@@ -355,7 +355,7 @@ can never override.
 cd backend
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt        # greenlet is pinned, so a fresh install is green
-python -m pytest -q                         # latest recorded full run: 8,208 passed, 4 skipped; see Journal.md
+python -m pytest -q                         # latest recorded full run: 8,364 passed, 4 skipped; see Journal.md
 ```
 
 ### WebUI build + tests + lint
@@ -364,7 +364,7 @@ cd webui
 npm ci
 npm run check:types # hard-fail API drift in CI with TLSOC_REQUIRE_TYPEGEN=1
 npm run gates       # tokens, contrast, CVD, and raw-style regression guards
-npm run test:strict # latest recorded full run: 5,279 passed, 1 skipped / 507 files; CI-parity quiet-output gate
+npm run test:strict # latest recorded full run: 5,299 passed, 1 skipped / 508 files; CI-parity quiet-output gate
 npm run lint -- --max-warnings=0
 npm run build      # version-matched MkDocs Help Center + tsc --noEmit + Vite
 npm run docs:check # verify the generated docs artifact matches VERSION

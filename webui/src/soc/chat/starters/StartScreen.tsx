@@ -172,23 +172,30 @@ const CARD_TEXT_INSET_PX = 12 + 16 + 12 + 36;
 /** The grid's gap (`gap-2`). */
 const GRID_GAP_PX = 8;
 /**
- * A typical start question's width on one line at text-base: about 65 characters where
- * each card keeps its own height (one column), about 75 where a row takes its tallest
- * card (two and four columns).
+ * Start questions' widths on one line at text-base. A first load usually brings one long
+ * question among typical ones: rendered start questions run from about 40 to 90
+ * characters, most near 65, and a few (a response-target list, a noisy rule, the changes
+ * waiting for approval) near 75 and more. "Which 10 cases are past their response target,
+ * and what is holding them up?" (75 characters) fills two 262 px lines at a 390 px phone
+ * and wraps to three at 375 and 360.
  */
 const TYPICAL_QUESTION_PX = 455;
+const LONG_QUESTION_PX = 520;
+/** Two and four columns: a row takes its tallest card, so every row holds a long one. */
 const ROW_QUESTION_PX = 525;
 
 /**
  * How many question lines a skeleton card holds before any card was measured here
- * (Round 13 polish): at least two, more where the card is narrow enough that a typical
- * question needs them, so the grid does not grow when the cards arrive.
+ * (Round 13 polish): at least two, more where the card is narrow enough that its
+ * question needs them, so the grid does not change height when the cards arrive. One
+ * column keeps each card's own height, so its first card holds a long question and the
+ * others a typical one (the mix of a usual first load; only the total moves the stack).
  */
-export function skeletonQuestionLines(width: number, columns: 1 | 2 | 4): number {
+export function skeletonQuestionLines(width: number, columns: 1 | 2 | 4, slot = 0): number {
   if (!(width > 0)) return 2;
   const text = (width - GRID_GAP_PX * (columns - 1)) / columns - CARD_TEXT_INSET_PX;
   if (!(text > 0)) return 2;
-  const reference = columns > 1 ? ROW_QUESTION_PX : TYPICAL_QUESTION_PX;
+  const reference = columns > 1 ? ROW_QUESTION_PX : slot === 0 ? LONG_QUESTION_PX : TYPICAL_QUESTION_PX;
   return Math.min(4, Math.max(2, Math.ceil(reference / text)));
 }
 
@@ -644,7 +651,6 @@ export function StartScreen({
   }, [grid, width, widthClass, count, principal, visibleSignature]);
   const measuredHeights = loading ? starterCardHeights(principal, widthClass) : null;
   const skeletonHeights = measuredHeights && measuredHeights.length === count ? measuredHeights : null;
-  const skeletonLines = skeletonQuestionLines(width, columns);
 
   /* ------------------------------------------------------------------ retry -- */
   // Retry keeps its row (busy) while the read runs, so focus is never dropped to <body>:
@@ -691,6 +697,10 @@ export function StartScreen({
   }, [node, phase, laneHeight]);
 
   const shortLane = laneHeight > 0 && laneHeight < GREETING_MIN_LANE_HEIGHT;
+  // While the cards load in one column (a phone), the capability line keeps the room of
+  // the two lines a catch-up line usually takes there ("Since 02:08: 44 new cases (8
+  // critical) and 3 new campaigns."), so the greeting does not move up when it arrives.
+  const reserveCatchUp = loading && !showError && columns === 1;
 
   return (
     <section
@@ -708,7 +718,9 @@ export function StartScreen({
       {catchUp ? (
         <CatchUpLine catchUp={catchUp} onSend={onActivate} disabled={paused} className={shortLane ? undefined : 'mt-1'} />
       ) : (
-        <p className={cn('text-base text-muted-foreground', !shortLane && 'mt-1')}>{CAPABILITY_LINE}</p>
+        <p className={cn('text-base text-muted-foreground', !shortLane && 'mt-1', reserveCatchUp && 'min-h-[2lh]')}>
+          {CAPABILITY_LINE}
+        </p>
       )}
 
       {showError ? (
@@ -745,7 +757,7 @@ export function StartScreen({
               className={cn(STARTER_CARD_FRAME, 'py-3 motion-safe:animate-pulse')}
               style={skeletonHeights ? { height: skeletonHeights[index] } : undefined}
             >
-              {skeletonHeights ? null : <SkeletonLines lines={skeletonLines} />}
+              {skeletonHeights ? null : <SkeletonLines lines={skeletonQuestionLines(width, columns, index)} />}
             </div>
           ))}
         </div>

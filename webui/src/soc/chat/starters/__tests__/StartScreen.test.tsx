@@ -665,6 +665,18 @@ describe('StartScreen', () => {
     expect(skeletonQuestionLines(869.2, 2)).toBe(2);
     expect(skeletonQuestionLines(1325.2, 4)).toBe(3);
     expect(skeletonQuestionLines(338, 1)).toBe(2);
+    // One column at common phone widths (Round 13 polish): the first card holds a long
+    // question (about 75 characters: two lines at 390 and 414, stacks of 338 and 362 px;
+    // three at 375 and 360, 323 and 308 px), the others a typical one (two lines down to
+    // 360), so a usual first load (84, 84 and 104 px at 375 and 360) keeps its height.
+    const column = (width: number) => [0, 1, 2].map((slot) => skeletonQuestionLines(width, 1, slot));
+    expect(column(338)).toEqual([2, 2, 2]);
+    expect(column(362)).toEqual([2, 2, 2]);
+    expect(column(323)).toEqual([3, 2, 2]);
+    expect(column(308)).toEqual([3, 2, 2]);
+    expect(column(268)).toEqual([3, 3, 3]);
+    // Rows take their tallest card: the slot does not change a row's estimate.
+    expect(skeletonQuestionLines(560, 2, 3)).toBe(skeletonQuestionLines(560, 2, 0));
     expect(skeletonQuestionLines(560, 2)).toBe(3);
     expect(skeletonQuestionLines(1040, 4)).toBe(3);
     expect(skeletonQuestionLines(60, 1)).toBe(2);
@@ -685,6 +697,24 @@ describe('StartScreen', () => {
       ]);
       expect(card.style.height).toBe('');
     }
+  });
+
+  it('keeps two lines for the catch-up line while the cards load in one column, so the greeting holds still', () => {
+    // Round 13 polish: on a phone the catch-up line ("Since 02:08: 44 new cases (8
+    // critical) and 3 new campaigns.") wraps to two lines and replaced a one-line
+    // capability line, pushing the bottom-anchored greeting up as the cards arrived.
+    stackWidth = 338;
+    const phone = renderStart({ starters: controller(null, { loading: true }) });
+    expect(screen.getByText(CAPABILITY_LINE)).toHaveClass('min-h-[2lh]');
+    phone.unmount();
+    // Loaded, the line takes its own height.
+    const loaded = renderStart({ starters: controller({ ...makeInfo(), catch_up: null }) });
+    expect(screen.getByText(CAPABILITY_LINE)).not.toHaveClass('min-h-[2lh]');
+    loaded.unmount();
+    // Two columns and wider: the catch-up line fits on one line, nothing is reserved.
+    stackWidth = 900;
+    renderStart({ starters: controller(null, { loading: true }) });
+    expect(screen.getByText(CAPABILITY_LINE)).not.toHaveClass('min-h-[2lh]');
   });
 
   it('takes the card heights last measured for this viewer and width, so the grid does not grow on load', () => {

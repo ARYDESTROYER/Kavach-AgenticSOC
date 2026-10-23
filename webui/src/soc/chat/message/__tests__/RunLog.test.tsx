@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import type { ChatLiveTurn } from '../../turn-runner';
-import { RunLogHeader, RunLogList, buildRunRows, stepsFromResponse, type RunLogStep } from '../RunLog';
+import { RunLogHeader, RunLogList, buildRunRows, stepParamChips, stepsFromResponse, type RunLogStep } from '../RunLog';
 import { step } from './fixtures';
 
 const model = (index: number, status: RunLogStep['status'], label = 'Thinking'): RunLogStep => ({
@@ -103,6 +103,58 @@ describe('RunLogList', () => {
     expect(screen.getByText('creation time')).toBeInTheDocument();
     expect(screen.queryByText('now-7d')).toBeNull();
     expect(screen.queryByText('created_at')).toBeNull();
+  });
+
+  it("keeps a step's chips in one order while it runs and once it ends", () => {
+    // Round 13 polish: an ended step listed its plain chips first and its untrusted ones
+    // last, so the chips changed places the moment the lookup finished.
+    const chipNames = () =>
+      screen.getAllByTestId('run-log-chips').map((row) => Array.from(row.children, (chip) => chip.firstElementChild?.textContent));
+    const running = (index: number, label: string, tool: string, params: RunLogStep['params']): RunLogStep => ({
+      index,
+      kind: 'tool',
+      tool,
+      label,
+      params,
+      group: null,
+      status: 'running',
+      result: null,
+    });
+    const indicator = { indicator: '203.0.113.77', kind: 'ip' };
+    const logs = { ip: '203.0.113.77', time_from: 'now-7d' };
+    const { rerender } = render(
+      <RunLogList
+        id="log-order"
+        steps={[running(1, 'Looking up an indicator', 'lookup_indicator', indicator), running(2, 'Searching logs', 'search_logs', logs)]}
+      />,
+    );
+    const whileRunning = chipNames();
+    expect(whileRunning).toEqual([
+      ['Indicator', 'Kind'],
+      ['IP', 'From'],
+    ]);
+    rerender(
+      <RunLogList
+        id="log-order"
+        steps={stepsFromResponse([
+          step(1, { label: 'Looked up an indicator', tool: 'lookup_indicator', params: indicator, untrusted_params: { indicator: '203.0.113.77' }, sources: [] }),
+          step(2, { label: 'Searched logs', params: logs, untrusted_params: { ip: '203.0.113.77' }, sources: [] }),
+        ])}
+      />,
+    );
+    expect(chipNames()).toEqual(whileRunning);
+    // Ended, the untrusted values are mono, each shown once.
+    for (const value of screen.getAllByText('203.0.113.77')) expect(value).toHaveClass('font-mono');
+    expect(screen.getAllByText('203.0.113.77')).toHaveLength(2);
+  });
+
+  it('appends keys only the result or only the untrusted map names, after the started order', () => {
+    expect(
+      stepParamChips({
+        params: { b: 1, a: 2 },
+        result: step(1, { params: { a: 2, c: 3, b: 1 }, untrusted_params: { d: 'x', b: '1' } }),
+      }).map((chip) => `${chip.key}${chip.untrusted ? '*' : ''}`),
+    ).toEqual(['b*', 'a', 'c', 'd*']);
   });
 
   it('says what the assistant is doing before any lookup ran, never "No lookups yet."', () => {

@@ -357,7 +357,16 @@ and, just as importantly, makes each of these conditions a state an operator can
   Search chats now gets focus back too. "Ask about this case" stays on one line in Case
   Manager chat on a phone. "Widen the search:" sits on its own line above its suggestions
   on a narrow screen. Start-screen placeholders now take the height of the suggestion
-  cards, so the cards no longer push the greeting up when they arrive.
+  cards, so the cards no longer push the greeting up when they arrive. On a phone the
+  first placeholder holds a longer question and the line under the greeting keeps room
+  for the catch-up line, so on a usual first load the greeting holds still as suggestions
+  arrive. Closing "What the assistant can access" with Escape no longer opens the
+  Read-only chip's tooltip over the composer, and after Collapse history, Show history or
+  the report panel's Close, focus moves to the button now on screen instead of dropping
+  to the page. A lookup's chips keep their order
+  when it finishes. Case Manager chat names the case by its number, and on a phone its
+  token estimate shows as the context ring once you type, so the question keeps more of
+  the field.
 - **Round 13 polish: my cases, close-to-target cases, the shift card, Demo case
   numbers.** `search_cases` and `case_stats` take assignee `me`, which the server
   resolves to the signed-in analyst (trimmed and case-insensitive, like every assignee
@@ -383,7 +392,27 @@ and, just as importantly, makes each of these conditions a state an operator can
   rule id that passes the rule grammar, so the history rail no longer shows a column of
   "Indicator hunt" or "Case list" rows. A name is still 2 to 6 words and never repeats an
   indicator, entity, log value or case title; a case is named by its rule ids, never its
-  title.
+  title. A rule id can appear in a name, exactly as written, when the suggestion rules
+  accept it.
+- **Round 13 polish review: "my cases" questions, case numbers, Demo numbering.** A
+  "my cases" question that names more ("my closed cases", "my critical cases", "my cases
+  by severity", "my cases this week", "compare my cases this week with last week") keeps
+  every filter and reads only your cases (assignee `me`); an answer from figures that
+  cannot be narrowed to you (the shift report, the posture) says so. A username that is
+  also an assignee word ("nobody", "none") is matched as that name, never as the
+  unassigned queue, and with sign-in off a "my cases" lookup shows no zero figure or
+  empty list and offers only the lookup without the assignee filter. Demo case and brief
+  conversation names lead with the case number ("CASE-000005 identity_signin case"),
+  carry a rule id only when the suggestion rules accept it and it does not look like an
+  indicator, and product-help, response-action and out-of-scope names say which console
+  page or request they are about ("Sources help", "Isolation request"). A case asked for
+  by its internal id is answered by its number with that id beside it. Report summaries
+  receive case numbers beside the ids, campaign listings give member case numbers, and
+  Demo case reads and the brief suggestion name cases by number. Demo seeding numbers
+  every case from one sequence whatever the reset period, so no two Demo cases share a
+  number. On the visit that starts a shift the shift card comes before the Demo Mode
+  card, and the weekly card counts as newer than your catch-up point. New candidate
+  summaries read "Candidate awaiting analysis: …" without an em dash.
 - **Round 13 chat fixes.** Risk figures in chat step summaries round half up, the same
   integer the Overview gauge shows (47.5 reads 48, not 47). The token meter no longer says
   "last 12 exchanges" on a new chat ("History: none yet"; "History: 3 exchanges,

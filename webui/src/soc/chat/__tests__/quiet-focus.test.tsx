@@ -5,10 +5,12 @@
  * only; the analyst's own keyboard focus still opens it. Covered here: the mechanism,
  * `useOpenerFocus.restore`, and every chat-workspace trigger that code focuses back
  * (toolbar History, Report and title; the rail's strip and header buttons; a rail row
- * after rename; the answer's feedback buttons after the reason panel).
+ * after rename; the answer's feedback buttons after the reason panel; the composer's
+ * Read-only chip after its access popover closes).
  */
-import { describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import type { ChatConversationSummary } from '@/lib/types';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
@@ -17,6 +19,8 @@ import { useOpenerFocus } from '../workspace/useOpenerFocus';
 import { ThreadToolbar } from '../workspace/ThreadToolbar';
 import { HintedIconButton, HistoryStrip } from '../workspace/HistoryRail';
 import { FeedbackButtons, type AnswerFeedbackState } from '../message/AnswerFeedback';
+import { Harness, makeSpies, stubServer } from '../composer/__tests__/harness';
+import { makeContext } from '../composer/__tests__/fixtures';
 
 /** Let Radix commit an open (focus opens a tooltip at once, without the delay). */
 async function settle() {
@@ -173,5 +177,57 @@ describe('chat workspace triggers that code focuses back', () => {
     // Moving between the thumbs with the arrow keys is the analyst's focus: hints show.
     fireEvent.keyDown(downRef.current as HTMLButtonElement, { key: 'ArrowLeft' });
     expect(await screen.findByRole('tooltip')).toHaveTextContent('Good answer');
+  });
+});
+
+describe('composer controls that code focuses back', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const CHIP = 'Read-only. What can the assistant access?';
+  const ACCESS = 'What the assistant can access';
+
+  it('returns focus to the Read-only chip on Escape without opening its tooltip over the composer', async () => {
+    stubServer();
+    const user = userEvent.setup();
+    render(<Harness spies={makeSpies()} context={makeContext()} />);
+    const chip = screen.getByRole('button', { name: CHIP });
+    // Pointer: open, move the pointer away, Escape.
+    await user.click(chip);
+    await screen.findByRole('dialog', { name: ACCESS });
+    await user.unhover(chip);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: ACCESS })).toBeNull());
+    expect(chip).toHaveFocus();
+    await settle();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // Keyboard: Tab from the field to the chip (its hint shows: the analyst moved focus),
+    // Enter, Escape.
+    act(() => screen.getByRole('textbox', { name: 'Message the assistant' }).focus());
+    await user.tab();
+    expect(chip).toHaveFocus();
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument();
+    await user.keyboard('{Enter}');
+    await screen.findByRole('dialog', { name: ACCESS });
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: ACCESS })).toBeNull());
+    expect(chip).toHaveFocus();
+    await settle();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('leaves focus where a click outside put it', async () => {
+    stubServer();
+    const user = userEvent.setup();
+    render(<Harness spies={makeSpies()} context={makeContext()} />);
+    const chip = screen.getByRole('button', { name: CHIP });
+    await user.click(chip);
+    await screen.findByRole('dialog', { name: ACCESS });
+    const field = screen.getByRole('textbox', { name: 'Message the assistant' });
+    await user.click(field);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: ACCESS })).toBeNull());
+    expect(field).toHaveFocus();
+    expect(screen.queryByRole('tooltip')).toBeNull();
   });
 });

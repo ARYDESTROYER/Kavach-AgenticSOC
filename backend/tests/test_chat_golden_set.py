@@ -2408,6 +2408,56 @@ def test_the_my_case_answer_lists_only_the_callers_other_cases(signed_in_client:
     assert listed == [c.case_number for c in mine[1:]], (listed, answer[:600])
 
 
+#: "My cases" questions that name more than the analyst's open cases (Round 13 polish
+#: review): each is classified as usual, and every case lookup it sends carries
+#: assignee "me" beside the filters the question names.
+_MY_VARIANTS = [
+    ("Which of my cases were closed as false positive?", "search_cases",
+     {"status_group": "terminal", "verdict": "FALSE_POSITIVE"}),
+    ("How many of my cases are critical?", "search_cases", {"severity": "critical"}),
+    ("Break down my open cases by severity", "case_stats", {"status_group": "active", "group_by": "severity"}),
+    ("Are any of my cases escalated?", "search_cases", {"status": "escalated"}),
+    ("List cases assigned to me that are high severity", "search_cases", {"severity": "high"}),
+    ("Show my open cases from this week", "search_cases", {"status_group": "active", "window": "this_week"}),
+    ("List my critical cases", "search_cases", {"severity": "critical"}),
+    ("Show my closed cases", "search_cases", {"status_group": "terminal"}),
+    ("What changed on my cases since yesterday?", "search_cases", {}),
+    ("Compare my cases this week vs last week", "case_stats", {"compare": "previous_period", "window": "this_week"}),
+]
+
+
+@pytest.mark.parametrize("question, tool, params", _MY_VARIANTS)
+def test_a_my_cases_question_keeps_its_filters_and_asks_for_me(signed_in_client: TestClient, question: str,
+                                                              tool: str, params: dict[str, Any]) -> None:
+    response = _stream(signed_in_client, question)
+    steps = [s for s in _tool_steps(response) if s["tool"] in ("search_cases", "case_stats")]
+    assert steps and all((s.get("params") or {}).get("assignee") == "me" for s in steps), steps
+    assert any(s["tool"] == tool and s.get("status") == "ok"
+               and all((s.get("params") or {}).get(k) == v for k, v in params.items()) for s in steps), steps
+    answer = response["answer"]
+    assert "No analyst is signed in" not in answer and _COUNTED not in answer, answer[:300]
+    assert "assigned to you" in answer, answer[:400]
+    # Every case the answer lists is the caller's own.
+    mine = {c.case_number for c in _store_cases(signed_in_client)
+            if str(getattr(c, "assignee", "") or "").strip().lower() == _ME.lower()}
+    listed = [i.get("case_number") for b in response.get("blocks") or [] if b.get("type") == "case_list"
+              for i in b.get("items") or []]
+    assert set(listed) <= mine, (listed, mine)
+    assert response["conversation_title"] is None or not response["conversation_title"].startswith("Case list")
+
+
+@pytest.mark.parametrize("question, note", [
+    ("Give me the shift handoff for my cases", "cannot be narrowed to the cases assigned to you"),
+    ("How is the security posture of my cases?", "cannot be narrowed to the cases assigned to you"),
+])
+def test_a_my_cases_question_a_snapshot_cannot_filter_says_so(signed_in_client: TestClient, question: str,
+                                                              note: str) -> None:
+    response = _stream(signed_in_client, question)
+    assert note in response["answer"], response["answer"][:600]
+    assert not [s for s in _tool_steps(response) if s["tool"] == "search_cases"
+                and (s.get("params") or {}).get("assignee") == "me"], _tool_steps(response)
+
+
 def _near_rows(client: TestClient) -> tuple[int, list[Any]]:
     """``(close total, the near cases nearest first)`` read directly: the shift
     snapshot's close-to-target total and the store's own near cases this app added,
@@ -2656,9 +2706,12 @@ def test_starter_answers_offer_chips_about_what_they_show(starter_client: TestCl
     ("How is our security posture right now?", r"Security posture, last 24 hours"),
     ("What did the AI spend this week?", r"AI spend, this week"),
     ("Cases by severity in the last 7 days", r"Cases by severity, last 7 days"),
-    # H1: the case's rule in words, never one generic title for every investigation,
-    # and (Round 13 polish) the case's display number.
-    ("Investigate case demo-00000539-0004", r"Identity signin case CASE-\d{6}"),
+    # H1: the case's rule, never one generic title for every investigation, and
+    # (Round 13 polish) the case's display number first, the rule id as written.
+    ("Investigate case demo-00000539-0004", r"CASE-\d{6} identity_signin case"),
+    ("Give me an investigation brief for demo-00000539-0004", r"CASE-\d{6} brief, identity_signin"),
+    # Product help names the console page it points to.
+    ("How do I connect a new log source?", r"(?!Console help$)[A-Z][\w &-]* help"),
     ("Create a report on case volume and false positives for the last 7 days",
      r"Case volume and false positives report"),
 ])
@@ -2705,6 +2758,7 @@ _TOLD_APART = [
     ("Compare Q3 2026 vs Q2 2026", "Compare today with yesterday"),                                   # periods
     ("What is our TP rate?", "TP rate this quarter"),
     ("Investigate everything about host dc01 over the last 30 days", "Deep dive into user pnair this month"),
+    ("How do I connect a new log source?", "How do I turn on single sign-on?"),                     # console page
 ]
 #: The most golden first questions with a data answer one title may share, and the
 #: least share of distinct titles among them (paraphrases of one ask legitimately share
@@ -2752,6 +2806,9 @@ def test_first_question_titles_tell_conversations_apart(client: TestClient, monk
         titles[question] = title
         assert title and 2 <= len(title.split()) <= 6 and parse_title({"title": title}) == title, (question, title)
         assert not re.search(r"\b(?:demo|case)-[0-9a-z]", title), (question, title)
+        number = re.search(r"\bCASE-\d+", title)
+        # The case number leads: the history rail cuts a title at about 26 characters.
+        assert number is None or number.end() <= 24, (question, title)
         for value in _question_values(question, ask):
             assert not re.search(rf"(?<![\w-]){re.escape(value)}(?![\w-])", title), (question, value, title)
         if question in {g.q for g in asked} and response.get("answer_kind") in ("data", "mixed"):

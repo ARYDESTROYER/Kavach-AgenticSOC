@@ -148,18 +148,22 @@ def preview_samples(
 
 async def allocate_case_number(
     seq_store: Any, fmt: Any, *, source: str = "", at: Any | None = None,
+    bucket_at: Any | None = None,
 ) -> str:
     """The display number the product gives a new case (F7): the next value of the
     configured reset bucket's sequence, rendered through the operator template.
 
     ``fmt`` is a ``CaseIdFormatConfig``; ``source`` fills ``{source}``. ``at`` is the
-    case's creation time (default now): it picks the reset bucket and fills the date
-    placeholders, so a case seeded with a past creation time is numbered as it would
-    have been when it was created. Returns "" when numbering is off or no sequence
-    store is wired. May raise (the callers keep case creation safe)."""
+    case's creation time (default now): it fills the date placeholders and, unless
+    ``bucket_at`` is given, picks the reset bucket. ``bucket_at`` picks the bucket on
+    its own: Demo seeding numbers every past case from the CURRENT bucket, so cases
+    seeded either side of a reset boundary never share a number (a seeded history is
+    numbered at once, not period by period as it happened). Returns "" when numbering
+    is off or no sequence store is wired. May raise (the callers keep case creation
+    safe)."""
     if fmt is None or not getattr(fmt, "enabled", False) or seq_store is None:
         return ""
-    bucket = reset_bucket(fmt.reset_period, at)
+    bucket = reset_bucket(fmt.reset_period, bucket_at if bucket_at is not None else at)
     seq = await seq_store.next(fmt.prefix, bucket, start=fmt.seq_start)
     ctx: dict[str, Any] = {"seq": seq, "prefix": fmt.prefix, "source": source or ""}
     if at is not None:

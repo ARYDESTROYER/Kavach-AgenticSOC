@@ -662,6 +662,61 @@ describe('Workspace Chat page', () => {
     expect(screen.queryByTestId('report-panel')).toBeNull();
   });
 
+  it('hands focus back to the Report toggle when the docked panel closes from inside, quietly', async () => {
+    // Round 13 polish: the panel's Close button leaves with the panel, which dropped
+    // focus to the page.
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    const toggle = screen.getByTestId('chat-report-toggle');
+    await user.click(toggle);
+    const panel = await screen.findByTestId('report-panel');
+    expect(panel).toHaveAttribute('data-mode', 'split');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    // Keyboard.
+    act(() => within(panel).getByRole('button', { name: 'Close report' }).focus());
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(screen.queryByTestId('report-panel')).toBeNull());
+    expect(document.activeElement).toBe(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await settle();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // Pointer.
+    await user.click(toggle);
+    await user.click(within(await screen.findByTestId('report-panel')).getByRole('button', { name: 'Close report' }));
+    await waitFor(() => expect(screen.queryByTestId('report-panel')).toBeNull());
+    expect(document.activeElement).toBe(toggle);
+    await settle();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('moves focus between Collapse history and Show history as the rail swaps, quietly', async () => {
+    // Round 13 polish: the pressed button unmounts as the rail and the strip swap.
+    const user = userEvent.setup();
+    renderChat();
+    await screen.findByText('Newest sign-in review answer');
+    const frame = screen.getByTestId('workspace-chat-page');
+    expect(frame).toHaveAttribute('data-rail', 'docked');
+    act(() => screen.getByRole('button', { name: 'Collapse history' }).focus());
+    await user.keyboard('{Enter}');
+    expect(frame).toHaveAttribute('data-rail', 'strip');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Show history' }));
+    await settle();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    await user.keyboard('{Enter}');
+    expect(frame).toHaveAttribute('data-rail', 'docked');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Collapse history' }));
+    await settle();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // The shortcut from the composer swaps the rail and leaves focus in the composer.
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    act(() => field.focus());
+    shortcut('S');
+    expect(frame).toHaveAttribute('data-rail', 'strip');
+    await settle();
+    expect(document.activeElement).toBe(field);
+  });
+
   it('never auto-opens the panel as an overlay: a toast offers it instead', async () => {
     // 900 px frame: strip rail, and the panel (360 + 9) would leave < 640 px.
     frameWidth(900);
