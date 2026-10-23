@@ -11574,3 +11574,10 @@
 - Tests: backend 8,364 passed, 4 skipped; ruff fatal clean; test:strict 508 files, 5,299 passed, 1 skipped, no stderr; tsc, lint 0/0, gates, check:types, check_docs, docs:check, knowledge --check, check_ci_contract, check_version green; build 3,404 modules, 0 warnings, entry 371,863 B (unchanged); bundle-first-paint 23 passed.
 - Status: in-progress (a last small polish pass for what the re-shoot found: unanchored follow-ups on an empty SLA answer, campaign ids on cards, the "Oldest assigned" wording, shift brief counts, a rule name spelled two ways, wide hyphens from body-wide tabular numerals, case numbers in report exports and the Campaigns member list, slow first case chips).
 - Next: that pass, then the operator's Overview choice and the pull request into Testing.
+
+### 2026-10-23 12:40Z — Orchestrator — Overview separation: the operator chose Grouped surfaces
+- Context: the four Overview card-separation options (A Grouped surfaces, B Hairlines, C Titled modules, D Bordered cards) were shown to the operator with comparison screenshots at 1440 light, 1920 dark and 768.
+- Did: the operator chose A, Grouped surfaces (each module on a soft tinted panel, no border, no resting shadow, band titles outside). A workflow now makes it the only look: panel surface promoted to theme tokens with light, dark, increased-contrast, forced-colours and reduce-transparency values, applied directly in the Overview, the preview switch, markers and losing options removed, tests of the new default, the ui-standard "Dashboard bands" paragraph rewritten, then a code review, a live accessibility review, fixes and final screenshots.
+- Tests: pending (run by that workflow and the closing gate).
+- Status: in-progress.
+- Next: commit with the last chat polish, run every gate on the combined tree, open the pull request into Testing.
