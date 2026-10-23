@@ -246,15 +246,19 @@ export function HumanVsAiCard({
       // an `sr-only` node INSIDE the section, never at the help popover: that popover is a
       // Radix portal with no `forceMount`, so while it is closed the IDREF would dangle.
       aria-describedby={describedById}
-      // Flat (Round 12): no inner padding — the dashboard band's gutters separate it from
-      // its neighbour, and a padded cell started its heading 12px off the band's rail.
+      // Flat (Round 12): no inner padding of its own. On the Overview its HOST supplies the
+      // grouped panel and its padding (Round 13), so the heading starts on the same inset
+      // as every other module title.
       className={cn('flex h-full min-w-0 flex-col', className)}
     >
       <p id={describedById} className="sr-only">
         How this window&rsquo;s cases were closed.
       </p>
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
+        {/* A 24px title row with the title centred in it (Round 13): the noise flow beside
+            this card centres its title in the same 24px row with its help button, so the
+            two titles share one line instead of sitting 2px apart. */}
+        <div className="flex min-h-6 min-w-0 items-center">
           {/* Sentence case at the section-title size (spec principle 2): the tracked
               capitals read as chrome and competed with the numbers below. */}
           <h2 className="text-base font-semibold text-foreground">Human vs AI</h2>

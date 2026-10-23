@@ -84,6 +84,34 @@
     --warning: 36 92% 42%;     --warning-foreground: 222 47% 11%; --warning-text: 36 96% 31%;   /* 4.62:1 on its 10% wash */
     --danger:  358 75% 45%;    --danger-foreground: 0 0% 100%;    --danger-text: 358 75% 42%;   /* aliases critical */
 
+    /* ---- Grouped panels (Round 13; ui-standard "Dashboard bands"). A dashboard module
+       sits on a soft tinted panel (`.surface-panel`) with no border and no shadow: one
+       step DEEPER than the canvas in light (the macOS grouped style), one step LIGHTER in
+       dark. Every neutral step that paints ON a panel moves with it, in the canvas's own
+       order (muted, then hover, then the selected wash, each one notch deeper), and
+       gate-contrast.mjs MEASURES each against the panel: panel vs canvas 1.09:1; muted
+       (tracks, `hover:bg-muted`, secondary badges) 1.08:1, at least the canvas's own
+       1.07:1, with muted text 4.94:1 on it; hover 1.14:1; the selected wash 1.26:1, its 30%
+       KPI wash 1.07:1, no weaker than on the canvas. Foreground 15.58:1, muted text
+       5.34:1 and primary 5.24:1 on the panel. The structural line (`--input`,
+       `--border-strong`, and `--border` under increased contrast) is one step deeper
+       too: 220 15% 58% measured 2.85:1 on the panel, 55% measures 3.17:1 on it and
+       3.46:1 on the canvas. The semantic text steps are two notches deeper, so a badge on
+       its 10% wash clears 4.5:1 on a resting panel AND on a hovered row (worst 4.60:1,
+       low over the hover). */
+    --panel: 230 22% 94.5%;
+    --panel-muted: 230 12% 91%;
+    --panel-hover: var(--slate-5);
+    --panel-accent: var(--slate-6);
+    --panel-border-strong: 220 15% 55%;
+    --panel-critical-text: 358 75% 39%;
+    --panel-high-text: 22 90% 32%;
+    --panel-medium-text: 40 96% 25%;
+    --panel-low-text: 212 90% 37%;
+    --panel-info-text: 215 16% 37%;
+    --panel-success-text: 158 74% 23%;
+    --panel-warning-text: 36 96% 26.5%;
+
     --radius: 0.625rem;
 
     /* ---- Round-3 extra token set (ALLOW-LISTED; see theme.tsx ALLOWED_TOKENS).
@@ -229,6 +257,28 @@
     --success: 135 50% 62%;  --success-foreground: var(--slate-1); --success-text: 135 50% 62%;  /* #6ecf86 — 7.64:1 on its 10% wash */
     --warning: 41 75% 59%;   --warning-foreground: var(--slate-1); --warning-text: 41 75% 59%;   /* aliases the medium gold */
     --danger:  2 72% 64%;    --danger-foreground: var(--slate-1);  --danger-text: 2 72% 64%;     /* aliases critical */
+
+    /* ---- Grouped panels (dark): one step LIGHTER than the canvas (the iOS secondary
+       grouped background). MEASURED: panel vs canvas 1.12:1; foreground 13.89:1, muted
+       text 6.45:1, primary 6.28:1. The in-panel steps keep the canvas's order: muted
+       1.11:1 (muted text 5.82:1 on it), hover 1.15:1, and the selected wash 1.25:1 (1.09:1
+       above the hover, its 30% KPI wash 1.06:1, no weaker than on the canvas). The
+       structural line keeps its dark value (4.05:1 on the panel). 12.5% is the panel's
+       ceiling: at 13.5% critical text on its wash drops to 4.49:1. The semantic text
+       keeps its dark values except critical, one notch lighter so a critical badge on a
+       hovered row still clears 4.5:1 (4.56:1; the dark value measured 4.00:1 there). */
+    --panel: 222 30% 12.5%;
+    --panel-muted: 220 28% 16%;
+    --panel-hover: var(--slate-6);
+    --panel-accent: 219 25% 19.5%;
+    --panel-border-strong: var(--border-strong);
+    --panel-critical-text: 2 72% 68%;
+    --panel-high-text: var(--high-text);
+    --panel-medium-text: var(--medium-text);
+    --panel-low-text: var(--low-text);
+    --panel-info-text: var(--info-text);
+    --panel-success-text: var(--success-text);
+    --panel-warning-text: var(--warning-text);
 
     /* ---- Round-3 extra token set (dark values). radius/density/font-display are
        MODE-AGNOSTIC and declared ONCE in :root (they resolve on <html> in both
@@ -648,6 +698,19 @@
     font-size: clamp(1.125rem, 15cqi, 1.8333rem);
     line-height: 1;
     letter-spacing: -0.018em;
+  }
+  /* Forced colours paint an opaque backplate behind each line of text, sized to the
+     font's content area. At `line-height: 1` Inter's content area runs about 0.1em above
+     the numeral's line box, so on a tile whose label sits right on the numeral row (the
+     row's tallest label) the backplate covered the label's descenders ("Total Cases",
+     "MTTR"). A 0.125em inset, in forced colours only, keeps the backplate under the
+     label. MEASURED with forced-colours emulation. */
+  @media (forced-colors: active) {
+    .kpi-numeral-fluid,
+    .kpi-numeral-fluid-md,
+    .kpi-numeral-fluid-sm {
+      padding-top: 0.125em;
+    }
   }
 }
 
@@ -1662,509 +1725,78 @@ select:-webkit-autofill:focus {
   }
 }
 
-/* ---- Overview card separation: PREVIEW OPTIONS (Round 13, TEMPORARY) ------------------
-   Four candidate ways to show where one Overview module ends and the next begins, kept
-   side by side until the operator picks one (`?separation=<id>`, read once by
-   `soc/pages/overview-separation.ts`). EVERY rule below is scoped under `[data-ov-sep]`,
-   which the Overview sets only while a preview is selected, so the default page is
-   untouched. The hooks are plain data attributes in Overview.tsx:
-     data-ov="kpi"          the KPI strip            data-ov="bands"    the band wrapper
-     data-ov="band"         one titled band          data-ov="grid"     a band's module grid
-     data-ov="cell"         one module (instrument)  data-ov="head"     a module's header row
-     data-ov="snap"         one severity snapshot    data-ov="deeper"   the Deeper analytics fold
-   plus `data-ov-cell` / `data-ov-grid` names for the gutter-rule placement in option B.
-   Option ids: grouped (A), hairlines (B), titled (C), bordered (D; `raised` is an alias).
+/* ---- Grouped panels (Round 13; ui-standard "Dashboard bands") --------------------------
+   The primary dashboard groups each module on its own soft tinted panel, so where one
+   module ends and the next begins reads at a glance without a line or a box edge: the
+   `--panel` surface (light: a step deeper than the canvas; dark: a step lighter), a 14px
+   corner (the `rounded-xl` step, so the brand "Square" preset squares it too), no border
+   and no resting shadow. Nothing here is translucent and nothing moves, so reduced
+   transparency and reduced motion need no special case.
 
-   Colours come from the theme's own tokens; nothing here is translucent and nothing
-   moves, so reduced transparency and reduced motion need no special case. No rule here
-   redefines an operator-writable token (`--primary`, `--radius`, …: ALLOWED_TOKENS in
-   soc/theme-tokens.ts), so a custom brand colour still reaches every module. Increased
-   contrast lifts every rule through `--border-alpha-floor` (the same floor the
-   `border-border/70` utilities honour) and gives the borderless surfaces a defined edge.
-   Remove this block, its hooks and `overview-separation.ts` once one option is chosen. */
+   Inside a panel every neutral step that paints ON it moves with it, so nothing that was
+   visible on the canvas vanishes into the panel: `--card` follows the panel (a chip
+   painted "on the card", such as a flow label, blends in); `--muted` and `--secondary`
+   (progress tracks, `hover:bg-muted`, secondary badges) take `--panel-muted`; hover and
+   the selected wash take `--panel-hover` and `--panel-accent`, in the canvas's own order
+   (muted, hover, selected, each one notch deeper); the structural line (`--input`,
+   `--border-strong`) takes `--panel-border-strong`, so a control edge clears 3:1 against
+   the panel it sits on; and the semantic text steps swap to their `--panel-*-text`
+   values, so a badge on its 10% wash clears 4.5:1 on a resting panel and on a hovered
+   row. gate-contrast.mjs measures every one of these pairs against the panel, in both
+   themes. No operator-writable token (`--primary`, `--radius`, …: ALLOWED_TOKENS in
+   soc/theme-tokens.ts) is redefined, so a custom brand reaches every panel.
+   `--panel-inset-rule` is the column rule a single-row strip draws INSIDE a panel
+   (`[border-image:var(--panel-inset-rule)_0_1_0_0]`): it stops 12px short of the rounded
+   edges, an inset separator rather than a table rule.
 
-[data-ov-sep] {
-  /* The KPI strip's own internal hairline (`border-border/70`), floor-aware. */
-  --ov-rule: hsl(var(--border) / max(0.7, var(--border-alpha-floor, 0)));
-}
-
-/* Every option: the KPI labels share ONE left edge with the module titles under them
-   (Round 13 review: "Total Cases" sat 12px right of "Noise reduction flow" today, and 8px
-   left of it inside a padded panel). Only the first tile of each strip row moves; the
-   others keep their own inset, so no context line loses width. `--ov-title-inset` is the
-   module's own left padding: 0 on the flat options, the panel padding on A and D. */
-@media (max-width: 639.98px) {
-  [data-ov-sep] [data-ov='kpi'] > * button[data-testid^='kpi-'] {
-    padding-left: var(--ov-title-inset, 0px);
+   Increased contrast gives the borderless surface a solid 1px structural edge (3.46:1
+   against the light canvas and 3.17:1 against the panel itself; 4.54:1 and 4.05:1 in
+   dark) and re-points the hairline at the panel's structural step, so every rule and
+   divider inside a panel is a ≥3:1 line against the panel, as on the card. Forced colours
+   drop the fill and the border image, so every panel keeps a system-colour edge and a
+   strip falls back to its plain rules. These media blocks sit AFTER the global
+   increased-contrast block above on purpose: that block is the first `prefers-contrast:
+   more` rule in this file. On paper a panel prints as its light (or dark) fill, like
+   every surface here. */
+@layer components {
+  .surface-panel {
+    --card: var(--panel);
+    --muted: var(--panel-muted);
+    --secondary: var(--panel-muted);
+    --hover: var(--panel-hover);
+    --accent: var(--panel-accent);
+    --border-strong: var(--panel-border-strong);
+    --input: var(--panel-border-strong);
+    --critical-text: var(--panel-critical-text);
+    --high-text: var(--panel-high-text);
+    --medium-text: var(--panel-medium-text);
+    --low-text: var(--panel-low-text);
+    --info-text: var(--panel-info-text);
+    --success-text: var(--panel-success-text);
+    --warning-text: var(--panel-warning-text);
+    --panel-inset-rule: linear-gradient(
+      to bottom,
+      transparent 0.75rem,
+      hsl(var(--border) / max(0.7, var(--border-alpha-floor, 0))) 0.75rem,
+      hsl(var(--border) / max(0.7, var(--border-alpha-floor, 0))) calc(100% - 0.75rem),
+      transparent calc(100% - 0.75rem)
+    );
+    background-color: hsl(var(--panel));
+    border-radius: calc(var(--radius) + min(var(--radius), 4px));
   }
-}
-@media (min-width: 640px) and (max-width: 767.98px) {
-  [data-ov-sep] [data-ov='kpi'] > :nth-child(2n + 1) button[data-testid^='kpi-'] {
-    padding-left: var(--ov-title-inset, 0px);
-  }
-}
-@media (min-width: 768px) and (max-width: 1279.98px) {
-  [data-ov-sep] [data-ov='kpi'] > :nth-child(3n + 1) button[data-testid^='kpi-'] {
-    padding-left: var(--ov-title-inset, 0px);
-  }
-}
-@media (min-width: 1280px) {
-  [data-ov-sep] [data-ov='kpi'] > :first-child button[data-testid^='kpi-'] {
-    padding-left: var(--ov-title-inset, 0px);
-  }
-}
-/* Every option: "Human vs AI" shares its title line with "Noise reduction flow" beside it.
-   The flow's title is centred in a 24px row with its help button, so it sat 2px lower;
-   the same 24px centred title row here puts both on one line whatever the header does. */
-[data-ov-sep] [data-testid='human-vs-ai'] > div:first-of-type > div:first-child {
-  display: flex;
-  min-height: 1.5rem;
-  align-items: center;
-}
-
-/* Gutter rules (option B, and the divider between the two severity snapshots in A, B and
-   D). Each module may draw ONE rule into the gutter to its left (::before) and ONE into
-   the gutter above it (::after). Which ones are on is decided per layout below by setting
-   `--ov-v` / `--ov-h` on the MODULE itself (not on its pseudo-element, which would query
-   the module's own container instead of the band's). `--ov-v-top/-bottom` and
-   `--ov-h-left/-right` let a rule run on through a gutter to MEET another rule (option B
-   draws T and cross junctions, never a near miss). */
-:is([data-ov-sep='grouped'], [data-ov-sep='hairlines'], [data-ov-sep='bordered']) [data-ov='snap'],
-[data-ov-sep='hairlines'] [data-ov-cell] {
-  position: relative;
-  --ov-v: none;
-  --ov-h: none;
-  /* Reset on every module, so an offset set on one never leaks to the modules inside it. */
-  --ov-rule-x: calc(var(--ov-col-gap, 1.5rem) / -2);
-  --ov-rule-y: calc(var(--ov-row-gap, 2rem) / -2);
-  --ov-v-top: 0px;
-  --ov-v-bottom: 0px;
-  --ov-h-left: 0px;
-  --ov-h-right: 0px;
-}
-:is([data-ov-sep='grouped'], [data-ov-sep='hairlines'], [data-ov-sep='bordered']) [data-ov='snap']::before,
-[data-ov-sep='hairlines'] [data-ov-cell]::before {
-  content: var(--ov-v, none);
-  position: absolute;
-  top: var(--ov-v-top);
-  bottom: var(--ov-v-bottom);
-  left: var(--ov-rule-x);
-  border-left: 1px solid var(--ov-rule);
-  pointer-events: none;
-}
-:is([data-ov-sep='grouped'], [data-ov-sep='hairlines'], [data-ov-sep='bordered']) [data-ov='snap']::after,
-[data-ov-sep='hairlines'] [data-ov-cell]::after {
-  content: var(--ov-h, none);
-  position: absolute;
-  left: var(--ov-h-left);
-  right: var(--ov-h-right);
-  top: var(--ov-rule-y);
-  border-top: 1px solid var(--ov-rule);
-  pointer-events: none;
-}
-/* The two severity snapshots: 24px apart stacked, 32px side by side (`gap-y-6` / `gap-x-8`
-   on their grid, which turns two-up at 35rem of its own width). `--ov-snap-reach-*` is set
-   on the snapshots MODULE by option B, so the divider can run out to the band's rules. */
-:is([data-ov-sep='grouped'], [data-ov-sep='hairlines'], [data-ov-sep='bordered']) [data-ov='snap'] + [data-ov='snap'] {
-  --ov-rule-x: -1rem;
-  --ov-rule-y: -0.75rem;
-  --ov-h: '';
-  --ov-h-right: var(--ov-snap-reach-x, 0px);
-  --ov-v-bottom: var(--ov-snap-reach-y, 0px);
-}
-@container (min-width: 35rem) {
-  :is([data-ov-sep='grouped'], [data-ov-sep='hairlines'], [data-ov-sep='bordered']) [data-ov='snap'] + [data-ov='snap'] {
-    --ov-v: '';
-    --ov-h: none;
-  }
-}
-
-/* ---- Shared by the two panel options (A grouped, D bordered) ---------------------------
-   Padding and gutters grow with the screen (16 / 20 from 1280px / 24 from 1920px). */
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) {
-  --ov-pad: 1rem;
-  --ov-gutter: 1rem;
-  --ov-band-gap: 2.5rem;
-  --ov-title-inset: var(--ov-pad);
-}
-@media (min-width: 1280px) {
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) {
-    --ov-pad: 1.25rem;
-    --ov-gutter: 1.25rem;
-  }
-}
-@media (min-width: 1920px) {
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) {
-    --ov-pad: 1.5rem;
-    --ov-gutter: 1.5rem;
-    --ov-band-gap: 3rem;
-  }
-}
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='cell'] {
-  padding: var(--ov-pad);
-}
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='kpi'],
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='subband'] > [data-kpi-grid-count] {
-  overflow: hidden;
-}
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='grid'] {
-  column-gap: var(--ov-gutter);
-  row-gap: var(--ov-gutter);
-}
-/* One row of six from 1280px: the column rules stop 12px short of the panel's top and
-   bottom edges (an inset separator, not a table rule). Drawn as a border image so the
-   tiles keep their exact size; it paints only where a tile has a right rule. */
-@media (min-width: 1280px) {
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='kpi'] > * {
-    border-image: linear-gradient(
-        to bottom,
-        transparent 0.75rem,
-        var(--ov-rule) 0.75rem,
-        var(--ov-rule) calc(100% - 0.75rem),
-        transparent calc(100% - 0.75rem)
-      )
-      0 1 0 0;
-  }
-}
-/* Response time: a panel stretches to its row, so the spare height sits BETWEEN the
-   detect and respond figures (each panel's last line then ends on the row's bottom edge)
-   instead of pooling as an empty block under them. */
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov-cell='response'] > [data-ov='head'] + * {
-  flex: 1 1 auto;
-  align-content: space-between;
-}
-/* Below 1280px a snapshot module is ~300px wide: tighter gaps keep each severity legend
-   BESIDE its ring (at 768px it dropped under the ring and left the chevron alone), with
-   the same ~9px to spare that today's flat layout has. */
-@media not all and (min-width: 1280px) {
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='snap'] :has(> [data-testid='snapshot-body']) {
-    column-gap: 0.5rem;
-  }
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='snap-grid'] {
-    column-gap: 1.5rem;
-  }
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='snap'] + [data-ov='snap'] {
-    --ov-rule-x: -0.75rem;
-  }
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-testid='snapshot-body'] {
-    column-gap: 0.75rem;
-  }
-}
-/* The sticky masthead is clear at rest and takes the Console material only once content
-   scrolls under it (`data-scrolled`, useScrollEdge): the top of the page then has two
-   surface levels, canvas and panel, not three. */
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-testid='page-hero']:not([data-scrolled='true']) {
-  background-color: transparent;
-}
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) > [data-ov='bands']:not([hidden]),
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) > [data-ov='deeper']:not([hidden]),
-:is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='bands'] > [data-ov='band']:not([hidden]) ~ [data-ov='band']:not([hidden]) {
-  margin-top: var(--ov-band-gap);
-}
-
-/* ---- A · Grouped surfaces --------------------------------------------------------------
-   Apple's grouped inset style: every module sits on a soft, slightly tinted surface with a
-   14px radius and roomy padding, and no border or shadow. Band titles stay outside, on the
-   canvas. The surface is a step darker than the canvas in light (macOS System Settings,
-   1.09:1 against it) and a step lighter in dark (iOS secondary grouped background). On the
-   light surface only the semantic TEXT steps are deepened a notch so a badge on its 10%
-   wash still clears 4.5:1 (worst 4.71:1, measured); primary and secondary text keep the
-   theme's own values (5.2:1 and 5.3:1 on the surface), so operator branding still applies.
-   Hover inside a panel steps one notch deeper than on the canvas (`--hover` for rows,
-   `--accent` for the KPI tiles' 30% wash), so it stays as visible as it is today. */
-[data-ov-sep='grouped'] {
-  --ov-surface: 230 22% 94.5%;
-  --ov-radius: calc(var(--radius) + min(var(--radius), 4px));
-  --ov-hover: var(--slate-5);
-  --ov-accent: var(--slate-6);
-}
-.dark [data-ov-sep='grouped'] {
-  --ov-surface: 222 30% 12.5%;
-  --ov-hover: var(--slate-6);
-}
-[data-ov-sep='grouped'] [data-ov='cell'],
-[data-ov-sep='grouped'] [data-ov='kpi'],
-[data-ov-sep='grouped'] [data-ov='subband'] > [data-kpi-grid-count],
-[data-ov-sep='grouped'] [data-ov='deeper-trigger'] {
-  /* `--card` follows the surface so chips painted "on the card" (flow labels) blend in. */
-  --card: var(--ov-surface);
-  --hover: var(--ov-hover);
-  --accent: var(--ov-accent);
-  background-color: hsl(var(--ov-surface));
-  border-radius: var(--ov-radius);
-}
-:root:not(.dark) [data-ov-sep='grouped'] :is([data-ov='cell'], [data-ov='kpi'], [data-ov='subband'] > [data-kpi-grid-count]) {
-  --critical-text: 358 75% 40%;
-  --high-text: 22 90% 34%;
-  --medium-text: 40 96% 27%;
-  --low-text: 212 90% 39%;
-  --info-text: 215 16% 39%;
-  --success-text: 158 74% 25%;
-  --warning-text: 36 96% 28%;
-}
-[data-ov-sep='grouped'] [data-ov='kpi'],
-[data-ov-sep='grouped'] [data-ov='subband'] > [data-kpi-grid-count] {
-  border-top-width: 0;
-  border-bottom-width: 0;
-}
-[data-ov-sep='grouped'] [data-ov='deeper'] {
-  border-top-width: 0;
-  padding-top: 0;
-}
-[data-ov-sep='grouped'] [data-ov='deeper-trigger'] {
-  padding: 0.75rem var(--ov-pad);
-}
-[data-ov-sep='grouped'] [data-ov='deeper-trigger']:hover {
-  background-color: hsl(var(--hover));
-}
-
-/* ---- B · Hairlines ---------------------------------------------------------------------
-   Flat modules, as today, with ONE thin rule centred in each gutter between siblings:
-   vertical between columns, horizontal between stacked rows. The rule is the full-strength
-   hairline (1.38:1 in light; slate-7 at 60% in dark, 1.35:1, where the 70% hairline all but
-   vanished), and the KPI strip and the Deeper analytics rule take the same weight, so the
-   page has one line weight. Where two rules would nearly touch, one runs on through the
-   gutter to meet the other (a T or a cross), so every junction reads as deliberate. The
-   gutters are 32px (48px from 1920px): 16px of air either side of a rule. No module draws
-   a rule on an outer edge. */
-[data-ov-sep='hairlines'] {
-  --ov-rule: hsl(var(--border));
-  --ov-col-gap: 2rem;
-  --ov-row-gap: 2rem;
-  --ov-band-gap: 3rem;
-}
-.dark [data-ov-sep='hairlines'] {
-  --ov-rule: hsl(var(--slate-7) / max(0.6, var(--border-alpha-floor, 0)));
-}
-@media (prefers-contrast: more) {
-  .dark [data-ov-sep='hairlines'] {
-    --ov-rule: hsl(var(--border));
-  }
-}
-@media (min-width: 1920px) {
-  [data-ov-sep='hairlines'] {
-    --ov-col-gap: 3rem;
-    --ov-row-gap: 3rem;
-    --ov-band-gap: 3.5rem;
-  }
-}
-[data-ov-sep='hairlines'] [data-ov='kpi'],
-[data-ov-sep='hairlines'] [data-ov='kpi'] > *,
-[data-ov-sep='hairlines'] [data-ov='deeper'] {
-  border-color: var(--ov-rule);
-}
-[data-ov-sep='hairlines'] [data-ov='grid'] {
-  column-gap: var(--ov-col-gap);
-  row-gap: var(--ov-row-gap);
-}
-/* Alert flow: stacked below 1280px (rule above Human vs AI), side by side from 1280px. */
-[data-ov-sep='hairlines'] [data-ov-grid='flow'] > [data-ov-cell] + [data-ov-cell] {
-  --ov-h: '';
-}
-@media (min-width: 1280px) {
-  [data-ov-sep='hairlines'] [data-ov-grid='flow'] > [data-ov-cell] + [data-ov-cell] {
-    --ov-v: '';
-    --ov-h: none;
-  }
-}
-/* Cases and response, by layout:
-   - below 1280px in a narrow band, all stacked: the snapshot divider (vertical when the
-     two snapshots sit side by side) runs down to the rule above Response time;
-   - below 1280px in a band at least 48rem wide: snapshots | response over the queue. The
-     stacked-snapshot divider runs right to the rule beside Response time, and that rule
-     runs down to the one above the queue;
-   - 1280 to 1919px, one row of three: the snapshot divider runs right to its gutter rule;
-   - from 1920px, the snapshots over the response pair, the queue on the right spanning
-     both rows: the snapshot divider runs down to the rule above Response time, and that
-     rule runs right to the queue's. */
-[data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell] + [data-ov-cell] {
-  --ov-h: '';
-}
-[data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell='snapshots'] {
-  --ov-snap-reach-y: calc(var(--ov-row-gap) / -2);
-}
-@media not all and (min-width: 1280px) {
-  @container (min-width: 48rem) {
-    [data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell='snapshots'] {
-      --ov-snap-reach-x: calc(var(--ov-col-gap) / -2);
-      --ov-snap-reach-y: 0px;
-    }
-    [data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell] + [data-ov-cell='response'] {
-      --ov-v: '';
-      --ov-h: none;
-      --ov-v-bottom: calc(var(--ov-row-gap) / -2);
+  @media (prefers-contrast: more) {
+    .surface-panel {
+      /* The global block above set `--border` from the ROOT's structural step; a custom
+         property inherits its resolved value, so the panel re-points it at its own. */
+      --border: var(--panel-border-strong);
+      border: 1px solid hsl(var(--border-strong));
     }
   }
-}
-@media (min-width: 1280px) {
-  [data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell] + [data-ov-cell] {
-    --ov-v: '';
-    --ov-h: none;
-  }
-  [data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell='snapshots'] {
-    --ov-snap-reach-x: calc(var(--ov-col-gap) / -2);
-    --ov-snap-reach-y: 0px;
-  }
-}
-@media (min-width: 1920px) {
-  [data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell] + [data-ov-cell='response'] {
-    --ov-v: none;
-    --ov-h: '';
-    --ov-h-right: calc(var(--ov-col-gap) / -2);
-  }
-  [data-ov-sep='hairlines'] [data-ov-grid='cases'] > [data-ov-cell='snapshots'] {
-    --ov-snap-reach-x: 0px;
-    --ov-snap-reach-y: calc(var(--ov-row-gap) / -2);
-  }
-}
-/* Deeper analytics: the two sub-bands (stacked, side by side from 1920px, 40px apart) … */
-[data-ov-sep='hairlines'] [data-ov='deeper-grid'] > [data-ov-cell] + [data-ov-cell] {
-  --ov-rule-x: -1.25rem;
-  --ov-rule-y: -1.25rem;
-  --ov-h: '';
-}
-@media (min-width: 1920px) {
-  [data-ov-sep='hairlines'] [data-ov='deeper-grid'] > [data-ov-cell] + [data-ov-cell] {
-    --ov-v: '';
-    --ov-h: none;
-  }
-}
-/* … coverage beside case volume from 1280px (its rule runs down to the sub-band rule
-   below), stacked again in the narrow 1920px column (its rule runs right to the sub-band
-   rule beside it) … */
-[data-ov-sep='hairlines'] [data-ov-grid='efficiency'] > [data-ov-cell] + [data-ov-cell] {
-  --ov-h: '';
-}
-@media (min-width: 1280px) and (max-width: 1919.98px) {
-  [data-ov-sep='hairlines'] [data-ov-grid='efficiency'] > [data-ov-cell] + [data-ov-cell] {
-    --ov-v: '';
-    --ov-h: none;
-    --ov-v-bottom: -1.25rem;
-  }
-}
-@media (min-width: 1920px) {
-  [data-ov-sep='hairlines'] [data-ov-grid='efficiency'] > [data-ov-cell] + [data-ov-cell] {
-    --ov-h-right: -1.25rem;
-  }
-}
-/* … and the four "what's driving volume" instruments, two by two from 768px, whose rules
-   cross in the middle (and, from 1920px, meet the sub-band rule on their left). */
-[data-ov-sep='hairlines'] [data-ov-grid='volume'] > [data-ov-cell] + [data-ov-cell] {
-  --ov-h: '';
-}
-@media (min-width: 768px) {
-  [data-ov-sep='hairlines'] [data-ov-grid='volume'] > [data-ov-cell]:nth-child(2) {
-    --ov-v: '';
-    --ov-h: none;
-    --ov-v-bottom: calc(var(--ov-row-gap) / -2);
-  }
-  [data-ov-sep='hairlines'] [data-ov-grid='volume'] > [data-ov-cell]:nth-child(3) {
-    --ov-h-right: calc(var(--ov-col-gap) / -2);
-  }
-  [data-ov-sep='hairlines'] [data-ov-grid='volume'] > [data-ov-cell]:nth-child(4) {
-    --ov-v: '';
-    --ov-v-top: calc(var(--ov-row-gap) / -2);
-    --ov-h-left: calc(var(--ov-col-gap) / -2);
-  }
-}
-@media (min-width: 1920px) {
-  [data-ov-sep='hairlines'] [data-ov-grid='volume'] > [data-ov-cell]:nth-child(3) {
-    --ov-h-left: -1.25rem;
-  }
-}
-/* More air between bands. */
-[data-ov-sep='hairlines'] > [data-ov='bands']:not([hidden]),
-[data-ov-sep='hairlines'] > [data-ov='deeper']:not([hidden]),
-[data-ov-sep='hairlines'] [data-ov='bands'] > [data-ov='band']:not([hidden]) ~ [data-ov='band']:not([hidden]) {
-  margin-top: var(--ov-band-gap);
-}
-
-/* ---- C · Titled modules ----------------------------------------------------------------
-   No boxes and no gutter rules: each module opens with a compact header row (title,
-   context, actions) closed by a hairline, the way a list section is titled. Header rows
-   are at least 44px and top-aligned, so titles and delta chips share one top line and the
-   rules of side-by-side modules line up into one broken rule across the band (the two
-   snapshot headers share a subgrid row, so even a wrapped caption keeps them level). The
-   rule is the KPI strip's own hairline weight. The rhythm between stacked modules and
-   between bands opens up (40 / 48px rows, 48 / 56px bands). */
-[data-ov-sep='titled'] {
-  --ov-col-gap: 2rem;
-  --ov-row-gap: 2.5rem;
-  --ov-band-gap: 3rem;
-}
-@media (min-width: 1920px) {
-  [data-ov-sep='titled'] {
-    --ov-col-gap: 2.5rem;
-    --ov-row-gap: 3rem;
-    --ov-band-gap: 3.5rem;
-  }
-}
-[data-ov-sep='titled'] [data-ov='grid'] {
-  column-gap: var(--ov-col-gap);
-  row-gap: var(--ov-row-gap);
-}
-[data-ov-sep='titled'] [data-ov='head'],
-[data-ov-sep='titled'] [data-testid='noise-funnel'] > div:first-of-type,
-[data-ov-sep='titled'] [data-testid='human-vs-ai'] > div:first-of-type {
-  min-height: 2.75rem;
-  padding-bottom: 0.625rem;
-  margin-bottom: 0.25rem;
-  border-bottom: 1px solid var(--ov-rule);
-  align-items: flex-start;
-}
-/* The instruments in Deeper analytics keep their baseline alignment (title, count and
-   span sit on one text line), with the same rule. */
-[data-ov-sep='titled'] [data-ov-cell='instrument'] > [data-ov='head'] {
-  min-height: 0;
-  align-items: baseline;
-  margin-bottom: 0.75rem;
-}
-[data-ov-sep='titled'] > [data-ov='bands']:not([hidden]),
-[data-ov-sep='titled'] > [data-ov='deeper']:not([hidden]),
-[data-ov-sep='titled'] [data-ov='bands'] > [data-ov='band']:not([hidden]) ~ [data-ov='band']:not([hidden]) {
-  margin-top: var(--ov-band-gap);
-}
-
-/* ---- D · Bordered cards ----------------------------------------------------------------
-   The familiar framed look, kept inside ui-standard "Elevation" (no resting shadow): each
-   content module is a card with a 1px quiet border and a 10px radius. Light cards are
-   white on the faintly tinted canvas; dark cards sit only just above the canvas and are
-   defined by their edge (1.44:1), not by a lighter fill (that is option A's language).
-   Band titles stay on the canvas, and the Deeper analytics fold keeps today's top rule:
-   only content modules become cards. */
-[data-ov-sep='bordered'] {
-  --ov-card-surface: 0 0% 100%;
-  --ov-card-border: hsl(var(--border) / max(0.75, var(--border-alpha-floor, 0)));
-  --ov-radius: var(--radius);
-}
-.dark [data-ov-sep='bordered'] {
-  --ov-card-surface: 221 36% 10%;
-  --ov-card-border: hsl(var(--slate-7) / max(0.7, var(--border-alpha-floor, 0)));
-}
-[data-ov-sep='bordered'] [data-ov='cell'],
-[data-ov-sep='bordered'] [data-ov='kpi'],
-[data-ov-sep='bordered'] [data-ov='subband'] > [data-kpi-grid-count] {
-  --card: var(--ov-card-surface);
-  background-color: hsl(var(--ov-card-surface));
-  border: 1px solid var(--ov-card-border);
-  border-radius: var(--ov-radius);
-}
-
-/* Increased contrast: a borderless surface gets a defined, ≥3:1 edge. */
-@media (prefers-contrast: more) {
-  [data-ov-sep='grouped'] :is([data-ov='cell'], [data-ov='kpi'], [data-ov='subband'] > [data-kpi-grid-count], [data-ov='deeper-trigger']) {
-    border: 1px solid hsl(var(--border-strong));
-  }
-}
-/* Forced colours drop backgrounds and border images: every surface keeps a system-colour
-   edge, and the strip keeps plain rules. */
-@media (forced-colors: active) {
-  [data-ov-sep='grouped'] :is([data-ov='cell'], [data-ov='kpi'], [data-ov='subband'] > [data-kpi-grid-count], [data-ov='deeper-trigger']),
-  [data-ov-sep='bordered'] :is([data-ov='cell'], [data-ov='kpi'], [data-ov='subband'] > [data-kpi-grid-count]) {
-    border: 1px solid CanvasText;
-  }
-  :is([data-ov-sep='grouped'], [data-ov-sep='bordered']) [data-ov='kpi'] > * {
-    border-image: none;
+  @media (forced-colors: active) {
+    .surface-panel {
+      --panel-inset-rule: none;
+      border: 1px solid CanvasText;
+    }
   }
 }
 

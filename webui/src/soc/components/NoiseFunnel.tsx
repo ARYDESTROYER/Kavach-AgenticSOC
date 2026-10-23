@@ -2593,7 +2593,10 @@ export function NoiseFunnel({
                       aria-label={`${DASHBOARD_STAGE_LABEL[node.key]}: ${fmtNumber(node.row.total)} ${unit}, ${share.sentence}. Filled conversion ribbon; the unit changes at this step.`}
                       className={cn(
                         'pointer-events-auto transition-colors duration-fast ease-standard',
-                        'hover:bg-popover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        // The interactive hover step, like every row (Round 13): `--popover`
+                        // matched the card in light and the grouped panel in dark, so a
+                        // hovered chip did not change at all there.
+                        'hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                         labelClassName,
                       )}
                       style={labelStyle}
@@ -2688,7 +2691,8 @@ export function NoiseFunnel({
                       onBlur={() => setFocusedStage(null)}
                       className={cn(
                         'pointer-events-auto',
-                        'transition-colors duration-fast ease-standard hover:bg-popover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        // `hover:bg-hover`, the interactive hover step (see the stage chips).
+                        'transition-colors duration-fast ease-standard hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                         row ? 'active:bg-accent/70' : 'cursor-help',
                         labelClassName,
                       )}

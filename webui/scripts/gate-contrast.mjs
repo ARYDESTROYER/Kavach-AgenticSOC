@@ -21,6 +21,29 @@
  *      severity/status/verdict SOLID FILL used as a graphic — badge chip, timeline node,
  *      gauge arc) → ≥ 3:1 (WCAG 1.4.11 graphical objects / UI components), measured on
  *      `--card`/`--background`. (`--medium` light was 2.97:1 → nudged to clear the bar.)
+ *   4. GROUPED PANELS (Round 13, `.surface-panel`, the primary dashboard's modules). Every
+ *      neutral step the recipe re-points inside a panel is measured against the PANEL, so
+ *      nothing that is visible on the canvas vanishes into it:
+ *      - TEXT → ≥ 4.5:1: body, secondary and link text on `--panel` and on the hovered
+ *        row (`--panel-hover`); muted and secondary text on `--panel-muted` (secondary
+ *        badges, chips); body text on the selected wash (`--panel-accent`); each semantic
+ *        text step the panel swaps in (`--panel-<axis>-text`) on its 10% wash composited
+ *        over the resting panel AND over the hovered row.
+ *      - STRUCTURE → ≥ 3:1 (WCAG 1.4.11): `--panel-border-strong`, which the recipe makes
+ *        the panel's `--input` and `--border-strong` (and, under increased contrast, its
+ *        `--border`), against the panel and against the canvas its edge sits on.
+ *      - SEPARATIONS, which keep the grouping and the in-panel states visible: the panel
+ *        against the canvas (≥ 1.08:1; the 1.06:1 first draft read as no panel at all on a
+ *        bright office display); muted against the panel (≥ 1.07:1, the canvas's own
+ *        muted step, so a progress track or a `hover:bg-muted` patch never disappears);
+ *        hover against the panel (≥ 1.10:1); and one notch (≥ 1.03:1, the canvas's own
+ *        muted-to-hover step) from muted to hover and from hover to the selected wash, so
+ *        the three states never collapse into one; the selected wash against the panel
+ *        (≥ 1.10:1); and the KPI tiles' 30% hover wash of the selected step composited
+ *        over the panel, held to what the SAME wash measures over the canvas, so a tile
+ *        hover inside a panel is never weaker than it was on the canvas.
+ *      A separation is not a WCAG text or UI-component bar: the panel is identified by its
+ *      grouping, never by its edge, and increased contrast adds a ≥ 3:1 edge (theme.css).
  *
  * Usage:  node scripts/gate-contrast.mjs   (exit 0 = pass, 1 = fail)
  * Library: `checkContrast()` returns { ok, results[] } for the Vitest wiring.
@@ -90,6 +113,23 @@ const NON_TEXT_AXES = [
  * status green (success), status/verdict amber (warning).
  */
 export const SEMANTIC_FILL_AXES = TEXT_WASH_AXES;
+
+/** Text measured on a grouped panel (bar 4: AA normal text), at rest and on a hovered row.
+ *  `--primary` is the default brand's link colour ("Review →", "View all", a case id); a
+ *  custom brand is the operator's own. */
+export const PANEL_TEXT_AXES = ['--foreground', '--muted-foreground', '--secondary-foreground', '--primary'];
+/** Text measured on the panel's muted step (secondary badges, the flow's count chip). */
+export const PANEL_MUTED_TEXT_AXES = ['--muted-foreground', '--secondary-foreground'];
+/** The panel against the canvas it sits on. */
+export const PANEL_SEPARATION = 1.08;
+/** The panel's muted step against the panel (the canvas's own muted step is 1.07:1). */
+export const PANEL_MUTED_SEPARATION = 1.07;
+/** The in-panel hover (and the selected wash) against the panel. */
+export const PANEL_HOVER_SEPARATION = 1.1;
+/** One notch between neighbouring in-panel states: muted → hover → selected. */
+export const PANEL_STEP_SEPARATION = 1.03;
+/** The KPI tiles' hover wash: `hover:bg-accent/30` (KpiTile). */
+export const KPI_HOVER_WASH_ALPHA = 0.3;
 
 /** Alpha-composite a foreground wash over an opaque card (sRGB CSS compositing). */
 function composite(fg, bg, alpha) {
@@ -165,6 +205,66 @@ export function checkContrast() {
         resolveTokenRgb('--card', map),
       );
     }
+    // Bar 4 — grouped panels (`.surface-panel`).
+    const panel = resolveTokenRgb('--panel', map);
+    const panelHover = resolveTokenRgb('--panel-hover', map);
+    const panelMuted = resolveTokenRgb('--panel-muted', map);
+    const panelAccent = resolveTokenRgb('--panel-accent', map);
+    const canvas = resolveTokenRgb('--canvas', map);
+    for (const t of PANEL_TEXT_AXES) {
+      push(results, theme, `${t.slice(2)} on panel`, 'panel-text', AA_TEXT, resolveTokenRgb(t, map), panel);
+      push(results, theme, `${t.slice(2)} on panel-hover`, 'panel-text', AA_TEXT, resolveTokenRgb(t, map), panelHover);
+    }
+    for (const t of PANEL_MUTED_TEXT_AXES) {
+      push(results, theme, `${t.slice(2)} on panel-muted`, 'panel-text', AA_TEXT, resolveTokenRgb(t, map), panelMuted);
+    }
+    push(results, theme, 'foreground on panel-accent', 'panel-text', AA_TEXT, resolveTokenRgb('--foreground', map), panelAccent);
+    for (const axis of TEXT_WASH_AXES) {
+      const fill = resolveTokenRgb(`--${axis}`, map);
+      const text = resolveTokenRgb(`--panel-${axis}-text`, map);
+      for (const [surface, ground] of [
+        ['panel', panel],
+        ['panel-hover', panelHover],
+      ]) {
+        const wash = fill && ground ? composite(fill, ground, TEXT_WASH_ALPHA) : null;
+        push(
+          results,
+          theme,
+          `panel-${axis}-text on ${axis}/10 wash over ${surface}`,
+          'panel-text-wash',
+          AA_TEXT,
+          text,
+          wash,
+        );
+      }
+    }
+    // The panel's structural line: its `--input` / `--border-strong` (and increased
+    // contrast's `--border`) against the panel, and its edge against the canvas.
+    const structural = resolveTokenRgb('--panel-border-strong', map);
+    push(results, theme, 'panel-border-strong (input) on panel', 'panel-nontext', AA_NONTEXT, structural, panel);
+    push(results, theme, 'panel-border-strong (edge) on canvas', 'panel-nontext', AA_NONTEXT, structural, canvas);
+    const separations = [
+      ['panel vs canvas', PANEL_SEPARATION, panel, canvas],
+      ['panel-muted vs panel', PANEL_MUTED_SEPARATION, panelMuted, panel],
+      ['panel-hover vs panel', PANEL_HOVER_SEPARATION, panelHover, panel],
+      ['panel-hover vs panel-muted', PANEL_STEP_SEPARATION, panelHover, panelMuted],
+      ['panel-accent vs panel', PANEL_HOVER_SEPARATION, panelAccent, panel],
+      ['panel-accent vs panel-hover', PANEL_STEP_SEPARATION, panelAccent, panelHover],
+    ];
+    for (const [name, bar, a, b] of separations) push(results, theme, name, 'separation', bar, a, b);
+    // The KPI hover wash, never weaker inside a panel than over the canvas.
+    const accent = resolveTokenRgb('--accent', map);
+    const onCanvas =
+      accent && canvas ? contrastRatio(composite(accent, canvas, KPI_HOVER_WASH_ALPHA), canvas) : null;
+    push(
+      results,
+      theme,
+      'panel-accent/30 over panel (KPI hover)',
+      'separation',
+      onCanvas == null ? Infinity : Math.floor(onCanvas * 100) / 100,
+      panelAccent && panel ? composite(panelAccent, panel, KPI_HOVER_WASH_ALPHA) : null,
+      panel,
+    );
   }
   return { ok: results.every((r) => r.pass), results };
 }

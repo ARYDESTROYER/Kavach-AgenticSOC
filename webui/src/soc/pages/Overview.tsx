@@ -181,7 +181,6 @@ import { BarList, type BarListItem } from '@/soc/components/BarList';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { AutomationNudge } from './AutomationNudge';
-import { readSeparationPreview } from './overview-separation';
 import { CaseDetail } from '@/soc/pages/CaseDetail';
 import { StartDemoButton } from '@/soc/components/StartDemoButton';
 import { usePosture } from '@/soc/hooks/usePosture';
@@ -774,7 +773,10 @@ function SnapshotCard({
    */
   const content = (
     <>
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-3" data-testid="snapshot-body">
+      <div
+        className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-3 xl:gap-x-4"
+        data-testid="snapshot-body"
+      >
         {segments.length ? (
           <DonutChart
             segments={segments}
@@ -854,12 +856,12 @@ function SnapshotCard({
       // The button's name replaces its contents for assistive tech, so the legend is
       // attached as its description: a screen reader hears the severity split too.
       aria-describedby={legendId}
-      className="-mx-1 mt-3 flex w-full min-w-0 items-center gap-4 self-start rounded-md px-1 py-1 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="-mx-1 mt-3 flex w-full min-w-0 items-center gap-2 self-start rounded-md px-1 py-1 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring xl:gap-4"
     >
       {content}
     </button>
   ) : (
-    <div className="mt-3 flex w-full min-w-0 items-center gap-4 self-start py-1">{content}</div>
+    <div className="mt-3 flex w-full min-w-0 items-center gap-2 self-start py-1 xl:gap-4">{content}</div>
   );
 
   /*
@@ -877,10 +879,8 @@ function SnapshotCard({
         className,
       )}
       data-testid="snapshot-card"
-      data-ov="snap"
-      data-ov-cell="snap"
     >
-      <div className="flex items-start justify-between gap-2" data-ov="head">
+      <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-foreground">{title}</h2>
           <p className="text-sm text-muted-foreground">{caption}</p>
@@ -1110,7 +1110,7 @@ function TopCasesPanel({
   const floorRows = Math.min(cases.length, minRows);
   return (
     <section aria-label="Latest cases" className="flex h-full min-w-0 flex-col">
-      <div className="flex items-start justify-between gap-3" data-ov="head">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-foreground">Latest cases</h2>
           <p className="text-sm text-muted-foreground">Real-time triage queue</p>
@@ -1506,9 +1506,72 @@ function Freshness({ at, label = 'Updated' }: { at: string | null | undefined; l
 }
 
 /**
- * One titled dashboard BAND (Round 12, SYNTHESIS-ux §2.3): a flat section on the canvas
- * with a 15px sentence-case title, an optional 13px caption, and an optional right-hand
- * aside (freshness, links). No card, no rule: whitespace between bands does the grouping.
+ * Grouped panels (Round 13, ui-standard "Dashboard bands"). Every module on this page —
+ * each instrument, the KPI strip, the Deeper analytics header — sits on its own soft
+ * tinted panel: `.surface-panel` in theme.css (the `--panel` fill, a 14px corner, no
+ * border, no resting shadow, and the in-panel hover / selected / semantic-text steps).
+ * Band titles stay OUTSIDE the panels, on the canvas. The panel padding and the gutters
+ * between panels grow with the screen together: 16px, 20px from 1280px, 24px from 1920px.
+ */
+const PANEL = 'surface-panel';
+const PANEL_PAD = 'p-4 xl:p-5 3xl:p-6';
+const PANEL_GAP = 'gap-4 xl:gap-5 3xl:gap-6';
+
+/**
+ * The thin divider between the two severity snapshots that share one panel ("Open cases"
+ * and "Cases resolved"), drawn by the SECOND snapshot into the gap before it so neither
+ * snapshot changes size: a horizontal rule centred in the 24px gap while they are stacked,
+ * a vertical one centred in the column gap once the panel is 35rem wide and they sit side
+ * by side (24px apart below 1280px, 32px from 1280px). It is the strip's hairline weight
+ * (`border-border/70`, which increased contrast lifts to a full structural line).
+ */
+const SNAPSHOT_DIVIDER = cn(
+  'relative before:pointer-events-none before:absolute before:inset-x-0 before:-top-3',
+  'before:border-t before:border-border/70',
+  '@[35rem]:before:inset-x-auto @[35rem]:before:inset-y-0 @[35rem]:before:-left-3',
+  '@[35rem]:before:border-l @[35rem]:before:border-t-0 xl:@[35rem]:before:-left-4',
+);
+
+/**
+ * The first tile of each KPI strip row: its trigger's left inset equals the panel padding
+ * (16 / 20 / 24px), so the KPI labels share ONE left edge with the module titles under
+ * them. The other tiles keep their own inset, so no context line loses width. Rows: one
+ * tile per row below `sm`, two to `md`, three to `xl`, then one row of six. The tile's
+ * `className` lands on its cell root (the help button sits beside the trigger), so the
+ * trigger is reached as its child; `[data-testid]` lifts the rule above the tile's own
+ * `xl:max-2xl:[&>button]:px-3` whatever the emission order.
+ */
+function kpiRowStartInset(index: number): string {
+  return cn(
+    'max-sm:[&>button[data-testid]]:pl-4',
+    index % 2 === 0 && 'sm:max-md:[&>button[data-testid]]:pl-4',
+    index % 3 === 0 && 'md:max-xl:[&>button[data-testid]]:pl-4',
+    index === 0 && 'xl:[&>button[data-testid]]:pl-5 3xl:[&>button[data-testid]]:pl-6',
+  );
+}
+
+/**
+ * The same row-start inset for the Deeper analytics timing strip, whose four tiles follow
+ * the STRIP's own width (`kpiGridColumns(4)`: one column under 20rem, two to 40rem, then
+ * four in a row), so its row starts are container queries too: the first tile always; the
+ * third while the strip is two-up (a phone, and from 1920px the 38rem efficiency column);
+ * the second and fourth only in one column. The inset is the panel padding (16 / 20 /
+ * 24px), so the timing labels share the left edge of the instrument titles beside them.
+ * Here the tile's `className` lands on the element that owns the padding. A container rung
+ * puts a tile that is not a row start back on its own 12px inset; from 1280px the tile's
+ * own `xl:px-4 2xl:px-5` come later in the cascade and keep it there by themselves.
+ */
+function timingRowStartInset(index: number): string {
+  if (index === 0) return 'pl-4 xl:pl-5 3xl:pl-6';
+  if (index === 2) return 'pl-4 @[40rem]:pl-3 3xl:[@container(max-width:39.98rem)]:pl-6';
+  return 'pl-4 @[20rem]:pl-3';
+}
+
+/**
+ * One titled dashboard BAND (Round 12, SYNTHESIS-ux §2.3): a section with a 15px
+ * sentence-case title, an optional 13px caption, and an optional right-hand aside
+ * (freshness, links), all on the canvas. The band itself draws no card and no rule: its
+ * modules sit on their own panels (Round 13), and whitespace separates the bands.
  */
 function Band({
   id,
@@ -1528,16 +1591,8 @@ function Band({
   'data-testid'?: string;
 }) {
   return (
-    <section
-      aria-labelledby={id}
-      className={cn('min-w-0', className)}
-      data-testid={testId}
-      data-ov="band"
-    >
-      <header
-        className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-1"
-        data-ov="band-head"
-      >
+    <section aria-labelledby={id} className={cn('min-w-0', className)} data-testid={testId}>
+      <header className="mb-4 flex flex-wrap items-end justify-between gap-x-6 gap-y-1">
         <div className="min-w-0">
           <h2
             id={id}
@@ -1583,7 +1638,7 @@ function SubBandTitle({
   );
 }
 
-/** One flat titled instrument inside a band (h3 + optional 13px caption). */
+/** One titled instrument inside a band (h3 + optional 13px caption), on its own panel. */
 function Instrument({
   title,
   caption,
@@ -1609,12 +1664,10 @@ function Instrument({
   return (
     <section
       aria-label={title}
-      className={cn('flex h-full min-w-0 flex-col', className)}
+      className={cn('flex h-full min-w-0 flex-col', PANEL, PANEL_PAD, className)}
       data-scope={scope}
-      data-ov="cell"
-      data-ov-cell="instrument"
     >
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5" data-ov="head">
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <h3 className="text-base font-semibold text-foreground">{title}</h3>
         {count != null ? (
           <span className="text-sm tabular-nums text-muted-foreground">{fmtNumber(count)}</span>
@@ -1713,12 +1766,6 @@ export default function Overview({ onNavigate }: OverviewProps) {
   // router context (no-op when rendered provider-less in a unit test).
   const contextNavigate = useNavigateOptional();
   const navigate = onNavigate ?? contextNavigate;
-  /**
-   * Round 13 TEMPORARY preview: which card-separation treatment to render, read once on
-   * mount from `?separation=<id>` (see `overview-separation.ts`). Null — the default — is
-   * today's look: the scoped styles in theme.css match only while `data-ov-sep` is set.
-   */
-  const [separation] = React.useState(readSeparationPreview);
 
   // ----- Time range + auto-refresh (the CONTROL BAR state) ---------------- //
   const [range, setRange] = React.useState<TimeRange>(DEFAULT_RANGE);
@@ -3571,18 +3618,18 @@ export default function Overview({ onNavigate }: OverviewProps) {
       : null;
 
   return (
-    <PageContainer
-      variant="wide"
-      className={containerClass}
-      data-ov-sep={separation ?? undefined}
-    >
+    <PageContainer variant="wide" className={containerClass}>
       {/* ---- BAND 0 — MASTHEAD + DASHBAR ----------------------------------------------
           The title, the time-range and refresh controls in the `meta` slot BESIDE it, and
           the page's freshness on the right. Sticky on the Console's one translucent
           material (Round 12): the controls that scope every number stay in reach while the
           bands scroll under them, with a scroll-edge fade instead of a hard rule. It is
           NOT a card — `page-hero` carries no `bg-card` (the material is floating chrome,
-          not a surface for data).
+          not a surface for data). At rest, before anything scrolls under it, the bar is
+          clear (Round 13): the top of the page then shows two surface levels, canvas and
+          panel, not three. It takes the material once content scrolls beneath it
+          (`data-scrolled`, useScrollEdge), and the solid fallbacks for reduced
+          transparency and increased contrast (`!important` in theme.css) still apply.
 
           The title steps up to the 30/36 display step at `2xl` (24/30 below; the type
           scale's nearest step to the 28px the synthesis sketched) — the page's one display
@@ -3594,7 +3641,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
         // Pinned from `sm` up only (Round 12 review): on a phone the title, three controls
         // and the freshness stamp stack to ~108px, a fifth of a 390×844 screen held by
         // chrome while every band scrolls. There it scrolls away with the page.
-        className="py-2 2xl:[&_h1]:text-4xl max-sm:static"
+        className="py-2 2xl:[&_h1]:text-4xl max-sm:static [&:not([data-scrolled=true])]:bg-transparent"
         meta={
           <div
             role="group"
@@ -3648,21 +3695,30 @@ export default function Overview({ onNavigate }: OverviewProps) {
           }
         />
       ) : (
-        <>
+        // The page's modules as ONE group with its own rhythm (Round 13): 40px from the KPI
+        // strip to the bands and from the bands to Deeper analytics at every width. The
+        // container's own `space-y-*` (32px, 40px from 1920px) spaces the masthead, the
+        // nudge and the load error; this group sets the modules' rhythm itself, so no
+        // child overrides a sibling margin.
+        <div className="min-w-0 space-y-10" data-testid="overview-modules">
           {/* ---- BAND 1 — THE KPI STRIP ---------------------------------------------
-              One continuous six-cell strip (no title: the page title introduces it), its
-              own outer rules, and the exact per-breakpoint divider math below. A 32px
-              band gap now separates it from the flow band (Round 12): the strip's bottom
-              rule used to BE the lattice's top edge, and with no gap anywhere the page
-              read as one undifferentiated slab. */}
+              One continuous six-cell strip (no title: the page title introduces it) on its
+              own grouped panel (Round 13), with the exact per-breakpoint divider math below
+              for its INNER rules. The panel clips the tiles to its rounded corners, so a
+              tile's hover wash follows the curve. From `xl` (one row of six) the column
+              rules stop 12px short of the panel's top and bottom edges
+              (`--panel-inset-rule`, drawn as a border image so the tiles keep their exact
+              size). */}
           <div>
             <Stagger
               data-testid="kpi-strip"
-              data-ov="kpi"
               // First load only, and quick: 40ms a tile, ≤200ms in all (Round 12 motion).
               step={40}
               maxDelay={200}
-              className="grid grid-cols-1 border-y border-border sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6"
+              className={cn(
+                'grid grid-cols-1 overflow-hidden sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6',
+                PANEL,
+              )}
               /*
                * Exact divider math for SIX tiles at 1 / 2 / 3 / 6 columns. A cell may
                * never draw a hairline into empty space or lose the rule that separates
@@ -3692,9 +3748,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 'sm:border-r sm:[&:nth-child(2n)]:border-r-0 sm:[&:nth-child(n+5)]:border-b-0',
                 'md:[&:nth-child(2n):not(:nth-child(3n))]:border-r md:[&:nth-child(3n)]:border-r-0 md:[&:nth-child(n+4)]:border-b-0',
                 'xl:border-b-0 xl:[&:nth-child(3n):not(:nth-child(6n))]:border-r',
+                'xl:[border-image:var(--panel-inset-rule)_0_1_0_0]',
               )}
             >
-              {kpis.map((kpi) => {
+              {kpis.map((kpi, index) => {
                 const tile = (
                   <KpiTile
                     ref={tileRef(kpi.testId)}
@@ -3741,7 +3798,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     // `ring-inset` (Round 12 review): the cell root is `overflow-hidden`, so
                     // the trigger's outset focus ring was clipped away entirely — a keyboard
                     // user saw no focus on the tile at all.
-                    className="press-scale xl:max-2xl:[&>button]:px-3 [&>button:focus-visible]:ring-inset [&>button:focus-visible]:ring-offset-0"
+                    //
+                    // The first tile of each row starts at the panel padding instead
+                    // (`kpiRowStartInset`), so the labels line up with the module titles.
+                    className={cn(
+                      'press-scale xl:max-2xl:[&>button]:px-3 [&>button:focus-visible]:ring-inset [&>button:focus-visible]:ring-offset-0',
+                      kpiRowStartInset(index),
+                    )}
                   />
                 );
                 // Hover/focus reveals the metric's honest trend; the tile is itself the
@@ -3790,19 +3853,20 @@ export default function Overview({ onNavigate }: OverviewProps) {
           </div>
 
           {/* ---- BANDS 2 + 3 — the instrument bands ---------------------------------
-              Flat titled sections on the canvas, separated by whitespace: 32px between
-              bands, 24px gutters inside one (32 / 40 from 1920px). No per-cell rules and
-              no cell padding — the gutters do the separating (Round 12, replacing the
-              gutterless hairline lattice that read as one slab).
+              Titled sections whose titles sit on the canvas and whose modules each sit on
+              their own grouped panel (Round 13): 40px under the KPI strip, 40px between
+              bands (48px from 1920px), and the gutters between panels match the panel
+              padding (16px, 20px from 1280px, 24px from 1920px). No rules between cells:
+              the panels do the separating.
 
               ⚠️ THE FLOW GRID IS `xl:`, NEVER `lg:`. The flow draws its graph only where its
               MEASURED labels fit the cell (Round 12 polish 3: about 600px for typical counts,
               with two-line labels wherever one-line ones would collide), and lists the stages
               in a rail otherwise.
-              At the tightest supported desktop — 1280px, sidebar pinned — the content is
-              ~982px; with no cell padding and a 24px gutter the flow's eight columns are
-              (982 − 24) × 8/12 ≈ 638px, which keeps the graph. Do NOT add padding to the
-              flow cell at `xl`.
+              At the tightest supported desktop — 1280px, sidebar pinned — the flow panel's
+              eight columns, less its 20px padding, leave the graph 615px (MEASURED; 653px
+              before the panels), which keeps the graph. That is the whole margin: do NOT
+              add more padding to the flow panel at `xl`, or widen the gutter there.
 
               At `4xl` (≥2200px) the page widens to 2400px by COLUMN COUNT: both bands share
               one track template whose last column is a 460px rail, so Human vs AI stacks
@@ -3811,8 +3875,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
             variant="rise"
             delay={40}
             data-testid="hero-row"
-            data-ov="bands"
-            className="min-w-0 space-y-8 3xl:space-y-10"
+            // 40px under the KPI strip (the modules group's rhythm); between the two bands
+            // 40px, 48px from 1920px.
+            className="min-w-0 space-y-10 3xl:space-y-12"
           >
             <Band
               id="overview-band-flow"
@@ -3826,18 +3891,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
             >
               <div
                 className={cn(
-                  'grid min-w-0 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:gap-x-8',
+                  'grid min-w-0 items-stretch xl:grid-cols-12',
+                  PANEL_GAP,
                   '4xl:grid-cols-[minmax(0,1fr)_460px]',
                 )}
-                data-ov="grid"
-                data-ov-grid="flow"
               >
                 {noiseCellVisible ? (
-                  <div
-                    className="min-w-0 xl:col-span-8 4xl:col-span-1"
-                    data-ov="cell"
-                    data-ov-cell="flow"
-                  >
+                  <div className={cn('min-w-0 xl:col-span-8 4xl:col-span-1', PANEL, PANEL_PAD)}>
                     {noiseUnavailable ? (
                       <EmptyState
                         data-testid="noise-reduction-unavailable"
@@ -3899,10 +3959,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                 <div
                   className={cn(
                     'min-w-0',
+                    PANEL,
+                    PANEL_PAD,
                     noiseSupported ? 'xl:col-span-4 4xl:col-span-1' : 'xl:col-span-12 4xl:col-span-2',
                   )}
-                  data-ov="cell"
-                  data-ov-cell="hva"
                 >
                   <HumanVsAiCard
                     totals={humanVsAi.totals}
@@ -3943,29 +4003,31 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   // beside a short snapshot row. DOM order — and so heading order — is
                   // unchanged: case state, response time, latest cases.
                   className={cn(
-                    'grid min-w-0 items-stretch gap-x-6 gap-y-8 max-xl:@[48rem]:grid-cols-2 xl:grid-cols-12 3xl:gap-x-8',
+                    'grid min-w-0 items-stretch max-xl:@[48rem]:grid-cols-2 xl:grid-cols-12',
+                    PANEL_GAP,
                     '3xl:grid-rows-[auto_1fr] 4xl:grid-cols-[minmax(0,1fr)_460px]',
                   )}
                   data-testid="cases-band-grid"
-                  data-ov="grid"
-                  data-ov-grid="cases"
                 >
-                  {/* Case state: ONE labelled region holding both snapshots. They sit side by
-                      side whenever the cell is at least 35rem (560px) wide and stack below
-                      that — a container query, so it follows the cell, not the viewport. */}
+                  {/* Case state: ONE labelled region holding both snapshots, on ONE panel.
+                      They sit side by side whenever the panel is at least 35rem (560px)
+                      wide and stack below that — a container query, so it follows the
+                      panel, not the viewport. */}
                   <section
                     aria-label="Resolved and open cases"
-                    className="@container min-w-0 xl:col-span-5 3xl:col-span-8 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1"
-                    data-ov="cell"
-                    data-ov-cell="snapshots"
+                    className={cn(
+                      '@container min-w-0 xl:col-span-5 3xl:col-span-8 3xl:col-start-1 3xl:row-start-1 4xl:col-span-1',
+                      PANEL,
+                      PANEL_PAD,
+                    )}
                   >
                     {/* `content-start`: the band stretches this cell, and a grid's auto rows
                         would otherwise share that stretch and push each snapshot's footnote
-                        away from its own donut. */}
-                    <div
-                      className="grid content-start gap-x-8 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0"
-                      data-ov="snap-grid"
-                    >
+                        away from its own donut. Below 1280px the snapshots sit 24px apart
+                        side by side, not 32px: in a ~300px snapshot inside a padded panel
+                        that keeps each severity legend BESIDE its ring (with the tighter
+                        body gaps in SnapshotCard). */}
+                    <div className="grid content-start gap-x-6 gap-y-6 @[35rem]:grid-cols-2 @[35rem]:gap-y-0 xl:gap-x-8">
                       <SnapshotCard
                         title="Open cases"
                         caption={`Arrived in the ${windowPhrase}, still open`}
@@ -4023,6 +4085,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         // `derived.resolved` counts BOTH terminal statuses, so the deep link
                         // uses the `__terminal__` facet (a `status: 'closed'` link silently
                         // dropped every RESOLVED case).
+                        className={SNAPSHOT_DIVIDER}
                         footnote={
                           crossRefs.resolved
                             ? 'The same cases as Resolved / Closed above, by severity.'
@@ -4042,11 +4105,13 @@ export default function Overview({ onNavigate }: OverviewProps) {
                       between them (the old `justify-center` halves left a ~110px void). */}
                   <section
                     aria-label="Mean time to detect / respond"
-                    className="@container flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1"
-                    data-ov="cell"
-                    data-ov-cell="response"
+                    className={cn(
+                      '@container flex min-w-0 flex-col xl:col-span-3 3xl:col-span-8 3xl:col-start-1 3xl:row-start-2 4xl:col-span-1',
+                      PANEL,
+                      PANEL_PAD,
+                    )}
                   >
-                    <div className="flex items-start justify-between gap-2" data-ov="head">
+                    <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <h2 className="text-base font-semibold text-foreground">Response time</h2>
                         <p className="text-sm text-muted-foreground">p50 · server-computed</p>
@@ -4065,8 +4130,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     {/* The detect / respond pair sits side by side whenever THIS cell is at
                         least 30rem wide (a container query, like the band above), so it
                         follows the cell through every band layout instead of a ladder of
-                        viewport breakpoints that guessed the cell's width. */}
-                    <div className="mt-4 grid gap-6 @[30rem]:grid-cols-2 3xl:gap-x-8">
+                        viewport breakpoints that guessed the cell's width. The panel
+                        stretches to its row, so the pair takes the spare height and spreads
+                        it BETWEEN the detect and respond figures (`flex-auto content-between`)
+                        instead of pooling it as an empty block under them. */}
+                    <div className="mt-4 grid flex-auto content-between gap-6 @[30rem]:grid-cols-2 3xl:gap-x-8">
                       <MetricHoverTrend
                         metric="MTTD · daily mean"
                         points={timingTrends?.mttd}
@@ -4110,9 +4178,11 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   </section>
 
                   <div
-                    className="min-w-0 max-xl:@[48rem]:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2"
-                    data-ov="cell"
-                    data-ov-cell="latest"
+                    className={cn(
+                      'min-w-0 max-xl:@[48rem]:col-span-2 xl:col-span-4 3xl:col-start-9 3xl:row-span-2 3xl:row-start-1 4xl:col-span-1 4xl:col-start-2',
+                      PANEL,
+                      PANEL_PAD,
+                    )}
                   >
                     <TopCasesPanel
                       cases={latestCases}
@@ -4128,16 +4198,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
           </Reveal>
 
           {/* ---- BAND 4 — DEEPER ANALYTICS -------------------------------------------
-              ONE disclosure (Round 12): no cards, no accent bars, no nested collapsibles.
-              Collapsed on a first visit; the operator's choice is remembered. While closed,
-              its header states what is inside in one line. Its single top rule is the only
-              hairline this band draws. */}
+              ONE disclosure (Round 12): no accent bars, no nested collapsibles, no panel
+              inside a panel. Collapsed on a first visit; the operator's choice is
+              remembered. While closed, its header states what is inside in one line. The
+              header is itself a grouped panel (Round 13), 40px under the bands at every
+              width; open, its sub-band titles sit on the canvas and each instrument and
+              the timing strip get their own panel, like the bands above. */}
           <Collapsible open={deeperOpen} onOpenChange={onDeeperOpenChange} asChild>
-            <section
-              aria-label="Deeper analytics"
-              className="min-w-0 border-t border-border pt-4"
-              data-ov="deeper"
-            >
+            <section aria-label="Deeper analytics" className="min-w-0">
               <h2 className="m-0">
                 <CollapsibleTrigger asChild>
                   {/* The summary WRAPS (Round 12 review): beside the title from `md`, on
@@ -4146,8 +4214,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     type="button"
                     aria-expanded={deeperOpen}
                     aria-controls="overview-deeper-region"
-                    data-ov="deeper-trigger"
-                    className="group/deeper flex w-full min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md py-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className={cn(
+                      'group/deeper flex w-full min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 px-4 py-3 text-left hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring xl:px-5 3xl:px-6',
+                      PANEL,
+                    )}
                   >
                     <ChevronDown
                       aria-hidden
@@ -4184,15 +4254,9 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     'grid min-w-0 items-stretch gap-x-6 gap-y-10 3xl:gap-x-10',
                     '3xl:grid-cols-[minmax(0,38rem)_minmax(0,1fr)]',
                   )}
-                  data-ov="deeper-grid"
                 >
                   {/* -- Sub-band: Efficiency and cost -------------------------------- */}
-                  <section
-                    aria-labelledby="overview-deeper-efficiency"
-                    className="flex min-w-0 flex-col"
-                    data-ov="subband"
-                    data-ov-cell="subband"
-                  >
+                  <section aria-labelledby="overview-deeper-efficiency" className="flex min-w-0 flex-col">
                     <SubBandTitle
                       id="overview-deeper-efficiency"
                       caption={`Timing and spend over the ${windowPhrase}`}
@@ -4201,14 +4265,15 @@ export default function Overview({ onNavigate }: OverviewProps) {
                     </SubBandTitle>
                     {/* A second continuous strip — the same KpiTile strip grammar as the
                         page's strip, four cells, its own dividers (KpiTileGrid draws one
-                        hairline grammar at every column count, with no empty tracks). */}
+                        hairline grammar at every column count, with no empty tracks) — on
+                        its own grouped panel, which clips the tiles to its corners. */}
                     <KpiTileGrid
                       count={4}
                       framed={false}
-                      containerClassName="border-y border-border"
+                      containerClassName={cn('overflow-hidden', PANEL)}
                       data-testid="deeper-timing-strip"
                     >
-                      {timing.map((s) => {
+                      {timing.map((s, index) => {
                         // Honest per-metric series: MTTA reuses the ACK-based `respond`
                         // daily series, MTTR the `resolve` series. Dwell has NO server
                         // series, so its tile carries no trend affordance.
@@ -4242,6 +4307,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                             // every hero strip since the final review): at 1280 with the
                             // navigation pinned these tiles are ~215px, and a server reason
                             // such as "no case has been acknowledged yet" takes two lines.
+                            className={timingRowStartInset(index)}
                           />
                         );
                         if (s.key === 'dwell') {
@@ -4275,6 +4341,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         // The tile is itself a button (retry / drill-through) whenever an
                         // action exists; only a nav-less static tile needs the wrapper stop.
                         focusable={!(usageUnavailable || Boolean(navigate))}
+                        // Both focus rings are INSET: the strip's frame and its panel clip
+                        // everything outside the tile, so an outset ring showed only as a
+                        // 2px line on its left edge, like one of the strip's column rules.
+                        className="focus-visible:ring-inset"
                         side="top"
                       >
                         <KpiTile
@@ -4305,6 +4375,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                                 ? () => navigate('metrics', { tab: 'cost' })
                                 : undefined
                           }
+                          className={cn(
+                            'focus-visible:ring-inset focus-visible:ring-offset-0',
+                            timingRowStartInset(timing.length),
+                          )}
                         />
                       </MetricHoverTrend>
                     </KpiTileGrid>
@@ -4313,9 +4387,10 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         height and the volume chart takes whatever the taller neighbouring
                         sub-band leaves (no dead space inside the coverage block). */}
                     <div
-                      className="mt-8 grid flex-1 items-stretch gap-x-6 gap-y-8 xl:grid-cols-12 3xl:grid-cols-1 3xl:grid-rows-[auto_minmax(0,1fr)]"
-                      data-ov="grid"
-                      data-ov-grid="efficiency"
+                      className={cn(
+                        'mt-8 grid flex-1 items-stretch xl:grid-cols-12 3xl:grid-cols-1 3xl:grid-rows-[auto_minmax(0,1fr)]',
+                        PANEL_GAP,
+                      )}
                     >
                       <Instrument
                         title="Ingest coverage"
@@ -4352,23 +4427,14 @@ export default function Overview({ onNavigate }: OverviewProps) {
                   </section>
 
                   {/* -- Sub-band: What's driving volume ------------------------------ */}
-                  <section
-                    aria-labelledby="overview-deeper-volume"
-                    className="flex min-w-0 flex-col"
-                    data-ov="subband"
-                    data-ov-cell="subband"
-                  >
+                  <section aria-labelledby="overview-deeper-volume" className="flex min-w-0 flex-col">
                     <SubBandTitle
                       id="overview-deeper-volume"
                       caption="Each instrument names its own time span"
                     >
                       What&rsquo;s driving volume
                     </SubBandTitle>
-                    <div
-                      className="grid flex-1 items-stretch gap-x-6 gap-y-8 md:grid-cols-2"
-                      data-ov="grid"
-                      data-ov-grid="volume"
-                    >
+                    <div className={cn('grid flex-1 items-stretch md:grid-cols-2', PANEL_GAP)}>
                       <Instrument
                         title="Case workload state"
                         count={workloadItems.length}
@@ -4458,69 +4524,76 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         data-scope={verdictMix.scope}
                       >
                         {verdictMix.total > 0 ? (
-                          <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-center">
-                            {/* The centre states the numeral with a sentence-case "AI verdicts"
-                                at 12px BELOW it, inside a hole sized for both (Round 12): the
-                                tracked uppercase "VERDICTS" ran over the ring ("ERDICTS"). */}
-                            <DonutChart
-                              segments={verdictMix.segments}
-                              height={VERDICT_RING_PX}
-                              thickness={0.3}
-                              className="w-40 shrink-0"
-                              ariaLabel="Case outcomes by AI verdict"
-                              center={
-                                <>
-                                  {/* The VERDICTED count: unverdicted cases are not "AI
-                                      verdicts" (they keep their own legend row). */}
-                                  <span className="text-2xl font-semibold leading-none tabular-nums text-foreground">
-                                    {fmtNumber(verdictMix.verdicted)}
-                                  </span>
-                                  <span className="text-xs leading-tight text-muted-foreground">
-                                    AI verdicts
-                                  </span>
-                                </>
-                              }
-                            />
-                            <ul className="w-full max-w-[15rem] space-y-2">
-                              {verdictMix.segments.map((seg) => {
-                                const pct = Math.round((seg.value / verdictMix.total) * 100);
-                                return (
-                                  <li key={seg.label} className="flex items-center gap-2 text-sm">
-                                    <span
-                                      className="h-2 w-2 shrink-0 rounded-full"
-                                      style={{ backgroundColor: seg.color }}
-                                      aria-hidden
-                                    />
-                                    <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                                      {seg.label}
+                          // The ring and its legend sit side by side only when THIS panel
+                          // holds both (a container query, Round 13): the ring is 160px and
+                          // the legend's labels, counts and shares need about 200px. In a
+                          // narrower panel (two-up at 768px, inside its padding) the legend
+                          // goes under the ring instead of running out of the panel.
+                          <div className="@container">
+                            <div className="flex flex-col items-center gap-5 @[24rem]:flex-row @[24rem]:items-center">
+                              {/* The centre states the numeral with a sentence-case "AI verdicts"
+                                  at 12px BELOW it, inside a hole sized for both (Round 12): the
+                                  tracked uppercase "VERDICTS" ran over the ring ("ERDICTS"). */}
+                              <DonutChart
+                                segments={verdictMix.segments}
+                                height={VERDICT_RING_PX}
+                                thickness={0.3}
+                                className="w-40 shrink-0"
+                                ariaLabel="Case outcomes by AI verdict"
+                                center={
+                                  <>
+                                    {/* The VERDICTED count: unverdicted cases are not "AI
+                                        verdicts" (they keep their own legend row). */}
+                                    <span className="text-2xl font-semibold leading-none tabular-nums text-foreground">
+                                      {fmtNumber(verdictMix.verdicted)}
+                                    </span>
+                                    <span className="text-xs leading-tight text-muted-foreground">
+                                      AI verdicts
+                                    </span>
+                                  </>
+                                }
+                              />
+                              <ul className="w-full max-w-[15rem] space-y-2">
+                                {verdictMix.segments.map((seg) => {
+                                  const pct = Math.round((seg.value / verdictMix.total) * 100);
+                                  return (
+                                    <li key={seg.label} className="flex items-center gap-2 text-sm">
+                                      <span
+                                        className="h-2 w-2 shrink-0 rounded-full"
+                                        style={{ backgroundColor: seg.color }}
+                                        aria-hidden
+                                      />
+                                      <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                                        {seg.label}
+                                      </span>
+                                      <span className="font-semibold tabular-nums text-foreground">
+                                        {fmtNumber(seg.value)}
+                                      </span>
+                                      <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
+                                        {pct}%
+                                      </span>
+                                    </li>
+                                  );
+                                })}
+                                {/* Only beside the WINDOW mix it was counted with: never under
+                                    all-time verdicts (two spans read as one population). */}
+                                {verdictMix.scope === 'window' && typeof analystConfirmedFp === 'number' ? (
+                                  <li
+                                    className="flex items-center gap-2 pt-1 text-sm"
+                                    data-testid="analyst-confirmed-fp"
+                                  >
+                                    <span className="h-2 w-2 shrink-0" aria-hidden />
+                                    <span className="min-w-0 flex-1 text-muted-foreground">
+                                      Confirmed false positive by an analyst
                                     </span>
                                     <span className="font-semibold tabular-nums text-foreground">
-                                      {fmtNumber(seg.value)}
+                                      {fmtNumber(analystConfirmedFp)}
                                     </span>
-                                    <span className="w-9 text-right text-xs tabular-nums text-muted-foreground">
-                                      {pct}%
-                                    </span>
+                                    <span className="w-9" aria-hidden />
                                   </li>
-                                );
-                              })}
-                              {/* Only beside the WINDOW mix it was counted with: never under
-                                  all-time verdicts (two spans read as one population). */}
-                              {verdictMix.scope === 'window' && typeof analystConfirmedFp === 'number' ? (
-                                <li
-                                  className="flex items-center gap-2 pt-1 text-sm"
-                                  data-testid="analyst-confirmed-fp"
-                                >
-                                  <span className="h-2 w-2 shrink-0" aria-hidden />
-                                  <span className="min-w-0 flex-1 text-muted-foreground">
-                                    Confirmed false positive by an analyst
-                                  </span>
-                                  <span className="font-semibold tabular-nums text-foreground">
-                                    {fmtNumber(analystConfirmedFp)}
-                                  </span>
-                                  <span className="w-9" aria-hidden />
-                                </li>
-                              ) : null}
-                            </ul>
+                                ) : null}
+                              </ul>
+                            </div>
                           </div>
                         ) : (
                           <EmptyState
@@ -4555,7 +4628,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
               </CollapsibleContent>
             </section>
           </Collapsible>
-        </>
+        </div>
       )}
 
       {/* The case, opened OVER the dashboard: the SHARED <CaseDetail> (the same component
