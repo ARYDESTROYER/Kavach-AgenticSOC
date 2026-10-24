@@ -112,6 +112,7 @@ const REPORT: StandupReport = {
   deltas: {
     open: { current: 5, prior: 8, delta: -3 },
     needs_human: { current: 2, prior: 1, delta: 1 },
+    needs_human_verdict: { current: 4, prior: 1, delta: 3 },
     escalated: { current: 1, prior: 1, delta: 0 },
     unassigned: { current: 2, prior: 4, delta: -2 },
     sla_breached: { current: 1, prior: 0, delta: 1 },
@@ -199,10 +200,27 @@ describe('Standup shift handoff (Round 3 / F11)', () => {
     expect(within(openTile).getByText('-3')).toBeInTheDocument();
     expect(within(openTile).getByText('was 8')).toBeInTheDocument();
 
-    // Needs-human tile: current 2, prior 1, delta +1 (a rise is bad → critical).
-    const nhTile = screen.getByTestId('delta-tile-needs_human');
-    expect(within(nhTile).getByText('2')).toBeInTheDocument();
-    expect(within(nhTile).getByText('+1')).toBeInTheDocument();
+    // The legacy needs_human STATUS tile reads as the console's word for that status:
+    // current 2, prior 1, delta +1 (a rise is bad → critical).
+    const awaitingTile = screen.getByTestId('delta-tile-needs_human');
+    expect(within(awaitingTile).getByText('Awaiting analyst')).toBeInTheDocument();
+    expect(within(awaitingTile).getByText('2')).toBeInTheDocument();
+    expect(within(awaitingTile).getByText('+1')).toBeInTheDocument();
+  });
+
+  it('shows the open cases with a Needs human verdict under Needs human, as chat does', async () => {
+    render(<Standup onNavigate={vi.fn()} />);
+
+    // Chat's shift report labels this same figure "Needs human"; one label, one figure.
+    const nhTile = await screen.findByTestId('delta-tile-needs_human_verdict');
+    expect(within(nhTile).getByText('Needs human')).toBeInTheDocument();
+    expect(within(nhTile).getByText('4')).toBeInTheDocument();
+    expect(within(nhTile).getByText('+3')).toBeInTheDocument();
+    // "Needs human" names exactly one tile; the status count never carries that label.
+    expect(screen.getAllByText('Needs human')).toHaveLength(1);
+    // The workload badge counts the same status as the Awaiting analyst tile.
+    expect(screen.getByText('1 awaiting')).toBeInTheDocument();
+    expect(screen.queryByText(/\bNH\b/)).not.toBeInTheDocument();
   });
 
   it('distinguishes a clear queue, unavailable SLA tracking, and an empty workload', async () => {

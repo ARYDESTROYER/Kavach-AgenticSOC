@@ -29,13 +29,22 @@ const api = vi.hoisted(() => ({
   estimateReportSummary: vi.fn(),
   generateReportSummary: vi.fn(),
   getConversation: vi.fn(),
+  listReports: vi.fn(),
 }));
 vi.mock('@/soc/chat/chat-api', () => api);
 const exportReport = vi.hoisted(() => vi.fn(async () => ({ ok: true, message: 'Markdown downloaded' })));
 vi.mock('@/soc/chat/report/export/run', () => ({ exportReport }));
 
-import ReportPanel, { NOTE_AUTOSAVE_MS } from '../ReportPanel';
+import ReportPanel, {
+  NOTE_AUTOSAVE_MS,
+  REPORT_EMPTY_TEXT,
+  SAVED_FROM_CHAT_HEADING,
+  reportCountLabel,
+  savedFromConversation,
+} from '../ReportPanel';
+import type { ReportListEntry } from '@/lib/types';
 import { emitReportChanged } from '../report-sync';
+import { clearChatActivity, putChatActivity, settleChatActivity } from '@/soc/chat-activity/activity';
 import { clearSourceTurnCache } from '../useSourceTurns';
 import { sampleConversation, sampleReport } from './fixtures';
 
@@ -66,15 +75,16 @@ beforeEach(() => {
   clearSourceTurnCache();
   api.getReport.mockResolvedValue(sampleReport());
   api.getConversation.mockResolvedValue(sampleConversation());
+  api.listReports.mockResolvedValue([]);
   api.estimateReportSummary.mockResolvedValue({ prompt_tokens: 1200, max_output_tokens: 600, total_tokens: 1400, cost: 0.001, simulated: false, model: 'm' });
 });
 afterEach(() => vi.useRealTimers());
 
 describe('ReportPanel', () => {
-  it('loads the report, shows n/60 and reports the count', async () => {
+  it('loads the report, shows "n of 60 items" and reports the count', async () => {
     const { onCountChange } = show();
     expect(await screen.findByRole('button', { name: /Brute force on vpn-gw-2, rename report/ })).toBeInTheDocument();
-    expect(screen.getByTestId('report-count')).toHaveTextContent('6/60');
+    expect(screen.getByTestId('report-count')).toHaveTextContent('6 of 60 items');
     await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(6));
     expect(api.getReport).toHaveBeenCalledWith('rep-1', expect.anything());
     const items = screen.getAllByRole('listitem').filter((li) => li.hasAttribute('data-report-item'));
@@ -110,10 +120,13 @@ describe('ReportPanel', () => {
 
   it('shows the empty state before the first add and picks up the draft from the change event', async () => {
     const { onCountChange } = show({ reportId: null });
-    expect(screen.getByTestId('report-empty')).toHaveTextContent('No report yet');
+    expect(screen.getByTestId('report-empty')).toHaveTextContent(
+      'Nothing added yet. Use Add to report on an answer or a block.',
+    );
+    expect(screen.queryByText('No report yet')).toBeNull();
     const created = sampleReport({ items: sampleReport().items.slice(0, 1), version: 1, summary: null });
     act(() => emitReportChanged({ reportId: 'rep-1', conversationId: 'conv-1', report: created }));
-    expect(await screen.findByTestId('report-count')).toHaveTextContent('1/60');
+    expect(await screen.findByTestId('report-count')).toHaveTextContent('1 of 60 items');
     await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(1));
     expect(api.getReport).not.toHaveBeenCalled();
   });
@@ -277,7 +290,7 @@ describe('ReportPanel', () => {
     api.getReport.mockResolvedValue({ ...report, items });
     show();
     expect(await screen.findByText('Report is full (60 items)')).toBeInTheDocument();
-    expect(screen.getByTestId('report-count')).toHaveTextContent('60/60');
+    expect(screen.getByTestId('report-count')).toHaveTextContent('60 of 60 items');
   }, 20_000);
 
   it('deletes after confirmation with the current version', async () => {
@@ -390,7 +403,7 @@ describe('ReportPanel', () => {
 
     // rep-B arrives first, then rep-1's save resolves late: rep-B stays on screen.
     await act(async () => releaseGet(other));
-    expect(await screen.findByTestId('report-count')).toHaveTextContent('2/60');
+    expect(await screen.findByTestId('report-count')).toHaveTextContent('2 of 60 items');
     const saved = withVersion(sampleReport(), 6);
     const events: string[] = [];
     const off = (await import('../report-sync')).onReportChanged((d) => events.push(String(d.reportId)));
@@ -398,7 +411,7 @@ describe('ReportPanel', () => {
     off();
     expect(events).toContain('rep-1');
     expect(screen.getByRole('button', { name: /Phishing wave, rename report/ })).toBeInTheDocument();
-    expect(screen.getByTestId('report-count')).toHaveTextContent('2/60');
+    expect(screen.getByTestId('report-count')).toHaveTextContent('2 of 60 items');
     expect(screen.queryByTestId('report-conflict')).toBeNull();
     await waitFor(() => expect(onCountChange).toHaveBeenLastCalledWith(2));
     expect(onCountChange).not.toHaveBeenCalledWith(6);
@@ -520,5 +533,149 @@ describe('ReportPanel', () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
     });
     expect(document.activeElement).toBe(close);
+  });
+});
+
+describe('ReportPanel — reports saved from this chat (Round 13, SPEC-chat T3, T34)', () => {
+  const entry = (patch: Partial<ReportListEntry>): ReportListEntry => ({
+    id: 'r-x',
+    title: 'Saved',
+    template: 'custom',
+    item_count: 1,
+    updated_at: '2026-10-17T10:00:00Z',
+    version: 1,
+    ...patch,
+  });
+  const rows: ReportListEntry[] = [
+    // The working draft of this conversation: shown as the panel's own report, not listed.
+    entry({ id: 'rep-1', title: 'Brute force on vpn-gw-2', conversation_id: 'conv-1', source_conversation_id: 'conv-1' }),
+    entry({ id: 'r-old', title: 'Posture last week', source_conversation_id: 'conv-1', updated_at: '2026-10-16T09:00:00Z' }),
+    entry({ id: 'r-new', title: 'Executive summary, last 7 days', source_conversation_id: 'conv-1', updated_at: '2026-10-17T11:00:00Z' }),
+    entry({ id: 'r-other', title: 'Another chat', source_conversation_id: 'conv-2' }),
+    entry({ id: 'r-legacy', title: 'Legacy row' }),
+  ];
+
+  it('lists the reports this chat saved, newest first, with Open and Export', async () => {
+    api.listReports.mockResolvedValue(rows);
+    const user = userEvent.setup();
+    show();
+    const list = await screen.findByRole('region', { name: SAVED_FROM_CHAT_HEADING });
+    const items = within(list).getAllByRole('listitem');
+    expect(items.map((li) => li.getAttribute('data-saved-report'))).toEqual(['r-new', 'r-old']);
+    const first = within(items[0]).getByRole('group', { name: 'Executive summary, last 7 days' });
+    await user.click(within(first).getByRole('button', { name: /Open/ }));
+    expect(navigate).toHaveBeenCalledWith('reports', { reportId: 'r-new' });
+    expect(within(first).getByRole('button', { name: /Export/ })).toBeInTheDocument();
+    // The working report still shows below.
+    expect(await screen.findByRole('button', { name: /Brute force on vpn-gw-2, rename report/ })).toBeInTheDocument();
+  });
+
+  it('shows the saved list even before anything was added, above "Nothing added yet"', async () => {
+    api.listReports.mockResolvedValue(rows);
+    show({ reportId: null });
+    expect(await screen.findByRole('region', { name: SAVED_FROM_CHAT_HEADING })).toBeInTheDocument();
+    expect(screen.getByTestId('report-empty')).toHaveTextContent(REPORT_EMPTY_TEXT);
+    expect(screen.getByRole('heading', { level: 2, name: 'Report' })).toBeInTheDocument();
+    expect(screen.queryByText('No report yet')).toBeNull();
+  });
+
+  it('reads the list again after a report changes anywhere (Save conversation as report)', async () => {
+    api.listReports.mockResolvedValueOnce([]);
+    show({ reportId: null });
+    await waitFor(() => expect(api.listReports).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('region', { name: SAVED_FROM_CHAT_HEADING })).toBeNull();
+    api.listReports.mockResolvedValue(rows);
+    act(() => emitReportChanged({ reportId: 'r-new', conversationId: null, origin: 'thread-menu' }));
+    expect(await screen.findByRole('region', { name: SAVED_FROM_CHAT_HEADING })).toBeInTheDocument();
+  });
+
+  it('reads the list again when an answer in this chat lands, so a report it saved shows while the panel is open', async () => {
+    const activity = (conversationId: string, turnId: string) => ({
+      scope: `conv:${conversationId}`,
+      kind: 'workspace' as const,
+      conversationId,
+      caseId: null,
+      turnId,
+      requestKey: turnId,
+      title: 'Create an executive summary report for the last 7 days',
+      label: null,
+      lookups: 0,
+      status: 'running' as const,
+      startedAt: Date.now(),
+      source: 'local' as const,
+    });
+    try {
+      api.listReports.mockResolvedValueOnce([]);
+      show({ reportId: null });
+      await waitFor(() => expect(api.listReports).toHaveBeenCalledTimes(1));
+      expect(screen.getByTestId('report-empty')).toHaveTextContent(REPORT_EMPTY_TEXT);
+      // An answer in ANOTHER conversation lands: nothing to read again.
+      act(() => {
+        putChatActivity(activity('conv-2', 't0'));
+        settleChatActivity('conv:conv-2', 'done');
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      });
+      expect(api.listReports).toHaveBeenCalledTimes(1);
+      // The answer header saved a report server-side ("Saved to Reports"); no report-change
+      // event is sent for it, only the turn settling in this conversation.
+      api.listReports.mockResolvedValue(rows);
+      act(() => {
+        putChatActivity(activity('conv-1', 't1'));
+        settleChatActivity('conv:conv-1', 'done');
+      });
+      const list = await screen.findByRole('region', { name: SAVED_FROM_CHAT_HEADING });
+      expect(api.listReports).toHaveBeenCalledTimes(2);
+      expect(within(list).getAllByRole('listitem').map((li) => li.getAttribute('data-saved-report'))).toEqual(['r-new', 'r-old']);
+    } finally {
+      act(() => clearChatActivity());
+    }
+  });
+
+  it('never lists another conversation\'s reports, and reads nothing for a new chat', async () => {
+    api.listReports.mockResolvedValue(rows);
+    const { unmount } = show({ conversationId: 'conv-2', reportId: null });
+    const list = await screen.findByRole('region', { name: SAVED_FROM_CHAT_HEADING });
+    expect(within(list).getAllByRole('listitem').map((li) => li.getAttribute('data-saved-report'))).toEqual(['r-other']);
+    unmount();
+    api.listReports.mockClear();
+    show({ conversationId: null, reportId: null });
+    await act(async () => {});
+    expect(api.listReports).not.toHaveBeenCalled();
+  });
+
+  it('keeps working when the list cannot be read', async () => {
+    api.listReports.mockRejectedValue(new ApiError(403, 'Forbidden', null));
+    show();
+    expect(await screen.findByRole('button', { name: /Brute force on vpn-gw-2, rename report/ })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: SAVED_FROM_CHAT_HEADING })).toBeNull();
+  });
+
+  it('says an empty working report has nothing added yet', async () => {
+    api.getReport.mockResolvedValue(sampleReport({ items: [], summary: null }));
+    show();
+    expect(await screen.findByTestId('report-items-empty')).toHaveTextContent(REPORT_EMPTY_TEXT);
+    expect(screen.getByTestId('report-count')).toHaveTextContent('0 of 60 items');
+  });
+
+  it('writes headings in sentence case and lets item titles wrap', async () => {
+    show();
+    await screen.findByRole('button', { name: /Brute force on vpn-gw-2, rename report/ });
+    for (const name of ['Summary', 'Items']) {
+      const heading = screen.getByRole('heading', { level: 3, name });
+      expect(heading.className).not.toMatch(/uppercase/);
+    }
+    expect(screen.getByTestId('report-panel-eyebrow').className).not.toMatch(/uppercase/);
+    const title = screen.getByText('1. Who is failing logins against vpn-gw-2?');
+    expect(title).toHaveClass('break-words');
+    expect(title).not.toHaveClass('truncate');
+  });
+
+  it('counts in words and filters the list purely', () => {
+    expect(reportCountLabel(1, 60)).toBe('1 of 60 items');
+    expect(reportCountLabel(60, 60)).toBe('60 of 60 items');
+    expect(savedFromConversation(rows, 'conv-1', 'rep-1').map((row) => row.id)).toEqual(['r-new', 'r-old']);
+    expect(savedFromConversation(rows, null, null)).toEqual([]);
   });
 });

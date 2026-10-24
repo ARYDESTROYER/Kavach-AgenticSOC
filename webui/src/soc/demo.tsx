@@ -10,8 +10,11 @@
  * BACK-COMPAT / ISOLATION: when demo is OFF (the default) every value here is inert:
  * `active` is false, `useDemoGuard()` returns "not guarded", and nothing renders. A
  * failed status fetch is swallowed (treated as OFF) so a backend without the demo
- * endpoints (or auth without the grant) never breaks the console. Synthetic data is
- * a backend concern; this context only reads NON-secret status metadata.
+ * endpoints (or auth without the grant) never breaks the console. That OFF stand-in
+ * (also the value before the first read lands) is marked `confirmed: false`: it is no
+ * answer, so a consumer that must tell "Demo left" from "the read failed" (the chat's
+ * caches, `chat/demo-identity.ts`) ignores it. Synthetic data is a backend concern;
+ * this context only reads NON-secret status metadata.
  */
 import * as React from 'react';
 import { api } from '@/lib/api';
@@ -29,6 +32,12 @@ export interface DemoContextValue {
   active: boolean;
   /** Whether the initial status fetch is still in flight. */
   loading: boolean;
+  /**
+   * False while `status` is the OFF stand-in, not an answer: before the first read lands
+   * and after a failed read (a network blip, a 502/503, a 429, no grant). True when it
+   * came from a read. Absent outside a provider, where the inert OFF value is the answer.
+   */
+  confirmed?: boolean;
   /** Re-fetch GET /api/demo/status now (call after enable/reset/disable + on nav). */
   refresh: () => Promise<DemoStatus>;
 }
@@ -73,7 +82,7 @@ export const DemoProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [refresh]);
 
   const value = React.useMemo<DemoContextValue>(
-    () => ({ status, active: isDemoActive(status), loading, refresh }),
+    () => ({ status, active: isDemoActive(status), loading, confirmed: status !== OFF, refresh }),
     [status, loading, refresh],
   );
 

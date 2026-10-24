@@ -191,8 +191,9 @@ def test_a_share_of_auto_closed_cases_states_the_automation_rate(question: str, 
     assert {"auto_closed", "human_closed"} <= set(stats[0].get("metrics") or []), stats[0]
     assert stats[0].get("window") == window, stats[0]
     assert "search_cases" not in [tool for tool, _ in ran(rounds)]
-    # 53 of 76 closed cases: the rate leads, with the counts it is computed from.
-    assert body.startswith("**69.7%** of the closed cases"), body
+    # 53 of 76 closed cases: the rate leads, with the counts it is computed from, in the
+    # form the console's tiles write it (69.7% reads "70%", Round 13 close).
+    assert body.startswith("**70%** of the closed cases"), body
     assert "53 of 76 closed cases" in body and "This is the automation rate." in body
 
 

@@ -98,7 +98,7 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   case_manager: ['split pane', 'queue', 'bulk', 'case detail'],
   campaigns: ['campaign', 'related cases', 'shared entity'],
   logs: ['log search', 'events', 'telemetry', 'unified logs'],
-  chat: ['assistant', 'ask', 'question', 'conversation', 'reports', 'prompt library', 'saved prompts', 'promptbook'],
+  chat: ['assistant', 'ask', 'question', 'conversation', 'reports', 'prompt library', 'saved prompts', 'promptbook', 'suggestions', 'suggested questions', 'follow-ups', 'catch-up'],
   investigate: ['entity', 'hunt', 'ip', 'host', 'user'],
   approvals: ['proposals', 'pending', 'approve', 'human in the loop'],
   intelligence: ['knowledge', 'runbooks', 'playbooks', 'memory'],

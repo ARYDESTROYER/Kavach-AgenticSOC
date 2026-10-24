@@ -460,30 +460,35 @@ describe('Overview — KPI drill-down depth', () => {
   });
 
   it('resets paging on a sort, search or facet change too', async () => {
-    const many = Array.from({ length: DRILLDOWN_PAGE_LIMIT }, (_, i) => ({
+    // A SMALL page that is nonetheless a FULL one, via the server's echoed clamp (as in
+    // the a11y case below): the reset is the same at any page size, and a 200-row page
+    // re-rendered on every keystroke made this case slow enough to time out under a
+    // fully parallel run.
+    const SERVED = 5;
+    const many = Array.from({ length: SERVED }, (_, i) => ({
       ...CASES[0], case_id: `m-${i}`, case_number: `M-${i}`, title: `Row ${i}`,
     })) as unknown as Case[];
     listCasesMock.mockResolvedValue({
-      cases: many, total: 500, window_total_exact: true, ...echo(),
+      cases: many, total: 500, window_total_exact: true, ...echo({ limit_applied: SERVED }),
     });
     renderOverview();
     await screen.findByTestId('page-hero');
     await openPanel('kpi-total-cases');
 
     await userEvent.click(screen.getByTestId('kpi-drilldown-more'));
-    await waitFor(() => expect(lastQuery().offset).toBe(DRILLDOWN_PAGE_LIMIT));
+    await waitFor(() => expect(lastQuery().offset).toBe(SERVED));
     await userEvent.click(screen.getByTestId('kpi-drilldown-sort'));
     await userEvent.click(await screen.findByRole('option', { name: 'Oldest first' }));
     await waitFor(() => expect(lastQuery().sort_order).toBe('asc'));
     expect(lastQuery().offset).toBe(0);
 
     await userEvent.click(screen.getByTestId('kpi-drilldown-more'));
-    await waitFor(() => expect(lastQuery().offset).toBe(DRILLDOWN_PAGE_LIMIT));
+    await waitFor(() => expect(lastQuery().offset).toBe(SERVED));
     await userEvent.type(screen.getByTestId('kpi-drilldown-search'), 'row');
     await waitFor(() => expect(lastQuery().offset).toBe(0));
 
     await userEvent.click(screen.getByTestId('kpi-drilldown-more'));
-    await waitFor(() => expect(lastQuery().offset).toBe(DRILLDOWN_PAGE_LIMIT));
+    await waitFor(() => expect(lastQuery().offset).toBe(SERVED));
     await userEvent.click(screen.getByTestId('kpi-drilldown-status'));
     await userEvent.click(await screen.findByRole('option', { name: 'Open' }));
     await waitFor(() => expect(lastQuery().offset).toBe(0));

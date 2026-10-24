@@ -133,6 +133,7 @@ from .chat_protocol import (
     parse_clarify,
     parse_reply,
     parse_report_request,
+    parse_title,
     plan_fold,
     render_conversation_summary,
     render_replay,
@@ -141,6 +142,7 @@ from .chat_protocol import (
     stitch_continuation,
     summary_max_chars,
 )
+from .chat_followups import ArtifactInfo, select_follow_ups, suggestion_question
 from .chat_tools import recall as recall_tool
 from .chat_tools.base import Artifact, ChatToolContext, ToolOutcome, render_tool_call_header, render_tool_signatures
 from .chat_tools.common import operator_tz, resolve_window
@@ -222,6 +224,7 @@ _SKIPPED_CAP = "Lookup limit for this question reached"
 _SKIPPED_INDICATOR_CAP = "Indicator lookup limit reached"
 _TOOL_FAILED = "The lookup failed"
 _LEGACY_LABEL = "Searched logs"
+_LEGACY_RUNNING_LABEL = "Searching logs"
 _LEGACY_FAILED = "The log search failed"
 # §4.8.1 compatibility carve-out: the caller may manage memory, but the turn read log
 # data, so the change waits for an explicit confirmation.
@@ -358,7 +361,12 @@ class TurnOutcome:
     route to save the persisted answer as a report (never for a case-scoped turn, nor
     for an answer that was stopped or cut short by a failure);
     ``observations`` holds, per tool step index, the observation the model saw (the
-    step inspector); ``continued``/``compacted`` mirror the response fields."""
+    step inspector); ``continued``/``compacted`` mirror the response fields.
+
+    Round 13 (SPEC-chat T6): ``title`` is the final header's ``title`` from the FIRST
+    answer of a Workspace conversation (``chat_protocol.parse_title``), for the route
+    to name a NEW conversation with; ``None`` otherwise (a later answer, a case-scoped
+    turn, compatibility mode, or a title that broke a rule)."""
 
     turn_id: str = ""
     response: ChatResponse | None = None
@@ -376,6 +384,7 @@ class TurnOutcome:
     continued: int = 0
     report_request: dict[str, str] | None = None
     observations: dict[int, dict[str, Any]] = field(default_factory=dict)
+    title: str | None = None
 
 
 @dataclass
@@ -1502,6 +1511,11 @@ class _AgentTurn:
         user_texts = [e.user for e in exchanges if e.origin == "user" and e.user]
         if self.origin == "user":
             user_texts.append(self.message)
+        # Round 13: the follow-up selector drops a chip that repeats any earlier
+        # question (§4.1), and the header title is read only from a conversation's
+        # first answer (T6).
+        self.earlier_questions: list[str] = [e.user for e in exchanges if e.user]
+        self.first_answer = not exchanges
         prior_lookups = sum(1 for e in exchanges for st in e.steps if _prior_lookup_consumed(st))
         self.taint = TaintLedger.for_turn(prefs, user_texts, conversation_lookups=prior_lookups)
         self.messages: list[dict[str, str]] = []
@@ -1512,6 +1526,17 @@ class _AgentTurn:
         self.model_calls = 0
         self.tool_calls = 0
         self.artifacts: dict[str, TurnArtifact] = {}
+        # The tool and input of each call that produced artifacts, by ordinal (the
+        # follow-up selector reads which dimensions and windows a call used).
+        self._call_meta: dict[int, tuple[str, dict[str, Any]]] = {}
+        # Calls that matched nothing (their observation carries zero-result
+        # suggestions) and the questions those suggestions ask (§4.1 anchoring).
+        self._zero_ordinals: set[int] = set()
+        self._widening: list[str] = []
+        # Every lookup that ran, by ordinal: its tool and input, the window its result
+        # names and the case numbers its observation lists by case id (§4.1 anchors
+        # for a lookup with nothing to show, and case numbers for a case list).
+        self._lookups: dict[int, _LookupNote] = {}
         self.citations: list[Citation] = []
         self.console_link_ids: list[str] = []
         self.model_usages: list[StepUsage] = []
@@ -2779,7 +2804,7 @@ class _AgentTurn:
         for call in planned:
             yield StepStartEvent(step=StepStartInfo(
                 index=call.index, ordinal=call.ordinal, kind="tool", tool=call.request.tool,
-                label=self._label(call), params=self._display_params(call), group=call.group,
+                label=self._running_label(call), params=self._display_params(call), group=call.group,
             ))
         # Engine refusals end at once (an indicator refusal is audited like a tool
         # refusal); everything else goes through the toolbox, which re-checks grants
@@ -2832,6 +2857,7 @@ class _AgentTurn:
         for call in planned:
             if call.step is not None:
                 self.steps.append(call.step)
+            self._note_lookup(call)
             outcome = call.outcome
             if outcome is None:
                 continue
@@ -2949,6 +2975,13 @@ class _AgentTurn:
         if call.recall:
             return recall_tool.LABEL
         return getattr(call.tool, "label", None) or call.request.tool
+
+    def _running_label(self, call: _PlannedCall) -> str:
+        """The ``step.start`` label: what the lookup is doing while it runs ("Searching
+        logs"); ``step.end`` and stored steps keep :meth:`_label` ("Searched logs")."""
+        if call.recall:
+            return recall_tool.RUNNING_LABEL
+        return getattr(call.tool, "running_label", None) or self._label(call)
 
     def _display_params(self, call: _PlannedCall) -> dict[str, Any]:
         if call.recall:
@@ -3094,6 +3127,25 @@ class _AgentTurn:
     def _is_reference_tool(self, call: _PlannedCall) -> bool:
         return call.request.tool in _PRODUCT_REFERENCE_TOOLS
 
+    def _note_lookup(self, call: _PlannedCall) -> None:
+        """What the follow-up selector needs of every lookup that ran, whatever its
+        status (§4.1): its tool and input, the window its result names and the case
+        numbers its observation lists by case id. A repeat or a recall adds nothing."""
+        try:
+            if call.recall or call.duplicate_of is not None or call.ordinal in self._lookups:
+                return
+            raw_input = getattr(call.request, "input", None)
+            observation = call.outcome.observation if call.outcome is not None else None
+            window = observation.get("window") if isinstance(observation, dict) else None
+            self._lookups[call.ordinal] = _LookupNote(
+                tool=str(call.request.tool),
+                params=dict(raw_input) if isinstance(raw_input, dict) else {},
+                window=window if isinstance(window, str) and len(window) <= 160 else None,
+                case_numbers=_case_numbers(observation),
+            )
+        except Exception:  # noqa: BLE001 -- presentation only: a lookup is never failed by it
+            logger.debug("follow-up lookup note skipped", exc_info=True)
+
     def _absorb(self, call: _PlannedCall) -> None:
         """Register a successful call's artifacts (``tN.aK``), citations and console
         links. ``D*`` ids of a second app_help call are renumbered after the ones the
@@ -3112,6 +3164,16 @@ class _AgentTurn:
             self.data_tools += 1
         valid = [a for a in outcome.artifacts if isinstance(a, Artifact) and not a.problems()]
         call.artifacts = valid
+        if valid:
+            raw_input = getattr(call.request, "input", None)
+            self._call_meta[call.ordinal] = (call.request.tool, dict(raw_input) if isinstance(raw_input, dict) else {})
+        suggestions = outcome.observation.get("suggestions") if isinstance(outcome.observation, dict) else None
+        if isinstance(suggestions, list) and suggestions:
+            self._zero_ordinals.add(call.ordinal)
+            for suggestion in suggestions[:8]:
+                question = suggestion_question(suggestion.get("label") if isinstance(suggestion, dict) else None)
+                if question is not None and question not in self._widening:
+                    self._widening.append(question)
         for artifact in valid:
             ref = f"t{call.ordinal}.{artifact.id}"
             self.artifacts[ref] = TurnArtifact(ref=ref, artifact=artifact, from_step=call.index)
@@ -3308,7 +3370,9 @@ class _AgentTurn:
         chips = self._legacy_display_params(tool, params)
         start = ChatStep(index=index, ordinal=self.ordinal, kind="tool", tool="search_logs",
                          label=getattr(tool, "label", None) or _LEGACY_LABEL, params=chips)
-        yield StepStartEvent(step=StepStartInfo.from_step(start))
+        # Present progressive while it runs; the stored step keeps the past-tense label.
+        running = getattr(tool, "running_label", None) or (start.label if tool is not None else _LEGACY_RUNNING_LABEL)
+        yield StepStartEvent(step=StepStartInfo.from_step(start).model_copy(update={"label": running}))
         header_text = json.dumps(reply.header or {}, ensure_ascii=True, default=str)
         self.messages.append({"role": "assistant", "content": neutralise_markers(
             header_text if self.unlimited else truncate(header_text, _MAX_ECHO_CHARS))})
@@ -3420,6 +3484,7 @@ class _AgentTurn:
         )
         ref = f"t{self.ordinal}.a1"
         self.artifacts[ref] = TurnArtifact(ref=ref, artifact=artifact, from_step=index)
+        self._call_meta[self.ordinal] = ("search_logs", dict(params) if isinstance(params, dict) else {})
         if memo is not None:
             memo.status, memo.refs = "ok", (ref,)
         self.taint.add_artifacts([artifact])
@@ -3514,7 +3579,8 @@ class _AgentTurn:
             answer=fallback.answer, case_id=self.case_id, blocks=blocks, steps=self.steps,
             usage=TurnUsage(model=None, simulated=self.simulated),
             citations=fallback.citations, console_links=fallback.console_links,
-            follow_ups=fallback.follow_ups, answer_kind="product_help", notice=notice,
+            follow_ups=self._follow_ups(fallback.follow_ups, (), "product_help"),
+            answer_kind="product_help", notice=notice,
             stream_mode=self.stream_mode, turn_id=self.turn_id,
         )
         response = await self._with_case_save(response)
@@ -3541,6 +3607,7 @@ class _AgentTurn:
         window = self.ctx.default_range.label() if self.ctx.default_range is not None else None
         sources = sorted({s for step in self.steps for s in step.sources})
         blocks: list[dict[str, Any]] = []
+        shown_refs: list[str] = []
         protocol_header = header is not None and reply is not None and not reply.legacy
         if protocol_header:
             requests, dropped = parse_final_block_requests(header.get("blocks"))
@@ -3550,6 +3617,7 @@ class _AgentTurn:
                 dropped_requests=dropped,
             )
             blocks = materialised.blocks
+            shown_refs = list(materialised.resolved_refs)
         elif self.artifacts:
             # No header (prose, a legacy reply, a stopped or synthesised turn): show
             # every artifact of the turn in its default view, in call order.
@@ -3598,8 +3666,10 @@ class _AgentTurn:
             notice = make_notice(key, retryable=False)
         if notice is None and self.compacted:
             notice = make_notice("compacted", retryable=False)
-        follow_ups = header.get("follow_ups") if protocol_header else None
+        model_chips = header.get("follow_ups") if protocol_header else None
         answer_kind = self._answer_kind(header if protocol_header else None, unsupported)
+        # Round 13 (SPEC-chat §4.1, T4): anchored follow-ups for every answer.
+        follow_ups = self._follow_ups(model_chips, shown_refs, answer_kind, answer_text=text)
         proposal = _memory_proposal(header) if header is not None else None
         # D11: the report request, only for an answer that completed normally (never
         # one the analyst stopped, or one a failure cut short: the client's "Save as
@@ -3608,6 +3678,10 @@ class _AgentTurn:
         completed = not self.outcome.cancelled and (notice is None or notice.kind not in _INCOMPLETE_NOTICE_KINDS)
         self.outcome.report_request = (parse_report_request(header)
                                        if protocol_header and not self.case_id and completed else None)
+        # T6: the conversation title, from a Workspace conversation's FIRST answer only
+        # (the same final call: no extra model call or spend, #6).
+        self.outcome.title = (parse_title(header)
+                              if protocol_header and self.first_answer and not self.case_id else None)
         usage = self._totals() if (self.model_usages or self.embedding_usages) else None
         if self.streamed_text and self.streamed_text.strip() != text:
             yield TextResetEvent()
@@ -3615,7 +3689,7 @@ class _AgentTurn:
             answer=text, table=self.legacy_table, query=self.legacy_query, case_id=self.case_id,
             effective_model=self.effective_model, blocks=blocks, steps=self.steps, usage=usage,
             citations=citations[:_MAX_CITATIONS], console_links=console_links,
-            follow_ups=follow_ups if isinstance(follow_ups, list) else [],
+            follow_ups=follow_ups,
             answer_kind=answer_kind, notice=notice, stream_mode=self.stream_mode,
             turn_id=self.turn_id, memory_proposal=proposal,
             clarify=clarify, continued=self.continued, compacted=self.compacted,
@@ -3626,6 +3700,62 @@ class _AgentTurn:
         self.outcome.compacted = self.compacted
         self.outcome.response = response
         yield TurnDoneEvent(response=response)
+
+    def _follow_ups(self, model_chips: Any, shown_refs: Sequence[str], answer_kind: str,
+                    *, answer_text: str = "") -> list[str]:
+        """The answer's follow-up chips (SPEC-chat §4.1): the model's own chips that are
+        anchored in what the answer shows, plus deterministic value-free chips from its
+        artifacts. ``shown_refs`` are the artifact refs its blocks show; an answer that
+        shows none (prose only, or no header) is anchored in every artifact of the turn
+        a default block would show (never an empty one). A lookup that ran but has
+        nothing to show (zero results, a failure, a denial) anchors by what it asked
+        for, so an answer about a lookup that found nothing is still a data answer and
+        an off-topic chip is still dropped. ``answer_text`` is the answer's prose: a case
+        a lookup observed anchors a chip only when the answer shows or names it.
+        Chips are presentation: a selector failure never fails the answer (no chips
+        instead)."""
+        try:
+            entries = [self.artifacts[r] for r in dict.fromkeys(shown_refs) if r in self.artifacts]
+            showable = {e.ref for e in self.artifacts.values()
+                        if to_blocks(e.artifact, MaterialiseOptions(block_id="b1", from_step=e.from_step))}
+            if not entries:
+                entries = [e for e in self.artifacts.values() if e.ref in showable]
+            infos: list[ArtifactInfo] = []
+            covered: set[int] = set()
+            for entry in entries:
+                ordinal = _ref_ordinal(entry.ref)
+                tool, params = self._call_meta.get(ordinal, (None, {})) if ordinal is not None else (None, {})
+                note = self._lookups.get(ordinal) if ordinal is not None else None
+                sources = [src for step in self.steps if step.ordinal == ordinal for src in step.sources]
+                if ordinal is not None:
+                    covered.add(ordinal)
+                infos.append(ArtifactInfo.from_artifact(
+                    entry.artifact, tool=tool, params=params, sources=sources,
+                    zero=ordinal in self._zero_ordinals,
+                    case_numbers=note.case_numbers if note is not None else None,
+                ))
+            shown_by = {_ref_ordinal(ref) for ref in showable}
+            for ordinal, note in self._lookups.items():
+                # A lookup whose artifacts the answer chose not to show is left out; one
+                # with nothing to show still anchors by its own input.
+                if ordinal in covered or ordinal in shown_by:
+                    continue
+                sources = [src for step in self.steps if step.ordinal == ordinal for src in step.sources]
+                infos.append(ArtifactInfo.from_lookup(note.tool, note.params, window=note.window,
+                                                      sources=sources, case_numbers=note.case_numbers))
+            allowed = frozenset(
+                name for name in (getattr(tool, "name", None) for tool in self.granted) if isinstance(name, str)
+            )
+            chips = (list(model_chips[:_FOLLOW_UP_CHIPS_READ]) if isinstance(model_chips, (list, tuple)) else [])
+            return select_follow_ups(
+                [c for c in chips if isinstance(c, str)], infos, question=self.message,
+                earlier_questions=self.earlier_questions, allowed_tools=allowed, answer_kind=answer_kind,
+                widening=self._widening, answer_text=answer_text,
+                case_number_pattern=_case_number_pattern(self.prefs),
+            )
+        except Exception:  # noqa: BLE001 -- chips are presentation; an answer never fails on them
+            logger.warning("follow-up selection failed", exc_info=True)
+            return []
 
     def _default_blocks(self) -> list[dict[str, Any]]:
         """Every artifact of the turn in its default view, in call order: an empty one
@@ -3695,6 +3825,71 @@ class _AgentTurn:
         )
         self.outcome.case_saved = saved
         return saved, why
+
+
+_REF_ORDINAL_RE = re.compile(r"^t(\d{1,6})\.a\d{1,4}$")
+
+
+@dataclass(frozen=True)
+class _LookupNote:
+    """One lookup the turn ran, as the follow-up selector reads it (§4.1)."""
+
+    tool: str
+    params: dict[str, Any]
+    window: str | None
+    case_numbers: dict[str, str]
+
+
+#: At most this many header follow-ups are read (the selector checks at most 6).
+_FOLLOW_UP_CHIPS_READ = 24
+#: Case number pairs read from one observation (a case list shows at most 50 cases).
+_CASE_NUMBERS_MAX = 100
+
+
+def _case_number_pattern(prefs: Any) -> str | None:
+    """The configured numbering template's display numbers as a pattern, for the
+    follow-up rule that a chip names a case only when the answer shows it (None when
+    there is none; the selector still knows the default "CASE-000042" shape)."""
+    fmt = getattr(prefs, "case_id_format", None)
+    template = getattr(fmt, "template", None)
+    if not isinstance(template, str):
+        return None
+    from ..engine.case_id import number_pattern
+
+    prefix = getattr(fmt, "prefix", "CASE")
+    return number_pattern(template, prefix=prefix if isinstance(prefix, str) else "CASE")
+
+
+def _case_numbers(observation: Any) -> dict[str, str]:
+    """``case_id → case_number`` from a lookup's observation (``case_row`` carries both;
+    the ``case_list`` artifact carries only the id), walked at most three levels deep
+    and bounded. Only matched against follow-up chips, never shown or sent."""
+    out: dict[str, str] = {}
+
+    def walk(value: Any, depth: int) -> None:
+        if len(out) >= _CASE_NUMBERS_MAX or depth > 3:
+            return
+        if isinstance(value, dict):
+            case_id, number = value.get("case_id"), value.get("case_number")
+            if (isinstance(case_id, str) and isinstance(number, str) and number and number != case_id
+                    and len(case_id) <= 128 and len(number) <= 64):
+                out.setdefault(case_id, number)
+            for child in list(value.values())[:40]:
+                if isinstance(child, (dict, list)):
+                    walk(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value[:_CASE_NUMBERS_MAX]:
+                if isinstance(child, (dict, list)):
+                    walk(child, depth + 1)
+
+    walk(observation, 0)
+    return out
+
+
+def _ref_ordinal(ref: str) -> int | None:
+    """The tool-call ordinal N of an artifact ref ``tN.aK`` (``None`` otherwise)."""
+    match = _REF_ORDINAL_RE.match(ref) if isinstance(ref, str) else None
+    return int(match.group(1)) if match else None
 
 
 def _knowledge_trust_split(observation: dict[str, Any]) -> str | None:

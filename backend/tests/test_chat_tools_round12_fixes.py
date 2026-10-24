@@ -583,7 +583,8 @@ async def test_the_prompt_clarify_example_runs_through_the_engine() -> None:
     prefs = uprefs()
     _, resp, _ = await run(make_engine(FakeGateway([example])), "show me the trend", prefs, engine_ctx(prefs))
     assert resp.clarify is not None and resp.clarify.question == "Trend of what?"
-    assert resp.answer == "Which trend do you want: alerts, cases, AI cost or false-positive rate?"
+    # Round 13: the example's body is the question alone (the clarify card shows the options).
+    assert resp.answer == "Which trend do you want?"
     assert "No answer could be generated" not in resp.answer
 
 

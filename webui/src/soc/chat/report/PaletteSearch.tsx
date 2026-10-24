@@ -14,7 +14,8 @@
  * entry chunk (SPEC §10.10's +1 kB budget), and the chat data client loads only when the
  * operator actually searches. "Search chats" is opt-in: the palette never sends a
  * conversation search per keystroke until it is chosen. Every title and snippet is plain
- * text (cmdk renders children as text; #9).
+ * text (cmdk renders children as text; #9), and a snippet cut from a Markdown answer
+ * loses its markers first (`plainSnippet`, Round 13 T27).
  */
 import * as React from 'react';
 import { FileText, MessageSquare, Search, Sparkles } from 'lucide-react';
@@ -24,6 +25,7 @@ import { CommandGroup, CommandItem } from '@/ui/command';
 import { useAuth } from '@/soc/auth';
 import type { PageId } from '@/soc/nav';
 import { clampAsk } from '../ask';
+import { plainSnippet } from '../workspace/plain-snippet';
 
 /** The palette's own jump helper (records a recent target, navigates, closes). */
 export type PaletteGo = (page: PageId, label: string, opts?: NavOpts) => void;
@@ -108,19 +110,22 @@ export default function PaletteSearch({ query, go }: PaletteSearchProps) {
       </CommandGroup>
       {chats.length ? (
         <CommandGroup heading="Chats">
-          {chats.map((c) => (
-            <CommandItem
-              key={`chat-${c.id}`}
-              value={`chat ${c.id}`}
-              onSelect={() => go('chat', 'Workspace', { conversationId: c.id, messageId: c.match?.message_id ?? undefined })}
-            >
-              <MessageSquare aria-hidden />
-              <span className="flex min-w-0 flex-col">
-                <span className="truncate">{c.title}</span>
-                {c.match?.snippet ? <span className="truncate text-xs text-muted-foreground">{c.match.snippet}</span> : null}
-              </span>
-            </CommandItem>
-          ))}
+          {chats.map((c) => {
+            const snippet = plainSnippet(c.match?.snippet);
+            return (
+              <CommandItem
+                key={`chat-${c.id}`}
+                value={`chat ${c.id}`}
+                onSelect={() => go('chat', 'Workspace', { conversationId: c.id, messageId: c.match?.message_id ?? undefined })}
+              >
+                <MessageSquare aria-hidden />
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate">{c.title}</span>
+                  {snippet ? <span className="truncate text-xs text-muted-foreground">{snippet}</span> : null}
+                </span>
+              </CommandItem>
+            );
+          })}
         </CommandGroup>
       ) : null}
       {reports.length ? (

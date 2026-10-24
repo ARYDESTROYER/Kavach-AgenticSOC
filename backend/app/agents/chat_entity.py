@@ -306,10 +306,21 @@ def entity_turn_question(text: Any) -> str | None:
 def prompt_question(text: Any, origin: Any) -> str | None:
     """The prompt form of a turn's text when it must be fenced: a NON-user turn that is
     exactly a console question. ``None`` otherwise (the caller sends the text as it
-    always did, markers neutralised)."""
+    always did, markers neutralised).
+
+    Two console question families are recognised, both exactly: the Ask AI entity
+    questions of this module and (Round 13, SPEC-chat §3.2.4, §3.8.4) the starter
+    templates of ``agents/chat_starter_text`` (``render_starter_turn``: a referenced
+    value goes into its own ``source=entity_ref`` fence, a question with counts gains the
+    counts note). The live turn (``agents/chat.py``) and every replay
+    (``chat_protocol.render_replay``) call this, so both render a starter identically."""
     if origin == "user":
         return None
-    return render_entity_turn(text)
+    # Imported here: ``chat_starter_text`` imports this module at load (a top-level
+    # import the other way would be a cycle).
+    from .chat_starter_text import render_starter_turn
+
+    return render_entity_turn(text) or render_starter_turn(text)
 
 
 __all__ = [

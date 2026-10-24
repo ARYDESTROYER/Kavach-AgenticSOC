@@ -59,3 +59,75 @@ export function capabilityLabel(tool: Pick<ChatToolInfo, 'name' | 'label'>): str
 export function isKindGated(tool: Pick<ChatToolInfo, 'requires' | 'kind_requires'>): boolean {
   return tool.requires.length === 0 && Object.keys(tool.kind_requires ?? {}).length > 0;
 }
+
+/**
+ * Round 13 (SPEC-chat T24): a missing grant reads as a plain sentence ("Needs permission
+ * to read sources") with the `resource:action` code beside it, muted, so an administrator
+ * can still grant it. Known grants have hand-written phrases; any other one reads
+ * "<action> <resource>" with underscores as spaces.
+ */
+export const PERMISSION_PHRASES: Readonly<Record<string, string>> = {
+  'cases:read': 'read cases',
+  'sources:read': 'read sources',
+  'metrics:view': 'view metrics',
+  'cost:view': 'view costs',
+  'audit:view': 'view the audit trail',
+  'enrichment:read': 'read threat intel',
+  'rag:read': 'read the knowledge base',
+  'runbooks:read': 'read runbooks',
+  'playbooks:read': 'read playbooks',
+  'memory:read': 'read memory',
+  'automation:read': 'read automation',
+  'settings:read': 'read settings',
+  'proposals:read': 'read approvals',
+  'rules:read': 'read rules',
+  'models:read': 'read models',
+};
+
+const GRANT_RE = /^([a-z][a-z0-9_]*):([a-z][a-z0-9_]*)$/;
+
+/** "read sources" for `sources:read`; an unknown well-formed grant reads "<action> <resource>". */
+export function permissionPhrase(grant: string): string {
+  const known = PERMISSION_PHRASES[grant];
+  if (known) return known;
+  const match = GRANT_RE.exec(grant);
+  if (!match) return grant;
+  return `${match[2].replace(/_/g, ' ')} ${match[1].replace(/_/g, ' ')}`;
+}
+
+/** A missing grant as copy: the sentence and the codes (shown muted, in parentheses). */
+export interface PermissionNeed {
+  /** "Needs permission to read sources" / "… to read sources or view metrics". */
+  text: string;
+  /** "(sources:read)" / "(sources:read or metrics:view)". */
+  code: string;
+}
+
+/**
+ * The copy for what a caller lacks. `missing` is one grant, or several joined with
+ * " or " (any one unlocks it) or " and " (all are needed), as {@link missingGrant} and
+ * `ScopeAccess.missing` give them. `prefix` replaces "Needs" ("Some details need").
+ */
+export function permissionNeed(missing: string, prefix = 'Needs'): PermissionNeed {
+  const joiner = / or /.test(missing) ? 'or' : 'and';
+  const grants = missing
+    .split(/ (?:or|and) /)
+    .map((grant) => grant.trim())
+    .filter(Boolean);
+  const phrases: string[] = [];
+  for (const grant of grants) {
+    const phrase = permissionPhrase(grant);
+    if (!phrases.includes(phrase)) phrases.push(phrase);
+  }
+  const list =
+    phrases.length <= 1
+      ? (phrases[0] ?? 'access')
+      : `${phrases.slice(0, -1).join(', ')} ${joiner} ${phrases[phrases.length - 1]}`;
+  return { text: `${prefix} permission to ${list}`, code: `(${grants.join(` ${joiner} `)})` };
+}
+
+/** One line: "Needs permission to read sources (sources:read)". */
+export function permissionNeedText(missing: string, prefix = 'Needs'): string {
+  const need = permissionNeed(missing, prefix);
+  return `${need.text} ${need.code}`;
+}

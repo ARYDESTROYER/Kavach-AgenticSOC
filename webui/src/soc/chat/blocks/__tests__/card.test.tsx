@@ -44,11 +44,33 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('header', () => {
-  it('shows title, caption, as-of and the provenance tag', () => {
+  it('shows title, caption and as-of; at rest the header holds only the ⋯ menu (Round 13 T9)', async () => {
+    const user = userEvent.setup();
     show([galleryBlock('kpis')]);
+    const fig = screen.getByRole('figure', { name: 'Posture now' });
     expect(screen.getByRole('heading', { level: 4, name: 'Posture now' })).toBeInTheDocument();
     expect(screen.getByTestId('block-caption')).toHaveTextContent('Last 24h · all sources · as of 2026-10-08 09:12 UTC');
-    expect(screen.getByRole('img', { name: /Provenance: Deterministic/ })).toBeInTheDocument();
+    // No provenance glyph in the header (its "01/10" read as a control), and no other
+    // control but the menu.
+    expect(within(fig).queryByRole('img', { name: /Provenance/ })).toBeNull();
+    const caption = fig.querySelector('figcaption') as HTMLElement;
+    expect(within(caption).getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['More actions for Posture now']);
+    // The provenance is the menu's first line: a line, not an action.
+    const menu = await openMenu(user);
+    const line = within(menu).getByTestId('block-provenance');
+    expect(line).toHaveTextContent('Computed by code');
+    expect(line).not.toHaveAttribute('role', 'menuitem');
+    expect(menu.firstElementChild).toBe(line);
+  });
+
+  it('names who produced the values in the menu: a lookup, code or the model', async () => {
+    const user = userEvent.setup();
+    const source = parseBlock({ ...(galleryBlock('top-hosts') as object), provenance: 'source' });
+    const ai = parseBlock({ ...(galleryBlock('severity-mix') as object), provenance: 'ai' });
+    show([source, ai]);
+    expect(within(await openMenu(user, 0)).getByTestId('block-provenance')).toHaveTextContent('Measured by a lookup');
+    await user.keyboard('{Escape}');
+    expect(within(await openMenu(user, 1)).getByTestId('block-provenance')).toHaveTextContent('Stated by the model');
   });
 
   it('always discloses truncation as top N of M (G4)', () => {
@@ -89,7 +111,11 @@ describe('header', () => {
     show([galleryBlock('ioc'), galleryBlock('shift-brief')]);
     const heading = screen.getByRole('heading', { level: 4, name: 'Indicator: 203.0.113.14' });
     expect(heading.querySelector('.font-mono')).toHaveTextContent('203.0.113.14');
-    expect(screen.getByRole('figure', { name: 'Brief Shift brief' })).toHaveTextContent(/^Brief/);
+    // The title row reads "Brief: {title}" (Round 13 T29; no separate eyebrow), and a
+    // title that already calls itself a brief is not prefixed twice.
+    const brief = screen.getByRole('figure', { name: 'Shift brief' });
+    expect(within(brief).getByRole('heading', { level: 4 })).toHaveTextContent(/^Shift brief$/);
+    expect(brief).toHaveAttribute('data-block-type', 'report');
   });
 
   it('falls back to a type title and never uses block.id as a DOM id', () => {

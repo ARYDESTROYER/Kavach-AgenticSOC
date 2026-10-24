@@ -8,6 +8,7 @@
  * Center page, recognised by {@link isDocLink} (the BLOCKS.md amendment 5 pattern,
  * identical to the backend `Citation.doc` rule).
  */
+import { statusLabel } from '@/soc/components/semantic-labels';
 
 /**
  * The ONLY link target a model may write: `/docs/<major.minor>/[<path>][/][#anchor]`.
@@ -174,4 +175,122 @@ export function projectTurnMaxTokens(
     (Math.max(0, bounds.max_tool_calls) * Math.max(0, bounds.observation_chars)) / ratio;
   const ceiling = Math.max(0, bounds.turn_token_ceiling);
   return Math.ceil(ceiling > 0 ? Math.min(ceiling, raw) : raw);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Product words for engine values (Round 13, SPEC-chat T14).                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Kinds as the console names them ("Kind ip" read as a raw value): indicator kinds, the
+ * reference kinds and the query languages. Unknown kinds keep their own text.
+ */
+export const KIND_LABEL: Readonly<Record<string, string>> = {
+  ip: 'IP',
+  domain: 'Domain',
+  url: 'URL',
+  hash: 'File hash',
+  host: 'Host',
+  user: 'User',
+  email: 'Email',
+  process: 'Process',
+  file: 'File',
+  case: 'Case',
+  rule: 'Detection rule',
+  source: 'Log source',
+  campaign: 'Campaign',
+  technique: 'ATT&CK technique',
+  kql: 'KQL',
+  lucene: 'Lucene',
+  esql: 'ES|QL',
+  dsl: 'Query DSL',
+  sql: 'SQL',
+  // Metric kinds whose words need more than sentence case.
+  mitre_coverage: 'MITRE ATT&CK coverage',
+  auto_close_health: 'Auto-close health',
+};
+
+/** "ip" → "IP", "domain" → "Domain"; anything else as written. */
+export function kindLabel(value: string): string {
+  const key = value.trim().toLowerCase();
+  return Object.prototype.hasOwnProperty.call(KIND_LABEL, key) ? KIND_LABEL[key] : value;
+}
+
+/** The case lifecycle values the console knows (`models.CaseStatus` plus the legacy ones). */
+const KNOWN_STATUSES: ReadonlySet<string> = new Set([
+  'created',
+  'new',
+  'open',
+  'needs_human',
+  'investigating',
+  'escalated',
+  'on_hold',
+  'resolved',
+  'closed',
+]);
+
+/**
+ * A known case status in the StatusBadge's own words, through the shared label map
+ * (`statusLabel`: "on_hold" → "On hold", "needs_human" → "Open · awaiting analyst"), so a
+ * run-log chip, a status-history line and the badge beside it always agree; `null` for a
+ * value that is not a known case status (never reworded).
+ */
+export function caseStatusWord(value: string): string | null {
+  const key = value.trim().toLowerCase();
+  return KNOWN_STATUSES.has(key) ? statusLabel(key) : null;
+}
+
+/**
+ * An engine status change ("open -> escalated", "created -> new") as words: "Open →
+ * Escalated". `null` unless BOTH sides are known statuses, so log or analyst text is never
+ * reworded.
+ */
+export function statusTransitionLabel(label: string): string | null {
+  const match = /^\s*([a-z_]{2,20})\s*->\s*([a-z_]{2,20})\s*$/i.exec(label);
+  if (!match) return null;
+  const from = caseStatusWord(match[1]);
+  const to = caseStatusWord(match[2]);
+  return from && to ? `${from} → ${to}` : null;
+}
+
+/** The deterministic decision's reason codes as sentences (`engine/case_manager.py`). */
+const REASON_SENTENCES: ReadonlyArray<[RegExp, string]> = [
+  [/^tp auto-close disabled\.?$/i, 'True-positive auto-close is off'],
+  [/^fp auto-close disabled\.?$/i, 'False-positive auto-close is off'],
+  [/^true positive routed to human: tp auto-close disabled\.?$/i, 'True positive sent to a person because true-positive auto-close is off.'],
+  [/^false positive routed to human: fp auto-close disabled\.?$/i, 'False positive sent to a person because false-positive auto-close is off.'],
+  [/^no confident close decision; routing to human \(fail-safe\)\.?$/i, 'No confident decision, so a person decides (fail-safe).'],
+];
+
+const ACTOR_WORDS: Readonly<Record<string, string>> = {
+  system: 'the system',
+  agent: 'the AI agent',
+  analyst_policy: 'an analyst policy',
+};
+
+/**
+ * A known decision reason as a sentence ("tp auto-close disabled" → "True-positive
+ * auto-close is off"), with its "by system: …" prefix as words. `null` for anything else,
+ * which the caller shows exactly as written (an analyst's own reason, log text).
+ */
+export function reasonSentence(text: string): string | null {
+  const trimmed = text.trim();
+  const by = /^by ([a-z_]{2,20}):\s*(.+)$/is.exec(trimmed);
+  const actor = by ? ACTOR_WORDS[by[1].toLowerCase()] ?? null : null;
+  if (by && !actor) return null;
+  const body = by ? by[2].trim() : trimmed;
+  for (const [pattern, sentence] of REASON_SENTENCES) {
+    if (pattern.test(body)) return actor ? `By ${actor}: ${sentence}` : sentence;
+  }
+  return null;
+}
+
+/**
+ * A run-log chip that names several log sources: "3 sources", with every name in its
+ * tooltip; one source reads as its name.
+ */
+export function sourcesChip(names: readonly string[]): { text: string; title: string } {
+  const list = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+  if (list.length <= 1) return { text: list[0] ?? '', title: list[0] ?? '' };
+  return { text: `${list.length.toLocaleString('en-US')} sources`, title: list.join(', ') };
 }

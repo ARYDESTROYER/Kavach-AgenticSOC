@@ -84,7 +84,8 @@ export interface AuthMe {
 // Account / profile self-service (Round-2 Wave 2) — GET/PUT /api/account/me.
 // --------------------------------------------------------------------------- //
 /**
- * GET /api/account/me — the signed-in user's own profile.
+ * GET /api/account/me — the signed-in user's own profile. The route nests it under
+ * `user` (`env_managed` beside it); `api.account.*` return it flat, as typed here.
  *
  * `username` + `role` are read-only identity; the rest are self-editable. Every
  * value is user-entered → render as PLAIN text (#9). Secrets are NEVER present
@@ -2392,6 +2393,8 @@ export interface UserPrefs {
    * Small UI-prefs bag. `misc.chat_stream_mode` is the viewer's chat live mode
    * (`'steps' | 'text'`, chat revamp D2); the backend normalises it and drops an
    * invalid value so the org default (`chat_agent.default_stream_mode`) applies.
+   * Round 13: `misc.chat_suggest_start` and `misc.chat_suggest_follow_ups` are the
+   * personal suggestion switches ({@link ChatSuggestPrefs}; absent means on).
    */
   misc?: Record<string, unknown>;
   /** Saved chat prompts (≤ 50; title ≤ 60, text ≤ 2000). Plain user text (#9). */
@@ -3513,15 +3516,121 @@ export interface ChatContextInfo {
   timezone?: string;
 }
 
-/** One empty-state starter card. Shown only if every tool in `tools` is allowed. */
+// ---- Round 13 chat starters (SPEC-chat §3.2.1; mirrors backend `models.py`). ---- //
+
+/** What a starter card does when clicked (SPEC-chat §3.9). */
+export type StarterAction = 'send' | 'open_conversation' | 'use_prompt';
+/** The kind of a starter's typed reference. */
+export type StarterRefKind = 'case' | 'rule' | 'source' | 'campaign' | 'technique' | 'conversation' | 'prompt';
+/** Drives the decorative urgency dot only; the reason words carry the meaning. */
+export type StarterUrgency = 'none' | 'attention' | 'critical';
+/** Where starters show: a new Workspace chat, an open thread (catch-up line), Case Manager chat. */
+export type StarterSurface = 'home' | 'thread' | 'case';
+
+/**
+ * A typed reference a card names or opens. Display it as text only; it is server-validated
+ * against a strict per-kind grammar and the client never builds a link or a prompt from it.
+ */
+export interface ChatStarterRef {
+  kind: StarterRefKind;
+  /** 1..128 characters. */
+  value: string;
+}
+
+/**
+ * One starter card. Shown only if every tool in `tools` is allowed.
+ *
+ * For action `send`, `prompt` is both the visible question and the exact text the client
+ * sends with `origin: 'starter'` (byte for byte; never edited, never placed in the
+ * composer). `open_conversation` and `use_prompt` cards are display-only: `prompt` is
+ * their card text and `ref` names the conversation or saved prompt. Every Round 13 field
+ * is optional so a pre-Round-13 payload (and `GET /api/chat/context` `starters`) still
+ * parses.
+ */
 export interface ChatStarter {
-  /** investigate | hunt | posture | shift_brief | explain_metric | learn_app */
+  /** The FAMILY id (one card per family). Pre-Round-13 ids stay valid. */
   id: string;
+  /** Short family name for older clients (≤ 40). */
   label: string;
+  /** Equals `reason` for older clients (≤ 120). */
   description: string;
   prompt: string;
   tools: string[];
+  /** Round 13: the server template id the card was worded from. */
+  template?: string | null;
+  /** Round 13: why the card is here (≤ 60 by copy); muted, under the question. */
+  reason?: string;
+  /** Round 13: default `'send'`. */
+  action?: StarterAction;
+  ref?: ChatStarterRef | null;
+  /** Round 13: opaque 16-hex key for `POST /api/chat/starters/events`. */
+  key?: string | null;
+  /** Round 13: default `'none'`. */
+  urgency?: StarterUrgency;
+  /** ISO 8601 UTC. */
+  as_of?: string | null;
+  /** ISO 8601 UTC. */
+  expires_at?: string | null;
 }
+
+/** One clause of the catch-up line ("5 new cases (2 critical)"); clicking sends `starter`. */
+export interface ChatCatchUpClause {
+  /** 1..60 characters, rendered as text. */
+  text: string;
+  /** Always action `send`. */
+  starter: ChatStarter;
+}
+
+/**
+ * "Since {since_label}: clause, clause and clause." The server keeps the whole line at
+ * most 160 characters (it drops clauses from the end); render it in exactly that shape.
+ */
+export interface ChatCatchUp {
+  /** ISO 8601 UTC. */
+  since: string;
+  /** "09:12", "yesterday 18:40", "Mon 18:40" or "12 Oct" (operator time zone). */
+  since_label: string;
+  /** At most 4. */
+  clauses: ChatCatchUpClause[];
+}
+
+/** `GET /api/chat/starters?surface=&conversation_id=&case_id=` (SPEC-chat §3.2.2). */
+export interface ChatStartersInfo {
+  surface: StarterSurface;
+  /** `chat_agent.dynamic_starters`; false: the evergreen set only and no catch-up line. */
+  enabled: boolean;
+  /** ISO 8601 UTC. */
+  as_of: string;
+  /** ISO 8601 UTC (`as_of` + 120 s): refetch on focus after it. */
+  expires_at: string;
+  /** IANA time zone the labels were built in (`SlaPolicy.timezone`). */
+  timezone: string;
+  /** At most 6, server order. The client shows the first 4 (lane ≥ 560 px) or 3. */
+  starters: ChatStarter[];
+  catch_up?: ChatCatchUp | null;
+}
+
+/** `POST /api/chat/starters/events` body (204; 422 on unknown fields or bad keys; 429 past 30/min). */
+export interface ChatStarterEvent {
+  type: 'viewed' | 'used' | 'dismissed';
+  /** Default `'home'`. */
+  surface?: StarterSurface;
+  /** At most 6 keys, each 16 lowercase hex characters. A `thread` `viewed` event carries none. */
+  keys?: string[];
+}
+
+/**
+ * Round 13 personal suggestion switches in `UserPrefs.misc` (SPEC-chat §3.2.1). Absent
+ * means on; the backend removes a value that is not a boolean.
+ */
+export interface ChatSuggestPrefs {
+  /** "Suggestions when a chat starts": the start cards and the thread catch-up line. */
+  chat_suggest_start?: boolean;
+  /** "Suggested follow-ups": the follow-up chips after an answer. */
+  chat_suggest_follow_ups?: boolean;
+}
+
+// ---- end of Round 13 chat starters ------------------------------------------- //
 
 /** `GET /api/chat/topics/{topic_id}`: the templated "Ask about this" question. */
 export interface ChatTopicQuestion {
@@ -3567,6 +3676,11 @@ export interface ChatAgentConfig {
   chat_daily_cap_usd?: number | null;
   /** Round 12: internal marker of the chat limits migration the block adopted (pass through). */
   chat_limits_version?: number;
+  /**
+   * Round 13 (SPEC-chat D9): new chats open with questions computed from live data each
+   * viewer can read (no AI cost). Default on; off serves the evergreen set and no catch-up line.
+   */
+  dynamic_starters?: boolean;
 }
 
 /** `ChatAgentConfig.limits_mode` (Round 12 SPEC D1). */

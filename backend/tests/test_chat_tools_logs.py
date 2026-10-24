@@ -4,9 +4,10 @@ the observation whitelist and fencing (chat revamp SPEC §5.2, §5.3, §4.8.4)."
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
-from app.agents.chat_tools.logs import SearchLogsTool
+from app.agents.chat_tools.logs import LogStatsTool, SearchLogsTool
 from app.agents.prompts import fence_block
 from app.config import ChatAgentConfig, Preferences
 from app.connectors.base import QueryRendering, SearchResult, StructuredQuery
@@ -193,6 +194,25 @@ async def test_no_source_and_unknown_source() -> None:
     ctx = make_ctx(log_source=RecordingConnector(), source_resolver=lambda sid: None)
     out = await SearchLogsTool().run(ctx, source_id="nope")
     assert out.error == "Unknown or unavailable log source"
+
+
+async def test_a_source_display_name_selects_that_source() -> None:
+    """A starter fences a source by its display name (SPEC-chat §3.8.1); a follow-up
+    log lookup with that value reads that source alone, an id still wins, and a name
+    two sources share is not guessed."""
+    targets = [_target("a", rows=2, total=2), _target("b", rows=5, total=5)]
+    ctx = make_ctx(browse_sources=lambda: targets, source_resolver=lambda sid: None)
+    out = await SearchLogsTool().run(ctx, source_id="Source b")
+    assert out.ok and out.rows == 5
+    assert (await SearchLogsTool().run(ctx, source_id="b")).rows == 5
+    shared = [BrowseTarget("x", "Twin", "search", targets[0].read), BrowseTarget("y", "Twin", "search", targets[1].read)]
+    ctx = make_ctx(browse_sources=lambda: shared, source_resolver=lambda sid: None)
+    assert (await SearchLogsTool().run(ctx, source_id="Twin")).error == "Unknown or unavailable log source"
+    single = RecordingConnector("Named")
+    ctx = make_ctx(browse_sources=lambda: [_target("c", rows=1, total=1)],
+                   source_resolver=lambda sid: (single, "Source c") if sid == "c" else None)
+    out = await SearchLogsTool().run(ctx, source_id="Source c")
+    assert out.ok and single.queries, "the name resolved to the id and its connector was searched"
 
 
 async def test_invalid_inputs_are_engine_templates() -> None:
@@ -417,3 +437,39 @@ async def test_toolbox_never_opens_logs_for_a_live_tail_source() -> None:
     # The search source alone still gets its exact view.
     out = await named.execute("search_logs", {"source_id": "a", "contains": "zzz-no-match"})
     assert out.ok and all(a.data["open_in"]["opts"]["sourceId"] == "a" for a in out.artifacts)
+
+
+async def test_an_empty_log_value_is_a_worded_row_never_an_em_dash() -> None:
+    """Round 13 T36: a counted value that is empty ("" or only whitespace) reads
+    "(empty)" in the top-values chart and the period comparison; the em dash means
+    "not measured" (BLOCKS G3) and never labels a counted row."""
+    from app.agents.chat_followups import PLACEHOLDER_LABELS
+    from app.agents.chat_tools.common import EMPTY_VALUE_LABEL
+    from tests.test_chat_tools_support import artifact_block
+
+    es = InMemoryESClient()
+    now = to_millis(now_utc())
+    for i in range(9):
+        es.add_log("all-logs-x", make_log_event(ip=f"203.0.113.{i % 2}", user=["alice", "", "  "][i % 3],
+                                                ts_millis=now - i * 60_000))
+    ctx = make_ctx(log_source=ElasticConnector(es))
+    out = await LogStatsTool().run(ctx, group_by=["user"], time_from="now-1h")
+    assert out.ok, out.error
+    top = next(a for a in out.artifacts if a.kind == "categories")
+    assert EMPTY_VALUE_LABEL in top.data["labels"] and "alice" in top.data["labels"]
+    assert "\u2014" not in top.data["labels"]
+    block = artifact_block(top)
+    assert "\u2014" not in json.dumps(block, ensure_ascii=False)
+    compared = await LogStatsTool().run(ctx, group_by=["user"], window="now-1h", compare="previous_period")
+    rows = next(a for a in compared.artifacts if a.kind == "comparison" and a.title == "Top values compared")
+    labels = [r.get("label") for r in rows.data.get("rows", [])]
+    assert EMPTY_VALUE_LABEL in labels and "\u2014" not in labels, labels
+    assert EMPTY_VALUE_LABEL in PLACEHOLDER_LABELS  # never anchors a follow-up chip
+
+
+def test_a_category_without_a_label_is_worded() -> None:
+    from app.agents.chat_tools.common import MISSING_LABEL, categories
+
+    data = categories([("", 3), (None, 2), ("high", 1)], dimension="severity")
+    assert data["labels"] == [MISSING_LABEL, MISSING_LABEL, "high"]
+    assert "\u2014" not in data["labels"]

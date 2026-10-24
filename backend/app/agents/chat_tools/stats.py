@@ -42,7 +42,15 @@ from typing import Any, Awaitable, Callable, ClassVar, Literal
 from pydantic import Field, field_validator
 
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
-from .cases import _DECIDED_BY_LABELS, _STATUS_LABELS, _VERDICT_LABELS, CaseFilters
+from .cases import (
+    _DECIDED_BY_LABELS,
+    _STATUS_LABELS,
+    _VERDICT_LABELS,
+    ASSIGNEE_ME_NOBODY,
+    ASSIGNEE_ME_OWN,
+    CaseFilters,
+    resolve_assignee_me,
+)
 from .common import (
     Window,
     align_to_bucket,
@@ -465,6 +473,10 @@ def zero_case_suggestions(args: CaseFilters, window: Window, tool: str) -> list[
     """Engine-built next lookups for a zero-match case question (SPEC D10): each is a
     VALID call of ``tool`` — widen to all time, then drop one filter at a time."""
     base = {k: v for k, v in args.filters().items()}
+    if getattr(args, "_assignee_exact", False) and "assignee" in base:
+        # The signed-in analyst stays "me", so the next lookup resolves it the same way
+        # (an exact username, never an unassigned keyword).
+        base["assignee"] = "me"
     out: list[dict[str, Any]] = []
     if not window.all_time and window.source == "tool":
         out.append({"label": "All time", "tool": tool, "input": {**base, "window": "all"}})
@@ -475,8 +487,21 @@ def zero_case_suggestions(args: CaseFilters, window: Window, tool: str) -> list[
                 reduced["window"] = args.window
             elif args.window_hours is not None:
                 reduced["window_hours"] = args.window_hours
-            out.append({"label": f"Without the {key.replace('_', ' ')} filter", "tool": tool, "input": reduced})
+            out.append({"label": ZERO_CASE_FILTER_LABELS[key], "tool": tool, "input": reduced})
     return out[:4]
+
+
+#: The chip label that drops one case filter, in the field's display words (Round 13
+#: T11), never a raw key.
+ZERO_CASE_FILTER_LABELS: dict[str, str] = {
+    "text": "Without the text filter", "rule": "Without the rule filter",
+    "assignee": "Without the assignee filter", "entity": "Without the entity filter",
+    "verdict": "Without the verdict filter", "severity": "Without the severity filter",
+    "priority": "Without the priority filter", "status": "Without the status filter",
+    # The open-or-closed filter, in the words its breakdown uses ("Open or closed"),
+    # never the key "status group".
+    "status_group": "Open and closed cases",
+}
 
 
 def invalid_aggregate_input(exc: Exception) -> ToolOutcome:
@@ -714,6 +739,7 @@ def comparison_basis(compared: list[Any]) -> tuple[str, str | None]:
 class CaseStatsTool(ChatTool):
     name: ClassVar[str] = "case_stats"
     label: ClassVar[str] = "Counted cases"
+    running_label: ClassVar[str] = "Counting cases"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Case store (exact counts over every case)"
@@ -723,9 +749,8 @@ class CaseStatsTool(ChatTool):
         "case_stats(group_by?=[<=2 of verdict|status|status_group|severity|priority|rule|assignee|source|"
         "surface|disposition|mitre_tactic|mitre_technique|decided_by|closed_by], bucket?=hour|day|week|month|"
         "quarter|year|auto (creation time), metrics?=[count] (<=6 of count,fp_rate,tp_rate,auto_closed,"
-        "human_closed,analyst_fp,mtta_p50,mttr_p50,mttd_p50,..._p90,mean_risk,open_now), top_n?<=50, window? "
-        "(default all time), compare?, and the search_cases filters) -- EXACT counts, breakdowns, trends and "
-        "rates over every case"
+        "human_closed,analyst_fp,mtta_p50,mttr_p50,mttd_p50,..._p90,mean_risk,open_now), top_n?<=50, window?, "
+        "compare?, and the search_cases filters) -- EXACT counts, breakdowns, trends and rates over every case"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
         "group_by", "bucket", "metrics", "top_n", "window", "window_hours", "compare", "text", "status",
@@ -758,6 +783,10 @@ class CaseStatsTool(ChatTool):
             return ToolOutcome.failure("Invalid input: group_by takes at most two fields")
         if ctx.cases is None:
             return ToolOutcome.failure("The case store is not available")
+        # Assignee "me" is the signed-in analyst (search_cases resolves it the same way).
+        args, me = resolve_assignee_me(ctx, args)
+        if me is False:
+            return ToolOutcome.failure(ASSIGNEE_ME_NOBODY)
         ref = datetime.now(timezone.utc)
         window = resolve_window(ctx, window=args.window, window_hours=args.window_hours, default="all", now=ref,
                                 minutes_ok=False)
@@ -777,7 +806,7 @@ class CaseStatsTool(ChatTool):
         periods = resolve_periods(ctx, window, args.compare, now=ref, minutes_ok=False)
         if isinstance(periods, str):
             return ToolOutcome.failure(periods)
-        filters = args.filters()
+        filters = args.aggregate_filters()
         coarsened: dict[str, Any] | None = None
         series_result: Any = None
         try:
@@ -815,7 +844,7 @@ class CaseStatsTool(ChatTool):
                         compared.append(result)
                         continue
                     compared.append(await run_case_aggregate(
-                        ctx, period.window, filters=args.filters(), group_by=tuple(fields[:1]),
+                        ctx, period.window, filters=filters, group_by=tuple(fields[:1]),
                         metrics=metrics, top_n=None,
                     ))
         except NotImplementedError:
@@ -827,8 +856,11 @@ class CaseStatsTool(ChatTool):
         except Exception as exc:  # noqa: BLE001 — engine template only
             logger.warning("case_stats aggregate failed: %s", exc)
             return ToolOutcome.failure("The case store did not answer")
-        return _outcome(args, window, fields, bucket, metrics, result, periods, compared,
-                        series_result=series_result, coarsened=coarsened)
+        outcome = _outcome(args, window, fields, bucket, metrics, result, periods, compared,
+                           series_result=series_result, coarsened=coarsened)
+        if me and outcome.ok:
+            outcome.observation["assignee_me"] = ASSIGNEE_ME_OWN
+        return outcome
 
 
 def _auto_bucket(window: Window) -> str:

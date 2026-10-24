@@ -18,7 +18,7 @@ import { maybeDefang } from '@/lib/defang';
 import type { MdBlock, MdInline } from '../../ChatMarkdown';
 import type { ReportDoc } from '../model';
 import { tokenDeclarations } from './report-tokens';
-import { documentNodes, type DocNode, type Line, type WalkOptions } from './walker';
+import { codeCellText, documentNodes, type DocNode, type Line, type WalkOptions } from './walker';
 
 /** The exact CSP of BLOCKS.md amendment 8. */
 export const REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'";
@@ -193,7 +193,7 @@ function node(n: DocNode): string {
             `<tr>${r
               .map((c, i) => {
                 const code = n.cellCode?.[ri]?.[i] ?? n.code[i] ?? false;
-                return `<td${cls(i)}>${code && c !== '—' ? `<code>${esc(c)}</code>` : esc(c)}</td>`;
+                return `<td${cls(i)}>${code && codeCellText(c) ? `<code>${esc(c)}</code>` : esc(c)}</td>`;
               })
               .join('')}</tr>`,
         )

@@ -28,6 +28,7 @@ import { focusRing } from '@/lib/ui-recipes';
 import type { ChatFeedbackReason } from '@/lib/types';
 import { IconButton } from '@/soc/components/IconButton';
 import { useAnnouncer } from '@/soc/components/announcer';
+import { focusQuietly, quietFocusGuard } from '../quiet-focus';
 import { Button } from '@/ui/button';
 import { CHAT_FEEDBACK_COMMENT_CHARS } from '../chat-api';
 import { saveAnswerFeedback, type AnswerFeedback } from './feedback';
@@ -125,8 +126,8 @@ export function useAnswerFeedbackControls(
   /** Focus after the panel closes: its disclosure, else the thumbs-down radio. */
   const focusAfterPanel = React.useCallback(() => {
     // The disclosure renders with the down rating; on the frame the panel closes it is
-    // already there, so no timer is needed.
-    (detailsRef.current ?? downRef.current)?.focus();
+    // already there, so no timer is needed. Quietly: the button's tooltip stays shut.
+    focusQuietly(detailsRef.current ?? downRef.current);
   }, []);
 
   const closePanel = React.useCallback(() => {
@@ -202,6 +203,7 @@ export function FeedbackButtons({ state, panelId }: { state: AnswerFeedbackState
           size="sm"
           aria-busy={state.saving || undefined}
           onClick={state.rateDown}
+          onFocus={quietFocusGuard}
           className={cn(rating === 'down' && 'text-primary')}
           data-testid="feedback-down"
         >
@@ -216,6 +218,7 @@ export function FeedbackButtons({ state, panelId }: { state: AnswerFeedbackState
           aria-expanded={state.panelOpen}
           aria-controls={state.panelOpen ? panelId : undefined}
           onClick={state.toggleDetails}
+          onFocus={quietFocusGuard}
           className={cn(state.panelOpen && 'text-primary')}
           data-testid="feedback-details"
         >

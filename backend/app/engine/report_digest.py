@@ -5,7 +5,8 @@ blocks themselves: per item its kind, title, provenance, basis, total and trunca
 KPI values; the top categories; per series min / max / last / trend; for tables the
 column names, the row count and at most five sample rows restricted to IDENTITY keys
 (never free-text columns such as a raw message); for case lists at most ten case ids
-plus verdict and severity counts; Markdown clipped to 1 000 characters; query blocks
+(with their display numbers beside them, where the cases have one) plus verdict and
+severity counts; Markdown clipped to 1 000 characters; query blocks
 omitted; the analyst's notes labelled as untrusted.
 
 Why a digest: a report can hold 40 items of up to 200 table rows each. Sending that to
@@ -331,11 +332,21 @@ def _table(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     return out
 
 
+def _case_numbers(rows: list[dict[str, Any]]) -> list[str | None]:
+    """The display number of each case row, aligned with its id (``None`` where a case
+    has none), or ``[]`` when no row has one: a summary can then name a case as the
+    analyst knows it (Round 13 A8), the internal id beside it for an exact reference."""
+    numbers = [_clip(r.get("case_number"), 64) if isinstance(r.get("case_number"), str)
+               and r.get("case_number").strip() else None for r in rows]
+    return numbers if any(numbers) else []
+
+
 def _case_list(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     items = [i for i in (block.get("items") or []) if isinstance(i, dict)]
     return _drop_empty({
         "cases": len(items),
         "case_ids": [_clip(i.get("case_id"), 64) for i in items[: lv.case_ids]],
+        "case_numbers": _case_numbers(items[: lv.case_ids]),
         "verdicts": _tally((i.get("verdict") for i in items), lv.tally),
         "severities": _tally((i.get("severity") for i in items), lv.tally),
         "statuses": _tally((i.get("status") for i in items), lv.tally),
@@ -357,6 +368,7 @@ def _entity(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
     entity = block.get("entity") if isinstance(block.get("entity"), dict) else {}
     facts = [f for f in (block.get("facts") or []) if isinstance(f, dict)]
     counts = [c for c in (block.get("counts") or []) if isinstance(c, dict)]
+    related = [r for r in (block.get("related_cases") or []) if isinstance(r, dict)]
     return _drop_empty({
         "entity": _drop_empty({"kind": entity.get("kind"), "value": _clip(entity.get("value"), 160)}),
         "risk": _num(block.get("risk")),
@@ -367,8 +379,8 @@ def _entity(block: dict[str, Any], lv: _Level) -> dict[str, Any]:
                    for c in counts[: lv.counts]],
         "reputation": _tally((r.get("verdict") for r in (block.get("reputation") or []) if isinstance(r, dict)),
                              lv.tally),
-        "related_cases": [_clip(r.get("case_id"), 64) for r in (block.get("related_cases") or [])
-                          if isinstance(r, dict)][: lv.case_ids],
+        "related_cases": [_clip(r.get("case_id"), 64) for r in related[: lv.case_ids]],
+        "related_case_numbers": _case_numbers(related[: lv.case_ids]),
     })
 
 

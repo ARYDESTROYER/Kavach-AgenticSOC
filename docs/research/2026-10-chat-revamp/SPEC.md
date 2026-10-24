@@ -912,13 +912,17 @@ first if that achieves it — otherwise as an overlay Sheet. Blocks widen to min
 conversation width); prose stays ≤ 48rem.
 
 **Superseded in Round 12 by A52** (one lane, two edges; the width preference; new
-reference widths). The text below is the revamp's original geometry.
+reference widths), **refined in Round 13 by A66** (the reading column and compact blocks).
+The text below is the revamp's original geometry.
 
 Reference widths (nav 240 / 64; the split counts its 9 px separator handle, A24): 1280 →
 conversation 727 (panel overlay) / 903 (split with rail strip 750); 1440 → split with rail strip
 734 / split with docked rail 694; 1920 → 998 / 1174; 390 → rail and panel are Sheets.
 
 ### 10.1a Chrome contract
+
+**Amended in Round 13 by A68** (no inline conversation total; the thread menu's usage line)
+and A66 (the View group).
 
 The Chat route bleeds the shell's vertical inset (a `-my-6` matched pair with `CONTENT_INSET`, as
 Case Manager bleeds horizontally) and sets the frame to `h-[calc(100dvh-3.5rem)]`; no document
@@ -935,12 +939,16 @@ at every width.
 Header: New chat button and search (searches content server-side via `?q=`, shows a snippet under
 matching titles; opening a hit scrolls to and highlights the message). Groups: Pinned, Today,
 Yesterday, Previous 7 days, Previous 30 days, then month (group labels, not headings; A25). One-line rows (title + relative time;
-accessible name "<title> — <exact date> · N messages"; exact date in a tooltip), active row
+accessible name "<title>, <state>, <exact date> · N messages", the state only when the row has
+one and no count on the temporary first-turn row; exact date in a tooltip), active row
 `aria-current`, arrow-key navigation. Row menu: Rename (inline), Pin/Unpin, Open report (when
 `report_id`), Export, Delete (confirm: "Its report stays in Reports"). Footer: retention note when
 `history_truncated` or ≥ 45 conversations.
 
 ### 10.3 Message anatomy
+
+**Amended in Round 13 by A65** (follow-up selection and the ghost row), **A66** (the reading
+column) and **A68** (the meta row and the usage card).
 
 User turn: compact bubble, muted background, right-aligned, max 36rem.
 Assistant turn: unboxed, full column width, no avatar, hidden `<h3>` "Assistant".
@@ -1023,6 +1031,9 @@ combination. The command palette gains "New chat" (`navigate('chat', {newChat: t
 chats", "Ask AI: <text>" (prefills, never sends; A26) and "Open Reports".
 
 ### 10.5 Empty state
+
+**Replaced in Round 13 by A64** (dynamic starters, the bottom-anchored start stack, the
+catch-up line and Case Manager chips). The text below is the revamp's original empty state.
 
 Top-aligned in the 48rem lane: one capability line ("Ask about your data, build a quick report, or
 learn how this console works. Read-only."), then a 2×3 grid of starters (2 columns × 3 rows; 1
@@ -1292,7 +1303,7 @@ value keeps its unit spelled out in `sr-only` text.
 `origin: "starter"` in a new chat. The page never sends free text for a topic. The topic id
 grammars and the entry points that ship are in A28 and A33.
 
-**A8 — Starters (§8, §10.5).** `GET /api/chat/context` returns `starters: ChatStarter[]`
+**A8 — Starters (§8, §10.5; replaced in Round 13 by A64).** `GET /api/chat/context` returns `starters: ChatStarter[]`
 (`{id, label, description, prompt, tools[]}`; ids `investigate`, `hunt`, `posture`,
 `shift_brief`, `explain_metric`, `learn_app`). Demo Mode uses `engine.demo_chat.DEMO_STARTERS`;
 production prompts are built server-side from live context (newest open case id, primary source
@@ -1807,7 +1818,12 @@ fields, apart from the top `notice`.
   lookups; indicator lookups and model steps are kept longest, so the run log and the stored
   egress count never lose a lookup that left the deployment (`models._bounded_steps`).
 - **Copy.** The shift brief headline labels the status KPI "Status: Needs human", which counts
-  cases in that status, not cases with a needs-human verdict; the posture trend says "in hourly
+  cases in that status, not cases with a needs-human verdict (**superseded in the Round 13
+  close round**, SPEC-chat §10.6 "Close round (CB)" and "Close round (BF)": the shift
+  headline's "Needs human" counts the open cases whose verdict is Needs human, the badge its
+  Needs attention list shows, and the Standup page shows that same figure under the same
+  label; the legacy `needs_human` status count is the Standup page's "Awaiting analyst");
+  the posture trend says "in hourly
   buckets" (a 24-hour window spans 25 hourly buckets) instead of "24h (25 hours)"; case facts show friendly labels next to badges, not raw enum values; Help Center
   citation snippets are plain text and a section is cited once.
 - **History rail.** The rail requests 60 rows so up to ten pinned conversations never fall off
@@ -2227,3 +2243,102 @@ without rewriting them (Round 12 SPEC §7.2 decisions 18 to 20).
   session, token, account generation and grants it was admitted with last; the stop ends
   the stream with a non-retryable `turn.error` (`internal`), and `POST /api/chat` answers
   `401 session_invalid` (reason `session_ended`) or `403 chat_access_changed`.
+
+### Round 13 amendments (A64+)
+
+Recorded by WP-DOC13 from `docs/research/2026-10-round13/SPEC-chat.md` (binding for Round 13
+chat) and its §10 "As built". They override the sections they name.
+
+**A64 — Starters v2: dynamic, deterministic, $0 (replaces §10.5 and A8; Round 13 SPEC-chat
+Part A, D1 to D10).** Starters are computed by code (`engine/chat_starters.py`) from the suite's
+own state under the viewer's grants, through the same `ChatToolContext` the chat turn builds: no
+model call builds, ranks or words them (#6), no log is read (#1, #7), every count is exact or the
+card is not shown, and a family runs only when every tool and permission its answer needs is
+allowed. Served by `GET /api/chat/starters?surface=home|thread|case` (`ChatStartersInfo`: up to 6
+starters and an optional `catch_up`), with events at `POST /api/chat/starters/events`
+(`viewed`, `used`, `dismissed`; keys only, at most 30 a minute). `GET /api/chat/context` keeps
+its `starters` field but returns only the static evergreen set (`evergreen_starters(demo=)`,
+the `demo` card first in Demo) and reads no case store; `production_starters` is deleted.
+`ChatStarter` keeps its old fields (`id` is now the family) and gains `template`, `reason`,
+`action` (`send`, `open_conversation`, `use_prompt`), `ref` (typed, validated per kind),
+`key` (16 hex, opaque), `urgency`, `as_of` and `expires_at`. A starter that names a case, rule,
+source, campaign or technique carries a server-worded question that the client sends byte for
+byte with `origin: "starter"` and never places in the composer; the engine recognises the
+template exactly (`chat_starter_text.parse_starter_question`) and sends the value to the model
+in its own `entity_ref` fence with a fixed note, live and on replay (`chat_entity.prompt_question`
+dispatches `render_entity_turn(text) or render_starter_turn(text)`); a value that starts like a
+role marker is refused for every kind. The empty state is a bottom-anchored stack above the
+docked composer (greeting, the "Since …" catch-up line or the capability line, 3 or 4 cards by
+the measured lane width, category pills); an open conversation can show one catch-up line
+above the composer; Case Manager chat shows up to three value-free case chips, the ones that
+apply to the case. Per-user state lives in the `chat_starters` KV namespace (one strict-CAS
+document per user, at most 8 KB and 64 keys, family ids, opaque keys, counters and
+timestamps only, cleared with the user and by a factory reset). Defaults on:
+`chat_agent.dynamic_starters` for the organisation and `UserPrefs.misc.chat_suggest_start`
+per viewer. The Wave 0 library event is `pickPromptFromLibrary`, not `usePromptFromLibrary`
+(rules-of-hooks). The deviations (hunt
+window wording, reason fallbacks, case chips, slow-signal refresher, dismissal on toast
+close, slot identity) are in Round 13 SPEC-chat §10.2.
+
+**A65 — Follow-up selection (amends §10.3; Round 13 SPEC-chat §4, D8).** Every answer, live
+and in Demo, ends with at most 3 follow-ups chosen by the pure `agents/chat_followups.py`
+`select_follow_ups` (no extra model call). A model chip is kept only when it names an anchor
+this answer shows (entity values, case numbers and their internal ids, rule ids, technique
+ids in the bundled corpus, source names, dimension labels, metric names, relative and calendar
+window labels; placeholders such as "Other" never anchor); an answer with no data artifacts,
+or only knowledge or runbooks, keeps up to 2 model chips unchecked. Deterministic value-free
+chips come from the artifacts ("Investigate the top {field} in this answer", "Break this down
+by {dimension} instead", "Which of these cases are still open, and who has them?", "Explain
+{technique} and whether other cases show it", "What else did this {kind} do in the last 7
+days?", "Compare this with the previous {period}", "Show the same for the {next window}");
+slots fill in, in, out; repeats of any earlier question and chips needing a tool the caller
+cannot run are dropped; `widening=` counts this answer's own zero-result suggestions as
+anchored. Bounds: 6 model chips checked of 24 read, 200 anchors, one compiled pattern. The
+prompt asks for "up to 3 short next questions about something this answer shows … one or two
+that go deeper and one that widens" and says "Never end the answer with a question or an
+offer; suggestions go in follow_ups. A clarify answer is the one exception." On screen the
+chips are one ghost row in the reading column with the zero-result chips after them behind
+"Widen the search:"; after five answers in a row with chips shown and none used, only the
+first shows (client, per browser); `UserPrefs.misc.chat_suggest_follow_ups === false` hides
+follow-ups but not zero-result chips.
+
+**A66 — The reading column and compact blocks (amends §10.1, A52, A62 and Round 12 D12;
+Round 13 SPEC-chat §5.1, D7).** One lane, two edges is refined by one reading column of 42rem
+on the lane's left edge for notices, the run log, the clarify card, follow-ups, the shared
+scope line, the meta row of an answer without a wide block, and compact blocks; answer prose
+and model-written `markdown` blocks keep a 38rem prose measure inside it (replacing the 48rem
+`CONTENT_COL` measure of A52 and A62; 42rem measured 99 characters a line at 15/24, 38rem at
+most 85). Compact blocks (`data-block-width`, `blocks/layout.ts`; BLOCKS amendment 32) stay in
+the column; wide blocks, the meta row under a wide block, the start stack, the composer and
+the user bubble's right edge span the lane. The framed-card hang into the gutter applies only
+from a 40rem conversation, so a phone never clips a card's border. Answer prose is 15/24
+(`text-md leading-6`). Full width stays the default width (A62); the width choice moved to the
+thread ⋯ menu's **View** group with word hints ("Narrower, easier to read", "Wider, centred",
+"Fills the space (default)").
+
+**A67 — Conversation titles from the answer header (amends §4.1, §7.5 and §10.2; Round 13
+SPEC-chat T6, T21).** The final header gains `title`, asked for only when the conversation has no
+earlier messages ("2 to 6 words naming what this conversation is about, in sentence case"),
+in the same model call. `chat_protocol.parse_title` accepts it only as written: one line, at
+most 48 characters, no marker token, quote, bracket, invisible character or trailing period,
+in sentence case (Title Case and shouted titles are refused; acronyms in a sentence-case
+title and a short list of console and product names keep their capitals); anything else is
+dropped and `derive_title` stays. The store applies it only when the exchange creates the
+conversation, so a later answer or a rename always wins; it reaches the client as the
+response's `conversation_title`, never as an answer field, and is rendered as text
+everywhere. While the first answer is written, the toolbar and a temporary rail row show the
+question's first 48 characters cut at a word boundary. Compatibility mode and case chat get
+no title. Demo writes a title for every intent a first question can reach.
+
+**A68 — Usage placement (amends the §10.1a toolbar, the §10.3 meta row and §8 item 3;
+Round 13 SPEC-chat D5, T10).** Cost stays on the meta row ("4 lookups · 6.2 s · $0.004 ·
+Sources 3"); the cost opens the usage card, which holds the tokens (a turn without a cost
+keeps the token figure as the trigger), and the button's accessible name starts with the
+visible figure. The toolbar carries no inline conversation total: the thread ⋯ menu's first,
+non-interactive line reads "This chat: 12.4k tokens · $0.03", or "Usage not recorded" for an
+older thread, and no dash placeholder appears anywhere. The meta row's right side is an "In
+report" chip while the answer is in the report, Copy, the rating pair and ⋯ (Add answer to
+report, Add to case…, Ask again); below 30rem the row keeps "4 lookups · 6.2 s", the rating
+pair and ⋯, which then also holds Copy answer, Usage details and Sources, so no figure is
+ever cut. The live run-log header puts "Working · 3 lookups" on the left and "1.2k tokens ·
+$0.002" on the right (the live cost is kept, Round 12 D5).

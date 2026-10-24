@@ -53,6 +53,9 @@ import {
   preferredThread,
   threadRetentionInfo,
   useChatConversations,
+  CLIENT_TITLE_MAX,
+  clientThreadTitle,
+  isPendingThreadRow,
   type UseChatConversationsOptions,
 } from '../useChatConversations';
 
@@ -974,28 +977,79 @@ describe('useChatConversations — live statuses (Round 12, SPEC D13)', () => {
     await settle();
   });
 
-  it('leaves out the new thread whose first answer is on screen as New chat, and shows it once opened', async () => {
+  it('lists a New chat\'s first turn as the current temporary row with a client title, then the server title (T21)', async () => {
     const { result } = await mount();
     act(() => result.current.startNew());
     await settle();
-    act(() => putChatActivity(activity({ scope: 'conv:conv-new', conversationId: 'conv-new', title: 'First question' })));
+    const question = 'Investigate the newest escalated case and tell me who owns the host';
+    act(() => putChatActivity(activity({ scope: 'conv:conv-new', conversationId: 'conv-new', title: question })));
     // The engine on screen views the run (its scope became `conv:<id>` at turn.start).
     let release: () => void = () => undefined;
     act(() => {
       release = viewChatActivity('conv:conv-new');
     });
     expect(result.current.activeId).toBeNull();
-    expect(result.current.conversations.some((row) => row.id === 'conv-new')).toBe(false);
+    const top = result.current.conversations[0];
+    expect(top.id).toBe('conv-new');
+    expect(isPendingThreadRow(top)).toBe(true);
+    expect(top.status).toBe('running');
+    expect(top.title).toBe('Investigate the newest escalated case and tell\u2026');
+    // The toolbar's subject: the temporary row, not "New chat".
+    expect(result.current.activeSummary).toBe(top);
+    // Selecting the temporary row (the phone's history sheet) changes nothing.
+    act(() => result.current.select(top));
+    expect(result.current.activeId).toBeNull();
+    expect(result.current.activeSummary).toBe(top);
+    expect(result.current.conversations.filter((row) => row.id === 'conv-new')).toHaveLength(1);
+    // Left on screen elsewhere (New chat again): an ordinary running row, not current.
     act(() => release());
-    expect(result.current.conversations.find((row) => row.id === 'conv-new')?.status).toBe('running');
+    const row = result.current.conversations.find((r) => r.id === 'conv-new');
+    expect(row?.status).toBe('running');
+    expect(isPendingThreadRow(row)).toBe(false);
+    expect(result.current.activeSummary).toBeNull();
     // Opened from the rail it is the selected thread (and its row stays).
     act(() => result.current.select('conv-new'));
     act(() => {
       release = viewChatActivity('conv:conv-new');
     });
-    expect(result.current.conversations.some((row) => row.id === 'conv-new')).toBe(true);
+    expect(result.current.conversations.some((r) => r.id === 'conv-new')).toBe(true);
     act(() => release());
     await settle();
+  });
+
+  it('replaces the temporary row and its title with the server\'s when the first answer lands (T21)', async () => {
+    const { result } = await mount();
+    act(() => result.current.startNew());
+    await settle();
+    act(() => putChatActivity(activity({ scope: 'conv:conv-new', conversationId: 'conv-new', title: 'Which hosts talked to 10.0.0.5 yesterday afternoon?' })));
+    let release: () => void = () => undefined;
+    act(() => {
+      release = viewChatActivity('conv:conv-new');
+    });
+    expect(result.current.activeSummary?.title).toBe('Which hosts talked to 10.0.0.5 yesterday\u2026');
+    act(() => result.current.conversationPersisted('conv-new', 'Hosts talking to 10.0.0.5'));
+    expect(result.current.activeId).toBe('conv-new');
+    expect(result.current.activeSummary?.title).toBe('Hosts talking to 10.0.0.5');
+    expect(isPendingThreadRow(result.current.activeSummary)).toBe(false);
+    expect(result.current.conversations.filter((row) => row.id === 'conv-new')).toHaveLength(1);
+    act(() => release());
+    await settle();
+  });
+
+  it('cuts a client title at a word boundary, never inside a word (T21)', () => {
+    expect(CLIENT_TITLE_MAX).toBe(48);
+    expect(clientThreadTitle('Top hosts today?')).toBe('Top hosts today?');
+    expect(clientThreadTitle('  Top   hosts\n today?  ')).toBe('Top hosts today?');
+    const cut = clientThreadTitle('How is our security posture right now, and how did it change in the last 24 hours?');
+    expect(cut).toBe('How is our security posture right now, and how\u2026');
+    expect(cut.length).toBeLessThanOrEqual(48);
+    // Trailing punctuation before the cut goes; one word longer than the limit is cut there, no ellipsis.
+    expect(clientThreadTitle('Investigate case-0042: what happened, the evidence and the decision')).toBe(
+      'Investigate case-0042: what happened, the\u2026',
+    );
+    const long = `${'a'.repeat(60)} tail`;
+    expect(clientThreadTitle(long)).toBe('a'.repeat(48));
+    expect(clientThreadTitle('x'.repeat(48))).toBe('x'.repeat(48));
   });
 
   it('opens the server’s temporary running row of a new thread (its detail is 404 until the answer saves)', async () => {

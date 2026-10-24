@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import math
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -41,6 +42,7 @@ from ...engine.log_rows import BrowseTarget, clamp_per_source_timeout, fan_out
 from ...utils import dotted_get
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
+    EMPTY_VALUE_LABEL,
     ToolInput,
     Window,
     align_to_bucket,
@@ -320,6 +322,18 @@ async def plan_sources(
         selected = [t for t in targets if t.source_id == source_id]
         if selected:
             return _Plan("fanout", selected[0].source_name, source_id, targets=selected)
+        # Not an id: a source's display name (a starter fences a source by its display
+        # name when that passes the grammar, SPEC-chat §3.8.1). Only one name match is
+        # taken; a name two sources share stays ambiguous.
+        named = [t for t in targets if t.source_name == source_id]
+        if len(named) == 1:
+            sid = named[0].source_id
+            resolved = await resolve_source(ctx, sid)
+            if resolved is not None:
+                conn, name, closer = resolved
+                return _Plan("single", name or named[0].source_name or connector_name(conn, sid), sid, conn,
+                             close=closer)
+            return _Plan("fanout", named[0].source_name, sid, targets=named)
         return ToolOutcome.failure("Unknown or unavailable log source")
     if targets and (all_sources is True or (all_sources is None and len(targets) > 1)):
         return _Plan("fanout", f"{len(targets)} sources", None, targets=targets)
@@ -663,6 +677,7 @@ def _bucket_key(value: str, interval: str, tz: str = "UTC") -> str | None:
 class SearchLogsTool(ChatTool):
     name: ClassVar[str] = "search_logs"
     label: ClassVar[str] = "Searched logs"
+    running_label: ClassVar[str] = "Searching logs"
     scope: ClassVar[str] = "logs"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Connected log sources"
@@ -1032,6 +1047,7 @@ def _stats_from_rows(
 class LogStatsTool(ChatTool):
     name: ClassVar[str] = "log_stats"
     label: ClassVar[str] = "Counted log events"
+    running_label: ClassVar[str] = "Counting log events"
     scope: ClassVar[str] = "logs"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Connected log sources"
@@ -1300,7 +1316,8 @@ class LogStatsTool(ChatTool):
             pairs = top[f]
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="categories", title=GROUP_TITLES[f], title_trusted=True,
-                data={"labels": [visible_text(k, 200) or "—" for k, _v in pairs], "values": [v for _k, v in pairs],
+                data={"labels": [visible_text(k, 200) or EMPTY_VALUE_LABEL for k, _v in pairs],
+                      "values": [v for _k, v in pairs],
                       "unit": "count", "dimension": f, "other": other[f]},
                 provenance="source", untrusted_labels=True,
                 basis="sample" if (all_exact and merged_remainder) else basis,
@@ -1389,6 +1406,17 @@ def _calendar_axis_data(axis: list[str], interval: str, window: Window) -> dict[
     return {"x_labels": labels, "tz": window.tz} if labels else {}
 
 
+def covered_days(window: Window) -> float:
+    """How many days ``window`` covers as asked: a window aligned to whole days ("last
+    30 days" since local midnight 29 days ago, the last day in progress) covers its
+    whole number of days, though fewer have run; any other window its span."""
+    if window.all_time:
+        return math.inf
+    if window.aligned_to == "day":
+        return float(math.ceil(window.span_days - 1e-6))
+    return window.span_days
+
+
 def zero_log_suggestions(tool: str, args: Any, window: Window, plan: _Plan) -> list[dict[str, Any]]:
     """Engine-built next lookups for a zero-match log question (SPEC D10): each a VALID
     call of ``tool`` — a wider window, every source, and the query without one filter
@@ -1398,9 +1426,13 @@ def zero_log_suggestions(tool: str, args: Any, window: Window, plan: _Plan) -> l
     if getattr(args, "group_by", None):
         keep["group_by"] = list(args.group_by)
     out: list[dict[str, Any]] = []
-    if window.span_days < 7 and window.source != "request":
+    # A wider window only when it really is wider: "last 30 days" counted in whole days
+    # (the last in progress) has run less than 30 days but already covers them, so it
+    # is never offered "Last 30 days" again (Round 13 close).
+    covered = covered_days(window)
+    if covered < 7 and window.source != "request":
         out.append({"label": "Last 7 days", "tool": tool, "input": {**base, **keep, "window": "now-7d"}})
-    elif window.span_days < 30 and window.source != "request":
+    elif covered < 30 and window.source != "request":
         out.append({"label": "Last 30 days", "tool": tool, "input": {**base, **keep, "window": "now-30d"}})
     window_input_: dict[str, Any] = {}
     if getattr(args, "window", None) is not None:
@@ -1413,10 +1445,18 @@ def zero_log_suggestions(tool: str, args: Any, window: Window, plan: _Plan) -> l
     for key in ("contains", "rule", "user", "host", "ip", "severity_gte"):
         if key in base:
             reduced = {k: v for k, v in base.items() if k != key}
-            label = {"contains": "Without the text filter", "severity_gte": "Any severity"}.get(
-                key, f"Without the {key} filter")
-            out.append({"label": label, "tool": tool, "input": {**reduced, **keep, **window_input_}})
+            out.append({"label": ZERO_LOG_FILTER_LABELS[key], "tool": tool,
+                        "input": {**reduced, **keep, **window_input_}})
     return out[:4]
+
+
+#: The chip label that drops one log filter, in the field's display words (Round 13
+#: T11: "Without the source IP filter", never the raw key "ip").
+ZERO_LOG_FILTER_LABELS: dict[str, str] = {
+    "contains": "Without the text filter", "rule": "Without the rule filter",
+    "user": "Without the user filter", "host": "Without the host filter",
+    "ip": "Without the source IP filter", "severity_gte": "Any severity",
+}
 
 
 _GROUP_DIMENSIONS = {"ip": "Source IP", "user": "User", "host": "Host", "rule": "Rule",
@@ -1484,7 +1524,8 @@ def _add_log_comparison(
         outcome.coverage = "; ".join(x for x in (outcome.coverage, f"comparison {note}") if x)
     if first is not None and per_value:
         ranked = sorted(per_value, key=lambda k: (-(per_value[k][-1] or 0), k))[:20]
-        value_rows = [comparison_row(f"v{i + 1}", visible_text(value, 200) or "—", per_value[value], unit="count")
+        value_rows = [comparison_row(f"v{i + 1}", visible_text(value, 200) or EMPTY_VALUE_LABEL, per_value[value],
+                                     unit="count")
                       for i, value in enumerate(ranked)]
         outcome.artifacts.append(Artifact(
             id=f"a{len(outcome.artifacts) + 1}", kind="comparison", title="Top values compared", title_trusted=True,

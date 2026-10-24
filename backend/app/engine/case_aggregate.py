@@ -61,6 +61,9 @@ Field mappings (``group_by`` and ``filters``), each verified against ``models.Ca
 ``rule``            each distinct value of ``Case.rule_ids`` (MULTI-VALUED); ``None`` = no rule
 ``assignee``        ``Case.assignee`` stripped; ``None`` = unassigned (filter: case-insensitive,
                     "unassigned" matches none)
+``assignee_user``   filter only: ``Case.assignee`` equals this username (case-insensitive),
+                    never read as an unassigned keyword (the signed-in analyst, whose
+                    username may itself be "none" or "nobody")
 ``source``          ``Case.source_id``; ``None`` = the legacy implicit source (filter matches
                     ``source_id`` exactly or ``source_name`` case-insensitively)
 ``surface``         ``Case.source_surface`` value
@@ -149,7 +152,7 @@ USAGE_METRICS: tuple[str, ...] = ("calls", "input_tokens", "output_tokens", "tot
 CASE_FILTER_FIELDS: tuple[str, ...] = (
     "text", "status", "status_group", "verdict", "entity", "severity", "priority",
     "assignee", "rule", "source", "surface", "disposition", "decided_by", "closed_by",
-    "mitre_tactic", "mitre_technique",
+    "mitre_tactic", "mitre_technique", "assignee_user",
 )
 USAGE_FILTER_FIELDS: tuple[str, ...] = ("role", "model", "surface", "provider", "service_tier",
                                         "case_id")
@@ -739,6 +742,11 @@ def _compile_case_filters(filters: dict[str, Any], prefs: Any) -> Callable[[_Cas
                 return (want_none and not actual) or (bool(actual) and actual in names)
 
             checks.append(_assignee)
+        elif key == "assignee_user":
+            # An exact username (the signed-in analyst): the unassigned keywords are
+            # names here, so a user called "nobody" never matches the unassigned queue.
+            users = {x.lower() for x in values}
+            checks.append(lambda v, w=users: (str(v.get("assignee") or "").strip().lower() or None) in w)
         elif key == "rule":
             lowered = {x.lower() for x in values}
             checks.append(lambda v, w=lowered: bool(
@@ -1488,6 +1496,7 @@ _RAW_FIELDS_OF: dict[str, tuple[str, ...]] = {
     "status_group": ("status",),
     "rule": ("rule_ids",),
     "assignee": ("assignee",),
+    "assignee_user": ("assignee",),
     "source": ("source_id", "source_name"),
     "surface": ("source_surface",),
     "disposition": ("disposition",),

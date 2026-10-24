@@ -100,11 +100,21 @@ point-in-time rollback in version 0.1.
   starting model calls once its spending since 00:00 UTC reaches the amount, and the
   answer says so; 0 turns the limit off. Every chat call is still recorded in the cost
   ledger.
-- **Answers.** The default live mode for viewers who have not chosen one (Live steps or
-  Type out answers), whether answers may be typed out at all, and **Animate the logo
-  while chat works**: a thin ring turns around the logo while an answer is being
-  written. A custom logo itself never moves, and the Chat item in the navigation keeps
-  its own indicator either way.
+- **Answers.** One **Typed-out answers** control with three choices: **Off** (answers
+  arrive whole, and the composer's **Type out answers** switch is disabled and says
+  why), **Allowed (off by default)**, and **Allowed (on by default)** (answers appear
+  word by word until a viewer turns it off). A viewer's own choice in the composer
+  wins wherever typed-out answers are allowed. Then **Animate the logo while chat
+  works**: a thin ring turns around the logo while an answer is being written. A custom
+  logo itself never moves, and the Chat item in the navigation keeps its own indicator
+  either way.
+- **Suggestions.** **Suggest questions from live data** (on by default): "New chats open
+  with questions about your queue, SLA and sources, computed from data each viewer can
+  read. No AI cost." Each viewer sees only cards their own permissions allow, and a
+  viewer can still turn the suggestions off for themselves in the composer's Options
+  (see [Workspace Chat](../analyst/chat.md#turn-suggestions-off)). Turned off here, new
+  chats offer only the everyday questions, with no catch-up line; Case Manager chat
+  keeps its case questions, which name no data.
 - **Timeouts and capacity** (in both modes): how many lookups run side by side in one
   step (in Bounded mode never more than the per-question lookup limit), how long one
   lookup may take, how long a model call may go silent before it is retried (300

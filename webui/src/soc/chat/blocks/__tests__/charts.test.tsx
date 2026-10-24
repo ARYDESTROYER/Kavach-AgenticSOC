@@ -405,10 +405,25 @@ describe('donut', () => {
     expect(legend).toHaveTextContent('61 · 59%');
     expect(legend).toHaveTextContent('7 · 7%');
     expect(screen.getByTestId('chart-donut-plot')).toHaveTextContent('104');
-    // A real flex basis (not flex-1's 0): in a narrow lane the legend wraps under the
-    // donut instead of being squeezed until its labels vanish (390 px, report panel).
-    expect(legend).toHaveClass('flex-[1_1_11rem]');
-    expect(legend).not.toHaveClass('flex-1');
+    // Round 13 T16: at most 16rem wide (no wide empty band), beside the donut from a
+    // 30rem card and under it below (a container query on the chart's own box).
+    expect(legend).toHaveClass('max-w-[16rem]');
+    const layout = screen.getByTestId('chart-donut-layout');
+    expect(layout).toHaveClass('@container');
+    expect(layout.firstElementChild).toHaveClass('flex-col', '@[30rem]:flex-row');
+  });
+
+  it('marks each part once: the semantic shape in the part colour, never a swatch plus a grey glyph', () => {
+    show(galleryBlock('verdicts'));
+    const legend = screen.getByRole('list', { name: 'Parts' });
+    const items = within(legend).getAllByRole('listitem');
+    for (const item of items) {
+      const shape = item.querySelector('[data-legend-marker="shape"]') as HTMLElement | null;
+      // A verdict series is semantic: its shape carries the colour, alone.
+      expect(shape).not.toBeNull();
+      expect(shape?.style.color).not.toBe('');
+      expect(item.querySelector('.rounded-\\[2px\\]')).toBeNull();
+    }
   });
 
   it('walks segments with ←/→', () => {

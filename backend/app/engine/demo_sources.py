@@ -75,7 +75,7 @@ DEMO_SOURCE_SPECS: dict[str, DemoSourceSpec] = {
     "splunk": DemoSourceSpec(
         key="splunk",
         source_id="demo-splunk",
-        display_name="Splunk Enterprise Security — HEC",
+        display_name="Splunk Enterprise Security (HEC)",
         source_type=SourceType.SPLUNK,
         category="siem",
         ingest_mode=IngestMode.PUSH_HTTP,
@@ -97,7 +97,7 @@ DEMO_SOURCE_SPECS: dict[str, DemoSourceSpec] = {
     "wazuh": DemoSourceSpec(
         key="wazuh",
         source_id="demo-wazuh",
-        display_name="Wazuh Manager — endpoint telemetry",
+        display_name="Wazuh Manager (endpoint telemetry)",
         source_type=SourceType.WAZUH,
         category="edr",
         ingest_mode=IngestMode.PUSH_HTTP,
@@ -108,7 +108,7 @@ DEMO_SOURCE_SPECS: dict[str, DemoSourceSpec] = {
     "syslog": DemoSourceSpec(
         key="syslog",
         source_id="demo-syslog",
-        display_name="Network & Linux — RFC 5424 Syslog",
+        display_name="Network & Linux (RFC 5424 Syslog)",
         source_type=SourceType.SYSLOG,
         category="transport",
         ingest_mode=IngestMode.PUSH_SYSLOG,

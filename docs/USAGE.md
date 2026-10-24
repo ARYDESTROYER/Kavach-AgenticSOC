@@ -116,8 +116,9 @@ so the dashboard never blanks; only a first load, with nothing yet to show, says
 selector is accepted; a slower earlier request cannot repaint those tiles beneath a new
 range.
 
-Below the strip the page has two titled bands. **Alert flow** holds the Noise
-Reduction ribbon and Human vs AI. **Cases and response** holds the Open cases and Cases
+Below the strip the page has two titled bands. Each module sits on its own soft tinted
+panel (no border, no shadow), with the band titles outside the panels. **Alert flow**
+holds the Noise Reduction ribbon and Human vs AI. **Cases and response** holds the Open cases and Cases
 resolved severity rings, **Response time** (MTTD paired with Respond, the first human
 action), and exactly five **Latest cases**; hovering or keyboard-focusing a latest row
 reveals bounded case detail without changing the selection. On very wide screens the
@@ -681,6 +682,17 @@ model call goes through the single gateway and cost ledger (#6).
   September", `/report monthly`) is saved to the Reports library by the server.
 - **Product questions** are answered from the bundled Help Center with `D*` citations,
   and at $0 from the Help Center alone when no model can run.
+- **Suggestions** (Round 13). `GET /api/chat/starters?surface=home|thread|case` serves the
+  new-chat cards, the "Since …" catch-up line and the Case Manager case chips, computed by
+  code from the suite's own state under the caller's grants (no model call, no log read,
+  exact counts, cached per caller for 60 s); `POST /api/chat/starters/events` records
+  `viewed`, `used` and `dismissed` with opaque keys (204, at most 30 a minute) in a
+  per-user state document that holds no question text. A card that names a value sends a
+  server-worded question with `origin: "starter"`, and the value reaches the model only in
+  an `entity_ref` untrusted fence. Follow-ups are at most 3 per answer, anchored on what the
+  answer shows, and a new conversation is named from its first answer. Switches:
+  `chat_agent.dynamic_starters` (organisation) and the composer's **Suggestions when a chat
+  starts** and **Suggested follow-ups** (per viewer), all on by default.
 - **Bounds** (`Preferences.chat_agent`, edited under **Settings → General → Chat
   assistant**): by default (`limits_mode: unlimited`, Round 12) a question has no
   per-question cap and runs until it answers or the analyst presses Stop, guarded by
@@ -2877,6 +2889,13 @@ curl -s localhost:8088/api/chat/conversations/chat-example
 curl -s -X PATCH localhost:8088/api/chat/conversations/chat-example \
   -H 'content-type: application/json' -d '{"title":"Failed-login review"}'
 curl -s -X DELETE localhost:8088/api/chat/conversations/chat-example
+
+# Suggested questions for a new chat, a conversation's catch-up line, or a case's chips
+# (computed by code, no model call); then record that the shown cards were viewed
+curl -s 'localhost:8088/api/chat/starters?surface=home'
+curl -s 'localhost:8088/api/chat/starters?surface=case&case_id=case-abc123'
+curl -s -X POST localhost:8088/api/chat/starters/events \
+  -H 'content-type: application/json' -d '{"type":"viewed","surface":"home","keys":[]}'
 
 # Per-log AI overview
 curl -s -X POST localhost:8088/api/overview \

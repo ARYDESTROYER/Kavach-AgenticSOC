@@ -144,9 +144,13 @@ describe('AppShell top bar — priority and compaction', () => {
     expect(leaf).toHaveAttribute('aria-current', 'page');
     expect(leaf).toHaveAttribute('title', 'Workspace');
     expect(leaf).toHaveClass('font-semibold', 'text-foreground');
-    // On a phone a long name takes a second line instead of an ellipsis.
-    expect(leaf).toHaveClass('line-clamp-2', 'break-words');
-    expect(leaf.className).not.toMatch(/\btruncate\b/);
+    // On a phone a long name takes a second line instead of an ellipsis, wrapping only
+    // between words: at 360 "Workspace" broke as "Workspac" / "e" (closing pass). A word
+    // wider than its room ends in an ellipsis instead of breaking.
+    expect(leaf).toHaveClass('line-clamp-2', 'text-ellipsis');
+    expect(leaf.className).not.toMatch(/\b(?:break-words|break-all|truncate)\b|\[overflow-wrap|\[word-break/);
+    // 6 px gaps below `sm` leave "Workspace" its 71 px beside "v0.1.13 · Testing" at 360.
+    expect(crumb.closest('header')).toHaveClass('gap-1.5', 'sm:gap-3');
     // The product name is the first thing to go (the rail carries the logo).
     const product = within(crumb).getByText('Agentic SOC');
     expect(product).toHaveClass('hidden', `@[${TOP_BAR_TIERS.product}]/topbar:block`);

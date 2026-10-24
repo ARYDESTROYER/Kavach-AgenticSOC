@@ -17,21 +17,37 @@ import { MessageSquare } from 'lucide-react';
 import type { Case } from '@/lib/types';
 import { LoadingState } from '@/design-system';
 import { Button } from '@/ui/button';
+import { useAuth } from '@/soc/auth';
+import { useDemo } from '@/soc/demo';
 import type { Navigate } from '@/soc/router';
+import { caseStartersScope, prefetchCaseStarters } from './case-starters-prefetch';
 
+import { caseDisplayId } from './caseFacts';
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
 import type { CasePanelPresentation } from './shared';
 
-/** Case-scoped quick questions in the Case Detail sheet. */
-const CASE_CHAT_STARTERS = ['Summarize this case', 'Why was this flagged?', 'What should I check next?'];
+/**
+ * Case-scoped quick questions in the Case Detail sheet (sentence case, UK spelling like
+ * the rest of the console; each is also the sent text).
+ */
+export const CASE_CHAT_STARTERS = ['Summarise this case', 'Why was this flagged?', 'What should I check next?'];
 
-/** Case Manager's analyst quick actions. */
-const CASE_MANAGER_CHAT_STARTERS = ['Summarize Case', 'Check IOCs', 'Suggest Remediation'];
+/** Case Manager's analyst quick actions (sentence case, UK spelling; each is the sent text). */
+export const CASE_MANAGER_CHAT_STARTERS = ['Summarise the case', 'Check indicators', 'Suggest remediation'];
 
 const CaseChat = React.lazy(() => import('./CaseChat'));
 
+/** The signed-in username, or null where no auth provider is mounted (as `CaseChat` reads it). */
+function useOptionalPrincipal(): string | null {
+  try {
+    return useAuth().username ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** The lazy chat body with the console's one blocking-load grammar while it arrives. */
-function LazyCaseChat(props: { caseId: string; caseManager: boolean; starters: readonly string[] }) {
+function LazyCaseChat(props: { caseId: string; displayId: string; caseManager: boolean; starters: readonly string[] }) {
   return (
     <React.Suspense fallback={<LoadingState layout="panel" label="Loading chat" className="h-full w-full" />}>
       <CaseChat {...props} />
@@ -45,6 +61,19 @@ export const ChatTab: React.FC<{
   onClose: () => void;
   presentation?: CasePanelPresentation;
 }> = ({ c, onNavigate, onClose, presentation = 'default' }) => {
+  // The case's suggested questions are read as soon as the tab is chosen, beside the
+  // chat's own lazy import, instead of after it (`case-starters-prefetch.ts`, Round 13
+  // polish).
+  // A layout effect: it runs before every passive effect of the commit, so when the
+  // chat's code is already loaded its hook (a child's passive effect) still finds this
+  // read instead of starting a second one.
+  const principal = useOptionalPrincipal();
+  // The Demo run the read belongs to (a confirmed switch starts the new run's read at
+  // once; a failed status read names none, so the last confirmed run holds).
+  const scope = caseStartersScope(useDemo());
+  React.useLayoutEffect(() => {
+    prefetchCaseStarters(c.case_id, principal, Date.now(), scope);
+  }, [c.case_id, principal, scope]);
   if (presentation === 'case-manager') {
     return (
       <div
@@ -53,7 +82,13 @@ export const ChatTab: React.FC<{
         data-presentation="case-manager"
       >
         {/* Keyed per case: case A's transcript never shows under case B. */}
-        <LazyCaseChat key={c.case_id} caseId={c.case_id} caseManager starters={CASE_MANAGER_CHAT_STARTERS} />
+        <LazyCaseChat
+          key={c.case_id}
+          caseId={c.case_id}
+          displayId={caseDisplayId(c)}
+          caseManager
+          starters={CASE_MANAGER_CHAT_STARTERS}
+        />
       </div>
     );
   }
@@ -84,7 +119,13 @@ export const ChatTab: React.FC<{
         {/* A definite height gives the transcript its own scroll lane and keeps the
             composer docked at the bottom of the card. */}
         <div className="h-[60dvh] min-h-[24rem]">
-          <LazyCaseChat key={c.case_id} caseId={c.case_id} caseManager={false} starters={CASE_CHAT_STARTERS} />
+          <LazyCaseChat
+            key={c.case_id}
+            caseId={c.case_id}
+            displayId={caseDisplayId(c)}
+            caseManager={false}
+            starters={CASE_CHAT_STARTERS}
+          />
         </div>
       </PanelCard>
     </div>

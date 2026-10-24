@@ -18,12 +18,14 @@
  */
 import type { ChatContextInfo, ChatPrompt, ChatScope, ChatToolInfo, ReportTemplateName } from '@/lib/types';
 import { CHAT_SCOPES } from '../stream-events';
-import { isKindGated } from './access-copy';
+import { isKindGated, permissionNeedText } from './access-copy';
 import { SCOPE_DESCRIPTIONS, SCOPE_LABELS } from './format';
 import {
   CATEGORY_LABEL,
   isPromptbook,
   orderPrompts,
+  paramLabel,
+  planPrompt,
   promptbookSteps,
   visibleStarters,
   type LibraryPrompt,
@@ -343,7 +345,8 @@ function commandLabel(command: SlashCommand): string {
 /**
  * What a prompt's menu row shows after its title: the text, or a promptbook's steps in
  * order ("3 steps: Open case… → Related cases… → Write next steps."), never the stored
- * `---` separators.
+ * `---` separators. The analyst's own words, so the menu clamps it to two lines; the
+ * console's ready-made prompts use {@link starterHint} instead.
  */
 export function promptHint(prompt: Pick<LibraryPrompt, 'id' | 'text'>): string {
   if (!isPromptbook(prompt)) return prompt.text;
@@ -351,12 +354,31 @@ export function promptHint(prompt: Pick<LibraryPrompt, 'id' | 'text'>): string {
   return `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}: ${steps.join(' → ')}`;
 }
 
+/**
+ * A ready-made (starter) prompt's menu description, console copy of at most
+ * {@link MENU_HINT_MAX} characters (Round 13, SPEC-chat T22): the library row's meta
+ * ("Hunt · Asks for Indicator, Period", "Triage · 3 steps · Asks for Case id"), never
+ * the prompt's full text. The values it asks for are counted instead of named when the
+ * names would not fit.
+ */
+export function starterHint(prompt: LibraryPrompt): string {
+  const plan = planPrompt(prompt);
+  const head: string[] = [];
+  if (prompt.category) head.push(CATEGORY_LABEL[prompt.category]);
+  if (plan.book) head.push(`${plan.steps.length} ${plan.steps.length === 1 ? 'step' : 'steps'}`);
+  if (!plan.params.length) return head.length ? head.join(' · ') : 'Ready-made prompt';
+  const named = [...head, `Asks for ${plan.params.map(paramLabel).join(', ')}`].join(' · ');
+  if (named.length <= MENU_HINT_MAX) return named;
+  const n = plan.params.length;
+  return [...head, `Asks for ${n} ${n === 1 ? 'value' : 'values'}`].join(' · ');
+}
+
 const promptItem = (prompt: LibraryPrompt): ComposerMenuItem => ({
   kind: 'prompt',
   value: `prompt:${prompt.id}`,
   prompt,
   label: prompt.title,
-  hint: promptHint(prompt),
+  hint: prompt.starter ? starterHint(prompt) : promptHint(prompt),
 });
 
 /** The analyst's prompts, starter prompts and the library entry matching `typed`. */
@@ -395,8 +417,25 @@ function promptGroups(
   return groups;
 }
 
+/** A menu description stays short (Round 13, SPEC-chat T22): at most this many characters. */
+export const MENU_HINT_MAX = 60;
+
+/**
+ * A report template's sections as one description of at most {@link MENU_HINT_MAX}
+ * characters: as many whole section names as fit, then "· n more".
+ */
+export function sectionsHint(sections: readonly string[]): string {
+  const all = sections.join(' · ');
+  if (all.length <= MENU_HINT_MAX) return all;
+  for (let shown = sections.length - 1; shown >= 1; shown -= 1) {
+    const text = `${sections.slice(0, shown).join(' · ')} · ${sections.length - shown} more`;
+    if (text.length <= MENU_HINT_MAX) return text;
+  }
+  return `${sections.length} sections`;
+}
+
 /** The hint for `/compact` with text after it: the text is not sent. */
-export const COMPACT_ARGUMENT_HINT = 'Summarise earlier messages to make room. Text after /compact is not sent.';
+export const COMPACT_ARGUMENT_HINT = 'Summarises earlier messages. Text after it is not sent.';
 
 /**
  * Commands, report templates, the analyst's prompts (favorites first), starter prompts
@@ -439,7 +478,7 @@ export function slashMenuGroups(
         spec,
         arg: subject,
         label: `/report ${spec.template}`,
-        hint: spec.sections.join(' · '),
+        hint: sectionsHint(spec.sections),
       }));
       if (items.length) groups.push({ heading: 'Report templates', items });
       return groups;
@@ -529,7 +568,7 @@ export function atMenuGroups(
       hint: access.allowed
         ? access.description
         : access.missing
-          ? `Needs ${access.missing}`
+          ? permissionNeedText(access.missing)
           : access.turnedOff
             ? TURNED_OFF_COPY
             : 'Not available to you',

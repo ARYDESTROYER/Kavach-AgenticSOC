@@ -114,6 +114,18 @@ def catalogue() -> tuple[ChatTool, ...]:
     return _CATALOGUE
 
 
+async def warm_catalogue() -> None:
+    """Build the catalogue off the event loop (an application startup hook, and the
+    first chat request of a process that skipped it): importing the tool modules costs
+    about 0.25 s of CPU, which the first cold Case Manager chip read paid on the loop
+    (Round 13 polish PB3). A no-op once built; a failure is left to :func:`catalogue`."""
+    if _CATALOGUE is None:
+        try:
+            await asyncio.to_thread(catalogue)
+        except Exception:  # noqa: BLE001 -- the caller's own catalogue() call reports it
+            logger.debug("chat tool catalogue warm-up failed", exc_info=True)
+
+
 def get_tool(name: str) -> ChatTool | None:
     return next((t for t in catalogue() if t.name == name), None)
 

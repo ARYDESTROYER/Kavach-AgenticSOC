@@ -23,9 +23,12 @@ import {
   HistoryStrip,
   distinctSnippet,
   groupConversations,
+  plainSnippet,
   shortAge,
+  snippetSegments,
   type HistoryRailProps,
 } from '../HistoryRail';
+import { pendingThreadRow } from '../../useChatConversations';
 
 expect.extend(toHaveNoViolations);
 
@@ -165,6 +168,11 @@ describe('HistoryRail', () => {
     fireEvent.keyDown(input, { key: 'Enter', isComposing: false });
     expect(props.onRename).toHaveBeenCalledWith(ROWS[0], '正在调查');
     expect(screen.getByRole('button', { name: /^Investigate sign-ins, / })).toHaveFocus();
+    // Focus handed back by code: the row's full-title tooltip stays shut.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(screen.queryByRole('tooltip')).toBeNull();
 
     // Escape cancels and also returns focus to the row.
     await user.click(screen.getByRole('button', { name: 'Actions for Review endpoint alert' }));
@@ -185,6 +193,25 @@ describe('HistoryRail', () => {
     expect(collapse).toHaveAttribute('aria-keyshortcuts', 'Control+Shift+S Meta+Shift+S');
     act(() => collapse.focus());
     await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent(/^Collapse history \((Ctrl|⌘).*S\)$/));
+  });
+
+  it('hides a row time only in the states that show its ⋯ trigger, never on click focus alone', () => {
+    renderRail();
+    const row = screen.getByRole('button', { name: /^Review endpoint alert, / });
+    const time = row.querySelector('span[aria-hidden]') as HTMLElement;
+    const trigger = screen.getByRole('button', { name: 'Actions for Review endpoint alert' });
+    const timeClasses = time.className.split(/\s+/);
+    const triggerClasses = trigger.className.split(/\s+/);
+    // A row focused by a click keeps focus but not :focus-visible, and the trigger stays
+    // hidden then: plain focus-within must not hide the time (the empty-slot bug).
+    expect(timeClasses.some((c) => c.startsWith('group-focus-within'))).toBe(false);
+    expect(triggerClasses.some((c) => c.startsWith('group-focus-within'))).toBe(false);
+    const hiding = timeClasses.filter((c) => c.endsWith(':invisible')).map((c) => c.slice(0, -':invisible'.length));
+    const showing = triggerClasses.filter((c) => c.startsWith('group-') && c.endsWith(':opacity-100')).map((c) => c.slice(0, -':opacity-100'.length));
+    expect(hiding.sort()).toEqual(['group-has-[:focus-visible]/row', 'group-has-[[data-state=open]]/row', 'group-hover/row']);
+    // The same three states, so the time and the trigger are never hidden together.
+    expect(showing.sort()).toEqual(hiding.sort());
+    expect(triggerClasses).toContain('opacity-0');
   });
 
   it('pins, opens a report only when one exists, exports and deletes', async () => {
@@ -308,7 +335,15 @@ describe('HistoryRail', () => {
         <HistoryRail {...props} search={{ query: 'brute', setQuery, results: [hit], searching: false, error: null, openHit }} />
       </TooltipProvider>,
     );
-    expect(screen.getByText('brute force from 10.0.0.5')).toBeInTheDocument();
+    // T27: the snippet under the title, the matching word in font-medium.
+    const snippet = screen.getByTestId('hit-snippet');
+    expect(snippet).toHaveTextContent('brute force from 10.0.0.5');
+    expect(snippet).toHaveClass('text-xs', 'text-muted-foreground', 'line-clamp-2');
+    // `block` would override line-clamp's box and let a third line show.
+    expect(snippet).not.toHaveClass('block');
+    const match = within(snippet).getByText('brute');
+    expect(match).toHaveClass('font-medium');
+    expect(match).toHaveAttribute('data-match');
     fireEvent.click(screen.getByRole('button', { name: /^Review endpoint alert: brute force/ }));
     expect(openHit).toHaveBeenCalledWith(hit);
     rerender(
@@ -319,16 +354,137 @@ describe('HistoryRail', () => {
     expect(screen.getByText('No matching conversations')).toBeInTheDocument();
   });
 
-  it('never repeats a hit\'s title as its snippet (on screen or in its name)', () => {
+  it('shows every hit\'s snippet, even one that repeats the title (T27)', () => {
     const title = 'Hunt the source IP behind the newest SQL injection case: check its reputation,…';
     const hit: ChatConversationSearchHit = { ...ROWS[1], title, match: { message_id: null, snippet: title } };
     renderRail({ search: { query: 'sql injection', setQuery: vi.fn(), results: [hit], searching: false, error: null, openHit: vi.fn() } });
-    expect(screen.getAllByText(title)).toHaveLength(1);
+    const snippet = screen.getByTestId('hit-snippet');
+    expect(snippet).toHaveTextContent(title);
+    expect(within(snippet).getByText('SQL injection')).toHaveAttribute('data-match');
+    // Shown twice is the price of every snippet showing; spoken twice it is noise: the
+    // hit's name says it once.
+    expect(screen.queryByRole('button', { name: `${title}: ${title}` })).toBeNull();
     expect(screen.getByRole('button', { name: title })).toBeInTheDocument();
+    // The helper stays for callers that want to avoid a repeat.
     expect(distinctSnippet('Posture check', 'Posture check')).toBe('');
-    // A first question the title was cut from is still a repeat.
-    expect(distinctSnippet('How is our posture right n…', 'How is our posture right now? Include the trend')).toBe('');
     expect(distinctSnippet('Posture check', '…failed logins from 10.0.0.5…')).toBe('…failed logins from 10.0.0.5…');
+  });
+
+  it('marks the whole query, else each word, case-insensitively and as text (T27)', () => {
+    expect(snippetSegments('Failed logins from 10.0.0.5', 'LOGINS from')).toEqual([
+      { text: 'Failed ', match: false },
+      { text: 'logins from', match: true },
+      { text: ' 10.0.0.5', match: false },
+    ]);
+    expect(snippetSegments('brute force on vpn, then brute again', 'brute vpn')).toEqual([
+      { text: 'brute', match: true },
+      { text: ' force on ', match: false },
+      { text: 'vpn', match: true },
+      { text: ', then ', match: false },
+      { text: 'brute', match: true },
+      { text: ' again', match: false },
+    ]);
+    expect(snippetSegments('nothing here', 'zzz')).toEqual([{ text: 'nothing here', match: false }]);
+    // Single letters alone never light up a snippet.
+    expect(snippetSegments('one a two', 'x a')).toEqual([{ text: 'one a two', match: false }]);
+    // Markup in a snippet stays text.
+    const hit: ChatConversationSearchHit = { ...ROWS[1], match: { message_id: null, snippet: '<img src=x onerror=alert(1)> brute' } };
+    const { container } = renderRail({ search: { query: 'brute', setQuery: vi.fn(), results: [hit], searching: false, error: null, openHit: vi.fn() } });
+    expect(container.querySelector('nav img')).toBeNull();
+    expect(screen.getByTestId('hit-snippet')).toHaveTextContent('<img src=x onerror=alert(1)> brute');
+  });
+
+  it('shows and names a snippet cut from a Markdown answer as plain text (T27)', () => {
+    const snippet = '**SOC performance report, last 7 days** (since 11 Oct 2026): **65 cases** opened, see [the queue](https://soc/cases) and `*.exe` hits. **4…';
+    const hit: ChatConversationSearchHit = { ...ROWS[1], title: 'Case volume', match: { message_id: 'm-1', snippet } };
+    renderRail({ search: { query: '65 cases', setQuery: vi.fn(), results: [hit], searching: false, error: null, openHit: vi.fn() } });
+    const shown = screen.getByTestId('hit-snippet');
+    const plain = 'SOC performance report, last 7 days (since 11 Oct 2026): 65 cases opened, see the queue and *.exe hits. 4…';
+    expect(shown).toHaveTextContent(plain);
+    expect(shown.textContent).not.toContain('**');
+    expect(within(shown).getByText('65 cases')).toHaveAttribute('data-match');
+    const button = screen.getByRole('button', { name: `Case volume: ${plain}` });
+    expect(button.getAttribute('aria-label')).not.toMatch(/\*\*|\]\(|`/);
+  });
+
+  it('strips Markdown markers from a snippet but keeps code, arithmetic and identifiers (T27)', () => {
+    expect(plainSnippet('**65 cases**')).toBe('65 cases');
+    expect(plainSnippet('__Bold__ and *italic* and _also_ ~~gone~~')).toBe('Bold and italic and also gone');
+    expect(plainSnippet('…summary. ## Next steps - Isolate the host')).toBe('…summary. Next steps - Isolate the host');
+    expect(plainSnippet('> Quoted advice')).toBe('Quoted advice');
+    expect(plainSnippet('…* Reset the account')).toBe('…Reset the account');
+    expect(plainSnippet('See [case 12](#/cases/case-12) and ![chart](x.png).')).toBe('See case 12 and chart.');
+    expect(plainSnippet('Open [the full report](https://soc/rep…')).toBe('Open the full report');
+    // Code spans keep their text exactly; markers outside them are not emphasis.
+    expect(plainSnippet('Run `Get-Item *.ps1` then check `_source`')).toBe('Run Get-Item *.ps1 then check _source');
+    expect(plainSnippet('Files *.exe and *.dll, field _source and case_id')).toBe('Files *.exe and *.dll, field _source and case_id');
+    expect(plainSnippet('risk > 70 and 3 * 4 = 12, ticket #4')).toBe('risk > 70 and 3 * 4 = 12, ticket #4');
+    expect(plainSnippet('escaped \\*star\\* and case\\_id')).toBe('escaped *star* and case_id');
+    expect(plainSnippet('  ')).toBe('');
+    expect(plainSnippet(null)).toBe('');
+  });
+
+  it('lists a New chat\'s first turn as the current row at the top of Today, with no actions (T21)', () => {
+    const pending = pendingThreadRow({
+      scope: 'conv:c-new',
+      kind: 'workspace',
+      conversationId: 'c-new',
+      caseId: null,
+      turnId: 't-1',
+      requestKey: 'k-1',
+      title: 'Which hosts talked to 10.0.0.5 in the last hour?',
+      label: null,
+      lookups: 0,
+      status: 'running',
+      startedAt: Date.now(),
+      source: 'local',
+    });
+    const { props } = renderRail({ activeId: null, conversations: [pending, ...ROWS] });
+    const today = screen.getByRole('group', { name: 'Today' });
+    const rows = within(today).getAllByRole('button').filter((el) => el.hasAttribute('data-rail-row'));
+    expect(rows[0]).toHaveAttribute('data-pending');
+    expect(rows[0]).toHaveAttribute('aria-current', 'page');
+    expect(rows[0]).toHaveAttribute('data-status', 'running');
+    // 48 characters fit whole.
+    expect(rows[0]).toHaveAccessibleName(/^Which hosts talked to 10\.0\.0\.5 in the last hour\?, answering, /);
+    // The question is on screen but nothing is saved yet: no "0 messages".
+    expect(rows[0].getAttribute('aria-label')).not.toMatch(/messages?$/);
+    expect(rows[0].querySelector('[data-activity="running"]')).not.toBeNull();
+    // Not saved yet: no actions. Activating it reaches the host (which closes the phone's
+    // history sheet); the selection itself ignores the temporary row.
+    expect(screen.queryByRole('button', { name: /^Actions for Which hosts/ })).toBeNull();
+    fireEvent.click(rows[0]);
+    expect(props.onSelect).toHaveBeenCalledWith(pending);
+    // Only one row is current.
+    expect(screen.getAllByRole('button').filter((el) => el.getAttribute('aria-current') === 'page')).toHaveLength(1);
+  });
+
+  it('renders a model-written title as text, in the row and in a search hit (T6)', () => {
+    const title = '<img src=x onerror=alert(1)> **bold** [link](https://evil.test)';
+    const row = { ...ROWS[0], title };
+    const { container, unmount } = renderRail({ conversations: [row] });
+    expect(container.querySelector('nav img, nav a, nav strong')).toBeNull();
+    expect(screen.getByRole('button', { name: new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}, `) })).toHaveTextContent(title);
+    unmount();
+    const hit: ChatConversationSearchHit = { ...ROWS[1], title, match: { message_id: null, snippet: 'brute force' } };
+    const view = renderRail({ search: { query: 'brute', setQuery: vi.fn(), results: [hit], searching: false, error: null, openHit: vi.fn() } });
+    expect(view.container.querySelector('nav img, nav a, nav strong')).toBeNull();
+    expect(screen.getByText(title)).toBeInTheDocument();
+  });
+
+  it('keeps row times clear of the title (T33)', () => {
+    renderRail();
+    const row = screen.getAllByRole('button').find((el) => el.hasAttribute('data-rail-row')) as HTMLElement;
+    const time = row.querySelector('span[aria-hidden]') as HTMLElement;
+    expect(time).toHaveClass('shrink-0', 'pl-3', 'tabular-nums');
+  });
+
+  it('marks the search field to take focus when the rail opens as a sheet (T27)', () => {
+    const { unmount } = renderRail({ inSheet: true });
+    expect(screen.getByRole('searchbox', { name: 'Search chats' })).toHaveAttribute('data-autofocus');
+    unmount();
+    renderRail();
+    expect(screen.getByRole('searchbox', { name: 'Search chats' })).not.toHaveAttribute('data-autofocus');
   });
 
   it('discloses bounded retention without implying infinite history', () => {

@@ -52,7 +52,7 @@ describe('answer-blocks gallery', () => {
     expect(container.querySelectorAll('section, [role="region"]')).toHaveLength(0);
     // Every visual card is a figure named by its heading; a Brief is announced as one.
     expect(screen.getByRole('figure', { name: 'Top hosts by failed logons' })).toBeInTheDocument();
-    expect(screen.getByRole('figure', { name: 'Brief Shift brief' })).toBeInTheDocument();
+    expect(screen.getByRole('figure', { name: 'Shift brief' })).toBeInTheDocument();
   });
 
   it('stays axe-clean when the same block and two untitled KPI groups repeat across turns', async () => {

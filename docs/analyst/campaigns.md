@@ -15,7 +15,9 @@ enabled.
 ## What a campaign contains
 
 - a stable campaign ID and generated name;
-- member case IDs;
+- member cases, each named by its case number as elsewhere in the console (the internal
+  case ID is in its tooltip; a case without a number shows its ID), listed in case-number
+  order with any case without a number last;
 - shared entities and ATT&CK techniques;
 - first- and last-seen time;
 - severity rollup; and

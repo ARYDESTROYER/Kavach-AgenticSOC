@@ -5,6 +5,10 @@
  * refuses to hide and says so. Swatches mirror the mark (a rect for bars, a line for
  * lines) and carry the semantic glyph when the series is semantic (WCAG 1.4.1). Labels
  * are plain text; untrusted ones render mono (G7). Colours stay bound to the series.
+ *
+ * `singleMarker` (the donut, Round 13 SPEC-chat T16): ONE marker per item, the semantic
+ * shape drawn in the series colour when there is one, else the colour swatch, never a
+ * swatch AND a grey glyph side by side.
  */
 import * as React from 'react';
 
@@ -23,6 +27,8 @@ export interface LegendProps {
   untrusted?: boolean;
   /** Optional value + share text per item (donut legends are the direct label). */
   values?: ReadonlyArray<string>;
+  /** One marker per item: the semantic shape in the series colour, else the swatch. */
+  singleMarker?: boolean;
   className?: string;
   ariaLabel?: string;
 }
@@ -35,7 +41,7 @@ function Swatch({ color, shape }: { color: string; shape: 'rect' | 'line' }) {
   );
 }
 
-export function Legend({ items, hidden, onToggle, shape, untrusted, values, className, ariaLabel = 'Series' }: LegendProps) {
+export function Legend({ items, hidden, onToggle, shape, untrusted, values, singleMarker = false, className, ariaLabel = 'Series' }: LegendProps) {
   const announce = useAnnouncer();
   const toggleable = Boolean(onToggle && hidden);
   const visibleCount = hidden ? hidden.filter((h) => !h).length : items.length;
@@ -59,12 +65,22 @@ export function Legend({ items, hidden, onToggle, shape, untrusted, values, clas
         const shown = hidden ? !hidden[i] : true;
         const body = (
           <>
-            <Swatch color={it.color} shape={shape} />
-            {Icon ? <Icon className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null}
+            {singleMarker && Icon ? (
+              <span className="inline-flex shrink-0 forced-colors:text-[CanvasText]" style={{ color: it.color }} data-legend-marker="shape" aria-hidden>
+                <Icon className="size-3.5" />
+              </span>
+            ) : (
+              <>
+                <Swatch color={it.color} shape={shape} />
+                {Icon ? <Icon className="size-3 shrink-0 text-muted-foreground" aria-hidden /> : null}
+              </>
+            )}
             <span className={cn('min-w-0 truncate', untrusted && 'font-mono')} title={it.label}>
               {it.label}
             </span>
-            {values?.[i] ? <span className="shrink-0 tabular-nums text-muted-foreground">{values[i]}</span> : null}
+            {values?.[i] ? (
+              <span className={cn('shrink-0 tabular-nums text-muted-foreground', singleMarker && 'ml-auto pl-3')}>{values[i]}</span>
+            ) : null}
           </>
         );
         return (

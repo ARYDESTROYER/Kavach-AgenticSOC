@@ -53,6 +53,13 @@ export interface CampaignsResponse {
   enabled: boolean;
 }
 
+/** GET /api/campaigns/{id}. */
+export interface CampaignDetailResponse {
+  campaign: Campaign;
+  /** Member case id → display number (additive; absent on older servers). */
+  case_numbers?: Record<string, string>;
+}
+
 /** POST /api/campaigns/recorrelate outcome. */
 export interface RecorrelateResponse {
   ok: boolean;
@@ -64,9 +71,13 @@ export const campaignsApi = {
   /** The running campaign list, newest first. */
   list: (params?: { status?: string; limit?: number; offset?: number }) =>
     api.get<CampaignsResponse>('campaigns', params as Record<string, unknown> | undefined),
-  /** One campaign by id (throws ApiError 404 when absent). */
+  /**
+   * One campaign by id (throws ApiError 404 when absent), with `case_numbers`: each
+   * member case's display number ("CASE-000045") by its internal id (Round 13 polish;
+   * a member without a number, or past the server's bound, is absent).
+   */
   get: (id: string) =>
-    api.get<{ campaign: Campaign }>(`campaigns/${encodeURIComponent(id)}`),
+    api.get<CampaignDetailResponse>(`campaigns/${encodeURIComponent(id)}`),
   /** The campaign a case belongs to (campaign is null when uncampaigned). */
   forCase: (caseId: string) =>
     api.get<{ case_id: string; campaign: Campaign | null }>(
@@ -81,4 +92,19 @@ export const CAMPAIGN_STATUS_LABELS: Record<string, string> = {
   open: 'Open',
   monitoring: 'Monitoring',
   resolved: 'Resolved',
+};
+
+/**
+ * A shared entity's kind in the console's words (the backend `EntityType`): the labels the
+ * rules editor shows (`rules/constants.ts` `ENTITY_OPTIONS`; a test keeps the two equal).
+ * Kept here rather than imported from there, so this page and Case Detail, which shows the
+ * campaign chip, take no extra chunk and the entry chunk's preload lists do not grow.
+ */
+export const CAMPAIGN_ENTITY_KIND_LABELS: Readonly<Record<string, string>> = {
+  ip: 'IP',
+  user: 'User',
+  host: 'Host',
+  file_hash: 'File hash',
+  domain: 'Domain',
+  rule: 'Rule',
 };

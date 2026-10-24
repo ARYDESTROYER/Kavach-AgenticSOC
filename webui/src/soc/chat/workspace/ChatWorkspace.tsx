@@ -29,20 +29,25 @@ import * as React from 'react';
 import { toast } from 'sonner';
 import { RotateCcw } from 'lucide-react';
 
-import type { ChatConversation, ChatConversationSummary, ChatStarter } from '@/lib/types';
+import type { ChatConversation, ChatConversationSummary, ChatStarter, StarterSurface } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/ui/sheet';
 import { LoadingState } from '@/design-system/loading';
 import { useAuth } from '@/soc/auth';
 import { useAnnouncer } from '@/soc/components/announcer';
+import { useOptionalPrefs } from '@/soc/prefs';
+import { postChatStarterEvent } from '../chat-api';
 import { BudgetAlert } from '../composer/BudgetAlert';
 import { Composer, type ComposerHandle } from '../composer/Composer';
+import { pickPromptFromLibrary } from '../composer/library-events';
 import { EmptyState } from '../empty/EmptyState';
-import { LANE_COL, LANE_GRID, laneVars } from '../message/lane';
+import { LANE_COL, LANE_GRID, laneVars, laneWidthChoiceMatters } from '../message/lane';
 import { NoticeCallout } from '../message/NoticeCallout';
 import { Transcript } from '../message/Transcript';
 import { announcedLookupBound, useTurnAnnouncer } from '../message/useTurnAnnouncer';
 import { ShortcutSheet } from '../shortcuts/ShortcutSheet';
+import { ThreadCatchUp } from '../starters/ThreadCatchUp';
+import { useChatStarters, useStarterViewed } from '../starters/useChatStarters';
 import { CHAT_KEYSHORTCUTS, useChatShortcuts } from '../shortcuts/useChatShortcuts';
 import type { ChatConversationsController } from '../useChatConversations';
 import type { ChatContextController } from '../useChatContext';
@@ -54,7 +59,7 @@ import { ThreadToolbar } from './ThreadToolbar';
 import { useChatLaneWidth } from './useChatLaneWidth';
 import { useConversationReport } from './useConversationReport';
 import { useConversationExport } from './useConversationExport';
-import { useOpenerFocus } from './useOpenerFocus';
+import { useFocusAfterSwap, useOpenerFocus } from './useOpenerFocus';
 import {
   C_MIN,
   PANEL_MAX,
@@ -84,14 +89,27 @@ export interface ChatWorkspaceProps {
 export function ChatWorkspace({ conv, engine, context, caseId = null, author = null }: ChatWorkspaceProps) {
   const caseScoped = !!caseId;
   const announce = useAnnouncer();
-  const { hasPermission } = useAuth();
+  const { hasPermission, username } = useAuth();
+  const principal = username ?? author ?? null;
   // The model picker lists `/api/models`, which needs models:read (SPEC §10.4).
   const canChooseModel = hasPermission('models', 'read');
   const composerRef = React.useRef<ComposerHandle>(null);
   const [panelOpen, setPanelOpen] = React.useState(false);
   const [historyOpen, setHistoryOpen] = React.useState(false);
   const [historySearchFocus, setHistorySearchFocus] = React.useState(false);
+  // However the sheet closed (a pick or New chat closes it without onOpenChange), the
+  // next open records its opener as usual: only Search chats moves focus into the
+  // search field itself (left on, the field took focus before the opener was recorded).
+  React.useEffect(() => {
+    if (!historyOpen) setHistorySearchFocus(false);
+  }, [historyOpen]);
   const historyOpener = useOpenerFocus();
+  // Collapse history / Show history (and the shortcut) swap the rail and the strip, and
+  // the docked report's Close button leaves with the panel: focus that went with them
+  // moves to the toggle that is on screen now, quietly (Round 13 polish).
+  const focusAfterSwap = useFocusAfterSwap();
+  const railZoneRef = React.useRef<HTMLDivElement>(null);
+  const conversationRef = React.useRef<HTMLElement>(null);
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [pendingReportFor, setPendingReportFor] = React.useState<string | null>(null);
   const geometry = useChatGeometry(panelOpen && !caseScoped);
@@ -112,6 +130,55 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
 
   const activeId = typeof conv.activeId === 'string' ? conv.activeId : null;
   const summary = conv.activeSummary;
+
+  /* -------------------------------------------- suggestions (Round 13, Part A) -- */
+
+  // The viewer's "Suggestions when a chat starts" (`UserPrefs.misc.chat_suggest_start`,
+  // absent = on). Nothing is requested before the preferences are known, and nothing at
+  // all while the viewer has them off (SPEC-chat §3.11). Without a provider (a
+  // standalone render) they are on.
+  const prefsCtx = useOptionalPrefs();
+  const suggestKnown = !prefsCtx || prefsCtx.ready;
+  const suggestOn = !prefsCtx || prefsCtx.prefs.misc?.chat_suggest_start !== false;
+  const suggest = suggestKnown && suggestOn;
+  // The new-chat start stack is on screen (a deliberate New chat with no message yet).
+  const homeActive = !caseScoped && conv.enabled && conv.activeId === null && engine.items.length === 0;
+  // An open, restored Workspace thread whose transcript is the engine's.
+  const threadOpen =
+    !caseScoped &&
+    !!activeId &&
+    !conv.restoring &&
+    !conv.threadError &&
+    engine.conversationId === activeId &&
+    engine.items.length > 0;
+  const homeStarters = useChatStarters({ surface: 'home', principal, enabled: homeActive && suggest, poll: true });
+  // The cards on screen (StartScreen reports them) travel with the `viewed` event.
+  const shownKeysRef = React.useRef<string[]>([]);
+  const onShownKeysChange = React.useCallback((keys: string[]) => {
+    shownKeysRef.current = keys;
+  }, []);
+  // A thread counts as OPENED (a visit to it) when it was read back from history; the
+  // thread a first send just created in this view is not a second visit.
+  const threadOpened = threadOpen && engine.items.some((item) => item.kind === 'assistant' && item.restored);
+  const flushViewed = useStarterViewed({
+    target: !suggest ? null : homeActive ? `home:${conv.transcriptEpoch}` : threadOpened ? `thread:${activeId}` : null,
+    surface: homeActive ? 'home' : 'thread',
+    enabled: suggest,
+    ready: !homeActive || !homeStarters.loading,
+    keys: () => shownKeysRef.current,
+  });
+  // The first send counts as seen even before the 2 seconds are up (§3.10).
+  React.useEffect(() => {
+    if (busy) flushViewed();
+  }, [busy, flushViewed]);
+  // When the thread's last answer settled (restored answers carry their saved time).
+  let lastAnswerAt: number | null = null;
+  for (let i = engine.items.length - 1; i >= 0; i -= 1) {
+    const item = engine.items[i];
+    if (item.kind !== 'assistant') continue;
+    lastAnswerAt = item.status === 'running' ? null : item.at;
+    break;
+  }
 
   /* ---------------------------------------------------------------- report -- */
 
@@ -163,13 +230,40 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
   /* --------------------------------------------------------------- actions -- */
 
   const focusComposer = React.useCallback(() => composerRef.current?.focus(), []);
-  // A starter card or chip is replaced by the transcript once it sends: focus stays in
-  // the composer (SPEC §10.9) instead of dropping to <body>.
-  const sendStarter = React.useCallback(
-    (starter: ChatStarter) => {
-      if (engine.send(starter.prompt, { origin: 'starter' })) focusComposer();
+  const { select: selectConversation } = conv;
+  // A starter card, catch-up clause or case chip (SPEC-chat §3.9). A `send` card sends
+  // its server-worded question exactly, with origin `starter`, and is replaced by the
+  // transcript: focus stays in the composer (SPEC §10.9) instead of dropping to <body>.
+  // `open_conversation` selects the analyst's own conversation (nothing is sent) and
+  // hands focus to the composer, the same landing point as a send: the card is replaced
+  // by the restoring thread, so focus must not drop to <body>. `use_prompt` runs the
+  // analyst's saved prompt through the library's Use (the composer fills or asks for its
+  // values, and places focus; sent later as the analyst's own words). A used Workspace
+  // card is recorded (`used`); a case chip records nothing.
+  const activateStarter = React.useCallback(
+    (starter: ChatStarter, surface: StarterSurface) => {
+      const action = starter.action ?? 'send';
+      let used = false;
+      if (action === 'send') {
+        flushViewed();
+        used = engine.send(starter.prompt, { origin: 'starter' });
+        if (used) focusComposer();
+      } else if (action === 'open_conversation' && starter.ref?.kind === 'conversation') {
+        selectConversation(starter.ref.value);
+        setHistoryOpen(false);
+        focusComposer();
+        used = true;
+      } else if (action === 'use_prompt' && starter.ref?.kind === 'prompt') {
+        pickPromptFromLibrary(starter.ref.value);
+        used = true;
+      }
+      if (used && surface !== 'case' && starter.key) {
+        void postChatStarterEvent({ type: 'used', surface, keys: [starter.key] }).catch(() => {
+          /* presentation state only */
+        });
+      }
     },
-    [engine, focusComposer],
+    [engine, flushViewed, focusComposer, selectConversation],
   );
 
   // Never refused while an answer is being written: the turn keeps running in the
@@ -202,12 +296,21 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       panelOpen: panelOpen && !caseScoped,
       panelWidth: geometry.panelWidth,
     }).rail === 'docked';
+  // Docked ↔ strip: the toggle on screen afterwards (Show history or Collapse history)
+  // takes a focus the swap dropped.
+  const setRailCollapsed = React.useCallback(
+    (collapsed: boolean) => {
+      geometry.setRailCollapsed(collapsed);
+      focusAfterSwap(() => railZoneRef.current?.querySelector<HTMLElement>('[data-history-toggle]'));
+    },
+    [focusAfterSwap, geometry],
+  );
   const toggleHistory = React.useCallback(() => {
     if (caseScoped) return;
-    if (geometry.rail === 'docked') geometry.setRailCollapsed(true);
-    else if (geometry.rail === 'strip' && geometry.railCollapsed && dockable) geometry.setRailCollapsed(false);
+    if (geometry.rail === 'docked') setRailCollapsed(true);
+    else if (geometry.rail === 'strip' && geometry.railCollapsed && dockable) setRailCollapsed(false);
     else setHistoryOpen((open) => !open);
-  }, [caseScoped, dockable, geometry]);
+  }, [caseScoped, dockable, geometry, setRailCollapsed]);
 
   useChatShortcuts(
     {
@@ -369,10 +472,16 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       context={ctx}
       variant={caseScoped ? 'case' : 'workspace'}
       disabled={busy || !!disabledReason}
-      // A failed /chat/context with nothing cached is an error with Retry, not skeletons.
+      // The case variant's access popover shows a failed /chat/context with Retry.
       error={context.error}
       onRetry={context.refresh}
-      onStarter={sendStarter}
+      onStarter={(starter) => activateStarter(starter, caseScoped ? 'case' : 'home')}
+      // The start stack's cards: null while the viewer has suggestions off (no request).
+      // A case-scoped chat reads its own case chips (the empty state's chips do).
+      starters={caseScoped ? undefined : suggestOn ? { ...homeStarters, loading: homeStarters.loading || !suggestKnown } : null}
+      principal={principal}
+      onShownKeysChange={onShownKeysChange}
+      caseId={caseId}
     />
   );
 
@@ -440,19 +549,23 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
 
       {rail === 'docked' ? (
         // Not a landmark of its own: the rail's <nav> ("Chat history") is the landmark.
-        <div className="flex w-[264px] shrink-0 flex-col border-r border-border bg-surface/40" data-testid="chat-history-rail">
-          <HistoryRail {...railProps} onCollapse={() => geometry.setRailCollapsed(true)} />
+        <div ref={railZoneRef} className="flex w-[264px] shrink-0 flex-col border-r border-border bg-surface/40" data-testid="chat-history-rail">
+          <HistoryRail {...railProps} onCollapse={() => setRailCollapsed(true)} />
         </div>
       ) : rail === 'strip' ? (
-        <div className="w-12 shrink-0 border-r border-border bg-surface/40">
+        <div ref={railZoneRef} className="w-12 shrink-0 border-r border-border bg-surface/40">
           <HistoryStrip
             busy={busy}
             onNewChat={newChat}
             onSearch={() => {
+              // The rail focuses its search field as it mounts, so the sheet's open
+              // event (where the opener is usually recorded) never fires: record Search
+              // chats now, or closing the sheet would drop focus to the page.
+              historyOpener.capture();
               setHistorySearchFocus(true);
               setHistoryOpen(true);
             }}
-            onExpand={() => (geometry.railCollapsed && dockable ? geometry.setRailCollapsed(false) : setHistoryOpen(true))}
+            onExpand={() => (geometry.railCollapsed && dockable ? setRailCollapsed(false) : setHistoryOpen(true))}
             shortcuts={railProps.shortcuts}
           />
         </div>
@@ -482,6 +595,7 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
       ) : null}
 
       <section
+        ref={conversationRef}
         className="@container flex min-w-0 flex-1 flex-col"
         aria-label="Conversation"
         style={laneVars(laneWidth.width) as React.CSSProperties}
@@ -502,7 +616,9 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           onExport={(format) => activeId && void exportThread(activeId, format)}
           onDelete={() => summary && void conv.remove(summary)}
           shortcuts={{ newChat: CHAT_KEYSHORTCUTS.newChat, history: CHAT_KEYSHORTCUTS.toggleHistory }}
-          laneWidth={{ value: laneWidth.width, onChange: laneWidth.setWidth }}
+          // The widths only where one would change the lane (PW4-9: at 390 px they all gave
+          // the same lane).
+          laneWidth={laneWidthChoiceMatters(geometry.conversationWidth) ? { value: laneWidth.width, onChange: laneWidth.setWidth } : null}
         />
 
         <Transcript
@@ -542,6 +658,20 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           <div className={LANE_GRID}>
             <div className={`${LANE_COL} space-y-2`}>
               <BudgetAlert context={ctx} />
+              {caseScoped ? null : (
+                <ThreadCatchUp
+                  conversationId={threadOpen ? activeId : null}
+                  principal={principal}
+                  enabled={suggest}
+                  lastAnswerAt={lastAnswerAt}
+                  draftEmpty={!engine.draft.trim()}
+                  busy={busy}
+                  disabled={!!disabledReason}
+                  onSend={(starter) => activateStarter(starter, 'thread')}
+                  // Hide removes the line: focus lands in the composer right below it.
+                  onHidden={focusComposer}
+                />
+              )}
               <Composer
                 ref={composerRef}
                 engine={engine}
@@ -566,7 +696,11 @@ export function ChatWorkspace({ conv, engine, context, caseId = null, author = n
           width={geometry.panelWidth}
           maxWidth={panelMax}
           onResize={geometry.setPanelWidth}
-          onClose={() => setPanelOpen(false)}
+          onClose={() => {
+            setPanelOpen(false);
+            // Its Close button leaves with the panel: back to the toolbar's Report toggle.
+            focusAfterSwap(() => conversationRef.current?.querySelector<HTMLElement>('[data-testid="chat-report-toggle"]'));
+          }}
           conversationId={activeId}
           reportId={report.reportId}
         />

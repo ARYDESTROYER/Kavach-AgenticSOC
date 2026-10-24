@@ -857,6 +857,11 @@ _CHAT_PROMPT_ID_RE = re.compile(CHAT_PROMPT_ID_PATTERN)
 ChatPromptCategory = Literal["triage", "hunt", "ioc", "posture", "reporting", "app_help"]
 CHAT_PROMPT_CATEGORIES: tuple[str, ...] = get_args(ChatPromptCategory)
 
+#: Round 13 (SPEC-chat §3.2.1): the personal suggestion switches in ``UserPrefs.misc``
+#: (``chat_suggest_start``: start cards and the thread catch-up line;
+#: ``chat_suggest_follow_ups``: follow-up chips). Absent means on; a non-bool is removed.
+CHAT_SUGGEST_PREF_KEYS: tuple[str, ...] = ("chat_suggest_start", "chat_suggest_follow_ups")
+
 
 class ChatPrompt(BaseModel):
     """One saved composer prompt (chat revamp SPEC §10.4). Plain user text: rendered
@@ -926,7 +931,10 @@ class UserPrefs(BaseModel):
       ``saved_views``) so a legacy bucket loads unchanged.
     * ``misc`` — a small catch-all UI-prefs bag (density, etc.). ``misc.chat_stream_mode``
       is the viewer's D2 chat mode (``"steps"``/``"text"``; normalised on load, an
-      invalid value is removed so the org default applies).
+      invalid value is removed so the org default applies). Round 13 (SPEC-chat
+      §3.2.1): ``misc.chat_suggest_start`` (start cards and the thread catch-up line)
+      and ``misc.chat_suggest_follow_ups`` (follow-up chips) are personal switches;
+      absent means on, and a value that is not a bool is removed on load.
     * ``chat_prompts`` — the user's saved chat prompts (chat revamp SPEC §10.4).
     """
 
@@ -948,15 +956,23 @@ class UserPrefs(BaseModel):
     @field_validator("misc", mode="before")
     @classmethod
     def _misc_chat_stream_mode(cls, value: Any) -> Any:
-        if not isinstance(value, dict) or "chat_stream_mode" not in value:
+        if not isinstance(value, dict):
+            return value
+        if "chat_stream_mode" not in value and not any(k in value for k in CHAT_SUGGEST_PREF_KEYS):
             return value
         out = dict(value)
-        mode = out.get("chat_stream_mode")
-        normalised = mode.strip().lower() if isinstance(mode, str) else None
-        if normalised in ("steps", "text"):
-            out["chat_stream_mode"] = normalised
-        else:
-            out.pop("chat_stream_mode", None)
+        if "chat_stream_mode" in out:
+            mode = out.get("chat_stream_mode")
+            normalised = mode.strip().lower() if isinstance(mode, str) else None
+            if normalised in ("steps", "text"):
+                out["chat_stream_mode"] = normalised
+            else:
+                out.pop("chat_stream_mode", None)
+        # Round 13 (SPEC-chat §3.2.1): the personal suggestion switches are bools or
+        # absent (absent = on). Anything else is removed, never coerced.
+        for key in CHAT_SUGGEST_PREF_KEYS:
+            if key in out and not isinstance(out[key], bool):
+                out.pop(key, None)
         return out
 
     @property
@@ -964,6 +980,16 @@ class UserPrefs(BaseModel):
         """The viewer's D2 preference, or ``None`` (use ``chat_agent.default_stream_mode``)."""
         mode = self.misc.get("chat_stream_mode")
         return mode if mode in ("steps", "text") else None
+
+    @property
+    def chat_suggest_start(self) -> bool:
+        """Round 13: the viewer's "Suggestions when a chat starts" switch (default on)."""
+        return self.misc.get("chat_suggest_start") is not False
+
+    @property
+    def chat_suggest_follow_ups(self) -> bool:
+        """Round 13: the viewer's "Suggested follow-ups" switch (default on)."""
+        return self.misc.get("chat_suggest_follow_ups") is not False
 
 
 # --------------------------------------------------------------------------- #
@@ -3344,16 +3370,137 @@ class ChatContextInfo(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
-class ChatStarter(BaseModel):
-    """One empty-state starter card (SPEC §10.5)."""
+# =========================================================================== #
+# Round 13 chat starters (docs/research/2026-10-round13/SPEC-chat.md §3.2.1).
+# Additive only: every field added to ChatStarter has a default, so a payload
+# written before Round 13 (the six §10.5 starters, ``DEMO_STARTERS``) stays valid.
+# Wording lives in ``agents/chat_starter_text.py``; ranking and the family registry
+# in ``engine/chat_starters.py``. Starters are computed by code, never by a model
+# (#6), and a referenced value is typed and fenced on the way to the model (#9).
+# =========================================================================== #
+StarterAction = Literal["send", "open_conversation", "use_prompt"]
+StarterRefKind = Literal["case", "rule", "source", "campaign", "technique", "conversation", "prompt"]
+StarterUrgency = Literal["none", "attention", "critical"]
+StarterSurface = Literal["home", "thread", "case"]
+STARTER_REF_KINDS: tuple[str, ...] = get_args(StarterRefKind)
+STARTER_SURFACES: tuple[str, ...] = get_args(StarterSurface)
+#: A starter key: the first 16 hex characters of ``sha256("<family>|<kind>|<value>")``
+#: (``"<family>|"`` without a reference). Opaque to the client.
+STARTER_KEY_PATTERN = r"^[0-9a-f]{16}$"
+_STARTER_KEY_RE = re.compile(r"[0-9a-f]{16}")
+#: At most this many cards per read, and keys per event (SPEC §3.5 step 3).
+MAX_STARTERS = 6
 
-    # investigate | hunt | posture | shift_brief | explain_metric | learn_app
+
+class ChatStarterRef(BaseModel):
+    """A typed reference a starter names (a case, rule, source, campaign, ATT&CK
+    technique) or opens (a conversation, a saved prompt). ``value`` passes its kind's
+    strict grammar (``chat_starter_text.ref_value``) unchanged, or the model refuses it:
+    a value is never cut, quoted or altered (SPEC §3.8.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: StarterRefKind
+    value: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def _grammar(self) -> "ChatStarterRef":
+        from .agents.chat_starter_text import ref_value  # lazy: agents import models
+
+        if ref_value(self.kind, self.value) != self.value:
+            raise ValueError(f"not a valid {self.kind} reference")
+        return self
+
+
+class ChatStarter(BaseModel):
+    """One starter card (SPEC §10.5; Round 13 SPEC-chat §3.2.1).
+
+    ``id`` is the FAMILY id (one card per family; the pre-Round-13 ids investigate,
+    hunt, posture, shift_brief, explain_metric and learn_app stay valid). ``label`` is
+    a short family name and ``description`` equals ``reason``, for older clients. For
+    action ``send``, ``prompt`` is both the visible question and the exact text the
+    client sends with ``origin: "starter"`` (never edited, never put in the composer);
+    dynamic templates render at most 100 characters. Action ``open_conversation`` and
+    ``use_prompt`` cards are display-only: ``prompt`` is their card text (at most 120
+    characters) and is never sent; ``ref`` names the conversation or saved prompt."""
+
     id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9_]+$")
     label: str = Field(min_length=1, max_length=40)
     description: str = Field(default="", max_length=120)
     prompt: str = Field(min_length=1, max_length=400)
     # Every tool the starter's plan needs; the card is hidden unless all are allowed.
     tools: list[str] = Field(default_factory=list, max_length=8)
+    # --- Round 13 (additive; defaults keep every old payload valid) --------------- #
+    #: The ``chat_starter_text`` template id the card was worded from.
+    template: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,40}$")
+    #: Why the card is here (at most 60 characters by copy): numbers, durations,
+    #: times, closed-vocabulary words and configured source names only, never
+    #: log-derived free text (SPEC §3.7).
+    reason: str = Field(default="", max_length=80)
+    action: StarterAction = "send"
+    ref: ChatStarterRef | None = None
+    #: Opaque key for ``POST /api/chat/starters/events`` (:data:`STARTER_KEY_PATTERN`).
+    key: str | None = Field(default=None, pattern=STARTER_KEY_PATTERN)
+    urgency: StarterUrgency = "none"
+    as_of: str | None = None        # ISO 8601 UTC
+    expires_at: str | None = None   # ISO 8601 UTC
+
+
+class ChatCatchUpClause(BaseModel):
+    """One clause of the catch-up line ("5 new cases (2 critical)") and the starter
+    it sends when clicked (action ``send`` only; SPEC §3.6)."""
+
+    text: str = Field(min_length=1, max_length=60)
+    starter: ChatStarter
+
+    @model_validator(mode="after")
+    def _sends(self) -> "ChatCatchUpClause":
+        if self.starter.action != "send":
+            raise ValueError("a catch-up clause sends its starter")
+        return self
+
+
+class ChatCatchUp(BaseModel):
+    """"Since {since_label}: clause, clause and clause." (at most 160 characters as a
+    whole line; the server drops clauses from the end until it fits)."""
+
+    since: str                     # ISO 8601 UTC
+    since_label: str               # "09:12", "yesterday 18:40", "Mon 18:40", "12 Oct" (operator tz)
+    clauses: list[ChatCatchUpClause] = Field(default_factory=list, max_length=4)
+
+
+class ChatStartersInfo(BaseModel):
+    """``GET /api/chat/starters`` (SPEC §3.2.2). ``enabled`` mirrors
+    ``chat_agent.dynamic_starters``; when it is false the server returns the evergreen
+    set only and no catch-up line. ``expires_at`` is ``as_of`` + 120 s."""
+
+    surface: StarterSurface
+    enabled: bool
+    as_of: str
+    expires_at: str
+    timezone: str                  # IANA name (SlaPolicy.timezone)
+    starters: list[ChatStarter] = Field(default_factory=list, max_length=MAX_STARTERS)
+    catch_up: ChatCatchUp | None = None
+
+
+class ChatStarterEvent(BaseModel):
+    """``POST /api/chat/starters/events`` body (SPEC §3.2.2, §3.6). Presentation state
+    only: it updates the caller's own starter state document, writes no audit row and
+    stores no text (D10). A ``thread`` ``viewed`` event carries no keys."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["viewed", "used", "dismissed"]
+    surface: StarterSurface = "home"
+    keys: list[str] = Field(default_factory=list, max_length=MAX_STARTERS)
+
+    @field_validator("keys")
+    @classmethod
+    def _keys(cls, value: list[str]) -> list[str]:
+        for key in value:
+            if not isinstance(key, str) or not _STARTER_KEY_RE.fullmatch(key):
+                raise ValueError("each key is 16 lowercase hex characters")
+        return value
 
 
 class ChatTopicQuestion(BaseModel):

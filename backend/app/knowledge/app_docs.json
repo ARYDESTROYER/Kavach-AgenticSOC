@@ -958,7 +958,7 @@
    "page": "getting-started/demo.md",
    "anchor": "suggested-tour",
    "heading": "Suggested tour",
-   "text": "1. Open **Overview** and inspect source coverage, the Human-vs-AI close\n   attribution, and the Noise-Reduction flow.\n2. Open **Case Manager**, compare the Overview, Timeline, Investigation, Threat,\n   Collaboration, and Chat tabs, then try queue selection. The legacy **Cases**\n   table remains available for comparison.\n3. Open **Workspace Chat**, pick a starter such as *Posture now* or *Shift brief*, and\n   watch each lookup run; add a chart to a report and generate its summary. Demo\n   answers and summaries are deterministic and cost nothing.\n4. Open **Sources** and inspect the five simulated source types and recent activity.\n5. Open **Detection & Rules**, Campaigns, Baseline, and Tuning to see the advisory\n   automation loop.\n6. Open **Cost** and confirm model spend remains `$0`.\n7. Open **Audit** and trace the demo actions.\n\nUse **Generate incident** in the Demo settings for an on-demand, cooldown-aware\nfive-source storyline. A successful request emits exactly eight native records:\nfour source-native alerts from Splunk, QRadar, Wazuh, and Entra plus four syslog\nevents that produce at least one Agentic SOC correlation detection. The response\nattributes records, native alerts, and system detections per source.",
+   "text": "1. Open **Overview** and inspect source coverage, the Human-vs-AI close\n   attribution, and the Noise-Reduction flow.\n2. Open **Case Manager**, compare the Overview, Timeline, Investigation, Threat,\n   Collaboration, and Chat tabs, then try queue selection. The legacy **Cases**\n   table remains available for comparison.\n3. Open **Workspace Chat**: the start screen says what changed in the demo data since\n   your last visit and suggests questions about it, such as your shift brief or a case\n   that needs a person. Pick one and watch each lookup run; add a chart to a report and\n   generate its summary. Demo answers and summaries are deterministic and cost nothing.\n4. Open **Sources** and inspect the five simulated source types and recent activity.\n5. Open **Detection & Rules**, Campaigns, Baseline, and Tuning to see the advisory\n   automation loop.\n6. Open **Cost** and confirm model spend remains `$0`.\n7. Open **Audit** and trace the demo actions.\n\nUse **Generate incident** in the Demo settings for an on-demand, cooldown-aware\nfive-source storyline. A successful request emits exactly eight native records:\nfour source-native alerts from Splunk, QRadar, Wazuh, and Entra plus four syslog\nevents that produce at least one Agentic SOC correlation detection. The response\nattributes records, native alerts, and system detections per source.",
    "console": []
   },
   {
@@ -1060,7 +1060,7 @@
    "page": "analyst/overview.md",
    "anchor": "read-the-page-from-top-to-bottom",
    "heading": "Read the page from top to bottom",
-   "text": "The tiles carry a **numeral and a label, and no standing caption**. What a numeral\n   counts, and the \"out of what\" behind it, live in the tile's help — the `?` beside\n   the label, which opens on click and is reachable by keyboard and touch — and in the\n   drill-down that opens when you select the tile. A caption appears only when\n   something is wrong with the measurement (see below). Where a numeral is a **lower\n   bound** rather than a fact, the tile marks the number itself with a `≥`, and the\n   full sentence is announced to screen readers; where a value is **withheld** because\n   the window was not fully covered, the em dash carries that explanation instead.\n   Hover or keyboard-focus a metric to reveal\n   its recent trendline for the same window — the card names the exact series it\n   draws, states the bucketing (for example `last 24 hours · 1h buckets`), and shows\n   a quiet \"No trend data yet\" line instead of inventing a trend when the series has\n   no measured buckets. Total Critical deliberately has no trendline, because no\n   per-severity bucket series exists for it.\n3. **Read the two bands** — below the strip, the page has two titled bands separated\n   by space rather than cards. **Alert flow** holds the Noise Reduction flow and Human\n   vs AI, which attributes the window's closes to the agent, an analyst, or system",
+   "text": "The tiles carry a **numeral and a label, and no standing caption**. What a numeral\n   counts, and the \"out of what\" behind it, live in the tile's help — the `?` beside\n   the label, which opens on click and is reachable by keyboard and touch — and in the\n   drill-down that opens when you select the tile. A caption appears only when\n   something is wrong with the measurement (see below). Where a numeral is a **lower\n   bound** rather than a fact, the tile marks the number itself with a `≥`, and the\n   full sentence is announced to screen readers; where a value is **withheld** because\n   the window was not fully covered, the em dash carries that explanation instead.\n   Hover or keyboard-focus a metric to reveal\n   its recent trendline for the same window — the card names the exact series it\n   draws, states the bucketing (for example `last 24 hours · 1h buckets`), and shows\n   a quiet \"No trend data yet\" line instead of inventing a trend when the series has\n   no measured buckets. Total Critical deliberately has no trendline, because no\n   per-severity bucket series exists for it.\n3. **Read the two bands.** Below the strip, the page has two titled bands. Each module\n   sits on its own soft tinted panel, with no border and no shadow, so you can see at a\n   glance where one ends and the next begins; the KPI strip and the Deeper analytics",
    "console": [
     "page:metrics"
    ]
@@ -1070,7 +1070,7 @@
    "page": "analyst/overview.md",
    "anchor": "read-the-page-from-top-to-bottom",
    "heading": "Read the page from top to bottom",
-   "text": "routing. **Cases and response** holds the case state (the Open cases and Cases\n   resolved composition rings, which show severity mix), **Response time** (MTTD paired\n   with Respond, the first human action), and Latest cases, which shows exactly five\n   recent records and reveals bounded detail on hover or keyboard focus. On very wide\n   screens the two bands sit side by side with a narrower rail.\n4. **Inspect Noise Reduction** — follow the horizontal ribbon from alerts ingested\n   through clustering and cases opened. Opened cases then split into\n   AI auto-cleared and escalated work; human closure is an overlapping analyst-owned\n   subset of escalated work, not newly created volume. The restored fan places those\n   operational views beside one another for scanability; the aligned labels carry the\n   authoritative relationship. Each stage\n   retains its count and percentage without decorative icon noise; those labels are\n   authoritative when the curves are visually compressed. Hover or focus a stage to\n   inspect severity detail. Selecting an outcome opens the matching selected-window\n   Cases cohort; earlier stages open the selected-window Cases context. Choose\n   **Expand** for a near-fullscreen, horizontally scrollable view. Beneath the aggregate\n   flow, inspect a lazy bounded sample of newest case-forming paths from one-way alert",
+   "text": "header sit on panels too. The band titles stay outside the panels, on the page, and\n   each module's own title sits inside its panel. **Alert flow** holds the Noise\n   Reduction flow and Human vs AI, which attributes the window's closes to the agent, an\n   analyst, or system routing. **Cases and response** holds the case state (the Open\n   cases and Cases resolved composition rings, which show severity mix and share one\n   panel, split by a thin line), **Response time** (MTTD paired with Respond, the first\n   human action), and Latest cases, which shows exactly five recent records and reveals\n   bounded detail on hover or keyboard focus. On very wide screens the two bands sit\n   side by side with a narrower rail.\n4. **Inspect Noise Reduction** — follow the horizontal ribbon from alerts ingested\n   through clustering and cases opened. Opened cases then split into\n   AI auto-cleared and escalated work; human closure is an overlapping analyst-owned\n   subset of escalated work, not newly created volume. The restored fan places those\n   operational views beside one another for scanability; the aligned labels carry the\n   authoritative relationship. Each stage\n   retains its count and percentage without decorative icon noise; those labels are\n   authoritative when the curves are visually compressed. Hover or focus a stage to",
    "console": [
     "page:metrics"
    ]
@@ -1080,7 +1080,7 @@
    "page": "analyst/overview.md",
    "anchor": "read-the-page-from-top-to-bottom",
    "heading": "Read the page from top to bottom",
-   "text": "references through the persisted deterministic cluster and opened case to its current\n   or terminal outcome. Coverage, store-page, and sample notices identify every bound\n   instead of presenting partial data as complete.\n5. **Check response timing** — look for changes in MTTD, MTTA, MTTR, or dwell, then\n   open **Deeper analytics**. It is one disclosure: **Efficiency and cost** (MTTA, MTTR,\n   Dwell, and LLM spend for the window) and **What's driving volume** (ingest coverage,\n   case volume, workload state, case outcomes, top signatures, and top entities). While\n   it is closed, its header summarizes what it holds, for example the timing figures,\n   spend, silent sources, and the top signature. Whether it is open is remembered for\n   your account, on every device. For opened-versus-resolved backlog growth, open\n   **Analytics → Metrics** and read **Closure vs arrival** on the Posture tab.",
+   "text": "inspect severity detail. Selecting an outcome opens the matching selected-window\n   Cases cohort; earlier stages open the selected-window Cases context. Choose\n   **Expand** for a near-fullscreen, horizontally scrollable view. Beneath the aggregate\n   flow, inspect a lazy bounded sample of newest case-forming paths from one-way alert\n   references through the persisted deterministic cluster and opened case to its current\n   or terminal outcome. Coverage, store-page, and sample notices identify every bound\n   instead of presenting partial data as complete.\n5. **Check response timing** — look for changes in MTTD, MTTA, MTTR, or dwell, then\n   open **Deeper analytics**. It is one disclosure: **Efficiency and cost** (MTTA, MTTR,\n   Dwell, and LLM spend for the window) and **What's driving volume** (ingest coverage,\n   case volume, workload state, case outcomes, top signatures, and top entities). While\n   it is closed, its header summarizes what it holds, for example the timing figures,\n   spend, silent sources, and the top signature. Whether it is open is remembered for\n   your account, on every device. For opened-versus-resolved backlog growth, open\n   **Analytics → Metrics** and read **Closure vs arrival** on the Posture tab.",
    "console": [
     "page:metrics"
    ]
@@ -1499,7 +1499,7 @@
    "page": "analyst/chat.md",
    "anchor": "the-page",
    "heading": "The page",
-   "text": "The Chat page has three zones:\n\n- **History** on the left: **New chat**, search, and your saved conversations. When the\n  window is narrow it shrinks to an icon strip, and on a small screen it opens as a\n  side sheet from the **History** button.\n- **Conversation** in the middle: the thread toolbar, the transcript, and the composer.\n- **Report** on the right, on demand: the report you are building from this\n  conversation. It opens beside the conversation when there is room and over it\n  otherwise. See Reports.\n\nThe thread toolbar shows the conversation title (select it to rename), the\nconversation's total tokens and cost, a **Report** toggle (with its item count once the\nreport has items), and a `⋯` menu with Rename, Pin conversation, Export conversation,\nSave conversation as report, Width, and Delete.",
+   "text": "The Chat page has three zones:\n\n- **History** on the left: **New chat**, search, and your saved conversations. When the\n  window is narrow it shrinks to an icon strip, and on a small screen it opens as a\n  side sheet from the **History** button.\n- **Conversation** in the middle: the thread toolbar, the transcript, and the composer.\n- **Report** on the right, on demand: the report you are building from this\n  conversation. It opens beside the conversation when there is room and over it\n  otherwise. When the history rail has to shrink to make room, the page says \"History\n  collapsed to make room for the report\", and closing the report brings the docked rail\n  back. See Reports.\n\nThe thread toolbar shows the conversation title (select it to rename), a **Report**\ntoggle (with its item count once the report has items), and a `⋯` menu. The menu's\nfirst line is the conversation's usage, for example \"This chat: 12.4k tokens · $0.03\"\n(\"Usage not recorded\" for a conversation saved before usage was recorded). Then come\n**Rename**, **Pin** (or **Unpin**), **Export**, **Save conversation as report**, and\n**Delete**, and a **View** group with the conversation width.",
    "console": []
   },
   {
@@ -1507,15 +1507,97 @@
    "page": "analyst/chat.md",
    "anchor": "conversation-width",
    "heading": "Conversation width",
-   "text": "The conversation uses the width the page gives it: when you collapse the navigation\nor the history rail, the answers grow into the space, up to the full width of the\nscreen. Prose keeps a readable line length on the left edge, and charts, tables, and the\nmessage box use the whole width. Choose how wide it may grow under `⋯` → **Width**:\n\n| Width | Use it for |\n|---|---|\n| **Comfortable** | A narrower column, up to about 1,000 px |\n| **Wide** | Up to about 1,400 px, centred on very wide screens |\n| **Full width** (default) | All the space beside the menus, for wide tables and charts |\n\nThe choice is saved to your account and follows you to other devices; if you chose\nComfortable or Wide before, your choice is kept. With Comfortable or Wide, a single chart\nor table can also take the full width from its own `⋯` menu (**Full width**).",
+   "text": "The conversation uses the width the page gives it: when you collapse the navigation\nor the history rail, the answers grow into the space, up to the full width of the\nscreen. Answers keep one **reading column** on the left edge: answer text wraps before\nabout 90 characters a line, and small results stay in that column beside the text that\nexplains them. Larger results, the start screen's suggestions, and the message box use\nthe whole width. Choose how wide the conversation may grow under `⋯` → **View**:\n\n| Width | Use it for |\n|---|---|\n| **Comfortable** | Narrower, easier to read: up to about 1,000 px |\n| **Wide** | Wider: up to about 1,400 px, centred on very wide screens |\n| **Full width** (default) | Fills the space beside the menus, for wide tables and charts |\n\nThe choice is saved to your account and follows you to other devices; if you chose\nComfortable or Wide before, your choice is kept. With Comfortable or Wide, a single chart\nor table can also take the full width from its own `⋯` menu (**Full width**). **View**\nappears only where the conversation is wider than Comfortable allows: on a phone, or\nbeside the history rail on a laptop screen, all three widths would look the same, so the\nmenu leaves them out until there is room.",
    "console": []
+  },
+  {
+   "id": "analyst/chat#conversation-width:1",
+   "page": "analyst/chat.md",
+   "anchor": "conversation-width",
+   "heading": "Conversation width",
+   "text": "A result stays in the reading column when it is small: up to four key figures, an\nindicator card, a case list, ATT&CK techniques, a table of up to three columns, or a\nbar, donut, or funnel chart of up to 12 categories. Time charts, wider tables, heatmaps,\ntimelines, queries, and Briefs use the whole width.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#start-a-chat:0",
+   "page": "analyst/chat.md",
+   "anchor": "start-a-chat",
+   "heading": "Start a chat",
+   "text": "A new chat opens on a short start screen, directly above the message box, so the\nsuggestions sit next to where you type and nothing moves when you send:\n\n- **A greeting**, such as \"Good afternoon, Priya\", from your display name (set it on\n  **Account**), else your username.\n- **What changed since you were last here**, for the first hour of a visit when anything\n  did (a new visit starts after 30 minutes away): \"Since 09:12: 5 new cases (2 critical),\n  1 of your cases changed and Wazuh quiet for 3 hours.\" Each part is a link that asks\n  about it. Otherwise the line reads \"Ask about cases, logs, metrics or this console.\"\n- **Suggested questions**: three or four cards (four in a row on a wide screen, two by\n  two on a medium one, three in a column on a phone), each a question about your own\n  data right now, with a short reason under it, such as \"Escalated 2 hours ago, risk 86\".\n- **Category pills**: **Investigate**, **Hunt**, **Posture**, **Report**, **Learn the\n  app**, and **All prompts**. Each opens the prompt library\n  filtered to that kind of question. A pill appears only when the library holds a prompt\n  in its category that you may run.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#suggested-questions:0",
+   "page": "analyst/chat.md",
+   "anchor": "suggested-questions",
+   "heading": "Suggested questions",
+   "text": "The cards are computed by code from what is in the console now, under your own\npermissions: no AI model builds, ranks, or words them, and building them costs nothing.\nThey read the platform's own records (cases, source health, campaigns, approvals, and\nspend), never raw logs. Every number on a card is exact, and a card appears only when\nyou hold the permissions its answer needs, so a card never offers an answer you cannot\nsee.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#suggested-questions:1",
+   "page": "analyst/chat.md",
+   "anchor": "suggested-questions",
+   "heading": "Suggested questions",
+   "text": "| A card about | When it appears |\n|---|---|\n| A case that needs a person | An escalated case, one waiting for review, or an open case whose AI verdict is Needs human, that is unassigned or assigned to you; the most urgent one |\n| Your cases | Open cases are assigned to you; the card says how long ago the oldest was assigned when every case's history records its assignment, else how long ago the oldest was opened |\n| Response targets | SLA targets are on and open cases are past, or close to, their response target |\n| New cases | Cases have opened since your last visit |\n| Case volume | New cases in the last 24 hours are at least twice the usual daily level (and 5 or more above it), or half of it or less |\n| A noisy detection rule | One rule created at least 10 cases, and 30% or more of all new cases, in the last 24 hours; when the rule's id is too long to show (see below), the card asks \"Which detection rule created 12 of the 40 cases in the last 24 hours, and why?\" and the answer finds the rule by that count |\n| A campaign | A campaign is new, or has grown, since your last visit (a new one first); the card names it by one of its cases (\"the campaign that includes CASE-000046\"), never by its internal id, and the answer is about the campaign that holds that case now |",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#suggested-questions:2",
+   "page": "analyst/chat.md",
+   "anchor": "suggested-questions",
+   "heading": "Suggested questions",
+   "text": "| A quiet log source | A log source has gone quiet or is failing its polls; the card names it by its display name, or by its id when the name does not fit, and otherwise asks \"Which log source has gone quiet, and is ingestion working?\" |\n| AI spending | Today's AI budget, or the chat spending limit, is mostly used (needs `models:read` and `cost:view`) |\n| Your shift | The start of your shift (your first visit after 8 hours or more away), or a handoff 7 to 13 hours after it |\n| The week or the month | The first visit of a new week (Monday) or a new month (the 1st) |\n| A chat to continue | One of your other conversations has a new answer, or a question waiting for you, from the last 24 hours |\n| A saved prompt | You starred a saved prompt or promptbook |\n| A hunt | An ATT&CK technique appeared in 3 or more cases in the last 7 days |\n| Approvals | Tuning changes are waiting for approval |\n| Auto-close health | The auto-close health check reports auto-close as degraded or collapsed |\n| Demo Mode | Demo Mode is on |",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#suggested-questions:3",
+   "page": "analyst/chat.md",
+   "anchor": "suggested-questions",
+   "heading": "Suggested questions",
+   "text": "The most urgent cards come first, cards about your own cases rank higher, and a card you\nhave seen three times without using it gives way to others. When fewer cards apply, the\neveryday questions fill the rest: which open cases need attention first, posture now, an\nexecutive report for the last 7 days, the Active Risk Index explained, and a tour of the\nconsole. On a fresh install with no source and no case, the first card is \"How do I\nconnect my first log source?\".\n\nA card names a case, rule, source or technique in its question only when no word of\nthat name is longer than 27 characters, so a long id (an Elastic rule id has 36\ncharacters) never adds a line to the start screen; the card is never cut short, it asks\nwithout the name instead. The one exception is a case without a display number, which keeps its internal\nid: with case numbering switched off, no other words name one case among several. A name\nthe card does show is kept whole: it moves to the next line rather than breaking at a\nhyphen, unless it is wider than the whole card.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#suggested-questions:4",
+   "page": "analyst/chat.md",
+   "anchor": "suggested-questions",
+   "heading": "Suggested questions",
+   "text": "Selecting a card sends its question as written, at once; nothing is typed into your\nmessage box. A card that names a case, rule, source, or technique sends that\nvalue to the assistant marked as data from your systems, not as your own words, so an\nindicator in it is looked up with an enrichment provider only when the answer's own\nlookups return it (see What chat can read). Two cards act\ndifferently: **Continue** opens that conversation, and a saved prompt card does what\n**Use** does in the prompt library. The cards are a snapshot: when a number has changed\nby the time you send, or the case was closed, the answer says so.\n\nCards refresh every two minutes while the page is visible, and when you come back to the\nwindow after that, but never while your pointer is over them or focus is on them, so a\ncard never moves under you. While an answer is being written, the cards are paused.\n\nWhen an administrator has turned on row-level scope for your role, cards about cases and\nthe catch-up line are not shown, because chat's case lookups do not apply that scope yet\nand a card must never state a count the answer would contradict.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#suggested-questions:5",
+   "page": "analyst/chat.md",
+   "anchor": "suggested-questions",
+   "heading": "Suggested questions",
+   "text": "**Hide for a day.** Point at a card (or tab to it) and select **Hide for a day** in its\ncorner, or press **Delete** or **Backspace** on a focused card. The next suggestion takes\nits place and the other cards stay where they are. A notice \"Hidden for a day\" offers\n**Undo**, which puts the card back where it was; while the notice shows, Ctrl+Z (⌘Z on a\nMac) on the start screen does the same. The card is hidden on the server only\nwhen the notice closes without **Undo**; that kind of card then stays away for 24 hours.\n\nThe start screen appears with its suggestions, so nothing on it moves as they arrive;\nwhen they take longer than about half a second, placeholder cards hold their place\nuntil they do. If the suggestions cannot be loaded, the start screen says \"Couldn't\nload suggestions.\" with **Retry**; the message box works as usual. When there is little height, the greeting\nis hidden and the rest stays.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#catching-up-in-an-open-conversation:0",
+   "page": "analyst/chat.md",
+   "anchor": "catching-up-in-an-open-conversation",
+   "heading": "Catching up in an open conversation",
+   "text": "When you come back to a conversation whose last answer is 30 minutes old or more, one\nquiet line above the message box can say what changed since that answer, in the same\nwords as the start screen. Each part asks about it in the same conversation. The line\ndisappears as soon as you type, an answer starts, or you select **Hide this summary**,\nand it shows at most once per conversation per visit.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#turn-suggestions-off:0",
+   "page": "analyst/chat.md",
+   "anchor": "turn-suggestions-off",
+   "heading": "Turn suggestions off",
+   "text": "- **For yourself:** in the message box's Options `⋯`, clear **Suggestions when a chat\n  starts** (the start screen's cards and the catch-up lines) or **Suggested follow-ups**\n  (the chips under an answer, see Follow-ups). Each choice is saved to your\n  account. With the start screen's suggestions off, a new chat shows only the greeting,\n  the line \"Ask about cases, logs, metrics or this console.\", and the category pills.\n- **For everyone:** an administrator can turn off **Suggest questions from live data**\n  under **Settings → General → Chat assistant**. New chats then offer only the everyday\n  questions and no catch-up line.\n\nSuggestions store only what they need to rotate and hide cards: which kinds of card you\nsaw, used, or hid, as opaque keys with counts and times, and when you last visited. No\nquestion text, value, or answer is stored, nothing of it is sent to a model or used to\ntrain one, it is never shown to anyone else or combined across users, and it is deleted\nwith your account. A suggestion you send is an ordinary question, recorded and metered\nlike any other.",
+   "console": [
+    "settings:chat_agent"
+   ]
   },
   {
    "id": "analyst/chat#ask-a-question:0",
    "page": "analyst/chat.md",
    "anchor": "ask-a-question",
    "heading": "Ask a question",
-   "text": "Type into the composer and press **Enter**; **Shift+Enter** adds a new line. A new\nconversation opens with six starters: *Investigate*, *Hunt an indicator*, *Posture\nnow*, *Shift brief*, *Explain a metric*, and *Learn the app*. A starter appears only\nwhen you hold the permissions its lookups need, and its question is built from your\nown data, such as your newest open case or your primary source.\n\nThe composer has one row of controls under the text box:",
+   "text": "Type into the message box, which reads \"Ask about cases, logs, metrics or this console\"\n(\"Ask a question\" on a narrow screen), and press **Enter**; **Shift+Enter** adds a new\nline. While the box is focused and empty, a muted hint at the right of its controls\nreads \"/ commands · @ scope\". The box has a quiet frame at rest and a clearer one while\nyou type in it.\n\nThe composer has one row of controls under the text box:",
    "console": []
   },
   {
@@ -1523,7 +1605,7 @@
    "page": "analyst/chat.md",
    "anchor": "ask-a-question",
    "heading": "Ask a question",
-   "text": "| Control | What it does |\n|---|---|\n| **Read-only** | Opens **What the assistant can access**: every lookup, its data source, the permission it needs, and whether you have it. A lookup an administrator switched off reads \"Turned off on this deployment\". |\n| Scope | The log source and time range in one chip, for example \"Wazuh · Auto\" or \"Wazuh · 30d\". The default, **Auto**, chooses no range and sets no outer limit: each lookup uses its own default window (see Time windows). The ranges are **1h**, **24h**, **7d**, **30d**, **90d**, **6mo**, **12mo**, and **All time**. A range you choose is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it. **All time** never limits a question. The shift brief covers at most 7 days, and agent improvement always compares its own fixed periods. The run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |\n| `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |\n| `/` commands | Type `/` at the start for the commands below, your saved prompts, and the prompt library. |\n| `≈ 1.2k` and the ring | The token estimate for your next request, and a ring that shows how much of the model's context window that request uses (see Tokens and cost). |\n| Options `⋯` | Model, **Type out answers**, Prompts (your saved prompts, **Save current prompt**, and **Prompt library…**), and Keyboard shortcuts. A non-default model also shows as a removable chip. A reopened conversation starts on the default model; each saved answer still names the model it used. |\n| Send / Stop | Send becomes Stop while an answer is being written. |",
+   "text": "| Control | What it does |\n|---|---|\n| **Read-only** | Opens **What the assistant can access**: every lookup and its data source. A lookup you may not run says which permission it needs, such as \"Needs permission to read sources (sources:read)\", so an administrator can grant it. A lookup an administrator switched off reads \"Turned off on this deployment\". |\n| Scope | The log source and time range in one chip, for example \"Wazuh · Auto\" or \"Wazuh · 30d\". The default, **Auto**, chooses no range and sets no outer limit: each lookup uses its own default window (see Time windows). The popover says it in one line, \"Auto: each lookup uses its own default window.\", with the details under **How ranges work**. The ranges are **1h**, **24h**, **7d**, **30d**, **90d**, **6mo**, **12mo**, and **All time**. A range you choose is used by every lookup whose question names no window, and is an outer limit: a question can narrow it but never widen it. **All time** never limits a question. The shift brief covers at most 7 days, and agent improvement always compares its own fixed periods. The run log shows the window each lookup used. Reopening a saved conversation restores its time range; the source starts at **All sources**. |",
    "console": []
   },
   {
@@ -1531,7 +1613,7 @@
    "page": "analyst/chat.md",
    "anchor": "ask-a-question",
    "heading": "Ask a question",
-   "text": "On a narrow composer, the scope chips merge into one **Scope · n** chip, the\n**Read-only** chip shows only its lock, and the model chip shows only its icon.",
+   "text": "| `@` scopes | Type `@` to limit lookups to `logs`, `cases`, `metrics`, `intel`, `docs`, or `platform`. A scope you lack the permission for is shown disabled with the permission it needs. |\n| `/` commands | Type `/` at the start for the commands below, your saved prompts, and the prompt library. |\n| Token meter | Hidden until you type (or until the conversation uses half of the model's context window). Then it reads, for example, \"≈ 4.1k tokens\", the estimate for your next request, with a ring that shows how much of the context window that request uses; on a narrow composer only the ring shows (see Tokens and cost). |\n| Options `⋯` | Model, **Type out answers**, **Suggestions when a chat starts**, **Suggested follow-ups**, Prompts (your **Favourites** or your saved prompts, **Save current prompt**, and **Prompt library…**), and Keyboard shortcuts. A non-default model also shows as a removable chip. A reopened conversation starts on the default model; each saved answer still names the model it used. On a phone, the model list and the prompts are listed inside the menu. |\n| Send / Stop | Send becomes Stop while an answer is being written. |\n\nOn a narrow composer, the scope chips merge into one **Scope · n** chip, the\n**Read-only** chip shows only its lock, and the model chip shows only its icon. Every\nmenu and popover of the composer keeps a 16 px gap from the edge of the screen.",
    "console": []
   },
   {
@@ -1569,7 +1651,15 @@
    "page": "analyst/chat.md",
    "anchor": "commands",
    "heading": "Commands",
-   "text": "| Command | Asks |\n|---|---|\n| `/shift-brief` | A shift handoff: summary, open work, key metrics, and next steps |\n| `/posture` | How the SOC is doing right now, with trends |\n| `/cost` | AI spend and tokens by role and model |\n| `/sources` | Which log sources are silent or degraded, and coverage |\n| `/hunt ` | What is known about an IP, domain, hash, or URL across logs, cases, and threat intel |\n| `/case ` | What happened in a case, its evidence, and why it was decided that way |\n| `/help ` | How a part of this console works |\n| `/report ` | Create a report from a template (see Reports from chat) |\n| `/compact` | Summarize the earlier messages of this conversation to make room |\n\nA command is listed only when you may run its lookups. Commands without a value send at\nonce. A command that takes a value fills the composer and selects the placeholder so you\ncan type the value and press Enter: the value is then your own words, which matters for\nindicator lookups (see What chat can read). In the `/` and `@`\nmenus, **Enter** chooses an item; **Tab** moves focus and never sends.\n\n`/compact` works in a saved conversation only, and only when chat runs without limits;\ntext after `/compact` is not sent. See Long conversations.",
+   "text": "| Command | Asks |\n|---|---|\n| `/shift-brief` | A shift handoff: summary, open work, key metrics, and next steps |\n| `/posture` | How the SOC is doing right now, with trends |\n| `/cost` | AI spend and tokens by role and model |\n| `/sources` | Which log sources are silent or degraded, and coverage |\n| `/hunt ` | What is known about an IP, domain, hash, or URL across logs, cases, and threat intel |\n| `/case ` | What happened in a case, its evidence, and why it was decided that way |\n| `/help ` | How a part of this console works |\n| `/report ` | Create a report from a template (see Reports from chat) |\n| `/compact` | Summarize the earlier messages of this conversation to make room |\n\nA command is listed only when you may run its lookups. Commands without a value send at\nonce. A command that takes a value fills the composer and selects the placeholder so you\ncan type the value and press Enter: the value is then your own words, which matters for\nindicator lookups (see What chat can read). In the `/` and `@`\nmenus, **Enter** chooses an item; **Tab** moves focus and never sends. Each menu opens on\nits first row. Group headings stay in view as the list scrolls, and each row has its\ndescription on a second line. Pointing at a row highlights it without scrolling the\nlist; the arrow keys scroll it.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#commands:1",
+   "page": "analyst/chat.md",
+   "anchor": "commands",
+   "heading": "Commands",
+   "text": "`/compact` works in a saved conversation only, and only when chat runs without limits;\ntext after `/compact` is not sent. See Long conversations.",
    "console": []
   },
   {
@@ -1577,7 +1667,7 @@
    "page": "analyst/chat.md",
    "anchor": "the-prompt-library",
    "heading": "The prompt library",
-   "text": "Keep the questions you ask often, and start from the starter prompts that ship with\nthe product. Open the library with **Prompt library** in the `/` menu, or with **Prompt\nlibrary…** in the Options menu's Prompts list. It lists your own prompts and the\nread-only **starter prompts**, filtered by category (Triage, Hunt, IOC, Posture,\nReporting, and App help) or by **Favorites**, with a search box.",
+   "text": "Keep the questions you ask often, and start from the starter prompts that ship with\nthe product. Open the library with **Prompt library** in the `/` menu, with **Prompt\nlibrary…** in the Options menu's Prompts list, or with a category pill on the start\nscreen, which opens it filtered to that category. It lists your own prompts and the\nread-only **starter prompts**, filtered by category (Triage, Hunt, IOC, Posture,\nReporting, and App help) or by **Favourites**, with a search box.\n\nSelect a row to use it: the prompt fills the message box (or asks for its values first).\nA row's `⋯` menu holds **Save a copy**. A promptbook row says how many steps it has,\nsuch as \"3 steps\", and expands to show them. Closing the library without choosing\nreturns you to where you opened it.",
    "console": []
   },
   {
@@ -1609,7 +1699,7 @@
    "page": "analyst/chat.md",
    "anchor": "live-steps-and-type-out-answers",
    "heading": "Live steps and Type out answers",
-   "text": "Chat has two live modes, switched with **Type out answers** in the composer's Options\nmenu:\n\n- **Live steps** (the default): every lookup appears as it runs, and the token and cost\n  counter updates after every model call. The written answer arrives whole.\n- **Type out answers**: the same, plus the final answer appears word by word.\n\nYour choice is remembered for your account and takes effect from the next question.\nEach answer records the mode it ran with. When an administrator has turned typed-out\nanswers off, or the selected model cannot stream, the switch is disabled and says why.",
+   "text": "Chat has two live modes, switched with **Type out answers** in the composer's Options\nmenu:\n\n- **Live steps** (the default): every lookup appears as it runs, and the token and cost\n  counter updates after every model call. The written answer arrives whole.\n- **Type out answers**: the same, plus the final answer appears word by word.\n\nYour choice is remembered for your account and takes effect from the next question.\nEach answer records the mode it ran with. Under the switch, one line says what it does:\n\"Shows the answer as it is written.\" When an administrator has turned typed-out answers\noff, or the selected model cannot stream, the switch is disabled and says why.",
    "console": []
   },
   {
@@ -1617,7 +1707,7 @@
    "page": "analyst/chat.md",
    "anchor": "follow-an-answer-as-it-runs",
    "heading": "Follow an answer as it runs",
-   "text": "While the assistant works, a run log sits under your question. Its header shows the\nrunning totals, for example \"Working · 3 lookups · 1.2k tokens · $0.002\". It has one\nrow per lookup, or per group of lookups that ran side by side. A row shows:\n\n- its status: Done, Failed, Timed out, Denied, Skipped, or Stopped;\n- what it did, such as \"Searched logs\" or \"Counted cases\";\n- chips for the effective parameters, including the time window and source;\n- a short result with row counts, the basis (exact, newest N, sample, or cached), and\n  coverage such as \"newest 200 of 1,284,113\" or \"3 of 4 sources answered\";\n- the exact query behind a disclosure, shown as untrusted code; and\n- **Inspect**, once the lookup has finished (see Inspect a lookup).\n\nA count over a very large case store reports its progress while it runs, for example\n\"Counted 42,000 of 118,402 cases…\". Model calls add no rows of their own; their tokens\ntick on the header. While the assistant waits on the model, one row shows **Thinking**,\nor **Writing the answer** when it has been asked to finish. A few quiet rows explain\nwhat the assistant did to keep going:",
+   "text": "While the assistant works, a run log sits under your question. Before the first lookup\nit reads \"Reading your question…\", then \"Choosing lookups…\". Its header then shows the\nprogress on the left, for example \"Working · 3 lookups\", and the running totals on the\nright, for example \"1.2k tokens · $0.002\"; on a narrow screen the totals move under the\nprogress. It has one row per lookup, or per group of lookups that ran side by side. A\nrow shows:\n\n- its status as an icon: a check when it is done, or the word Failed, Timed out,\n  Denied, Skipped, or Stopped;\n- what it is doing while it runs, such as \"Searching logs\", then what it did, such as\n  \"Searched logs\" or \"Counted cases\", and how long it took;\n- chips for the effective parameters in words, including the time window and source,\n  in the same order while the lookup runs and once it has finished; a lookup over\n  several sources reads \"3 sources\", and selecting it lists them;\n- a short result with row counts, the basis (exact, newest N, sample, or cached), and\n  coverage such as \"newest 200 of 1,284,113\" or \"3 of 4 sources answered\";\n- the exact query behind a disclosure, shown as untrusted code; and\n- **Inspect**, once the lookup has finished (see Inspect a lookup).\n\nWhile a result is still on its way, the space it will take is kept for it, so the\nanswer does not jump when it arrives.",
    "console": []
   },
   {
@@ -1625,7 +1715,15 @@
    "page": "analyst/chat.md",
    "anchor": "follow-an-answer-as-it-runs",
    "heading": "Follow an answer as it runs",
-   "text": "| Row | Meaning |\n|---|---|\n| Continued the answer (part 2) | The model reached its output length and the answer carried on in another model call; the text keeps streaming and is never cut |\n| Earlier messages were summarised to keep going | Earlier messages of this saved conversation were folded into a summary to fit the model's context window |\n| Already ran as t2 in this question | The same lookup with the same inputs was asked for again, so its earlier result was reused instead of running it twice |\n| Wrapped up after a very long investigation | The question ran for an exceptionally long time, so the assistant wrote its answer from what it had gathered |\n| Waiting for another answer to finish | You, or the backend, already have the maximum number of answers running; this question starts as soon as one finishes (after five minutes it stops and offers Retry) |\n\nWhen the answer is done, the last model call stays as one **Wrote the answer** row, and\na model call that failed or timed out keeps its row. When the answer starts, the run log\nfolds into the answer's meta row, where you can reopen it.",
+   "text": "A count over a very large case store reports its progress while it runs, for example\n\"Counted 42,000 of 118,402 cases…\". Model calls add no rows of their own; their tokens\ntick on the header. While the assistant waits on the model, one row shows **Thinking**,\nor **Writing the answer** when it has been asked to finish. A few quiet rows explain\nwhat the assistant did to keep going:\n\n| Row | Meaning |\n|---|---|\n| Continued the answer (part 2) | The model reached its output length and the answer carried on in another model call; the text keeps streaming and is never cut |\n| Earlier messages were summarised to keep going | Earlier messages of this saved conversation were folded into a summary to fit the model's context window |\n| Already ran as t2 in this question | The same lookup with the same inputs was asked for again, so its earlier result was reused instead of running it twice |\n| Wrapped up after a very long investigation | The question ran for an exceptionally long time, so the assistant wrote its answer from what it had gathered |\n| Waiting for another answer to finish | You, or the backend, already have the maximum number of answers running; this question starts as soon as one finishes (after five minutes it stops and offers Retry) |",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#follow-an-answer-as-it-runs:2",
+   "page": "analyst/chat.md",
+   "anchor": "follow-an-answer-as-it-runs",
+   "heading": "Follow an answer as it runs",
+   "text": "When the answer is done, the last model call stays as one **Wrote the answer** row, and\na model call that failed or timed out keeps its row. When the answer starts, the run log\nfolds into the answer's meta row, where you can reopen it.",
    "console": []
   },
   {
@@ -1633,7 +1731,7 @@
    "page": "analyst/chat.md",
    "anchor": "leave-and-come-back",
    "heading": "Leave and come back",
-   "text": "You do not need to stay on the Chat page while an answer is being written. Leave for\nanother page and the answer keeps going; come back and the run log and **Stop** pick up\nwhere they are, live. After a page reload, a running answer is rejoined the same way.\nOther open tabs of the console show the same working indicator. When you are signed in,\nso does the console in your other browsers and on your other devices, and an answer you\nread in one of them is no longer marked as new in the others.\n\nWhile chat works away from the screen:\n\n- the **Chat** item in the navigation shows a turning ring; an accent dot means a new\n  answer you have not read, amber means a question you have not opened yet is waiting\n  for your input, and red means an answer failed;\n- the logo can show a thin turning ring too (an administrator can turn this off, and a\n  custom logo itself never moves);\n- the browser tab title starts with **●** while an answer is being written and **✓**\n  when one is ready; and\n- when an answer is ready and Chat is not on screen, you get one **Answer ready**\n  notice with **Open**. If the first answer in a new chat could not be completed or\n  saved, the notice offers **Ask again** instead: a question you typed comes back in the\n  message box for you to send, and an **Ask AI** or **Ask about this** question is asked\n  again as it was, never put in the message box.",
+   "text": "You do not need to stay on the Chat page while an answer is being written. Leave for\nanother page and the answer keeps going; come back and the run log and **Stop** pick up\nwhere they are, live. After a page reload, a running answer is rejoined the same way.\nOther open tabs of the console show the same working indicator. When you are signed in,\nso does the console in your other browsers and on your other devices, and an answer you\nread in one of them is no longer marked as new in the others.\n\nWhile chat works away from the screen:",
    "console": []
   },
   {
@@ -1641,7 +1739,7 @@
    "page": "analyst/chat.md",
    "anchor": "leave-and-come-back",
    "heading": "Leave and come back",
-   "text": "History rows show the same states: answering, needs your input, answer failed, or new\nanswer. With reduced motion, the ring is still and its tooltip says \"Working\". A Case\nManager chat keeps its transcript when you switch tabs and shows its own indicator on\nthe case.",
+   "text": "- the **Chat** item in the navigation shows a turning ring; an accent dot means a new\n  answer you have not read, amber means a question you have not opened yet is waiting\n  for your input, and red means an answer failed;\n- on a phone, where the navigation sits behind the menu button, that button shows a\n  small dot while an answer is being written;\n- the logo can show a thin turning ring too, on larger screens (an administrator can\n  turn this off, and a custom logo itself never moves);\n- the browser tab title starts with **●** while an answer is being written and **✓**\n  when one is ready; and\n- when an answer is ready and Chat is not on screen, you get one **Answer ready**\n  notice with **Open**. If the first answer in a new chat could not be completed or\n  saved, the notice offers **Ask again** instead: a question you typed comes back in the\n  message box for you to send, and an **Ask AI** or **Ask about this** question is asked\n  again as it was, never put in the message box.\n\nHistory rows show the same states: answering, needs your input, answer failed, or new\nanswer. With reduced motion, the ring is still and its tooltip says \"Working\". A Case\nManager chat keeps its transcript when you switch tabs and shows its own indicator on\nthe case.",
    "console": []
   },
   {
@@ -1649,7 +1747,7 @@
    "page": "analyst/chat.md",
    "anchor": "read-an-answer",
    "heading": "Read an answer",
-   "text": "A finished answer reads from top to bottom:\n\n1. **The answer**: the direct answer first, then the evidence. A long answer with four\n   or more headings starts with a **Contents** list, and a long answer offers **Jump to\n   end**.\n2. **Blocks**: charts, tables, and other results (see below).\n3. **The meta row**: one line such as \"4 lookups · 6.2 s · 2.1k tokens · $0.004\".\n   Select the lookups to reopen the run log, or the token figure for usage details.\n   **Sources** lists the answer's citations and console links. Thumbs up and thumbs\n   down rate the answer (see Rate an answer). **Copy**, **Add to\n   report**, and the **More actions** menu (Copy answer, Add answer to report, **Add to\n   case…**, and **Ask again**) sit at the right; on older answers they appear when you\n   point at or tab into the answer.\n4. **Follow-ups**: up to three suggested next questions, on the latest answer only.\n\nAn answer about the product carries a **Product help** label, shown only when no data\nlookup ran. An answer saved before usage was recorded shows \"Usage not recorded · —\"\ninstead of a zero. In Demo Mode, money figures are marked \"simulated\".\n\nA notice at the top of an answer explains anything unusual:",
+   "text": "A finished answer reads from top to bottom:",
    "console": []
   },
   {
@@ -1657,7 +1755,23 @@
    "page": "analyst/chat.md",
    "anchor": "read-an-answer",
    "heading": "Read an answer",
-   "text": "| Notice | What it means |\n|---|---|\n| Answered with what chat can read | Chat looked things up and answered, but part of the question is outside what its lookups can read |\n| Not something this assistant can do | Nothing chat can read applies; the answer links the console page for it when there is one |\n| Stopped repeating the same lookup | The assistant kept asking for the same results without making progress, so it answered from what it had gathered |\n| Some lookups were not allowed | You lack a permission, or policy does not allow the lookup (for example, a private address is never sent to an outside service); the notice says which |\n| Stopped | You pressed Stop; what was done is kept |\n| Partial answer | A lookup or a model call failed, or the model provider stopped responding |\n| Chat spending limit reached | The optional daily chat spending limit was reached (see Tokens and cost) |\n\n**Retry** appears only when retrying can help. A quiet line under an answer says when\nearlier messages were summarised to keep the conversation going.",
+   "text": "1. **The answer**: the direct answer first, then the evidence. When a block shows the\n   figures, the text gives the takeaway and names at most two of them. A long answer\n   with four or more headings starts with a **Contents** list, and a long answer offers\n   **Jump to end**. An answer never ends with a question or an offer; suggestions go\n   in the follow-ups.\n2. **Blocks**: charts, tables, and other results (see below).\n3. **The meta row**: one line such as \"4 lookups · 6.2 s · $0.004 · Sources 3\". Select\n   the lookups to reopen the run log, or the cost for the usage card, which holds the\n   tokens (an answer without a cost shows its token figure there instead). **Sources**\n   lists the answer's citations and console links. At the right: **Copy**, thumbs up\n   and thumbs down (see Rate an answer), and the **More actions**\n   menu (**Add answer to report**, **Add to case…**, and **Ask again**). On older\n   answers they appear when you point at or tab into the answer. While the whole answer\n   is in the report, an **In report** chip shows before them; selecting it takes the\n   answer out. On a narrow screen the row keeps \"4 lookups · 6.2 s\", the thumbs, and\n   **More actions**, which then also holds **Copy answer**, **Usage details**, and\n   **Sources**, so no figure is ever cut.\n4. **Follow-ups**: up to three suggested next questions, on the latest answer only (see\n   Follow-ups).",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#read-an-answer:2",
+   "page": "analyst/chat.md",
+   "anchor": "read-an-answer",
+   "heading": "Read an answer",
+   "text": "An answer about the product carries a **Product help** label, shown only when no data\nlookup ran. An answer saved before usage was recorded shows \"Usage not recorded\" instead\nof a zero. A figure that a lookup could not provide reads \"not available\". In Demo\nMode, money figures are marked \"simulated\".\n\nA notice at the top of an answer explains anything unusual:\n\n| Notice | What it means |\n|---|---|\n| Answered with what chat can read | Chat looked things up and answered, but part of the question is outside what its lookups can read |\n| Not something this assistant can do | Nothing chat can read applies; the answer links the console page for it when there is one |\n| Stopped repeating the same lookup | The assistant kept asking for the same results without making progress, so it answered from what it had gathered |\n| Some lookups were not allowed | You lack a permission, or policy does not allow the lookup (for example, a private address is never sent to an outside service); the notice says which |\n| Stopped | You pressed Stop; what was done is kept |\n| Partial answer | A lookup or a model call failed, or the model provider stopped responding |\n| Chat spending limit reached | The optional daily chat spending limit was reached (see Tokens and cost) |",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#read-an-answer:3",
+   "page": "analyst/chat.md",
+   "anchor": "read-an-answer",
+   "heading": "Read an answer",
+   "text": "**Retry** appears only when retrying can help. A quiet line under an answer says when\nearlier messages were summarised to keep the conversation going.",
    "console": []
   },
   {
@@ -1669,11 +1783,27 @@
    "console": []
   },
   {
+   "id": "analyst/chat#follow-ups:0",
+   "page": "analyst/chat.md",
+   "anchor": "follow-ups",
+   "heading": "Follow-ups",
+   "text": "Under the latest answer, up to three suggested next questions sit in one quiet row, each\nwith a small arrow. They are about something the answer shows, such as an entity, a\nwindow, a breakdown, or a case: usually one or two that go deeper and one that widens,\nfor example \"Investigate the top source IP in this answer\", \"Break this down by rule\ninstead\", \"Which of these cases are still open, and who has them?\", \"Explain T1190 and\nwhether other cases show it\", \"What else did this host do in the last 7 days?\",\n\"Compare this with the previous week\", or \"Show the same for the last 30 days\".",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#follow-ups:1",
+   "page": "analyst/chat.md",
+   "anchor": "follow-ups",
+   "heading": "Follow-ups",
+   "text": "The assistant's own suggestions are kept only when they name something the answer\nshows, so a hunt for one technique never suggests a different one. A suggestion names a\ncase only when the answer shows or names that case: a case a lookup merely read, such as\nthe first row of the shift report behind an \"Open cases by analyst\" chart, is never\noffered. A case named in the answer counts in any numbering, including your own\ntemplate (\"INC/2026/0042\"). An answer about the\nproduct, or a conversation without data, keeps at most two of them, and none that names\na case the answer does not name. A suggestion that\nrepeats a question already asked in the conversation, or that needs a lookup you may not\nrun, is left out. Suggestions are chosen by code from the answer and the assistant's own\nlist, with no extra model call.\n\nSelecting a suggestion sends it as your next question; it counts as a suggestion, not as\nyour own words, for indicator lookups. When you skip the suggestions of five answers in a\nrow, only the first suggestion shows until you use one again (counted in this browser).\nTo hide follow-ups altogether, clear **Suggested follow-ups** in the message box's\nOptions `⋯`.",
+   "console": []
+  },
+  {
    "id": "analyst/chat#when-nothing-matched:0",
    "page": "analyst/chat.md",
    "anchor": "when-nothing-matched",
    "heading": "When nothing matched",
-   "text": "When a lookup finds nothing, the answer says so in words, and one-click suggestions\nunder it widen the search, for example a longer time window or a broader filter\n(\"Nothing matched. Widen the search:\"). Selecting one sends it as your next question.",
+   "text": "When a lookup finds nothing, the answer says so in words, and one-click suggestions widen\nthe search: a longer time window, every source, or the same lookup without one filter,\nfor example \"Without the source IP filter\", \"Open and closed cases\", \"Any severity\", or\n\"All sources\". A longer window is offered only when it covers more than the search did:\na search of the last 30 days, counted in whole days, is never offered \"Last 30 days\"\nagain. They join the follow-ups' row after a muted \"Widen the search:\" label (on\na narrow screen the label sits on its own line with the suggestions under it) and stay\neven when you turned follow-ups off, because they only repeat the lookup more\nwidely. Selecting one sends it as your next question, for example \"Show the same without\nthe source IP filter\".",
    "console": []
   },
   {
@@ -1681,7 +1811,7 @@
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
-   "text": "Numbers in blocks come only from lookups. The model chooses which result to show and\nhow, but it never writes the numbers, so every chart is backed by a lookup in the run\nlog. Each block shows its title, a caption with the window, the source, and how the\nnumber was counted (for example \"6,438 cases · exact\"), and a provenance tag: **source**\nfor values read from a connected system, **code** for values the platform computed, and\n**AI** for text the assistant wrote, such as a brief's narrative or a callout. A chart,\ntable, or key figure is never AI-written. When a block shows the top N of a larger\ntotal, its caption says so.\n\nCase counts in chat are exact across your whole case store, however large: chat never\npresents a sample as a total. If the store fails part-way through a count, the answer\nsays how much was counted instead of showing a smaller number as exact.",
+   "text": "Numbers in blocks come only from lookups. The model chooses which result to show and\nhow, but it never writes the numbers, so every chart is backed by a lookup in the run\nlog. Each block shows its title and a caption with the window, the source, and how the\nnumber was counted (for example \"6,438 cases · exact\"). The first line of its `⋯` menu\nsays who produced the values: **Measured by a lookup** for values read from a connected\nsystem, **Computed by code** for values the platform computed, and **Stated by the\nmodel** for text the assistant wrote, such as a brief's narrative or a callout; such a\nblock also says \"Values stated by the model, not measured\" under it. A chart, table, or\nkey figure is never AI-written. When a block shows the top N of a larger total, its\ncaption says so.\n\nWhen several blocks in a row share the same caption parts and the same time, the answer\nstates them once, in a quiet line above the first block, for example \"44 cases · exact ·\nlast 24 hours · as of 11:13\", and each block's caption keeps only what differs. A\nprintout, an export, a report item, and the expanded view keep each block's full\ncaption, because a block can travel alone.",
    "console": []
   },
   {
@@ -1689,7 +1819,7 @@
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
-   "text": "Block types include key-figure groups (with a gauge for the Active Risk Index); bar,\ngrouped bar, horizontal bar, stacked bar, line, area, donut, sparkline, and funnel\ncharts; heatmaps; tables; case lists; timelines; entity cards; ATT&CK technique cards;\nquery blocks; and guides with console links. A **comparison** sets two or more periods\nside by side, for example this quarter against the last: tiles with the absolute and\npercentage change, grouped columns, and a table. A change from zero reads \"new\", never\ninfinity, and a figure based on fewer than 20 cases is marked as a small sample. A\n**Brief** groups several results into sections, for example for a shift handoff; an\ninfographic Brief leads with key figures and trend lines and lays its charts out in a\ngrid.\n\nCharts over time read in calendar terms, such as \"Mar 2026\" or \"W14 2026\", name their\ntime zone, and draw the current period lighter with \"(in progress)\". On a time chart you\ncan:\n\n- **Group by** a coarser unit, such as days into weeks or weeks into months, when the\n  data allows it; the table, Copy data, and the downloads follow the grouping shown.\n- **Zoom** a line or area chart: drag across it, or select one point and Shift-select\n  another; with the keyboard, Shift+←/→ then Enter. **Reset zoom** shows the whole\n  series again.\n- **Hide or show a series** by selecting it in the legend; at least one stays visible.",
+   "text": "Cases are named by their case number and title. A case without a number shows its title\nfollowed by a short form of its ID (the full ID is in its tooltip). Verdicts, statuses,\nand kinds read in words, such as \"True positive\", \"Open → Escalated\", and \"IP\".\n\nFigures in an answer's text read the way its blocks show them, so one figure never\nappears in two forms: a rate is a whole percent from 10% up (\"78%\"), with one decimal\nunder 10% and \"<1%\" for a sliver, rounded half up; a change in a rate is in points the\nsame way (\"+36 points\"); an average risk reads \"7/100\". The run log's step summaries\nwrite a rate the same way (\"FP rate 76%\").\n\nCase counts in chat are exact across your whole case store, however large: chat never\npresents a sample as a total. If the store fails part-way through a count, the answer\nsays how much was counted instead of showing a smaller number as exact.",
    "console": []
   },
   {
@@ -1697,7 +1827,7 @@
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
-   "text": "All of these change only the view of the same numbers; nothing is looked up again.\n\nEvery block has **Add to report** and a `⋯` menu:\n\n| Action | What it does |\n|---|---|\n| Expand | Opens the block in a wide view |\n| Full width | Lets the block use the whole conversation width (offered when there is room to gain) |\n| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. |\n| Show table / Show chart | Flips between the chart and its data |\n| Copy data | Copies the rows as tab-separated text. Indicators are defanged by default (`hxxp`, `[.]`), and the menu has a toggle. |\n| Download CSV / Download JSON | Saves the block's data. CSV cells that look like formulas are neutralized. |\n| Download PNG / Download SVG | Saves the chart as shown, with its grouping, zoom, and hidden series stated on the image |\n| Copy query | Copies the exact query behind the block |\n| Open in Logs / Open in Cases | Opens the console view of exactly this data, with the same query, source, and absolute time window. Offered only when the console can show the same filter. |",
+   "text": "Block types include key-figure groups (the Active Risk Index tile shows a small gauge\nbeside its figure, with the band, such as \"High\", above \"/100\"); bar,\ngrouped bar, horizontal bar, stacked bar, line, area, donut, sparkline, and funnel\ncharts; heatmaps; tables; case lists; timelines; entity cards; ATT&CK technique cards;\nquery blocks; and guides with console links. A **comparison** sets two or more periods\nside by side, for example this quarter against the last: tiles with the absolute and\npercentage change, grouped columns, and a table. A change from zero reads \"new\", never\ninfinity, and a figure based on fewer than 20 cases is marked as a small sample. A\n**Brief** groups several results into sections, for example for a shift handoff. Its\ntitle reads \"Brief: {title}\" (unless the title already says brief), its window is stated\nonce, and it shows a **Contents** control from four sections. An infographic Brief leads\nwith key figures and trend lines and lays its charts out in a grid.\n\nCharts over time read in calendar terms, such as \"Mar 2026\" or \"W14 2026\", name their\ntime zone, and draw the current period lighter with \"(in progress)\". A time chart has one\nrow of controls above it: **Group by** on the left, and the zoom hint (\"Drag to zoom\"),\nthe zoomed range, and **Reset zoom** on the right. On a time chart you can:",
    "console": []
   },
   {
@@ -1705,7 +1835,23 @@
    "page": "analyst/chat.md",
    "anchor": "charts-tables-and-other-blocks",
    "heading": "Charts, tables, and other blocks",
-   "text": "A table shows ten rows inline, and **View all** opens the rest. A lookup that returns\nno rows adds no empty chart or table; the answer says so in words. A count of zero is\nstill a figure and is shown, and a duration of zero reads in its unit, such as \"0 min\";\na duration measured in minutes or hours that is under one second reads \"< 1 min\". You\ncan also ask for a different view in words, such as \"show that as a donut\" or \"now by\nhost\": the assistant reuses the earlier lookup or its stored result.",
+   "text": "- **Group by** a coarser unit, such as days into weeks or weeks into months, when the\n  data allows it; the table, Copy data, and the downloads follow the grouping shown.\n- **Zoom** a line or area chart: drag across it, or select one point and Shift-select\n  another; with the keyboard, Shift+←/→ then Enter. **Reset zoom** shows the whole\n  series again.\n- **Hide or show a series** by selecting it in the legend; at least one stays visible.\n  When every line is labelled at its end, the chart draws no legend, and **Series** in\n  the block's `⋯` menu shows or hides lines instead.\n\nAll of these change only the view of the same numbers; nothing is looked up again. A\nhorizontal bar shows its value just after the bar, and a donut's legend sits beside it on\na wide card and under it on a narrow one.\n\nAt rest a block shows only its `⋯` menu. **Add to report** appears beside it when you\npoint at or tab into the block, and stays while the block is in the report. The menu:",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#charts-tables-and-other-blocks:4",
+   "page": "analyst/chat.md",
+   "anchor": "charts-tables-and-other-blocks",
+   "heading": "Charts, tables, and other blocks",
+   "text": "| Action | What it does |\n|---|---|\n| Add to report | Adds the block to this conversation's report, or removes it (also beside the menu, see above) |\n| Expand | Opens the block in a wide view |\n| Full width | Lets the block use the whole conversation width (offered when there is room to gain) |\n| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. |\n| Series | Shows or hides each line of a chart whose lines are labelled at their ends |\n| Show table / Show chart | Flips between the chart and its data |\n| Copy data | Copies the rows as tab-separated text. Indicators are defanged by default (`hxxp`, `[.]`), and the menu has a toggle. |\n| Download CSV / Download JSON | Saves the block's data. CSV cells that look like formulas are neutralized. |\n| Download PNG / Download SVG | Saves the chart as shown, with its grouping, zoom, and hidden series stated on the image |\n| Copy query | Copies the exact query behind the block |\n| Open in Logs / Open in Cases | Opens the console view of exactly this data, with the same query, source, and absolute time window. Offered only when the console can show the same filter. |",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#charts-tables-and-other-blocks:5",
+   "page": "analyst/chat.md",
+   "anchor": "charts-tables-and-other-blocks",
+   "heading": "Charts, tables, and other blocks",
+   "text": "A list of cases names each case by its case number (**CASE-000045**) in **Show table**,\n**Expand**, and **Copy data**, as the list does, and its link opens that case. A case\nwithout a number shows its case ID. The CSV writes the number under **Case** and adds a\n**Case ID** column with the internal ID, so other tools can match it; JSON keeps the\nstored values.\n\nA table shows ten rows inline, and **View all** opens the rest. A cell with no value is\nleft blank (a screen reader reads \"None\", or \"Not measured\" for a number), and a list of\nATT&CK techniques in a cell shows one chip per technique. A lookup that returns\nno rows adds no empty chart or table; the answer says so in words. A count of zero is\nstill a figure and is shown, and a duration of zero reads in its unit, such as \"0 min\";\na duration measured in minutes or hours that is under one second reads \"< 1 min\". You\ncan also ask for a different view in words, such as \"show that as a donut\" or \"now by\nhost\": the assistant reuses the earlier lookup or its stored result.",
    "console": []
   },
   {
@@ -1723,7 +1869,7 @@
    "page": "analyst/chat.md",
    "anchor": "inspect-a-lookup",
    "heading": "Inspect a lookup",
-   "text": "Select **Inspect** on a finished lookup in the run log to see exactly what it did, in a\nside panel:\n\n- **What was sent**: the lookup's parameters and the exact query as it ran;\n- **What the model saw**: the result as the model received it, which is counts, top\n  values, and a few sample rows, never raw log records;\n- its time, rows, and tokens.\n\nEverything in the panel came from logs or the model, so it is shown as plain text, and\ninvisible or look-alike characters are written as visible escapes (such as `\\u200b` for a zero-width space) so\n\"admin\" with a hidden character never looks like \"admin\". **Retry step** asks again in a\nnew question, for a lookup that failed, timed out, was stopped, or was skipped. **Explain\nthis step** asks the assistant what the lookup did and why. Results are kept for your\n100 most recent saved answers; for older ones the panel says the result is no longer\nstored.",
+   "text": "Select **Inspect** on a finished lookup in the run log to see exactly what it did, in a\nside panel. Its header names the step and what the lookup did, such as \"Step 2: Searched\nlogs\", and states its status and time once:\n\n- **What was sent**: which lookup ran, its parameters, and the exact query as it ran;\n  the lookup is named in words with its tool name in muted text, such as \"Search logs\n  (search_logs)\";\n- **What the model saw**: the result as the model received it, which is counts, top\n  values, and a few sample rows, never raw log records;\n- its rows and tokens, under a heading that names what it holds, such as \"Sources and\n  tokens\".\n\nQueries and results keep their lines and scroll sideways on a narrow screen.\n\nEverything in the panel came from logs or the model, so it is shown as plain text, and\ninvisible or look-alike characters are written as visible escapes (such as `\\u200b` for a zero-width space) so\n\"admin\" with a hidden character never looks like \"admin\". **Retry step** asks again in a\nnew question, for a lookup that failed, timed out, was stopped, or was skipped. **Explain\nthis step** asks the assistant what the lookup did and why. Results are kept for your\n100 most recent saved answers; for older ones the panel says the result is no longer\nstored.",
    "console": []
   },
   {
@@ -1757,13 +1903,23 @@
    "page": "analyst/chat.md",
    "anchor": "tokens-and-cost",
    "heading": "Tokens and cost",
-   "text": "- **Before you send:** `≈ 1.2k` is the estimate for your next request: the system\n  instructions, the part of this conversation that will be sent, and your draft, at\n  about four characters per token. After the first answer in a conversation, the\n  estimate is calibrated against what the model actually counted. The ring beside it\n  shows how much of the model's context window that request fills, for example \"12%\".\n  Point at either, or select the estimate, for the breakdown, the projected cost, the\n  model's context window, and this conversation's totals. When chat runs without\n  limits, a long saved Workspace conversation is summarised automatically near the\n  limit, so the chat keeps going; there is no hard cap. In Case Manager chat, in an\n  unsaved conversation, and when an administrator has set per-question limits, only\n  the newest exchanges that fit are sent instead (see\n  Long conversations); the card's note about automatic\n  summaries currently appears in Case Manager chat and in an unsaved conversation too,\n  where it does not apply.\n  It is an estimate: lookups add their results to later model calls, so a question\n  that runs lookups uses more than its first request.\n- **Daily AI budget:** the same card shows today's AI spend against the daily budget,\n  when one is set and you may see it. Automatic investigations count against that\n  budget; chat is recorded in the cost ledger but is not paused by it.\n- **While it runs:** the run-log header updates after every model call.\n- **After it finishes:** the meta row shows the exact totals. The usage details list\n  input, cached input, output, and total tokens, search-embedding calls, model calls,\n  cost, model time, the model, the sources queried, and whether any figure was\n  estimated (`≈`).\n- **For the conversation:** the toolbar shows the running total.",
+   "text": "- **Before you send:** once you start typing, \"≈ 1.2k tokens\" is the estimate for your\n  next request: the system instructions, the part of this conversation that will be\n  sent, and your draft, at about four characters per token. With an empty message box\n  the meter stays hidden until the conversation uses half of the model's context window.\n  After the first answer in a conversation, the estimate is calibrated against what the\n  model actually counted. The ring beside it shows how much of the model's context\n  window that request fills, for example \"12%\". Point at either, or select the estimate,\n  for the breakdown, the projected cost, the model's context window, and this\n  conversation's totals. The card's history line says what the next request replays:\n  \"History: none yet\" in a new chat, \"History: 3 exchanges, summarised near the limit\"\n  when chat runs without limits, or \"History: summary of earlier messages\" after\n  `/compact`. When chat runs without\n  limits, a long saved Workspace conversation is summarised automatically near the\n  limit, so the chat keeps going; there is no hard cap. In Case Manager chat, in an\n  unsaved conversation, and when an administrator has set per-question limits, only\n  the newest exchanges that fit are sent instead (see\n  Long conversations); the card's note about automatic",
    "console": [
     "page:cost"
    ]
   },
   {
    "id": "analyst/chat#tokens-and-cost:2",
+   "page": "analyst/chat.md",
+   "anchor": "tokens-and-cost",
+   "heading": "Tokens and cost",
+   "text": "summaries currently appears in Case Manager chat and in an unsaved conversation too,\n  where it does not apply.\n  It is an estimate: lookups add their results to later model calls, so a question\n  that runs lookups uses more than its first request.\n- **Daily AI budget:** the same card shows today's AI spend against the daily budget,\n  when one is set and you may see it. Automatic investigations count against that\n  budget; chat is recorded in the cost ledger but is not paused by it.\n- **While it runs:** the run-log header updates after every model call.\n- **After it finishes:** the meta row shows the exact cost; select it for the usage\n  card, which holds the tokens. The usage details list input, cached input, output, and\n  total tokens, search-embedding calls, model calls, cost, model time, the model, the\n  sources queried, and whether any figure was estimated (`≈`).\n- **For the conversation:** the first line of the thread `⋯` menu, for example \"This\n  chat: 12.4k tokens · $0.03\".",
+   "console": [
+    "page:cost"
+   ]
+  },
+  {
+   "id": "analyst/chat#tokens-and-cost:3",
    "page": "analyst/chat.md",
    "anchor": "tokens-and-cost",
    "heading": "Tokens and cost",
@@ -1801,7 +1957,7 @@
    "page": "analyst/chat.md",
    "anchor": "long-conversations",
    "heading": "Long conversations",
-   "text": "The reply is a short note, not an answer: it says what was summarised and what it cost\n(**No model call · $0** when no model was used, as in Demo Mode), names no data source,\nand has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,\n**Ask again**). The assistant does not see the note in later questions, a later\n`/compact` does not summarise it again, and **Save conversation as report** and **Export\nconversation** leave it out.",
+   "text": "The reply is a short note, not an answer: it says what was summarised and what it cost\n(**No model call · $0** when no model was used, as in Demo Mode), names no data source,\nand has none of an answer's actions (rating, copy, **Add to case**, **Add to report**,\n**Ask again**). The assistant does not see the note in later questions, a later\n`/compact` does not summarise it again, and **Save conversation as report** and **Export**\nleave it out.",
    "console": []
   },
   {
@@ -1817,7 +1973,7 @@
    "page": "analyst/chat.md",
    "anchor": "reports-from-chat",
    "heading": "Reports from chat",
-   "text": "Ask for a report and chat creates it for you. A question such as \"Create a monthly SOC\nreport for September\" or `/report monthly` runs the lookups the report needs, writes\nthe answer as a **Brief** with that template's sections, and saves it to the Reports\nlibrary. A line under the answer says **Saved to Reports** with the report's title,\n**Open**, and **Export**. The server creates the report from the saved answer; the model\nonly names its title and template. When the save could not happen (for example,\nbecause you already have 100 reports), the line says why and, when trying again can\nhelp, offers **Save as report**. A stopped or failed answer is not saved as a report,\nand case-scoped chat never creates one.",
+   "text": "Ask for a report and chat creates it for you. A question such as \"Create a monthly SOC\nreport for September\" or `/report monthly` runs the lookups the report needs, writes\nthe answer as a **Brief** with that template's sections, and saves it to the Reports\nlibrary. One line under the answer says so, for example \"Saved to Reports: Monthly SOC\nreport, September 2026 · Open · Export\", with no second notice. The server creates the\nreport from the saved answer; the model\nonly names its title and template. When the save could not happen (for example,\nbecause you already have 100 reports), the line says why and, when trying again can\nhelp, offers **Save as report**. A stopped or failed answer is not saved as a report,\nand case-scoped chat never creates one.",
    "console": []
   },
   {
@@ -1833,7 +1989,7 @@
    "page": "analyst/chat.md",
    "anchor": "add-to-a-report",
    "heading": "Add to a report",
-   "text": "Select **Add to report** on a block to add that block, or on an answer's meta row to add\nthe whole answer as a section titled with your question. The first add creates this\nconversation's draft report; the control then reads **In report ✓**, and selecting it\nagain removes the item. When there is room, the report panel opens beside the\nconversation without taking focus; on a narrower screen it stays closed and a notice\noffers **Open**.\n\nAn item is a snapshot the server takes from the saved answer, so its numbers never\nchange afterwards. A whole answer keeps all of its text: a long one continues in\nfurther sections titled \"(continued)\", and removing the first section removes the rest.\nAn item whose lookup found nothing keeps its title and reads \"The lookup found\nnothing.\" instead of an empty chart or table. An answer whose charts have expired from\nsaved history cannot be added, and neither can anything from the case-scoped chat in\nCase Manager.",
+   "text": "Select **Add to report** on a block (beside its `⋯` menu, or in it) to add that block, or\n**Add answer to report** in an answer's **More actions** menu to add the whole answer as\na section titled with your question. The first add creates this conversation's draft\nreport. A block's control then shows as added, and an answer shows an **In report** chip\non its meta row; selecting either again removes the item. When there is room, the report\npanel opens beside the\nconversation without taking focus; on a narrower screen it stays closed and a notice\noffers **Open**.\n\nAn item is a snapshot the server takes from the saved answer, so its numbers never\nchange afterwards. A whole answer keeps all of its text: a long one continues in\nfurther sections titled \"(continued)\", and removing the first section removes the rest.\nAn item whose lookup found nothing keeps its title and reads \"The lookup found\nnothing.\" instead of an empty chart or table. An answer whose charts have expired from\nsaved history cannot be added, and neither can anything from the case-scoped chat in\nCase Manager.",
    "console": []
   },
   {
@@ -1841,7 +1997,7 @@
    "page": "analyst/chat.md",
    "anchor": "the-report-panel",
    "heading": "The report panel",
-   "text": "- **Header:** the editable title, the template, the item count out of 60, **Download\n  PDF**, and **Export**.\n- **Summary:** see AI summary.\n- **Items:** collapsed cards, each with a note field and a menu with Move up, Move down,\n  Move to top, and Remove.\n\nNotes save shortly after you stop typing. If the report changed in another tab, the\npanel says \"This report changed elsewhere\" with a **Reload** button beside it, and keeps\nthe note you typed.\n\nThe template names the kind of report and frames its summary and exports:\n**Investigation**, **Threat hunt**, **Indicator report**, **Shift handoff**, **Posture\nreview**, **Executive summary**, **Monthly SOC report**, **Infographic**,\n**Investigation brief**, or **Custom**.",
+   "text": "- **Header:** the editable title (the panel reads \"Report\" until this conversation has a\n  working report), the template, the item count, such as \"1 of 60 items\", **Download\n  PDF**, and **Export**.\n- **Saved from this chat:** the reports this conversation's answers saved to the Reports\n  library (see Reports from chat), each with **Open** and\n  **Export**. The list updates when an answer in this conversation saves one, even with\n  the panel open.\n- **Summary:** see AI summary.\n- **Items:** collapsed cards whose full titles wrap, each with a note field and a menu\n  with Move up, Move down, Move to top, and Remove. With no items yet, the panel reads\n  \"Nothing added yet. Use Add to report on an answer or a block.\"\n\nNotes save shortly after you stop typing. If the report changed in another tab, the\npanel says \"This report changed elsewhere\" with a **Reload** button beside it, and keeps\nthe note you typed.\n\nThe template names the kind of report and frames its summary and exports:\n**Investigation**, **Threat hunt**, **Indicator report**, **Shift handoff**, **Posture\nreview**, **Executive summary**, **Monthly SOC report**, **Infographic**,\n**Investigation brief**, or **Custom**.",
    "console": []
   },
   {
@@ -1857,11 +2013,19 @@
    "page": "analyst/chat.md",
    "anchor": "export",
    "heading": "Export",
-   "text": "**Download PDF** opens the browser's print dialog, already named after the report, where\nyou choose Save as PDF. **Export** opens one menu with every format:\n\n| Format | Contents |\n|---|---|\n| PDF (`.pdf`) | The browser's print dialog, laid out for A4 |\n| Word (`.docx`) | The whole document, with headings, tables, and notes, ready to edit |\n| Excel (`.xlsx`) | A **Report** sheet with the document, then one sheet per table with exact values |\n| Markdown (`.md`) | The whole document as text |\n| HTML (`.html`) | A self-contained file with no scripts and a strict content security policy |\n| CSV (all tables) | Every table-like block, each labelled |\n| JSON | The report exactly as stored, for other tools |\n\nEvery format except JSON writes severity, verdict, and status in the words the report\nshows on screen, such as **Critical**, **True positive**, **Needs human**, and **On hold**.\nYes/no values read **Yes** and **No**, in the CSV too, and a query is labelled with its\nlanguage as the screen names it, such as **ES|QL** or **Query DSL**. JSON keeps the stored\nvalues (`true_positive`, `on_hold`, `true`, `esql`) so other tools can read them.",
+   "text": "**Download PDF** opens the browser's print dialog, already named after the report, where\nyou choose Save as PDF. **Export** opens one menu with every format:\n\n| Format | Contents |\n|---|---|\n| PDF (`.pdf`) | The browser's print dialog, laid out for A4 |\n| Word (`.docx`) | The whole document, with headings, tables, and notes, ready to edit |\n| Excel (`.xlsx`) | A **Report** sheet with the document, then one sheet per table with exact values |\n| Markdown (`.md`) | The whole document as text |\n| HTML (`.html`) | A self-contained file with no scripts and a strict content security policy |\n| CSV (all tables) | Every table-like block, each labelled |\n| JSON | The report exactly as stored, for other tools |",
    "console": []
   },
   {
    "id": "analyst/chat#export:1",
+   "page": "analyst/chat.md",
+   "anchor": "export",
+   "heading": "Export",
+   "text": "Every format except JSON writes severity, verdict, and status in the words the report\nshows on screen, such as **Critical**, **True positive**, **Needs human**, and **On hold**.\nYes/no values read **Yes** and **No**, in the CSV too, and a query is labelled with its\nlanguage as the screen names it, such as **ES|QL** or **Query DSL**. JSON keeps the stored\nvalues (`true_positive`, `on_hold`, `true`, `esql`) so other tools can read them.\nCases are named as the report shows them, by case number (**CASE-000045**), in PDF,\nWord, Excel, Markdown, HTML, and the CSV's **Case** column; a case without a number keeps\nits case ID. The CSV adds a **Case ID** column with the internal ID, and JSON keeps it as\nstored, so other tools can match it.\n\nA table cell with no value is left blank in every format, as on screen, such as a\ncampaign with no ATT&CK technique. In Word, Markdown, and HTML, a dash (`—`) marks only\na figure that was not measured, such as a missing count or risk score, and the\n**Methodology & limitations** section says how many there are. Excel and CSV leave both\nkinds of cell empty, never 0.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#export:2",
    "page": "analyst/chat.md",
    "anchor": "export",
    "heading": "Export",
@@ -1883,7 +2047,7 @@
    "page": "analyst/chat.md",
    "anchor": "conversation-history",
    "heading": "Conversation history",
-   "text": "**New chat** starts an unsaved draft; it appears in history as soon as its first\nquestion starts, marked as answering, and is saved with the first answer. History groups\nconversations into Pinned, Today, Yesterday, Previous 7 days, Previous 30 days, and then\nby month.\n\n- **Search** looks through titles, your questions, answer text, and block titles. A\n  result shows the matching snippet, and opening it scrolls to and highlights the\n  message.\n- Each row's menu offers **Rename**, **Pin** or **Unpin**, **Open report** (when the\n  conversation has one), **Export**, and **Delete**. A conversation with an answer in\n  progress cannot be deleted until it finishes. Deleting a conversation keeps its\n  report in the Reports library.\n- **Export** saves the conversation as Markdown, HTML, or Print / Save as PDF, with\n  indicators defanged.\n- While the Chat page stays open, unsent text is kept separately for each\n  conversation. It is never saved: reloading or leaving the page discards it.",
+   "text": "**New chat** starts an unsaved draft; it appears at the top of Today as soon as its first\nquestion starts, marked as answering, and is saved with the first answer. History groups\nconversations into Pinned, Today, Yesterday, Previous 7 days, Previous 30 days, and then\nby month.\n\nA new conversation is named after its first answer, in 2 to 6 words that say what it is\nabout, such as \"Failed logins on the VPN\". Until that answer arrives, the toolbar and the\nhistory row show the first words of your question. The name comes with the answer, at no\nextra cost. A name that is too long, written all in upper case, or not in sentence case\nis not used, and the conversation keeps your question as its title. A name you choose with\n**Rename** is never replaced, and a Case Manager chat is never named this way.",
    "console": [
     "page:audit",
     "page:cost"
@@ -1894,7 +2058,7 @@
    "page": "analyst/chat.md",
    "anchor": "conversation-history",
    "heading": "Conversation history",
-   "text": "History keeps up to **50 conversations** for each user; up to ten pinned conversations\nare exempt from that limit. Messages are never removed from a conversation: every\nquestion and every answer is kept in full, however long. A reopened conversation opens\non its newest 100 messages; a long one shows **Show earlier messages** above its first\nmessage, with how many earlier messages there are. Each click loads the 50 before them,\nin full, above your place in the transcript, so what you are reading stays where it is.\nOnce everything is shown, the top of the transcript reads **Start of the conversation**.\nOpening a search result or a link to an older message loads the earlier messages it\nneeds and highlights it, and **Export** always saves the whole conversation. A\nconversation that an older version of the app shortened says how many of its first\nmessages were removed, for example \"The first 24 messages of this conversation were\nremoved by an older version of Agentic SOC. Messages are no longer removed.\"\nAnswers saved before this release keep their compacted\nform: each block holds up to 25 table rows, cases, or timeline events and 100 chart\npoints, and says so in its card, for example \"Showing top 25 of 200\" or \"Downsampled for\nsaved history\"; the oldest of those answers' charts may read \"Expired from saved\nhistory\". A report item is taken from the saved answer, so it holds the same rows; **Open\nin Logs** or **Open in Cases**, where a block offers it, opens the same filter in the\nconsole.",
+   "text": "In the docked history rail, each row and search result keeps its title on one line. A\ntitle too long for the rail is cut at the end; point at the row or move to it with the\nkeyboard to see the whole title in a tooltip, with the time of its last change in UTC\n(2026-10-23 15:45 UTC), as answers write times. The toolbar above the conversation shows the\nwhole title where it has room, and in a tooltip where it does not. On a phone, in the\nhistory sheet, and on any touch screen, where there is no pointer to show a tooltip, a\ntitle wraps to up to three lines in the history and in the toolbar, so the whole title is\non screen.",
    "console": [
     "page:audit",
     "page:cost"
@@ -1902,6 +2066,28 @@
   },
   {
    "id": "analyst/chat#conversation-history:2",
+   "page": "analyst/chat.md",
+   "anchor": "conversation-history",
+   "heading": "Conversation history",
+   "text": "- **Search** looks through titles, your questions, answer text, and block titles. Every\n  result shows its matching snippet under the title, as plain text with the matching\n  words highlighted, and opening it scrolls to and highlights the message. The command\n  palette's chat results show the same plain snippets. On a phone, the history sheet\n  opens with its search field ready to type in.\n- Each row's menu offers **Rename**, **Pin** or **Unpin**, **Open report** (when the\n  conversation has one), **Export**, and **Delete**. A conversation with an answer in\n  progress cannot be deleted until it finishes. Deleting a conversation keeps its\n  report in the Reports library.\n- **Export** saves the conversation as Markdown, HTML, or Print / Save as PDF, with\n  indicators defanged.\n- While the Chat page stays open, unsent text is kept separately for each\n  conversation. It is never saved: reloading or leaving the page discards it.",
+   "console": [
+    "page:audit",
+    "page:cost"
+   ]
+  },
+  {
+   "id": "analyst/chat#conversation-history:3",
+   "page": "analyst/chat.md",
+   "anchor": "conversation-history",
+   "heading": "Conversation history",
+   "text": "History keeps up to **50 conversations** for each user; up to ten pinned conversations\nare exempt from that limit. Messages are never removed from a conversation: every\nquestion and every answer is kept in full, however long. A reopened conversation opens\non its newest 100 messages; a long one shows **Show earlier messages** above its first\nmessage, with how many earlier messages there are. Each click loads the 50 before them,\nin full, above your place in the transcript, so what you are reading stays where it is.\nOnce everything is shown, the top of the transcript reads **Start of the conversation**.\nOpening a search result or a link to an older message loads the earlier messages it\nneeds and highlights it, and **Export** always saves the whole conversation. A\nconversation that an older version of the app shortened says how many of its first\nmessages were removed, for example \"The first 24 messages of this conversation were\nremoved by an older version of Agentic SOC. Messages are no longer removed.\"\nAnswers saved before this release keep their compacted\nform: each block holds up to 25 table rows, cases, or timeline events and 100 chart\npoints, and says so in its card, for example \"Showing top 25 of 200\" or \"Downsampled for\nsaved history\"; the oldest of those answers' charts may read \"Expired from saved\nhistory\". A report item is taken from the saved answer, so it holds the same rows; **Open\nin Logs** or **Open in Cases**, where a block offers it, opens the same filter in the\nconsole.",
+   "console": [
+    "page:audit",
+    "page:cost"
+   ]
+  },
+  {
+   "id": "analyst/chat#conversation-history:4",
    "page": "analyst/chat.md",
    "anchor": "conversation-history",
    "heading": "Conversation history",
@@ -1916,7 +2102,7 @@
    "page": "analyst/chat.md",
    "anchor": "what-chat-can-read",
    "heading": "What chat can read",
-   "text": "Each lookup needs the same permission as the console page that shows the same data:\n\n| Scope | Lookups |\n|---|---|\n| `logs` | Search logs (one source or every browsable source) and log statistics such as top values and counts over time, by any interval up to a year |\n| `cases` | Search cases, exact case counts and breakdowns (by month, week, severity, status, verdict, rule, assignee, source, ATT&CK, and more, with comparisons between periods), read a case, explain a case decision, the shift report, and campaigns |\n| `metrics` | Posture, trends, the noise funnel, case mix, timing, ATT&CK coverage, auto-close health, agent improvement, analyst feedback, and your own chat answer ratings. Alert stages the counters do not cover read \"not measured\" (see the KPI glossary) |\n| `intel` | Indicator reputation from your enrichment providers, ATT&CK techniques, and the knowledge corpus |\n| `platform` | AI cost and usage, source health, automation status, and the audit log |\n| `docs` | The bundled Help Center and the status of this deployment |\n\nChat cannot read users, roles, sessions, jobs, notifications, dashboards, or secrets,\nand it cannot change anything. For those, it answers from the Help Center and links the\nconsole page. A lookup input it does not understand is refused visibly in the run log,\nnever silently ignored.\n\nData from your sources is treated as untrusted:",
+   "text": "Each lookup needs the same permission as the console page that shows the same data:\n\n| Scope | Lookups |\n|---|---|\n| `logs` | Search logs (one source or every browsable source) and log statistics such as top values and counts over time, by any interval up to a year |\n| `cases` | Search cases, exact case counts and breakdowns (by month, week, severity, status, verdict, rule, assignee, source, ATT&CK, and more, with comparisons between periods), read a case, explain a case decision, the shift report, and campaigns |\n| `metrics` | Posture, trends, the noise funnel, case mix, timing, ATT&CK coverage, auto-close health, agent improvement, analyst feedback, and your own chat answer ratings. Alert stages the counters do not cover read \"not measured\" (see the KPI glossary) |\n| `intel` | Indicator reputation from your enrichment providers, ATT&CK techniques, and the knowledge corpus |\n| `platform` | AI cost and usage, source health, automation status, and the audit log |\n| `docs` | The bundled Help Center and the status of this deployment |",
    "console": []
   },
   {
@@ -1924,7 +2110,23 @@
    "page": "analyst/chat.md",
    "anchor": "what-chat-can-read",
    "heading": "What chat can read",
-   "text": "- Logs reach the model only as counts, top values, and a few sample rows, never as raw\n  records. The same holds for results the assistant reads back later in a long\n  investigation and for the conversation summary.\n- An indicator is sent to an enrichment provider only when it appears in your own\n  words or in this question's results. Private, reserved, and loopback addresses,\n  single-label hosts, and your internal domains are never sent, and e-mail addresses\n  are sent only when an administrator allows it.\n- Instructions found inside log values, case text, imported documents, or the\n  conversation summary are never followed.\n\nWhen the assistant suggests remembering a fact, the suggestion appears under the\nanswer. Nothing is stored until a user with the `memory:manage` permission confirms it.",
+   "text": "Questions about \"my cases\" or cases \"assigned to me\" read the open cases assigned to\nyou, the signed-in analyst. A question that names more keeps it: \"my closed cases\", \"my\ncritical cases\", \"my cases by severity\", \"my cases this week\" or \"compare my cases this\nweek with last week\" read only the cases assigned to you, with that status, severity,\nbreakdown, period or comparison. The shift report, the posture and other figures cannot\nbe narrowed to your cases; an answer from them says so. With sign-in turned off, chat\ncannot tell which cases are yours, so it says so and shows the open queue by assignee\ninstead. The suggestion \"What should I do next on case …?\" reads your own open cases\ntoo, so its answer can say whether the case is your only one and list your others.\nAsked right after you assign a case, it already counts and lists that case: the count\nand the list always describe the same cases.",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#what-chat-can-read:2",
+   "page": "analyst/chat.md",
+   "anchor": "what-chat-can-read",
+   "heading": "What chat can read",
+   "text": "The shift report names the 5 most overdue open cases and the 5 closest to their response\ntarget (nearest first), each with who has it; its totals count every one. An answer from\nit states the total once and then says how many it lists, for example \"Work the 10 cases\npast SLA first, starting with the 3 most overdue: …\". The brief's opening line starts\nwith the same case as that step, the most overdue one. Its **Needs human** figure counts\nthe open cases whose verdict is Needs human, the same badge its **Needs attention** list\nshows, and the same figure the Standup page shows under **Needs human** (the Standup\npage's **Awaiting analyst** counts a status instead; see\nAnalytics and standup).\n\nCampaigns are listed with every ATT&CK technique and shared entity, or the first few and\nhow many more (\"T1021, T1048, T1078 and 2 more\"), in the table and in the text, where the\ncount names what it counts (\"and 2 more techniques\", \"and 6 more shared entities\"). A\ncase's own techniques read the same way: every one up to four, else the first three and\nhow many more, beside the ATT&CK block that lists them all. An\nin-depth look at a user, host, or IP lists only the campaigns that involve it: one of\ntheir shared entities is that value, or one of their cases is about it. The table is\ntitled for it, for example \"Campaigns involving this user\".",
+   "console": []
+  },
+  {
+   "id": "analyst/chat#what-chat-can-read:3",
+   "page": "analyst/chat.md",
+   "anchor": "what-chat-can-read",
+   "heading": "What chat can read",
+   "text": "Chat cannot read users, roles, sessions, jobs, notifications, dashboards, or secrets,\nand it cannot change anything. For those, it answers from the Help Center and links the\nconsole page. A lookup input it does not understand is refused visibly in the run log,\nnever silently ignored.\n\nData from your sources is treated as untrusted:\n\n- Logs reach the model only as counts, top values, and a few sample rows, never as raw\n  records. The same holds for results the assistant reads back later in a long\n  investigation and for the conversation summary.\n- An indicator is sent to an enrichment provider only when it appears in your own\n  words or in this question's results. Private, reserved, and loopback addresses,\n  single-label hosts, and your internal domains are never sent, and e-mail addresses\n  are sent only when an administrator allows it.\n- Instructions found inside log values, case text, imported documents, or the\n  conversation summary are never followed.\n\nWhen the assistant suggests remembering a fact, the suggestion appears under the\nanswer. Nothing is stored until a user with the `memory:manage` permission confirms it.",
    "console": []
   },
   {
@@ -1940,7 +2142,27 @@
    "page": "analyst/chat.md",
    "anchor": "case-scoped-chat",
    "heading": "Case-scoped chat",
-   "text": "The **Chat** tab in Case Manager uses the same assistant with the selected case as its\ncontext. It is compact: no history, no report panel, no **Add to report**, and no `/`\nor `@` menus. Its transcript stays when you switch to another tab of the case and back,\nand an answer keeps running if you leave the case. Case chat keeps no running summary:\nonce its conversation is long, only the newest exchanges that fit are sent with each\nquestion, and older ones are left out of what the model sees (see\nLong conversations).\n\nEach question and its final answer text (without charts or the run log) are posted to\nthe case's discussion thread, where anyone who can read the case sees them. Posting\nneeds the `cases:comment` permission; without it, the answer is marked **Not saved**\nand says it was not added to the case thread. When the save itself fails, **Run again\nto save** asks the question again, which is billed again. Case conversations never\nenter your personal Workspace history.\n\n| Surface | Use it for | Where answers are kept |\n|---|---|---|\n| **Triage → Workspace → Chat** | Questions across telemetry, cases, metrics, intelligence, and the product | Your saved conversations and reports |\n| Case Manager **Chat** tab | Evidence and follow-up for the selected case | The case thread, with your question |",
+   "text": "The **Chat** tab in Case Manager uses the same assistant with the selected case as its\ncontext; its status line names the case by the number the case header shows (for\nexample \"Scoped to CASE-000086\"). It is compact: no history, no report panel, no **Add\nto report**, and no `/` or `@` menus. On a phone, its token estimate shows as the\ncontext ring alone once you type, so the question keeps most of the field's width. Its transcript stays when you switch to another tab of the case and back,\nand an answer keeps running if you leave the case. Case chat keeps no running summary:\nonce its conversation is long, only the newest exchanges that fit are sent with each\nquestion, and older ones are left out of what the model sees (see\nLong conversations).\n\nAn empty case chat offers up to three suggested questions, the ones that apply to the\ncase's state (a case that fits fewer of them shows one or two). They come from this list:",
+   "console": [
+    "page:chat"
+   ]
+  },
+  {
+   "id": "analyst/chat#case-scoped-chat:1",
+   "page": "analyst/chat.md",
+   "anchor": "case-scoped-chat",
+   "heading": "Case-scoped chat",
+   "text": "- \"Why does this case need a person, and what would settle it?\" (an escalated case, one\n  waiting for review, or an open case whose AI verdict is Needs human);\n- \"What evidence is missing before this case can be decided?\" (an open case without a\n  verdict);\n- \"Why was this case closed that way, and who decided?\" (a closed or resolved case);\n- \"What else has this case's main entity done in the last 24 hours?\" (a case with a\n  main entity);\n- \"Which other cases share entities with this one?\" (a case that shares a campaign or\n  an entity with another case); and\n- \"Summarise this case for a handoff note.\" (any case).\n\nThey name no value, because the case is already the chat's subject, and they are sent\nin this case chat only. While they show, the quick actions (\"Summarise the case\", \"Check\nindicators\", \"Suggest remediation\") stay out of the way; they appear after the first\nmessage, or when no suggestion could be loaded.\n\nEach question and its final answer text (without charts or the run log) are posted to\nthe case's discussion thread, where anyone who can read the case sees them. Posting\nneeds the `cases:comment` permission; without it, the answer is marked **Not saved**\nand says it was not added to the case thread. When the save itself fails, **Run again\nto save** asks the question again, which is billed again. Case conversations never\nenter your personal Workspace history.",
+   "console": [
+    "page:chat"
+   ]
+  },
+  {
+   "id": "analyst/chat#case-scoped-chat:2",
+   "page": "analyst/chat.md",
+   "anchor": "case-scoped-chat",
+   "heading": "Case-scoped chat",
+   "text": "| Surface | Use it for | Where answers are kept |\n|---|---|---|\n| **Triage → Workspace → Chat** | Questions across telemetry, cases, metrics, intelligence, and the product | Your saved conversations and reports |\n| Case Manager **Chat** tab | Evidence and follow-up for the selected case | The case thread, with your question |",
    "console": [
     "page:chat"
    ]
@@ -1950,7 +2172,17 @@
    "page": "analyst/chat.md",
    "anchor": "demo-mode",
    "heading": "Demo Mode",
-   "text": "With Demo Mode on (**Settings → Organization → Experimental & Demo**), chat answers from\nthe synthetic demo data at no cost: the starters ask about demo cases and sources,\nlookups and answers are deterministic, and money figures are marked \"simulated\". Demo\nanswers cover the same ground as a live model, including any time window, breakdowns,\ncomparisons, reports, and clarifying questions. Report summaries are deterministic too\nand are not rate limited. Demo conversations and reports are kept apart from your real\nones and are removed when Demo Mode is turned off.",
+   "text": "With Demo Mode on (**Settings → Organization → Experimental & Demo**), chat answers from\nthe synthetic demo data at no cost: the suggested questions are built from the demo\ncases and sources (with a Demo Mode card, and a \"Since …\" line on your first visit; on\nthe visit that starts your shift, the shift card comes before the Demo Mode card),\nevery suggestion and case chat question gets a real answer from that data, lookups and\nanswers are deterministic, and money figures are marked \"simulated\". Every demo case is\nnumbered with your numbering template (CASE-000001 onwards by default), the oldest first,\neven when custom numbering is switched off for real cases, and cases the demo creates\nwhile it runs continue the same sequence (one sequence for the demo, whatever your reset\nperiod, so no two demo cases share a number; each number keeps its case's own date);\nturning Demo Mode off and on again, or resetting it, gives each case the same number\nagain. A case you name by its internal id is answered by its number, with the id you\nused beside it once. A detection rule is written the same way everywhere in an answer: its\nid exactly as written (for example `demo_impossible_travel`), as the case list shows it. Demo answers cover the same ground as a live model, including any time window, breakdowns,\ncomparisons, reports, and clarifying questions. A question that asks to investigate or",
+   "console": [
+    "settings:demo"
+   ]
+  },
+  {
+   "id": "analyst/chat#demo-mode:1",
+   "page": "analyst/chat.md",
+   "anchor": "demo-mode",
+   "heading": "Demo Mode",
+   "text": "look into a named host, user, email address, IP address, domain or file hash\n(\"Investigate the activity of user pnair in the last 3 days\") is about that entity over\nthe window it names. \"Investigate\" with a detection rule (\"Investigate rule\ndemo_impossible_travel\") counts that rule's cases by verdict; with a log source\n(\"Investigate source Wazuh\") it shows the source's newest events and says if it is\nsilent or disabled; with an attack type (\"Investigate ransomware\") it runs the hunt; and\nwith records Demo can list (\"Investigate the false positives from yesterday\") it lists\nthem. A technique id, cost, sources, tuning and other console words keep their own\nanswers (\"Investigate T1059.001\" describes the technique). A case is picked when the\nquestion picks one (\"Investigate the newest escalated case\", \"Investigate it\"); a\nquestion that names nothing else Demo can look up also starts from the newest escalated\ncase, and the answer says that is how it was chosen. When cases, rules or periods tie\nfor the highest risk, the most or the oldest, as the answer writes the figure, the\nanswer says so and names each of them rather than presenting one as the only one. A\ndemo conversation's name carries one\ndetail that tells it apart from similar ones where there is one: the case number (first,\nso a narrow history list still shows it), the ATT&CK technique, the period, the breakdown\nor the console page a product question is about, such as \"CASE-000045 needs a person\",\n\"CASE-000005 identity_signin case\", \"Cases by severity, last 7 days\" or \"Sources help\".\nA name can carry a detection rule id exactly as written, but only one that the\nsuggestion rules accept and that does not look like an address, domain or file hash. It\nnever repeats any other value from your logs or cases, such as an address, a host or\nuser name, or a case title. Report summaries are\ndeterministic too and are not rate limited. Demo conversations and reports are kept apart from your real\nones and are removed when Demo Mode is turned off.",
    "console": [
     "settings:demo"
    ]
@@ -1960,7 +2192,7 @@
    "page": "analyst/chat.md",
    "anchor": "keyboard-shortcuts",
    "heading": "Keyboard shortcuts",
-   "text": "| Shortcut | Action |\n|---|---|\n| Enter / Shift+Enter | Send / new line |\n| ↑ in an empty composer | Edit your last question |\n| Esc | Stop the answer (focus in the composer, no menu open) |\n| `/` at the start | Commands, saved prompts, and the prompt library |\n| `@` | Limit lookups to logs, cases, metrics, … |\n| Shift+Esc | Focus the composer |\n| Ctrl/⌘+Shift+O | New chat |\n| Ctrl/⌘+Shift+S | Show or hide history |\n| Ctrl/⌘+Shift+C | Copy the last answer |\n| Ctrl/⌘+/ | Show all shortcuts |\n\nEsc always closes the topmost menu or dialog first. The command palette also offers\n**New chat**, **Search chats**, **Open Reports**, and **Ask AI**, which opens a new chat\nwith your text in the composer for you to review and send.",
+   "text": "| Shortcut | Action |\n|---|---|\n| Enter / Shift+Enter | Send / new line |\n| ↑ in an empty composer | Edit your last question |\n| Esc | Stop the answer (focus in the composer, no menu open) |\n| `/` at the start | Commands, saved prompts, and the prompt library |\n| `@` | Limit lookups to logs, cases, metrics, … |\n| Shift+Esc | Focus the composer |\n| Ctrl/⌘+Shift+O | New chat |\n| Ctrl/⌘+Shift+S | Show or hide history |\n| Ctrl/⌘+Shift+C | Copy the last answer |\n| Ctrl/⌘+/ | Show all shortcuts |\n| Delete or Backspace | Hide a suggestion for a day (on a focused suggestion) |\n| Ctrl/⌘+Z | Undo the last hidden suggestion (on the start screen) |\n\nOn the start screen the suggestions are one stop in the Tab order: the arrow keys move\nbetween them, Home and End jump to the first and last, and Enter or Space sends the\nfocused one. Esc always closes the topmost menu or dialog first. The command palette also offers\n**New chat**, **Search chats**, **Open Reports**, and **Ask AI**, which opens a new chat\nwith your text in the composer for you to review and send.",
    "console": []
   },
   {
@@ -1976,7 +2208,7 @@
    "page": "analyst/chat.md",
    "anchor": "limits",
    "heading": "Limits",
-   "text": "Administrators can switch chat to **Bounded** under **Settings → General → Chat\nassistant**. Each question then stops looking things up at its limits (model calls,\nlookups, tokens, and time; by default 5 model calls, 10 lookups, about 60,000 tokens,\nand 90 seconds), answers from what it found, and says so. The same section sets the\nanswers-at-once bounds, the default live mode, whether answers may be typed out, the\ndaily chat spending limit, whether the logo animates while chat works, internal\ndomains, and whether e-mail addresses may be looked up.\n\nUse Investigation for the broader entity and case workflow,\nLogs and search to inspect telemetry directly, and\nCase Manager for actions on a selected case.",
+   "text": "Administrators can switch chat to **Bounded** under **Settings → General → Chat\nassistant**. Each question then stops looking things up at its limits (model calls,\nlookups, tokens, and time; by default 5 model calls, 10 lookups, about 60,000 tokens,\nand 90 seconds), answers from what it found, and says so. The same section sets the\nanswers-at-once bounds, **Typed-out answers** (off, or allowed and off or on by\ndefault), **Suggest questions from live data**, the daily chat spending limit, whether\nthe logo animates while chat works, internal domains, and whether e-mail addresses may\nbe looked up.\n\nUse Investigation for the broader entity and case workflow,\nLogs and search to inspect telemetry directly, and\nCase Manager for actions on a selected case.",
    "console": []
   },
   {
@@ -2088,7 +2320,7 @@
    "page": "analyst/campaigns.md",
    "anchor": "what-a-campaign-contains",
    "heading": "What a campaign contains",
-   "text": "- a stable campaign ID and generated name;\n- member case IDs;\n- shared entities and ATT&CK techniques;\n- first- and last-seen time;\n- severity rollup; and\n- open, monitoring, or resolved status.\n\nEach member case remains independently assignable, explainable, and auditable. Open\na member to inspect its own source, evidence, risk, verdict, and decision.",
+   "text": "- a stable campaign ID and generated name;\n- member cases, each named by its case number as elsewhere in the console (the internal\n  case ID is in its tooltip; a case without a number shows its ID), listed in case-number\n  order with any case without a number last;\n- shared entities and ATT&CK techniques;\n- first- and last-seen time;\n- severity rollup; and\n- open, monitoring, or resolved status.\n\nEach member case remains independently assignable, explainable, and auditable. Open\na member to inspect its own source, evidence, risk, verdict, and decision.",
    "console": []
   },
   {
@@ -2261,7 +2493,7 @@
    "page": "analyst/analytics.md",
    "anchor": "standup-and-handoff",
    "heading": "Standup and handoff",
-   "text": "The Standup report is built from aggregates, never a raw-log dump. It contains:\n\n- urgency-ranked open, escalated, and needs-human cases;\n- SLA and aging pressure;\n- workload by assignee;\n- current-versus-prior deltas; and\n- action items and handoff acknowledgements.\n\nWriting action items or acknowledgements requires `cases:write`.",
+   "text": "The Standup report is built from aggregates, never a raw-log dump. It contains:\n\n- urgency-ranked open, escalated, and awaiting-analyst cases;\n- SLA and aging pressure;\n- workload by assignee;\n- current-versus-prior deltas; and\n- action items and handoff acknowledgements.\n\nIts figures are the ones chat's shift report shows for the same window. **Needs human**\ncounts the open cases whose AI verdict is Needs human. **Awaiting analyst** counts the open\ncases still in the status the console shows as **Open · awaiting analyst**, the cases the\nautomation routed to a person that no one has picked up; the workload list shows that\ncount per assignee as \"N awaiting\".\n\nWriting action items or acknowledgements requires `cases:write`.",
    "console": []
   },
   {
@@ -3130,7 +3362,7 @@
    "page": "administration/settings.md",
    "anchor": "chat-assistant",
    "heading": "Chat assistant",
-   "text": "- **Question limits.** **Limits per question** comes first. **Unlimited** (the default)\n  lets a question run until the assistant has answered or someone presses Stop, and\n  never cuts an answer short; loop guards still stop a question that is going nowhere\n  (the same lookup never runs twice, a question that stops making progress is asked to\n  answer, a model call that goes silent is retried once, and a very long investigation\n  wraps up with what it found). **Bounded** applies the per-question limits shown under\n  it: model calls, lookups, the token ceiling, and the time limit, with the answer\n  reserve, answer length, and results per step under **More limits**. Switching modes\n  keeps the values you set, so switching back is lossless.\n- **Spending.** **Daily chat spending limit** is off by default: the AI budget (daily\n  and monthly) covers automatic investigations and never pauses chat, so this limit is\n  chat's only spending bound, and there is no monthly chat limit. With a limit, chat stops\n  starting model calls once its spending since 00:00 UTC reaches the amount, and the\n  answer says so; 0 turns the limit off. Every chat call is still recorded in the cost\n  ledger.\n- **Answers.** The default live mode for viewers who have not chosen one (Live steps or\n  Type out answers), whether answers may be typed out at all, and **Animate the logo",
+   "text": "- **Question limits.** **Limits per question** comes first. **Unlimited** (the default)\n  lets a question run until the assistant has answered or someone presses Stop, and\n  never cuts an answer short; loop guards still stop a question that is going nowhere\n  (the same lookup never runs twice, a question that stops making progress is asked to\n  answer, a model call that goes silent is retried once, and a very long investigation\n  wraps up with what it found). **Bounded** applies the per-question limits shown under\n  it: model calls, lookups, the token ceiling, and the time limit, with the answer\n  reserve, answer length, and results per step under **More limits**. Switching modes\n  keeps the values you set, so switching back is lossless.\n- **Spending.** **Daily chat spending limit** is off by default: the AI budget (daily\n  and monthly) covers automatic investigations and never pauses chat, so this limit is\n  chat's only spending bound, and there is no monthly chat limit. With a limit, chat stops\n  starting model calls once its spending since 00:00 UTC reaches the amount, and the\n  answer says so; 0 turns the limit off. Every chat call is still recorded in the cost\n  ledger.\n- **Answers.** One **Typed-out answers** control with three choices: **Off** (answers\n  arrive whole, and the composer's **Type out answers** switch is disabled and says",
    "console": [
     "settings:chat_agent"
    ]
@@ -3140,7 +3372,7 @@
    "page": "administration/settings.md",
    "anchor": "chat-assistant",
    "heading": "Chat assistant",
-   "text": "while chat works**: a thin ring turns around the logo while an answer is being\n  written. A custom logo itself never moves, and the Chat item in the navigation keeps\n  its own indicator either way.\n- **Timeouts and capacity** (in both modes): how many lookups run side by side in one\n  step (in Bounded mode never more than the per-question lookup limit), how long one\n  lookup may take, how long a model call may go silent before it is retried (300\n  seconds by default), and how many questions may run at once per user (4) and in\n  total on this backend (16). Over those bounds a question waits and starts by itself.\n- **Indicator lookups:** how many indicators chat may send to enrichment providers per\n  question and per conversation (0 turns the lookup off, and chat's access list then\n  says it is turned off on this deployment), internal domain suffixes that are never\n  sent, and whether e-mail addresses may be sent.\n\nThe editor accepts only values inside each knob's range, and the server clamps anything\nelse, so a bad value can never reset other preferences. No setting here can let chat\nchange anything: the assistant is read-only by construction. The keys are listed in the\nconfiguration reference.",
+   "text": "why), **Allowed (off by default)**, and **Allowed (on by default)** (answers appear\n  word by word until a viewer turns it off). A viewer's own choice in the composer\n  wins wherever typed-out answers are allowed. Then **Animate the logo while chat\n  works**: a thin ring turns around the logo while an answer is being written. A custom\n  logo itself never moves, and the Chat item in the navigation keeps its own indicator\n  either way.\n- **Suggestions.** **Suggest questions from live data** (on by default): \"New chats open\n  with questions about your queue, SLA and sources, computed from data each viewer can\n  read. No AI cost.\" Each viewer sees only cards their own permissions allow, and a\n  viewer can still turn the suggestions off for themselves in the composer's Options\n  (see Workspace Chat). Turned off here, new\n  chats offer only the everyday questions, with no catch-up line; Case Manager chat\n  keeps its case questions, which name no data.\n- **Timeouts and capacity** (in both modes): how many lookups run side by side in one\n  step (in Bounded mode never more than the per-question lookup limit), how long one\n  lookup may take, how long a model call may go silent before it is retried (300\n  seconds by default), and how many questions may run at once per user (4) and in\n  total on this backend (16). Over those bounds a question waits and starts by itself.\n- **Indicator lookups:** how many indicators chat may send to enrichment providers per\n  question and per conversation (0 turns the lookup off, and chat's access list then\n  says it is turned off on this deployment), internal domain suffixes that are never\n  sent, and whether e-mail addresses may be sent.",
    "console": [
     "settings:chat_agent"
    ]
@@ -3150,7 +3382,7 @@
    "page": "administration/settings.md",
    "anchor": "chat-assistant",
    "heading": "Chat assistant",
-   "text": "**Upgrading from an earlier build.** The first time a stored configuration is read, it\nmoves to **Unlimited** unless an administrator had changed a per-question limit from\nits shipped value; then it stays **Bounded** with those values. The old defaults for\nthe model call timeout (30 seconds, Unlimited only) and the questions-at-once bounds (2\nper user, 8 in total) move to the new ones; values an administrator had chosen are\nkept. This happens once and is never repeated.",
+   "text": "The editor accepts only values inside each knob's range, and the server clamps anything\nelse, so a bad value can never reset other preferences. No setting here can let chat\nchange anything: the assistant is read-only by construction. The keys are listed in the\nconfiguration reference.\n\n**Upgrading from an earlier build.** The first time a stored configuration is read, it\nmoves to **Unlimited** unless an administrator had changed a per-question limit from\nits shipped value; then it stays **Bounded** with those values. The old defaults for\nthe model call timeout (30 seconds, Unlimited only) and the questions-at-once bounds (2\nper user, 8 in total) move to the new ones; values an administrator had chosen are\nkept. This happens once and is never repeated.",
    "console": [
     "settings:chat_agent"
    ]
@@ -5854,7 +6086,7 @@
    "page": "reference/configuration.md",
    "anchor": "chat-assistant-bounds",
    "heading": "Chat assistant bounds",
-   "text": "| `model_step_timeout_s` | 300 | 5–900 | Both | Seconds one model call may stay silent before it counts as stalled and is retried once |\n| `max_concurrent_turns_per_user` | 4 | 1–10 | Both | Questions one user may run at once (Workspace and case chat together) |\n| `max_concurrent_turns_global` | 16 | 1–100 | Both | Questions one backend process runs at once |\n| `max_indicator_lookups` | 3 | 0–10 | Both | Third-party indicator lookups per question; 0 turns the lookup off |\n| `max_indicator_lookups_per_conversation` | 10 | 0–50 | Both | Third-party indicator lookups per conversation |\n| `chat_daily_cap_usd` | `null` | ≥ 0 | Both | Optional daily chat spending limit in US dollars (UTC day); `null` or 0 is off |\n| `default_stream_mode` | `steps` | `steps`, `text` | Both | Live mode for viewers who have not chosen one |\n| `allow_text_streaming` | `true` | — | Both | Allow answers to be typed out word by word |\n| `animated_brand` | `true` | — | Both | Turn a ring around the logo while chat works (a custom logo itself never moves) |\n| `internal_domains` | `[]` | ≤ 100 suffixes | Both | Domain suffixes never sent to enrichment providers |\n| `allow_email_lookup` | `false` | — | Both | Allow e-mail addresses to be sent to enrichment providers |\n| `chat_limits_version` | 1 | — | — | Internal marker of the one-time limits migration below |",
+   "text": "| `model_step_timeout_s` | 300 | 5–900 | Both | Seconds one model call may stay silent before it counts as stalled and is retried once |\n| `max_concurrent_turns_per_user` | 4 | 1–10 | Both | Questions one user may run at once (Workspace and case chat together) |\n| `max_concurrent_turns_global` | 16 | 1–100 | Both | Questions one backend process runs at once |\n| `max_indicator_lookups` | 3 | 0–10 | Both | Third-party indicator lookups per question; 0 turns the lookup off |\n| `max_indicator_lookups_per_conversation` | 10 | 0–50 | Both | Third-party indicator lookups per conversation |\n| `chat_daily_cap_usd` | `null` | ≥ 0 | Both | Optional daily chat spending limit in US dollars (UTC day); `null` or 0 is off |\n| `default_stream_mode` | `steps` | `steps`, `text` | Both | Live mode for viewers who have not chosen one |\n| `allow_text_streaming` | `true` | — | Both | Allow answers to be typed out word by word |\n| `animated_brand` | `true` | — | Both | Turn a ring around the logo while chat works (a custom logo itself never moves) |\n| `dynamic_starters` | `true` | `true`, `false` | Both | New chats open with suggested questions computed by code from data each viewer can read, at no AI cost; off serves only the everyday questions and no catch-up line |\n| `internal_domains` | `[]` | ≤ 100 suffixes | Both | Domain suffixes never sent to enrichment providers |\n| `allow_email_lookup` | `false` | — | Both | Allow e-mail addresses to be sent to enrichment providers |\n| `chat_limits_version` | 1 | — | — | Internal marker of the one-time limits migration below |",
    "console": [
     "settings:chat_agent"
    ]
@@ -5864,7 +6096,7 @@
    "page": "reference/configuration.md",
    "anchor": "chat-assistant-bounds",
    "heading": "Chat assistant bounds",
-   "text": "Chat is outside the AI budget (`budget`), both `budget.daily_usd` and\n`budget.monthly_usd`: a chat call is never blocked by either and its spend is not counted\ntoward either. `chat_daily_cap_usd` is the only spending bound for chat; there is no\nmonthly chat bound.\n\n**One-time migration.** A stored `chat_agent` block without `chat_limits_version` is\nmigrated once when it is read. An explicit `limits_mode` is kept. Otherwise the block\nbecomes `bounded` if any of the seven per-question knobs differs from its shipped\ndefault (5, 10, 60,000, 12,000, 4,000, 6,000, and 90 seconds) and `unlimited` if not.\nIn a stored block, the old defaults of three knobs move to the new ones:\n`model_step_timeout_s` 30 → 300 (only when the block becomes `unlimited`),\n`max_concurrent_turns_per_user` 2 → 4, and `max_concurrent_turns_global` 8 → 16. Values\nan administrator chose are kept. The marker is then stamped, so a later choice is never\nre-decided.",
+   "text": "The editor shows `allow_text_streaming` and `default_stream_mode` as one **Typed-out\nanswers** control: **Off** stores `allow_text_streaming: false` and\n`default_stream_mode: steps`; **Allowed (off by default)** stores `true` and `steps`;\n**Allowed (on by default)** stores `true` and `text`. `dynamic_starters` is repaired like\n`animated_brand`: only an explicit off value turns it off, and a stored block without\nthe key reads as on.\n\nChat is outside the AI budget (`budget`), both `budget.daily_usd` and\n`budget.monthly_usd`: a chat call is never blocked by either and its spend is not counted\ntoward either. `chat_daily_cap_usd` is the only spending bound for chat; there is no\nmonthly chat bound.\n\n**One-time migration.** A stored `chat_agent` block without `chat_limits_version` is\nmigrated once when it is read. An explicit `limits_mode` is kept. Otherwise the block\nbecomes `bounded` if any of the seven per-question knobs differs from its shipped\ndefault (5, 10, 60,000, 12,000, 4,000, 6,000, and 90 seconds) and `unlimited` if not.\nIn a stored block, the old defaults of three knobs move to the new ones:\n`model_step_timeout_s` 30 → 300 (only when the block becomes `unlimited`),\n`max_concurrent_turns_per_user` 2 → 4, and `max_concurrent_turns_global` 8 → 16. Values\nan administrator chose are kept. The marker is then stamped, so a later choice is never\nre-decided.",
    "console": [
     "settings:chat_agent"
    ]
@@ -5962,7 +6194,15 @@
    "page": "reference/permissions.md",
    "anchor": "chat-and-reports",
    "heading": "Chat and reports",
-   "text": "- choosing a model other than the default, and seeing money and budget figures, need\n  `models:read`; today's spend also needs `cost:view`. Chat is not paused by the daily\n  AI budget, whatever these permissions; when the optional daily chat spending limit is\n  reached, a product question is still answered from the Help Center at no cost and any\n  other question gets the spending-limit notice;\n- posting a case-chat question and its answer text to the case thread, where every\n  reader of the case sees them, needs `cases:comment`, and so does **Add to case** on a\n  Workspace answer, which posts it as the user's own comment;\n- the step inspector, answer ratings, rejoining a running answer, and **Ask AI** entity\n  questions need `cases:read`, like chat itself, and work only on the user's own\n  conversations and turns;\n- confirming a fact the assistant suggests remembering needs `memory:manage`;\n- a running answer keeps only the access it started with: a role change that removes a\n  grant it uses stops it (\"Your access changed\"); a change that only adds access stops\n  nothing.\n\nChecking these grants for the composer and the starters writes no audit rows; a lookup\nthe model requests and the engine refuses for a missing grant writes one ACCESS_DENIED\nrow. Reports and saved conversations are visible only to the user who created them.",
+   "text": "- choosing a model other than the default, and seeing money and budget figures, need\n  `models:read`; today's spend also needs `cost:view`. Chat is not paused by the daily\n  AI budget, whatever these permissions; when the optional daily chat spending limit is\n  reached, a product question is still answered from the Help Center at no cost and any\n  other question gets the spending-limit notice;\n- posting a case-chat question and its answer text to the case thread, where every\n  reader of the case sees them, needs `cases:comment`, and so does **Add to case** on a\n  Workspace answer, which posts it as the user's own comment;\n- the step inspector, answer ratings, rejoining a running answer, and **Ask AI** entity\n  questions need `cases:read`, like chat itself, and work only on the user's own\n  conversations and turns;\n- suggested questions (`GET /api/chat/starters`) and their events need `cases:read`; a\n  card appears only when the caller holds every grant its answer needs (for example\n  `sources:read` for a quiet source, `models:read` and `cost:view` for spending,\n  `proposals:read` for approvals, `metrics:view` for auto-close health), and while\n  row-level object scope is on for the caller's role no card about cases is shown;\n- confirming a fact the assistant suggests remembering needs `memory:manage`;\n- a running answer keeps only the access it started with: a role change that removes a\n  grant it uses stops it (\"Your access changed\"); a change that only adds access stops\n  nothing.",
+   "console": []
+  },
+  {
+   "id": "reference/permissions#chat-and-reports:2",
+   "page": "reference/permissions.md",
+   "anchor": "chat-and-reports",
+   "heading": "Chat and reports",
+   "text": "Checking these grants for the composer and the starters writes no audit rows; a lookup\nthe model requests and the engine refuses for a missing grant writes one ACCESS_DENIED\nrow. Reports and saved conversations are visible only to the user who created them.",
    "console": []
   },
   {
@@ -6609,6 +6849,14 @@
    "anchor": "the-context-note-overstates-in-case-manager-chat",
    "heading": "The context note overstates in Case Manager chat",
    "text": "The composer's context card says \"Long conversations are summarised automatically near\nthe limit, so the chat keeps going. There is no hard cap.\" That holds for a saved\nWorkspace conversation. Case Manager chat, and a Workspace conversation that is not\nsaved, keep no running summary: when the conversation outgrows the model's context\nwindow, only the newest exchanges that fit are sent, and the oldest are left out without\na notice. The card shows the same note there.",
+   "console": []
+  },
+  {
+   "id": "releases/known-limitations#chat-suggestions-have-bounded-scope:0",
+   "page": "releases/known-limitations.md",
+   "anchor": "chat-suggestions-have-bounded-scope",
+   "heading": "Chat suggestions have bounded scope",
+   "text": "The suggested questions on a new chat follow each analyst's own visits: a first visit\nafter 8 hours or more away counts as the start of a shift, and the handoff card appears 7\nto 13 hours later. There is no configured team shift schedule. While row-level object\nscope is turned on for a role, no suggestion about cases and no \"Since …\" line is shown,\nbecause chat's case lookups do not apply that scope yet and a suggestion must never state\na count its answer would contradict. Case lists in chat answers name a case by its title\nand a short ID until the lookups return case numbers, and chat cannot yet filter cases by\nthe signed-in analyst, so the answer to \"Which of my open cases should I work on first?\"\nsays so and shows the open queue by assignee.",
    "console": []
   },
   {

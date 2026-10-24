@@ -272,6 +272,7 @@ class AuthService:
         chat_conversations: object | None = None,
         chat_feedback: object | None = None,
         reports: object | None = None,
+        chat_starters: object | None = None,
     ) -> None:
         """Best-effort cleanup of a deleted user's per-user side-state.
 
@@ -297,6 +298,10 @@ class AuthService:
         receipts, step observations and live state), ``chat_feedback.clear`` (the
         answer ratings and their comments) and ``reports.clear`` (the user's reports).
         The caller stops the user's running chat turns first, so none writes back.
+
+        Round 13 (SPEC-chat §3.2.3): ``chat_starters.clear`` drops the user's chat
+        starter state (visit clock, opaque starter keys and hidden families), keyed by
+        the username like the ratings, so it is cleared wherever they are.
         """
         uname = (username or "").strip()
         if not uname:
@@ -313,6 +318,7 @@ class AuthService:
             ("custom_roles", custom_roles, "delete_assignment", (uname,)),
             ("chat_conversations", chat_conversations, "purge_owner", (uname,)),
             ("chat_feedback", chat_feedback, "clear", (uname,)),
+            ("chat_starters", chat_starters, "clear", (uname,)),
             ("reports", reports, "clear", (uname,)),
         ]
         for label, store, method, args in targets:

@@ -11,6 +11,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
@@ -173,11 +174,18 @@ describe('a /compact reply', () => {
     expect(screen.queryByRole('button', { name: 'Ask again' })).toBeNull();
   });
 
-  it('an ordinary answer keeps its meta row and actions', () => {
+  it('an ordinary answer keeps its meta row and actions', async () => {
+    const user = userEvent.setup();
     renderMessage({ item: assistantItem({ response: response() }) });
     expect(screen.queryByTestId('answer-command-note')).toBeNull();
     expect(screen.getByTestId('meta-row')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add to case' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy answer' })).toBeInTheDocument();
+    // Add to case and Ask again live in the answer's ⋯ menu (Round 13 T10): the
+    // permission-gated Add to case is still offered on this path.
+    await user.click(screen.getByTestId('answer-more-actions'));
+    const menu = await screen.findByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: /Add to case/ })).toBeInTheDocument();
+    expect(within(menu).getByRole('menuitem', { name: 'Ask again' })).toBeInTheDocument();
   });
 });
 

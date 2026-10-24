@@ -3,7 +3,10 @@
  * because hostnames, rule names and IPs stay readable without rotation.
  *
  * - A simple single series of ≤ 10 measured, non-negative rows with no drill-through and
- *   no reference renders as the console's lighter, already-accessible `BarList`.
+ *   no reference renders as a light list: the label over each bar, and the value right
+ *   after the bar's end (Round 13, SPEC-chat T34), never at the far end of a long track,
+ *   so a label, its bar and its count read together. A compact block also sits in the
+ *   42rem reading column (SPEC-chat §5.1), which caps the track itself.
  * - Otherwise: labels left (ellipsised; the full label is in the tooltip and the table),
  *   bars square at the zero line with a 2 px radius at the tip, the value at the tip in
  *   text ink, `null` rows hatched across the plot, one tab stop with ↑/↓ rows (←/→
@@ -12,7 +15,7 @@
  */
 import * as React from 'react';
 
-import { BarList } from '@/soc/components/BarList';
+import { cn } from '@/lib/cn';
 import { token } from '@/soc/components/palette';
 import { navLabel } from '@/soc/nav';
 
@@ -98,19 +101,42 @@ export function HBarChart({ block, title, staticMode = false, full = false }: HB
 
 function BarListView({ block, title, staticMode }: { block: ChartBlock; title: string; staticMode: boolean }) {
   const values = block.series[0].values as number[];
-  const items = block.x.values.map((label, i) => {
-    const sem = asSemantic(label);
-    const cls = sem && SEMANTIC_BAR[sem] ? BAR_CLASS[SEMANTIC_BAR[sem] as string] : undefined;
-    return { label, value: values[i], color: cls };
-  });
+  const max = values.reduce((m, v) => Math.max(m, v), 0) || 1;
+  const texts = values.map((v) => formatValue(v, block.unit));
+  // Room for the longest value after the longest bar (in `ch` of the value's own font).
+  const reserve = `${Math.max(3, ...texts.map((t) => t.length)) + 2}ch`;
   return (
     <div data-testid="chart-hbar-list" className="min-w-0">
-      <BarList items={items} format={(v) => formatValue(v, block.unit)} className={block.untrusted ? '[&_li_span:first-child]:font-mono' : undefined} />
+      {/* The drawing is decorative: the data table below carries the figures (sr-only). */}
+      <ul className="flex flex-col gap-3" aria-hidden>
+        {block.x.values.map((label, i) => {
+          const sem = asSemantic(label);
+          const cls = sem && SEMANTIC_BAR[sem] ? BAR_CLASS[SEMANTIC_BAR[sem] as string] : 'bg-accent-bar';
+          const share = Math.max(0, Math.min(1, values[i] / max));
+          return (
+            <li key={`${label}-${i}`} className="min-w-0" data-bar-row={i}>
+              <span className={cn('block truncate text-sm text-foreground', block.untrusted ? 'font-mono' : 'proportional-nums')} title={label}>
+                {label}
+              </span>
+              <span className="mt-1 flex items-center gap-2">
+                <span
+                  className={cn('h-1.5 shrink-0 rounded-full', cls, values[i] > 0 && 'min-w-0.5')}
+                  style={{ width: `calc((100% - ${reserve}) * ${share.toFixed(4)})` }}
+                  data-bar-fill=""
+                />
+                <span className="shrink-0 text-xs font-medium tabular-nums text-foreground" data-bar-value="">
+                  {texts[i]}
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
       <DataTableFallback
         caption={`${title} (${unitLabel(block.unit)})`}
         rowHeader={block.x.label ?? 'Category'}
         columns={[block.series[0].label]}
-        rows={block.x.values.map((x, i) => ({ key: String(i), header: x, cells: [formatValue(values[i], block.unit)] }))}
+        rows={block.x.values.map((x, i) => ({ key: String(i), header: x, cells: [texts[i]] }))}
         visible={staticMode}
       />
     </div>

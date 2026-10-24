@@ -1,7 +1,10 @@
 /**
  * The saved-report line under an answer (Round 12 SPEC D11, SYNTHESIS-chat P0-7):
  *
- *   Saved to Reports · September 2026 SOC report · Open · Export ▾
+ *   Saved to Reports: September 2026 SOC report · Open · Export ▾
+ *
+ * One line says it once (Round 13, SPEC-chat T29): no toast repeats it, including after
+ * "Save as report" (the line itself replaces the button and takes focus).
  *
  * The SERVER created the report from the persisted answer (never the model); the title
  * came from the model's header, so it is display-sanitised text (#9). Open goes to the
@@ -71,9 +74,9 @@ export function SavedReportLine({ report, className, focusOpen = false }: SavedR
     <div className={cn('space-y-1', className)} data-testid="saved-report-line">
       <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
         <FileText className="size-3.5 shrink-0" aria-hidden />
-        <span>Saved to Reports</span>
-        <Dot />
-        <span className="min-w-0 break-words font-medium text-foreground">{title}</span>
+        <span className="min-w-0 break-words">
+          Saved to Reports: <span className="font-medium text-foreground">{title}</span>
+        </span>
         {report.skipped ? (
           <>
             <Dot />
@@ -150,7 +153,6 @@ export function saveAsReportFailure(code: string | null): string {
 /** "The report could not be saved …" and, when it may work later, "Save as report". */
 export function ReportSaveErrorLine({ error, conversationId, messageId, className }: ReportSaveErrorLineProps) {
   const announce = useAnnouncer();
-  const navigate = useNavigateOptional();
   const [saving, setSaving] = React.useState(false);
   const [saved, setSaved] = React.useState<ChatSavedReport | null>(null);
   const canSave = error.retryable && !!conversationId && !!messageId;
@@ -162,8 +164,8 @@ export function ReportSaveErrorLine({ error, conversationId, messageId, classNam
       // The server saves the report this answer asked for, once per answer.
       const done = await saveAnswerAsReport(conversationId, messageId);
       setSaved(done);
+      // The saved line replaces the button and says it; assistive tech hears it once too.
       announce(`Saved to Reports: ${done.title || 'Untitled report'}`);
-      toast.success('Saved to Reports', { action: { label: 'Open', onClick: () => navigate('reports', { reportId: done.id }) } });
     } catch (err) {
       const message = saveAsReportFailure(apiErrorCode(err));
       announce(message);

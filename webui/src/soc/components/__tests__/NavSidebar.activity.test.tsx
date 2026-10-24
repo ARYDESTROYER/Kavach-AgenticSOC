@@ -184,3 +184,22 @@ describe('NavSidebar — chat activity (collapsed rail)', () => {
     expect(within(screen.getByTestId('nav-flyout-chat')).getByText(/^Working\. Chat: 1 answer in progress/)).toBeInTheDocument();
   });
 });
+
+describe('NavSidebar — the brand ring below sm (Round 13, SPEC-chat T32)', () => {
+  it('draws the brand ring only from sm: on a phone the Chat item\'s glyph alone turns', () => {
+    putChatActivity(entry({ scope: 'conv:c1' }));
+    const { container } = renderNav();
+    const ring = container.querySelector('.chat-brand-ring') as HTMLElement;
+    expect(ring).not.toBeNull();
+    // The brand tile hides its ring below sm (the phone sheet) and keeps it from sm.
+    const tile = ring.parentElement as HTMLElement;
+    expect(tile).toHaveClass('max-sm:[&>.chat-brand-ring]:hidden');
+    expect(tile.querySelector('img, svg')).not.toBeNull();
+    // The Chat destination keeps its own turning glyph at every width.
+    for (const row of screen.getAllByTestId('nav-chat')) {
+      const glyph = row.querySelector('[data-activity="running"]');
+      expect(glyph).not.toBeNull();
+      expect(glyph?.closest('.hidden')).toBeNull();
+    }
+  });
+});

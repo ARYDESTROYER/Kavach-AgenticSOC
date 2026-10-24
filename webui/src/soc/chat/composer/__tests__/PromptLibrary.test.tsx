@@ -3,8 +3,10 @@
  * categories, the favorites star, search, read-only starter prompts kept apart from the
  * analyst's own, `{param}` values asked for inline before sending (the analyst's own
  * words, `origin: "user"`), promptbooks run step by step with a counter and Stop, and
- * the empty state's "Browse the prompt library" link. Everything is stored in the
+ * the start screen's "All prompts" pill (Round 13). Everything is stored in the
  * existing `UserPrefs.chat_prompts` through `/api/prefs/user` (no new endpoint).
+ * Round 13 (SPEC-chat T30, T35): the row itself is Use (Run for a promptbook), a
+ * starter's ⋯ holds Save a copy, a promptbook reads "{k} steps", UK "Favourites".
  */
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,7 +19,7 @@ import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 import type { ChatPrompt } from '@/lib/types';
-import { EmptyState, LIBRARY_LINK } from '../../empty/EmptyState';
+import { EmptyState } from '../../empty/EmptyState';
 import type { ComposerHandle } from '../Composer';
 import { PROMPTBOOK_RUNNING_REASON } from '../PromptRunner';
 import { resetPromptbookForTests } from '../promptbook-store';
@@ -69,27 +71,59 @@ describe('Composer — prompt library', () => {
     const dialog = await openLibrary(user);
     const own = within(dialog).getByRole('region', { name: 'Your prompts' });
     const starters = within(dialog).getByRole('region', { name: 'Starter prompts' });
-    const ownTitles = within(own).getAllByRole('listitem').map((li) => li.querySelector('p')?.textContent);
+    const ownTitles = within(own)
+      .getAllByRole('listitem')
+      .map((li) => li.querySelector('[data-row-title]')?.textContent);
     expect(ownTitles).toEqual(['Phishing review', 'VPN anomalies', 'Case triage']);
     expect(within(own).getByText('3 of 50')).toBeInTheDocument();
-    // Starters can be used or copied, never starred, edited or deleted.
+    // Starters can be used or copied (their ⋯), never starred, edited or deleted.
     expect(within(starters).getByRole('button', { name: 'Use Hunt an indicator' })).toBeInTheDocument();
-    expect(within(starters).getByRole('button', { name: 'Save a copy of Hunt an indicator' })).toBeInTheDocument();
-    expect(within(starters).queryByRole('button', { name: /^Favorite / })).toBeNull();
-    expect(within(starters).queryByRole('button', { name: /^More actions/ })).toBeNull();
-    // Rows say their category, kind and the values they ask for.
+    expect(within(starters).queryByRole('button', { name: /^Favourite / })).toBeNull();
+    await user.click(within(starters).getByRole('button', { name: 'More actions for Hunt an indicator' }));
+    expect(await screen.findByRole('menuitem', { name: 'Save a copy' })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Edit' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: /Delete/ })).toBeNull();
+    await user.keyboard('{Escape}');
+    // Rows say their category, kind and the values they ask for; a book its steps.
     const book = within(own).getByText('Case triage').closest('li') as HTMLElement;
-    expect(within(book).getByTestId('prompt-meta')).toHaveTextContent('Promptbook · 3 steps · Asks for Case id');
-    // A promptbook's button reads "Run", and its name starts with what it shows (WCAG 2.5.3).
-    expect(within(book).getByRole('button', { name: 'Run Case triage' })).toHaveTextContent('Run');
-    expect(within(starters).getByRole('button', { name: 'Run Triage a case' })).toHaveTextContent('Run');
+    expect(within(book).getByTestId('prompt-meta')).toHaveTextContent('Promptbook · Asks for Case id');
+    expect(within(book).getByRole('button', { name: '3 steps' })).toHaveAttribute('aria-expanded', 'false');
+    // The row itself is Use (Run for a promptbook, T30); its name holds the title it
+    // shows (WCAG 2.5.3), and the steps expander is a separate control.
+    expect(within(book).getByRole('button', { name: 'Run Case triage' })).toHaveTextContent('Case triage');
+    expect(within(starters).getByRole('button', { name: 'Run Triage a case' })).toHaveTextContent('Triage a case');
+    expect(within(book).getByRole('button', { name: 'Run Case triage' })).not.toContainElement(
+      within(book).getByRole('button', { name: '3 steps' }),
+    );
+    // A button's children are presentational: the meta line and the preview stay
+    // readable as its description, not swallowed by the name.
+    expect(within(book).getByRole('button', { name: 'Run Case triage' })).toHaveAccessibleDescription(
+      'Promptbook · Asks for Case id',
+    );
+    const vpn = within(own).getByRole('button', { name: 'Use VPN anomalies' });
+    expect(vpn).toHaveAccessibleDescription(/Asks for User/);
+    expect(vpn.getAttribute('aria-describedby')?.split(' ')).toHaveLength(2);
+  });
+
+  it('expands a promptbook row to show every step, never cut (T30)', async () => {
+    const { user } = setup();
+    const dialog = await openLibrary(user);
+    const book = within(within(dialog).getByRole('region', { name: 'Your prompts' })).getByText('Case triage').closest('li') as HTMLElement;
+    const toggle = within(book).getByRole('button', { name: '3 steps' });
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const steps = within(book).getAllByRole('listitem').map((li) => li.textContent);
+    expect(steps).toEqual(['Open case {case id}.', 'Related cases to {case id}?', 'Write next steps.']);
+    for (const li of within(book).getAllByRole('listitem')) expect(li.className).not.toMatch(/truncate|line-clamp/);
+    await user.click(toggle);
+    expect(within(book).queryAllByRole('listitem')).toHaveLength(0);
   });
 
   it('filters by category chip, favorites and search', async () => {
     const { user } = setup();
     const dialog = await openLibrary(user);
-    await user.click(within(dialog).getByRole('button', { name: 'Favorites', pressed: false }));
-    expect(within(dialog).getByRole('button', { name: 'Favorites' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(within(dialog).getByRole('button', { name: 'Favourites', pressed: false }));
+    expect(within(dialog).getByRole('button', { name: 'Favourites' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(dialog).queryByRole('region', { name: 'Starter prompts' })).toBeNull();
     expect(within(dialog).getByText('Phishing review')).toBeInTheDocument();
     expect(within(dialog).queryByText('VPN anomalies')).toBeNull();
@@ -110,15 +144,15 @@ describe('Composer — prompt library', () => {
   it('stars a prompt through the prefs route and says so', async () => {
     const { user, server } = setup();
     const dialog = await openLibrary(user);
-    const star = within(dialog).getByRole('button', { name: 'Favorite VPN anomalies' });
+    const star = within(dialog).getByRole('button', { name: 'Favourite VPN anomalies' });
     expect(star).toHaveAttribute('aria-pressed', 'false');
     await user.click(star);
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Favorite VPN anomalies' })).toHaveAttribute('aria-pressed', 'true'));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Favourite VPN anomalies' })).toHaveAttribute('aria-pressed', 'true'));
     const put = lastPut(server);
     expect(put?.chat_prompts.find((p) => p.id === 'p1')).toMatchObject({ favorite: true, category: 'hunt' });
     // The other prompts are written back untouched (order, ids, category).
     expect(put?.chat_prompts.map((p) => p.id)).toEqual(['p1', 'p2', 'book-b1']);
-    expect(announce).toHaveBeenCalledWith('Added VPN anomalies to favorites');
+    expect(announce).toHaveBeenCalledWith('Added VPN anomalies to favourites');
   });
 
   it('asks for the values of a starter prompt inline and sends the filled text as the analyst’s own', async () => {
@@ -250,7 +284,8 @@ describe('Composer — prompt library', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name: /Prompt library/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Prompt library' });
     expect(await within(dialog).findByText(/No saved prompts yet/)).toBeInTheDocument();
-    await user.click(within(dialog).getByRole('button', { name: 'Save a copy of Explain a case' }));
+    await user.click(within(dialog).getByRole('button', { name: 'More actions for Explain a case' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Save a copy' }));
     const save = await screen.findByRole('dialog', { name: 'Save prompt' });
     expect(within(save).getByRole('textbox', { name: 'Title' })).toHaveValue('Explain a case');
     expect(within(save).getByRole('combobox', { name: 'Category' })).toHaveTextContent('Triage');
@@ -340,7 +375,7 @@ describe('Composer — prompt library', () => {
     const dialog = await openLibrary(user);
     // Another tab deletes "VPN anomalies".
     server.prompts = server.prompts.filter((p) => p.id !== 'p1');
-    await user.click(within(dialog).getByRole('button', { name: 'Favorite VPN anomalies' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Favourite VPN anomalies' }));
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('That prompt no longer exists.');
     expect(within(dialog).queryByText('VPN anomalies')).toBeNull();
     expect(within(dialog).getByText('2 of 50')).toBeInTheDocument();
@@ -370,45 +405,45 @@ describe('Composer — prompt library', () => {
     expect(within(dialog).queryByRole('alert')).toBeNull();
   });
 
-  it('keeps focus on a favorite star while it saves and after its row moves', async () => {
+  it('keeps focus on a favourite star while it saves and after its row moves', async () => {
     const { user } = setup();
     const dialog = await openLibrary(user);
-    const star = within(dialog).getByRole('button', { name: 'Favorite Case triage' });
+    const star = within(dialog).getByRole('button', { name: 'Favourite Case triage' });
     star.focus();
     await user.keyboard(' ');
     await waitFor(() =>
-      expect(within(dialog).getByRole('button', { name: 'Favorite Case triage' })).toHaveAttribute('aria-pressed', 'true'),
+      expect(within(dialog).getByRole('button', { name: 'Favourite Case triage' })).toHaveAttribute('aria-pressed', 'true'),
     );
-    // Favorites sort first: the row moved, and its star still has focus.
+    // Favourites sort first: the row moved, and its star still has focus.
     const titles = within(within(dialog).getByRole('region', { name: 'Your prompts' }))
       .getAllByRole('listitem')
-      .map((li) => li.querySelector('p')?.textContent);
+      .map((li) => li.querySelector('[data-row-title]')?.textContent);
     expect(titles).toEqual(['Phishing review', 'Case triage', 'VPN anomalies']);
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Favorite Case triage' })).toHaveFocus());
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Favourite Case triage' })).toHaveFocus());
     // Never natively disabled while saving (that would drop focus out of the dialog).
-    expect(within(dialog).getByRole('button', { name: 'Favorite VPN anomalies' })).not.toBeDisabled();
+    expect(within(dialog).getByRole('button', { name: 'Favourite VPN anomalies' })).not.toBeDisabled();
   });
 
-  it('moves focus on when an un-starred row leaves the Favorites list, never to the dialog', async () => {
+  it('moves focus on when an un-starred row leaves the Favourites list, never to the dialog', async () => {
     const { user } = setup([
       { id: 'p1', title: 'VPN anomalies', text: 'Any odd VPN logins for {user} this week?', favorite: true },
       { id: 'p2', title: 'Phishing review', text: 'Summarise phishing cases.', favorite: true },
       { id: 'p3', title: 'Not starred', text: 'Count cases.' },
     ]);
     const dialog = await openLibrary(user);
-    await user.click(within(dialog).getByRole('button', { name: 'Favorites', pressed: false }));
+    await user.click(within(dialog).getByRole('button', { name: 'Favourites', pressed: false }));
     const own = () => within(dialog).getByRole('region', { name: 'Your prompts' });
-    const titles = () => within(own()).getAllByRole('listitem').map((li) => li.querySelector('p')?.textContent);
+    const titles = () => within(own()).getAllByRole('listitem').map((li) => li.querySelector('[data-row-title]')?.textContent);
     expect(titles()).toEqual(['VPN anomalies', 'Phishing review']);
     // Un-star the first row: it leaves the list, and focus moves to the next row's star.
-    within(dialog).getByRole('button', { name: 'Favorite VPN anomalies' }).focus();
+    within(dialog).getByRole('button', { name: 'Favourite VPN anomalies' }).focus();
     await user.keyboard(' ');
     await waitFor(() => expect(titles()).toEqual(['Phishing review']));
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Favorite Phishing review' })).toHaveFocus());
-    expect(announce).toHaveBeenCalledWith('Removed VPN anomalies from favorites');
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Favourite Phishing review' })).toHaveFocus());
+    expect(announce).toHaveBeenCalledWith('Removed VPN anomalies from favourites');
     // Un-star the last one: no row is left, so focus goes to the search field.
     await user.keyboard(' ');
-    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Favorite Phishing review' })).toBeNull());
+    await waitFor(() => expect(within(dialog).queryByRole('button', { name: 'Favourite Phishing review' })).toBeNull());
     await waitFor(() => expect(within(dialog).getByRole('searchbox', { name: 'Search prompts' })).toHaveFocus());
     expect(document.activeElement?.getAttribute('role')).not.toBe('dialog');
   });
@@ -481,7 +516,7 @@ describe('Composer — prompt library', () => {
     expect(textarea.value).toBe('Summarise phishing cases.');
   });
 
-  it('opens from the new-chat empty state link', async () => {
+  it('opens from the start screen\'s All prompts pill', async () => {
     stubServer({ prompts: OWN.map((p) => ({ ...p })) });
     const user = userEvent.setup();
     render(
@@ -490,7 +525,7 @@ describe('Composer — prompt library', () => {
         <Harness spies={spies} context={makeContext()} />
       </>,
     );
-    await user.click(screen.getByRole('button', { name: LIBRARY_LINK }));
+    await user.click(screen.getByRole('button', { name: 'All prompts' }));
     expect(await screen.findByRole('dialog', { name: 'Prompt library' })).toBeInTheDocument();
   });
 

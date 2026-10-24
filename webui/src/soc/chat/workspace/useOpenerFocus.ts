@@ -10,26 +10,71 @@
  * so `document.activeElement` is still the opener) and `restore` into
  * `onCloseAutoFocus`. An opener that is no longer in the document (the layout changed
  * while the Sheet was open) leaves Radix's default in place.
+ *
+ * Focus goes back quietly (`focusQuietly`): a guarded opener does not open its tooltip
+ * over the content the reader just chose (the phone's History button, Round 13 polish).
+ *
+ * Round 13 (SPEC-chat T27): passed the open event, `capture` also moves focus to an
+ * element marked `data-autofocus` inside the content instead of Radix's first focusable
+ * one (the History sheet's search field, so the New chat tooltip never opens over it).
  */
 import * as React from 'react';
+import { focusQuietly } from '../quiet-focus';
 
 export interface OpenerFocus {
-  capture: () => void;
+  /** Record the opener; with the open event, focus the content's `[data-autofocus]`. */
+  capture: (event?: Event) => void;
   restore: (event: Event) => void;
 }
 
 export function useOpenerFocus(): OpenerFocus {
   const openerRef = React.useRef<HTMLElement | null>(null);
-  const capture = React.useCallback(() => {
+  const capture = React.useCallback((event?: Event) => {
     const active = typeof document === 'undefined' ? null : document.activeElement;
     openerRef.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    const content = event?.target;
+    if (!(content instanceof Element)) return;
+    const preferred = content.querySelector<HTMLElement>('[data-autofocus]');
+    if (!preferred) return;
+    event?.preventDefault();
+    preferred.focus();
   }, []);
   const restore = React.useCallback((event: Event) => {
     const opener = openerRef.current;
     openerRef.current = null;
     if (!opener || !opener.isConnected) return;
     event.preventDefault();
-    opener.focus();
+    // Without opening the opener's tooltip over what the reader just chose (Round 13).
+    focusQuietly(opener);
   }, []);
   return React.useMemo(() => ({ capture, restore }), [capture, restore]);
+}
+
+/**
+ * useFocusAfterSwap — hand focus on when a control takes itself off the page (Round 13
+ * polish). Collapse history and Show history swap the rail and the strip, and the docked
+ * report panel's Close button leaves with the panel, so the button that had focus is
+ * gone and the browser drops focus to `<body>`.
+ *
+ * Call the returned function with a finder in the same handler that changes the layout:
+ * after that commit (a layout effect, before paint) the finder's element takes focus,
+ * quietly (`focusQuietly`, so its tooltip stays shut), but only when focus was dropped.
+ * Focus the analyst kept somewhere else (the composer, a Safari click that never focused
+ * the button) stays where it is.
+ */
+export function useFocusAfterSwap(): (find: () => HTMLElement | null | undefined) => void {
+  const finder = React.useRef<(() => HTMLElement | null | undefined) | null>(null);
+  const [request, setRequest] = React.useState(0);
+  React.useLayoutEffect(() => {
+    const find = finder.current;
+    finder.current = null;
+    if (!find || typeof document === 'undefined') return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    focusQuietly(find());
+  }, [request]);
+  return React.useCallback((find: () => HTMLElement | null | undefined) => {
+    finder.current = find;
+    setRequest((n) => n + 1);
+  }, []);
 }

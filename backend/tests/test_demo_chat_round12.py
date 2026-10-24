@@ -388,7 +388,7 @@ def test_a_better_or_worse_question_gets_a_direct_answer() -> None:
         return out
 
     _rounds, _header, body = drive("Is our FP rate better or worse than last month?", obs)
-    assert body.startswith("**Worse**: the false-positive rate went from 40% to 75.6% (+35.6 points). The sample "
+    assert body.startswith("**Worse**: the false-positive rate went from 40% to 76% (+36 points). The sample "
                            "is small, so read the change with care.")
 
 
@@ -876,12 +876,17 @@ def test_a_filtered_comparison_names_its_filter_and_drops_the_all_case_posture(
 
 
 def test_an_unfiltered_comparison_keeps_the_posture_and_says_now_only_for_the_current_period() -> None:
-    """R2-3 / R2-12: the unfiltered comparison keeps the automation rate; "now" only when
-    the subject period is the current, in-progress one."""
-    _rounds, _header, body = drive("Compare this month with last month", _compare_obs({}))
+    """R2-3 / R2-12: the unfiltered comparison keeps the automation rate (in the posture
+    block; Round 13 T15: the prose names two of its figures, so it says the automation
+    rate only when the question asks for it); "now" only when the subject period is the
+    current, in-progress one."""
+    _rounds, header, body = drive("Compare this month with last month", _compare_obs({}))
     assert body.startswith("**Oct 2026 to date compared with Sep 2026 to date**. Changes are computed exactly over "
                            "every case:")
-    assert "Automation rate: +42.4 points (86.8% now)." in body
+    assert ("soc_metrics", {"kind": "posture", "window": "this_month", "compare": "previous_period"}) in ran(_rounds)
+    assert "Automation rate" not in body
+    _rounds, _header, asked = drive("Compare the automation rate this month with last month", _compare_obs({}))
+    assert "Automation rate: +42 points (87% now)." in asked
     past = {"subject": "Sep 2026", "baseline": "Aug 2026", "periods": ["Aug 2026", "Sep 2026"],
             "in_progress": [False, False]}
     assert demo_chat._subject_when(past) == "in Sep 2026"
@@ -944,8 +949,8 @@ def test_the_automation_rate_trend_is_its_own_measure() -> None:
     (stats,) = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
     assert stats["bucket"] == "month" and set(stats["metrics"]) == {"count", "auto_closed", "human_closed"}
     assert body.startswith("**Automation rate in the last 12 months (since Nov 2025)**, by month")
-    assert ("Automation rate per month: latest Oct 2026 (in progress) 89.2% (33 of 37 closed); lowest Sep 2026 "
-            "52.2% (12 of 23 closed)") in body
+    assert ("Automation rate per month: latest Oct 2026 (in progress) 89% (33 of 37 closed); lowest Sep 2026 "
+            "52% (12 of 23 closed)") in body
     assert "False-positive rate" not in body and "True-positive rate" not in body
 
 
@@ -981,7 +986,7 @@ def test_a_true_positive_rate_question_leads_with_the_rate() -> None:
     rounds, _header, body = drive("TP rate this quarter", obs)
     (stats,) = [inp for tool, inp in ran(rounds) if tool == "case_stats"]
     assert {"tp_rate", "fp_rate"} <= set(stats["metrics"]) and stats["window"] == "this_quarter"
-    assert body.startswith("True-positive rate **13.3%** in Q4 2026, over 45 cases.")
+    assert body.startswith("True-positive rate **13%** in Q4 2026, over 45 cases.")
     # Verdicts are named in their canonical order, as the chart beside them is (SPEC
     # §7.2 decision 27), never by volume.
     assert "By AI verdict: True positive 6 and False positive 34." in body

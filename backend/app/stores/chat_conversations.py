@@ -524,6 +524,17 @@ def archive_page_key(partition_key: str, conversation_id: str, page: int) -> str
     return _aux_key(ARCHIVE_KEY_PREFIX, "archive", partition_key, conversation_id, str(int(page)))
 
 
+def clean_system_title(value: Any) -> str | None:
+    """A model-written conversation title (Round 13 SPEC-chat T6) as stored: one line,
+    whitespace collapsed, at most :data:`MAX_TITLE_CHARS`; ``None`` when empty. The
+    engine has already checked it (``chat_protocol.parse_title``); this is the store's
+    own bound, never a rewrite into a different title."""
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split()).strip()
+    return cleaned if cleaned and len(cleaned) <= MAX_TITLE_CHARS else None
+
+
 def derive_title(message: str) -> str:
     title = " ".join(str(message or "").split()).strip()
     if not title:
@@ -2715,8 +2726,13 @@ class ChatConversationStore:
         exchange_saved: bool = False,
         removed: _Removed | None = None,
         live: dict[str, Any] | None = None,
+        title: str | None = None,
     ) -> tuple[ChatConversation | None, str | None]:
         """Append one exchange to the decoded partition ``data`` (in place).
+
+        ``title`` (Round 13 T6) is the model's title from the first answer: it names
+        the conversation only when this exchange CREATES it, so its title is still the
+        derived default; an existing (possibly renamed) conversation keeps its title.
 
         ``exchange_saved`` (Round 12): the caller has written the exchange document,
         so the inline copy may be partial — it is marked and restored on read, and
@@ -2738,7 +2754,7 @@ class ChatConversationStore:
         if existing is None:
             existing = ChatConversation(
                 id=conversation_id,
-                title=derive_title(user_content),
+                title=clean_system_title(title) or derive_title(user_content),
                 preview="",
                 created_at=now,
                 updated_at=now,
@@ -2880,6 +2896,7 @@ class ChatConversationStore:
         source_name: str | None = None,
         idempotency_key: str | None = None,
         user_origin: str | None = None,
+        system_title: str | None = None,
     ) -> ChatConversation | None:
         """Append one exchange without a reservation (tests, imports). Like
         :meth:`complete_exchange`, the full exchange is written to its own document
@@ -2917,6 +2934,7 @@ class ChatConversationStore:
                 exchange_saved=True,
                 removed=removed,
                 live=live,
+                title=system_title,
             )
             return self._encode(data), stored
 
@@ -3191,9 +3209,12 @@ class ChatConversationStore:
         source_name: str | None,
         user_origin: str | None = None,
         time_range: TimeRange | dict[str, Any] | None | Literal[False] = False,
+        system_title: str | None = None,
     ) -> ChatExchangeReservation:
         """Append the exchange under the caller's lease and turn the reservation into
-        a compact receipt. ``user_origin`` is stored on the user message (§4.8);
+        a compact receipt. ``system_title`` (Round 13 T6) is the model's title from the
+        conversation's first answer: it names the conversation only when this exchange
+        creates it (its title is then still the derived default), never after a rename. ``user_origin`` is stored on the user message (§4.8);
         ``time_range`` (when given, ``None`` included) becomes the conversation's last
         composer window; usage totals are incremented from ``response.usage``.
 
@@ -3262,6 +3283,7 @@ class ChatConversationStore:
                 exchange_saved=True,
                 removed=removed,
                 live=live,
+                title=system_title,
             )
             if conversation is None or assistant_id is None:
                 raise ChatConversationMissing("conversation not found")

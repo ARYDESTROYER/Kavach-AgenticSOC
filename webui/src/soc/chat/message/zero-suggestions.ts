@@ -18,17 +18,33 @@ export interface ZeroChip {
   question: string;
 }
 
-/** The follow-up question a suggestion label asks (engine label → plain question). */
+/**
+ * A label as it reads mid-sentence: its first word loses its capital ("Without" →
+ * "without") unless that word is an acronym ("IP"), and every other word keeps the
+ * label's own case ("source IP", "Open and closed cases" → "open and closed cases").
+ */
+function midSentence(text: string): string {
+  const first = text.split(/\s/, 1)[0] ?? '';
+  const acronym = first.length > 1 && first === first.toUpperCase() && first !== first.toLowerCase();
+  return acronym ? text : text.charAt(0).toLowerCase() + text.slice(1);
+}
+
+/**
+ * The follow-up question a suggestion label asks (engine label → plain question). The
+ * prefixes match case-insensitively; the rest of the label is kept as written, so
+ * "Without the source IP filter" asks "Show the same without the source IP filter"
+ * (the engine's `chat_followups.suggestion_question` builds the same words).
+ */
 export function suggestionQuestion(label: string): string {
   const text = label.trim();
   const low = text.toLowerCase();
   if (low === 'all time') return 'Show the same for all time';
   if (low === 'all sources') return 'Show the same across all sources';
   if (low === 'any severity') return 'Show the same for any severity';
-  if (low.startsWith('without the ')) return `Show the same ${low}`;
-  if (low.startsWith('last ')) return `Show the same for the ${low}`;
-  if (low.startsWith('this ')) return `Show the same for ${low}`;
-  return `Show the same for ${low}`;
+  const lead = midSentence(text);
+  if (low.startsWith('without the ')) return `Show the same ${lead}`;
+  if (low.startsWith('last ')) return `Show the same for the ${lead}`;
+  return `Show the same for ${lead}`;
 }
 
 /** Chips for a set of suggestions (deduplicated by question, at most 4). */

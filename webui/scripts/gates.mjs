@@ -4,7 +4,10 @@
  *
  * Runs all five gate checks in-process and reports a single pass/fail:
  *   1. token-existence — every ALLOWED_TOKENS + palette token() name in theme.css (both themes)
- *   2. contrast        — WCAG AA (4.5:1 text / 3:1 non-text) across the semantic axes, both themes
+ *   2. contrast        — WCAG AA (4.5:1 text / 3:1 non-text) across the semantic axes, both themes,
+ *                        plus the grouped dashboard panel: AA text and badge text on `--panel` and
+ *                        its hovered row, a ≥3:1 structural line on it, and the separations that
+ *                        keep the panel and its muted / hover / selected steps visible
  *   3. grep: text-size — no NEW arbitrary `text-[<number>…]` in .tsx (baselined)
  *   4. grep: raw hex   — no NEW raw `#rrggbb` in .tsx (baselined)
  *   5. CVD             — --chart-* ramp resolves + stays separable under the 3 dichromacies

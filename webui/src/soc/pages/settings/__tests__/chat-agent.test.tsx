@@ -15,7 +15,10 @@
  *     timeouts and capacity"), because the generic All settings view no longer shows
  *     this block, and
  *   - shows the Round 12 limits mode first (Unlimited by default, the per-question knobs
- *     only in Bounded) and the optional chat daily spending limit (SPEC D1, D5).
+ *     only in Bounded) and the optional chat daily spending limit (SPEC D1, D5), and
+ *   - Round 13 (SPEC-chat T31): one "Typed-out answers" control over
+ *     `allow_text_streaming` + `default_stream_mode`, and the "Suggest questions from
+ *     live data" switch (`dynamic_starters`, on by default).
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -34,6 +37,10 @@ import {
   CHAT_AGENT_DEFAULTS,
   CHAT_CAP_STARTING_USD,
   ChatAgentSection,
+  DYNAMIC_STARTERS_HELP,
+  TYPED_ANSWERS_HELP,
+  typedAnswers,
+  typedAnswersPatch,
   chatCapFromField,
   LIMITS_MODE_HELP,
   MAX_INTERNAL_DOMAINS,
@@ -108,6 +115,8 @@ describe('the editor mirrors backend ChatAgentConfig', () => {
     expect(CHAT_AGENT_DEFAULTS.allow_email_lookup).toBe(false);
     expect(body).toMatch(/animated_brand: bool = Field\(\s*default=True/);
     expect(CHAT_AGENT_DEFAULTS.animated_brand).toBe(true);
+    expect(body).toMatch(/dynamic_starters: bool = Field\(\s*default=True/);
+    expect(CHAT_AGENT_DEFAULTS.dynamic_starters).toBe(true);
     expect(CHAT_AGENT_DEFAULTS.internal_domains).toEqual([]);
     expect(source.slice(start)).toMatch(new RegExp(`_MAX_INTERNAL_DOMAINS: ClassVar\\[int\\] = ${MAX_INTERNAL_DOMAINS}\\b`));
   });
@@ -206,7 +215,7 @@ describe('ChatAgentSection', () => {
     renderSection(CHAT_AGENT_DEFAULTS);
     expect(screen.getByRole('heading', { name: 'Chat assistant' })).toBeInTheDocument();
     const headings = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
-    expect(headings).toEqual(['Question limits', 'Spending', 'Answers', 'Timeouts and capacity', 'Indicator lookups']);
+    expect(headings).toEqual(['Question limits', 'Spending', 'Answers', 'Suggestions', 'Timeouts and capacity', 'Indicator lookups']);
     const group = screen.getByRole('radiogroup', { name: 'Limits per question' });
     expect(within(group).getByRole('radio', { name: 'Unlimited' })).toBeChecked();
     expect(screen.getByTestId('chat-limits-help')).toHaveTextContent(LIMITS_MODE_HELP.unlimited);
@@ -334,8 +343,9 @@ describe('ChatAgentSection', () => {
     const limits = screen.getByRole('radiogroup', { name: 'Limits per question' });
     expect(limits).toHaveAccessibleDescription(LIMITS_MODE_HELP.unlimited);
     expect(screen.getByTestId('chat-limits-help')).toHaveAttribute('aria-live', 'polite');
-    const live = screen.getByRole('radiogroup', { name: 'Default live mode' });
-    expect(live).toHaveAccessibleDescription('Applies until a viewer picks their own mode in the composer options.');
+    const typed = screen.getByRole('radiogroup', { name: 'Typed-out answers' });
+    expect(typed).toHaveAccessibleDescription(TYPED_ANSWERS_HELP.allowed_off);
+    expect(screen.getByTestId('typed-answers-help')).toHaveAttribute('aria-live', 'polite');
   });
 
   it('keeps the bounded long tail behind More limits, reachable and editable', () => {
@@ -436,24 +446,50 @@ describe('ChatAgentSection', () => {
     expect(low.lastPatch().chat_daily_cap_usd).toBeNull();
   });
 
-  it('sets the default live mode, and disables typed answers when they are not allowed', () => {
+  it('maps the one Typed-out answers control onto the two stored fields (T31)', () => {
+    expect(typedAnswers({ allow_text_streaming: false, default_stream_mode: 'text' })).toBe('off');
+    expect(typedAnswers({ allow_text_streaming: true, default_stream_mode: 'steps' })).toBe('allowed_off');
+    expect(typedAnswers({ allow_text_streaming: true, default_stream_mode: 'text' })).toBe('allowed_on');
+    expect(typedAnswersPatch('off')).toEqual({ allow_text_streaming: false, default_stream_mode: 'steps' });
+    expect(typedAnswersPatch('allowed_off')).toEqual({ allow_text_streaming: true, default_stream_mode: 'steps' });
+    expect(typedAnswersPatch('allowed_on')).toEqual({ allow_text_streaming: true, default_stream_mode: 'text' });
+
     const { lastPatch, unmount } = renderSection(CHAT_AGENT_DEFAULTS);
-    fireEvent.click(screen.getByRole('radio', { name: 'Type out answers' }));
-    expect(lastPatch().default_stream_mode).toBe('text');
+    const group = screen.getByRole('radiogroup', { name: 'Typed-out answers' });
+    expect(within(group).getAllByRole('radio').map((r) => r.textContent)).toEqual([
+      'Off',
+      'Allowed (off by default)',
+      'Allowed (on by default)',
+    ]);
+    expect(within(group).getByRole('radio', { name: 'Allowed (off by default)' })).toBeChecked();
+    fireEvent.click(within(group).getByRole('radio', { name: 'Allowed (on by default)' }));
+    expect(lastPatch()).toMatchObject({ allow_text_streaming: true, default_stream_mode: 'text' });
+    fireEvent.click(within(group).getByRole('radio', { name: 'Off' }));
+    expect(lastPatch()).toMatchObject({ allow_text_streaming: false, default_stream_mode: 'steps' });
+    // One control: the old pair is gone.
+    expect(screen.queryByRole('switch', { name: 'Allow typed-out answers' })).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: 'Default live mode' })).toBeNull();
     unmount();
 
+    // What viewers actually get is shown: not allowed reads Off whatever the stored default.
     renderSection({ ...CHAT_AGENT_DEFAULTS, default_stream_mode: 'text', allow_text_streaming: false });
-    const group = screen.getByRole('radiogroup', { name: 'Default live mode' });
-    expect(within(group).getByRole('radio', { name: 'Type out answers' })).toBeDisabled();
-    // What viewers actually get is shown, not the stored preference.
-    expect(within(group).getByRole('radio', { name: 'Live steps' })).toBeChecked();
-    expect(screen.getByText(/arrive whole while typed-out answers are not allowed/i)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Off' })).toBeChecked();
+    expect(screen.getByTestId('typed-answers-help')).toHaveTextContent(TYPED_ANSWERS_HELP.off);
   });
 
-  it('toggles typed answers and e-mail lookups', () => {
+  it('turns live-data suggestions off and on (T31; a stored config without it reads as on)', () => {
+    const { lastPatch } = renderSection({ ...CHAT_AGENT_DEFAULTS, dynamic_starters: undefined });
+    const toggle = screen.getByRole('switch', { name: 'Suggest questions from live data' });
+    expect(toggle).toBeChecked();
+    expect(toggle).toHaveAccessibleDescription(DYNAMIC_STARTERS_HELP);
+    fireEvent.click(toggle);
+    expect(lastPatch().dynamic_starters).toBe(false);
+    expect(coherentChatAgent({ dynamic_starters: false }).dynamic_starters).toBe(false);
+    expect(coherentChatAgent({}).dynamic_starters).toBe(true);
+  });
+
+  it('toggles e-mail lookups', () => {
     const { lastPatch } = renderSection(CHAT_AGENT_DEFAULTS);
-    fireEvent.click(screen.getByRole('switch', { name: 'Allow typed-out answers' }));
-    expect(lastPatch().allow_text_streaming).toBe(false);
     fireEvent.click(screen.getByRole('switch', { name: 'Allow e-mail lookups' }));
     expect(lastPatch().allow_email_lookup).toBe(true);
   });

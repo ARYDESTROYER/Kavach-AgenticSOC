@@ -9,7 +9,7 @@ import * as React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, renderHook, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
-import { CHAT_SHORTCUTS, keyLabel, shortcutLabel } from '../shortcut-list';
+import { CHAT_SHORTCUTS, ariaKeyShortcuts, keyLabel, shortcutLabel } from '../shortcut-list';
 import { COPY_LAST_ANSWER_KEYS, isCopyLastAnswer } from '../../message/useCopyLastAnswer';
 import { ShortcutSheet } from '../ShortcutSheet';
 import {
@@ -204,7 +204,19 @@ describe('shortcut list', () => {
   it('documents every shortcut, composer keys included, and none uses K or B', () => {
     const ids = CHAT_SHORTCUTS.map((s) => s.id);
     expect(ids).toEqual(
-      expect.arrayContaining(['send', 'newline', 'edit-last', 'stop', 'focus', 'new-chat', 'toggle-history', 'copy-last', 'shortcuts']),
+      expect.arrayContaining([
+        'send',
+        'newline',
+        'edit-last',
+        'stop',
+        'focus',
+        'new-chat',
+        'toggle-history',
+        'copy-last',
+        'hide-suggestion',
+        'undo-hide-suggestion',
+        'shortcuts',
+      ]),
     );
     for (const s of CHAT_SHORTCUTS) {
       expect(s.keys.includes('Mod') && s.keys.some((k) => k === ('K' as never) || k === ('B' as never))).toBe(false);
@@ -218,6 +230,47 @@ describe('shortcut list', () => {
       expect(isCopyLastAnswer({ key: 'C', code: 'KeyC', shiftKey: true, altKey: false, ctrlKey: false, metaKey: false, ...mod })).toBe(true);
     }
     expect(COPY_LAST_ANSWER_KEYS).toBe('Control+Shift+C Meta+Shift+C');
+  });
+
+  it('documents Delete or Backspace on a focused suggestion (SPEC-chat §5.6)', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'hide-suggestion');
+    expect(entry).toEqual({
+      id: 'hide-suggestion',
+      label: 'Hide a suggestion for a day',
+      keys: ['Delete'],
+      altKeys: ['Backspace'],
+      where: 'chat',
+      note: 'on a focused suggestion',
+    });
+    // Plain keys: the same words on every platform.
+    expect(shortcutLabel(['Delete'], true)).toBe('Delete');
+    expect(shortcutLabel(['Backspace'], false)).toBe('Backspace');
+  });
+
+  it('documents Ctrl/Cmd+Z on the start screen: undo the last hidden suggestion', () => {
+    const entry = CHAT_SHORTCUTS.find((s) => s.id === 'undo-hide-suggestion');
+    expect(entry).toEqual({
+      id: 'undo-hide-suggestion',
+      label: 'Undo the last hidden suggestion',
+      keys: ['Mod', 'Z'],
+      where: 'chat',
+      note: 'on the start screen',
+    });
+    expect(shortcutLabel(['Mod', 'Z'], false)).toBe('Ctrl+Z');
+    expect(shortcutLabel(['Mod', 'Z'], true)).toBe('⌘Z');
+  });
+
+  it('derives aria-keyshortcuts from the list, so a declared key is always documented', () => {
+    // A suggestion card: Delete or Backspace hides it, Ctrl/Cmd+Z undoes that.
+    expect(ariaKeyShortcuts('hide-suggestion', 'undo-hide-suggestion')).toBe('Delete Backspace Control+Z Meta+Z');
+    // The same spelling as the hand-written values for the workspace shortcuts.
+    expect(ariaKeyShortcuts('new-chat')).toBe(CHAT_KEYSHORTCUTS.newChat);
+    expect(ariaKeyShortcuts('toggle-history')).toBe(CHAT_KEYSHORTCUTS.toggleHistory);
+    expect(ariaKeyShortcuts('shortcuts')).toBe(CHAT_KEYSHORTCUTS.openShortcuts);
+    expect(ariaKeyShortcuts('focus')).toBe(CHAT_KEYSHORTCUTS.focusComposer);
+    expect(ariaKeyShortcuts('copy-last')).toBe(COPY_LAST_ANSWER_KEYS);
+    expect(ariaKeyShortcuts('edit-last')).toBe('ArrowUp');
+    expect(ariaKeyShortcuts('no-such-entry')).toBe('');
   });
 
   it('labels keys per platform', () => {
@@ -245,6 +298,17 @@ describe('ShortcutSheet', () => {
     expect(within(send).getByText('Enter').tagName).toBe('KBD');
     const newline = within(dialog).getByText('New line').closest('div') as HTMLElement;
     expect(within(newline).getAllByText(/Shift|⇧|Enter/).map((k) => k.tagName)).toEqual(['KBD', 'KBD']);
+    // Alternative keys read "Delete or Backspace", in the "Anywhere in Chat" group.
+    expect(terms).toContain('Hide a suggestion for a day (on a focused suggestion)');
+    const hide = within(dialog).getByText('Hide a suggestion for a day').closest('div') as HTMLElement;
+    expect(Array.from(hide.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(['Delete', 'Backspace']);
+    expect(hide.querySelector('dd')?.textContent).toBe('Delete or Backspace');
+    expect(hide.closest('section')).toHaveAccessibleName('Anywhere in Chat');
+    expect(terms).toContain('Undo the last hidden suggestion (on the start screen)');
+    const undo = within(dialog).getByText('Undo the last hidden suggestion').closest('div') as HTMLElement;
+    expect(Array.from(undo.querySelectorAll('kbd')).map((k) => k.textContent)).toEqual(
+      /mac/i.test(navigator.platform) ? ['⌘', 'Z'] : ['Ctrl', 'Z'],
+    );
     expect(await axe(document.body, { rules: { region: { enabled: false } } })).toHaveNoViolations();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(onOpenChange).toHaveBeenCalledWith(false);

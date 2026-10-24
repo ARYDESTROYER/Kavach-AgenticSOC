@@ -71,10 +71,10 @@ export function CalloutView({ block }: { block: CalloutBlock }) {
       data-tone={block.tone}
       className={cn('py-2.5', fallback && 'text-muted-foreground')}
     >
-      {title ? <AlertTitle className="text-sm">{title}</AlertTitle> : null}
-      <AlertDescription className="whitespace-pre-line break-words text-sm">{block.text}</AlertDescription>
+      {title ? <AlertTitle className="text-sm proportional-nums">{title}</AlertTitle> : null}
+      <AlertDescription className="whitespace-pre-line break-words text-sm proportional-nums">{block.text}</AlertDescription>
       {fallback && block.fallback_text ? (
-        <AlertDescription className="mt-1 whitespace-pre-line break-words text-sm text-foreground">{block.fallback_text}</AlertDescription>
+        <AlertDescription className="mt-1 whitespace-pre-line break-words text-sm text-foreground proportional-nums">{block.fallback_text}</AlertDescription>
       ) : null}
     </Alert>
   );
@@ -98,13 +98,13 @@ export function CitationsView({ block, anchored = true }: { block: CitationsBloc
               {it.ref && !fenced ? (
                 <RefLink refValue={it.ref}>{it.label}</RefLink>
               ) : (
-                <span className={cn(fenced && 'font-mono text-xs')}>{it.label}</span>
+                <span className={cn(fenced ? 'font-mono text-xs' : 'proportional-nums')}>{it.label}</span>
               )}
               {it.snippet ? (
                 fenced ? (
                   <CodeBlock value={it.snippet} copyable={false} wrap maxHeightClassName="max-h-28" className="mt-1 [&_pre]:p-2 [&_pre]:text-xs" />
                 ) : (
-                  <p className="mt-0.5 break-words text-xs text-muted-foreground">{it.snippet}</p>
+                  <p className="mt-0.5 break-words text-xs text-muted-foreground proportional-nums">{it.snippet}</p>
                 )
               ) : null}
             </div>
@@ -119,7 +119,7 @@ export function GuideView({ block }: { block: GuideBlock }) {
   return (
     <div className="flex min-w-0 flex-col gap-2" data-testid="block-guide">
       {block.steps.length ? (
-        <ol className="list-decimal space-y-1 pl-5 text-sm">
+        <ol className="list-decimal space-y-1 pl-5 text-sm proportional-nums">
           {block.steps.map((s, i) => (
             <li key={i} className="whitespace-pre-line break-words">
               {s.text}
@@ -148,7 +148,7 @@ export function GuideView({ block }: { block: GuideBlock }) {
 export function MarkdownView({ block }: { block: MarkdownBlock }) {
   const { renderMarkdown } = useBlocks();
   return (
-    <div className="min-w-0 break-words text-sm leading-relaxed text-foreground" data-testid="block-markdown">
+    <div className="min-w-0 break-words text-sm leading-relaxed text-foreground proportional-nums" data-testid="block-markdown">
       {renderMarkdown ? renderMarkdown(block.text) : <Markdown text={block.text} className="space-y-0.5" />}
     </div>
   );

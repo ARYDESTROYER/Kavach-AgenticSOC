@@ -285,6 +285,8 @@ def sla_aging(
             "age_minutes": round(age, 1),
             "target_minutes": target,
             "overdue_minutes": round(age - target, 1) if age > target else 0.0,
+            # Who has it (Round 13 polish): the "close to their target" question asks.
+            "assignee": str(getattr(case, "assignee", "") or ""),
         }
         if age >= target:
             bucket["breached"] += 1
@@ -334,16 +336,20 @@ def analyst_workload(cases: Iterable[Case]) -> list[dict[str, Any]]:
     return rows
 
 
-def headline_counts(cases: Iterable[Case], *, now: Any = None, sla: SlaPolicy | None = None) -> dict[str, int]:
+def headline_counts(
+    cases: Iterable[Case], *, now: Any = None, sla: SlaPolicy | None = None, needs_human_verdict: bool = False,
+) -> dict[str, int]:
     """The small set of comparable headline counts used for period-over-period deltas.
 
     Deterministic + cheap: total open, escalated, needs-human, unassigned, and SLA
     breached. Computed identically for the current AND prior windows so the delta is
-    apples-to-apples. Never raises."""
+    apples-to-apples. ``needs_human_verdict`` adds the count of open cases whose
+    VERDICT is Needs human (chat's shift headline, Round 13 close; the Standup page and
+    its model aggregate keep their keys). Never raises."""
     ref = now or now_utc()
     snapshot = list(cases)
     aging = sla_aging(snapshot, sla, now=ref)
-    open_n = escalated = needs_human = unassigned = 0
+    open_n = escalated = needs_human = verdict_needs_human = unassigned = 0
     for case in snapshot:
         if not _is_attention(case):
             continue
@@ -353,15 +359,24 @@ def headline_counts(cases: Iterable[Case], *, now: Any = None, sla: SlaPolicy | 
             escalated += 1
         if status == CaseStatus.NEEDS_HUMAN.value:
             needs_human += 1
+        verdict = getattr(getattr(case, "verdict", None), "value", getattr(case, "verdict", None))
+        if str(verdict or "").upper() == "NEEDS_HUMAN":
+            verdict_needs_human += 1
         if not (getattr(case, "assignee", "") or "").strip():
             unassigned += 1
-    return {
+    counts = {
         "open": open_n,
         "escalated": escalated,
+        # ``needs_human`` is the legacy STATUS (the Standup page's count);
+        # ``needs_human_verdict`` the open cases whose VERDICT is Needs human, the
+        # badge a case list beside these counts shows (Round 13 close).
         "needs_human": needs_human,
         "unassigned": unassigned,
         "sla_breached": int(aging["totals"]["breached"]),
     }
+    if needs_human_verdict:
+        counts["needs_human_verdict"] = verdict_needs_human
+    return counts
 
 
 def period_deltas(current: dict[str, int], prior: dict[str, int]) -> dict[str, dict[str, int]]:
@@ -410,6 +425,7 @@ def build_shift_report(
     now: Any = None,
     attention_limit: int = 25,
     prefs: Any = None,
+    needs_human_verdict: bool = False,
 ) -> dict[str, Any]:
     """Assemble the full forward-looking shift snapshot from a case list.
 
@@ -424,8 +440,9 @@ def build_shift_report(
     Never raises."""
     ref = now or now_utc()
     snapshot = list(cases)
-    current_counts = headline_counts(snapshot, now=ref, sla=sla)
-    prior_counts = headline_counts(list(prior_cases or []), now=ref, sla=sla)
+    current_counts = headline_counts(snapshot, now=ref, sla=sla, needs_human_verdict=needs_human_verdict)
+    prior_counts = headline_counts(list(prior_cases or []), now=ref, sla=sla,
+                                   needs_human_verdict=needs_human_verdict)
     return {
         "attention_queue": attention_queue(
             snapshot, sla=sla, now=ref, limit=attention_limit, prefs=prefs

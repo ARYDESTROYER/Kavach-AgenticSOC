@@ -574,6 +574,7 @@ def _partial_share(observation: dict[str, Any], coverage: str | None, *results: 
 class SocMetricsTool(ChatTool):
     name: ClassVar[str] = "soc_metrics"
     label: ClassVar[str] = "Read SOC metrics"
+    running_label: ClassVar[str] = "Reading SOC metrics"
     scope: ClassVar[str] = "metrics"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("metrics", "view"),)
     data_source: ClassVar[str] = "Dashboard metrics (deterministic)"
@@ -1652,6 +1653,7 @@ def _top_rows(rows: Any, n: int | None = None) -> list[dict[str, Any]]:
 class CostUsageTool(ChatTool):
     name: ClassVar[str] = "cost_usage"
     label: ClassVar[str] = "Read AI cost and usage"
+    running_label: ClassVar[str] = "Reading AI cost and usage"
     scope: ClassVar[str] = "platform"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cost", "view"),)
     optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("models", "read"),)

@@ -36,6 +36,12 @@ export default {
             theme.css. Every `destructive` VARIANT (button/badge/alert) resolves to
             `--critical` directly, so there is no `destructive` color entry here. */
         card: { DEFAULT: 'hsl(var(--card))', foreground: 'hsl(var(--card-foreground))' },
+        /** Round 13 — the grouped dashboard panel (light: a step deeper than the canvas;
+            dark: a step lighter). A module normally takes the whole recipe through the
+            `.surface-panel` component class in theme.css (fill, 14px corner, in-panel
+            hover/selected/semantic-text steps, increased-contrast and forced-colours
+            edges); `bg-panel` is the bare fill for anything that only needs the colour. */
+        panel: 'hsl(var(--panel) / <alpha-value>)',
         popover: { DEFAULT: 'hsl(var(--popover))', foreground: 'hsl(var(--popover-foreground))' },
         /** Optional secondary brand accent (login hero aurora). Falls back to the
             primary hue when `--accent2` is not set by branding. */
@@ -142,7 +148,9 @@ export default {
             lg 10px — menus, popovers, hover cards, tooltips, toasts
             xl 14px — dialogs, sheets (leading edge), the command palette
           A 10px menu with a `p-1` (4px) inset holds 6px items. Bands, list rows,
-          tables, the KPI strip and split panes stay square (divider-led).
+          tables, flat KPI strips and split panes stay square (divider-led); a grouped
+          dashboard panel (`.surface-panel`, the primary dashboard's modules and its
+          KPI strip) takes the xl step.
           The xl step adds at most the anchor itself (`min(--radius, 4px)`), so the
           brandable "Square" preset (`--radius: 0rem`) squares dialogs and sheets too,
           exactly like the three steps below it, which clamp to 0. */

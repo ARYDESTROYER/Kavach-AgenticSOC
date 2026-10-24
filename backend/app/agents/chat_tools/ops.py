@@ -89,6 +89,7 @@ def _source_state(row: dict[str, Any]) -> str:
 class SourceHealthTool(ChatTool):
     name: ClassVar[str] = "source_health"
     label: ClassVar[str] = "Checked source health"
+    running_label: ClassVar[str] = "Checking source health"
     scope: ClassVar[str] = "platform"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Source health and ingest coverage"
@@ -112,7 +113,13 @@ class SourceHealthTool(ChatTool):
             logger.warning("source health rows failed: %s", exc)
             return ToolOutcome.failure("Source health could not be read")
         if args.source_id:
-            rows = [r for r in rows if r.get("source_id") == args.source_id]
+            # An id first, else a display name: a starter names a source by its display
+            # name when that passes the grammar (SPEC-chat §3.8.1), and fences that
+            # value, so the obvious call with it must find the source. Two sources with
+            # the same name both answer.
+            wanted = args.source_id
+            by_id = [r for r in rows if r.get("source_id") == wanted]
+            rows = by_id or [r for r in rows if r.get("source_name") == wanted]
             if not rows:
                 return ToolOutcome.failure("Unknown log source")
         now_ms = int(to_millis(now_utc()))
@@ -225,6 +232,7 @@ def automation_signature(kinds: Any) -> str:
 class AutomationStatusTool(ChatTool):
     name: ClassVar[str] = "automation_status"
     label: ClassVar[str] = "Read automation status"
+    running_label: ClassVar[str] = "Reading automation status"
     scope: ClassVar[str] = "platform"
     requires: ClassVar[tuple[tuple[str, str], ...]] = ()
     kind_permissions: ClassVar[dict[str, tuple[str, str]]] = {
@@ -577,6 +585,7 @@ def audit_observation_row(row: dict[str, Any]) -> dict[str, Any]:
 class AuditSearchTool(ChatTool):
     name: ClassVar[str] = "audit_search"
     label: ClassVar[str] = "Searched the audit trail"
+    running_label: ClassVar[str] = "Searching the audit trail"
     scope: ClassVar[str] = "platform"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("audit", "view"),)
     data_source: ClassVar[str] = "Append-only audit trail (agent and analyst actions)"

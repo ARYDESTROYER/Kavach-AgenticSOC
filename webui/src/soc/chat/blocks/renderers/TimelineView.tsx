@@ -4,6 +4,11 @@
  * the label in plain text, the detail muted (in a CodeBlock when the block is untrusted,
  * so log text is fenced visually and never linkified), and an optional validated ref.
  * Ten or more events get a decorative density strip above the list.
+ *
+ * Engine words read as product words (Round 13, SPEC-chat T14): a status change
+ * ("open -> escalated") reads "Open → Escalated" and a known decision reason ("by system:
+ * True positive routed to human: tp auto-close disabled.") reads as a sentence, both as
+ * plain text. Anything else (an analyst's own reason, log text) stays exactly as written.
  */
 import { Bell, Briefcase, Play, Radar, StickyNote, type LucideIcon } from 'lucide-react';
 
@@ -11,6 +16,7 @@ import { cn } from '@/lib/cn';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import { SEMANTIC_ICON, token } from '@/soc/components/palette';
 
+import { reasonSentence, statusTransitionLabel } from '../../display';
 import { RefLink } from '../context';
 import { instantOf, utcDateKey, utcDay, utcHm } from '../format';
 import { TIMELINE_KIND_LABEL } from '../labels';
@@ -64,6 +70,8 @@ export function TimelineView({ block }: { block: TimelineBlock }) {
           const newDay = day !== lastDay;
           lastDay = day;
           const Icon = ev.semantic ? SEMANTIC_ICON[ev.semantic] : ev.kind ? KIND_ICON[ev.kind] : undefined;
+          const transition = statusTransitionLabel(ev.label);
+          const reason = ev.detail ? reasonSentence(ev.detail) : null;
           return (
             <li key={i} className="relative grid grid-cols-[3.5rem_1rem_minmax(0,1fr)] gap-x-2 pb-3 last:pb-0">
               {newDay ? (
@@ -81,9 +89,9 @@ export function TimelineView({ block }: { block: TimelineBlock }) {
                 </span>
               </span>
               <div className="min-w-0">
-                <p className={cn('break-words text-sm text-foreground', block.untrusted && 'font-mono text-xs')}>
+                <p className={cn('break-words text-sm text-foreground', block.untrusted && !transition ? 'font-mono text-xs' : 'proportional-nums')}>
                   {ev.kind ? <span className="sr-only">{TIMELINE_KIND_LABEL[ev.kind]}: </span> : null}
-                  {ev.label}
+                  {transition ?? ev.label}
                   {ev.ref ? (
                     <>
                       {' '}
@@ -94,10 +102,14 @@ export function TimelineView({ block }: { block: TimelineBlock }) {
                   ) : null}
                 </p>
                 {ev.detail ? (
-                  block.untrusted ? (
+                  reason ? (
+                    <p className="mt-0.5 break-words text-xs text-muted-foreground proportional-nums" data-testid="timeline-reason">
+                      {reason}
+                    </p>
+                  ) : block.untrusted ? (
                     <CodeBlock value={ev.detail} copyable={false} wrap maxHeightClassName="max-h-32" className="mt-1 [&_pre]:p-2 [&_pre]:text-xs" />
                   ) : (
-                    <p className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground">{ev.detail}</p>
+                    <p className="mt-0.5 whitespace-pre-line break-words text-xs text-muted-foreground proportional-nums">{ev.detail}</p>
                   )
                 ) : null}
               </div>
