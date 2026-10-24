@@ -106,6 +106,10 @@ class AppState:
         # stack so REAL cases are hidden + isolated; disable GC's it + the real
         # state returns intact.
         self._demo = None
+        # Bumped on every Demo switch (enable, disable; a reset is both): a cache filled
+        # by a build compares it before and after, so even a switch there and back
+        # within one build (the run id the same both times) is seen (``demo_generation``).
+        self._demo_generation = 0
         self._demo_sim = None
         # Serialize enable/reset/disable as one lifecycle transaction. Without this,
         # concurrent enables can each create a live ticker before the later request
@@ -282,6 +286,25 @@ class AppState:
     @property
     def demo_active(self) -> bool:
         return self._demo is not None
+
+    @property
+    def demo_run_id(self) -> str | None:
+        """The active Demo run's identity (its ``run_id``), or None when Demo is off.
+        Every enable and every reset builds a new stack under a new run id, so a cache
+        of answers read from the demo-swapped stores keys on this, never on
+        :attr:`demo_active` alone: another run's answer is never served."""
+        demo = self._demo
+        if demo is None:
+            return None
+        return str(getattr(demo, "run_id", "") or "") or f"stack-{id(demo):x}"
+
+    @property
+    def demo_generation(self) -> int:
+        """How many Demo switches (enable, disable) this process has seen. A cache
+        that stores what a build read reads this before the build and stores the answer
+        only when it is unchanged afterwards: :attr:`demo_run_id` alone cannot tell a
+        build that Demo was enabled and disabled again while it ran (None both times)."""
+        return self._demo_generation
 
     def spawn_mutation_task(self, coro, *, name: str | None = None) -> asyncio.Task[Any]:
         """Spawn one tracked tenant-writing task, rejecting work after admission closes."""
@@ -3373,6 +3396,7 @@ class AppState:
         # atomic off→ready transition to other asyncio tasks.
         await self.update_prefs(pending_prefs)
         self._demo = demo_stack
+        self._demo_generation += 1
         # Start the live simulator only after the complete stack is publicly visible.
         if new_demo.mode == "live":
             self._demo_sim = DemoSimulator(demo_stack, self.get_prefs, seed=new_demo.seed)
@@ -3436,6 +3460,7 @@ class AppState:
             except Exception:  # noqa: BLE001
                 pass
             self._demo = None
+            self._demo_generation += 1
         prefs = self.prefs.model_copy(deep=True)
         prefs.demo = DemoConfig()  # mode='off', run_id=''
         await self.update_prefs(prefs)

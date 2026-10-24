@@ -33,6 +33,7 @@ import type { ChatStarter } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { useAuth } from '@/soc/auth';
+import { useDemo } from '@/soc/demo';
 import { Composer, type ComposerHandle } from '@/soc/chat/composer/Composer';
 import { EmptyState } from '@/soc/chat/empty/EmptyState';
 import { CONTENT_COL, LANE_GRID } from '@/soc/chat/message/lane';
@@ -41,7 +42,7 @@ import { announcedLookupBound, useTurnAnnouncer } from '@/soc/chat/message/useTu
 import { useChatContext } from '@/soc/chat/useChatContext';
 import { useChatEngine } from '@/soc/chat/useChatEngine';
 import { useChatStarters } from '@/soc/chat/starters/useChatStarters';
-import { takeCaseStartersPrefetch } from './case-starters-prefetch';
+import { caseStartersScope, takeCaseStartersPrefetch } from './case-starters-prefetch';
 import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 
 const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -106,8 +107,13 @@ export function CaseChat({ caseId, displayId, caseManager, starters }: CaseChatP
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };
   // The case chips (one read, shared with the empty state through the module cache).
-  // The read the Chat tab started as it mounted (`case-starters-prefetch.ts`), if any.
-  const takePrefetched = React.useCallback(() => takeCaseStartersPrefetch(caseId, principal), [caseId, principal]);
+  // The read the Chat tab started as it mounted (`case-starters-prefetch.ts`), if any,
+  // under the same Demo run only (a failed status read names none: the last one holds).
+  const prefetchScope = caseStartersScope(useDemo());
+  const takePrefetched = React.useCallback(
+    () => takeCaseStartersPrefetch(caseId, principal, Date.now(), prefetchScope),
+    [caseId, principal, prefetchScope],
+  );
   const caseStarters = useChatStarters({ surface: 'case', caseId, principal, enabled: !!caseId, takePrefetched });
   const chipsOffered =
     caseStarters.loading || (caseStarters.info?.starters ?? []).some((starter) => (starter.action ?? 'send') === 'send');

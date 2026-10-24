@@ -2717,14 +2717,19 @@ async def chat_context(
 
     author = current_username(request)
     owner = normalize_user_id(author)
+    # Read before the first await: a Demo switch while the answer is built (even one
+    # there and back, the run the same both times) keeps that answer out of the cache.
+    demo_run = state.demo_run_id
+    demo_generation = state.demo_generation
     grants = await state.chat_grants(request)
     registry = state.chat_turns
     prefs = state.execution_prefs
     cfg = prefs.chat_agent
     # The limits mode, the operator timezone and the brand-ring switch are part of the
-    # answer: a change to any of them is never served from the 30-second cache.
+    # answer: a change to any of them is never served from the 30-second cache. So is
+    # the Demo run (not just "Demo on"): a reset or a re-enable is another run's history.
     key = (
-        owner, state.demo_active, conversation_id, (model or "").strip(), case_id, grants,
+        owner, demo_run, conversation_id, (model or "").strip(), case_id, grants,
         getattr(cfg, "limits_mode", None), getattr(getattr(prefs, "sla", None), "timezone", None),
         getattr(cfg, "animated_brand", None),
     )
@@ -2826,7 +2831,8 @@ async def chat_context(
                     info["spent_today"] = max(0.0, float(spent))
                     info["remaining"] = (round(daily - float(spent), 6) if daily is not None else None)
     result = ChatContextInfo.model_validate(info)
-    registry.context_put(key, result)
+    if state.demo_generation == demo_generation:
+        registry.context_put(key, result)
     return result
 
 

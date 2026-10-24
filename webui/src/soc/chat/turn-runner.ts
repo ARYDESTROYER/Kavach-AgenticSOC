@@ -74,6 +74,7 @@ import {
   postChat,
   streamChat,
 } from './chat-api';
+import { currentChatDemoIdentity } from './demo-identity';
 import { NdjsonLineSplitter, type ChatStreamOutcome } from './ndjson';
 import {
   displayText,
@@ -418,6 +419,11 @@ interface RunInternals extends TurnRun {
   /** Ends the parked wait (a view came back, or the turn ended). */
   wake: (() => void) | null;
   parkTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * The Demo switch token when the run was made (`./demo-identity.ts`): a case turn of
+   * an earlier token belongs to another Demo identity (see `isCaseRunOfAnotherDemo`).
+   */
+  demo: string;
 }
 
 let runCounter = 0;
@@ -557,6 +563,7 @@ function makeRun(fields: {
     cancelWhenStarted: false,
     forcedStop: false,
     listeners: new Set(),
+    demo: currentChatDemoIdentity(),
     text: '',
     frame: null,
     read: null,
@@ -958,9 +965,15 @@ function finish(run: RunInternals, state: Exclude<TurnRunState, 'running'>, fiel
     if (unreachable && !run.attached) consumeRun(run);
   }
   if (run.kind === 'workspace') broadcastHistory();
-  // A case turn nobody is looking at joins its session transcript now.
+  // A case turn nobody is looking at joins its session transcript now (not one that
+  // started under another Demo identity: its case's session is another run's).
   if (run.kind === 'case' && run.caseId && !run.attached) {
-    appendToCaseSession(run.caseId, run);
+    if (!isCaseRunOfAnotherDemo(run)) {
+      // The sessions may still be an earlier identity's (no chat view rendered since
+      // the switch): they go first, so this answer is kept for its own identity.
+      noteCaseSessionsDemoIdentity(run.demo);
+      appendToCaseSession(run.caseId, run);
+    }
     consumeRun(run);
   }
   emit(run);
@@ -1476,6 +1489,33 @@ export interface CaseSession {
 }
 
 const caseSessions = new Map<string, CaseSession>();
+/** The Demo switch token the case sessions belong to (`./demo-identity.ts`; null: none seen). */
+let caseSessionsDemo: string | null = null;
+
+/**
+ * Record the Demo switch token a chat view renders under (render phase, module state
+ * only; `./demo-identity.ts`). Demo case ids repeat across a reset (the same seed), so a
+ * confirmed switch drops every case session: a case of the new run never shows, or sends
+ * as history, the previous run's exchanges (PR #132 review). The token changes only on
+ * a confirmed switch, never on a failed status read or on the first read landing, so
+ * neither drops a session (PR #132 verify). A case turn that started under another
+ * token never joins a session when it settles.
+ */
+export function noteCaseSessionsDemoIdentity(identity: string): void {
+  if (identity === caseSessionsDemo) return;
+  if (caseSessionsDemo !== null) caseSessions.clear();
+  caseSessionsDemo = identity;
+}
+
+/**
+ * A case turn made under an earlier Demo switch token than the console's now: a view of
+ * the new identity's case (the same id after a reset) never follows it. A turn made, or
+ * re-attached after a reload, before the first status read landed keeps its token (that
+ * read is not a switch), so it is followed and saved as before.
+ */
+export function isCaseRunOfAnotherDemo(run: TurnRun): boolean {
+  return run.kind === 'case' && internals(run).demo !== currentChatDemoIdentity();
+}
 
 export function readCaseSession(caseId: string): CaseSession | null {
   const session = caseSessions.get(caseId);
@@ -1536,5 +1576,6 @@ export function resetTurnRunnerForTests(): void {
   }
   runs.clear();
   caseSessions.clear();
+  caseSessionsDemo = null;
   Object.assign(TURN_RUNNER_TIMING, DEFAULT_TIMING);
 }

@@ -43,8 +43,11 @@ suggestions arrive (a skeleton only after 600 ms), so on a phone nothing on it m
 12 px above the category pills; a chat table shows one chip per ATT&CK technique and
 leaves a blank cell blank instead of a dash, and so does a report download, which keeps
 a dash only for a figure that was not measured; and the console header never breaks a page
-name inside a word (a word too long for a phone's header ends in an ellipsis). The Help
-Center chat, settings,
+name inside a word (a word too long for a phone's header ends in an ellipsis). Entering,
+leaving or resetting Demo Mode refreshes the suggestions at once, never another run's, a case
+chat never shows an answer from before a reset, and a failed Demo status check no longer clears
+the case chat or the suggestions. The
+Help Center chat, settings,
 configuration, permissions and API pages are updated to match.
 
 **Round 12: chat without limits, a working indicator, Remember me, reliable report

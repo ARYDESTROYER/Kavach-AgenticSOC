@@ -8,7 +8,10 @@
  * - a `use_prompt` card runs the saved prompt through the library's Use (the pick event);
  * - a viewer who switched suggestions off gets no starters request at all;
  * - an open thread whose last answer settled long ago shows the catch-up line above the
- *   composer, and a clause sends in the SAME conversation.
+ *   composer, and a clause sends in the SAME conversation;
+ * - leaving, entering or resetting Demo (as the top bar's Demo chip does: the action, then
+ *   a Demo status refresh) drops the mounted start screen's cards at once and reads the
+ *   new identity's; no card of the previous identity can be clicked meanwhile (PR #132).
  *
  * The composer is a small double (its own package); everything else is real.
  */
@@ -53,7 +56,9 @@ vi.mock('@/soc/chat/composer/Composer', async () => {
 vi.mock('@/soc/chat/composer/BudgetAlert', () => ({ BudgetAlert: () => null }));
 vi.mock('@/soc/chat/shortcuts/ShortcutSheet', () => ({ ShortcutSheet: () => null }));
 
-import type { ChatConversation, ChatConversationSummary, ChatStartersInfo } from '@/lib/types';
+import type { ChatConversation, ChatConversationSummary, ChatStartersInfo, DemoStatus } from '@/lib/types';
+import { api } from '@/lib/api';
+import { DemoProvider, useDemo } from '@/soc/demo';
 import { AnnouncerProvider } from '@/soc/components/announcer';
 import { ConfirmProvider } from '@/soc/components/ConfirmDialog';
 import { TooltipProvider } from '@/ui/tooltip';
@@ -79,6 +84,10 @@ interface Call {
 }
 
 let calls: Call[] = [];
+const DEMO_OFF: DemoStatus = { mode: 'off', active: false, run_id: '' };
+let demoStatus: DemoStatus = DEMO_OFF;
+/** The home answer for the Demo state the server is in now (null: `homeInfo`). */
+let homeFor: ((status: DemoStatus) => ChatStartersInfo | Promise<ChatStartersInfo>) | null = null;
 let rows: ChatConversationSummary[] = [];
 let details: Record<string, ChatConversation> = {};
 let homeInfo: ChatStartersInfo = makeInfo();
@@ -129,6 +138,8 @@ function detailOf(row: ChatConversationSummary): ChatConversation {
 
 beforeEach(() => {
   calls = [];
+  demoStatus = DEMO_OFF;
+  homeFor = null;
   rows = [];
   details = {};
   homeInfo = makeInfo();
@@ -152,7 +163,18 @@ beforeEach(() => {
       if (path === '/api/chat/turns/active') return json([]);
       if (path === '/api/chat/starters') {
         const surface = params.get('surface');
+        if (surface !== 'thread' && surface !== 'case' && homeFor) return json(await homeFor(demoStatus));
         return json(surface === 'thread' ? threadInfo : surface === 'case' ? caseInfo : homeInfo);
+      }
+      if (path === '/api/demo/status') return json(demoStatus);
+      if (path === '/api/demo/disable' && method === 'POST') {
+        demoStatus = DEMO_OFF;
+        return json(demoStatus);
+      }
+      if ((path === '/api/demo/reset' || path === '/api/demo/enable') && method === 'POST') {
+        const run = demoStatus.active ? `${demoStatus.run_id}-reset` : 'run-1';
+        demoStatus = { mode: 'seeded', active: true, run_id: run };
+        return json(demoStatus);
       }
       if (path === '/api/chat/starters/events') return new Response(null, { status: 204 });
       if (path === '/api/chat/conversations' && method === 'GET') return json({ conversations: rows, total: rows.length, limit: 60 });
@@ -196,6 +218,39 @@ const settle = () =>
 const starterReads = () => calls.filter((c) => c.url.split('?')[0] === '/api/chat/starters');
 const events = () => calls.filter((c) => c.url === '/api/chat/starters/events').map((c) => c.body);
 const streams = () => calls.filter((c) => c.url === '/api/chat/stream');
+
+/** What the top bar's Demo chip does: the action, then a refresh of the shared status. */
+function DemoControls() {
+  const { refresh } = useDemo();
+  return (
+    <div>
+      <button type="button" onClick={() => void api.demo.disable().then(refresh)}>
+        Exit demo
+      </button>
+      <button type="button" onClick={() => void api.demo.reset().then(refresh)}>
+        Reset demo
+      </button>
+      <button type="button" onClick={() => void api.demo.enable().then(refresh)}>
+        Start demo
+      </button>
+    </div>
+  );
+}
+
+function renderChatWithDemo() {
+  return render(
+    <DemoProvider>
+      <AnnouncerProvider>
+        <TooltipProvider>
+          <ConfirmProvider>
+            <DemoControls />
+            <Chat />
+          </ConfirmProvider>
+        </TooltipProvider>
+      </AnnouncerProvider>
+    </DemoProvider>,
+  );
+}
 
 describe('Workspace Chat — starters', () => {
   it('sends a card\'s server question exactly as a starter and records viewed, then used', async () => {
@@ -357,6 +412,76 @@ describe('Workspace Chat — starters', () => {
     await user.clear(screen.getByRole('textbox', { name: 'Message' }));
     await settle();
     expect(screen.queryByTestId('thread-catch-up')).toBeNull();
+  });
+});
+
+describe('Workspace Chat — starters across a Demo switch (PR #132)', () => {
+  const RUN_CARD = (run: string) => ({
+    ...NEEDS_HUMAN,
+    key: run === 'run-1' ? 'd1d1d1d1d1d1d1d1' : 'd2d2d2d2d2d2d2d2',
+    prompt: `Which cases need a person in ${run}, starting with ${run === 'run-1' ? 'CASE-001042' : 'CASE-002077'}?`,
+  });
+  const REAL_CARD = { ...NEEDS_HUMAN, key: 'a0a0a0a0a0a0a0a0', prompt: 'Which real cases need a person?' };
+  const sent = () => streams().map((c) => c.body?.message);
+
+  /** Serve the answer for the server's current Demo state; the read after a switch waits. */
+  function serveWithGate() {
+    let gate: (() => void) | null = null;
+    let release: Promise<void> = Promise.resolve();
+    homeFor = async (status) => {
+      await release;
+      return makeInfo({ starters: [status.active ? RUN_CARD(String(status.run_id)) : REAL_CARD] });
+    };
+    return {
+      /** The next reads wait until `open()`. */
+      close: () => {
+        release = new Promise<void>((resolve) => {
+          gate = resolve;
+        });
+      },
+      open: () => gate?.(),
+    };
+  }
+
+  it('Exit demo: the run\'s cards leave at once, the real ones are read at once, and only a real card sends', async () => {
+    demoStatus = { mode: 'seeded', active: true, run_id: 'run-1' };
+    const server = serveWithGate();
+    const user = userEvent.setup();
+    renderChatWithDemo();
+    expect(await screen.findByRole('button', { name: RUN_CARD('run-1').prompt })).toBeInTheDocument();
+    const before = starterReads().length;
+
+    server.close();
+    await user.click(screen.getByRole('button', { name: 'Exit demo' }));
+    // The status refresh landed: the run's card is gone before the real answer arrives,
+    // so there is nothing of the run's left to click.
+    await waitFor(() => expect(screen.queryByRole('button', { name: RUN_CARD('run-1').prompt })).toBeNull());
+    await waitFor(() => expect(starterReads().length).toBe(before + 1));
+    expect(screen.queryByRole('button', { name: REAL_CARD.prompt })).toBeNull();
+    server.open();
+    const real = await screen.findByRole('button', { name: REAL_CARD.prompt });
+    await user.click(real);
+    await settle();
+    expect(sent()).toEqual([REAL_CARD.prompt]);
+  });
+
+  it('Reset and Start demo: the mounted start screen shows the new run\'s cards, never the previous ones', async () => {
+    serveWithGate();
+    const user = userEvent.setup();
+    renderChatWithDemo();
+    expect(await screen.findByRole('button', { name: REAL_CARD.prompt })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Start demo' }));
+    expect(await screen.findByRole('button', { name: RUN_CARD('run-1').prompt })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: REAL_CARD.prompt })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Reset demo' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: RUN_CARD('run-1').prompt })).toBeNull());
+    // The reset run's answer (this stub words it from the new run id).
+    const resetCard = await screen.findByRole('button', { name: RUN_CARD('run-1-reset').prompt });
+    await user.click(resetCard);
+    await settle();
+    expect(sent()).toEqual([RUN_CARD('run-1-reset').prompt]);
   });
 });
 

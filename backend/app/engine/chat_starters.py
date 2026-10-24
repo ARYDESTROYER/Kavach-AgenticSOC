@@ -1158,7 +1158,8 @@ class _Build:
         """The reading of slow family ``name`` (see :data:`SLOW_FAMILIES`) when one is
         young enough to show, else None. Either way the refresher is told this build
         wants it (after the response)."""
-        key = (name, self.demo, id(self.ctx.cases), self.tz_name)
+        # The Demo run as well as the store: a reset's new store never reads the last run's.
+        key = (name, self.demo, getattr(self.state, "demo_run_id", None), id(self.ctx.cases), self.tz_name)
         self.deferred.append((key, compute))
         return slow_signals(self.state).read(key)
 

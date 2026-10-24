@@ -10,10 +10,15 @@ auto-discovered by ``main.py``.
   evergreen set. ``surface=thread`` needs a conversation the caller owns and
   ``surface=case`` a case the caller can read; anything else is 404 (never another
   owner's existence). Cached per caller for ``CACHE_TTL_S`` seconds under a key that
-  includes the caller's grants, the surface and ids, Demo Mode, the operator time zone,
-  the organisation switch and the revision of the caller's starter state, so a
-  dismissal is visible on the next read. A degraded build (a family raised or timed
-  out, a shared read failed) is served but not cached.
+  includes the caller's grants, the surface and ids, the active Demo run
+  (``AppState.demo_run_id``: None off Demo, a new id on every enable and reset), the
+  operator time zone, the organisation switch and the revision of the caller's starter
+  state, so a dismissal is visible on the next read. Entering, leaving or resetting
+  Demo drops every cached answer (the first read after the switch builds afresh), so
+  no answer crosses from one run, or from before Demo, to another; a build that any
+  switch overtook (``AppState.demo_generation`` moved, even back to the same run) is
+  served but not cached. A degraded build (a family raised or timed out, a shared read
+  failed) is served but not cached either.
 * ``POST /api/chat/starters/events`` (``ChatStarterEvent``) — ``viewed``, ``used`` or
   ``dismissed`` with up to 6 opaque keys (204). It updates only the caller's own starter
   state (visit clock, per-key view counts, "hide for a day"); no audit row, like
@@ -84,8 +89,19 @@ class _StarterRuntime:
         self.answers: OrderedDict[tuple[Any, ...], tuple[float, ChatStartersInfo]] = OrderedDict()
         self.served: OrderedDict[str, OrderedDict[str, str]] = OrderedDict()
         self.events: OrderedDict[str, deque[float]] = OrderedDict()
+        #: The Demo run the cached answers were read under (None: Demo off).
+        self.demo_run: str | None = None
 
     # ---- the response cache --------------------------------------------------- #
+    def enter_demo_run(self, run: str | None) -> None:
+        """A request under Demo run ``run`` (None: Demo off). Another run than the
+        cached answers were read under (Demo entered, left or reset) drops them all: the
+        run is also in every key, and this keeps an answer from before Demo from being
+        served after it either."""
+        if run != self.demo_run:
+            self.answers.clear()
+            self.demo_run = run
+
     def cached(self, key: tuple[Any, ...]) -> ChatStartersInfo | None:
         hit = self.answers.get(key)
         if hit is None:
@@ -182,6 +198,12 @@ async def chat_starters(
     """The caller's starters for ``surface`` (see the module docstring)."""
     username = current_username(request)
     owner = normalize_user_id(username)
+    # The Demo run, not just "Demo on": a reset or a re-enable is another run's stores.
+    # Read before the first await, with the switch count: any switch before the answer
+    # is built (even Demo enabled and disabled again, the run None both times) keeps it
+    # uncached.
+    demo_run = state.demo_run_id
+    demo_generation = state.demo_generation
     if surface == "thread":
         if not conversation_id:
             raise _not_found("conversation_not_found", "That conversation was not found.")
@@ -213,12 +235,13 @@ async def chat_starters(
     grants = await state.chat_grants(request)
     prefs = state.execution_prefs
     key = (
-        owner, grants, surface, conversation_id, case_id, bool(state.demo_active),
+        owner, grants, surface, conversation_id, case_id, demo_run,
         getattr(getattr(prefs, "sla", None), "timezone", None),
         bool(getattr(getattr(prefs, "chat_agent", None), "dynamic_starters", True)),
         user_state.rev,
     )
     runtime = starter_runtime(state)
+    runtime.enter_demo_run(state.demo_run_id)  # the run now (a switch drops the answers)
     cached = runtime.cached(key)
     if cached is not None:
         return cached
@@ -227,7 +250,9 @@ async def chat_starters(
         state, request, surface=surface, conversation_id=conversation_id, case_id=case_id,
         user_state=user_state, status=status,
     )
-    if not status.degraded:  # a transient overrun is never pinned for CACHE_TTL_S
+    # A transient overrun is never pinned for CACHE_TTL_S, nor a build that a Demo
+    # switch overtook (it may have read two runs' stores, or Demo's and the tenant's).
+    if not status.degraded and state.demo_generation == demo_generation:
         runtime.store(key, info)
     runtime.remember(owner, info)
     return info

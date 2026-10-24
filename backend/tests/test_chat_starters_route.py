@@ -356,6 +356,203 @@ def test_a_degraded_answer_is_served_but_never_cached(monkeypatch: pytest.Monkey
         assert builds[0] == 3 and "shift" in _families(healthy)  # a whole answer is cached
 
 
+def _counting_builds(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    builds = [0]
+    real = route_module.build_starters
+
+    async def counting(*args: Any, **kwargs: Any):
+        builds[0] += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(route_module, "build_starters", counting)
+    return builds
+
+
+def test_a_demo_reset_or_re_enable_within_the_minute_builds_afresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The cache key carries the Demo RUN (a new id on every enable and reset), not just
+    # "Demo on": a reset's or a re-enable's stores never get the previous run's answer
+    # (PR #132 review). The clock is frozen, so every miss below is the run changing.
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    monkeypatch.setattr(route_module, "_monotonic", lambda: 1000.0)
+    builds = _counting_builds(monkeypatch)
+    with _client(demo=True) as client:
+        state: AppState = client.app.state.tlsoc
+        first_run = state.demo_run_id
+        assert first_run and first_run == state._demo.run_id
+        first = _starters(client)
+        assert _starters(client) == first and builds[0] == 1  # served from the cache
+        client.portal.call(state.reset_demo)
+        assert state.demo_run_id not in (None, first_run)
+        after_reset = _starters(client)
+        assert builds[0] == 2 and after_reset["as_of"] != first["as_of"]
+        assert _starters(client) == after_reset and builds[0] == 2  # the new run's own cache
+        client.portal.call(state.disable_demo)
+        assert state.demo_run_id is None
+        client.portal.call(lambda: state.enable_demo(mode="seeded", seed=1337, history_days=30))
+        assert state.demo_run_id not in (None, first_run)
+        again = _starters(client)
+        assert builds[0] == 3 and again["as_of"] != after_reset["as_of"]
+        assert "demo" in _families(again)
+
+
+def test_leaving_demo_never_serves_a_cached_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Within the minute: a production answer from before Demo, the Demo answer, and
+    # after leaving a fresh production build (neither earlier answer comes back).
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    monkeypatch.setattr(route_module, "_monotonic", lambda: 1000.0)
+    builds = _counting_builds(monkeypatch)
+    with _client(configure=_established) as client:
+        state: AppState = client.app.state.tlsoc
+        before = _starters(client)
+        assert builds[0] == 1 and "demo" not in _families(before)
+        client.portal.call(lambda: state.enable_demo(mode="seeded", seed=1337, history_days=30))
+        in_demo = _starters(client)
+        assert builds[0] == 2 and "demo" in _families(in_demo)
+        client.portal.call(state.disable_demo)
+        after = _starters(client)
+        assert builds[0] == 3 and "demo" not in _families(after)
+        assert after["as_of"] not in (before["as_of"], in_demo["as_of"])
+        assert route_module.starter_runtime(state).demo_run is None
+
+
+def test_a_build_a_demo_switch_overtook_is_served_but_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The switch lands while the answer is being built (it may have read two runs'
+    # stores): that answer is not pinned for the minute under either run.
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    monkeypatch.setattr(route_module, "_monotonic", lambda: 1000.0)
+    builds = [0]
+    real = route_module.build_starters
+
+    async def switching(state: AppState, *args: Any, **kwargs: Any):
+        builds[0] += 1
+        info = await real(state, *args, **kwargs)
+        if builds[0] == 1:
+            await state.reset_demo()
+        return info
+
+    monkeypatch.setattr(route_module, "build_starters", switching)
+    with _client(demo=True) as client:
+        _starters(client)
+        _starters(client)
+        assert builds[0] == 2  # the overtaken answer was not cached
+        _starters(client)
+        assert builds[0] == 2  # the next whole answer is
+
+
+def test_chat_context_is_cached_per_demo_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The same rule for GET /api/chat/context (its history estimate reads the Demo
+    # run's conversations): a reset within its 30 seconds is a miss.
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    with _client(demo=True) as client:
+        state: AppState = client.app.state.tlsoc
+        built = [0]
+        real = state.build_chat_tool_context
+
+        async def counting(*args: Any, **kwargs: Any):
+            built[0] += 1
+            return await real(*args, **kwargs)
+
+        state.build_chat_tool_context = counting  # type: ignore[method-assign]
+        assert client.get("/api/chat/context").status_code == 200
+        assert client.get("/api/chat/context").status_code == 200
+        assert built[0] == 1
+        client.portal.call(state.reset_demo)
+        assert client.get("/api/chat/context").status_code == 200
+        assert built[0] == 2
+        client.portal.call(state.disable_demo)
+        response = client.get("/api/chat/context")
+        assert response.status_code == 200 and built[0] == 3
+        assert "demo" not in [s["id"] for s in response.json()["starters"]]
+
+
+def test_a_slow_reading_belongs_to_one_demo_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The background readings (hunt, platform) are keyed by the Demo run as well as the
+    # store, so a reset's new store never reads the previous run's figures.
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    with _client(demo=True) as client:
+        state: AppState = client.app.state.tlsoc
+        _starters(client)
+        client.portal.call(lambda: cs.settle_slow_signals(state))
+        first_run = state.demo_run_id
+        memo = cs.slow_signals(state)
+        assert memo.computes and all(k[2] == first_run for k in memo.computes)
+        client.portal.call(state.reset_demo)
+        _starters(client)
+        client.portal.call(lambda: cs.settle_slow_signals(state))
+        assert {k[2] for k in memo.computes} >= {state.demo_run_id}
+        assert state.demo_run_id != first_run
+
+
+def test_demo_generation_counts_every_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The switch count the caches compare across a build: enable and disable each count
+    # once (a reset is both); disabling when Demo is already off is no switch.
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    with _client() as client:
+        state: AppState = client.app.state.tlsoc
+        assert state.demo_generation == 0
+        client.portal.call(lambda: state.enable_demo(mode="seeded", seed=1337, history_days=30))
+        assert state.demo_generation == 1
+        client.portal.call(state.reset_demo)
+        assert state.demo_generation == 3
+        client.portal.call(state.disable_demo)
+        assert state.demo_generation == 4 and state.demo_run_id is None
+        client.portal.call(state.disable_demo)
+        assert state.demo_generation == 4
+
+
+def test_a_build_demo_entered_and_left_within_is_served_but_never_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Demo enabled and disabled again while one answer is built: the run is None before
+    # and after, but the build may have read the Demo stores. The switch count keeps that
+    # answer out of the minute's cache (PR #132 verify, the narrow server race).
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    monkeypatch.setattr(route_module, "_monotonic", lambda: 1000.0)
+    builds = [0]
+    real = route_module.build_starters
+
+    async def switching(state: AppState, *args: Any, **kwargs: Any):
+        builds[0] += 1
+        info = await real(state, *args, **kwargs)
+        if builds[0] == 1:
+            await state.enable_demo(mode="seeded", seed=1337, history_days=30)
+            await state.disable_demo()
+        return info
+
+    monkeypatch.setattr(route_module, "build_starters", switching)
+    with _client(configure=_established) as client:
+        state: AppState = client.app.state.tlsoc
+        _starters(client)
+        assert state.demo_run_id is None and state.demo_generation == 2
+        _starters(client)
+        assert builds[0] == 2  # the overtaken answer was not cached
+        _starters(client)
+        assert builds[0] == 2  # the next whole answer is
+
+
+def test_chat_context_built_across_a_demo_switch_is_not_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The same rule for GET /api/chat/context's 30-second cache.
+    monkeypatch.setattr(providers, "DEMO_STREAM_DELAY_S", 0)
+    with _client() as client:
+        state: AppState = client.app.state.tlsoc
+        built = [0]
+        real = state.build_chat_tool_context
+
+        async def switching(*args: Any, **kwargs: Any):
+            built[0] += 1
+            ctx = await real(*args, **kwargs)
+            if built[0] == 1:
+                await state.enable_demo(mode="seeded", seed=1337, history_days=30)
+                await state.disable_demo()
+            return ctx
+
+        state.build_chat_tool_context = switching  # type: ignore[method-assign]
+        assert client.get("/api/chat/context").status_code == 200
+        assert state.demo_run_id is None and state.demo_generation == 2
+        assert client.get("/api/chat/context").status_code == 200
+        assert built[0] == 2  # the overtaken answer was not cached
+        assert client.get("/api/chat/context").status_code == 200
+        assert built[0] == 2  # the next whole answer is
+
+
 # --------------------------------------------------------------------------- #
 # Events
 # --------------------------------------------------------------------------- #

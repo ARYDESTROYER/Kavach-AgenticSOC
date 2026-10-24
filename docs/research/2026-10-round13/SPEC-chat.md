@@ -1284,6 +1284,23 @@ overrides as amendments A64 to A68 and BLOCKS as amendments 32 and 33.
   `my_cases`, `sla`, `campaign`) start their 0.8-second limit only after that read
   arrives; the read is bounded by the time left in the build. A degraded build (a family
   raised or timed out, a shared read failed) is served but not cached.
+- **Demo identity in the caches (PR #132 review):** the server keys starters, `/chat/context`
+  and the slow readings on the active Demo run (`AppState.demo_run_id`), drops cached
+  starters on a switch and never caches a build a switch overtook (`AppState.demo_generation`
+  moved, even for Demo enabled and disabled within one build); the console keys
+  `useChatStarters`, `useChatContext`, the case prefetch and case chat sessions on the
+  Demo status it knows, so entering, leaving or resetting Demo reads afresh at once and
+  no earlier card, transcript or case turn applies. Only a confirmed status read counts
+  (PR #132 verify): `DemoProvider` marks its OFF stand-in (before the first read, after a
+  failed one) `confirmed: false`, and `chat/demo-identity.ts` turns the reads into a switch
+  token that changes only when a confirmed read names another identity than the last one
+  (the case prefetch, which may not import chat code, keeps the last confirmed run itself).
+  A failed 20 s poll changes nothing, and the first read landing is no switch, so a case
+  turn sent or re-attached before it is kept. The shell's activity observer
+  (`ActivityEffects`, which makes the runs no chat view started) notes the status as the
+  chat views do, so a reset before the first chat view rendered is still a switch and a
+  case answer it followed under the earlier run never shows under the new run's case
+  (PR #132 verify 2).
 - **Cold reads (polish round PB3):** the first chat request of a process (often the first
   Case Manager chip read) imported every chat tool module on the event loop while
   resolving grants (349 ms measured on Demo; 0.3 s more where the Help Center index was

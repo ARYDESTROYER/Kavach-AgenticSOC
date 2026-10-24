@@ -18,8 +18,9 @@ import type { Case } from '@/lib/types';
 import { LoadingState } from '@/design-system';
 import { Button } from '@/ui/button';
 import { useAuth } from '@/soc/auth';
+import { useDemo } from '@/soc/demo';
 import type { Navigate } from '@/soc/router';
-import { prefetchCaseStarters } from './case-starters-prefetch';
+import { caseStartersScope, prefetchCaseStarters } from './case-starters-prefetch';
 
 import { caseDisplayId } from './caseFacts';
 import { CASE_MANAGER_PANEL_PADDING, PanelCard, SectionHeading } from './shared';
@@ -67,9 +68,12 @@ export const ChatTab: React.FC<{
   // chat's code is already loaded its hook (a child's passive effect) still finds this
   // read instead of starting a second one.
   const principal = useOptionalPrincipal();
+  // The Demo run the read belongs to (a confirmed switch starts the new run's read at
+  // once; a failed status read names none, so the last confirmed run holds).
+  const scope = caseStartersScope(useDemo());
   React.useLayoutEffect(() => {
-    prefetchCaseStarters(c.case_id, principal);
-  }, [c.case_id, principal]);
+    prefetchCaseStarters(c.case_id, principal, Date.now(), scope);
+  }, [c.case_id, principal, scope]);
   if (presentation === 'case-manager') {
     return (
       <div

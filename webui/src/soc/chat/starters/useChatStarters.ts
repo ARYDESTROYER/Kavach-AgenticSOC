@@ -2,12 +2,20 @@
  * useChatStarters — the client side of the Round 13 starters (SPEC-chat §3.10).
  *
  * `GET /api/chat/starters` is cached per caller for 60 s on the server; the client
- * mirrors that with a small module cache keyed by principal + surface + conversation +
- * case (the `useChatContext` pattern): remounting the start stack, or opening a new chat
- * inside the window, costs no request. Entries are shared across mounts ONLY under a
- * known principal; without one they stay private to the hook instance, and seeing a
- * different principal drops every entry (and every locally hidden card), so one
- * viewer's suggestions never reach the next viewer in the same tab.
+ * mirrors that with a small module cache keyed by principal + Demo identity + surface +
+ * conversation + case (the `useChatContext` pattern): remounting the start stack, or
+ * opening a new chat inside the window, costs no request. Entries are shared across
+ * mounts ONLY under a known principal; without one they stay private to the hook
+ * instance, and seeing a different principal drops every entry (and every locally hidden
+ * card), so one viewer's suggestions never reach the next viewer in the same tab.
+ *
+ * The same holds for Demo Mode (PR #132 review): the Demo identity the console knows
+ * (the switch token of `../demo-identity.ts`) is in every key, and a confirmed switch
+ * (Demo entered, left or reset, here or noticed from the shared status) drops every
+ * entry, every locally hidden card and every waiting dismissal, and reads the new
+ * identity's suggestions at once. A result read or held under the old identity is
+ * discarded, never applied, so a click can never send another run's card. A failed
+ * status read, or the first read landing, is no switch: nothing is dropped or re-read.
  *
  * Fetches happen when the hook is enabled for a key (the stack mounts, a new chat or
  * another thread or case opens), every 120 s while `poll` is on and the page is
@@ -38,6 +46,7 @@ import * as React from 'react';
 import type { ChatStartersInfo, StarterSurface } from '@/lib/types';
 import { onChatActivity } from '../../chat-activity/activity';
 import { getChatStarters, normaliseChatStartersInfo, postChatStarterEvent } from '../chat-api';
+import { useChatDemoIdentity } from '../demo-identity';
 
 /** Mirrors the server's per-caller cache window (`CACHE_TTL_S`). */
 export const STARTERS_CACHE_TTL_MS = 60_000;
@@ -61,6 +70,16 @@ const CARD_HEIGHTS_LIMIT = 16;
 const cardHeights = new Map<string, readonly number[]>();
 /** The last known principal any instance rendered with; a change drops the cache. */
 let lastPrincipal: string | null = null;
+/** The Demo identity the cached answers were read under; a change drops the cache. */
+let lastDemoIdentity: string | null = null;
+/** The Demo identity the locally hidden cards belong to (cleared after render). */
+let hiddenDemoIdentity: string | null = null;
+/**
+ * Bumped whenever another viewer or another Demo identity drops the cache: a read that
+ * started, or a result held, before the drop is discarded, never applied (even when the
+ * key comes back, as on Demo entered and left again).
+ */
+let cacheEpoch = 0;
 
 /* -------------------------------------------------------------------------- */
 /* Locally hidden cards ("Hide for a day").                                    */
@@ -99,6 +118,8 @@ interface PendingDismissal {
   starterKey: string;
   /** The viewer who hid the card (null: auth off); only that viewer's session posts it. */
   principal: string | null;
+  /** The Demo identity the card was hidden under; posted only while it is still current. */
+  demo: string | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 /** local hide key → its dismissal, not posted yet. */
@@ -171,7 +192,7 @@ export function hideStarterLocally(key: string, starterKey?: string | null, prin
   const token = dismissalToken;
   if (starterKey) {
     const timer = setTimeout(() => commitStarterDismissal(key, token), DISMISS_FALLBACK_MS);
-    pendingDismissals.set(key, { token, starterKey, principal: lastPrincipal, timer });
+    pendingDismissals.set(key, { token, starterKey, principal: lastPrincipal, demo: lastDemoIdentity, timer });
     bindPagehide();
   }
   publishHidden();
@@ -182,15 +203,16 @@ export function hideStarterLocally(key: string, starterKey?: string | null, prin
  * Post a hidden card's `dismissed` event (its toast closed without Undo): the server
  * hides the family for 24 hours. Cached answers still list the card, so the next read
  * asks the server again. A token from an older hide of the same card does nothing, and
- * a dismissal recorded for another viewer than the current one is dropped unposted
- * (it must never hide a family in someone else's suggestions).
+ * a dismissal recorded for another viewer than the current one, or under another Demo
+ * identity, is dropped unposted (it must never hide a family in someone else's
+ * suggestions, nor in the stores of another Demo run or of the real tenant).
  */
 export function commitStarterDismissal(key: string, token?: number): void {
   const pending = pendingDismissals.get(key);
   if (!pending || (token !== undefined && pending.token !== token)) return;
   if (pending.timer !== null) clearTimeout(pending.timer);
   pendingDismissals.delete(key);
-  if (!hidden.has(key) || pending.principal !== lastPrincipal) return;
+  if (!hidden.has(key) || pending.principal !== lastPrincipal || pending.demo !== lastDemoIdentity) return;
   for (const entry of cache.values()) entry.at = 0;
   void postChatStarterEvent({ type: 'dismissed', surface: 'home', keys: [pending.starterKey] }).catch(() => {
     // Presentation state only: the card is already hidden here. A refused post (a 401
@@ -265,6 +287,8 @@ export function clearChatStartersCache(): void {
   cache.clear();
   cardHeights.clear();
   lastPrincipal = null;
+  lastDemoIdentity = null;
+  hiddenDemoIdentity = null;
   clearHidden();
 }
 
@@ -282,10 +306,39 @@ function notePrincipal(principal: string | null): void {
   if (lastPrincipal !== null) {
     cache.clear();
     cardHeights.clear();
+    cacheEpoch += 1;
     // Another viewer: the previous one's hides (and any dismissal still waiting) go.
     clearHidden();
   }
   lastPrincipal = principal;
+}
+
+/**
+ * Record the Demo identity this render runs under (render phase: module state only). A
+ * change after a first one drops every cached answer and every waiting dismissal (a
+ * Demo switch: the answers and the hides belong to the stores of the previous identity),
+ * and starts a new epoch, so nothing read or held before it is applied.
+ */
+function noteDemoIdentity(identity: string): void {
+  if (identity === lastDemoIdentity) return;
+  const changed = lastDemoIdentity !== null;
+  lastDemoIdentity = identity;
+  if (!changed) return;
+  cache.clear();
+  cacheEpoch += 1;
+  dropPendingDismissals();
+}
+
+/**
+ * After the render that saw a new Demo identity: the cards hidden under the previous
+ * one show again (their hides lived in that identity's stores). Run from a layout effect,
+ * never during render, because it notifies the start screens subscribed to the set.
+ */
+function noteHiddenDemoIdentity(identity: string): void {
+  if (identity === hiddenDemoIdentity) return;
+  const changed = hiddenDemoIdentity !== null;
+  hiddenDemoIdentity = identity;
+  if (changed) clearHidden();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -390,8 +443,15 @@ export function useChatStarters(args: UseChatStartersArgs): ChatStartersControll
   const instanceId = React.useId();
   const known = typeof principal === 'string' && principal.length > 0;
   const namespace = known ? `principal:${principal}` : `instance:${instanceId}`;
+  // The Demo switch token: entering, leaving or resetting Demo (confirmed) is another key.
+  const demoIdentity = useChatDemoIdentity();
   notePrincipal(known ? principal : null);
-  const key = JSON.stringify([namespace, surface, conversationId ?? '', caseId ?? '']);
+  noteDemoIdentity(demoIdentity);
+  const key = JSON.stringify([namespace, demoIdentity, surface, conversationId ?? '', caseId ?? '']);
+
+  React.useLayoutEffect(() => {
+    noteHiddenDemoIdentity(demoIdentity);
+  }, [demoIdentity]);
 
   // Instance-private entries are unreachable once this instance unmounts: drop them.
   React.useEffect(() => {
@@ -405,7 +465,7 @@ export function useChatStarters(args: UseChatStartersArgs): ChatStartersControll
   const [request, setRequest] = React.useState<{ n: number; force: boolean }>({ n: 0, force: false });
   const handledRef = React.useRef(0);
   const heldRef = React.useRef(false);
-  const pendingRef = React.useRef<{ key: string; info: ChatStartersInfo } | null>(null);
+  const pendingRef = React.useRef<{ key: string; info: ChatStartersInfo; epoch: number } | null>(null);
 
   // Another key never shows the previous key's cards (a thread or case switch).
   let current = applied;
@@ -426,6 +486,10 @@ export function useChatStarters(args: UseChatStartersArgs): ChatStartersControll
       return undefined;
     }
     const controller = new AbortController();
+    // A drop of the cache for another viewer or Demo identity after this read started
+    // makes its result another identity's: it is discarded, never applied.
+    const epoch = cacheEpoch;
+    const stale = () => controller.signal.aborted || epoch !== cacheEpoch;
     // The caller may have started this read already (Case Manager's Chat tab): it is
     // this read, its failure included (one read per case, as before; Retry asks again).
     const prefetched = force ? null : (takePrefetchedRef.current?.() ?? null);
@@ -434,19 +498,19 @@ export function useChatStarters(args: UseChatStartersArgs): ChatStartersControll
       : getChatStarters({ surface, conversationId, caseId }, controller.signal);
     read
       .then((info) => {
-        if (controller.signal.aborted) return;
+        if (stale()) return;
         remember(key, info, Date.now());
         const shown = currentRef.current;
         if (heldRef.current && shown.key === key && shown.info) {
           // Never reorder under the analyst: apply on pointer leave or focus out.
-          pendingRef.current = { key, info };
+          pendingRef.current = { key, info, epoch };
           return;
         }
         pendingRef.current = null;
         setApplied({ key, info, error: null });
       })
       .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
+        if (stale()) return;
         // A failed refresh keeps the cards on screen; only an empty view shows the error.
         setApplied((prev) =>
           prev.key === key && prev.info
@@ -455,7 +519,8 @@ export function useChatStarters(args: UseChatStartersArgs): ChatStartersControll
         );
       });
     return () => controller.abort();
-    // `request` carries the refresh intent; the key covers surface/conversation/case/principal.
+    // `request` carries the refresh intent; the key covers surface/conversation/case/
+    // principal and the Demo identity (a switch reads the new identity's answer at once).
   }, [key, enabled, request, surface, conversationId, caseId]);
 
   const refresh = React.useCallback(() => setRequest((r) => ({ n: r.n + 1, force: true })), []);
@@ -498,7 +563,11 @@ export function useChatStarters(args: UseChatStartersArgs): ChatStartersControll
     if (held) return;
     const pending = pendingRef.current;
     pendingRef.current = null;
-    if (pending && pending.key === currentRef.current.key) setApplied({ key: pending.key, info: pending.info, error: null });
+    // A result held for another key, or before the cache was dropped (a Demo switch and
+    // back, say), belongs to another identity: discarded, never applied.
+    if (pending && pending.key === currentRef.current.key && pending.epoch === cacheEpoch) {
+      setApplied({ key: pending.key, info: pending.info, error: null });
+    }
   }, []);
 
   // Retry shows the loading state again (not the old error) while it reads.

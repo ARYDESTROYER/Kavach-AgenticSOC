@@ -27,6 +27,17 @@
  * starts no read (a read nobody would use). Measured from the take, which comes before
  * the answer, so the skip never outlasts the hook's cache; a failed read is forgotten at
  * once, and another viewer or case always reads.
+ *
+ * Demo Mode (PR #132 review): every read also carries the Demo scope it was started
+ * under ({@link caseStartersScope}: `off`, or the active run, which the tab's shell and
+ * the chat both pass), and a read is handed over, or counted as taken, only under that
+ * same scope. A reset re-seeds the same case ids, so without it a read started for the
+ * previous run could serve the new one; the chat hook's own cache drops its answers on
+ * the same switch. Only a confirmed Demo status read names a scope (PR #132 verify): the
+ * provider's OFF stand-in, after a failed read, keeps the last confirmed scope, so a
+ * failed 20 s poll starts no read; before any confirmed read the scope is unknown
+ * (null), and a read started then belongs to the first scope a confirmed read names
+ * (that read is no switch), so it is still handed over once the status lands.
  */
 import { request } from '@/lib/api';
 
@@ -43,12 +54,48 @@ const LIMIT = 8;
 interface Prefetch {
   at: number;
   principal: string;
+  /** The Demo scope the read was started under (null: no confirmed status read yet). */
+  scope: string | null;
   promise: Promise<unknown>;
 }
 
 const pending = new Map<string, Prefetch>();
 /** When the chat first took a case's read, per case: its hook's cache answers after that. */
-const taken = new Map<string, { at: number; principal: string; promise: Promise<unknown> }>();
+const taken = new Map<string, { at: number; principal: string; scope: string | null; promise: Promise<unknown> }>();
+/** The scope the last confirmed Demo status read named (null: none yet). */
+let confirmedScope: string | null = null;
+
+/** The part of the shared Demo context (`useDemo()`) a scope reads. */
+export interface CaseStartersDemoView {
+  active: boolean;
+  /** `false` for the provider's OFF stand-in (no read yet, or a failed read). */
+  confirmed?: boolean;
+  status: { run_id?: string | null };
+}
+
+/**
+ * The Demo scope of a read, from the shared Demo context (`useDemo()`): `off`, or
+ * `demo:<run id>` while Demo is on, as the last confirmed status read named it. The
+ * provider's stand-in (`confirmed: false`) names nothing, so the last confirmed scope
+ * holds (null before any). Render phase, module state only; the tab's shell and the
+ * chat pass the same value.
+ */
+export function caseStartersScope(demo: CaseStartersDemoView): string | null {
+  if (demo.confirmed !== false) confirmedScope = demo.active ? `demo:${demo.status.run_id ?? ''}` : 'off';
+  return confirmedScope;
+}
+
+/**
+ * Whether a read (or a take) recorded under `entry.scope` serves `scope`. A read started before any
+ * confirmed status read (null) belongs to the first scope one names, and is bound to it.
+ */
+function sameScope(entry: { scope: string | null }, scope: string | null): boolean {
+  if (entry.scope === null) {
+    entry.scope = scope;
+    return true;
+  }
+  return entry.scope === scope;
+}
 
 function trim(map: Map<string, unknown>): void {
   while (map.size > LIMIT) {
@@ -65,18 +112,25 @@ function validCaseId(caseId: string | null | undefined): caseId is string {
 
 /**
  * Start the case's suggestions read now (Chat tab chosen). A read already waiting for
- * this case and viewer is reused. Never throws; a failed read is simply not taken.
+ * this case, viewer and Demo scope is reused. Never throws; a failed read is simply not
+ * taken.
  */
-export function prefetchCaseStarters(caseId: string | null | undefined, principal: string | null | undefined, now = Date.now()): void {
+export function prefetchCaseStarters(
+  caseId: string | null | undefined,
+  principal: string | null | undefined,
+  now = Date.now(),
+  scope: string | null = null,
+): void {
   if (!validCaseId(caseId)) return;
   const viewer = principal ?? '';
   const existing = pending.get(caseId);
-  if (existing && existing.principal === viewer && now - existing.at < PREFETCH_TTL_MS) return;
-  // The chat took this case's read moments ago: its hook answers from its own cache.
+  if (existing && existing.principal === viewer && now - existing.at < PREFETCH_TTL_MS && sameScope(existing, scope)) return;
+  // The chat took this case's read moments ago: its hook answers from its own cache
+  // (under the same Demo scope only: a switch drops that cache).
   const took = taken.get(caseId);
-  if (took && took.principal === viewer && now - took.at < HOOK_CACHE_MS) return;
+  if (took && took.principal === viewer && now - took.at < HOOK_CACHE_MS && sameScope(took, scope)) return;
   const promise = request<unknown>('GET', 'chat/starters', { query: { surface: 'case', case_id: caseId } });
-  const entry: Prefetch = { at: now, principal: viewer, promise };
+  const entry: Prefetch = { at: now, principal: viewer, scope, promise };
   const drop = () => {
     if (pending.get(caseId) === entry) pending.delete(caseId);
   };
@@ -91,15 +145,21 @@ export function prefetchCaseStarters(caseId: string | null | undefined, principa
 }
 
 /**
- * The raw response a prefetch holds for this case and viewer; `null` when there is none
- * (or it is stale, or another viewer started it). Not removed when read: React's
- * development double effect reads it twice, and the hook's cache answers after that.
+ * The raw response a prefetch holds for this case, viewer and Demo scope; `null` when
+ * there is none (or it is stale, or another viewer or Demo scope started it). Not
+ * removed when read: React's development double effect reads it twice, and the hook's
+ * cache answers after that.
  */
-export function takeCaseStartersPrefetch(caseId: string | null | undefined, principal: string | null | undefined, now = Date.now()): Promise<unknown> | null {
+export function takeCaseStartersPrefetch(
+  caseId: string | null | undefined,
+  principal: string | null | undefined,
+  now = Date.now(),
+  scope: string | null = null,
+): Promise<unknown> | null {
   if (!validCaseId(caseId)) return null;
   const entry = pending.get(caseId);
   if (!entry) return null;
-  if (entry.principal !== (principal ?? '') || now - entry.at >= PREFETCH_TTL_MS) {
+  if (entry.principal !== (principal ?? '') || now - entry.at >= PREFETCH_TTL_MS || !sameScope(entry, scope)) {
     pending.delete(caseId);
     return null;
   }
@@ -111,7 +171,7 @@ export function takeCaseStartersPrefetch(caseId: string | null | undefined, prin
 function recordTaken(caseId: string, entry: Prefetch, now: number): void {
   const previous = taken.get(caseId);
   if (previous && previous.promise === entry.promise) return;
-  const record = { at: now, principal: entry.principal, promise: entry.promise };
+  const record = { at: now, principal: entry.principal, scope: entry.scope, promise: entry.promise };
   const forget = () => {
     if (taken.get(caseId) === record) taken.delete(caseId);
   };
@@ -127,4 +187,5 @@ function recordTaken(caseId: string, entry: Prefetch, now: number): void {
 export function clearCaseStartersPrefetch(): void {
   pending.clear();
   taken.clear();
+  confirmedScope = null;
 }

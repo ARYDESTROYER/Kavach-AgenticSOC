@@ -8,6 +8,9 @@
  *    and in the user's other tabs. The shell also goes away while the user stays signed
  *    in (the setup wizard, a boot error): then nothing is forgotten, so the shell asks
  *    the server who is signed in before it clears anything.
+ *  - Demo Mode: it notes the Demo status like the chat views do (`noteChatDemoStatus`),
+ *    so a run it makes for a turn no chat view started carries the right Demo switch
+ *    token even when no chat view has rendered on the page yet (PR #132 verify 2).
  *  - Other tabs: one BroadcastChannel carries this tab's own changes and applies the
  *    others' (scoped to the signed-in user), so two tabs agree; a closing tab hands its
  *    running turns over to this one.
@@ -52,6 +55,7 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { useOptionalAuth } from '@/soc/auth';
 import { displayText } from '@/soc/chat/stream-events';
+import { useDemo } from '@/soc/demo';
 import type { NavOpts } from '@/lib/types';
 import type { Navigate } from '@/soc/router';
 import { setDocumentTitlePrefix } from './title-prefix';
@@ -64,6 +68,7 @@ import {
   isChatActivitySettling,
   markChatActivitySeen,
   markViewedChatActivitySeen,
+  noteChatDemoStatus,
   onChatActivity,
   patchChatActivity,
   putChatActivity,
@@ -341,6 +346,13 @@ export default function ActivityEffects({ username: user, onNavigate }: Activity
   const auth = useOptionalAuth();
   const authEnabled = auth?.authEnabled ?? false;
   const canRead = auth ? auth.hasPermission('cases', 'read') : true;
+  // The Demo status, noted here as well as in the chat views (PR #132 verify 2). This
+  // observer makes the runs no chat view started (`trackRun`), and the runner stamps each
+  // one with the Demo switch token as of the last status noted. Noted by chat views only,
+  // a Demo reset before the first chat view rendered read as the first confirmed status,
+  // not a switch, so a case answer followed under the earlier run showed under the new
+  // run's case with the same id.
+  noteChatDemoStatus(useDemo());
   // Selected slices only: the shell observer never re-renders on every step.
   const prefix = useChatActivity((snapshot) => titlePrefix(snapshot.entries));
   const navigateRef = React.useRef(onNavigate);
