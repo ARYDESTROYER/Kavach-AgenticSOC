@@ -4,16 +4,16 @@ builder (chat revamp SPEC §8, §10.5, §10.7, §5.1, §2).
 Covers the meter's shape, RBAC on money fields (a ``cases:read``-only principal
 sees tokens and the budget state, never rates or spend), zero audit writes while
 resolving a restricted caller's grants, the per-principal cache, history and
-calibration estimates, Demo and production starters (never literal indicators), the
-topic templates, and ``AppState.build_chat_tool_context`` with its Demo overlays.
+calibration estimates, the static evergreen starters (Round 13 SPEC D2: never a
+literal indicator, never a case-store read; the dynamic cards are
+``GET /api/chat/starters``), the topic templates, and
+``AppState.build_chat_tool_context`` with its Demo overlays.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
-import sys
-import types
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any, Iterator
 
@@ -32,7 +32,8 @@ from app.llm.providers import MockProvider
 from app.models import Case, ChatRequest, ChatStarter, Entity
 from app.state import AppState, ChatSourceUnavailable, chat_grant_pairs
 
-STARTER_IDS = ["investigate", "hunt", "posture", "shift_brief", "explain_metric", "learn_app"]
+# Round 13 SPEC D2: the evergreen families, in the default role order (§3.5).
+STARTER_IDS = ["triage", "posture", "report", "explain_metric", "learn_app"]
 # Literal indicators a starter must never carry (§10.5): addresses, hashes, mail, URLs.
 IOC_PATTERNS = [
     re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"),
@@ -107,7 +108,7 @@ async def _seed_case(state: AppState, case_id: str = "case-0042") -> None:
 # --------------------------------------------------------------------------- #
 # Shape, starters and topics.
 # --------------------------------------------------------------------------- #
-def test_context_shape_tools_bounds_and_production_starters() -> None:
+def test_context_shape_tools_bounds_and_evergreen_starters() -> None:
     with _client() as client:
         state = client.app.state.tlsoc
         response = client.get("/api/chat/context")
@@ -128,21 +129,48 @@ def test_context_shape_tools_bounds_and_production_starters() -> None:
         assert body["history_tokens"] == 0 and body["calibration"] is None
         starters = body["starters"]
         assert [s["id"] for s in starters] == STARTER_IDS
-        assert starters[0]["tools"] == ["search_cases"]           # no open case yet
+        assert starters[0]["tools"] == ["search_cases"]
         for starter in starters:
             ChatStarter.model_validate(starter)
             assert not any(p.search(starter["prompt"]) for p in IOC_PATTERNS), starter
-        assert "last 24h" in starters[1]["prompt"] and "all connected sources" in starters[1]["prompt"]
+            # The evergreen set carries no reference, no live slot and no timestamp.
+            assert starter["ref"] is None and starter["action"] == "send"
+            assert starter["as_of"] is None and starter["expires_at"] is None
+            assert starter["key"] and starter["template"] == starter["id"]
+            assert starter["description"] == starter["reason"]
 
 
-def test_production_starters_name_the_newest_open_case() -> None:
+def test_context_starters_are_the_engine_evergreen_set_and_read_no_case_store() -> None:
+    """``/chat/context`` serves ``evergreen_starters`` byte for byte and never reads
+    the case store for them (Round 13 SPEC D2 and §3.2.2): a seeded open case does not
+    change the cards, and no case-store read runs while the context resolves."""
+    from app.engine.chat_starters import evergreen_starters
+
     with _client() as client:
         state = client.app.state.tlsoc
         client.portal.call(_seed_case, state, "case-0042")
-        starters = client.get("/api/chat/context").json()["starters"]
-        assert starters[0]["tools"] == ["get_case", "explain_decision"]
-        assert "case-0042" in starters[0]["prompt"]
-        assert not any(p.search(starters[0]["prompt"]) for p in IOC_PATTERNS)
+        reads: list[str] = []
+        store = state.cases
+        originals = {name: getattr(store, name) for name in ("list", "get", "count", "aggregate")
+                     if callable(getattr(store, name, None))}
+
+        def _spy(name: str):
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                reads.append(name)
+                return await originals[name](*args, **kwargs)
+            return wrapper
+
+        for name in originals:
+            setattr(store, name, _spy(name))
+        try:
+            starters = client.get("/api/chat/context").json()["starters"]
+        finally:
+            for name, fn in originals.items():
+                setattr(store, name, fn)
+        assert reads == []
+        assert starters == [s.model_dump(mode="json") for s in evergreen_starters(demo=False)]
+        assert all("case-0042" not in s["prompt"] for s in starters)
+        assert "production_starters" not in __import__("app.api.routes_chat", fromlist=["__all__"]).__all__
 
 
 def test_text_streaming_reason_disabled_by_admin() -> None:
@@ -352,27 +380,24 @@ async def test_context_is_cached_per_principal_and_dropped_after_a_turn(app_stat
 # --------------------------------------------------------------------------- #
 # Demo Mode: starters, simulated rates, the builder's overlays.
 # --------------------------------------------------------------------------- #
-async def test_demo_context_uses_demo_starters_and_simulated_money(app_state: AppState, monkeypatch) -> None:
-    fake = types.ModuleType("app.engine.demo_chat")
-    fake.DEMO_STARTERS = [
-        {"id": "posture", "label": "Posture now", "prompt": "How are we doing?", "tools": ["soc_metrics"]},
-        {"id": "bad id", "label": "x", "prompt": "y"},                 # invalid → dropped
-    ]
-    monkeypatch.setitem(sys.modules, "app.engine.demo_chat", fake)
+async def test_demo_context_uses_the_demo_evergreen_set_and_simulated_money(app_state: AppState) -> None:
+    from app.engine.chat_starters import evergreen_starters
+
     await app_state.enable_demo(mode="seeded", seed=1337, history_days=1)
     try:
         info = await _context(app_state)
-        assert [s.id for s in info.starters] == ["posture"]
+        # Round 13 SPEC D2: the static evergreen set with the Demo card first.
+        assert [s.id for s in info.starters] == ["demo", *STARTER_IDS]
+        assert info.starters == evergreen_starters(demo=True)
         assert info.simulated is True
         assert info.rates.input_per_million == pytest.approx(3.0)
         assert info.rates.output_per_million == pytest.approx(15.0)
         assert info.budget.enabled is False and info.spent_today is None
         assert info.text_streaming.available is True                # the demo provider streams
-        monkeypatch.setitem(sys.modules, "app.engine.demo_chat", None)
-        app_state.chat_turns.context_cache.clear()
-        assert (await _context(app_state)).starters == []            # planner absent → none
     finally:
         await app_state.disable_demo()
+    app_state.chat_turns.context_cache.clear()
+    assert [s.id for s in (await _context(app_state)).starters] == STARTER_IDS
 
 
 async def test_build_chat_tool_context_real_and_demo(app_state: AppState) -> None:

@@ -29,6 +29,14 @@
  * content to edit), and a late reply for it updates the cache and the event bus only.
  * Every string shown is a React text node (G1); snapshots are re-validated with
  * `parseBlocks` before they render.
+ *
+ * Round 13 (SPEC-chat T3, T34): reports SAVED from this chat (an answer's "Saved to
+ * Reports", `/report`, Save conversation as report) are listed at the top under "Saved
+ * from this chat", each with Open and Export, so the panel never says "No report yet"
+ * after the answer said it saved one. The working report (the items added here) keeps
+ * its own section; empty, it reads "Nothing added yet. Use Add to report on an answer or
+ * a block." The panel heading is the working report's title, else "Report". The count
+ * reads "1 of 60 items", headings are sentence case and item titles wrap.
  */
 import * as React from 'react';
 import {
@@ -47,7 +55,7 @@ import {
 
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
-import type { Report, ReportPatchRequest, ReportSummaryEstimate, ReportTemplateName } from '@/lib/types';
+import type { Report, ReportListEntry, ReportPatchRequest, ReportSummaryEstimate, ReportTemplateName } from '@/lib/types';
 import { LoadingState } from '@/design-system';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
@@ -66,8 +74,9 @@ import { useAnnouncer } from '@/soc/components/announcer';
 import { useAuth } from '@/soc/auth';
 import { useNavigateOptional } from '@/soc/router';
 
+import { onChatActivity } from '../../chat-activity/activity';
 import { ChatMarkdown } from '../ChatMarkdown';
-import { deleteReport, estimateReportSummary, generateReportSummary, getReport, patchReport } from '../chat-api';
+import { deleteReport, estimateReportSummary, generateReportSummary, getReport, listReports, patchReport } from '../chat-api';
 import { displayText } from '../stream-events';
 import { formatUtc } from '../blocks/format';
 import { DownloadPdfButton, ExportErrorNote, ExportMenu, useDefangPreference } from './ExportMenu';
@@ -113,6 +122,39 @@ export function isGenericReportTitle(title: string): boolean {
   return title.trim().toLowerCase() === 'report';
 }
 
+/** The working report with nothing in it (SPEC-chat T3). */
+export const REPORT_EMPTY_TEXT = 'Nothing added yet. Use Add to report on an answer or a block.';
+/** The "Saved from this chat" section heading (T3). */
+export const SAVED_FROM_CHAT_HEADING = 'Saved from this chat';
+
+/** "1 of 60 items" (T34; was "1/60"). */
+export function reportCountLabel(count: number, max: number): string {
+  return `${count.toLocaleString('en-US')} of ${max.toLocaleString('en-US')} ${max === 1 ? 'item' : 'items'}`;
+}
+
+/**
+ * The reports saved FROM this conversation (T3): rows that came from it
+ * (`source_conversation_id`) but are not its working draft, newest first.
+ */
+export function savedFromConversation(
+  rows: readonly ReportListEntry[],
+  conversationId: string | null,
+  workingId: string | null,
+): ReportListEntry[] {
+  if (!conversationId) return [];
+  return rows
+    .filter(
+      (row) =>
+        row.source_conversation_id === conversationId &&
+        row.conversation_id !== conversationId &&
+        row.id !== workingId,
+    )
+    .sort((a, b) => (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0));
+}
+
+/** Re-read the saved list this long after a report changed anywhere (coalesced). */
+const SAVED_REFRESH_MS = 300;
+
 function newKey(): string {
   try {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -148,6 +190,8 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
   const [summaryError, setSummaryError] = React.useState<string | null>(null);
   const [defang, setDefang] = useDefangPreference();
   const exports = useReportExport({ author: username });
+  /** Reports saved from this conversation, from `GET /api/reports` (T3). */
+  const [savedRows, setSavedRows] = React.useState<ReportListEntry[]>([]);
   // Focus returns to the control that started an export when its error note goes away.
   const pdfRef = React.useRef<HTMLButtonElement>(null);
   const exportRef = React.useRef<HTMLButtonElement>(null);
@@ -295,6 +339,54 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
       }),
     [conversationId, load, show],
   );
+
+  // Reports saved from this chat (T3): read when the panel opens, when the conversation
+  // changes, after any report changes anywhere (a save from the thread menu, the
+  // library) and after an answer in this conversation lands (the answer header and
+  // `/report` save a report server-side and emit no report change), coalesced. A failed
+  // read keeps the last list quietly: the working report and its controls never depend
+  // on it.
+  React.useEffect(() => {
+    if (!conversationId) {
+      setSavedRows([]);
+      return undefined;
+    }
+    let controller: AbortController | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const read = () => {
+      controller?.abort();
+      const current = new AbortController();
+      controller = current;
+      // Through a promise, so even a synchronous failure stays a quiet rejection.
+      Promise.resolve()
+        .then(() => listReports(current.signal))
+        .then((rows) => {
+          if (!current.signal.aborted && alive.current) setSavedRows(Array.isArray(rows) ? rows : []);
+        })
+        .catch(() => {
+          /* the list is a convenience; the working report stands alone */
+        });
+    };
+    const schedule = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(read, SAVED_REFRESH_MS);
+    };
+    read();
+    const off = onReportChanged(schedule);
+    // An answer in this conversation finished (here, in another tab or on another
+    // console): it may have saved a report ("Saved to Reports").
+    const offSettled = onChatActivity('settled', (event) => {
+      const { activity } = event;
+      if (event.outcome !== 'done' || activity.kind !== 'workspace' || activity.conversationId !== conversationId) return;
+      schedule();
+    });
+    return () => {
+      off();
+      offSettled();
+      if (timer) clearTimeout(timer);
+      controller?.abort();
+    };
+  }, [conversationId]);
 
   const count = report?.items.length ?? 0;
   const pendingFirstLoad = loading && !report;
@@ -621,7 +713,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
         {/* The eyebrow names the panel only above a report's own title: over the bare
             heading "Report" it would say the same word twice (Round 12 follow-up). */}
         {report && !isGenericReportTitle(title) ? (
-          <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground" data-testid="report-panel-eyebrow">
+          <p className="text-2xs font-medium text-muted-foreground" data-testid="report-panel-eyebrow">
             Report
           </p>
         ) : null}
@@ -679,7 +771,7 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
               </SelectContent>
             </Select>
             <span className="tabular-nums" data-testid="report-count">
-              {count}/{MAX_REPORT_ITEMS}
+              {reportCountLabel(count, MAX_REPORT_ITEMS)}
             </span>
             {full ? <span className="text-warning-text">{REPORT_FULL_MESSAGE}</span> : null}
           </div>
@@ -725,6 +817,45 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     </div>
   );
 
+  const saved = savedFromConversation(savedRows, conversationId, report?.id ?? targetRef.current);
+  const savedSection = saved.length ? (
+    <section aria-labelledby={`${ids.heading}-saved`} className="space-y-1.5 border-b border-border px-3 py-3" data-testid="report-saved-list">
+      <h3 id={`${ids.heading}-saved`} className="text-xs font-semibold text-foreground">
+        {SAVED_FROM_CHAT_HEADING}
+      </h3>
+      <ul className="space-y-1">
+        {saved.map((row) => {
+          const rowTitleId = `${ids.heading}-saved-${row.id.replace(/[^A-Za-z0-9_-]/g, '')}`;
+          return (
+            <li key={row.id} data-saved-report={row.id}>
+              <div role="group" aria-labelledby={rowTitleId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span id={rowTitleId} className="min-w-0 flex-1 break-words text-sm text-foreground">
+                  {displayText(row.title, 120) || 'Untitled report'}
+                </span>
+                <span className="flex shrink-0 items-center gap-1">
+                  <Button variant="outline" size="sm" onClick={() => navigate('reports', { reportId: row.id })}>
+                    <ExternalLink aria-hidden />
+                    Open
+                  </Button>
+                  <ExportMenu
+                    variant="button"
+                    busy={exports.exporting(row.id)}
+                    onExport={(format, on) =>
+                      void exports.run(row.id, () => getReport(row.id), format, on, { title: row.title })
+                    }
+                    defang={defang}
+                    onDefangChange={setDefang}
+                    testId="saved-report-export"
+                  />
+                </span>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  ) : null;
+
   let body: React.ReactNode;
   if (loading && !report) {
     body = <LoadingState label="Loading report" layout="panel" />;
@@ -741,11 +872,8 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
     body = (
       <div className="space-y-2 px-3 py-6 text-sm" data-testid="report-empty">
         <FileText className="size-5 text-muted-foreground" aria-hidden />
-        <p className="font-medium text-foreground">No report yet</p>
         <p className="text-muted-foreground">
-          {conversationId
-            ? 'Use Add to report on an answer or a block. The first one starts this conversation’s report.'
-            : 'Ask a question first; answers you add to the report collect here.'}
+          {conversationId ? REPORT_EMPTY_TEXT : 'Ask a question first; answers you add to the report collect here.'}
         </p>
       </div>
     );
@@ -754,12 +882,12 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
       <div className="space-y-5 px-3 py-3">
         {/* ---- Summary ---- */}
         <section aria-labelledby={ids.summary} className="space-y-2">
-          <h3 id={ids.summary} className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <h3 id={ids.summary} className="text-xs font-semibold text-foreground">
             Summary
           </h3>
           {summary ? (
             <div className="space-y-2 rounded-md border border-border bg-surface px-3 py-2" data-testid="report-summary">
-              <p className="inline-flex items-center gap-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <p className="inline-flex items-center gap-1 text-2xs font-medium text-muted-foreground">
                 <Sparkles className="size-3" aria-hidden />
                 AI-written summary
               </p>
@@ -828,12 +956,14 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
             ref={itemsHeadingRef}
             id={ids.items}
             tabIndex={-1}
-            className="text-xs font-semibold uppercase tracking-wide text-muted-foreground focus:outline-none"
+            className="text-xs font-semibold text-foreground focus:outline-none"
           >
             Items
           </h3>
           {count === 0 ? (
-            <p className="text-sm text-muted-foreground">This report is empty. Use Add to report in the conversation.</p>
+            <p className="text-sm text-muted-foreground" data-testid="report-items-empty">
+              {REPORT_EMPTY_TEXT}
+            </p>
           ) : (
             <ol ref={listRef} className="space-y-2">
               {report.items.map((item, index) => {
@@ -865,10 +995,10 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                           aria-hidden
                         />
                         <span className="min-w-0">
-                          <span className="block truncate text-sm font-medium text-foreground" title={parsed.title}>
+                          <span className="block break-words text-sm font-medium text-foreground">
                             {index + 1}. {parsed.title}
                           </span>
-                          <span className="block truncate text-xs text-muted-foreground">
+                          <span className="block break-words text-xs text-muted-foreground">
                             {kindLabel}
                             {item.scope.window ? ` · ${item.scope.window}` : ''}
                             {item.scope.sources?.length ? ` · ${item.scope.sources.join(', ')}` : ''}
@@ -996,13 +1126,30 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
           onDismiss={exports.dismissError}
           returnFocus={() => (exports.error?.format === 'print' ? pdfRef.current : exportRef.current)}
         />
+      ) : exports.error && saved.some((row) => row.id === exports.error?.reportId) ? (
+        <ExportErrorNote
+          variant="bar"
+          error={exports.error}
+          onRetry={exports.retry}
+          onDismiss={exports.dismissError}
+          returnFocus={() => {
+            const id = exports.error?.reportId;
+            const row = Array.from(document.querySelectorAll<HTMLElement>('[data-saved-report]')).find(
+              (el) => el.dataset.savedReport === id,
+            );
+            return row?.querySelector<HTMLElement>('[data-testid="saved-report-export"]') ?? null;
+          }}
+        />
       ) : null}
       {loadError && report ? (
         <p className="border-b border-border px-3 py-1.5 text-xs text-critical-text" data-testid="report-reload-error">
           {loadError}
         </p>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-y-auto">{body}</div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {savedSection}
+        {body}
+      </div>
       <ConfirmDialog
         open={confirmDelete}
         onOpenChange={setConfirmDelete}

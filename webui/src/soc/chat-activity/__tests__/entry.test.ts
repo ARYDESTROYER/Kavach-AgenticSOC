@@ -55,6 +55,15 @@ describe('chat activity entry boundary', () => {
     expect(runtimeImports(shell)).not.toContain('./chat-activity/ActivityEffects');
   });
 
+  it('the shell observer notes the Demo status through the shared activity module', () => {
+    // PR #132 verify 2. A static import of `@/soc/chat/demo-identity` from here would move
+    // that module out of the turn runner's chunk into one of its own, and the entry's
+    // preload map would name it.
+    const effects = read('soc/chat-activity/ActivityEffects.tsx');
+    expect(runtimeImports(effects)).not.toContain('@/soc/chat/demo-identity');
+    expect(effects).toContain('noteChatDemoStatus(useDemo());');
+  });
+
   it('holds no literal invisible or bidi control characters in its sources (Trojan Source)', () => {
     const dir = path.join(SRC, 'soc/chat-activity');
     // Escapes (\u200b) are fine: only the raw characters are refused.

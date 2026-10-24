@@ -230,7 +230,11 @@
         "reports",
         "prompt library",
         "saved prompts",
-        "promptbook"
+        "promptbook",
+        "suggestions",
+        "suggested questions",
+        "follow-ups",
+        "catch-up"
       ],
       "owned_keys": []
     },
@@ -861,13 +865,14 @@
         "section": "chat_agent"
       },
       "requires": null,
-      "blurb": "Per-question limits (unlimited or bounded), the daily chat spending limit, live answer mode, and which indicators chat may send to enrichment.",
+      "blurb": "Per-question limits (unlimited or bounded), the daily chat spending limit, typed-out answers, suggested questions, and which indicators chat may send to enrichment.",
       "keywords": [
         "chat",
         "assistant",
         "lookups",
         "tokens",
         "type out answers",
+        "typed-out answers",
         "internal domains",
         "email",
         "e-mail",
@@ -880,7 +885,10 @@
         "chat budget",
         "animated logo",
         "timeouts",
-        "questions at once"
+        "questions at once",
+        "suggestions",
+        "suggested questions",
+        "live data"
       ],
       "owned_keys": [
         "chat_agent"

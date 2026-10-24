@@ -2,14 +2,17 @@
  * useChatContext — the composer meter / catalogue / starters source (SPEC §8, §10.5).
  *
  * `GET /api/chat/context` is cached per principal for 30 s on the server; the client
- * mirrors that with a small module cache keyed by principal + case + conversation +
- * model, so remounting the chat page (or switching back to a thread) inside the
- * window costs no request. The cache is shared across mounts ONLY under a known
- * principal: without one (`principal` omitted or null) the entries are private to
- * this hook instance, so one user's catalogue, rates and `spent_today` can never be
+ * mirrors that with a small module cache keyed by principal + Demo identity + case +
+ * conversation + model, so remounting the chat page (or switching back to a thread)
+ * inside the window costs no request. The cache is shared across mounts ONLY under a
+ * known principal: without one (`principal` omitted or null) the entries are private
+ * to this hook instance, so one user's catalogue, rates and `spent_today` can never be
  * served to the next user signed in to the same tab (logout does not reload the
- * page). Seeing a different principal also drops every cached entry. Fresh numbers
- * are fetched:
+ * page). Seeing a different principal also drops every cached entry, and so does a
+ * different Demo identity (the switch token of `./demo-identity.ts`, which changes only
+ * on a confirmed switch, never on a failed status read): entering, leaving or resetting
+ * Demo never shows the other side's simulated rates, budget, history estimate or
+ * starters (PR #132 review). Fresh numbers are fetched:
  *
  * - when the conversation, the model override or the case changes (new key);
  * - after a turn settles (`busy` true → false), because the history estimate,
@@ -20,12 +23,13 @@
  * Every request is aborted on unmount and when its key changes; nothing is fetched
  * while `enabled` is false. A failed refresh keeps the last good context (the meter
  * stays useful) and reports `error`. The previous context is also kept while the
- * next key loads, except across a principal or case change, where showing the old
- * catalogue would be wrong.
+ * next key loads, except across a principal, Demo identity or case change, where
+ * showing the old catalogue would be wrong.
  */
 import * as React from 'react';
 import type { ChatContextInfo } from '@/lib/types';
 import { getChatContext } from './chat-api';
+import { useChatDemoIdentity } from './demo-identity';
 
 export interface UseChatContextArgs {
   conversationId: string | null;
@@ -75,11 +79,14 @@ interface CacheEntry {
 const cache = new Map<string, CacheEntry>();
 /** The last known principal any instance rendered with; a change drops the cache. */
 let lastPrincipal: string | null = null;
+/** The Demo identity the cached contexts were read under; a change drops the cache. */
+let lastDemoIdentity: string | null = null;
 
 /** Test hook: forget every cached context. */
 export function clearChatContextCache(): void {
   cache.clear();
   lastPrincipal = null;
+  lastDemoIdentity = null;
 }
 
 /**
@@ -93,8 +100,15 @@ function notePrincipal(principal: string | null): void {
   lastPrincipal = principal;
 }
 
-function cacheKey(namespace: string, caseId: string | null, conversationId: string | null, model: string | null) {
-  return JSON.stringify([namespace, caseId ?? '', conversationId ?? '', model ?? '']);
+/** Another Demo identity (Demo entered, left or reset) drops every cached context. */
+function noteDemoIdentity(identity: string): void {
+  if (identity === lastDemoIdentity) return;
+  if (lastDemoIdentity !== null) cache.clear();
+  lastDemoIdentity = identity;
+}
+
+function cacheKey(namespace: string, demo: string, caseId: string | null, conversationId: string | null, model: string | null) {
+  return JSON.stringify([namespace, demo, caseId ?? '', conversationId ?? '', model ?? '']);
 }
 
 function remember(key: string, context: ChatContextInfo, at: number) {
@@ -120,9 +134,11 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
   const instanceId = React.useId();
   const known = typeof principal === 'string' && principal.length > 0;
   const namespace = known ? `principal:${principal}` : `instance:${instanceId}`;
+  const demoIdentity = useChatDemoIdentity();
   notePrincipal(known ? principal : null);
-  const key = cacheKey(namespace, caseId, conversationId, model);
-  const scopeKey = JSON.stringify([namespace, caseId ?? '']);
+  noteDemoIdentity(demoIdentity);
+  const key = cacheKey(namespace, demoIdentity, caseId, conversationId, model);
+  const scopeKey = JSON.stringify([namespace, demoIdentity, caseId ?? '']);
 
   // Instance-private entries are unreachable once this instance unmounts: drop them.
   React.useEffect(() => {
@@ -145,7 +161,7 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
   // not again to a later key change (a thread switch reads the cache as usual).
   const handledRef = React.useRef(0);
 
-  // A different principal or case must never show the previous catalogue or spend.
+  // A different principal, Demo identity or case must never show the previous catalogue or spend.
   if (scopeRef.current !== scopeKey) {
     scopeRef.current = scopeKey;
     const cached = cache.get(key)?.context ?? null;
@@ -187,7 +203,8 @@ export function useChatContext(args: UseChatContextArgs): ChatContextController 
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-    // `request` carries the refresh intent; the key covers conversation/model/case/principal.
+    // `request` carries the refresh intent; the key covers conversation/model/case/
+    // principal and the Demo identity.
   }, [key, enabled, request, conversationId, model, caseId]);
 
   // A settled turn changes history, calibration and spend: re-read past the cache.

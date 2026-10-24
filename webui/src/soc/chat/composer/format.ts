@@ -243,6 +243,16 @@ export function scopeChipName(sourceLabel: string, range: ChatTimeRange | null |
  *  - Agent improvement always compares its own fixed periods
  *    (`soc_metrics kind=agent_improvement`): the selected range does not apply.
  */
+/**
+ * The scope popover's one-line hint (Round 13, SPEC-chat T23); the rest of
+ * {@link timeRangeHint} sits behind its "How ranges work" disclosure.
+ */
+export function timeRangeShortHint(range: ChatTimeRange | null | undefined): string {
+  if (!range) return 'Auto: each lookup uses its own default window.';
+  if (isAllTimeRange(range) && presetForRange(range)) return 'All time: lookups without a window cover all time.';
+  return `${timeRangeLongLabel(range)}: questions can narrow this range, not widen it.`;
+}
+
 export function timeRangeHint(range: ChatTimeRange | null | undefined): string {
   if (!range) {
     return (

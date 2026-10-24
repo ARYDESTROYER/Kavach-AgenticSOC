@@ -257,11 +257,17 @@ layer. It measures observed case coverage, not preventive-control effectiveness.
 
 The Standup report is built from aggregates, never a raw-log dump. It contains:
 
-- urgency-ranked open, escalated, and needs-human cases;
+- urgency-ranked open, escalated, and awaiting-analyst cases;
 - SLA and aging pressure;
 - workload by assignee;
 - current-versus-prior deltas; and
 - action items and handoff acknowledgements.
+
+Its figures are the ones chat's shift report shows for the same window. **Needs human**
+counts the open cases whose AI verdict is Needs human. **Awaiting analyst** counts the open
+cases still in the status the console shows as **Open · awaiting analyst**, the cases the
+automation routed to a person that no one has picked up; the workload list shows that
+count per assignee as "N awaiting".
 
 Writing action items or acknowledgements requires `cases:write`.
 

@@ -67,7 +67,8 @@ function UserTurnView({ item, headingId, onSavePrompt, compact = false, highligh
       </div>
       <div
         className={cn(
-          'min-w-0 max-w-[min(36rem,100%)] whitespace-pre-wrap break-words rounded-lg bg-muted text-foreground',
+          // Proportional numerals, as in the answer prose (tabular ones set hyphens wide).
+          'min-w-0 max-w-[min(36rem,100%)] whitespace-pre-wrap break-words rounded-lg bg-muted text-foreground proportional-nums',
           compact ? 'px-3 py-1.5 text-sm' : 'px-3.5 py-2 text-md leading-relaxed',
           highlighted && 'ring-2 ring-primary/60 ring-offset-2 ring-offset-background',
         )}

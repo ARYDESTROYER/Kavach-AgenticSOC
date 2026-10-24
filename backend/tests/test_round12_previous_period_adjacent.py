@@ -104,7 +104,7 @@ def test_the_narration_reads_the_previous_period_in_words() -> None:
     assert lines == [
         "Cases: **83** in the last 90 days (since 15 Jul 2026) vs 0 in the previous 90 days "
         "(16 Apr to 14 Jul 2026; new).",
-        "False-positive rate: **56.6%** in the last 90 days; not measured in the previous 90 days, so there is "
+        "False-positive rate: **57%** in the last 90 days; not measured in the previous 90 days, so there is "
         "no change to show.",
         "MTTR median: **20 min** in the last 90 days vs 30 min in the previous 90 days (−10 min).",
     ]
@@ -469,8 +469,8 @@ def test_the_90_day_report_summary_states_each_window_once() -> None:
     summary = _summary("Last 90 days or whatever reports you can", _report_obs(
         "now-90d", "last 90 days (since 15 Jul 2026)", comp, 83,
         {"count": 83, "fp_rate": 56.6, "tp_rate": 27.7, "mttr_p50": 0}))
-    assert summary.startswith("83 cases in the last 90 days (since 15 Jul 2026), false-positive rate 56.6%, "
-                              "true-positive rate 27.7%, "), summary
+    assert summary.startswith("83 cases in the last 90 days (since 15 Jul 2026), false-positive rate 57%, "
+                              "true-positive rate 28%, "), summary
     assert "Cases: 83 in the last 90 days vs 0 in the previous 90 days (16 Apr to 14 Jul 2026; new)." in summary
     assert summary.endswith("False-positive and true-positive rates were not measured in the previous 90 days, "
                             "so there is no change to show."), summary
@@ -509,7 +509,7 @@ def test_rows_without_a_baseline_figure_are_said_once_with_their_values() -> Non
             comparison_row("cases", "Cases", [70, 83])]
     lines = demo_chat._say_comparison(comparison_observation(periods, rows))
     assert lines == [
-        "False-positive rate **56.6%** and true-positive rate **27.7%** in the last 90 days (since 15 Jul 2026); "
+        "False-positive rate **57%** and true-positive rate **28%** in the last 90 days (since 15 Jul 2026); "
         "neither was measured in the previous 90 days (16 Apr to 14 Jul 2026), so there is no change to show.",
         "Cases: **83** in the last 90 days vs 70 in the previous 90 days (+13, +18.6%).",
     ]
@@ -659,5 +659,5 @@ def test_the_same_period_a_year_earlier_reads_with_its_article() -> None:
                      {"label": "False-positive rate", "unit": "percent", "values": [None, 80.5]}]}
     assert demo_chat._say_comparison(comp) == [
         "Cases: **41** in the last 24 hours vs 0 in the same 24 hours a year earlier (new).",
-        "False-positive rate: **80.5%** in the last 24 hours; not measured in the same 24 hours a year earlier, "
+        "False-positive rate: **81%** in the last 24 hours; not measured in the same 24 hours a year earlier, "
         "so there is no change to show."]

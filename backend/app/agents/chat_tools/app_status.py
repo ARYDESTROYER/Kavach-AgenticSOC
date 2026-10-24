@@ -82,6 +82,7 @@ class AppStatusInput(ToolInput):
 class AppStatusTool(ChatTool):
     name: ClassVar[str] = "app_status"
     label: ClassVar[str] = "Checked this deployment"
+    running_label: ClassVar[str] = "Checking this deployment"
     scope: ClassVar[str] = "docs"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     kind_permissions: ClassVar[dict[str, tuple[str, str]]] = {

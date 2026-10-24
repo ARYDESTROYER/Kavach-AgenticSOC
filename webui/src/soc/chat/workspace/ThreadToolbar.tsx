@@ -1,13 +1,21 @@
 /**
- * ThreadToolbar — the conversation zone's single 44 px band (chat revamp SPEC §10.1a).
+ * ThreadToolbar — the conversation zone's single 44 px band (chat revamp SPEC §10.1a),
+ * taller only while a long title wraps.
  *
  * Left to right: [History] (only when the rail is a Sheet) · the thread title as the
- * page's `<h2>` (inline rename, full text in a tooltip) · the conversation total
- * "12.4k tokens · $0.03" (only when the toolbar is ≥ 560 px; otherwise inside ⋯) ·
- * [Report n] (Workspace only) · [New chat] (only when the rail is a Sheet, so exactly
- * one New chat is ever visible) · ⋯ (Rename, Pin conversation, Export conversation ▸,
- * Save conversation as report — once the thread is saved —, Width ▸, then Delete once
- * saved).
+ * page's `<h2>` (inline rename, full text in a tooltip) · [Report n] (Workspace only) ·
+ * [New chat] (only when the rail is a Sheet, so exactly one New chat is ever visible) ·
+ * ⋯ (the thread menu).
+ *
+ * Round 13 (SPEC-chat T6, T10, T21, T26, T36):
+ *  - The title (now written by the model with the first answer) renders as text only.
+ *    While a New chat's first answer is written, the host passes the temporary row
+ *    (`isPendingThreadRow`): its client title shows, with no thread actions until saved.
+ *  - No inline total: the thread menu's first line reads "This chat: 12.4k tokens ·
+ *    $0.03" ("Usage not recorded" for an older thread; never a dash placeholder).
+ *  - The menu: the usage line, then Rename, Pin (Unpin), Export ▸, Save conversation as
+ *    report and Delete (the rail's words), a separator, then a "View" group with the
+ *    conversation width as three choices described in words, not pixels.
  *
  * Save conversation as report (Round 12 SPEC D11, SYNTHESIS-chat P0-7): every answer of
  * this saved Workspace thread becomes one section of a NEW report, resolved on the server
@@ -23,12 +31,21 @@
  *
  * Width (Round 12 SPEC D12): the viewer's conversation width, Comfortable / Wide /
  * Full width, offered on drafts too (it is a viewer preference, not a thread action).
+ * The host passes it only where a choice changes the lane (`laneWidthChoiceMatters`,
+ * PW4-9): on a phone, or beside a docked rail at 1440, all three are the same lane, so
+ * the menu has no View group there.
  *
  * Inline rename returns focus to the title when it ends from the keyboard (Enter /
  * Escape); a blur commit leaves focus wherever the reader moved it.
+ *
+ * Long titles (re-shoot PW3-2): with room and a pointer that hovers, the title keeps one
+ * line and the whole of it is in a tooltip on hover and keyboard focus. Under 480 px
+ * (`narrow`) or on a touch screen (no hover, so no tooltip) it wraps to up to three
+ * lines and the band grows to hold them: a generated title (48 characters at most) or a
+ * rename (80) is read whole on a phone.
  */
 import * as React from 'react';
-import { Download, FilePlus2, FileText, History, MoreHorizontal, MoveHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
+import { Download, FilePlus2, FileText, History, MoreHorizontal, Pencil, Pin, PinOff, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { cn } from '@/lib/cn';
@@ -39,6 +56,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -51,6 +69,7 @@ import {
 } from '@/ui/dropdown-menu';
 import { useNavigateOptional } from '@/soc/router';
 import { shortcutLabel } from '../shortcuts/shortcut-list';
+import { focusQuietly, quietFocusGuard } from '../quiet-focus';
 import {
   conversationReportErrorMessage,
   conversationReportRetryable,
@@ -61,14 +80,25 @@ import {
 import { emitReportChanged } from '../report/report-sync';
 import { compactTokens, formatCost } from '../message/format';
 import { LANE_WIDTHS, LANE_WIDTH_HINT, LANE_WIDTH_LABEL, isLaneWidth, type ChatLaneWidth } from '../message/lane';
+import { isPendingThreadRow } from '../useChatConversations';
 import { EXPORT_FORMATS, HintedIconButton, SHORTCUT_HINT_KEYS, type ConversationExportFormat } from './HistoryRail';
 
-/** "12.4k tokens · $0.03", or "Usage —" for a legacy thread without totals. */
+/** The usage line of a thread saved before totals were recorded (T36: no dash). */
+export const USAGE_NOT_RECORDED = 'Usage not recorded';
+
+/** "12.4k tokens · $0.03", or "Usage not recorded" for a legacy thread without totals. */
 export function conversationTotal(summary: ChatConversationSummary | null): string | null {
-  if (!summary) return null;
-  if (typeof summary.total_tokens !== 'number') return 'Usage —';
+  if (!summary || isPendingThreadRow(summary)) return null;
+  if (typeof summary.total_tokens !== 'number') return USAGE_NOT_RECORDED;
   const cost = typeof summary.total_cost === 'number' ? ` · ${formatCost(summary.total_cost)}` : '';
   return `${compactTokens(summary.total_tokens)} tokens${cost}`;
+}
+
+/** The thread menu's first line (T10): "This chat: 12.4k tokens · $0.03". */
+export function conversationUsageLine(summary: ChatConversationSummary | null): string | null {
+  const total = conversationTotal(summary);
+  if (total === null || total === USAGE_NOT_RECORDED) return total;
+  return `This chat: ${total}`;
 }
 
 /** "Report" plus the added-item count only when there is one (never "· 0"). */
@@ -142,6 +172,17 @@ export function useSaveConversationAsReport(conversationId: string | null) {
   return { save, saving };
 }
 
+/**
+ * The title's text box: one line cut with an ellipsis where a tooltip can show the rest,
+ * up to three wrapped lines under 480 px and on a touch screen (no hover, no tooltip).
+ * (No `block` with the clamp: it would override line-clamp's box.)
+ */
+export function titleTextClass(narrow: boolean): string {
+  return narrow
+    ? 'line-clamp-3 break-words'
+    : 'block truncate [@media(hover:none)]:line-clamp-3 [@media(hover:none)]:whitespace-normal [@media(hover:none)]:break-words';
+}
+
 /** How an inline rename ended: from the keyboard (refocus the title) or by blur. */
 type EditEnd = 'keyboard' | 'blur';
 
@@ -203,8 +244,11 @@ export interface ThreadToolbarProps {
   railInSheet: boolean;
   onOpenHistory: () => void;
   onNewChat: () => void;
-  /** The toolbar is ≥ 560 px wide (show the total inline). */
-  wide: boolean;
+  /**
+   * The toolbar is ≥ 560 px wide. Kept for hosts; since Round 13 (T10) the total never
+   * shows inline at any width (it is the thread menu's first line).
+   */
+  wide?: boolean;
   /** Under 480 px: History and Report keep their icon (and count) only. */
   narrow?: boolean;
   report?: { count: number; open: boolean; onToggle: () => void } | null;
@@ -226,7 +270,6 @@ export function ThreadToolbar({
   railInSheet,
   onOpenHistory,
   onNewChat,
-  wide,
   narrow = false,
   report = null,
   busy,
@@ -246,15 +289,18 @@ export function ThreadToolbar({
   // a field mounted there would lose focus to the trap at once — and its blur commits.
   const renamingRef = React.useRef(false);
   const hintId = `${React.useId().replace(/[^A-Za-z0-9_-]/g, '')}-rename-hint`;
-  const total = conversationTotal(summary);
-  const saved = !!summary;
+  const usage = conversationUsageLine(summary);
+  // A New chat's first turn is not a saved thread yet (T21): no rename, no actions.
+  const saved = !!summary && !isPendingThreadRow(summary);
   const saveReport = useSaveConversationAsReport(caseScoped ? null : (summary?.id ?? null));
   const threadActions = !caseScoped && saved;
   const showMenu = threadActions || !!laneWidth;
+  const viewLabelId = `${hintId}-view`;
 
   React.useEffect(() => {
     if (!refocusTitle || editing) return;
-    titleButtonRef.current?.focus();
+    // Handed back by code: not a reason to open the full-title tooltip.
+    focusQuietly(titleButtonRef.current);
     setRefocusTitle(false);
   }, [editing, refocusTitle]);
   const endEdit = (end: EditEnd) => {
@@ -263,7 +309,7 @@ export function ThreadToolbar({
   };
 
   return (
-    <div className={cn('flex h-11 shrink-0 items-center gap-1.5 border-b border-border px-3', className)} data-testid="chat-thread-toolbar">
+    <div className={cn('flex min-h-11 shrink-0 items-center gap-1.5 border-b border-border px-3 py-1', className)} data-testid="chat-thread-toolbar">
       {railInSheet && !caseScoped ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -273,6 +319,8 @@ export function ThreadToolbar({
               size="sm"
               className="h-8 shrink-0 gap-1.5 px-2"
               onClick={onOpenHistory}
+              // The History sheet hands focus back here when it closes (no tooltip then).
+              onFocus={quietFocusGuard}
               aria-label={narrow ? 'History' : undefined}
               aria-keyshortcuts={shortcuts?.history}
             >
@@ -296,18 +344,21 @@ export function ThreadToolbar({
           />
         ) : (
           <div className="flex min-w-0 items-baseline gap-2">
-            <h2 className="min-w-0 truncate text-sm font-semibold text-foreground">
+            <h2 className="min-w-0 text-sm font-semibold text-foreground proportional-nums">
               {saved ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <button
                       ref={titleButtonRef}
                       type="button"
-                      className="max-w-full truncate rounded-sm text-left hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      className="max-w-full rounded-sm text-left hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       onClick={() => setEditing(true)}
+                      onFocus={quietFocusGuard}
                       aria-describedby={hintId}
                     >
-                      {title}
+                      <span className={titleTextClass(narrow)} data-testid="thread-title-text">
+                        {title}
+                      </span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-md break-words">
@@ -315,17 +366,14 @@ export function ThreadToolbar({
                   </TooltipContent>
                 </Tooltip>
               ) : (
-                title
+                <span className={titleTextClass(narrow)} data-testid="thread-title-text">
+                  {title}
+                </span>
               )}
             </h2>
             {saved ? (
               <span id={hintId} hidden>
                 Activate to rename this conversation
-              </span>
-            ) : null}
-            {wide && total ? (
-              <span className="shrink-0 text-xs tabular-nums text-muted-foreground" data-testid="conversation-total">
-                {total}
               </span>
             ) : null}
           </div>
@@ -343,6 +391,8 @@ export function ThreadToolbar({
               aria-pressed={report.open}
               aria-label={reportButtonLabel(report.count)}
               onClick={report.onToggle}
+              // The report sheet hands focus back here when it closes (no tooltip then).
+              onFocus={quietFocusGuard}
               data-testid="chat-report-toggle"
             >
               <FileText aria-hidden />
@@ -387,6 +437,8 @@ export function ThreadToolbar({
           </DropdownMenuTrigger>
           <DropdownMenuContent
             align="end"
+            // The 16 px screen-edge gap the composer layers keep (SPEC-chat T23, audit C8).
+            collisionPadding={16}
             // Wide enough that "Save conversation as report" stays on one line.
             className="w-64"
             onCloseAutoFocus={(event) => {
@@ -397,10 +449,10 @@ export function ThreadToolbar({
               setEditing(true);
             }}
           >
-            {!wide && total ? (
+            {usage ? (
               <>
-                <DropdownMenuLabel className="text-xs font-normal tabular-nums text-muted-foreground">
-                  This conversation: {total}
+                <DropdownMenuLabel className="text-xs font-normal tabular-nums text-muted-foreground" data-testid="conversation-usage">
+                  {usage}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
               </>
@@ -417,15 +469,15 @@ export function ThreadToolbar({
                 </DropdownMenuItem>
                 <DropdownMenuItem onSelect={onTogglePin}>
                   {summary?.pinned ? <PinOff aria-hidden /> : <Pin aria-hidden />}
-                  {summary?.pinned ? 'Unpin conversation' : 'Pin conversation'}
+                  {summary?.pinned ? 'Unpin' : 'Pin'}
                 </DropdownMenuItem>
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>
                     {/* A sub-trigger does not size its icon like a menu item does (16 px, muted). */}
                     <Download className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                    Export conversation
+                    Export
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent>
+                  <DropdownMenuSubContent collisionPadding={16}>
                     {EXPORT_FORMATS.map(({ format, label }) => (
                       <DropdownMenuItem key={format} onSelect={() => onExport(format)}>
                         {label}
@@ -441,19 +493,25 @@ export function ThreadToolbar({
                   <FilePlus2 aria-hidden />
                   {saveReport.saving ? 'Saving as report…' : 'Save conversation as report'}
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={busy}
+                  className="text-critical-text focus:text-critical-text"
+                  onSelect={onDelete}
+                >
+                  <Trash2 aria-hidden />
+                  Delete
+                </DropdownMenuItem>
               </>
             ) : null}
             {laneWidth ? (
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger aria-label={`Width, currently ${LANE_WIDTH_LABEL[laneWidth.value]}`}>
-                  <MoveHorizontal className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                  {/* flex-1 takes the free space, so the trigger's own chevron stays at the end. */}
-                  <span className="flex-1">Width</span>
-                  <span className="text-xs text-muted-foreground">{LANE_WIDTH_LABEL[laneWidth.value]}</span>
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="w-60">
-                  <DropdownMenuLabel>Conversation width</DropdownMenuLabel>
+              <>
+                {threadActions ? <DropdownMenuSeparator /> : null}
+                <DropdownMenuGroup aria-labelledby={viewLabelId}>
+                  <DropdownMenuLabel id={viewLabelId} className="text-xs font-medium text-muted-foreground">
+                    View
+                  </DropdownMenuLabel>
                   <DropdownMenuRadioGroup
+                    aria-label="Conversation width"
                     value={laneWidth.value}
                     onValueChange={(value) => {
                       if (isLaneWidth(value)) laneWidth.onChange(value);
@@ -472,20 +530,7 @@ export function ThreadToolbar({
                       </DropdownMenuRadioItem>
                     ))}
                   </DropdownMenuRadioGroup>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            ) : null}
-            {threadActions ? (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  disabled={busy}
-                  className="text-critical-text focus:text-critical-text"
-                  onSelect={onDelete}
-                >
-                  <Trash2 aria-hidden />
-                  Delete
-                </DropdownMenuItem>
+                </DropdownMenuGroup>
               </>
             ) : null}
           </DropdownMenuContent>

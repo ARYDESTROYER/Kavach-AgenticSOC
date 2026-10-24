@@ -3,9 +3,12 @@
  *
  * Lists the caller's tool catalogue from `/chat/context`, grouped by scope: each
  * capability in the present tense ("Search logs", never the run log's "Searched
- * logs"), its data source, the permission it needs, and either ✓, "Needs <perm>"
- * (any one of several for a kind-gated tool) or, for a tool the deployment switched
- * off (`available: false`, SPEC A30), "Turned off on this deployment". The catalogue is the server's
+ * logs") and either ✓ with its data source, "Needs permission to read sources" with
+ * the grant code muted beside it ("(sources:read)", any one of several for a
+ * kind-gated tool) or, for a tool the deployment switched off (`available: false`,
+ * SPEC A30), "Turned off on this deployment". Round 13 (SPEC-chat T24): an allowed row
+ * no longer prints a `resource:action` string; only a locked row names its grant, so
+ * an administrator can still grant it. The catalogue is the server's
  * per-principal view, so this is what the assistant can actually read for THIS user;
  * it never claims more. While the context loads it says so; when it cannot be read
  * it says that once, with Retry, instead of "Checking…" forever. Every string came
@@ -13,6 +16,11 @@
  *
  * The trigger is the caller's element (`asChild`), so the composer's Read-only chip
  * and the empty state's link open the same surface.
+ *
+ * Closing with Escape (or from inside) hands focus back to the trigger quietly
+ * (`focusQuietly`, Round 13 polish), so a guarded trigger's tooltip (the Read-only chip's)
+ * does not open over the composer; a close by a click or tap outside leaves focus where
+ * that interaction put it, as Radix does.
  */
 import * as React from 'react';
 import { Check, CircleSlash, Lock, RotateCcw } from 'lucide-react';
@@ -20,9 +28,10 @@ import type { ChatContextInfo, ChatScope, ChatToolInfo } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
+import { focusQuietly } from '../quiet-focus';
 import { CHAT_SCOPES } from '../stream-events';
 import { SCOPE_LABELS } from './format';
-import { capabilityLabel } from './access-copy';
+import { capabilityLabel, permissionNeed, type PermissionNeed } from './access-copy';
 import { TURNED_OFF_COPY, missingGrant, toolTurnedOff, toolUsable } from './commands';
 
 /** The honest line shown when `/chat/context` could not be read. */
@@ -78,6 +87,16 @@ function lockedKinds(tool: ChatToolInfo): string[] {
   return out;
 }
 
+/** "Needs permission to read sources" with its code muted, as text nodes. */
+function NeedLine({ need, className }: { need: PermissionNeed; className?: string }) {
+  return (
+    <p className={cn('text-2xs', className)}>
+      <span className="font-medium text-foreground">{need.text}</span>{' '}
+      <span className="text-muted-foreground">{need.code}</span>
+    </p>
+  );
+}
+
 function ToolRow({ tool }: { tool: ChatToolInfo }) {
   const missing = missingGrant(tool);
   // Switched off by configuration (SPEC A30): the grant is held, but no grant would
@@ -85,7 +104,6 @@ function ToolRow({ tool }: { tool: ChatToolInfo }) {
   const off = tool.allowed && toolTurnedOff(tool);
   const usable = toolUsable(tool);
   const partly = usable ? lockedKinds(tool) : [];
-  const needs = tool.requires.length ? tool.requires.join(', ') : 'No permission needed';
   return (
     <li className="flex items-start gap-2.5 py-1.5" data-tool-state={usable ? 'allowed' : off ? 'off' : 'denied'}>
       <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden="true">
@@ -98,24 +116,23 @@ function ToolRow({ tool }: { tool: ChatToolInfo }) {
         )}
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className={usable ? 'text-foreground' : 'text-muted-foreground'}>{capabilityLabel(tool)}</span>
-          <span className="shrink-0 text-2xs text-muted-foreground">
-            {usable ? (
-              <>
-                <span className="sr-only">Allowed. </span>
-                {needs}
-              </>
-            ) : off ? (
-              TURNED_OFF_COPY
-            ) : (
-              <span className="font-medium text-foreground">Needs {missing ?? 'access'}</span>
-            )}
-          </span>
-        </div>
-        {tool.data_source ? <p className="truncate text-2xs text-muted-foreground">{tool.data_source}</p> : null}
+        <p className={usable ? 'text-foreground' : 'text-muted-foreground'}>
+          {usable ? <span className="sr-only">Allowed: </span> : null}
+          {capabilityLabel(tool)}
+        </p>
+        {usable && tool.data_source ? (
+          <p className="break-words text-2xs text-muted-foreground">{tool.data_source}</p>
+        ) : null}
+        {off ? <p className="text-2xs text-muted-foreground">{TURNED_OFF_COPY}</p> : null}
+        {!usable && !off ? (
+          missing ? (
+            <NeedLine need={permissionNeed(missing)} />
+          ) : (
+            <p className="text-2xs text-muted-foreground">Not available to you</p>
+          )
+        ) : null}
         {partly.length ? (
-          <p className="text-2xs text-muted-foreground">Some details need {partly.join(' or ')}</p>
+          <NeedLine need={permissionNeed(partly.join(' or '), 'Some details need')} className="text-muted-foreground" />
         ) : null}
       </div>
     </li>
@@ -175,15 +192,32 @@ export function AccessPopover({
   align = 'start',
 }: AccessPopoverProps) {
   const titleId = React.useId();
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  // Radix's non-modal rule: an interaction outside (a click, a tap, focus moved away)
+  // keeps the focus it placed; any other close returns focus to the trigger.
+  const interactedOutside = React.useRef(false);
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverTrigger asChild ref={triggerRef}>
+        {children}
+      </PopoverTrigger>
       <PopoverContent
         side={side}
         align={align}
         aria-labelledby={titleId}
         className="w-[min(24rem,calc(100vw-2rem))] p-0"
-        collisionPadding={8}
+        // The 16 px screen-edge gap every composer layer keeps (SPEC-chat T23, audit C8).
+        collisionPadding={16}
+        onInteractOutside={() => {
+          interactedOutside.current = true;
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          const outside = interactedOutside.current;
+          interactedOutside.current = false;
+          // Back to the chip without opening its tooltip over the composer (Round 13 polish).
+          if (!outside) focusQuietly(triggerRef.current);
+        }}
       >
         <div className="border-b border-border px-4 py-3">
           <h2 id={titleId} className="text-sm font-semibold text-foreground">

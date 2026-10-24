@@ -283,9 +283,17 @@ widen what chat may do; the assistant is read-only by construction.
 | `default_stream_mode` | `steps` | `steps`, `text` | Both | Live mode for viewers who have not chosen one |
 | `allow_text_streaming` | `true` | — | Both | Allow answers to be typed out word by word |
 | `animated_brand` | `true` | — | Both | Turn a ring around the logo while chat works (a custom logo itself never moves) |
+| `dynamic_starters` | `true` | `true`, `false` | Both | New chats open with suggested questions computed by code from data each viewer can read, at no AI cost; off serves only the everyday questions and no catch-up line |
 | `internal_domains` | `[]` | ≤ 100 suffixes | Both | Domain suffixes never sent to enrichment providers |
 | `allow_email_lookup` | `false` | — | Both | Allow e-mail addresses to be sent to enrichment providers |
 | `chat_limits_version` | 1 | — | — | Internal marker of the one-time limits migration below |
+
+The editor shows `allow_text_streaming` and `default_stream_mode` as one **Typed-out
+answers** control: **Off** stores `allow_text_streaming: false` and
+`default_stream_mode: steps`; **Allowed (off by default)** stores `true` and `steps`;
+**Allowed (on by default)** stores `true` and `text`. `dynamic_starters` is repaired like
+`animated_brand`: only an explicit off value turns it off, and a stored block without
+the key reads as on.
 
 Chat is outside the AI budget (`budget`), both `budget.daily_usd` and
 `budget.monthly_usd`: a chat call is never blocked by either and its spend is not counted

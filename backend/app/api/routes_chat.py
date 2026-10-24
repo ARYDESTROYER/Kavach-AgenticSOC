@@ -2,7 +2,8 @@
 
 Chat revamp SPEC §6 (streaming lifecycle, events, Stop and recovery), §4.2
 (concurrency bounds), §4.5 (first-call failures), §4.6 (the case-scoped entry
-point), §8 (``/chat/context``), §10.5 (starters) and §10.7 (topics).
+point), §8 (``/chat/context``, whose starters are the static evergreen set since Round 13;
+the dynamic ones are ``GET /api/chat/starters``) and §10.7 (topics).
 
 ONE engine, two entry points (#5): ``POST /api/chat`` (blocking, in ``routes.py``)
 and ``POST /api/chat/stream`` (NDJSON) both call :func:`run_chat_turn`, which
@@ -81,7 +82,7 @@ import time
 from array import array
 from collections import OrderedDict
 from dataclasses import dataclass, field, is_dataclass, replace
-from typing import Any, AsyncIterator, Iterable
+from typing import Any, AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -105,7 +106,7 @@ from ..agents.chat_events import (
 )
 from ..agents.chat_protocol import PriorExchange, render_replay, select_replay, turn_error_code
 from ..config import ModelConfig, Preferences
-from ..constants import OPEN_CASE_STATUSES, ActionType
+from ..constants import ActionType
 from ..engine.mutation_gate import MutationAdmissionClosed
 from ..models import (
     CHAT_TOPIC_MAX_CHARS,
@@ -120,7 +121,6 @@ from ..models import (
     ChatReportSaveError,
     ChatResponse,
     ChatSavedReport,
-    ChatStarter,
     ChatTopicQuestion,
     DiscoverLink,
     TextStreamingInfo,
@@ -202,7 +202,6 @@ CONTEXT_CACHE_MAX_ENTRIES = 512
 # The meter's calibration is a ratio; one odd turn must not swing it wildly.
 CALIBRATION_BOUNDS = (0.25, 4.0)
 CHARS_PER_TOKEN = 4
-STARTER_WINDOW = "last 24h"
 # Response fields that are presentation-only metadata, kept with the stored answer
 # so the meter can calibrate against this conversation's last turn.
 ESTIMATE_KEY = "estimate_prompt_tokens"
@@ -210,7 +209,6 @@ ESTIMATE_KEY = "estimate_prompt_tokens"
 _SAFE_ID_PATTERN = r"^[A-Za-z0-9._:-]{1,128}$"
 _SAFE_ID_RE = re.compile(_SAFE_ID_PATTERN)
 _TOPIC_ID_PATTERN = CONSOLE_TOPIC_ID_PATTERN
-_CASE_REF_RE = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
 _PROVIDERS = frozenset({"anthropic", "openai", "mock", "azure", "bedrock", "vertex", "openai_compatible"})
 _RESET_MESSAGE = "A maintenance reset stopped this answer before it was saved. Try again shortly."
 _INTERNAL_MESSAGE = "The answer could not be completed. Try again."
@@ -457,9 +455,10 @@ _MODEL_LABELS = frozenset({
 })
 
 
-def _activity_label(step: Any) -> str | None:
+def _activity_label(step: Any, running: bool = False) -> str | None:
     """An ENGINE-template label for the activity indicator (never model or log text):
-    a registered tool's own label, or one of the engine's model-step labels."""
+    a registered tool's own label (its present-progressive ``running_label`` while the
+    lookup runs, ``step.start``), or one of the engine's model-step labels."""
     kind = getattr(step, "kind", None)
     if kind == "model":
         label = getattr(step, "label", "")
@@ -472,7 +471,9 @@ def _activity_label(step: Any) -> str | None:
             tool = get_tool(tool_name)
         except Exception:  # noqa: BLE001 -- the indicator degrades to a generic label
             tool = None
-        label = getattr(tool, "label", None) if tool is not None else None
+        label = None
+        if tool is not None:
+            label = (getattr(tool, "running_label", None) if running else None) or getattr(tool, "label", None)
         if isinstance(label, str) and label:
             return label[:120]
     return "Looking something up"
@@ -562,7 +563,7 @@ class ChatTurnHandle:
         changed = False
         if kind in ("step.start", "step.end"):
             step = getattr(event, "step", None)
-            label = _activity_label(step)
+            label = _activity_label(step, running=kind == "step.start")
             if label and label != self.label:
                 self.label, changed = label, True
             if kind == "step.end" and getattr(step, "kind", None) == "tool":
@@ -2151,6 +2152,9 @@ async def _drive(state: AppState, handle: ChatTurnHandle, plan: _TurnPlan) -> No
             source_name=source_name,
             user_origin=body.origin,
             time_range=body.time_range,
+            # T6: the model's title from the first answer; the store applies it only
+            # when this exchange creates the conversation (never after a rename).
+            **({"system_title": outcome.title} if outcome.title else {}),
         )
     except ChatHistoryUnavailable as exc:
         if plan.billed:
@@ -2628,103 +2632,6 @@ def _calibration(conversation: ChatConversation | None) -> float | None:
     return None
 
 
-def _clean_starters(raw: Iterable[Any]) -> list[ChatStarter]:
-    out: list[ChatStarter] = []
-    for item in raw or ():
-        try:
-            out.append(item if isinstance(item, ChatStarter) else ChatStarter.model_validate(
-                item.model_dump() if isinstance(item, BaseModel) else item))
-        except Exception:  # noqa: BLE001 -- one bad starter never hides the rest
-            continue
-    return out
-
-
-def _demo_starters() -> list[ChatStarter]:
-    """§5.5: the Demo planner's starters (``engine.demo_chat.DEMO_STARTERS``)."""
-    try:
-        from ..engine.demo_chat import DEMO_STARTERS  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 -- the planner is optional at this layer
-        return []
-    return _clean_starters(DEMO_STARTERS)
-
-
-async def _newest_open_case_ref(state: AppState) -> str | None:
-    """The newest open case's display reference (number, else id), or None."""
-    try:
-        cases, _total = await state.cases.list(limit=25, sort_field="created_at", sort_order="desc")
-    except Exception:  # noqa: BLE001 -- the starter falls back to "which cases"
-        return None
-    for case in cases:
-        status = getattr(getattr(case, "status", None), "value", getattr(case, "status", None))
-        if str(status) not in OPEN_CASE_STATUSES:
-            continue
-        for ref in (getattr(case, "case_number", None), getattr(case, "case_id", None)):
-            if isinstance(ref, str) and _CASE_REF_RE.match(ref):
-                return ref
-    return None
-
-
-def _primary_source_label(prefs: Preferences) -> str:
-    from ..agents.blocks import display_text
-
-    try:
-        primary = prefs.primary_source()
-    except Exception:  # noqa: BLE001
-        primary = None
-    name = (primary.display_name or primary.id) if primary is not None else ""
-    return display_text(name, 60) or "all connected sources"
-
-
-async def production_starters(state: AppState, prefs: Preferences) -> list[ChatStarter]:
-    """§10.5 starters filled from live context: the newest open case, the primary
-    source's name and the last 24 h — never a literal indicator. Each lists the tools
-    its plan needs; the page shows a card only when all are allowed."""
-    case_ref = await _newest_open_case_ref(state)
-    source = _primary_source_label(prefs)
-    window = STARTER_WINDOW
-    if case_ref:
-        investigate = ChatStarter(
-            id="investigate", label="Investigate", description=f"Walk through case {case_ref}",
-            prompt=(f"Investigate case {case_ref}: what happened, what evidence supports the "
-                    "verdict, and why was it routed this way?"),
-            tools=["get_case", "explain_decision"],
-        )
-    else:
-        investigate = ChatStarter(
-            id="investigate", label="Investigate", description="Find the open cases that need attention",
-            prompt="Which open cases need attention first, and why?", tools=["search_cases"],
-        )
-    return [
-        investigate,
-        ChatStarter(
-            id="hunt", label="Hunt an indicator", description=f"Unusual activity in {source}, {window}",
-            prompt=(f"Hunt across {source} for the {window}: which source IPs, users and hosts "
-                    "stand out, and do any of them appear in open cases?"),
-            tools=["log_stats", "search_cases"],
-        ),
-        ChatStarter(
-            id="posture", label="Posture now", description="Key metrics and the trend",
-            prompt=f"How is our security posture right now? Show the key metrics and the trend for the {window}.",
-            tools=["soc_metrics"],
-        ),
-        ChatStarter(
-            id="shift_brief", label="Shift brief", description="Summary, open work and next steps",
-            prompt=f"Write a shift brief for the {window}: summary, open work, key metrics and next steps.",
-            tools=["shift_report", "soc_metrics"],
-        ),
-        ChatStarter(
-            id="explain_metric", label="Explain a metric", description="What the Active Risk Index means",
-            prompt="What is the Active Risk Index, how is it calculated, and what moves it?",
-            tools=["app_help"],
-        ),
-        ChatStarter(
-            id="learn_app", label="Learn the app", description="What this console can do",
-            prompt="What can I do in this console, and where should I start?",
-            tools=["app_help", "app_status"],
-        ),
-    ]
-
-
 async def _history_estimate(
     state: AppState, owner_name: str, conversation_id: str | None,
     cfg: Any = None, context_window: int | None = None,
@@ -2798,24 +2705,31 @@ async def chat_context(
 ) -> ChatContextInfo:
     """Everything the composer meter needs (SPEC §8): the effective model and its
     limits, the static prompt and history estimates, the caller's tool catalogue,
-    the live-text availability, the §4.2 bounds, calibration and the starters.
+    the live-text availability, the §4.2 bounds, calibration and the static evergreen
+    starters (Round 13 SPEC D2: no case-store read).
     Money and budget fields need ``models:read``; ``spent_today``/``remaining`` also
     ``cost:view``. Cached per principal for 30 s (dropped when one of the caller's
     turns ends) and resolved without audit rows."""
     from ..agents.chat_tools.registry import build_toolbox, catalogue_infos
     from ..agents.prompts import render_chat_agent_system
+    from ..engine.chat_starters import evergreen_starters
     from ..llm.gateway import estimate_message_tokens
 
     author = current_username(request)
     owner = normalize_user_id(author)
+    # Read before the first await: a Demo switch while the answer is built (even one
+    # there and back, the run the same both times) keeps that answer out of the cache.
+    demo_run = state.demo_run_id
+    demo_generation = state.demo_generation
     grants = await state.chat_grants(request)
     registry = state.chat_turns
     prefs = state.execution_prefs
     cfg = prefs.chat_agent
     # The limits mode, the operator timezone and the brand-ring switch are part of the
-    # answer: a change to any of them is never served from the 30-second cache.
+    # answer: a change to any of them is never served from the 30-second cache. So is
+    # the Demo run (not just "Demo on"): a reset or a re-enable is another run's history.
     key = (
-        owner, state.demo_active, conversation_id, (model or "").strip(), case_id, grants,
+        owner, demo_run, conversation_id, (model or "").strip(), case_id, grants,
         getattr(cfg, "limits_mode", None), getattr(getattr(prefs, "sla", None), "timezone", None),
         getattr(cfg, "animated_brand", None),
     )
@@ -2894,7 +2808,9 @@ async def chat_context(
         "bounds": ChatContextBounds.from_config(cfg),
         "calibration": _calibration(conversation),
         "budget_state": _budget_state(budget_status),
-        "starters": _demo_starters() if state.demo_active else await production_starters(state, prefs),
+        # Round 13 (SPEC D2): the static evergreen set, no store read; the dynamic cards
+        # come from GET /api/chat/starters.
+        "starters": evergreen_starters(demo=state.demo_active),
     }
     if ("models", "read") in grants:
         budget = prefs.budget
@@ -2915,7 +2831,8 @@ async def chat_context(
                     info["spent_today"] = max(0.0, float(spent))
                     info["remaining"] = (round(daily - float(spent), 6) if daily is not None else None)
     result = ChatContextInfo.model_validate(info)
-    registry.context_put(key, result)
+    if state.demo_generation == demo_generation:
+        registry.context_put(key, result)
     return result
 
 
@@ -2957,7 +2874,6 @@ __all__ = [
     "active_chat_turns",
     "chat_request_fingerprint",
     "chat_turn_events",
-    "production_starters",
     "router",
     "run_chat_blocking",
     "run_chat_turn",

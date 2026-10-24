@@ -514,6 +514,11 @@ export interface TableBlock extends BlockBase {
 
 export interface CaseListItem {
   case_id: string;
+  /**
+   * The case's display number ("CASE-0042"), when the server sends one (Round 13,
+   * SPEC-chat T14: the number, then the title; the internal id only in a tooltip).
+   */
+  case_number?: string;
   title: string;
   severity?: SeverityKey;
   verdict?: VerdictKey;
@@ -547,7 +552,7 @@ export interface EntityBlock extends BlockBase {
   facts: Array<{ label: string; value: string; untrusted: boolean }>;
   reputation: Array<{ provider: string; verdict: ReputationVerdict; score?: number | null; detail?: string }>;
   counts: KpiItem[];
-  related_cases: Array<{ case_id: string; title: string; severity?: SeverityKey }>;
+  related_cases: Array<{ case_id: string; case_number?: string; title: string; severity?: SeverityKey }>;
   first_seen?: string;
   last_seen?: string;
 }
@@ -1122,6 +1127,9 @@ function parseTable(raw: Obj, base: Base): TableBlock {
   return block;
 }
 
+/** A case's display number is short product text ("CASE-0042"). */
+const CASE_NUMBER_CHARS = 64;
+
 function caseId(value: unknown): string {
   if (typeof value !== 'string' || !isSafeCaseId(value)) fail('string_pattern_mismatch:case_id');
   return value;
@@ -1134,6 +1142,8 @@ function parseCaseList(raw: Obj, base: Base): CaseListBlock {
       if (!isObj(it)) fail('model_type');
       const id = caseId(it.case_id);
       const out: CaseListItem = { case_id: id, title: optText(it.title, LIMITS.title) ?? displayText(id, LIMITS.title) };
+      const number = optText(it.case_number, CASE_NUMBER_CHARS);
+      if (number) out.case_number = number;
       const severity = enumOr(it.severity, SEVERITY_KEYS, undefined);
       if (severity) out.severity = severity;
       const verdict = enumOr(it.verdict, VERDICT_KEYS, undefined);
@@ -1224,6 +1234,8 @@ function parseEntity(raw: Obj, base: Base): EntityBlock {
         case_id: caseId(c.case_id),
         title: text(c.title, LIMITS.title, 'title'),
       };
+      const number = optText(c.case_number, CASE_NUMBER_CHARS);
+      if (number) out.case_number = number;
       const severity = enumOr(c.severity, SEVERITY_KEYS, undefined);
       if (severity) out.severity = severity;
       return out;

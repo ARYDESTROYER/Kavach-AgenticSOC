@@ -718,6 +718,20 @@ export async function request<T>(
   return (await parseBody(res)) as T;
 }
 
+/**
+ * `/api/account/me` (GET, PUT) and `PUT /api/me/avatar` nest the profile under `user`
+ * (`{authenticated, auth_enabled, env_managed, user}` and `{ok, user}`). Unwrapped once
+ * here, so every caller reads one flat {@link AccountProfile} with the route's
+ * `env_managed` on it. A flat body (a `username` at the top, or no `user` object)
+ * passes through as it is. Kept small: this module is on first paint.
+ */
+function accountProfileOf(body: AccountProfile): AccountProfile {
+  const { user, env_managed } = body ?? {};
+  return user && typeof user === 'object' && typeof body.username !== 'string'
+    ? { ...(user as AccountProfile), env_managed }
+    : body;
+}
+
 async function requestBlob(
   method: string,
   path: string,
@@ -963,14 +977,15 @@ export const api = {
   // The signed-in user's OWN profile. Gated server-side by current_user (NOT
   // users:manage). Secrets are never returned; the avatar string is a tiny
   // data: URL the browser has already cropped/resized to 256x256 WebP.
+  // All three return the flat profile (see accountProfileOf).
   account: {
-    get: () => request<AccountProfile>('GET', 'account/me'),
+    get: () => request<AccountProfile>('GET', 'account/me').then(accountProfileOf),
     put: (patch: AccountProfileBody) =>
-      request<AccountProfile>('PUT', 'account/me', { body: patch }),
+      request<AccountProfile>('PUT', 'account/me', { body: patch }).then(accountProfileOf),
     // Thin set/clear of just the avatar. `value` null/"" clears it. The backend
     // validates the data: URL (png/webp/jpeg, magic-byte sniff, bounded length).
     avatar: (value: string | null) =>
-      request<AccountProfile>('PUT', 'me/avatar', { body: { avatar: value } }),
+      request<AccountProfile>('PUT', 'me/avatar', { body: { avatar: value } }).then(accountProfileOf),
   },
 
   // ---- OOBE first-run setup (PUBLIC status) ---------------------------- //

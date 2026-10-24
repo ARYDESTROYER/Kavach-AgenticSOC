@@ -1,7 +1,7 @@
 /**
  * Standup — the forward-looking shift handoff (Round 3 / Feature 11 rebuild).
  *
- * LEADS with the ATTENTION QUEUE: the open / NEEDS_HUMAN / escalated cases that need
+ * LEADS with the ATTENTION QUEUE: the open / awaiting-analyst / escalated cases that need
  * a human THIS shift, urgency-ranked server-side, each row a deep-link that navigates
  * to the Cases list pre-seeded with the case's status filter. Below it: SLA
  * breached/at-risk, per-analyst workload, and period-over-period delta tiles; an
@@ -133,14 +133,21 @@ function useCopy(): [boolean, (text: string) => void, boolean] {
 
 /* ------------------------------------------------------------- delta labels */
 
-/** Human-readable label + lower-is-better hint for each headline delta metric. */
+/**
+ * Human-readable label + lower-is-better hint for each headline delta metric.
+ *
+ * "Needs human" is the open cases whose VERDICT is Needs human, the figure chat's shift
+ * report shows under the same label. The legacy `needs_human` STATUS count is
+ * "Awaiting analyst", the console's word for that status (Round 13 close).
+ */
 const DELTA_META: Array<{
   key: string;
   label: string;
   lowerIsBetter: boolean;
 }> = [
   { key: 'open', label: 'Open', lowerIsBetter: true },
-  { key: 'needs_human', label: 'Needs human', lowerIsBetter: true },
+  { key: 'needs_human_verdict', label: 'Needs human', lowerIsBetter: true },
+  { key: 'needs_human', label: 'Awaiting analyst', lowerIsBetter: true },
   { key: 'escalated', label: 'Escalated', lowerIsBetter: true },
   { key: 'unassigned', label: 'Unassigned', lowerIsBetter: true },
   { key: 'sla_breached', label: 'SLA breached', lowerIsBetter: true },
@@ -438,7 +445,16 @@ function DeltaTiles({ deltas }: { deltas: Record<string, DeltaCell> }) {
   const present = DELTA_META.filter((m) => deltas[m.key]);
   if (!present.length) return null;
   return (
-    <Stagger className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+    <Stagger
+      className={cn(
+        'grid grid-cols-2 gap-4 sm:grid-cols-3',
+        // Six tiles sit in one row only where each keeps its label on one line
+        // ("Awaiting analyst" wraps below about 160 px a tile, 1280 px wide included).
+        present.length > 5 ? 'min-[1400px]:grid-cols-6' : 'lg:grid-cols-5',
+      )}
+      // Equal heights in a row: "Awaiting analyst" wraps to two lines on a phone.
+      itemClassName="h-full"
+    >
       {present.map((m) => {
         const cell = deltas[m.key];
         const d = cell.delta;
@@ -456,7 +472,7 @@ function DeltaTiles({ deltas }: { deltas: Record<string, DeltaCell> }) {
           good ? ', improved' : ', worse'
         }`;
         return (
-          <Card key={m.key} className="p-4" data-testid={`delta-tile-${m.key}`}>
+          <Card key={m.key} className="h-full p-4" data-testid={`delta-tile-${m.key}`}>
             <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               {m.label}
             </div>
@@ -524,7 +540,7 @@ function AttentionQueueCard({
             title={evidenceComplete ? 'Nothing needs you right now' : 'Attention queue is incomplete'}
             description={
               evidenceComplete
-                ? 'The current window has no open, escalated, or NEEDS_HUMAN case in the attention queue. Continue with planned work and refresh after new cases arrive.'
+                ? 'The current window has no open, escalated, or awaiting-analyst case in the attention queue. Continue with planned work and refresh after new cases arrive.'
                 : 'The case store returned a degraded snapshot, so an empty queue cannot be verified. Refresh or check source health before treating this shift as clear.'
             }
           />
@@ -752,7 +768,7 @@ function WorkloadCard({ workload }: { workload: StandupReport['workload'] }) {
                         <Badge variant="high">{fmtNumber(w.escalated)} esc</Badge>
                       ) : null}
                       {w.needs_human > 0 ? (
-                        <Badge variant="warning">{fmtNumber(w.needs_human)} NH</Badge>
+                        <Badge variant="warning">{fmtNumber(w.needs_human)} awaiting</Badge>
                       ) : null}
                       <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
                         {fmtNumber(w.open)}

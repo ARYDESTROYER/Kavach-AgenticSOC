@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import math
 import re
+from decimal import ROUND_HALF_UP, Decimal
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -868,22 +869,57 @@ def logs_console_view(
 # --------------------------------------------------------------------------- #
 
 
+#: What engine text says for a figure that was not measured (Round 13 T36: no em dash
+#: on screen; the run log and step summaries read "FP rate not available").
+NOT_AVAILABLE = "not available"
+
+
+def round_half_up(value: float) -> int:
+    """The nearest integer, a half rounded away from zero (``Decimal`` ``ROUND_HALF_UP``
+    over the float's exact value): 47.5 -> 48, 47.4 -> 47, -1.5 -> -2. For every
+    non-negative figure this is the integer the console's gauge shows (``Math.round``),
+    so a step summary never says 47 beside a gauge that says 48 (Round 13 T1)."""
+    return int(Decimal(value).to_integral_value(rounding=ROUND_HALF_UP))
+
+
 def fmt_int(value: Any) -> str:
-    """``1,284``; ``—`` for a missing value."""
+    """``1,284``, rounded half away from zero (never truncated); ``not available``
+    for a missing value."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return "—"
-    return f"{int(value):,}"
+        return NOT_AVAILABLE
+    return f"{value if isinstance(value, int) else round_half_up(value):,}"
 
 
-def fmt_pct(value: Any, *, ratio: bool = False, digits: int = 1) -> str:
-    """A percentage string from a 0..100 value (or a 0..1 ``ratio``)."""
+def console_num(number: float, places: int) -> str:
+    """``number`` as the console writes it (``toLocaleString`` with at most ``places``
+    decimals, rounded half up): "78", "7.5", "1,284"; trailing zeros dropped."""
+    step = Decimal(1).scaleb(-places)
+    # Binary noise first (0.145 * 100 is 14.499999999999998, a tile's 14.5): the tools
+    # round a rate to two decimals before the console rounds it again.
+    quantized = Decimal(str(round(number, 6))).quantize(step, rounding=ROUND_HALF_UP)
+    if quantized.is_zero():
+        quantized = abs(quantized)  # never "-0"
+    text = f"{quantized:,.{places}f}"
+    return text.rstrip("0").rstrip(".") if places and "." in text else text
+
+
+def fmt_pct(value: Any, *, ratio: bool = False, missing: str = NOT_AVAILABLE) -> str:
+    """A rate exactly as the console's figures show it (Round 13 close: one figure, one
+    form), from a 0..100 value or a 0..1 ``ratio``: a whole percent from 10% up, one
+    decimal under 10%, "<1%" for a sliver, rounded half up ("75.6" reads "76%", "7.45"
+    reads "7.5%"). A step summary and the planner's prose share it, so neither says
+    "75.6%" beside a tile that says "76%". ``missing`` (``not available``) for a missing
+    value."""
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-        return "—"
-    return f"{(value * 100 if ratio else value):.{digits}f}%"
+        return missing
+    number = float(value) * 100 if ratio else float(value)
+    if 0 < number < 1:
+        return "<1%"
+    return f"{console_num(number, 1 if abs(number) < 10 else 0)}%"
 
 
 def finite(value: Any) -> float | None:
-    """A finite float, else ``None`` (the em-dash ``"—"`` of a metric is ``None``)."""
+    """A finite float, else ``None`` (a metric's not-measured value is ``None``)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     number = float(value)
@@ -1052,6 +1088,7 @@ def case_list_item(case: Any, prefs: Any) -> dict[str, Any]:
     """A ``case_list`` artifact item (BLOCKS.md §5.3)."""
     return {
         "case_id": str(getattr(case, "case_id", "")),
+        "case_number": opt_text(getattr(case, "case_number", ""), 64),
         "title": display_text(getattr(case, "title", "") or getattr(case, "case_id", ""), 120),
         "severity": case_severity(case, prefs),
         "verdict": _VERDICT_SEMANTIC.get(enum_value(getattr(case, "verdict", None)) or ""),
@@ -1098,6 +1135,17 @@ def kpi(
     return item
 
 
+#: The row label of a counted LOG value that is empty (``""`` or only whitespace): the
+#: events were counted, only their value is blank, so the row is worded, never the em
+#: dash a missing figure would read as (Round 13 T36; BLOCKS G3 keeps the dash for "not
+#: measured"). Parenthesised like Kibana's own empty-value label so it does not read as
+#: a log value; ``chat_followups.PLACEHOLDER_LABELS`` keeps it from anchoring a chip.
+EMPTY_VALUE_LABEL = "(empty)"
+#: The row label of a category with no label at all (the word ``stats.group_label``
+#: uses for a missing value).
+MISSING_LABEL = "(none)"
+
+
 def categories(
     pairs: list[tuple[Any, Any]], *, unit: str = "count", dimension: str | None = None,
     other: Any = None, ordered: bool = False,
@@ -1106,7 +1154,7 @@ def categories(
     colours, SPEC §7.3). ``None`` values sort last. ``ordered`` keeps ``pairs`` in the
     order given (a canonical order such as Critical, High, Medium, Low, Info) and marks
     the payload so materialisation keeps it too (Round 12 SPEC §7.2 decision 27)."""
-    rows = [(display_text(label, 200) or "—", finite(value)) for label, value in pairs]
+    rows = [(display_text(label, 200) or MISSING_LABEL, finite(value)) for label, value in pairs]
     if not ordered:
         rows.sort(key=lambda r: (r[1] is None, -(r[1] or 0), r[0]))
     data: dict[str, Any] = {
@@ -1137,10 +1185,12 @@ def column(
 
 __all__ = [
     "AMBIGUOUS_MINUTES",
+    "EMPTY_VALUE_LABEL",
     "EMPTY_WINDOW",
     "OUTSIDE_SELECTED_RANGE",
     "MAX_CITATIONS_PER_CALL",
     "MAX_WINDOW_DAYS",
+    "MISSING_LABEL",
     "MAX_WINDOW_HOURS",
     "ToolCall",
     "ToolInput",
@@ -1160,6 +1210,8 @@ __all__ = [
     "current_call",
     "enum_value",
     "finite",
+    "NOT_AVAILABLE",
+    "console_num",
     "fmt_int",
     "fmt_pct",
     "iso_or_none",
@@ -1170,6 +1222,7 @@ __all__ = [
     "parse_input",
     "ratio_to_pct",
     "resolve_window",
+    "round_half_up",
     "text",
     "verdict_semantic",
     "visible_text",

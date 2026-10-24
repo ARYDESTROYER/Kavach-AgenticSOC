@@ -14,6 +14,10 @@
  * container (the transcript), the gutter is the lane's `clamp(1rem, 2.5cqi, 2.5rem)` of
  * it, and the card gets negative inline margins up to those edges — re-measured on every
  * resize, so it follows the window, the side panels and the width preference.
+ *
+ * A COMPACT card (Round 13, SPEC-chat §5.1) rests in the 42rem reading column, narrower
+ * than the lane: the room it gains is measured from its own resting width, and its
+ * reading-column cap is lifted while it is shown full width.
  */
 import * as React from 'react';
 
@@ -46,7 +50,7 @@ export function inChatLane(figure: HTMLElement | null): boolean {
  * the card is not in a lane or there is no room to gain. `hang` is the card's own
  * resting (negative) inline margin, which the bleed keeps.
  */
-export function measureBleed(figure: HTMLElement, hang: number): BleedMargins | null {
+export function measureBleed(figure: HTMLElement, hang: number, restWidth?: number | null): BleedMargins | null {
   if (!inChatLane(figure)) return null;
   const parent = figure.parentElement;
   const root = scrollRoot(figure);
@@ -61,7 +65,11 @@ export function measureBleed(figure: HTMLElement, hang: number): BleedMargins | 
   const gutter = Math.min(40, Math.max(16, rootRect.width * 0.025));
   const marginLeft = Math.min(hang, Math.round(left + gutter - parentRect.left + hang));
   const marginRight = Math.min(hang, Math.round(parentRect.right - (right - gutter) + hang));
-  if (hang - marginLeft + (hang - marginRight) < MIN_BLEED_GAIN) return null;
+  // The room gained: from the card's resting width when it is known (a compact card rests
+  // narrower than the lane), else from the lane edges the hang already reaches.
+  const bled = parentRect.width - marginLeft - marginRight;
+  const gain = typeof restWidth === 'number' && restWidth > 0 ? bled - restWidth : hang - marginLeft + (hang - marginRight);
+  if (gain < MIN_BLEED_GAIN) return null;
   return { marginLeft, marginRight };
 }
 
@@ -83,12 +91,16 @@ export function useFullBleed(figureRef: React.RefObject<HTMLElement>, enabled: b
   const [margins, setMargins] = React.useState<BleedMargins | null>(null);
   /** The card's resting inline margin (the lane hang), read while it is not bled. */
   const hang = React.useRef(0);
+  /** The card's resting width (a compact card rests narrower than the lane). */
+  const rest = React.useRef<number | null>(null);
 
   const readHang = React.useCallback(() => {
     const fig = figureRef.current;
     if (!fig) return;
     const m = Number.parseFloat(window.getComputedStyle(fig).marginLeft);
     hang.current = Number.isFinite(m) ? Math.min(0, m) : 0;
+    const width = fig.getBoundingClientRect().width;
+    rest.current = Number.isFinite(width) && width > 0 ? width : null;
   }, [figureRef]);
 
   const check = React.useCallback(() => {
@@ -98,7 +110,7 @@ export function useFullBleed(figureRef: React.RefObject<HTMLElement>, enabled: b
       return;
     }
     if (!on) readHang();
-    setAvailable(on || measureBleed(fig, hang.current) !== null);
+    setAvailable(on || measureBleed(fig, hang.current, rest.current) !== null);
   }, [enabled, figureRef, on, readHang]);
 
   const toggle = React.useCallback(() => {
@@ -115,7 +127,7 @@ export function useFullBleed(figureRef: React.RefObject<HTMLElement>, enabled: b
       return undefined;
     }
     const measure = () => {
-      const next = measureBleed(fig, hang.current);
+      const next = measureBleed(fig, hang.current, rest.current);
       setMargins((cur) =>
         cur && next && cur.marginLeft === next.marginLeft && cur.marginRight === next.marginRight ? cur : next,
       );
@@ -139,6 +151,7 @@ export function useFullBleed(figureRef: React.RefObject<HTMLElement>, enabled: b
     available: enabled && available,
     check,
     toggle,
-    style: on && enabled && margins ? { marginLeft: margins.marginLeft, marginRight: margins.marginRight } : undefined,
+    // `maxWidth: none` lifts a compact card's reading-column cap while it is bled.
+    style: on && enabled && margins ? { marginLeft: margins.marginLeft, marginRight: margins.marginRight, maxWidth: 'none' } : undefined,
   };
 }

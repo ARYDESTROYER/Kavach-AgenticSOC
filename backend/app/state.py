@@ -106,6 +106,10 @@ class AppState:
         # stack so REAL cases are hidden + isolated; disable GC's it + the real
         # state returns intact.
         self._demo = None
+        # Bumped on every Demo switch (enable, disable; a reset is both): a cache filled
+        # by a build compares it before and after, so even a switch there and back
+        # within one build (the run id the same both times) is seen (``demo_generation``).
+        self._demo_generation = 0
         self._demo_sim = None
         # Serialize enable/reset/disable as one lifecycle transaction. Without this,
         # concurrent enables can each create a live ticker before the later request
@@ -282,6 +286,25 @@ class AppState:
     @property
     def demo_active(self) -> bool:
         return self._demo is not None
+
+    @property
+    def demo_run_id(self) -> str | None:
+        """The active Demo run's identity (its ``run_id``), or None when Demo is off.
+        Every enable and every reset builds a new stack under a new run id, so a cache
+        of answers read from the demo-swapped stores keys on this, never on
+        :attr:`demo_active` alone: another run's answer is never served."""
+        demo = self._demo
+        if demo is None:
+            return None
+        return str(getattr(demo, "run_id", "") or "") or f"stack-{id(demo):x}"
+
+    @property
+    def demo_generation(self) -> int:
+        """How many Demo switches (enable, disable) this process has seen. A cache
+        that stores what a build read reads this before the build and stores the answer
+        only when it is unchanged afterwards: :attr:`demo_run_id` alone cannot tell a
+        build that Demo was enabled and disabled again while it ran (None both times)."""
+        return self._demo_generation
 
     def spawn_mutation_task(self, coro, *, name: str | None = None) -> asyncio.Task[Any]:
         """Spawn one tracked tenant-writing task, rejecting work after admission closes."""
@@ -736,9 +759,16 @@ class AppState:
     async def chat_grants(self, request) -> frozenset[tuple[str, str]]:
         """The caller's grants over every pair a chat turn can need: the tool
         catalogue, the console map and the route-level grants (case comments,
-        memory, model choice, cost). Resolved once, WITHOUT audit rows (SPEC §5.1)."""
+        memory, model choice, cost). Resolved once, WITHOUT audit rows (SPEC §5.1).
+        The first call of a process builds the tool catalogue and the Help Center index
+        off the event loop (Round 13 polish PB3: a cold Case Manager chip read paid both
+        on the loop, about 0.3 s); both are no-ops once built."""
+        from .agents.chat_tools.registry import warm_catalogue
         from .api.deps import resolve_grants
+        from .knowledge import warm_app_knowledge
 
+        await warm_catalogue()
+        await warm_app_knowledge()
         return await resolve_grants(request, chat_grant_pairs())
 
     async def build_chat_tool_context(
@@ -801,6 +831,7 @@ class AppState:
             "grants": frozenset(grants),
             "case_id": effective_case or None,
             "user": current_username(request) or "default",
+            "caller": current_username(request) or "",
             "time_range": getattr(body, "time_range", None),
             "context_time_range": _context_time_range(body),
             "app_version": __version__,
@@ -835,6 +866,15 @@ class AppState:
             return feedback_store_for(getattr(self.chat_conversations, "_kv", None) or self.kv)
         except Exception:  # noqa: BLE001 -- a missing store never fails a chat turn
             return None
+
+    @property
+    def chat_starters(self):
+        """Round 13 (SPEC-chat §3.2.3): the caller-keyed chat starter state store over
+        the ACTIVE chat KV (the demo stack's in Demo Mode, so Demo state stays in the
+        sandbox). Presentation state only: family ids, opaque keys, counters, times."""
+        from .stores.chat_starters import starters_store_for
+
+        return starters_store_for(getattr(self.chat_conversations, "_kv", None) or self.kv)
 
     @property
     def rag_service(self):
@@ -1744,10 +1784,14 @@ class AppState:
             from .engine.event_detection import pre_aggregate
 
             seen.update(summary.signature for summary in pre_aggregate(events, prefs))
+            # One store write for the batch: a write per signature re-encoded the whole
+            # series document each time (quadratic, and a stalled event loop, PW4-10).
+            updates = {}
             for sig in seen:
                 snap = baseline.snapshot(sig)
                 if snap:
-                    await self.baseline_store.put(sig, snap)
+                    updates[sig] = snap
+            await self.baseline_store.put_many(updates)
         except Exception as exc:  # noqa: BLE001 — persistence is best-effort
             logger.debug("funnel baseline flush failed (%s)", exc)
 
@@ -3229,10 +3273,6 @@ class AppState:
             new_demo.seed, org, history_days=new_demo.history_days,
             run_id=new_demo.run_id, now_millis=now_ms,
         )
-        seeded_counter_cases = list(cases)
-        for case in cases:
-            self._write_guard(case, demo=True)
-            await demo_stack.cases.save(case)
 
         # Pre-seed a tight "just happened" window: a varied trio of recent cases (1
         # TP-escalate, 1 NEEDS_HUMAN, 1 FP — not all terminal) + ~100 events already
@@ -3244,6 +3284,28 @@ class AppState:
             case_count=new_demo.preseed_case_count,
             event_count=new_demo.preseed_event_count,
         )
+        # The capability seed cases (generated here so every seeded case is numbered
+        # together; saved and acted on below).
+        hitl_cases: list = []
+        tuner_cases: list = []
+        if new_demo.force_capabilities:
+            try:
+                from .engine.demo_generator import generate_capability_seed_cases
+
+                hitl_cases, tuner_cases = generate_capability_seed_cases(
+                    new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
+                )
+            except Exception as exc:  # noqa: BLE001 — capability seeding never blocks enable
+                logger.warning("demo capability seeding failed: %s", exc)
+                hitl_cases, tuner_cases = [], []
+        # Every seeded case gets its display number before it is saved, oldest first,
+        # from the same nomenclature and sequence the demo pipeline continues.
+        await demo_stack.number_seeded_cases([*cases, *recent_cases, *hitl_cases, *tuner_cases])
+
+        seeded_counter_cases = list(cases)
+        for case in cases:
+            self._write_guard(case, demo=True)
+            await demo_stack.cases.save(case)
         for case in recent_cases:
             self._write_guard(case, demo=True)
             await demo_stack.cases.save(case)
@@ -3269,13 +3331,8 @@ class AppState:
         # records one bounded observation). Every write lands in the DEMO stores; the real
         # HITL/tuning/campaign ledgers are untouched. Gated on force_capabilities because
         # the seeded automation rule + the tuner/campaign blocks are only forced ON there.
-        if new_demo.force_capabilities:
+        if hitl_cases or tuner_cases:
             try:
-                from .engine.demo_generator import generate_capability_seed_cases
-
-                hitl_cases, tuner_cases = generate_capability_seed_cases(
-                    new_demo.seed, org, run_id=new_demo.run_id, now_millis=now_ms,
-                )
                 for case in (*hitl_cases, *tuner_cases):
                     self._write_guard(case, demo=True)
                     await demo_stack.cases.save(case)
@@ -3339,6 +3396,7 @@ class AppState:
         # atomic off→ready transition to other asyncio tasks.
         await self.update_prefs(pending_prefs)
         self._demo = demo_stack
+        self._demo_generation += 1
         # Start the live simulator only after the complete stack is publicly visible.
         if new_demo.mode == "live":
             self._demo_sim = DemoSimulator(demo_stack, self.get_prefs, seed=new_demo.seed)
@@ -3402,6 +3460,7 @@ class AppState:
             except Exception:  # noqa: BLE001
                 pass
             self._demo = None
+            self._demo_generation += 1
         prefs = self.prefs.model_copy(deep=True)
         prefs.demo = DemoConfig()  # mode='off', run_id=''
         await self.update_prefs(prefs)
@@ -3673,6 +3732,13 @@ class AppState:
             # A turn still running at shutdown is abandoned like a reset-cancelled
             # one: its reservation is aborted so a retry runs fresh after restart.
             await self.cancel_chat_turns()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # Round 13: the chat starters' background readings (hunt, platform).
+            from .engine.chat_starters import close_slow_signals
+
+            await close_slow_signals(self)
         except Exception:  # noqa: BLE001
             pass
         try:

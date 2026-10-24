@@ -97,16 +97,29 @@ def invalidate_case_page_cache() -> None:
     _ledger_memo.clear()
 
 
-async def fetch_case_page(store: Any, limit: int) -> tuple[list, int]:
+async def fetch_case_page(store: Any, limit: int, *, fresh: bool = False) -> tuple[list, int]:
     """Return ``(cases, total)`` from ``store.list(limit=limit)`` via the shared
     short-TTL cache.
 
     The returned list is a fresh shallow copy per call. Errors from the store
     propagate to the caller (each route keeps its own degrade-to-empty handling)
     and are never cached.
+
+    ``fresh=True`` reads the store now, whatever the cache or an in-flight read holds,
+    and the page it reads replaces the cached one (Round 13 close: a chat lookup whose
+    rows must match a count it just took reads this way when the cached page predates
+    that count, e.g. right after a case was assigned).
     """
     limit = int(limit)
     now = time.monotonic()
+
+    if fresh:
+        cases, total = await store.list(limit=limit)
+        cases, total = list(cases), int(total)
+        _page_cache[limit] = _CacheEntry(
+            store, time.monotonic() + float(CASE_PAGE_TTL_SECONDS), cases, total
+        )
+        return list(cases), total
 
     entry = _page_cache.get(limit)
     if entry is not None and entry.store is store and now < entry.expires_at:

@@ -12,6 +12,44 @@ History is reconstructed from `git log`.
 
 ## [Unreleased]
 
+**Round 13 (chat): dynamic suggestions and a neater chat.** A new chat opens on a short
+start screen directly above the message box: a greeting, a "Since 09:12: …" line saying
+what changed since your last visit, three or four suggested questions about your own data
+right now (a case that needs a person, new cases, response targets, a quiet source, a
+noisy rule, a campaign, your shift, and more), each with a one-line reason, and category
+pills into the prompt library. The suggestions are computed by code under your own
+permissions, at no AI cost and without reading logs, and every number on them is exact.
+Hide one for a day, with Undo. An open conversation can show the same catch-up line above
+the message box, and Case Manager chat offers up to three questions chosen from the case's state.
+Follow-up chips now name something the answer shows, new conversations are named from
+their first answer, and answers read in one calm column with small results beside the
+text, quiet block headers, one shared scope line, the cost on the meta row and tokens in
+its usage card. The composer, run log, history rail and report panel are tidier, and Demo
+Mode answers every suggestion from its data. A suggestion never writes an id longer than
+27 characters into its question (a noisy-rule card then asks which rule created that
+many cases), except a case's internal id when case numbering is off, Demo Mode investigates the host, user, email address, IP address, domain,
+file hash, detection rule, log source or attack type a question names rather than the
+newest case, and its answers say when cases, rules or periods tie for the highest, the
+most or the oldest. Every figure in an answer reads the way its blocks show it ("78%",
+"7/100"), in the run log too; the shift brief's Needs human figure counts the cases its
+list badges as Needs human, and the Standup page shows the same figure under Needs human,
+with its old status count renamed Awaiting analyst; an investigation of a user, host or IP
+lists only the campaigns that involve it; campaign tables and text name every ATT&CK
+technique or say how many more ("and 3 more techniques", "and 6 more shared entities"),
+and so does a case's brief; "my cases" asked right after an assignment lists every case
+it counts; and a suggestion to widen a search always widens it. A suggestion's "times the
+usual" figure reads "15 times", never "15.0 times". The start screen appears once its
+suggestions arrive (a skeleton only after 600 ms), so on a phone nothing on it moves and the last card sits
+12 px above the category pills; a chat table shows one chip per ATT&CK technique and
+leaves a blank cell blank instead of a dash, and so does a report download, which keeps
+a dash only for a figure that was not measured; and the console header never breaks a page
+name inside a word (a word too long for a phone's header ends in an ellipsis). Entering,
+leaving or resetting Demo Mode refreshes the suggestions at once, never another run's, a case
+chat never shows an answer from before a reset, and a failed Demo status check no longer clears
+the case chat or the suggestions. The
+Help Center chat, settings,
+configuration, permissions and API pages are updated to match.
+
 **Round 12: chat without limits, a working indicator, Remember me, reliable report
 downloads, an exact Overview, and a Case Manager that records what a case was.** Workspace
 Chat no longer stops a question at a step, token or time limit, never cuts an answer
@@ -331,6 +369,184 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Fixed
 
+- **Round 13 polish: Demo investigations, third pass.** In Demo Mode, a question about a
+  technique id, cost, sources and ingestion, tuning or approvals keeps its own answer
+  instead of a log search for the word ("Investigate T1059.001" describes the technique,
+  "What is ingestion doing?" shows source health, "What did spend do this week?" the AI
+  cost), and product words such as autopilot, enrichment or risk get the Help Center
+  again. A name keeps the dots inside it ("admin@corp.example", "T1059.001"), and an
+  email address is investigated as a user rather than as its domain. "Investigate" with
+  a detection rule counts that rule's cases by verdict, with a log source shows its
+  newest events (and says if it is silent or disabled, or lists the configured sources
+  when none has that name), with an attack type runs the hunt, and with a request for
+  records lists them ("the false positives from yesterday"); only a question that names
+  nothing Demo can look up still starts from the newest escalated case, and says so.
+  "Show activity by severity" counts log events by severity. Rules tied for the most are
+  never called "the rule with the most", periods of spend tie when their figures read the
+  same, and an in-depth look's rankings after a dated window no longer start inside the
+  window's brackets.
+- **Round 13 polish: chat layout, third pass.** A case number, technique id or rule id (up
+  to 27 characters, not counting the punctuation after it: the same limit the suggestions
+  use for the names they write) no longer breaks at its hyphen or inside its digits in
+  suggestion cards, case chips, case lists and table cells ("CASE-" / "000089?", "T107" /
+  "8", "sigma-" / "win-proc-creation-01?"); the sentence still wraps between words, and
+  on a card too narrow for the whole id it wraps inside the id rather than running past
+  the card. A longer case number from a custom format now wraps where its line ends
+  instead of running past the row on a phone. A start card's
+  question balances its lines so a case number is never left alone on the last one. A
+  table in an answer that is wider than its frame scrolls inside it and fades out on the
+  side that holds more columns, instead of looking clipped. Text inside a Brief (its
+  Next steps, section summaries and notes) keeps the answer's reading measure however wide
+  the Brief is. Indicator facts, provider names such as "demo-synthetic", case titles,
+  table text and KPI tile labels ("False-positive rate") set normal hyphens; figures keep
+  their aligned digits. On a phone the suggestion cards sit 16 px under the catch-up line
+  whatever their heights, and the greeting no longer moves down when the suggestions load
+  (spare height now sits under the cards, above the category pills). The History sheet's tooltip stays on screen and its date
+  reads like the answers' (2026-10-23 15:45 UTC). The thread menu offers the conversation
+  widths only where one changes the lane. The Campaign detail sheet's body is inset like
+  its header, its icon keeps its size beside a long name, its title sets normal hyphens,
+  and its shared entities read "IP:" rather than "Ip:". Case Manager chat's
+  suggestions end on the composer's right edge. In a running Demo, the event funnel's
+  baseline is saved in one write per batch instead of one per signature (each rewrote the
+  whole baseline document), which had stalled every request, the Case Manager
+  suggestions included, for 4 to 8 seconds every 15 to 20 seconds; a live deployment's
+  event funnel uses the same single write.
+- **Round 13 polish: chat workspace details.** A running lookup reads in the present
+  tense ("Searching logs", "Looking up an indicator") and switches to the past tense once
+  it ends; saved answers keep their labels. A history row you clicked keeps its time
+  instead of leaving an empty slot (the time gives way to the row's ⋯ button only while
+  that button shows). Picking a conversation from the History sheet on a phone no longer
+  opens the "History" tooltip over it: focus that the console hands back never opens a
+  tooltip, while focus you move with the keyboard still shows it; the collapsed rail's
+  Search chats now gets focus back too. "Ask about this case" stays on one line in Case
+  Manager chat on a phone. "Widen the search:" sits on its own line above its suggestions
+  on a narrow screen. Start-screen placeholders now take the height of the suggestion
+  cards, so the cards no longer push the greeting up when they arrive. On a phone the
+  first placeholder holds a longer question and the line under the greeting keeps room
+  for the catch-up line, so on a usual first load the greeting holds still as suggestions
+  arrive. Closing "What the assistant can access" with Escape no longer opens the
+  Read-only chip's tooltip over the composer, and after Collapse history, Show history or
+  the report panel's Close, focus moves to the button now on screen instead of dropping
+  to the page. A lookup's chips keep their order
+  when it finishes. Case Manager chat names the case by its number, and on a phone its
+  token estimate shows as the context ring once you type, so the question keeps more of
+  the field.
+- **Round 13 polish: my cases, close-to-target cases, the shift card, Demo case
+  numbers.** `search_cases` and `case_stats` take assignee `me`, which the server
+  resolves to the signed-in analyst (trimmed and case-insensitive, like every assignee
+  match), so "Which of my open cases should I work on first?" lists your own open cases
+  instead of the whole queue; with sign-in off, `me` matches no case and the answer says
+  so. The shift report lists the 5 open cases closest to their response target, nearest
+  first, with who has each (and each overdue case's owner), so the "close to their
+  response target" suggestions get a full answer from the same count the card shows. The
+  shift-start suggestion now counts as newer than your catch-up point (SPEC-chat §3.5),
+  so it ranks with the other new signals. Every seeded Demo case has a case number from
+  the Case-ID format template (CASE-000001 onwards, oldest first, the same after a
+  reset), cases the Demo creates continue the sequence, and chat case lists and related
+  cases carry the number, so cards, answers and the console no longer show internal ids
+  such as `case-3fa004…`. New case titles separate the entity and the rules with " · "
+  instead of an em dash; stored titles keep theirs and every title parser reads both.
+- **Round 13 polish: "my case" answers and distinct Demo titles.** In Demo Mode, "What
+  should I do next on case X?" also reads your own open cases (assignee `me`) and says
+  whether it is your only one, lists your others by risk, or says it is no longer
+  assigned to you. Demo conversation names now carry one detail that tells similar ones
+  apart: the case number ("CASE-000045 needs a person"), the ATT&CK technique ("ATT&CK
+  hunt for T1078"), the period ("Security posture, last 24 hours", "This month versus
+  last month"), the breakdown or the filters ("Open critical cases, this week"), or a
+  rule id that passes the rule grammar, so the history rail no longer shows a column of
+  "Indicator hunt" or "Case list" rows. A name is still 2 to 6 words and never repeats an
+  indicator, entity, log value or case title; a case is named by its rule ids, never its
+  title. A rule id can appear in a name, exactly as written, when the suggestion rules
+  accept it.
+- **Round 13 polish review: "my cases" questions, case numbers, Demo numbering.** A
+  "my cases" question that names more ("my closed cases", "my critical cases", "my cases
+  by severity", "my cases this week", "compare my cases this week with last week") keeps
+  every filter and reads only your cases (assignee `me`); an answer from figures that
+  cannot be narrowed to you (the shift report, the posture) says so. A username that is
+  also an assignee word ("nobody", "none") is matched as that name, never as the
+  unassigned queue, and with sign-in off a "my cases" lookup shows no zero figure or
+  empty list and offers only the lookup without the assignee filter. Demo case and brief
+  conversation names lead with the case number ("CASE-000005 identity_signin case"),
+  carry a rule id only when the suggestion rules accept it and it does not look like an
+  indicator, and product-help, response-action and out-of-scope names say which console
+  page or request they are about ("Sources help", "Isolation request"). A case asked for
+  by its internal id is answered by its number with that id beside it. Report summaries
+  receive case numbers beside the ids, campaign listings give member case numbers, and
+  Demo case reads and the brief suggestion name cases by number. Demo seeding numbers
+  every case from one sequence whatever the reset period, so no two Demo cases share a
+  number. On the visit that starts a shift the shift card comes before the Demo Mode
+  card, and the weekly card counts as newer than your catch-up point. New candidate
+  summaries read "Candidate awaiting analysis: …" without an em dash.
+- **Round 13 polish re-shoot: case numbers in exports and campaigns, prose hyphens,
+  long ids, history titles.** Word, Excel, Markdown, HTML and PDF report and conversation
+  exports name a case by its case number, as the screen does (a case without one keeps
+  its internal id); CSV adds a Case ID column and JSON keeps the internal id. The Campaigns detail sheet lists
+  member cases by number, with the internal id in the tooltip and in each Open button's
+  description (`GET /api/campaigns/{id}` adds `case_numbers`). Chat prose, your questions,
+  suggestion cards, the catch-up line, follow-up chips and history titles use
+  proportional numerals, so hyphens no longer read wide ("Read - only"); figures, tables
+  and meta rows keep tabular numerals. A long id or hash in a suggested question breaks
+  where its line ends, never leaving one or two characters alone on a line, and the
+  start-screen placeholders hand their height to the cards, so the greeting holds still
+  as suggestions arrive. A history search result shows its whole title in a tooltip, as
+  a history row does. Case Manager asks for a case's suggested questions as soon as its
+  Chat tab opens, beside loading the chat, instead of after the chat has loaded.
+- **Round 13 polish re-shoot: follow-ups, the campaign card, assignment time, shift
+  counts, rule names, cold case chips.** A follow-up names a case only when the answer
+  shows or names it, so an empty "close to their response target" answer no longer offers
+  "Investigate CASE-000005". The campaign card reads "What links the 5 cases in the most
+  recently active campaign?" and never shows the campaign's internal id; its answer looks
+  up that campaign. Assigning a case records when it was assigned on the case history, and
+  the "my cases" card says "Oldest assigned 2 min ago" only from that record, else "Oldest
+  opened 8 min ago". The shift brief states the total past SLA once, then exactly the
+  cases it names ("Work the 10 cases past SLA first, starting with the 3 most overdue:
+  …"), and the response-target answer says "The 5 most overdue:". Demo answers write a
+  detection rule one way, its id as the case list shows it (`demo_impossible_travel`).
+  The first chat request after a restart no longer imports every chat tool module on the
+  server's event loop, so a cold Case Manager chip read takes about 14 ms instead of 350.
+- **Round 13 polish review: the campaign card, assignment time, follow-ups, the shift
+  brief.** The campaign card names its campaign by one of its cases ("What links the 5
+  cases in the campaign that includes CASE-000046?"), so the answer is about the campaign
+  that holds that case even when a newer campaign has appeared, and it says plainly when
+  no campaign holds the case any more; `list_campaigns` gains a `case_id` filter. A new
+  campaign gets the card even when an older one was active more recently, and the
+  "since" line keeps "1 new campaign". Older campaign questions in saved chats still
+  replay with their reference kept apart from the question. Assigning a case to the person
+  who already owns it (Assign again, or a bulk assign over their own cases) no longer
+  resets "Oldest assigned". A follow-up about a case the answer names by a custom case
+  number ("INC/2026/0042", "SOC#0042", "IR 0042") is kept, and a follow-up about a case
+  the answer does not show is dropped, on help and conversation answers too. The shift
+  brief and handoff have one starting point: with cases past SLA they start with the
+  most overdue one, the first case the next steps name.
+- **Round 13 polish second re-shoot: case tables, long titles on a phone, block titles,
+  the start stack, case chips, campaign members.** A list of cases shown as a table (Show
+  table, Expand), copied with Copy data or downloaded as CSV names each case by its case
+  number, as the list does, and its link still opens that case; a CSV adds a Case ID
+  column with the internal id. On a phone, in the history sheet and on any touch screen,
+  a long conversation title wraps to up to three lines in the history and the toolbar
+  instead of being cut, since no tooltip can show there. Answer block titles, captions
+  and the answer's scope line use proportional numerals ("Highest-risk", not
+  "Highest - risk"). When suggestion cards arrive shorter than their placeholders, the
+  spare height sits above the cards instead of stretching them. Choosing a case's Chat
+  tab again within a minute no longer sends a suggestions request nobody uses. Campaign
+  members are listed in case-number order.
+- **Round 13 chat fixes.** Risk figures in chat step summaries round half up, the same
+  integer the Overview gauge shows (47.5 reads 48, not 47). The token meter no longer says
+  "last 12 exchanges" on a new chat ("History: none yet"; "History: 3 exchanges,
+  summarised near the limit" without limits; "History: summary of earlier messages" after
+  `/compact`). The report panel no longer says "No report yet" after an answer saved a
+  report: it lists **Saved from this chat** and updates when an answer saves one. On a
+  phone, block frames no longer hang past the scroll lane's edge, and **Jump to latest**
+  never covers a line. Follow-up chips no longer suggest a different technique than the
+  answer hunted. Zero-result chips say "Without the source IP filter", not "Without the
+  ip filter", and send "Show the same without the source IP filter". A missing figure in
+  chat text reads "not available" and an answer without usage reads "Usage not recorded",
+  never a dash; in charts and comparison rows a blank log value reads "(empty)" and a
+  category with no label "(none)". History search snippets and command-palette chat hits
+  are plain text without Markdown markers. The Account page loads and keeps the profile fields
+  (`api.account.*` unwrap the route's `user` object), so a display name shows in the
+  shell chip and in the start screen's greeting. Inline code no longer splits its border
+  across lines. Demo source names and seed case titles no longer contain em dashes.
 - **A case closed as false positive still read "Undetermined" / "Needs human review —
   closed".** Resolving could not capture a disposition, and the case headline led with
   the AI verdict even after an analyst classified the case; both are fixed, and the
@@ -872,6 +1088,52 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Added
 
+- **Dynamic chat suggestions (Round 13).** `GET /api/chat/starters?surface=home|thread|case`
+  serves the new-chat cards, the catch-up line and Case Manager case chips
+  (`ChatStartersInfo`), computed by `engine/chat_starters.py` from cases, source health,
+  campaigns, approvals and spend under the caller's grants and tool catalogue: no model
+  call, no log read, no audit row, no usage record, exact counts only, cached per caller
+  for 60 seconds. Seventeen signal families are ranked by urgency, recency, whether they
+  concern the caller's own cases, and novelty, then filled with everyday questions. A card
+  that names a case, rule, source, campaign or ATT&CK technique carries a server-worded
+  question (`agents/chat_starter_text.py`) that the client sends byte for byte with
+  `origin: "starter"`; the engine sends the value to the model in its own `entity_ref`
+  untrusted fence with a fixed note, live and on replay, and refuses values that fail the
+  per-kind grammar or start like a role marker. `POST /api/chat/starters/events` records
+  `viewed`, `used` and `dismissed` (opaque keys only, at most 30 a minute) in the new
+  per-user `chat_starters` KV document (visit clock, counters and hidden-for-a-day
+  families; never question text), cleared with the user and by a factory reset. Visits
+  drive a "Since …" catch-up line and shift cards (a first visit after 8 hours starts a
+  shift; a handoff card 7 to 13 hours later). The organisation switch
+  `chat_agent.dynamic_starters` and the personal switches **Suggestions when a chat
+  starts** and **Suggested follow-ups** (`UserPrefs.misc.chat_suggest_start`,
+  `chat_suggest_follow_ups`) default on.
+- **The start screen (Round 13).** A bottom-anchored stack above the docked composer: a
+  greeting with the analyst's first name, the catch-up line or "Ask about cases, logs,
+  metrics or this console.", 3 or 4 suggestion cards by the measured lane width (never
+  truncated; reason line; urgency dot), **Hide for a day** with Undo (the next card takes
+  the hidden card's own slot; Delete or Backspace on a focused card), and category pills
+  (Investigate, Hunt, Posture, Report, Learn the app, All prompts) that open the prompt
+  library filtered. One tab stop with arrow keys, Home and End; refreshes every two
+  minutes but never under the pointer or focus. A quiet catch-up line can sit above the
+  composer in a conversation whose last answer is 30 minutes old, and Case Manager chat
+  offers up to three value-free case questions.
+- **Anchored follow-ups (Round 13).** `agents/chat_followups.py` picks at most 3 follow-ups
+  per answer, live and in Demo, from deterministic value-free chips built from the
+  answer's own results and the model's own suggestions that name something the answer
+  shows; repeats and chips needing a lookup the caller cannot run are dropped, and no
+  extra model call is made. They sit in one quiet row with the zero-result chips; after
+  five unused answers only the first shows.
+- **Conversation titles from the first answer (Round 13).** The final header gains
+  `title`, asked for only on a conversation's first answer and accepted only as one
+  sentence-case line of at most 48 characters; the store applies it only when it creates
+  the conversation, so a rename always wins. While the first answer is written, the
+  toolbar and a temporary history row show the question's first words.
+- **Settings and options (Round 13).** **Settings → General → Chat assistant** gains
+  **Suggest questions from live data** and one **Typed-out answers** control (Off,
+  Allowed (off by default), Allowed (on by default)) over the existing two keys. The
+  composer's Options menu gains the two suggestion switches. The shortcut sheet lists
+  "Hide a suggestion for a day: Delete or Backspace".
 - **Chat without per-question limits** (`ChatAgentConfig.limits_mode`, default
   `unlimited`). A question ends when the model writes its answer or the analyst presses
   Stop. Guards end pathological loops without cutting a working answer: an identical
@@ -1329,6 +1591,40 @@ and, just as importantly, makes each of these conditions a state an operator can
 
 ### Changed
 
+- **Overview modules on grouped panels (Round 13).** Each Overview module, the KPI strip and
+  the Deeper analytics header sit on a soft tinted panel (a step deeper than the page in
+  light, a step lighter in dark) with rounded corners and no border or shadow, so where one
+  card ends and the next begins is plain at a glance; band titles stay on the page. The
+  panel is the new `--panel` theme token (`.surface-panel`, `bg-panel`), measured by the
+  contrast gate, and the temporary `?separation=` preview switch is gone. Inside a panel the
+  progress tracks, hover and selected states, control edges and badge text step with it, so
+  nothing that showed on the page fades into the panel (measured in both themes, under
+  increased contrast too), and the Case outcomes legend stacks under its ring when its panel
+  is narrow.
+- **A neater chat (Round 13).** Answers keep one 42rem reading column on the lane's left
+  edge (prose at a 38rem measure and 15/24, about 85 characters a line), and small results
+  (up to four key figures, an indicator, a case list, ATT&CK techniques, a short table, a
+  small categorical chart) stay in it; larger blocks use the whole width. A block header
+  shows only its `⋯` menu at rest (provenance moves to the menu's first line, Add to
+  report shows on hover or focus), and caption parts shared by consecutive blocks are
+  stated once in a scope line. The meta row reads "4 lookups · 6.2 s · $0.004 · Sources
+  3": the cost opens the usage card that holds the tokens, an **In report** chip shows
+  while the answer is in the report, and Add to report, Add to case and Ask again move to
+  `⋯`. The toolbar drops its inline total; the thread menu opens with "This chat: 12.4k
+  tokens · $0.03" and a **View** group for the width. The run log reads "Reading your
+  question…" and "Choosing lookups…", shows status as icons, and reserves each block's
+  height. The composer has a plain placeholder, a "/ commands · @ scope" hint only while
+  focused and empty, a meter hidden until you type, a quieter focus frame, two-line `/`
+  menu rows with sticky headings, a one-line scope hint with "How ranges work", and
+  permission sentences in the access list. History search shows every hit's snippet, the
+  report panel lists reports saved from the chat, the prompt library row is its Use with
+  "Favourites", the Active Risk Index tile matches its neighbours' height, and Case
+  Manager's quick actions read "Summarise the case", "Check indicators" and "Suggest
+  remediation". The prompt asks for a takeaway that names at most two figures a block
+  shows and never ends an answer with a question or an offer.
+- **`GET /api/chat/context` `starters`** keeps its shape but returns only the static
+  everyday set (the Demo Mode card first in Demo) and no longer reads the case store; live
+  suggestions moved to `GET /api/chat/starters`.
 - **Chat is no longer covered by the AI budget, daily or monthly.** Chat calls
   (`role=chat` on the `chat` surface) are never blocked by the budget gate, and their
   spend is excluded from both of its ceilings (`budget.daily_usd` and

@@ -254,6 +254,9 @@ class ChatToolContext:
     grants: frozenset[Grant] = frozenset()
     case_id: str | None = None
     user: str = "default"              # the actor; "default" when auth is off
+    # The signed-in analyst's username, "" when auth is off (Round 13 polish): what the
+    # case tools' assignee "me" resolves to. Never a model input on its own.
+    caller: str = ""
     time_range: TimeRange | None = None
     # The screen-context window (``ChatRequest.context.time_range``), validated. A
     # DEFAULT below the chip (SPEC §3.1: tool input → chip → context → 24 h), never a
@@ -336,6 +339,11 @@ class ChatTool(ABC):
 
     name: ClassVar[str]
     label: ClassVar[str]                                   # run-log label, e.g. "Searched logs"
+    # The label while the lookup runs (``step.start``), present progressive, e.g.
+    # "Searching logs" (Round 13 polish). Every catalogue tool sets it (a registry test
+    # holds that); a tool without one runs under :attr:`label`. Stored steps (``step.end``,
+    # transcripts) always carry :attr:`label`.
+    running_label: ClassVar[str] = ""
     scope: ClassVar[ChatScope]
     requires: ClassVar[tuple[Grant, ...]] = ()             # all-of
     # Extra grant per ``kind`` input. A tool with kind permissions and NO ``requires``
@@ -362,6 +370,8 @@ class ChatTool(ABC):
             raise TypeError(f"{cls.__name__}.signature must be one line starting '{name}('")
         if not isinstance(getattr(cls, "label", None), str) or not cls.label:
             raise TypeError(f"{cls.__name__}.label is required")
+        if not isinstance(getattr(cls, "running_label", ""), str):
+            raise TypeError(f"{cls.__name__}.running_label must be a string")
 
     @abstractmethod
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:

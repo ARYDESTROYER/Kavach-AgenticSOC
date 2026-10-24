@@ -5,6 +5,10 @@
  * measured; the legend beside it is ALWAYS present and is the direct label — value plus a
  * reconciling share (largest remainder, summing to exactly 100 %), or "—" for a part that
  * was not measured (G3). ←/→ walk the segments.
+ *
+ * Round 13 (SPEC-chat T16): the legend has ONE marker per part (the semantic shape in the
+ * part's colour, else its swatch), is at most 16rem wide, and sits beside the donut from
+ * a 30rem card, under it below (a container query on the chart's own box).
  */
 import * as React from 'react';
 
@@ -77,7 +81,8 @@ export function DonutChart({ block, title, size = 160, staticMode = false }: Don
   ) : null;
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-6 gap-y-3">
+    <div className="@container min-w-0" data-testid="chart-donut-layout">
+    <div className="flex min-w-0 flex-col items-start gap-x-6 gap-y-3 @[30rem]:flex-row @[30rem]:items-center">
       <div className="shrink-0" style={{ width: size }}>
         <ChartShell
           nav={nav}
@@ -134,13 +139,13 @@ export function DonutChart({ block, title, size = 160, staticMode = false }: Don
         shape="rect"
         untrusted={block.untrusted}
         values={labels.map((_, i) => `${formatValue(values[i] ?? null, unit)} · ${shareText(i)}`)}
-        // A real basis (11rem), not flex-1's 0: when the lane cannot fit the donut AND a
-        // readable legend side by side (a phone, the report panel), the legend wraps
-        // under the donut instead of squeezing every label out (BLOCKS.md: the legend
-        // is the direct label).
-        className="min-w-0 flex-[1_1_11rem] flex-col items-start"
+        singleMarker
+        // At most 16rem (no wide empty band beside it); under the donut below a 30rem
+        // card, so a label is never squeezed out (BLOCKS.md: the legend is the direct label).
+        className="w-full min-w-0 max-w-[16rem] flex-col items-stretch [&>li>*]:w-full"
         ariaLabel="Parts"
       />
+    </div>
     </div>
   );
 }

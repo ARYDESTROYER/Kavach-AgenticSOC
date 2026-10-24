@@ -6,12 +6,17 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-10-12
-- **Round 12 (newest, 2026-10):** chat without limits, the chat working indicator,
-  Remember me, report downloads, and the Overview and Case Manager redesigns, built on
-  `claude/round12` and heading to `Testing` by pull request. What shipped, the decisions
-  taken during implementation, and the known limitations are in the **"As built"**
-  section (§7) of [`docs/research/2026-10-round12/SPEC.md`](research/2026-10-round12/SPEC.md).
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-10-18
+- **Round 13, chat (newest, 2026-10):** dynamic $0 suggested questions, anchored
+  follow-ups, conversation titles from the first answer and a neater chat, on
+  `claude/round12` and heading to `Testing` by a new pull request. What was built, the
+  accepted deviations and the known limitations are in §10 "As built" of
+  [`docs/research/2026-10-round13/SPEC-chat.md`](research/2026-10-round13/SPEC-chat.md).
+- **Round 12 (2026-10):** chat without limits, the chat working indicator, Remember me,
+  report downloads, and the Overview and Case Manager redesigns, merged into `Testing` as
+  `db8d935` (PR #131). What shipped, the decisions taken during implementation, and the
+  known limitations are in the **"As built"** section (§7) of
+  [`docs/research/2026-10-round12/SPEC.md`](research/2026-10-round12/SPEC.md).
 - **Status:** Round 10 and the additive Cyber Defence Center (the landing dashboard,
   renamed from Security Command Center) / Case Manager work are
   integrated on `Testing`. A **backend deep-audit hardening pass
@@ -270,7 +275,13 @@
   backward-compatible read path, with no operator reset. Saved server history is
   authoritative on resume. Case Manager chat remains case-scoped and never enters
   personal Workspace history; browser-only chats from before this feature cannot be
-  recovered. **Analytics → Agent effectiveness** (reload-safe at
+  recovered. Round 13 adds dynamic, $0 suggested questions: `GET /api/chat/starters`
+  (`surface=home|thread|case`; computed by `engine/chat_starters.py` from the suite's own
+  state under the caller's grants, no model call, no log read) and
+  `POST /api/chat/starters/events` (opaque keys into the per-user `chat_starters` KV
+  document), anchored follow-ups (`agents/chat_followups.py`) and conversation titles
+  from the first answer; see `docs/research/2026-10-round13/SPEC-chat.md` §10 for what was
+  built and what is deferred. **Analytics → Agent effectiveness** (reload-safe at
   `#/metrics?tab=effectiveness`) renders the additive
   `GET /api/metrics/agent-improvement` report. It compares the last seven complete UTC days with the
   preceding 28 using weighted analyst-reported agreement, material correction rate,
@@ -344,7 +355,7 @@ can never override.
 cd backend
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements-dev.txt        # greenlet is pinned, so a fresh install is green
-python -m pytest -q                         # latest recorded full run: 7,526 passed, 4 skipped; see Journal.md
+python -m pytest -q                         # latest recorded full run: 8,674 passed, 4 skipped; see Journal.md
 ```
 
 ### WebUI build + tests + lint
@@ -353,7 +364,7 @@ cd webui
 npm ci
 npm run check:types # hard-fail API drift in CI with TLSOC_REQUIRE_TYPEGEN=1
 npm run gates       # tokens, contrast, CVD, and raw-style regression guards
-npm run test:strict # latest recorded full run: 4,750 passed, 1 skipped / 466 files; CI-parity quiet-output gate
+npm run test:strict # latest recorded full run: 5,425 passed, 1 skipped / 520 files; CI-parity quiet-output gate
 npm run lint -- --max-warnings=0
 npm run build      # version-matched MkDocs Help Center + tsc --noEmit + Vite
 npm run docs:check # verify the generated docs artifact matches VERSION
@@ -396,7 +407,7 @@ backend/app/
                    /account/me, /demo/*, /proposals, /settings/schema, `/chat`, and
                    per-user `/chat/conversations` list/detail/rename/delete).
                    api/deps.py =
-                   auth/RBAC gates (+ custom-role union). **29 feature routers total**,
+                   auth/RBAC gates (+ custom-role union). **36 feature routers total**,
                    ALL auto-discovered at boot
                    (`main.py::discover_feature_routers()` walks `app.api.routes_*`, needs
                    only a top-level `router: APIRouter` — no manual registration):
@@ -431,8 +442,15 @@ backend/app/
                    (read-only precedent/migration/auto-close health) + routes_jobs
                    (self-scoped application job submit/list/detail/cancel/artifact plus
                    permission-scoped LLM Batch and scheduler projections; bounded,
-                   generation-bound new-Batch Inbox outbox). Direct reset mutation also
-                   returns 410; canonical tiered reset is a Job.
+                   generation-bound new-Batch Inbox outbox) + routes_analyst_policy
+                   (operator "declared benign" policies) + routes_replay (replay fixture
+                   catalogue metadata and purge) + routes_updates (supervised Stable
+                   update control plane) + routes_chat (streamed chat turns, rejoin and
+                   cancel) + routes_reports (owner-scoped reports). Round 12 added
+                   routes_chat_library (feedback, step inspector, message paging, mark
+                   read) and routes_chat_entity (Ask AI entity questions); Round 13 added
+                   routes_chat_starters (suggested questions and their events). Direct
+                   reset mutation also returns 410; canonical tiered reset is a Job.
   auth/            passwords (PBKDF2) · tokens (stdlib HS256 JWT, sid/tv claims) · service ·
                    mfa (RFC-6238 TOTP) · oidc (SSO code-exchange)
   rbac/policy.py   the role->resource->action permission matrix + can()

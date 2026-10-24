@@ -41,6 +41,11 @@ const mocks = vi.hoisted(() => ({
   copyText: vi.fn(),
 }));
 
+/** The viewer's preferences (`null`: no provider, every suggestion on). */
+const prefsRef = vi.hoisted(() => ({ current: null as null | { misc: Record<string, unknown> } }));
+vi.mock('@/soc/prefs', () => ({
+  useOptionalPrefs: () => (prefsRef.current ? { ready: true, prefs: prefsRef.current } : null),
+}));
 vi.mock('@/soc/components/announcer', () => ({ useAnnouncer: () => mocks.announce }));
 vi.mock('@/soc/router', () => ({ useNavigateOptional: () => mocks.navigate }));
 vi.mock('@/soc/auth', () => ({
@@ -87,6 +92,14 @@ function renderMessage(props: Partial<MessageProps> & Pick<MessageProps, 'item'>
   return { ...view, engine };
 }
 
+/** Open "Add to case…" from the answer's ⋯ menu (Round 13 T10); returns the ⋯ trigger. */
+async function openAddToCase(user: ReturnType<typeof userEvent.setup>, scope: HTMLElement = document.body): Promise<HTMLElement> {
+  const trigger = within(scope).getByTestId('answer-more-actions');
+  await user.click(trigger);
+  await user.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: /Add to case/ }));
+  return trigger;
+}
+
 function zeroStep(index = 2, extra: Partial<ChatStep> = {}): ChatStep {
   return step(index, {
     tool: 'case_stats',
@@ -129,6 +142,7 @@ beforeEach(() => {
   mocks.copyText.mockResolvedValue(true);
   resetAnswerFeedbackForTests();
   resetZeroChipCacheForTests();
+  prefsRef.current = null;
 });
 
 afterEach(() => {
@@ -230,10 +244,14 @@ describe('zero-result chips', () => {
     });
     const group = await screen.findByRole('group', { name: 'Ways to widen the search' });
     expect(mocks.getStepObservation).toHaveBeenCalledWith(CONV, 'm-assistant-1', 2);
-    expect(group).toHaveTextContent('Nothing matched. Widen the search:');
-    // Nothing on screen moved or disappeared: the chips were APPENDED last.
+    expect(group).toHaveTextContent(/^Widen the search:/);
+    // Nothing on screen moved or disappeared: the chips were APPENDED last, in the SAME
+    // row as the follow-ups (Round 13 §4.2).
     expect(Array.from(article.children).slice(0, before.length)).toEqual(before);
-    expect(article.lastElementChild).toBe(group);
+    const row = screen.getByTestId('answer-suggestions');
+    expect(article.lastElementChild).toBe(row);
+    expect(row.firstElementChild).toBe(followUps);
+    expect(row.lastElementChild).toBe(group);
     expect(within(followUps).getAllByRole('button').map((b) => b.textContent)).toEqual(shown);
     // The chip a follow-up already offers is the one left out.
     expect(within(group).queryByRole('button', { name: 'All time' })).toBeNull();
@@ -241,10 +259,30 @@ describe('zero-result chips', () => {
     expect(engine.send).toHaveBeenCalledWith('Show the same without the verdict filter', { origin: 'follow_up' });
   });
 
-  it('says only some lookups found nothing when another one returned data', async () => {
+  it('reads "Widen the search:" whether or not another lookup returned data, as ghost chips', async () => {
     renderMessage({ item: assistantItem({ response: response({ steps: [step(1, { rows: 12 }), zeroStep()] }) }) });
     const group = await screen.findByRole('group', { name: 'Ways to widen the search' });
-    expect(group).toHaveTextContent('Some lookups found nothing. Widen them:');
+    expect(group).toHaveTextContent(/^Widen the search:/);
+    // The label, then ONE wrapping block holding every chip: on a phone the block moves
+    // under the label as a whole instead of leaving one chip beside it.
+    const list = within(group).getByTestId('zero-result-chip-list');
+    expect(Array.from(group.children)).toEqual([group.firstElementChild, list]);
+    expect(group.firstElementChild).toHaveTextContent(/^Widen the search:$/);
+    expect(within(list).getAllByRole('button')).toEqual(within(group).getAllByRole('button'));
+    expect(list).toHaveClass('flex', 'flex-wrap', 'min-w-0', 'max-w-full');
+    for (const chip of within(group).getAllByRole('button')) {
+      expect(chip).not.toHaveClass('border');
+      expect(chip).toHaveClass('rounded-sm', 'hover:bg-hover');
+    }
+  });
+
+  it('keeps the zero-result chips when the viewer turned suggested follow-ups off', async () => {
+    prefsRef.current = { misc: { chat_suggest_follow_ups: false } };
+    renderMessage({
+      item: assistantItem({ response: response({ steps: [zeroStep()], follow_ups: ['Compare with last month'] }) }),
+    });
+    expect(screen.queryByRole('group', { name: 'Suggested follow-ups' })).toBeNull();
+    expect(await screen.findByRole('group', { name: 'Ways to widen the search' })).toBeInTheDocument();
   });
 
   it('reads nothing for an older turn, a case chat or an unsaved answer', async () => {
@@ -715,7 +753,8 @@ describe('saved report line', () => {
       }),
     });
     const line = screen.getByTestId('saved-report-line');
-    expect(line).toHaveTextContent(/^Saved to Reports·September 2026 SOC report·2 sections did not fit·Open/);
+    // One line says it (Round 13 T29): "Saved to Reports: {title} · Open · Export".
+    expect(line).toHaveTextContent(/^Saved to Reports: September 2026 SOC report·2 sections did not fit·Open/);
     expect(within(line).getByRole('button', { name: 'Open September 2026 SOC report in Reports' })).toBeInTheDocument();
     expect(within(line).getByRole('button', { name: 'Export September 2026 SOC report' })).toBeInTheDocument();
     await user.click(within(line).getByRole('button', { name: /^Open/ }));
@@ -803,8 +842,7 @@ describe('add to case', () => {
     mocks.postCaseComment.mockResolvedValue({ id: 'msg-1' });
     const user = userEvent.setup();
     renderMessage({ item: assistantItem({ response: response({ answer: 'Ask @soc-lead about **10.0.0.5**.' }) }) });
-    const open = screen.getByRole('button', { name: 'Add to case' });
-    await user.click(open);
+    const open = await openAddToCase(user);
     const dialog = await screen.findByRole('dialog', { name: 'Add this answer to a case' });
     const preview = within(dialog).getByTestId('add-to-case-preview');
     expect(preview).toHaveTextContent('Question: How many critical false positives this week?');
@@ -838,7 +876,7 @@ describe('add to case', () => {
         }),
       }),
     });
-    await user.click(screen.getByRole('button', { name: 'Add to case' }));
+    await openAddToCase(user);
     const dialog = await screen.findByRole('dialog', { name: 'Add this answer to a case' });
     const preview = within(dialog).getByTestId('add-to-case-preview');
     const text = preview.textContent ?? '';
@@ -860,7 +898,7 @@ describe('add to case', () => {
     ]);
     const user = userEvent.setup();
     renderMessage({ item: assistantItem() });
-    await user.click(screen.getByRole('button', { name: 'Add to case' }));
+    await openAddToCase(user);
     const dialog = await screen.findByRole('dialog', { name: 'Add this answer to a case' });
     const first = await within(dialog).findByRole('radio', { name: 'SOC-0001: Loan API access (On hold)' });
     expect(first).toHaveTextContent('On hold');
@@ -880,7 +918,7 @@ describe('add to case', () => {
     mocks.searchCasesForPicker.mockResolvedValue(entries);
     const user = userEvent.setup();
     renderMessage({ item: assistantItem() });
-    await user.click(screen.getByRole('button', { name: 'Add to case' }));
+    await openAddToCase(user);
     const dialog = await screen.findByRole('dialog', { name: 'Add this answer to a case' });
     const group = await within(dialog).findByRole('radiogroup', { name: 'Matching cases' });
     expect(within(dialog).getByRole('status')).toHaveTextContent('3 cases');
@@ -930,7 +968,7 @@ describe('add to case', () => {
       </TooltipProvider>,
     );
     const answer = screen.getByText('Cases rose 20% this week.').closest('article') as HTMLElement;
-    await user.click(within(answer).getByRole('button', { name: 'Add to case' }));
+    await openAddToCase(user, answer);
     const dialog = await screen.findByRole('dialog', { name: 'Add this answer to a case' });
     const preview = within(dialog).getByTestId('add-to-case-preview');
     expect(preview.textContent).toMatch(/^From Workspace chat · .*\nQuestion: Show me the trend → Cases\n\nCases rose 20% this week\.$/);
@@ -948,14 +986,18 @@ describe('add to case', () => {
     );
   });
 
-  it('is offered only with cases:comment on a saved Workspace answer', () => {
+  it('is offered only with cases:comment on a saved Workspace answer', async () => {
+    const user = userEvent.setup();
     mocks.hasPermission.mockReturnValue(false);
     const { unmount } = renderMessage({ item: assistantItem() });
-    expect(screen.queryByRole('button', { name: 'Add to case' })).toBeNull();
+    await user.click(screen.getByTestId('answer-more-actions'));
+    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: /Add to case/ })).toBeNull();
+    await user.keyboard('{Escape}');
     unmount();
     mocks.hasPermission.mockReturnValue(true);
     renderMessage({ compact: true, item: assistantItem() });
-    expect(screen.queryByRole('button', { name: 'Add to case' })).toBeNull();
+    await user.click(screen.getByTestId('answer-more-actions'));
+    expect(within(await screen.findByRole('menu')).queryByRole('menuitem', { name: /Add to case/ })).toBeNull();
   });
 });
 
@@ -1071,7 +1113,7 @@ describe('narrow meta row menu', () => {
         onToggleBlock: vi.fn(),
       },
     });
-    await user.click(screen.getByTestId('answer-more-actions'));
+    await user.click(screen.getByTestId('answer-more-actions-narrow'));
     const menu = await screen.findByRole('menu');
     const item = within(menu).getByTestId('more-actions-report');
     // Not Radix-disabled (roving focus would skip it and its reason): aria-disabled.

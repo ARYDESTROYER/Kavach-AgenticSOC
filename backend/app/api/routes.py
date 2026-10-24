@@ -5222,8 +5222,10 @@ async def delete_user(
     await state.refresh_users()
     await _stop_chat_turns(state, username)
     from ..stores.chat_feedback import feedback_store_for
+    from ..stores.chat_starters import starters_store_for
 
     real_chat = state.real_chat_conversations
+    real_chat_kv = getattr(real_chat, "_kv", None) or state.kv
     await state.auth.purge_user_side_state(
         username,
         inbox=state.real_inbox,
@@ -5231,8 +5233,11 @@ async def delete_user(
         user_prefs=state.user_prefs,
         custom_roles=state.custom_roles,
         chat_conversations=real_chat,
-        chat_feedback=feedback_store_for(getattr(real_chat, "_kv", None) or state.kv),
+        chat_feedback=feedback_store_for(real_chat_kv),
         reports=state.real_reports,
+        # Round 13 (SPEC-chat §3.2.3): the user's chat starter state goes with the
+        # ratings, over the same REAL chat KV.
+        chat_starters=starters_store_for(real_chat_kv),
     )
     await state.control_audit.record(
         action_type=ActionType.USER_MGMT, surface="users", actor=current_username(request),
@@ -6276,8 +6281,14 @@ async def _perform_case_action(
 
     # --- Additive optional fields (persisted without touching status logic) -----
     # assignee → set the case owner when provided (non-empty).
+    assigned = None
     if body.assignee is not None:
-        case.assignee = str(body.assignee).strip()[:80]
+        assigned = str(body.assignee).strip()[:80]
+        # The same owner again (trimmed, any letter case) changes nothing and records
+        # no new assignment time.
+        assigned = assigned if _owner_changed(case.assignee, assigned) else None
+        if assigned is not None:
+            case.assignee = assigned
     # tags → merge into the case's tags (trim, de-dupe, bounded; the same rules as
     # the dedicated /tags route, checked above by ``_merge_case_tags``).
     if merged_tags is not None:
@@ -6314,6 +6325,9 @@ async def _perform_case_action(
         entry["resolution"] = str(body.resolution)
     if body.priority is not None:
         entry["priority"] = str(body.priority)
+    if assigned is not None:
+        # A new owner set by this action: its time, for the "my cases" starter.
+        entry["assignee"] = assigned
     case.history.append(entry)
     await state.cases.save(case)
     # Append-only audit of the lifecycle transition (#2) — best-effort.
@@ -6488,6 +6502,12 @@ class AssignBody(BaseModel):
     analyst: str = ""
 
 
+def _owner_changed(previous: str | None, new: str | None) -> bool:
+    """True when ``new`` names a different case owner from ``previous``: trimmed and
+    compared without case, as usernames are (the user store lower-cases them)."""
+    return (previous or "").strip().casefold() != (new or "").strip().casefold()
+
+
 @router.post("/cases/{case_id}/feedback")
 async def case_feedback(
     case_id: str,
@@ -6617,8 +6637,19 @@ async def case_assign(
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    case.assignee = body.assignee.strip()[:80]
+    new_owner = body.assignee.strip()[:80]
+    changed = _owner_changed(case.assignee, new_owner)
+    if changed:
+        case.assignee = new_owner
     case.updated_at = iso_now()
+    # The assignment time, on the case's append-only history (Round 13 polish PB3): the
+    # "my cases" starter states how long the oldest of a caller's cases has been theirs
+    # only from this record ("Oldest assigned …"), never from the case's age. Recorded
+    # only when the owner changes: assigning a case to its current owner (Assign again,
+    # or a bulk assign over cases the person already holds) keeps the earlier time.
+    if changed:
+        case.history.append({"ts": case.updated_at, "event": "assigned", "assignee": case.assignee,
+                             "analyst": body.analyst or "analyst"})
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",

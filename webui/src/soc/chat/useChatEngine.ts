@@ -58,13 +58,16 @@ import type {
   ChatTurn,
 } from '@/lib/types';
 import { getChatActivity, setAnimatedBrand, showChatTurns, useChatActivity, viewChatActivity } from '../chat-activity/activity';
+import { useChatDemoIdentity } from './demo-identity';
 import { CHAT_SCOPES, CHAT_STREAM_MODES, displayText } from './stream-events';
 import { REQUEST_TOPIC_RE } from './topic';
 import {
   attachRun,
   consumeRun,
   findRun,
+  isCaseRunOfAnotherDemo,
   isUnsavedTurn,
+  noteCaseSessionsDemoIdentity,
   reattachRun,
   readCaseSession,
   runAssistantItem,
@@ -497,6 +500,10 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     transport = 'stream',
   } = options;
   const persist = !caseId && (options.persist ?? true);
+  // Case sessions belong to one Demo identity (demo case ids repeat across a reset). The
+  // switch token changes only on a confirmed switch: a failed status poll keeps them.
+  const demoIdentity = useChatDemoIdentity();
+  noteCaseSessionsDemoIdentity(demoIdentity);
 
   const [items, setItems] = React.useState<ChatTranscriptItem[]>([]);
   const [busy, setBusy] = React.useState(false);
@@ -767,6 +774,9 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
   const adoptReported = React.useCallback(
     (scope: string, kind: 'workspace' | 'case') => {
       const local = findRun(scope);
+      // A case turn of another Demo identity (the same case id before a reset) is not
+      // this case's: it is never followed here.
+      if (local && isCaseRunOfAnotherDemo(local)) return;
       if (local) {
         adopt(local);
         return;
@@ -816,7 +826,9 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
 
   // Case chat: restore this case's session transcript (tab switches and re-opens keep
   // it), and follow a turn still running for it. A reused host that changes case never
-  // shows case A's transcript or turn under case B.
+  // shows case A's transcript or turn under case B, nor, after entering, leaving or
+  // resetting Demo, the transcript of the same case id under the previous identity
+  // (PR #132 review: the switch dropped the sessions, so this starts the case clean).
   React.useEffect(() => {
     if (!caseId) return;
     const session = readCaseSession(caseId);
@@ -827,7 +839,7 @@ export function useChatEngine(options: UseChatEngineOptions = {}): ChatEngine {
     }
     adoptReported(`case:${caseId}`, 'case');
     refreshViewScope();
-  }, [adoptReported, caseId, commitItems, refreshViewScope, resetTranscript, writeHistory]);
+  }, [adoptReported, caseId, commitItems, demoIdentity, refreshViewScope, resetTranscript, writeHistory]);
 
   // Hydrate from the host's saved conversation. Identity-keyed: the host keeps the
   // same object while a just-persisted thread stays live, so no re-hydration flash.

@@ -15,12 +15,13 @@ policy, never a write, never a model call, never a different policy (#3).
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 from collections import Counter
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, NamedTuple
 
-from pydantic import Field, field_validator
+from pydantic import Field, PrivateAttr, field_validator
 
 from ...constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, CaseStatus, Verdict
 from ...models import Citation, humanise_relative_window
@@ -66,15 +67,16 @@ _VERDICTS = tuple(v.value for v in Verdict)
 _ENTITY_KIND = {"ip": "ip", "user": "user", "host": "host", "file_hash": "hash", "domain": "domain"}
 
 
-async def load_case_page(ctx: ChatToolContext) -> tuple[list[Any], int, bool]:
-    """``(cases, store_total, ok)`` from the shared page cache; a store failure is
-    reported (``ok=False``), never presented as an empty store."""
+async def load_case_page(ctx: ChatToolContext, *, fresh: bool = False) -> tuple[list[Any], int, bool]:
+    """``(cases, store_total, ok)`` from the shared page cache (``fresh``: read now,
+    never the cached page); a store failure is reported (``ok=False``), never presented
+    as an empty store."""
     from ...api.metrics_shared import fetch_case_page
 
     if ctx.cases is None:
         return [], 0, False
     try:
-        cases, total = await fetch_case_page(ctx.cases, CASE_SCAN_LIMIT)
+        cases, total = await fetch_case_page(ctx.cases, CASE_SCAN_LIMIT, fresh=fresh)
         return list(cases), int(total), True
     except Exception as exc:  # noqa: BLE001 — degrade, never raise into the turn
         logger.warning("chat case page load failed: %s", exc)
@@ -110,6 +112,9 @@ class CaseFilters(ToolInput):
     rule: str | None = Field(default=None, max_length=128)
     window: str | dict[str, Any] | None = None
     window_hours: int | None = Field(default=None, ge=1)
+    #: Set by :func:`resolve_assignee_me`: ``assignee`` is the signed-in analyst's
+    #: username, matched as that exact name (never as an unassigned keyword).
+    _assignee_exact: bool = PrivateAttr(default=False)
 
     @field_validator("text", "entity", "assignee", "rule", "window_hours", mode="before")
     @classmethod
@@ -154,8 +159,43 @@ class CaseFilters(ToolInput):
         keys = ("text", "status", "status_group", "verdict", "entity", "severity", "priority", "assignee", "rule")
         return {k: getattr(self, k) for k in keys if getattr(self, k) is not None}
 
+    def aggregate_filters(self) -> dict[str, Any]:
+        """:meth:`filters` as the case aggregator takes them: the signed-in analyst's
+        username goes as ``assignee_user`` (an exact name), so a username such as
+        "nobody" or "none" never reads as the unassigned keyword."""
+        out = self.filters()
+        if self._assignee_exact and "assignee" in out:
+            out["assignee_user"] = out.pop("assignee")
+        return out
+
     def has_window(self) -> bool:
         return self.window is not None or self.window_hours is not None
+
+
+#: The ``assignee`` value that names the signed-in analyst ("my cases", Round 13 polish).
+#: The case tools resolve it on the server to the caller's username, matched like every
+#: assignee (trimmed, case-insensitive); with nobody signed in (auth off) it names no
+#: one, so it matches no case and the result says so. Any other value is a username, as
+#: before: the case rows already show every case's assignee to anyone who may read cases.
+ASSIGNEE_ME = "me"
+ASSIGNEE_ME_NOBODY = 'No analyst is signed in (sign-in is off), so assignee "me" matches no case'
+#: The observation note of a lookup that resolved assignee "me" (search_cases, case_stats).
+ASSIGNEE_ME_OWN = "the signed-in analyst's own cases"
+
+
+def resolve_assignee_me(ctx: ChatToolContext, args: Any) -> tuple[Any, bool | None]:
+    """``(args, me)``: ``args`` with assignee "me" replaced by the caller's username.
+    ``me`` is None when the input did not ask for "me", True when it was resolved, and
+    False when "me" was asked but nobody is signed in (``args`` unchanged)."""
+    value = getattr(args, "assignee", None)
+    if not isinstance(value, str) or value.strip().lower() != ASSIGNEE_ME:
+        return args, None
+    caller = (getattr(ctx, "caller", "") or "").strip()
+    if not caller:
+        return args, False
+    resolved = args.model_copy(update={"assignee": caller})
+    resolved._assignee_exact = True
+    return resolved, True
 
 
 class SearchCasesInput(CaseFilters):
@@ -186,7 +226,11 @@ def _case_matches(case: Any, args: SearchCasesInput, prefs: Any, window: Any) ->
     if args.assignee is not None:
         wanted = args.assignee.strip().lower()
         actual = (case.assignee or "").strip().lower()
-        if wanted in ("unassigned", "none", "nobody", "(unassigned)"):
+        if getattr(args, "_assignee_exact", False):
+            # The signed-in analyst: an exact username, even "nobody" or "none".
+            if actual != wanted:
+                return False
+        elif wanted in ("unassigned", "none", "nobody", "(unassigned)"):
             if actual:
                 return False
         elif actual != wanted:
@@ -250,6 +294,62 @@ def _sort_cases(cases: list[Any], field: str, order: str) -> list[Any]:
     return sorted(cases, key=key, reverse=(order == "desc"))
 
 
+class _Listing(NamedTuple):
+    """What ``search_cases`` lists: the display rows, the listing's own count, whether
+    that count covers every case, how many cases the page scanned, and (in-memory
+    filters only) every match on the case page, for :func:`_page_agrees`."""
+
+    page: list[Any]
+    count: int
+    exact: bool
+    scanned: int | None
+    matched: list[Any] | None
+
+
+def _breakdown_key(verdict: Any, status: Any) -> tuple[str, str]:
+    return (str(enum_value(verdict) or "").upper(), str(enum_value(status) or "").lower())
+
+
+def _page_agrees(listing: _Listing, counts: Any) -> bool:
+    """Do the case page's matches describe the same cases as the exact count (the
+    total, and the cases by verdict and status)? A page that holds only the newest
+    cases agrees unless it holds more matches than exist. ``True`` when there is
+    nothing to compare (no in-memory filter, no exact count)."""
+    from .stats import is_exact
+
+    if counts is None or listing.matched is None or not is_exact(counts):
+        return True
+    total = int(finite(getattr(counts, "total", None)) or 0)
+    if not listing.exact:
+        return listing.count <= total
+    if listing.count != total:
+        return False
+    counted: Counter[tuple[str, str]] = Counter()
+    for group in getattr(counts, "groups", None) or []:
+        key = group.get("key") if isinstance(group, dict) else None
+        if isinstance(key, dict):
+            counted[_breakdown_key(key.get("verdict"), key.get("status"))] += int(
+                finite((group.get("metrics") or {}).get("count")) or 0)
+    return not counted or counted == Counter(_breakdown_key(c.verdict, c.status) for c in listing.matched)
+
+
+def _page_counts(matched: list[Any]) -> Any:
+    """The figures ``search_cases`` states (the total, by verdict and status, the
+    average risk) counted from the matches of a case page that holds every case: the
+    same read as the rows."""
+    from ...engine.case_aggregate import AggregateResult
+
+    groups = Counter((enum_value(c.verdict) or None, enum_value(c.status) or None) for c in matched)
+    risks = [r for r in (finite(c.risk_score) for c in matched) if r is not None]
+    return AggregateResult(
+        total=len(matched),
+        groups=[{"key": {"verdict": v, "status": s}, "bucket": None, "metrics": {"count": n}}
+                for (v, s), n in groups.items()],
+        buckets=[], exact=True, consistency="point_in_time", scanned=len(matched),
+        totals={"count": len(matched), "mean_risk": round(sum(risks) / len(risks), 1) if risks else None},
+    )
+
+
 #: At most this many extra rows are read to refill a page after undated cases (not
 #: counted in a bounded window) are left out of the listing.
 _UNDATED_EXTRA_ROWS = 50
@@ -258,6 +358,7 @@ _UNDATED_EXTRA_ROWS = 50
 class SearchCasesTool(ChatTool):
     name: ClassVar[str] = "search_cases"
     label: ClassVar[str] = "Searched cases"
+    running_label: ClassVar[str] = "Searching cases"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Case store"
@@ -265,9 +366,9 @@ class SearchCasesTool(ChatTool):
     timeout_s: ClassVar[float] = 600
     signature: ClassVar[str] = (
         "search_cases(text?, status?, status_group?=active|terminal, verdict?=TRUE_POSITIVE|FALSE_POSITIVE|"
-        "NEEDS_HUMAN, entity?, severity?, priority?=P1..P4, assignee?, rule?, window? (default all time), "
-        "sort_field?=created_at|updated_at|risk_score, sort_order?, limit?=20 (<=50)) -- list matching cases "
-        "with an EXACT count and verdict and status counts over every case"
+        "NEEDS_HUMAN, entity?, severity?, priority?=P1..P4, assignee? (me = signed-in analyst), rule?, window?, "
+        "sort_field?=created_at|updated_at|risk_score, sort_order?, limit?=20 (<=50)) -- list matching cases with "
+        "an EXACT count and verdict and status counts over every case"
     )
     display_keys: ClassVar[tuple[str, ...]] = (
         "text", "status", "status_group", "verdict", "entity", "severity", "priority",
@@ -294,6 +395,9 @@ class SearchCasesTool(ChatTool):
             return ToolOutcome.failure(window)
         # The same start as every other case lookup of this window in the answer.
         window = whole_periods(window)
+        args, me = resolve_assignee_me(ctx, args)
+        if me is False:
+            return self._nobody_signed_in(ctx, args, window)
         counts = await self._exact_counts(ctx, args, window)
         # A bounded window does not count cases with no creation date (the aggregator
         # discloses them as ``missing_created``), so it does not list them either: the
@@ -305,7 +409,21 @@ class SearchCasesTool(ChatTool):
         listing = await self._list_rows(ctx, args, window, extra=extra)
         if isinstance(listing, ToolOutcome):
             return listing
-        page, listed_count, listed_exact, scanned = listing
+        if args.memory_filters() and not _page_agrees(listing, counts):
+            # The shared case page (kept a few seconds so the lookups of one answer
+            # share one read) predates the count just taken: a case changed in between,
+            # e.g. it was assigned a moment ago. Read the page again now, so the rows
+            # describe the same cases as the count (Round 13 close: "3 open cases are
+            # assigned to you" with none listed).
+            listing = await self._list_rows(ctx, args, window, extra=extra, fresh=True)
+            if isinstance(listing, ToolOutcome):
+                return listing
+            if not _page_agrees(listing, counts) and listing.exact and listing.matched is not None:
+                # Still apart (a case changed between the two reads): the page holds
+                # every case, so the figures come from it too, the same read as the rows.
+                counts = _page_counts(listing.matched)
+                drop_undated = False
+        page, listed_count, listed_exact, scanned = listing.page, listing.count, listing.exact, listing.scanned
         if drop_undated:
             kept = [c for c in page if _created(c) is not None]
             listed_count = max(0, listed_count - (len(page) - len(kept)))
@@ -322,8 +440,31 @@ class SearchCasesTool(ChatTool):
                 listed_exact, scanned = True, None
             else:
                 unlisted = int(getattr(counts, "total", 0) or 0) - listed_count
-        return self._outcome(ctx, args, window, page, listed_count, listed_exact, scanned, counts,
-                             unlisted=unlisted)
+        outcome = self._outcome(ctx, args, window, page, listed_count, listed_exact, scanned, counts,
+                                unlisted=unlisted)
+        if me:
+            outcome.observation["assignee_me"] = ASSIGNEE_ME_OWN
+        return outcome
+
+    def _nobody_signed_in(self, ctx: ChatToolContext, args: SearchCasesInput, window: Any) -> ToolOutcome:
+        """Assignee "me" with nobody signed in: an exact zero, said plainly (no read).
+
+        No block: a "Matching cases 0" figure or an empty case list would read as a
+        fact about the queue, when the lookup could not ask the question at all. The
+        only next lookup offered drops the assignee filter (any other would still
+        carry "me" and be refused the same way)."""
+        outcome = self._outcome(ctx, args, window, [], 0, True, None, None)
+        outcome.observation["assignee_me"] = ASSIGNEE_ME_NOBODY
+        outcome.observation["suggestions"] = [
+            s for s in outcome.observation.get("suggestions") or []
+            if isinstance(s, dict) and "assignee" not in (s.get("input") or {})
+        ]
+        if not outcome.observation["suggestions"]:
+            outcome.observation.pop("suggestions")
+        outcome.artifacts = []
+        outcome.summary = f"{ASSIGNEE_ME_NOBODY} ({window.label})"
+        outcome.coverage = ASSIGNEE_ME_NOBODY
+        return outcome
 
     async def _scan_rows(
         self, ctx: ChatToolContext, args: SearchCasesInput, window: Any,
@@ -367,20 +508,21 @@ class SearchCasesTool(ChatTool):
         return _sort_cases(kept, args.sort_field, args.sort_order)[: args.limit], matched
 
     async def _list_rows(
-        self, ctx: ChatToolContext, args: SearchCasesInput, window: Any, *, extra: int = 0,
-    ) -> tuple[list[Any], int, bool, int | None] | ToolOutcome:
+        self, ctx: ChatToolContext, args: SearchCasesInput, window: Any, *, extra: int = 0, fresh: bool = False,
+    ) -> _Listing | ToolOutcome:
         """The DISPLAY rows (newest first, at most ``limit``, plus ``extra`` from the
         store when undated rows will be left out) and the listing's own count. The
-        count is only a fallback: the exact total comes from the aggregator."""
+        count is only a fallback: the exact total comes from the aggregator. ``fresh``
+        reads the case page now instead of the shared few-seconds-old copy."""
         if args.memory_filters():
-            cases, store_total, ok = await load_case_page(ctx)
+            cases, store_total, ok = await load_case_page(ctx, fresh=fresh)
             if not ok:
                 return ToolOutcome.failure("The case store did not answer")
             matched = _sort_cases(
                 [c for c in cases if _case_matches(c, args, ctx.prefs, window)],
                 args.sort_field, args.sort_order,
             )
-            return matched[: args.limit], len(matched), store_total <= len(cases), len(cases)
+            return _Listing(matched[: args.limit], len(matched), store_total <= len(cases), len(cases), matched)
         try:
             page, count, exact = await ctx.cases.list_window(
                 created_from=window.created_from,
@@ -392,7 +534,7 @@ class SearchCasesTool(ChatTool):
         except Exception as exc:  # noqa: BLE001
             logger.warning("search_cases list failed: %s", exc)
             return ToolOutcome.failure("The case store did not answer")
-        return list(page), int(count), bool(exact), None
+        return _Listing(list(page), int(count), bool(exact), None, None)
 
     async def _exact_counts(self, ctx: ChatToolContext, args: SearchCasesInput, window: Any) -> Any:
         """Exact counts over every matching case (SPEC D8): the total, by verdict and
@@ -402,7 +544,7 @@ class SearchCasesTool(ChatTool):
 
         try:
             return await run_case_aggregate(
-                ctx, window, filters=args.filters(), group_by=("verdict", "status"),
+                ctx, window, filters=args.aggregate_filters(), group_by=("verdict", "status"),
                 metrics=("count", "mean_risk"),
             )
         except Exception as exc:  # noqa: BLE001 — degrade to the listing's count
@@ -621,6 +763,7 @@ def _last_decision_reason(case: Any) -> str | None:
 class GetCaseTool(ChatTool):
     name: ClassVar[str] = "get_case"
     label: ClassVar[str] = "Read a case"
+    running_label: ClassVar[str] = "Reading a case"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("cost", "view"),)
@@ -708,7 +851,8 @@ class GetCaseTool(ChatTool):
                     "id": text(campaign.id, 128), "name": opt_text(campaign.name, 120),
                     "status": enum_value(campaign.status), "case_count": len(campaign.case_ids),
                 }
-        artifacts = self._artifacts(ctx, case, technique_rows, history)
+        related = await self._related(ctx, case)
+        artifacts = self._artifacts(ctx, case, technique_rows, history, related)
         verdict = enum_value(case.verdict) or "no verdict"
         status = enum_value(case.status) or "unknown"
         summary = (
@@ -776,7 +920,25 @@ class GetCaseTool(ChatTool):
             "playbook": opt_text(playbook.get("id"), 60),
         }
 
-    def _artifacts(self, ctx: ChatToolContext, case: Any, techniques: list[dict[str, Any]], history: list[Any]) -> list[Artifact]:
+    async def _related(self, ctx: ChatToolContext, case: Any) -> list[dict[str, Any]]:
+        """The entity card's related cases (at most 5): each named by its display number
+        and title when the store has it, else by its id (one bounded read per case)."""
+        out: list[dict[str, Any]] = []
+        for cid in list(case.related_case_ids or [])[:5]:
+            other = None
+            try:
+                other = await ctx.cases.get(str(cid))
+            except Exception as exc:  # noqa: BLE001 -- the id alone still names it
+                logger.info("related case read failed: %s", exc)
+            out.append({
+                "case_id": str(cid),
+                "case_number": opt_text(getattr(other, "case_number", ""), 64) if other is not None else None,
+                "title": display(getattr(other, "title", "") or cid) if other is not None else str(cid),
+            })
+        return out
+
+    def _artifacts(self, ctx: ChatToolContext, case: Any, techniques: list[dict[str, Any]], history: list[Any],
+                   related: list[dict[str, Any]] | None = None) -> list[Artifact]:
         artifacts: list[Artifact] = []
         entity_type = enum_value(getattr(case.entity, "type", None)) or ""
         kind = _ENTITY_KIND.get(entity_type)
@@ -804,7 +966,7 @@ class GetCaseTool(ChatTool):
                     "risk": finite(case.risk_score),
                     "verdict": verdict_semantic(case.verdict),
                     "facts": facts,
-                    "related_cases": [
+                    "related_cases": related if related is not None else [
                         {"case_id": str(cid), "title": str(cid)} for cid in list(case.related_case_ids or [])[:5]
                     ],
                     "first_seen": iso_or_none(case.created_at),
@@ -857,10 +1019,12 @@ class ShiftReportInput(ToolInput):
         return none_if_blank(value)
 
 
-# ``needs_human`` counts cases whose lifecycle STATUS is ``needs_human`` (the
-# shift_report headline), not cases with a needs-human VERDICT, which the case list
-# beside it badges as "Needs human": the label names the status so the two never read
-# as the same count.
+# The shift headline's "Needs human" counts the open cases whose VERDICT is Needs
+# human, the badge the Needs attention list beside it shows, so the two agree (Round 13
+# close: a STATUS count of 0 sat beside ten "Needs human" badges). The Standup page's
+# "Needs human" tile shows the same verdict figure; the legacy ``needs_human`` STATUS
+# count is its "Awaiting analyst" tile, which chat does not show, and the workload rows
+# carry it as ``awaiting_analyst`` so no figure here reads as a second "needs human".
 # Console display labels for the case enums an entity card states as facts (the
 # status wording matches the console's status badge: ``needs_human`` is the legacy
 # alias of "Open · awaiting analyst").
@@ -894,14 +1058,39 @@ def _label(labels: dict[str, str], value: Any, missing: str) -> str:
 
 
 _HEADLINE_LABELS = {
-    "open": "Open cases", "escalated": "Escalated", "needs_human": "Status: Needs human",
+    "open": "Open cases", "escalated": "Escalated", "needs_human_verdict": "Needs human",
     "unassigned": "Unassigned", "sla_breached": "SLA breached",
 }
+
+
+#: SLA rows the shift snapshot lists per kind (overdue, close to target); the totals
+#: count every one.
+_SLA_ROWS = 5
+
+
+def _sla_ref(row: dict[str, Any]) -> dict[str, Any]:
+    """A shift SLA row's case: its id and, when it has one, its display number."""
+    case_id = text(row.get("case_id"), 128)
+    shown = opt_text(row.get("display_id"), 64)
+    return {"case_id": case_id, "case_number": shown if shown and shown != case_id else None}
+
+
+def _minutes_left(row: dict[str, Any]) -> float | None:
+    target, age = finite(row.get("target_minutes")), finite(row.get("age_minutes"))
+    return round(max(0.0, target - age), 1) if target is not None and age is not None else None
+
+
+def _nearest_first(rows: Any) -> list[dict[str, Any]]:
+    """Close-to-target rows, the least time left first (ties by case id)."""
+    kept = [r for r in (rows or []) if isinstance(r, dict)]
+    return sorted(kept, key=lambda r: (_minutes_left(r) if _minutes_left(r) is not None else math.inf,
+                                       str(r.get("case_id") or "")))
 
 
 class ShiftReportTool(ChatTool):
     name: ClassVar[str] = "shift_report"
     label: ClassVar[str] = "Built the shift snapshot"
+    running_label: ClassVar[str] = "Building the shift snapshot"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Open cases and shift handoff"
@@ -934,7 +1123,12 @@ class ShiftReportTool(ChatTool):
         elif abs(window.span_hours - hours) > 1e-6:
             notes.append("the range was narrowed to whole hours")
         try:
-            snap = await ctx.standup.shift_snapshot(ctx.prefs, window_hours=hours)
+            # The headline's "Needs human" counts verdicts (Round 13 close); a standup
+            # service without that option (an older one) still gives the snapshot.
+            if "needs_human_verdict" in inspect.signature(ctx.standup.shift_snapshot).parameters:
+                snap = await ctx.standup.shift_snapshot(ctx.prefs, window_hours=hours, needs_human_verdict=True)
+            else:
+                snap = await ctx.standup.shift_snapshot(ctx.prefs, window_hours=hours)
         except Exception as exc:  # noqa: BLE001
             logger.warning("shift snapshot failed: %s", exc)
             return ToolOutcome.failure("The shift report could not be built")
@@ -958,7 +1152,8 @@ class ShiftReportTool(ChatTool):
                 for k in _HEADLINE_LABELS if isinstance(deltas.get(k), dict)
             },
             "attention": [
-                {"case_id": text(q.get("case_id"), 128), "title": text(q.get("title"), 160),
+                {"case_id": text(q.get("case_id"), 128), "case_number": opt_text(q.get("case_number"), 64),
+                 "title": text(q.get("title"), 160),
                  "status": q.get("status"), "verdict": q.get("verdict"),
                  "risk_score": finite(q.get("risk_score")), "severity": q.get("severity_band"),
                  "age_minutes": finite(q.get("age_minutes")), "assignee": opt_text(q.get("assignee"), 80)}
@@ -968,13 +1163,21 @@ class ShiftReportTool(ChatTool):
                 "enabled": bool(sla.get("enabled")),
                 "totals": (sla.get("totals") or {}),
                 "breached": [
-                    {"case_id": text(b.get("case_id"), 128), "overdue_minutes": finite(b.get("overdue_minutes"))}
-                    for b in (sla.get("breached") or [])[:5] if isinstance(b, dict)
+                    {**_sla_ref(b), "overdue_minutes": finite(b.get("overdue_minutes")),
+                     "assignee": opt_text(b.get("assignee"), 80)}
+                    for b in [r for r in (sla.get("breached") or []) if isinstance(r, dict)][:_SLA_ROWS]
+                ],
+                # Round 13 polish: the open cases close to their response target, nearest
+                # first, bounded like the overdue list (the totals count every one).
+                "about_to_breach": [
+                    {**_sla_ref(b), "minutes_left": _minutes_left(b), "target_minutes": finite(b.get("target_minutes")),
+                     "assignee": opt_text(b.get("assignee"), 80)}
+                    for b in _nearest_first(sla.get("about_to_breach"))[:_SLA_ROWS]
                 ],
             },
             "workload": [
                 {"analyst": text(w.get("analyst"), 80), "open": w.get("open"),
-                 "escalated": w.get("escalated"), "needs_human": w.get("needs_human")}
+                 "escalated": w.get("escalated"), "awaiting_analyst": w.get("needs_human")}
                 for w in workload[:10]
             ],
             "open_action_items": [
@@ -998,7 +1201,8 @@ class ShiftReportTool(ChatTool):
         artifacts.append(Artifact(
             id="a2", kind="case_list", title="Needs attention", title_trusted=True,
             data={"items": [
-                {"case_id": str(q.get("case_id") or ""), "title": display(q.get("title") or q.get("case_id")),
+                {"case_id": str(q.get("case_id") or ""), "case_number": opt_text(q.get("case_number"), 64),
+                 "title": display(q.get("title") or q.get("case_id")),
                  "severity": q.get("severity_band") if q.get("severity_band") in ("critical", "high", "medium", "low", "info") else None,
                  "verdict": verdict_semantic(q.get("verdict")), "status": q.get("status"),
                  "risk": finite(q.get("risk_score"))}
@@ -1040,9 +1244,17 @@ def display(value: Any) -> str:
 class ListCampaignsInput(ToolInput):
     status: Literal["open", "monitoring", "resolved"] | None = None
     campaign_id: str | None = Field(default=None, max_length=128)
+    #: The campaigns that hold this case (its id or display number), so a question
+    #: about "the campaign that includes CASE-000046" finds that campaign now, whatever
+    #: newer campaigns exist and whatever id it has after growing (polish round PB4).
+    case_id: str | None = Field(default=None, max_length=128)
+    #: The campaigns that involve this entity value (a user, host or IP): one of their
+    #: shared entities has it, or one of their cases is about it, so an investigation
+    #: of the entity lists only its own campaigns (Round 13 close).
+    entity: str | None = Field(default=None, max_length=256)
     limit: int = Field(default=10, ge=1, le=25)
 
-    @field_validator("status", "campaign_id", mode="before")
+    @field_validator("status", "campaign_id", "case_id", "entity", mode="before")
     @classmethod
     def _blank(cls, value: Any) -> Any:
         value = none_if_blank(value)
@@ -1052,14 +1264,15 @@ class ListCampaignsInput(ToolInput):
 class ListCampaignsTool(ChatTool):
     name: ClassVar[str] = "list_campaigns"
     label: ClassVar[str] = "Listed campaigns"
+    running_label: ClassVar[str] = "Listing campaigns"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     data_source: ClassVar[str] = "Campaign correlation"
     signature: ClassVar[str] = (
-        "list_campaigns(status?=open|monitoring|resolved, campaign_id?, limit?=10) -- cross-case "
-        "campaigns: related cases grouped by shared entities and ATT&CK techniques"
+        "list_campaigns(status?=open|monitoring|resolved, campaign_id?, case_id?, entity?, limit?=10) -- "
+        "campaigns, latest first: cases sharing entities and ATT&CK techniques"
     )
-    display_keys: ClassVar[tuple[str, ...]] = ("status", "campaign_id", "limit")
+    display_keys: ClassVar[tuple[str, ...]] = ("status", "campaign_id", "case_id", "entity", "limit")
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
         args, error = parse_input(ListCampaignsInput, inp)
@@ -1069,26 +1282,80 @@ class ListCampaignsTool(ChatTool):
             return ToolOutcome.failure("Campaign correlation is not available")
         from ...engine.views import campaign_json
 
+        member: Any = None
+        if args.case_id:
+            member = await find_case(ctx, args.case_id)
+        matches: dict[int, str] = {}
+        entity_cases = read = 0
         try:
             if args.campaign_id:
                 one = await ctx.campaigns.get(args.campaign_id)
                 campaigns, total = ([one], 1) if one is not None else ([], 0)
+            elif args.case_id:
+                # The campaigns that hold the case now (status filter applied), most
+                # recently active first; none when the case is not found.
+                held: list[Any] = []
+                if member is not None:
+                    every, _total = await ctx.campaigns.list(status=args.status)
+                    held = [c for c in every if member.case_id in (c.case_ids or [])]
+                campaigns, total = held[:args.limit], len(held)
+            elif args.entity:
+                # The campaigns that involve the entity, most recently active first: a
+                # shared entity with that value, or a member case about it.
+                every, _total = await ctx.campaigns.list(status=args.status)
+                about, entity_cases, read = await _cases_about(ctx, args.entity)
+                involved = [(c, _involvement(c, args.entity, about)) for c in every]
+                kept = [(c, how) for c, how in involved if how]
+                matches = {id(c): str(how) for c, how in kept}
+                campaigns, total = [c for c, _how in kept][:args.limit], len(kept)
             else:
                 campaigns, total = await ctx.campaigns.list(status=args.status, limit=args.limit)
         except Exception as exc:  # noqa: BLE001
             logger.warning("list_campaigns failed: %s", exc)
             return ToolOutcome.failure("The campaign store did not answer")
         rows = [campaign_json(c) for c in campaigns]
+        if args.entity and not args.campaign_id and not args.case_id:
+            for row, campaign in zip(rows, campaigns):
+                row["match"] = matches.get(id(campaign))
+        numbers = await _case_numbers(ctx, [c for r in rows for c in r["case_ids"][:5]])
+
+        def member_numbers(ids: list[Any]) -> dict[str, Any]:
+            # Each listed member's display number beside its id (Round 13 A8), so an
+            # answer names the cases as the analyst knows them; omitted when none has one.
+            shown = [numbers.get(str(c)) for c in ids[:5]]
+            return {"case_numbers": shown} if any(shown) else {}
+
+        case_filter: dict[str, Any] = {}
+        if args.entity and not args.campaign_id and not args.case_id:
+            # How the involvement was found (the value itself is the analyst's, never
+            # echoed): the cases about the entity that were checked against the members.
+            case_filter = {"entity_filter": {"cases_about_entity": entity_cases, "cases_checked": read}}
+        if args.case_id:
+            # Which case the listing is about, as the analyst knows it (its number),
+            # and whether it was found at all ("no campaign holds it" vs "no such case").
+            case_filter = {"case_filter": {
+                "found": member is not None,
+                "case_id": text(member.case_id, 128) if member is not None else None,
+                "case_number": opt_text(getattr(member, "case_number", None), 64) if member is not None else None,
+            }}
         observation = {
             "status_filter": args.status,
+            **case_filter,
             "total": total,
             "returned": len(rows),
             "campaigns": [
                 {"id": text(r["id"], 128), "name": opt_text(r["name"], 120), "status": r["status"],
                  "case_count": r["case_count"], "case_ids": [text(c, 128) for c in r["case_ids"][:5]],
-                 "entities": [f"{text(e['entity_type'], 20)}:{text(e['value'], 120)}" for e in r["entities"][:5]],
-                 "mitre": [text(t, 16) for t in r["mitre"][:5]],
-                 "severity": r["severity_rollup"], "first_seen": r["first_seen"], "last_seen": r["last_seen"]}
+                 **member_numbers(r["case_ids"]),
+                 "entities": [f"{text(e['entity_type'], 20)}:{text(e['value'], 120)}"
+                              for e in r["entities"][:_CAMPAIGN_ENTITIES_OBS]],
+                 "entity_count": len(r["entities"]),
+                 # Every technique up to the bound, and how many there are, so an answer
+                 # never shows three of four with nothing saying one is missing.
+                 "mitre": [text(t, 16) for t in r["mitre"][:_CAMPAIGN_TECHNIQUES_OBS]],
+                 "mitre_count": len(r["mitre"]),
+                 "severity": r["severity_rollup"], "first_seen": r["first_seen"], "last_seen": r["last_seen"],
+                 **({"match": r["match"]} if r.get("match") else {})}
                 for r in rows
             ],
         }
@@ -1102,8 +1369,8 @@ class ListCampaignsTool(ChatTool):
             [r["name"] or r["id"], r["status"], r["case_count"],
              r["severity_rollup"] if r["severity_rollup"] in ("critical", "high", "medium", "low", "info") else None,
              r["first_seen"], r["last_seen"],
-             ", ".join(f"{e['entity_type']}:{e['value']}" for e in r["entities"][:3]),
-             ", ".join(r["mitre"][:3])]
+             with_more([f"{e['entity_type']}:{e['value']}" for e in r["entities"]], _CAMPAIGN_CELL_ITEMS),
+             with_more(list(r["mitre"]), _CAMPAIGN_CELL_ITEMS)]
             for r in rows
         ]
         open_count = sum(1 for r in rows if r["status"] == "open")
@@ -1118,11 +1385,90 @@ class ListCampaignsTool(ChatTool):
                          kpi("cases", "Cases linked (listed)", sum(r["case_count"] for r in rows)),
                      ]}, provenance="code"),
         ]
-        summary = f"{fmt_int(total)} campaigns" + (f" with status {args.status}" if args.status else "")
+        summary = f"{fmt_int(total)} campaign{'' if total == 1 else 's'}" + (
+            f" with status {args.status}" if args.status else "")
+        if args.case_id:
+            summary += " holding the case" if member is not None else " (the case was not found)"
+        elif args.entity and not args.campaign_id:
+            summary += " involving the entity"
         summary += f"; {fmt_int(len(rows))} listed"
+        untrusted = {key: value for key, value in (("campaign_id", args.campaign_id), ("case_id", args.case_id),
+                                                   ("entity", args.entity))
+                     if value}
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
-                           rows=len(rows), basis="exact",
-                           untrusted_params={"campaign_id": args.campaign_id} if args.campaign_id else {})
+                           rows=len(rows), basis="exact", untrusted_params=untrusted)
+
+
+#: The most member cases a campaign listing reads display numbers for (one bounded read
+#: each; the rest keep their id alone).
+_CAMPAIGN_NUMBER_READS = 25
+#: How many of a campaign's shared entities and ATT&CK techniques its observation
+#: lists (``entity_count`` and ``mitre_count`` say how many there are), and how many
+#: a table cell names before "and K more" (Round 13 close: a fourth technique was
+#: dropped without a word).
+_CAMPAIGN_ENTITIES_OBS = 5
+_CAMPAIGN_TECHNIQUES_OBS = 12
+_CAMPAIGN_CELL_ITEMS = 4
+
+
+#: The most cases about an entity ``list_campaigns(entity=…)`` checks against the
+#: campaigns' members (one store query; the observation says when there are more).
+_ENTITY_CASE_READS = 500
+
+
+async def _cases_about(ctx: ChatToolContext, value: str) -> tuple[set[str], int, int]:
+    """``(ids of the cases about the entity, how many there are, how many were read)``:
+    the cases whose entity has exactly this value, like ``search_cases(entity=…)``."""
+    if ctx.cases is None:
+        return set(), 0, 0
+    try:
+        page, count, _exact = await ctx.cases.list_window(entity_value=value, limit=_ENTITY_CASE_READS)
+    except Exception as exc:  # noqa: BLE001 -- the shared entities alone still decide
+        logger.info("list_campaigns entity case read failed: %s", exc)
+        return set(), 0, 0
+    ids = {str(getattr(c, "case_id", "") or "") for c in page} - {""}
+    return ids, int(count), len(page)
+
+
+def _involvement(campaign: Any, value: str, about: set[str]) -> str | None:
+    """How ``campaign`` involves the entity: "shared_entity" (one of its shared
+    entities has the value, compared without case), "member_case" (one of its cases
+    is about it), else ``None``."""
+    wanted = value.strip().lower()
+    for entity in getattr(campaign, "entities", None) or []:
+        if str(getattr(entity, "value", "") or "").strip().lower() == wanted:
+            return "shared_entity"
+    if about & {str(c) for c in getattr(campaign, "case_ids", None) or []}:
+        return "member_case"
+    return None
+
+
+def with_more(items: list[Any], limit: int) -> str:
+    """``items`` joined with commas: all of them when there are at most ``limit``, else
+    the first ``limit - 1`` and "and K more" (never a silent cut)."""
+    shown = [str(i) for i in items if i not in (None, "")]
+    if len(shown) <= limit:
+        return ", ".join(shown)
+    keep = max(1, limit - 1)
+    return f"{', '.join(shown[:keep])} and {len(shown) - keep} more"
+
+
+async def _case_numbers(ctx: ChatToolContext, case_ids: list[Any]) -> dict[str, str]:
+    """``{case_id: display number}`` for up to :data:`_CAMPAIGN_NUMBER_READS` distinct
+    cases (a case without a number, or a failed read, is left out)."""
+    out: dict[str, str] = {}
+    if ctx.cases is None:
+        return out
+    for cid in list(dict.fromkeys(str(c) for c in case_ids if c))[:_CAMPAIGN_NUMBER_READS]:
+        try:
+            case = await ctx.cases.get(cid)
+        except Exception as exc:  # noqa: BLE001 -- the id alone still names it
+            logger.info("campaign member read failed: %s", exc)
+            continue
+        number = opt_text(getattr(case, "case_number", ""), 64) if case is not None else None
+        if number and number != cid:
+            out[cid] = number
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -1189,6 +1535,7 @@ def _policy_rows(policy: Any) -> list[dict[str, Any]]:
 class ExplainDecisionTool(ChatTool):
     name: ClassVar[str] = "explain_decision"
     label: ClassVar[str] = "Explained the decision policy"
+    running_label: ClassVar[str] = "Explaining the decision policy"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
     optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
@@ -1299,8 +1646,9 @@ class ExplainDecisionTool(ChatTool):
             ))
         if what_if is not None:
             outcome_text = "auto-closed" if what_if["auto_closed"] else "routed to a human"
+            # The gauge's integer (round half up, T1), never Python's half-to-even.
             summary = (f"{verdict_name} at confidence {what_if['confidence']:.2f} and risk "
-                       f"{what_if['risk_score']:.0f} would be {outcome_text}")
+                       f"{fmt_int(what_if['risk_score'])} would be {outcome_text}")
             if what_if["escalate"]:
                 summary += " (escalated)"
         else:

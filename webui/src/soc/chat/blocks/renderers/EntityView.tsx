@@ -7,7 +7,9 @@
  * mono, and never turned into a link (G7). Facts are mono only when the server marks
  * that fact attacker-derived; product values are sans captions. A provider's reputation
  * note is a sans caption unless the block is marked untrusted (it can hold third-party
- * tags), when it stays mono.
+ * tags), when it stays mono. Sans text values (facts, provider names such as
+ * "demo-synthetic", notes) set proportional numerals, whose hyphen is not set wide
+ * (PW4-8); dates and scores keep tabular ones.
  */
 import * as React from 'react';
 import { Check, Copy, Search } from 'lucide-react';
@@ -22,9 +24,9 @@ import { SeverityBadge, VerdictBadge } from '@/soc/components/badges';
 import { SEMANTIC_ICON } from '@/soc/components/palette';
 import { isPageId } from '@/soc/nav';
 
-import { CaseHoverArm, CaseLink, RefLink } from '../context';
+import { CaseHoverArm, CaseLink, CaseRefText, RefLink } from '../context';
 import { formatUtc } from '../format';
-import { ENTITY_KIND_LABEL, REPUTATION_LABEL } from '../labels';
+import { ENTITY_KIND_LABEL, REPUTATION_LABEL, entityFacts } from '../labels';
 import type { EntityBlock, ReputationVerdict } from '../schema';
 import { KpiGroupView } from './KpiGroupView';
 
@@ -81,6 +83,8 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
   const rawId = React.useId();
   const valueId = `ent-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const canInvestigate = isPageId('investigate');
+  // The kind is the badge: a "Kind" fact restating it is not listed again (T14).
+  const facts = entityFacts(block);
   return (
     // The block card already frames it; only a report leaf (no card of its own) draws
     // the entity's border, so the transcript never shows a card inside a card.
@@ -115,17 +119,17 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
 
           {/* Facts sit beside the gauge rather than below it, so the card has no dead
               band under the indicator. */}
-          {block.facts.length ? (
+          {facts.length ? (
             <dl className="grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)] gap-x-4 gap-y-1 text-sm">
-              {block.facts.map((f, i) => (
+              {facts.map((f, i) => (
                 <React.Fragment key={i}>
                   <dt className="truncate text-muted-foreground" title={f.label}>
                     {f.label}
                   </dt>
                   {/* Mono only for a fact the server marked attacker-derived (G7); product
-                      values ("ip", "1 of 1 answered") are prose (browser-QA D7). The
-                      indicator itself is already InlineCode above. */}
-                  <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground')}>{f.value}</dd>
+                      values ("1 of 1 answered") are prose (browser-QA D7). The indicator
+                      itself is already InlineCode above. */}
+                  <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground proportional-nums')}>{f.value}</dd>
                 </React.Fragment>
               ))}
             </dl>
@@ -147,7 +151,7 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
               const Icon = SEMANTIC_ICON[meta.icon];
               return (
                 <li key={i} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 py-1 text-sm">
-                  <span className="min-w-0 flex-1 truncate">{r.provider}</span>
+                  <span className="min-w-0 flex-1 truncate proportional-nums">{r.provider}</span>
                   <span className={cn('inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-2xs font-medium', meta.cls)}>
                     {Icon ? <Icon className="size-3" aria-hidden /> : null}
                     {meta.label}
@@ -161,7 +165,7 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
                     <span
                       className={cn(
                         'w-full break-words text-muted-foreground',
-                        block.untrusted ? 'font-mono text-2xs' : 'text-xs',
+                        block.untrusted ? 'font-mono text-2xs' : 'text-xs proportional-nums',
                       )}
                     >
                       {r.detail}
@@ -185,8 +189,9 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
             <ul className="space-y-1">
               {block.related_cases.map((c, i) => (
                 <li key={`${c.case_id}-${i}`} className="flex flex-wrap items-center gap-2 text-sm">
-                  <CaseLink facts={c} className="min-w-0 truncate">
-                    {c.title}
+                  <CaseLink facts={c} className="min-w-0 break-words">
+                    {/* Number then title; the internal id only as a tooltip (T14). */}
+                    <CaseRefText facts={c} />
                   </CaseLink>
                   {c.severity ? <SeverityBadge severity={c.severity} /> : null}
                 </li>

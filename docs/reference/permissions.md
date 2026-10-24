@@ -109,6 +109,11 @@ A few chat features have their own gates:
 - the step inspector, answer ratings, rejoining a running answer, and **Ask AI** entity
   questions need `cases:read`, like chat itself, and work only on the user's own
   conversations and turns;
+- suggested questions (`GET /api/chat/starters`) and their events need `cases:read`; a
+  card appears only when the caller holds every grant its answer needs (for example
+  `sources:read` for a quiet source, `models:read` and `cost:view` for spending,
+  `proposals:read` for approvals, `metrics:view` for auto-close health), and while
+  row-level object scope is on for the caller's role no card about cases is shown;
 - confirming a fact the assistant suggests remembering needs `memory:manage`;
 - a running answer keeps only the access it started with: a role change that removes a
   grant it uses stops it ("Your access changed"); a change that only adds access stops

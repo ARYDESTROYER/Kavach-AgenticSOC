@@ -19,6 +19,7 @@ import type { Case } from '@/lib/types';
 import { focusRing } from '@/lib/ui-recipes';
 import { pageHash, settingsSectionHash, useNavigateOptional } from '@/soc/router';
 import { isSafeCaseId } from '@/soc/case-result-route';
+import { softBreakLongTokens } from '../starters/soft-breaks';
 
 import type { BlockRef, CaseStatusKey, InternalRef, SeverityKey, VerdictKey } from './schema';
 import { isDocRef, parseDocRef, parseInternalRef } from './schema';
@@ -148,6 +149,77 @@ export const RefLink = React.forwardRef<HTMLAnchorElement, RefLinkProps>(functio
 /* -------------------------------------------------------------------------- */
 /* Case links with a lazy hover preview.                                       */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * How a case is named in a block (Round 13, SPEC-chat T14): its display number (mono) then
+ * its title, the internal id (`case-6b22d1…`) only in the number's tooltip. The server
+ * sends `case_number` when a case has one (Round 13 polish); without it the title alone
+ * cannot tell two cases apart, so the internal id stays VISIBLE after the title: muted,
+ * mono, middle-ellipsised ("case-6b22…70b4", the Case Manager queue's form), with the
+ * full id in its tooltip and for assistive tech. A case with neither a number nor a title
+ * shows its whole id, which wraps instead of being cut. Titles wrap too (the hosts never
+ * truncate them), so the whole title is always on screen. A number of up to 27 characters
+ * never breaks at its hyphen, nor does a short reference in the title ("LP-ES-RISK-1001",
+ * PW4-1), and the title is prose (proportional numerals, so Inter's tabular hyphen is not
+ * set wide). A longer number (an operator template may write up to 200 characters) breaks
+ * where its line ends, its ends kept, so it never runs past the row on a phone: both
+ * through `softBreakLongTokens`, the one length rule.
+ */
+export function CaseRefText({ facts }: { facts: Pick<CaseLinkFacts, 'case_id' | 'case_number' | 'title'> }) {
+  const number = facts.case_number?.trim() || null;
+  const title = facts.title?.trim() && facts.title.trim() !== facts.case_id ? facts.title.trim() : null;
+  if (!number && !title) {
+    return (
+      <span className="break-all font-mono text-xs" data-case-ref="id">
+        {facts.case_id}
+      </span>
+    );
+  }
+  if (!number) {
+    const short = shortCaseId(facts.case_id);
+    return (
+      <>
+        <span className="break-words proportional-nums" data-case-ref="title">
+          {title ? softBreakLongTokens(title) : null}
+        </span>{' '}
+        <span className="whitespace-nowrap font-mono text-2xs font-normal text-muted-foreground" title={facts.case_id} data-case-ref="id">
+          {short === facts.case_id ? (
+            short
+          ) : (
+            <>
+              <span aria-hidden>{short}</span>
+              <span className="sr-only">{facts.case_id}</span>
+            </>
+          )}
+        </span>
+      </>
+    );
+  }
+  return (
+    <>
+      <span className="mr-1.5 font-mono text-xs" title={facts.case_id} data-case-ref="number">
+        {softBreakLongTokens(number)}
+      </span>
+      {title ? (
+        <span className="break-words proportional-nums" data-case-ref="title">
+          {softBreakLongTokens(title)}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * A long internal case id with both ends kept ("case-6b22…70b4", 9 + 4 characters, the
+ * Case Manager queue's `middleEllipsis`); a short id (a template such as "CASE-000042")
+ * is returned whole.
+ */
+export function shortCaseId(caseId: string, head = 9, tail = 4): string {
+  const text = String(caseId ?? '');
+  if (text.length <= head + tail + 1) return text;
+  return `${text.slice(0, head)}…${text.slice(-tail)}`;
+}
+
 type HoverCardComponent = React.ComponentType<{ case: Case; children: React.ReactNode }>;
 
 /** The loaded preview component, shared by every block once any pointer fetched it. */
@@ -226,6 +298,8 @@ class PreviewBoundary extends React.Component<{ fallback: React.ReactNode; child
 
 export interface CaseLinkFacts {
   case_id: string;
+  /** The display number ("CASE-0042"), when the block carries one. */
+  case_number?: string;
   title?: string;
   severity?: SeverityKey;
   verdict?: VerdictKey;
@@ -238,6 +312,7 @@ export interface CaseLinkFacts {
 function previewCase(facts: CaseLinkFacts): Case {
   return {
     case_id: facts.case_id,
+    case_number: facts.case_number,
     title: facts.title,
     severity_band: facts.severity,
     verdict: facts.verdict,

@@ -27,7 +27,7 @@ import type {
 } from '@/lib/types';
 
 import { LIMITS, isExpiredBlock, leafBlocks, legacyTableBlock, parseBlocks } from '../blocks/schema';
-import type { AnswerBlock, DroppedBlock, KpiItem, LeafBlock } from '../blocks/schema';
+import type { AnswerBlock, Cell, ColumnType, DroppedBlock, KpiItem, LeafBlock } from '../blocks/schema';
 import { displayText } from '../stream-events';
 import { mergeWindows } from './windows';
 
@@ -640,6 +640,16 @@ export function tokens(value: number): string {
   return String(Math.round(value));
 }
 
+/**
+ * A table cell that is not measured: a blank (`null` or empty) cell in a `number` or
+ * `risk` column (BLOCKS.md G3, amendment 35). The methodology line counts exactly these
+ * and a report export marks exactly these with "—"; a blank cell in any other column is
+ * simply empty (a Techniques cell with no technique is not a missing figure).
+ */
+export function notMeasuredTableCell(type: ColumnType | undefined, cell: Cell | undefined): boolean {
+  return (type === 'number' || type === 'risk') && (cell === null || cell === undefined || cell === '');
+}
+
 /** Count `null` (not measured) numbers in a block's data. */
 export function notMeasuredCount(block: LeafBlock): number {
   const nulls = (values: ReadonlyArray<number | null | undefined>) => values.filter((v) => v === null).length;
@@ -651,10 +661,11 @@ export function notMeasuredCount(block: LeafBlock): number {
       return block.series.reduce((n, s) => n + nulls(s.values), 0);
     case 'heatmap':
       return block.cells.reduce((n, row) => n + nulls(row), 0);
-    case 'table': {
-      const numeric = block.columns.map((c) => c.type === 'number' || c.type === 'risk');
-      return block.rows.reduce((n, row) => n + row.filter((cell, i) => numeric[i] && cell === null).length, 0);
-    }
+    case 'table':
+      return block.rows.reduce((n, row) => n + block.columns.filter((c, i) => notMeasuredTableCell(c.type, row[i])).length, 0);
+    // A case without a risk score: its Risk cell is the one figure a case list carries.
+    case 'case_list':
+      return block.items.filter((it) => notMeasuredTableCell('risk', it.risk)).length;
     case 'entity':
       return kpis(block.counts) + (block.risk === null ? 1 : 0);
     default:

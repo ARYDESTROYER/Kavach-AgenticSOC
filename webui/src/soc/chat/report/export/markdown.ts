@@ -17,7 +17,7 @@
  */
 import type { MdBlock, MdInline } from '../../ChatMarkdown';
 import type { ReportDoc } from '../model';
-import { documentNodes, type DocNode, type Line, type WalkOptions } from './walker';
+import { codeCellText, documentNodes, type DocNode, type Line, type WalkOptions } from './walker';
 
 /* -------------------------------------------------------------------------- */
 /* Escaping.                                                                   */
@@ -173,7 +173,7 @@ export function markdownFromAst(blocks: readonly MdBlock[], base = 3, defang = t
 /* -------------------------------------------------------------------------- */
 
 function cell(text: string, code: boolean): string {
-  if (code && text !== '—') return mdCode(text, true);
+  if (code && codeCellText(text)) return mdCode(text, true);
   return mdText(text) || ' ';
 }
 

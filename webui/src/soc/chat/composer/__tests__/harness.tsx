@@ -159,6 +159,8 @@ export interface ServerState {
   sourcesStatus: number;
   /** Status for PUT /api/prefs/user (a failing write). */
   putStatus: number;
+  /** Status for GET /api/prefs/user (a failing read); 200 by default. */
+  getStatus?: number;
   /** `/api/models` body override (e.g. with a `capabilities` map). */
   models?: unknown;
 }
@@ -175,6 +177,7 @@ export function stubServer(initial: Partial<ServerState> = {}): ServerState {
     calls: [],
     sourcesStatus: initial.sourcesStatus ?? 200,
     putStatus: initial.putStatus ?? 200,
+    getStatus: initial.getStatus ?? 200,
     models: initial.models,
   };
   const json = (body: unknown, status = 200) =>
@@ -194,7 +197,12 @@ export function stubServer(initial: Partial<ServerState> = {}): ServerState {
       if (url === '/api/models') {
         return json(state.models ?? { providers: { anthropic: ['claude-sonnet-test'], openai: ['gpt-x'] }, configured: {} });
       }
-      if (url === '/api/prefs/user' && method === 'GET') return json({ chat_prompts: state.prompts });
+      if (url === '/api/prefs/user' && method === 'GET') {
+        if ((state.getStatus ?? 200) !== 200) {
+          return json({ detail: 'Preferences are unavailable right now.' }, state.getStatus);
+        }
+        return json({ chat_prompts: state.prompts });
+      }
       if (url === '/api/prefs/user' && method === 'PUT') {
         if (state.putStatus !== 200) return json({ detail: 'Preferences are unavailable right now.' }, state.putStatus);
         const next = (body as { chat_prompts?: ChatPrompt[] })?.chat_prompts;

@@ -318,7 +318,7 @@ async def test_tool_then_final_with_refs_events_usage_and_audit() -> None:
     gateway = FakeGateway([
         tool_call("log_stats", group_by="source.ip"),
         final("**12** events from `10.0.0.1`.", blocks=[{"ref": "t1.a1", "view": "bar", "title": "Top IPs"}],
-              follow_ups=["Same for 7 days"], answer_kind="data"),
+              follow_ups=["Same for 7 days", "Which hosts did 10.0.0.1 reach?"], answer_kind="data"),
     ])
     prefs = make_prefs()
     events, resp, outcome = await run(make_engine(gateway), "top source IPs?", prefs,
@@ -327,7 +327,10 @@ async def test_tool_then_final_with_refs_events_usage_and_audit() -> None:
     assert kinds == ["TurnStartEvent", "StepStartEvent", "StepEndEvent", "UsageEvent", "StepStartEvent",
                      "StepEndEvent", "StepStartEvent", "StepEndEvent", "UsageEvent", "TurnDoneEvent"]
     assert resp.answer == "**12** events from `10.0.0.1`." and resp.turn_id == "turn-1"
-    assert resp.answer_kind == "data" and resp.follow_ups == ["Same for 7 days"]
+    # Round 13 (SPEC-chat §4.1): the unanchored model chip is dropped; the anchored one
+    # leads and a deterministic "in" chip follows.
+    assert resp.answer_kind == "data" and resp.follow_ups == [
+        "Which hosts did 10.0.0.1 reach?", "Investigate the top source IP in this answer"]
     (block,) = resp.blocks
     assert block["kind"] == "bar" and block["title"] == "Top IPs" and block["series"][0]["values"] == [12, 7]
     assert block["provenance"] == "source" and block["from_step"] == 2

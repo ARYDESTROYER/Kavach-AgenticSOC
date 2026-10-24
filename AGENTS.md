@@ -155,7 +155,8 @@ backend/app/
                      storage_lifecycle desired policy (Hot 180d + Warm 90d + desired
                      Glacier from day 270; deletion always off; capability-aware) +
                      caps.max_concurrent + chat_agent (chat loop bounds +
-                     indicator-lookup policy; repaired/clamped on load, never
+                     indicator-lookup policy + Round 13 `dynamic_starters` [live-data
+                     suggested questions, default on]; repaired/clamped on load, never
                      rejected; curated editor Settings → General → Chat assistant)
                      + BrandingConfig.login_*
                      bounded plain-text white-label [validator rejects any `<`, #9];
@@ -170,7 +171,11 @@ backend/app/
                      RawEvent/...); Case build provenance is nullable+immutable,
                      `retrieval_history_status` is the authoritative lifetime marker,
                      `retrieval_observation_status` proves a completed measurement,
-                     and `knowledge_used` retains its backward-compatible array shape
+                     and `knowledge_used` retains its backward-compatible array shape;
+                     Round 13 chat starters section (ChatStarter + ChatStarterRef,
+                     ChatCatchUp, ChatStartersInfo, ChatStarterEvent) and the
+                     `UserPrefs.misc` `chat_suggest_start`/`chat_suggest_follow_ups`
+                     switches (absent = on)
   utils.py           dotted_get, time helpers, extract_json, coerce_float, ...
   evidence_fields.py The ONE definition of which raw-record paths count as case
                      evidence: the ECS default projection, the wildcard/whole-record
@@ -272,7 +277,14 @@ backend/app/
                      demo_generator (seeded OCSF org+baseline+MITRE storylines) ·
                      demo_runtime (deterministic mock LLM + sandboxed policy — Demo Mode) ·
                      demo_chat (pure Demo chat planner: plays the model for chat turns
-                     and report summaries from the real prompts, $0, deterministic) ·
+                     and report summaries from the real prompts, $0, deterministic;
+                     Round 13: answers every starter and case chip from the fenced
+                     value, titles, anchored follow-ups) ·
+                     chat_starters (Round 13: dynamic $0 starter families over the
+                     caller's ChatToolContext and grants: ranking, visit/shift state,
+                     catch-up line, case chips, evergreen set; a background refresher
+                     for the hunt/auto-close-health readings; never a model call, never
+                     a log read #1/#6/#7; case families skipped under object scope) ·
                      report_digest (bounded, deterministic, fenced digest a report
                      summary reads; aggregates only, never raw logs #7) ·
                      threshold_tuner (Round-4: nightly deterministic tuning observer —
@@ -371,7 +383,16 @@ backend/app/
                      rows]; per-tool RBAC, whitelisted aggregate observations #7,
                      indicator taint ledger #9) · chat_entity (Round 12: "Ask AI" entity
                      questions — strict per-kind value grammar, server-worded question,
-                     value fenced as untrusted, origin `starter`) · standup ·
+                     value fenced as untrusted, origin `starter`; `prompt_question` also
+                     renders Round 13 starter turns) · chat_starter_text (Round 13: the
+                     curated starter templates, slot grammars, render/parse, the
+                     `entity_ref`-fenced prompt form, reason and catch-up wording) ·
+                     chat_role_lookalikes (Round 13: vendored UTS #39 confusables of the
+                     role-word letters and the colon, data for the starter role-marker
+                     refusal; no new dependency) ·
+                     chat_followups (Round 13: pure anchored follow-up selector, at most
+                     3 per answer, no model call; `chat_protocol.parse_title` reads the
+                     first answer's conversation title) · standup ·
                      graph (LangGraph) · pipeline · common · personas (multi-agent roster)
   stores/            base (abstract repositories — backend-agnostic StateStore) ·
                      cases · usage · ledger_claims (ES keyed Audit/Usage first-writer
@@ -394,6 +415,11 @@ backend/app/
                      fixed set of `chat_`-prefixed fields holding one opaque string) ·
                      chat_feedback (Round 12: per-user answer ratings, one opaque KV doc
                      per user in the `chat_feedback` namespace; never used for training) ·
+                     chat_starters (Round 13: per-user suggestion state, one strict-CAS
+                     KV doc per user in the `chat_starters` namespace, one opaque
+                     `chat_starters_json` field ≤ 8 KB: visit clock, opaque keys,
+                     counters, hidden-for-a-day families; never question text; cleared
+                     with the user and by factory reset) ·
                      reports (owner-
                      scoped chat reports: one strict-CAS KV doc per report + a per-user
                      index, opaque report_-prefixed fields; no new index/table) ·
@@ -430,7 +456,7 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **35 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity), ALL
+                     + /sources/health) + **36 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters), ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
@@ -505,6 +531,10 @@ backend/app/
                      step inspector, message paging, mark-read (+ owner-only
                      `chat.read` SSE frame)] · routes_chat_entity
                      [Round 12: `POST /api/chat/entity-question` for Ask AI chips] ·
+                     routes_chat_starters [Round 13: `GET /api/chat/starters`
+                     (home/thread/case suggestions, 60 s per-caller cache, pure read, no
+                     audit) + `POST /api/chat/starters/events` (viewed/used/dismissed,
+                     opaque keys, 30/min)] ·
                      routes_reports [`/api/reports*` owner-scoped reports,
                      server-resolved add, one-call AI summary with dry-run estimate;
                      Round 12: `from-answer`, `from-conversation`, 60 items,
@@ -553,7 +583,9 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      chat-api/ndjson/
                      stream-events, useChatEngine/useChatConversations/useChatContext,
                      composer/, message/, workspace/, empty/, shortcuts/, blocks/ [answer
-                     renderers + chart kit], report/ [panel, library, exports]) +
+                     renderers + chart kit], report/ [panel, library, exports], starters/
+                     [Round 13: useChatStarters, StartScreen, StarterCard, CatchUpLine,
+                     ThreadCatchUp, CategoryPills, CaseStarterChips, greeting]) +
                      Docs (same-origin, version-matched Help Center discovery hub) +
                      Round-5 Dashboards.tsx + settings/* data-driven section files [was a
                      2673-line god-file, now a section registry; includes Organization
@@ -709,9 +741,9 @@ See `docs/ENVIRONMENT.md` for the full detail. Summary:
 ## 7. Build / run / test cheatsheet
 
 ```bash
-# Backend tests (offline; MUST stay green) — latest recorded full run: 7,624 tests (see Journal for the exact current count)
+# Backend tests (offline; MUST stay green) — latest recorded full run: 8,678 tests (see Journal for the exact current count)
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements-dev.txt
-python -m pytest -q                         # -> latest recorded full run: 7,620 passed, 4 skipped (see Journal)
+python -m pytest -q                         # -> latest recorded full run: 8,674 passed, 4 skipped (see Journal)
 
 # Backend run locally (in-memory store, mock LLM if no keys)
 uvicorn app.main:app --port 8088
@@ -719,7 +751,7 @@ uvicorn app.main:app --port 8088
 # Web UI + installed Help Center build, tests, and lint (Node 22)
 cd webui && npm install && npm run build   # MkDocs bundle + tsc --noEmit + Vite -> webui/dist/
 npm run docs:check                         # validate app 0.1.13 ↔ bundled docs 0.1
-npm run test:strict                        # -> latest recorded full run: 4,947 passed, 1 skipped / 481 files; zero stderr/console output
+npm run test:strict                        # -> latest recorded full run: 5,425 passed, 1 skipped / 520 files; zero stderr/console output
 npm run lint                               # 0 errors, 0 warnings; jsx-a11y at error
 
 # Shipping backend acceptance also runs `python -m pip check` inside the final
@@ -781,8 +813,8 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
   `/api` proxy forwards arbitrary JSON). Keep `webui/src/lib/types.ts` in sync with
   `models.py`.
 - **Secrets:** env only; UI shows booleans (`configured ✓`) never values.
-- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 7,620 passed, 4 skipped) +
-  `npm run build` clean + `npm run test:strict` (latest recorded full run: 4,947 passed, 1 skipped / 481 files) +
+- **Tests:** add/keep offline tests; `pytest -q` green (latest recorded full run: 8,674 passed, 4 skipped) +
+  `npm run build` clean + `npm run test:strict` (latest recorded full run: 5,425 passed, 1 skipped / 520 files) +
   `npm run lint` (0 errors, jsx-a11y at error) before
   every commit. (Counts rise each round — see `Journal.md` for the exact current totals.)
 - **Git:** active branch `Testing`. Commit focused changes; push when asked. The
@@ -882,10 +914,13 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
 
 ## 10. Current status & roadmap
 
-**Round 12 is the newest feature round** (chat without limits, the working indicator,
-Remember me, report downloads, the Overview and Case Manager redesigns). It is built on
-branch `claude/round12` and heads to `Testing` through a pull request; see the Round 12
-bullet in the round summary below and `docs/research/2026-10-round12/SPEC.md`.
+**Round 13 (chat) is the newest work** (dynamic $0 starters, anchored follow-ups,
+conversation titles from the first answer, a neater chat). It is built on branch
+`claude/round12` and heads to `Testing` through a new pull request; see the Round 13 bullet
+in the round summary below and `docs/research/2026-10-round13/SPEC-chat.md`. Round 12
+(chat without limits, the working indicator, Remember me, report downloads, the Overview
+and Case Manager redesigns) merged into `Testing` as `db8d935` (PR #131); see its bullet
+below and `docs/research/2026-10-round12/SPEC.md`.
 
 **History: Round 10 was a behavior change, not just a UI/UX pass.** It is committed on
 `Testing` (including `9010443`). On top of it, a **backend
@@ -942,10 +977,10 @@ identity, process privilege, or frozen-base bytes. Repository-level branch
 protection, required-check, and `github-pages` environment policy remain administrator
 controls and must be verified independently of source changes.
 
-**Current baseline (2026-10-12, Round 12 close after polish round 3):** backend **7,620 pytest** passed, 4 skipped (0 failures);
-webui **4,947 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 481 files
-with zero stderr or captured console output, full docs+app build clean (3,389 modules; entry chunk
-371,507 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
+**Current baseline (2026-10-23, Round 13 chat, closing gates):** backend **8,674 pytest** passed, 4 skipped (0 failures);
+webui **5,425 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 520 files
+with zero stderr or captured console output, full docs+app build clean (3,406 modules; entry chunk
+371,859 B, inside the +1,024 B budget over the recorded `PRE_REVAMP_ENTRY_BYTES` baseline
 371,003 B and under the 400,000 B ceiling;
 motion remains lazy and off the entry path); eslint **0 errors, 0 warnings**; **zero new webui runtime
 deps except the deliberate lazy `motion`** (12.42.2). Version 0.1 adds only the
@@ -1082,8 +1117,8 @@ a retelling — do not re-derive round detail from here.
   coverage banner/Overview tile/Noise-Reduction "awaiting" stage. **motion.dev** —
   ONE new lazy runtime dep (`motion` 12.42.2, replacing the Round-5-removed
   `framer-motion`) behind `LazyMotion`/`domAnimation`, landing in an ~83.85 kB lazy
-  chunk (entry was 281.44 kB at the time of Round 10; it is 371,507 B at the Round 12
-  close, against the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
+  chunk (entry was 281.44 kB at the time of Round 10; it is 371,859 B at the Round 13
+  chat gates, against the 400 kB ceiling in `bundle-first-paint.test.ts` — check the artifact, not this
   line), animating route transitions, CaseDetail tabs, Cases
   bulk-bar/row reflow, the nav rail, and KPI count-ups — reduced-motion honored.
   Built research(vendor+standards) → code (5 batches) → adversarial verify (5 major +
@@ -1143,6 +1178,22 @@ a retelling — do not re-derive round detail from here.
   design foundations. `decide()` untouched (#3); every new call still one gateway call
   and one UsageDoc (#6). Records: `docs/research/2026-10-round12/SPEC.md` (decisions +
   "As built"), chat-revamp SPEC amendments A39+, and the Round 12 `Journal.md` entries.
+- **Round 13, chat** (2026-10-17→, same branch, PR to `Testing`): the operator asked for a
+  neater chat and dynamic suggestions. **Dynamic $0 starters** computed by code from the
+  suite's own state under each viewer's grants (`engine/chat_starters.py`,
+  `agents/chat_starter_text.py`, `GET /api/chat/starters`, `POST /api/chat/starters/events`,
+  the `chat_starters` KV namespace; no model call, no log read; a referenced value fenced as
+  `entity_ref` live and on replay, origin `starter`): a bottom-anchored start stack with a
+  greeting, a "Since …" catch-up line, 3 or 4 ranked cards with Hide for a day, and
+  category pills; a catch-up line in an open thread; up to three Case Manager case chips;
+  `chat_agent.dynamic_starters` and two personal switches default on. **Anchored
+  follow-ups** (`agents/chat_followups.py`, at most 3, no extra call); **conversation
+  titles** from the first answer's header; a 42rem **reading column** with compact and wide
+  blocks and a 38rem prose measure; quiet block headers and one shared scope line; the cost
+  on the meta row with tokens in the usage card; a calmer composer, run log and history
+  rail; Demo answers every starter and chip. `decide()` untouched (#3). Records:
+  `docs/research/2026-10-round13/SPEC-chat.md` (§10 "As built"), chat-revamp SPEC
+  amendments A64 to A68, BLOCKS amendments 32 and 33, and the Round 13 `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the
 offline test suite keep working unchanged; `TLSOC_AUTH_ENABLED=true` turns on the

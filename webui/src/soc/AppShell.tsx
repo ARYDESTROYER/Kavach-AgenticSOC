@@ -1549,7 +1549,7 @@ export const AppShell: React.FC<AppShellProps> = ({
           as="header"
           blur="md"
           rim={false}
-          className="group/topbar @container/topbar sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border px-2 sm:gap-3 sm:px-4"
+          className="group/topbar @container/topbar sticky top-0 z-30 flex h-14 items-center gap-1.5 border-b border-border px-2 sm:gap-3 sm:px-4"
         >
           {isMobile ? (
             <Button
@@ -1562,7 +1562,13 @@ export const AppShell: React.FC<AppShellProps> = ({
               aria-describedby={menuActivity.text ? 'mobile-nav-activity' : undefined}
             >
               <Menu className="h-4 w-4" aria-hidden />
-              <ActivityGlyph status={menuActivity.status} className="chat-activity-badge" />
+              {/* A 6 px dot while an answer is written, never a ring around the menu icon
+                  (SPEC-chat T32); the states with news keep their coloured dot. */}
+              {menuActivity.status === 'running' ? (
+                <span aria-hidden="true" data-activity="working" className="chat-activity chat-activity-badge size-1.5" />
+              ) : (
+                <ActivityGlyph status={menuActivity.status} className="chat-activity-badge" />
+              )}
             </Button>
           ) : null}
           {isMobile && menuActivity.text ? (
@@ -1581,9 +1587,14 @@ export const AppShell: React.FC<AppShellProps> = ({
               nav is the only thing that can give: a long name on a phone ("Automated scans
               (legacy)" at 390) takes a second line in the 56px bar rather than an
               ellipsis, and only a name past two lines is clipped, with its full name in
-              `title`. The product name is the first thing to go (below 72rem of bar, or
-              first to fold when the bar is crowded): the rail beside it already carries
-              the logo, and the name when expanded. */}
+              `title`. It wraps BETWEEN words only (no `break-words`): at 360 "Workspace"
+              broke as "Workspac" / "e", 2 px short beside "v0.1.13 · Testing". The bar's
+              gaps are 6 px below `sm` (8 px left the name 69 of its 71 px there), and a
+              word still wider than its room ends in an ellipsis (`text-ellipsis`;
+              `line-clamp` makes the leaf a scroll container, so it can shrink without
+              `min-w-0`). The product name is the first thing to go (below
+              72rem of bar, or first to fold when the bar is crowded): the rail beside it
+              already carries the logo, and the name when expanded. */}
           <nav
             aria-label="Breadcrumb"
             data-testid="top-bar-breadcrumb"
@@ -1604,7 +1615,7 @@ export const AppShell: React.FC<AppShellProps> = ({
               /
             </span>
             <span
-              className="line-clamp-2 min-w-0 max-w-[16rem] break-words font-semibold leading-tight text-foreground"
+              className="line-clamp-2 max-w-[16rem] text-ellipsis font-semibold leading-tight text-foreground"
               aria-current="page"
               title={pageLabel}
             >

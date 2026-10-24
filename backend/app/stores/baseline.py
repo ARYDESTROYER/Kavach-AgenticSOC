@@ -82,6 +82,27 @@ def _encode_series(series: dict[str, dict[int, BaselineState]]) -> dict[str, Any
     }
 
 
+def _encode_buckets(buckets: Any) -> dict[str, Any]:
+    """One signature's buckets as the KV value holds them (ascending integer bucket)."""
+    items = dict(buckets or {})
+    return {str(b): items[b].model_dump(mode="json") for b in sorted(items, key=int)}
+
+
+def _merge_encoded(doc: dict | None, encoded: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """The KV value with ``encoded`` signatures replaced and every other series kept AS
+    STORED (no decode / re-encode of the untouched ones; a corrupt bucket there is still
+    skipped at load by :func:`_decode_series`). Signatures stay in sorted order, so the
+    document is as stable as :func:`_encode_series` writes it."""
+    raw = doc.get("series") if isinstance(doc, dict) else None
+    series: dict[str, Any] = (
+        {str(sig): buckets for sig, buckets in raw.items() if isinstance(buckets, dict)}
+        if isinstance(raw, dict)
+        else {}
+    )
+    series.update(encoded)
+    return {"series": {sig: series[sig] for sig in sorted(series)}}
+
+
 class BaselineStore:
     """CRUD over the anomaly-baseline sketch state, persisted as one KV document.
 
@@ -135,6 +156,28 @@ class BaselineStore:
             await kv_mutate(self._kv, BASELINE_NS, BASELINE_KEY, _change, lock=self._lock)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Persisting baseline (%s) failed (%s); continuing", sig, exc)
+
+    async def put_many(self, updates: dict[str, dict[int, BaselineState]]) -> None:
+        """Replace several signatures' sketch states in ONE read-modify-write.
+
+        The funnel flushes every signature a batch touched. One :meth:`put` per
+        signature decoded and re-encoded the WHOLE series document each time
+        (quadratic in the number of series), and with an in-memory KV no ``await`` in
+        that loop ever yields, so the event loop stalled for seconds on a warm Demo
+        (PW4-10: every API call, the Case Manager chips included, waited 4 to 8 s).
+        This encodes only the updated signatures and keeps every other series as
+        stored. Never raises, like :meth:`put`."""
+        encoded = {str(sig): _encode_buckets(buckets) for sig, buckets in (updates or {}).items()}
+        if not encoded:
+            return
+
+        def _change(current: dict | None) -> dict:
+            return _merge_encoded(current, encoded)
+
+        try:
+            await kv_mutate(self._kv, BASELINE_NS, BASELINE_KEY, _change, lock=self._lock)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Persisting baseline (%d series) failed (%s); continuing", len(encoded), exc)
 
     async def put_strict(
         self, signature: str, buckets: dict[int, BaselineState]

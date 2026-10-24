@@ -113,7 +113,9 @@ async def test_every_demo_starter_runs_a_multi_lookup_turn_deterministically(dem
         assert first.blocks, starter.id
         assert first.notice is None, (starter.id, first.notice)
         assert first.answer_kind == EXPECTED_KIND[starter.id]
-        assert len(first.follow_ups) == 3 and starter.prompt not in first.follow_ups
+        # Round 13 (SPEC-chat §4.1): up to 3 follow-ups, each anchored in what the answer
+        # shows or built from its artifacts (WP-DEMO13 anchors the Demo planner's table).
+        assert 1 <= len(first.follow_ups) <= 3 and starter.prompt not in first.follow_ups
         # Metered through the ONE gateway: simulated, $0 real pricing (#6, SPEC §1).
         assert first.usage is not None and first.usage.calls >= 2
         assert first.usage.simulated is True and first.usage.pricing_source == "zero"
@@ -129,8 +131,10 @@ async def test_starter_blocks_carry_the_numbers_the_answer_states(demo_state) ->
     assert ari.get("display") == "gauge" and kpis["provenance"] == "code"
     assert f"**Active Risk Index {int(round(ari['value']))}**" in posture.answer
     line = _block(posture, type="chart", kind="line")
-    new_cases = int(round(sum(v for v in line["series"][0]["values"] if v is not None)))
-    assert f"{new_cases:,} new and" in posture.answer
+    # Round 13 T15: the window's totals are in the key figures beside the prose, so the
+    # trend sentence states the line chart's peak (the busiest bucket's new cases).
+    peak = int(round(max(v for v in line["series"][0]["values"] if v is not None)))
+    assert f"with {peak:,} new case" in posture.answer
 
     explain = await _turn(demo_state, STARTERS["explain_metric"].prompt)
     funnel = _block(explain, type="chart", kind="funnel")
@@ -159,7 +163,11 @@ async def test_starter_blocks_carry_the_numbers_the_answer_states(demo_state) ->
     paragraphs = shift.answer.split("\n\n")
     assert len(paragraphs) == 3 and paragraphs[-1] == "The brief below is ready to add to a report."
     attention = next(b for s in brief["sections"] for b in s["blocks"] if b.get("type") == "case_list")
-    assert paragraphs[1].startswith(f"Start with `{attention['items'][0]['case_id']}` (")
+    # Round 13 A8: the case to start with by its display number, then what it is about
+    # (every seeded Demo case is numbered, Round 13 polish).
+    first = attention["items"][0]
+    assert first.get("case_number"), first
+    assert paragraphs[1].startswith(f"Start with `{first['case_number']}` (")
     assert "Needs attention first" not in shift.answer and "Posture:" not in shift.answer
 
 
@@ -326,8 +334,12 @@ async def test_report_leads_say_the_headline_and_name_the_case(demo_state) -> No
     assert anchor.startswith("The question names no indicator") and "Name an indicator" in anchor
     assert f"scores {int(round(entity['risk']))}/100" in found and "It is quiet in the logs" in found
     case = await _turn(demo_state, "Give me a report on case demo-00000539-0004", origin="user")
-    assert re.match(r"\*\*`demo-00000539-0004`\*\* \([a-z ]+ on user `[^`]+`\) needs human review",
-                    case.answer), case.answer
+    # Round 13 A8: the case's display number leads, then what happened to which user;
+    # the internal id the question named is stated once beside the number (polish).
+    number = (await demo_state.cases.get("demo-00000539-0004")).case_number
+    assert number, "every seeded Demo case is numbered"
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`demo-00000539-0004`, `[a-z_]+` on user `[^`]+`\) "
+                    r"needs human review", case.answer), case.answer
 
 
 @pytest.mark.parametrize("question", ["Build a posture report", "Build a noise reduction report"])
@@ -385,9 +397,12 @@ async def test_case_manager_chat_answers_about_its_case(demo_state) -> None:
                                                  tool_context=ctx, origin="user")
     tools = [(s.tool, s.status) for s in _tool_steps(response)]
     assert ("get_case", "ok") in tools and ("explain_decision", "ok") in tools
-    # The id is the handle and the machine title reads as what happened to which entity (D6).
-    assert re.match(rf"\*\*`{case_id}`\*\* \([a-z ]+ on [A-Za-z ]+ `[^`]+`\) is a true positive", response.answer), (
-        response.answer)
+    # The machine title reads as what happened to which entity (D6), after the case's
+    # display number (Round 13 A8; every seeded Demo case is numbered).
+    number = (await demo_state.cases.get(case_id)).case_number
+    assert number, "every seeded Demo case is numbered"
+    assert re.match(rf"\*\*`{re.escape(number)}`\*\* \(`[a-z_, `]+` on [A-Za-z ]+ `[^`]+`\) is a true positive",
+                    response.answer), response.answer
     assert "How the policy sees it:" in response.answer
     assert response.case_id == case_id
 

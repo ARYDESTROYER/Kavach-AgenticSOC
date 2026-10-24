@@ -2,10 +2,18 @@
  * RunLog — the per-turn record of lookups (chat revamp SPEC §10.3, §10.9).
  *
  * One row per tool call, or one framed row per parallel batch (steps sharing a
- * `group`). A row reads: status icon + status WORD (never colour alone), the engine
- * label, the whitelisted parameter chips (effective window and source included),
- * the engine summary, rows / basis / coverage, the duration, and the exact query
- * behind an expandable "Query" disclosure rendered as untrusted code.
+ * `group`). A row reads (Round 13, SPEC-chat T20): a leading 16 px status icon, the
+ * engine label, then the muted duration ("· 61 ms"); a status WORD only when the lookup
+ * did not simply finish (Failed, Timed out, Denied, Skipped, Stopped), while Done is the
+ * check icon with an sr-only "Done" (status is never colour alone). Under it the
+ * whitelisted parameter chips (verdicts, statuses and kinds in the console's words; a
+ * chip naming several sources reads "3 sources" with the names in its tooltip, T14), the
+ * engine summary, rows / basis / coverage, and the exact query behind an expandable
+ * "Query" disclosure rendered as untrusted code.
+ *
+ * Before any lookup has run the live log says what is happening instead of "No lookups
+ * yet." (which read like an empty result): "Reading your question…", then "Choosing
+ * lookups…" while the first model call decides.
  *
  * Model steps add no rows of their own (their tokens tick on the header). The
  * exceptions are the step the turn is waiting on — "Thinking", or "Writing the answer"
@@ -40,6 +48,7 @@ import type { ChatStep, ChatStepProgress } from '@/lib/types';
 import { LoadingGlyph } from '@/design-system';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import type { ChatLiveTurn } from '../useChatEngine';
+import { sourcesChip } from '../display';
 import {
   BASIS_LABEL,
   STEP_STATUS_LABEL,
@@ -183,18 +192,54 @@ const STATUS_ICON: Record<Exclude<RunStepStatus, 'running'>, { icon: React.Compo
 
 function StatusIcon({ status }: { status: RunStepStatus }) {
   if (status === 'running') {
-    return <LoadingGlyph size="sm" className="size-3.5" aria-hidden />;
+    return <LoadingGlyph size="sm" className="size-4" aria-hidden />;
   }
   const { icon: Icon, tone } = STATUS_ICON[status];
-  return <Icon className={cn('size-3.5 shrink-0', tone)} aria-hidden />;
+  return <Icon className={cn('size-4 shrink-0', tone)} aria-hidden />;
 }
 
-function Chip({ name, value, mono = false }: { name: string; value: string; mono?: boolean }) {
+/** Statuses whose word shows beside the label; Done and Running are the icon (sr-only word). */
+const SPOKEN_ONLY: ReadonlySet<RunStepStatus> = new Set<RunStepStatus>(['ok', 'running']);
+
+function Chip({ name, value, mono = false, title }: { name: string; value: string; mono?: boolean; title?: string }) {
   return (
     <span className="inline-flex h-5 max-w-full min-w-0 items-center gap-1 rounded-sm border border-border bg-surface px-1.5 text-2xs">
       <span className="shrink-0 text-muted-foreground">{name}</span>
-      <span className={cn('min-w-0 truncate text-foreground', mono && 'font-mono')}>{value}</span>
+      {/* The whole value is the tooltip: a long one may be cut on a narrow row. */}
+      <span className={cn('min-w-0 truncate text-foreground', mono && 'font-mono')} title={title ?? value}>
+        {value}
+      </span>
     </span>
+  );
+}
+
+/**
+ * The sources a lookup read (SPEC-chat T14): one source is a plain chip ("Source Wazuh");
+ * several read "3 sources", a disclosure button whose names show inline when pressed (and
+ * in its tooltip for a pointer), so a keyboard or touch reader can see them too.
+ */
+function SourcesChip({ names, id }: { names: readonly string[]; id: string }) {
+  const [open, setOpen] = React.useState(false);
+  const chip = sourcesChip(names);
+  if (names.length <= 1 || chip.title === chip.text) return <Chip name="Source" value={chip.text} />;
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((value) => !value)}
+        title={chip.title}
+        className="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-border bg-surface px-1.5 text-2xs text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        data-testid="run-log-sources"
+      >
+        {chip.text}
+        <ChevronRight className={cn('size-3 text-muted-foreground transition-transform motion-reduce:transition-none', open && 'rotate-90')} aria-hidden />
+      </button>
+      <span id={id} hidden={!open} className="min-w-0 break-words text-2xs text-foreground" data-testid="run-log-source-names">
+        {chip.title}
+      </span>
+    </>
   );
 }
 
@@ -246,6 +291,36 @@ function InspectButton({ step, onInspect }: { step: RunLogStep; onInspect: (step
   );
 }
 
+/** One parameter chip of a step: plain, or untrusted text (mono). */
+export type StepParamChip =
+  | { key: string; untrusted: true; value: string }
+  | { key: string; untrusted: false; value: ChatStep['params'][string] };
+
+/**
+ * A step's parameter chips in ONE order that holds while it runs and after it ends (Round
+ * 13 polish): the order the step started with (`step.params`), then keys only its result
+ * names, then untrusted-only keys. Most tools put an input in both maps: a key shown as
+ * untrusted text (mono) is shown once, never also as a plain chip (it read as if applied
+ * twice). Before, an ended step listed its plain chips first and its untrusted ones last,
+ * so "Indicator 203.0.113.77 · Kind IP" turned into "Kind IP · Indicator 203.0.113.77".
+ */
+export function stepParamChips(step: Pick<RunLogStep, 'params' | 'result'>): StepParamChip[] {
+  const result = step.result;
+  const untrusted = result?.untrusted_params ?? {};
+  const plain = result?.params ?? step.params ?? {};
+  const has = (map: object, key: string) => Object.prototype.hasOwnProperty.call(map, key);
+  const order: string[] = [];
+  for (const key of [...Object.keys(step.params ?? {}), ...Object.keys(plain), ...Object.keys(untrusted)]) {
+    if (!order.includes(key)) order.push(key);
+  }
+  const chips: StepParamChip[] = [];
+  for (const key of order) {
+    if (has(untrusted, key)) chips.push({ key, value: untrusted[key], untrusted: true });
+    else if (has(plain, key)) chips.push({ key, value: plain[key], untrusted: false });
+  }
+  return chips;
+}
+
 interface StepRowProps {
   step: RunLogStep;
   idPrefix: string;
@@ -256,44 +331,55 @@ function StepRow({ step, idPrefix, onInspect = null }: StepRowProps) {
   const result = step.result;
   const summary = result?.summary ?? '';
   const scope = scopeLine(result);
-  const untrustedMap = result?.untrusted_params ?? {};
-  const untrusted = Object.entries(untrustedMap);
-  // Most tools put the same input in both maps: a key shown as untrusted text (mono) is
-  // shown ONCE, never also as a plain chip (it read as if applied twice).
-  const params = Object.entries(result?.params ?? step.params).filter(
-    ([key]) => !Object.prototype.hasOwnProperty.call(untrustedMap, key),
-  );
+  // One order while running and once ended; an untrusted key shown once, as mono text.
+  const paramChips = stepParamChips(step);
   const sources = result?.sources ?? [];
-  const sourceInParams = [...params, ...untrusted].some(
-    ([key]) => key === 'source' || key === 'sources' || key === 'source_id',
-  );
+  const sourceInParams = paramChips.some(({ key }) => key === 'source' || key === 'sources' || key === 'source_id');
+  const sourceChip = !sourceInParams && sources.length ? sources : null;
   const duration = result && step.status !== 'running' ? formatDuration(result.duration_ms) : null;
   // A long lookup's count while it runs ("Counted 42,000 of 118,402 cases…").
   const progress = step.status === 'running' && step.progress ? progressLine(step.progress) : null;
   const inspectable = !!onInspect && step.kind === 'tool' && step.status !== 'running' && !!result;
+  const word = STEP_STATUS_LABEL[step.status];
+  const chips = paramChips.length || sourceChip;
   return (
     <div className="flex min-w-0 items-start gap-2" data-step-status={step.status}>
-      <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+      <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
         <StatusIcon status={step.status} />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
           <span className="text-sm text-foreground">{step.label}</span>
-          {params.map(([key, value]) => (
-            <Chip key={key} name={paramKeyLabel(key)} value={paramValue(value, key)} />
-          ))}
-          {!sourceInParams && sources.length ? <Chip name="Source" value={sources.join(', ')} /> : null}
-          {untrusted.map(([key, value]) => (
-            <Chip key={`u-${key}`} name={paramKeyLabel(key)} value={value} mono />
-          ))}
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <span className="text-2xs tabular-nums text-muted-foreground">
-              {STEP_STATUS_LABEL[step.status]}
-              {duration ? ` · ${duration}` : ''}
+          {SPOKEN_ONLY.has(step.status) ? (
+            <span className="sr-only">{word}</span>
+          ) : (
+            <span className="text-xs font-medium text-foreground" data-testid="run-log-status">
+              {word}
             </span>
-            {inspectable && onInspect ? <InspectButton step={step} onInspect={onInspect} /> : null}
-          </span>
+          )}
+          {duration ? (
+            <span className="text-xs tabular-nums text-muted-foreground" data-testid="run-log-duration">
+              · {duration}
+            </span>
+          ) : null}
+          {inspectable && onInspect ? (
+            <span className="ml-auto self-center">
+              <InspectButton step={step} onInspect={onInspect} />
+            </span>
+          ) : null}
         </div>
+        {chips ? (
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1" data-testid="run-log-chips">
+            {paramChips.map((chip) =>
+              chip.untrusted ? (
+                <Chip key={`u-${chip.key}`} name={paramKeyLabel(chip.key)} value={chip.value} mono />
+              ) : (
+                <Chip key={chip.key} name={paramKeyLabel(chip.key)} value={paramValue(chip.value, chip.key)} />
+              ),
+            )}
+            {sourceChip ? <SourcesChip names={sourceChip} id={`${idPrefix}-s${step.index}-sources`} /> : null}
+          </div>
+        ) : null}
         {progress ? (
           <p className="mt-0.5 text-xs tabular-nums text-muted-foreground" data-testid="run-log-progress">
             {progress}
@@ -347,10 +433,35 @@ export interface RunLogListProps {
   className?: string;
 }
 
+/** The live log before any lookup ran (T20): what the assistant is doing, never "No lookups yet." */
+export const PENDING_TEXT = {
+  reading: 'Reading your question…',
+  choosing: 'Choosing lookups…',
+} as const;
+
+/** The engine's label of a model call that is still deciding what to look up. */
+const THINKING_LABEL = 'Thinking';
+
+/**
+ * What the live log says while no lookup has run yet, or null once it has one to show:
+ * "Reading your question…" before the first model call, "Choosing lookups…" while that
+ * call decides. A model step that writes the answer straight away keeps its own row.
+ */
+export function pendingLine(steps: readonly RunLogStep[], notes: readonly RunLogNote[] = []): string | null {
+  if (notes.length || steps.some((step) => step.kind === 'tool')) return null;
+  if (!steps.length) return PENDING_TEXT.reading;
+  const last = steps[steps.length - 1];
+  if (steps.every((step) => step.kind === 'model' && quietModelNote(step) === null) && last.status === 'running' && last.label === THINKING_LABEL) {
+    return PENDING_TEXT.choosing;
+  }
+  return null;
+}
+
 /** The rows themselves; the host owns the disclosure that shows or hides them. */
 export function RunLogList({ steps, id, hidden = false, notes = [], onInspect = null, className }: RunLogListProps) {
   const rows = React.useMemo(() => buildRunRows(steps), [steps]);
-  const empty = !rows.length && !notes.length;
+  const pending = pendingLine(steps, notes);
+  const empty = pending !== null || (!rows.length && !notes.length);
   return (
     <div id={id} hidden={hidden} className={className}>
       {!empty ? (
@@ -384,7 +495,10 @@ export function RunLogList({ steps, id, hidden = false, notes = [], onInspect = 
           ))}
         </ol>
       ) : (
-        <p className="text-xs text-muted-foreground">No lookups yet.</p>
+        <p className="flex items-center gap-2 text-xs text-muted-foreground" data-testid="run-log-pending">
+          <LoadingGlyph size="sm" className="size-4" aria-hidden />
+          {pending ?? PENDING_TEXT.reading}
+        </p>
       )}
     </div>
   );
@@ -399,9 +513,10 @@ export interface RunLogHeaderProps {
 }
 
 /**
- * The live header: "Working · 3 lookups · 1.2k tokens · $0.002", updated on every
- * `usage` event, plus an output estimate (≈) while answer text streams. It is the
- * run log's disclosure button (`aria-expanded` / `aria-controls`).
+ * The live header (Round 13, SPEC-chat T20): "Working · 3 lookups" on the left, the live
+ * usage "1.2k tokens · $0.002" on the right, muted and `tabular-nums` (the live cost stays,
+ * Round 12 D5), plus an output estimate (≈) while answer text streams. The left part is
+ * the run log's disclosure button (`aria-expanded` / `aria-controls`).
  */
 export function RunLogHeader({ live, open, onToggle, controls }: RunLogHeaderProps) {
   const lookups = live.steps.filter((step) => step.kind === 'tool').length;
@@ -413,27 +528,51 @@ export function RunLogHeader({ live, open, onToggle, controls }: RunLogHeaderPro
         : live.waiting
           ? 'Waiting for another answer to finish'
           : 'Working';
-  const parts = [state];
-  if (lookups) parts.push(lookupsLabel(lookups));
+  const counts = lookups ? [lookupsLabel(lookups)] : [];
+  const usage: string[] = [];
   if (live.usage) {
     const approx = live.usage.estimated ? '≈ ' : '';
-    parts.push(`${approx}${compactTokens(live.usage.total_tokens)} tokens`);
-    parts.push(`${approx}${formatCost(live.usage.cost)}`);
-    if (live.usage.simulated) parts.push('simulated');
+    usage.push(`${approx}${compactTokens(live.usage.total_tokens)} tokens`);
+    usage.push(`${approx}${formatCost(live.usage.cost)}`);
+    if (live.usage.simulated) usage.push('simulated');
   }
-  if (live.text) parts.push(`≈ ${compactTokens(Math.ceil(live.text.length / 4))} output tokens`);
+  if (live.text) usage.push(`≈ ${compactTokens(Math.ceil(live.text.length / 4))} output tokens`);
+  // Each figure group stays whole ("· 4 lookups", "≈ 1.2k tokens", "· $0.04"): a line
+  // breaks only BETWEEN groups, so a count is never split from its unit. The state is a
+  // sentence and wraps between its words like any prose ("Connection lost. Checking
+  // whether the answer was saved" is wider than a phone's header row). The row wraps
+  // too, so on a narrow column the usage drops under the progress instead of squeezing it.
+  const groups = (parts: readonly string[], after = false) =>
+    parts.map((part, i) => (
+      <React.Fragment key={`${i}-${part}`}>
+        {i || after ? ' ' : null}
+        <span className="whitespace-nowrap" data-figure-group="">
+          {i || after ? `· ${part}` : part}
+        </span>
+      </React.Fragment>
+    ));
   return (
-    <button
-      type="button"
-      className="inline-flex min-h-7 max-w-full items-center gap-2 rounded-sm text-left text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      aria-expanded={open}
-      aria-controls={controls}
-      onClick={onToggle}
-      data-testid="run-log-header"
-    >
-      <LoadingGlyph size="sm" className="size-3.5" aria-hidden />
-      <span className="min-w-0 truncate tabular-nums">{parts.join(' · ')}</span>
-      <ChevronRight className={cn('size-3.5 shrink-0 transition-transform motion-reduce:transition-none', open && 'rotate-90')} aria-hidden />
-    </button>
+    <div className="flex min-h-7 min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground" data-testid="run-log-header-row">
+      <button
+        type="button"
+        className="inline-flex min-h-7 min-w-0 items-center gap-2 rounded-sm text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        aria-expanded={open}
+        aria-controls={controls}
+        onClick={onToggle}
+        data-testid="run-log-header"
+      >
+        <LoadingGlyph size="sm" className="size-4" aria-hidden />
+        <span className="min-w-0 tabular-nums" data-testid="run-log-progress-label">
+          <span data-run-state="">{state}</span>
+          {groups(counts, true)}
+        </span>
+        <ChevronRight className={cn('size-3.5 shrink-0 transition-transform motion-reduce:transition-none', open && 'rotate-90')} aria-hidden />
+      </button>
+      {usage.length ? (
+        <span className="ml-auto min-w-0 text-right tabular-nums" data-testid="run-log-usage">
+          {groups(usage)}
+        </span>
+      ) : null}
+    </div>
   );
 }

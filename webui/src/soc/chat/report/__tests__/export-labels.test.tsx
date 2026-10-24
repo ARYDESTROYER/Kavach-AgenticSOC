@@ -504,3 +504,33 @@ describe('Word column split notes', () => {
     for (const n of notes) expect(n).not.toMatch(/(\d+)–\1 /);
   });
 });
+
+describe('an indicator card names its kind once in a report export (T14)', () => {
+  /** `lookup_indicator`'s card as answers saved before the fix hold it: a raw "Kind ip" fact. */
+  const INDICATOR = {
+    type: 'entity',
+    id: 'ioc',
+    provenance: 'source',
+    artifact_kind: 'entity',
+    allowed_views: ['entity'],
+    entity: { kind: 'ip', value: '198.51.100.250' },
+    facts: [
+      { label: 'Kind', value: 'ip' },
+      { label: 'Providers', value: '1 of 1 answered' },
+    ],
+    reputation: [],
+    counts: [],
+    related_cases: [],
+  };
+
+  it('writes one Kind row, in words, in the document nodes and the Markdown', () => {
+    const doc = buildReportDoc({ ...lifetimeReport(), items: [section('it-ioc', 'Indicator', [INDICATOR])] }, { generatedAt: NOW.toISOString() });
+    const table = documentNodes(doc, { defang: false }).find((n): n is TableNode => n.k === 'table')!;
+    const kindRows = table.rows.filter((row) => row[0] === 'Kind');
+    expect(kindRows).toEqual([['Kind', 'IP address']]);
+    expect(table.rows.map((row) => row[0])).toContain('Providers');
+    const md = reportToMarkdown(doc, { defang: false });
+    expect(md.match(/\| Kind \|/g)).toHaveLength(1);
+    expect(md).not.toMatch(/\| ip \|/);
+  });
+});

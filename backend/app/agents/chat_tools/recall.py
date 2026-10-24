@@ -32,6 +32,7 @@ from ..chat_events import RECALL_TOOL
 
 NAME = RECALL_TOOL
 LABEL = "Re-read an earlier lookup result"
+RUNNING_LABEL = "Re-reading an earlier lookup result"
 SIGNATURE = f"{NAME}(ref) -- read again the full result of an earlier lookup of this question (ref: t3)"
 DISPLAY_KEYS = ("ref",)
 

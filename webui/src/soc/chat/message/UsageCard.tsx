@@ -1,5 +1,7 @@
 /**
- * UsageCard — a turn's exact usage behind the meta row's token figure (SPEC §8 item 3).
+ * UsageCard — a turn's exact usage behind the meta row's COST (SPEC §8 item 3; Round 13
+ * SPEC-chat D5, T10: the cost stays in the meta row and the tokens move into this card;
+ * a turn without a cost keeps the token figure as the trigger).
  *
  * Input (uncached + cache read + cache write, the user-facing definition of §3.4),
  * cached, output, total, embedding, cost, model latency, model and the sources the
@@ -16,7 +18,7 @@ import * as React from 'react';
 import { fmtNumber } from '@/lib/format';
 import type { TurnUsage } from '@/lib/types';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/popover';
-import { formatCost, formatDuration, inputTokens, usageSummary } from './format';
+import { compactTokens, formatCost, formatDuration, inputTokens, usageSummary } from './format';
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -29,15 +31,40 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
 
 export interface UsageCardProps {
   usage: TurnUsage;
-  /**
-   * Classes for the cost segment of the figure (the meta row hides it in a narrow lane;
-   * the accessible name and the details always carry it).
-   */
-  costClassName?: string;
   /** The host shows the Demo "simulated" marker itself (so it never truncates away). */
   simulatedOutside?: boolean;
   /** Source names the lookups queried (display text). */
   sources?: readonly string[];
+}
+
+/** The turn has a cost to show (a finite, non-negative amount). */
+export function hasCost(usage: Pick<TurnUsage, 'cost'>): boolean {
+  return typeof usage.cost === 'number' && Number.isFinite(usage.cost) && usage.cost >= 0;
+}
+
+/**
+ * The meta row's visible figure: the cost ("$0.004", "≈ $0.004"), or the token figure
+ * ("2.1k tokens") when the turn has no cost. The card holds the rest.
+ */
+export function usageTriggerText(usage: TurnUsage): string {
+  const approx = usage.estimated ? '≈ ' : '';
+  return hasCost(usage) ? `${approx}${formatCost(usage.cost)}` : usageSummary(usage, { withCost: false, withSimulated: false });
+}
+
+/**
+ * The trigger's accessible name, which STARTS with its visible label (WCAG 2.5.3, so a
+ * speech-input user can say what they see): "$0.06 · 16.7k tokens · simulated. Usage
+ * details", or "1.2k tokens. Usage details" when the turn has no cost. "simulated" is
+ * spoken here even when the row shows it outside the button (`simulatedOutside`).
+ */
+export function usageTriggerName(usage: TurnUsage, simulatedOutside = false): string {
+  const approx = usage.estimated ? '≈ ' : '';
+  const visible = usageTriggerText(usage);
+  const parts = [visible];
+  if (usage.simulated && !simulatedOutside) parts.push('simulated');
+  if (hasCost(usage)) parts.push(`${approx}${compactTokens(usage.total_tokens)} tokens`);
+  if (usage.simulated && simulatedOutside) parts.push('simulated');
+  return `${parts.join(' · ')}. Usage details`;
 }
 
 /** The card body (exported for the toolbar total and tests). */
@@ -71,10 +98,8 @@ export function UsageDetails({ usage, sources = [] }: UsageCardProps) {
 const HOVER_OPEN_MS = 250;
 const HOVER_CLOSE_MS = 150;
 
-/** The meta row's token figure: a button that opens the usage details. */
-export function UsageCard({ usage, sources, costClassName, simulatedOutside = false }: UsageCardProps) {
-  const summary = usageSummary(usage);
-  const approx = usage.estimated ? '≈ ' : '';
+/** The meta row's cost figure: a button that opens the usage details (tokens included). */
+export function UsageCard({ usage, sources, simulatedOutside = false }: UsageCardProps) {
   const [open, setOpen] = React.useState(false);
   /** Opened by a hovering mouse (not pinned): closes when the pointer leaves. */
   const hoverRef = React.useRef(false);
@@ -114,8 +139,10 @@ export function UsageCard({ usage, sources, costClassName, simulatedOutside = fa
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="min-w-0 truncate rounded-sm tabular-nums hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label={`${summary}. Usage details`}
+          // A figure never truncates (T10): the row moves it into ⋯ before it would.
+          className="shrink-0 whitespace-nowrap rounded-sm tabular-nums hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label={usageTriggerName(usage, simulatedOutside)}
+          data-testid="usage-trigger"
           onPointerEnter={hoverOpen}
           onPointerLeave={hoverClose}
           onClick={(event) => {
@@ -127,8 +154,7 @@ export function UsageCard({ usage, sources, costClassName, simulatedOutside = fa
             }
           }}
         >
-          {usageSummary(usage, { withCost: false, withSimulated: false })}
-          <span className={costClassName}>{` · ${approx}${formatCost(usage.cost)}`}</span>
+          {usageTriggerText(usage)}
           {usage.simulated && !simulatedOutside ? ' · simulated' : null}
         </button>
       </PopoverTrigger>

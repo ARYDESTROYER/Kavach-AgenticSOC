@@ -960,6 +960,11 @@ export interface paths {
          * Get Campaign
          * @description One campaign by its (content-hash) id — its member case ids, shared entities,
          *     MITRE union and severity rollup. 404 when absent. Read-only advisory (#3/#4).
+         *
+         *     ``case_numbers`` (Round 13 polish, additive) maps a member case id to its display
+         *     number ("CASE-000045"), so the Campaigns detail sheet names members the way the rest
+         *     of the console does. Bounded (:data:`_MEMBER_NUMBER_READS` reads); a member without
+         *     a number, past the bound or whose read fails is simply absent and keeps its id.
          */
         get: operations["get_campaign_api_campaigns__campaign_id__get"];
         put?: never;
@@ -1699,7 +1704,8 @@ export interface paths {
          * Chat Context
          * @description Everything the composer meter needs (SPEC §8): the effective model and its
          *     limits, the static prompt and history estimates, the caller's tool catalogue,
-         *     the live-text availability, the §4.2 bounds, calibration and the starters.
+         *     the live-text availability, the §4.2 bounds, calibration and the static evergreen
+         *     starters (Round 13 SPEC D2: no case-store read).
          *     Money and budget fields need ``models:read``; ``spent_today``/``remaining`` also
          *     ``cost:view``. Cached per principal for 30 s (dropped when one of the caller's
          *     turns ends) and resolved without audit rows.
@@ -1923,6 +1929,46 @@ export interface paths {
         get: operations["chat_feedback_summary_api_chat_feedback_summary_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/starters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Starters
+         * @description The caller's starters for ``surface`` (see the module docstring).
+         */
+        get: operations["chat_starters_api_chat_starters_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/chat/starters/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Chat Starter Event
+         * @description Record that the caller saw, used or hid starters (see the module docstring).
+         */
+        post: operations["chat_starter_event_api_chat_starters_events_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -7003,6 +7049,29 @@ export interface components {
             soft_warn_pct: number;
         };
         /**
+         * ChatCatchUp
+         * @description "Since {since_label}: clause, clause and clause." (at most 160 characters as a
+         *     whole line; the server drops clauses from the end until it fits).
+         */
+        ChatCatchUp: {
+            /** Clauses */
+            clauses?: components["schemas"]["ChatCatchUpClause"][];
+            /** Since */
+            since: string;
+            /** Since Label */
+            since_label: string;
+        };
+        /**
+         * ChatCatchUpClause
+         * @description One clause of the catch-up line ("5 new cases (2 critical)") and the starter
+         *     it sends when clicked (action ``send`` only; SPEC §3.6).
+         */
+        ChatCatchUpClause: {
+            starter: components["schemas"]["ChatStarter"];
+            /** Text */
+            text: string;
+        };
+        /**
          * ChatClarify
          * @description A clarifying question the model asked instead of guessing (SPEC D10). Option
          *     text is model-authored and may echo log values: the UI renders it as untrusted
@@ -7748,22 +7817,118 @@ export interface components {
         };
         /**
          * ChatStarter
-         * @description One empty-state starter card (SPEC §10.5).
+         * @description One starter card (SPEC §10.5; Round 13 SPEC-chat §3.2.1).
+         *
+         *     ``id`` is the FAMILY id (one card per family; the pre-Round-13 ids investigate,
+         *     hunt, posture, shift_brief, explain_metric and learn_app stay valid). ``label`` is
+         *     a short family name and ``description`` equals ``reason``, for older clients. For
+         *     action ``send``, ``prompt`` is both the visible question and the exact text the
+         *     client sends with ``origin: "starter"`` (never edited, never put in the composer);
+         *     dynamic templates render at most 100 characters. Action ``open_conversation`` and
+         *     ``use_prompt`` cards are display-only: ``prompt`` is their card text (at most 120
+         *     characters) and is never sent; ``ref`` names the conversation or saved prompt.
          */
         ChatStarter: {
+            /**
+             * Action
+             * @default send
+             * @enum {string}
+             */
+            action: "send" | "open_conversation" | "use_prompt";
+            /** As Of */
+            as_of?: string | null;
             /**
              * Description
              * @default
              */
             description: string;
+            /** Expires At */
+            expires_at?: string | null;
             /** Id */
             id: string;
+            /** Key */
+            key?: string | null;
             /** Label */
             label: string;
             /** Prompt */
             prompt: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            ref?: components["schemas"]["ChatStarterRef"] | null;
+            /** Template */
+            template?: string | null;
             /** Tools */
             tools?: string[];
+            /**
+             * Urgency
+             * @default none
+             * @enum {string}
+             */
+            urgency: "none" | "attention" | "critical";
+        };
+        /**
+         * ChatStarterEvent
+         * @description ``POST /api/chat/starters/events`` body (SPEC §3.2.2, §3.6). Presentation state
+         *     only: it updates the caller's own starter state document, writes no audit row and
+         *     stores no text (D10). A ``thread`` ``viewed`` event carries no keys.
+         */
+        ChatStarterEvent: {
+            /** Keys */
+            keys?: string[];
+            /**
+             * Surface
+             * @default home
+             * @enum {string}
+             */
+            surface: "home" | "thread" | "case";
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "viewed" | "used" | "dismissed";
+        };
+        /**
+         * ChatStarterRef
+         * @description A typed reference a starter names (a case, rule, source, campaign, ATT&CK
+         *     technique) or opens (a conversation, a saved prompt). ``value`` passes its kind's
+         *     strict grammar (``chat_starter_text.ref_value``) unchanged, or the model refuses it:
+         *     a value is never cut, quoted or altered (SPEC §3.8.1).
+         */
+        ChatStarterRef: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "case" | "rule" | "source" | "campaign" | "technique" | "conversation" | "prompt";
+            /** Value */
+            value: string;
+        };
+        /**
+         * ChatStartersInfo
+         * @description ``GET /api/chat/starters`` (SPEC §3.2.2). ``enabled`` mirrors
+         *     ``chat_agent.dynamic_starters``; when it is false the server returns the evergreen
+         *     set only and no catch-up line. ``expires_at`` is ``as_of`` + 120 s.
+         */
+        ChatStartersInfo: {
+            /** As Of */
+            as_of: string;
+            catch_up?: components["schemas"]["ChatCatchUp"] | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Expires At */
+            expires_at: string;
+            /** Starters */
+            starters?: components["schemas"]["ChatStarter"][];
+            /**
+             * Surface
+             * @enum {string}
+             */
+            surface: "home" | "thread" | "case";
+            /** Timezone */
+            timezone: string;
         };
         /**
          * ChatStep
@@ -14350,6 +14515,70 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ChatFeedbackSummary"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_starters_api_chat_starters_get: {
+        parameters: {
+            query?: {
+                surface?: "home" | "thread" | "case";
+                conversation_id?: string | null;
+                case_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatStartersInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_starter_event_api_chat_starters_events_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatStarterEvent"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

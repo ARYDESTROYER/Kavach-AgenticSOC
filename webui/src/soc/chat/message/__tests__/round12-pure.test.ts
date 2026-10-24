@@ -122,6 +122,23 @@ describe('zero-result chips', () => {
     expect(suggestionQuestion('Any severity')).toBe('Show the same for any severity');
   });
 
+  it('keeps the label\'s own case after its first word (Round 13 T11 display labels)', () => {
+    // The engine's display label names the field in its own words: "source IP" stays.
+    expect(suggestionQuestion('Without the source IP filter')).toBe('Show the same without the source IP filter');
+    expect(suggestionQuestion('  Without the source IP filter ')).toBe('Show the same without the source IP filter');
+    expect(suggestionQuestion('Open and closed cases')).toBe('Show the same for open and closed cases');
+    expect(suggestionQuestion('Last 30 days')).toBe('Show the same for the last 30 days');
+    // Prefixes match whatever their case; an acronym leading the label keeps its capitals.
+    expect(suggestionQuestion('without the host filter')).toBe('Show the same without the host filter');
+    expect(suggestionQuestion('ALL TIME')).toBe('Show the same for all time');
+    expect(suggestionQuestion('IP addresses seen today')).toBe('Show the same for IP addresses seen today');
+    expect(suggestionQuestion('A wider window')).toBe('Show the same for a wider window');
+    // The chip shows the label as written and sends the question built from it.
+    expect(zeroChips([{ label: 'Without the source IP filter', tool: 'search_logs' }])).toEqual([
+      { label: 'Without the source IP filter', question: 'Show the same without the source IP filter' },
+    ]);
+  });
+
   it('dedupes chips, keeps at most four, and leaves out a chip a shown follow-up already asks', () => {
     const chips = zeroChips([
       { label: 'All time', tool: 'case_stats' },
@@ -455,8 +472,14 @@ describe('chip values', () => {
     expect(windowLabel('now-90d')).toBe('last 90 days');
     expect(windowLabel('2026-07-01/2026-09-30')).toBe('2026-07-01/2026-09-30');
     expect(paramValue('this_quarter', 'window')).toBe('this quarter');
-    expect(paramValue('FALSE_POSITIVE', 'verdict')).toBe('false positive');
-    expect(paramValue('NEEDS_HUMAN', 'verdict')).toBe('needs human');
+    // The badges' words (Round 13 T14).
+    expect(paramValue('FALSE_POSITIVE', 'verdict')).toBe('False positive');
+    expect(paramValue('NEEDS_HUMAN', 'verdict')).toBe('Needs human');
+    expect(paramValue('on_hold', 'status')).toBe('On hold');
+    expect(paramValue('ip', 'kind')).toBe('IP');
+    expect(paramValue('esql', 'language')).toBe('ES|QL');
+    // A kind with no console word reads in sentence case (Round 13 review F21), never raw.
+    expect(paramValue('weird_kind', 'kind')).toBe('Weird kind');
     expect(paramValue('FALSE_POSITIVE', 'query')).toBe('FALSE_POSITIVE');
   });
 });

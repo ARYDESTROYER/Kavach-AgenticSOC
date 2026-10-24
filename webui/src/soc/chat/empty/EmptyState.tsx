@@ -1,65 +1,63 @@
 /**
- * EmptyState — the new-chat start surface (SPEC §10.5).
+ * EmptyState — what a conversation shows before its first message (SPEC-chat §3.1,
+ * §3.11, §3.14, §5.2; replaces the chat revamp's §10.5 starter grid).
  *
- * Top-aligned in the 48rem lane: one capability line, then a 2×3 grid of starters
- * (one column below 560 px of lane width, each card ≤ 64 px tall), then the "What can
- * the assistant access?" link that opens the access popover and (Round 12) the "Browse
- * the prompt library" link that opens the composer's prompt library. A starter card is shown
- * only when every tool it needs is allowed for this user, so a restricted role never
- * sees a card that would end in "Denied". Starter text is server-built from live
- * context (a case id, a source name) and renders as text (#9); clicking a card hands
- * the starter to the host, which sends its prompt with `origin: "starter"`.
+ * - **Workspace** (`variant="workspace"`): the Round 13 start stack
+ *   ({@link StartScreen}): a greeting, the "since you were last here" line or the
+ *   capability line, 3 or 4 dynamic "Right now" cards read from
+ *   `GET /api/chat/starters` (the host owns that read through `useChatStarters`, so it
+ *   can also record the `viewed` event on the first send), and the prompt library's
+ *   category pills. The host sends a card's question with `origin: "starter"`, opens a
+ *   conversation, or runs a saved prompt, by the card's action.
+ * - **Case** (`variant="case"`, Case Manager chat and a case-scoped Chat page): one
+ *   compact capability line with the access popover link, plus the three case-scoped
+ *   chips of `GET /api/chat/starters?surface=case`, sent in the case chat with
+ *   `origin: "starter"`. Case chips stay case-scoped and never reach personal
+ *   Workspace history (#5).
  *
- * The Case Manager variant is a single compact line (no grid): its quick actions
- * belong to the case panel.
- *
- * States are explicit (UI standard): skeleton cards while `/chat/context` loads; one
- * honest line with Retry when it cannot be read (`error` with no context), instead of
- * skeletons that never resolve; nothing but the capability line when no starter is
- * allowed for this role. While a promptbook runs (it may be waiting on another thread),
- * the cards are paused with the composer's reason: one click would open a new thread,
- * and the book would stop itself because another conversation is open.
+ * Every server string renders as React text only (#9).
  */
-import { useId, useSyncExternalStore } from 'react';
 import type { ChatContextInfo, ChatStarter } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
-import { Library } from 'lucide-react';
-import { AccessPopover, ContextUnavailable } from '../composer/AccessPopover';
-import { toolsAllowed } from '../composer/commands';
-import { openPromptLibrary } from '../composer/library-events';
-import { PROMPTBOOK_RUNNING_REASON } from '../composer/PromptRunner';
-import { getPromptbook, subscribePromptbook } from '../composer/promptbook-store';
-import { starterIcon } from './starter-icons';
+import { AccessPopover } from '../composer/AccessPopover';
+import { CaseStarterChips } from '../starters/CaseStarterChips';
+import { StartScreen } from '../starters/StartScreen';
+import type { ChatStartersController } from '../starters/useChatStarters';
+
+export { CAPABILITY_LINE } from '../starters/StartScreen';
+
+export const CASE_CAPABILITY_LINE = 'Ask about this case: what happened, the evidence and the decision. Read-only.';
+export const ACCESS_LINK = 'What can the assistant access?';
 
 export interface EmptyStateProps {
+  /** The tool catalogue (`/chat/context`): the category pills and the access popover. */
   context: ChatContextInfo | null;
-  /** Send the starter's prompt (the host calls engine.send(prompt, {origin: 'starter'})). */
+  /**
+   * A card, catch-up clause or case chip was chosen. Workspace: the host dispatches on
+   * `starter.action`; case: the host sends `starter.prompt` with `origin: "starter"`.
+   */
   onStarter: (starter: ChatStarter) => void;
-  /** 'case' renders the compact Case Manager variant (no starter grid). */
+  /** 'case' renders the compact Case Manager variant with its case chips. */
   variant?: 'workspace' | 'case';
-  /** Starters cannot be sent right now (a thread is restoring, a turn is running). */
+  /** Starters cannot be used right now (a thread is restoring, a turn is running). */
   disabled?: boolean;
   className?: string;
-  /** `/chat/context` failed and nothing is cached (`useChatContext().error`). */
+  /** `/chat/context` failed and nothing is cached (the case variant's access popover). */
   error?: string | null;
   /** Retry the context read (`useChatContext().refresh`). */
   onRetry?: () => void;
-}
-
-/** SPEC §10.5 capability line. */
-export const CAPABILITY_LINE =
-  'Ask about your data, build a quick report, or learn how this console works. Read-only.';
-const CASE_CAPABILITY_LINE = 'Ask about this case: what happened, the evidence and the decision. Read-only.';
-const ACCESS_LINK = 'What can the assistant access?';
-/** Round 12 prompt library (SPEC §3.1). */
-export const LIBRARY_LINK = 'Browse the prompt library';
-const MAX_STARTERS = 6;
-
-/** The starters this user can run: every tool allowed, at most six, server order. */
-export function visibleStarters(context: ChatContextInfo | null): ChatStarter[] {
-  if (!context) return [];
-  return (context.starters ?? []).filter((s) => s.tools.length === 0 || toolsAllowed(context, s.tools)).slice(0, MAX_STARTERS);
+  /**
+   * Workspace: the home starters; null or absent when the viewer switched them off.
+   * Case: the host's read of the case chips (absent: the chips read them themselves).
+   */
+  starters?: ChatStartersController | null;
+  /** The signed-in username (greeting, and the per-principal suggestion cache). */
+  principal?: string | null;
+  /** Workspace: the keys of the cards on screen (for the `viewed` event). */
+  onShownKeysChange?: (keys: string[]) => void;
+  /** Case: the case its chips are read for. */
+  caseId?: string | null;
 }
 
 function AccessLink({
@@ -94,97 +92,34 @@ export function EmptyState({
   className,
   error = null,
   onRetry,
+  starters = null,
+  principal = null,
+  onShownKeysChange,
+  caseId = null,
 }: EmptyStateProps) {
-  // The running promptbook lives outside any composer (it outlives a thread switch).
-  const book = useSyncExternalStore(subscribePromptbook, getPromptbook, getPromptbook);
-  const reasonId = useId();
   if (variant === 'case') {
     return (
-      <div className={cn('flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2', className)}>
-        <p className="text-sm text-muted-foreground">{CASE_CAPABILITY_LINE}</p>
-        <AccessLink context={context} error={error} onRetry={onRetry} />
+      // Proportional numerals: the line and chips are prose (tabular ones set hyphens wide).
+      <div className={cn('space-y-2 py-2 proportional-nums', className)} data-testid="case-chat-start">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <p className="text-sm text-muted-foreground">{CASE_CAPABILITY_LINE}</p>
+          <AccessLink context={context} error={error} onRetry={onRetry} />
+        </div>
+        {caseId ? (
+          <CaseStarterChips caseId={caseId} principal={principal} disabled={disabled} onSend={onStarter} starters={starters} />
+        ) : null}
       </div>
     );
   }
-
-  const starters = visibleStarters(context);
-  // A failed read with nothing cached is an error, not a load that never ends.
-  const failed = context === null && Boolean(error);
-  const loading = context === null && !failed;
-  const bookRunning = book?.status === 'running';
-  const paused = disabled || bookRunning;
-
   return (
-    <section aria-label="Start a conversation" className={cn('@container w-full max-w-3xl pt-2', className)}>
-      <p className="text-sm text-muted-foreground">{CAPABILITY_LINE}</p>
-      {failed ? (
-        <ContextUnavailable onRetry={onRetry} className="mt-4" />
-      ) : loading ? (
-        <div aria-hidden="true" className="mt-4 grid grid-cols-1 gap-2 @[560px]:grid-cols-2">
-          {Array.from({ length: MAX_STARTERS }, (_, index) => (
-            <div key={index} className="h-14 rounded-md border border-border/60 bg-muted/30" />
-          ))}
-        </div>
-      ) : starters.length ? (
-        <ul
-          aria-label="Suggested questions"
-          aria-describedby={bookRunning ? reasonId : undefined}
-          className="mt-4 grid grid-cols-1 gap-2 @[560px]:grid-cols-2"
-        >
-          {starters.map((starter) => {
-            const Icon = starterIcon(starter.id);
-            return (
-              <li key={starter.id} className="min-w-0">
-                <button
-                  type="button"
-                  disabled={paused}
-                  onClick={() => onStarter(starter)}
-                  data-starter={starter.id}
-                  className={cn(
-                    'group flex h-full max-h-16 w-full items-start gap-3 rounded-md border border-border bg-card px-3 py-2.5 text-left',
-                    'transition-colors hover:border-border-strong hover:bg-muted/50 disabled:pointer-events-none disabled:opacity-50',
-                    focusRing,
-                  )}
-                >
-                  <Icon
-                    className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
-                    aria-hidden="true"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-sm font-medium leading-5 text-foreground">{starter.label}</span>
-                    {starter.description ? (
-                      <span className="block truncate text-xs leading-4 text-muted-foreground" title={starter.description}>
-                        {starter.description}
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-      {bookRunning && starters.length > 0 && !failed && !loading ? (
-        <p id={reasonId} className="mt-2 text-xs text-muted-foreground">
-          {PROMPTBOOK_RUNNING_REASON}
-        </p>
-      ) : null}
-      {failed ? null : (
-        <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
-          <AccessLink context={context} error={error} onRetry={onRetry} />
-          <button
-            type="button"
-            onClick={() => openPromptLibrary()}
-            className={cn(
-              'inline-flex items-center gap-1 rounded-sm text-xs text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline',
-              focusRing,
-            )}
-          >
-            <Library className="size-3.5" aria-hidden="true" />
-            {LIBRARY_LINK}
-          </button>
-        </div>
-      )}
-    </section>
+    <StartScreen
+      context={context}
+      starters={starters}
+      principal={principal}
+      disabled={disabled}
+      onActivate={onStarter}
+      onShownKeysChange={onShownKeysChange}
+      className={className}
+    />
   );
 }

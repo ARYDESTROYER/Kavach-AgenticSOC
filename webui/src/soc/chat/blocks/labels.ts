@@ -11,8 +11,17 @@
 import { severityLabel, statusLabel, verdictLabel } from '@/soc/components/semantic-labels';
 
 import { formatValue } from './format';
-import type { CitationBlockKind, ColumnType, EntityKind, QueryBlock, QueryLanguage, ReputationVerdict, TimelineKind } from './schema';
-import { CASE_STATUS_KEYS, SEVERITY_KEYS, VERDICT_KEYS } from './schema';
+import type {
+  CitationBlockKind,
+  ColumnType,
+  EntityBlock,
+  EntityKind,
+  QueryBlock,
+  QueryLanguage,
+  ReputationVerdict,
+  TimelineKind,
+} from './schema';
+import { CASE_STATUS_KEYS, ENTITY_KINDS, SEVERITY_KEYS, VERDICT_KEYS } from './schema';
 
 /** The table column types whose known values the screen draws as a badge. */
 export type SemanticColumn = 'severity' | 'verdict' | 'status';
@@ -27,6 +36,23 @@ export const ENTITY_KIND_LABEL: Readonly<Record<EntityKind, string>> = {
   email: 'E-mail',
   process: 'Process',
 };
+
+/**
+ * The facts an entity card lists, on screen and in every export (T14). The card's kind
+ * is its badge (and each export's own Kind row), in words: a fact labelled "Kind" that
+ * restates it ("ip", from answers saved before the server stopped writing it) is left
+ * out, so the kind shows once and never as the raw value. A "Kind" fact naming another
+ * known kind is shown in words. Every other fact is listed as written.
+ */
+export function entityFacts(block: Pick<EntityBlock, 'entity' | 'facts'>): EntityBlock['facts'] {
+  return block.facts.flatMap((fact) => {
+    if (fact.label.trim().toLowerCase() !== 'kind') return [fact];
+    const value = fact.value.trim().toLowerCase();
+    const kind = ENTITY_KINDS.find((k) => k === value || ENTITY_KIND_LABEL[k].toLowerCase() === value);
+    if (!kind) return [fact];
+    return kind === block.entity.kind ? [] : [{ ...fact, value: ENTITY_KIND_LABEL[kind] }];
+  });
+}
 
 export const REPUTATION_LABEL: Readonly<Record<ReputationVerdict, string>> = {
   malicious: 'Malicious',
@@ -98,6 +124,19 @@ export function semanticText(kind: SemanticColumn, text: string): string {
     default:
       return text;
   }
+}
+
+/** Engine context words the console says plainly (Round 13, SPEC-chat T19). */
+const KPI_CONTEXT_WORDS: Readonly<Record<string, string>> = {
+  'not windowed': 'Right now',
+};
+
+/**
+ * A KPI's context as a tile (and an export) says it: the engine's "not windowed" (a count
+ * of right now, not of the chosen window) reads "Right now"; anything else as written.
+ */
+export function kpiContext(context: string): string {
+  return KPI_CONTEXT_WORDS[context.trim().toLowerCase()] ?? context;
 }
 
 /** A yes/no cell as the table shows it. */

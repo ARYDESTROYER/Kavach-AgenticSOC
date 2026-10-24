@@ -19,6 +19,8 @@ import type { SourceInstance } from '@/lib/types';
 import type { ComposerHandle } from '../Composer';
 import {
   CASE_COMPOSER_PLACEHOLDER,
+  COMPOSER_FOCUS_FRAME,
+  COMPOSER_KEY_HINT,
   COMPOSER_PLACEHOLDER,
   COMPOSER_PLACEHOLDER_NARROW,
   READ_ONLY_TOOLTIP,
@@ -26,6 +28,7 @@ import {
 import { TYPE_OUT_HELPER } from '../ComposerOptions';
 import { Harness, makeSpies, stubComposerWidth, stubServer, type EngineSpies, type HarnessProps } from './harness';
 import { makeContext } from './fixtures';
+import { contrastRatio, parseThemeCss, resolveTokenRgb } from '../../../../../scripts/lib/theme-css.mjs';
 
 expect.extend(toHaveNoViolations);
 
@@ -57,6 +60,17 @@ const AUTO_HINT =
   'cover all time; log, metric, cost and audit lookups and the shift brief cover the last 24 hours. ' +
   'Agent improvement always compares fixed periods.';
 
+/** The one-line hint under the time range (SPEC-chat T23). */
+const AUTO_SHORT = 'Auto: each lookup uses its own default window.';
+
+/** Open the scope popover's "How ranges work" disclosure (the full hint, T23). */
+async function showRanges(user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) {
+  const toggle = within(dialog).getByRole('button', { name: 'How ranges work' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await user.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+}
+
 describe('Composer — layout and copy', () => {
   it('renders the placeholder, the Read-only chip, the scope chip and Send in one row', async () => {
     const { textarea } = setup();
@@ -75,6 +89,59 @@ describe('Composer — layout and copy', () => {
     expect(send).toHaveAttribute('aria-disabled', 'true');
   });
 
+  it('asks a plain question at rest, shows the key hint only while focused and empty, and frames focus quietly (T13)', async () => {
+    const { user, textarea } = setup();
+    expect(COMPOSER_PLACEHOLDER).toBe('Ask about cases, logs, metrics or this console');
+    expect(COMPOSER_PLACEHOLDER_NARROW).toBe('Ask a question');
+    expect(textarea.getAttribute('placeholder')).not.toMatch(/[/@]/);
+    expect(screen.queryByTestId('composer-key-hint')).toBeNull();
+    await user.click(textarea);
+    const hint = screen.getByTestId('composer-key-hint');
+    expect(hint).toHaveTextContent(COMPOSER_KEY_HINT);
+    expect(COMPOSER_KEY_HINT).toBe('/ commands · @ scope');
+    expect(hint).toHaveAttribute('aria-hidden', 'true');
+    // The hint sits at the right of the control row, before Options and Send.
+    expect(hint.parentElement).toContainElement(screen.getByRole('button', { name: 'Send' }));
+    await user.type(textarea, 'x');
+    expect(screen.queryByTestId('composer-key-hint')).toBeNull();
+    await user.clear(textarea);
+    expect(screen.getByTestId('composer-key-hint')).toBeInTheDocument();
+    act(() => textarea.blur());
+    expect(screen.queryByTestId('composer-key-hint')).toBeNull();
+    // The frame: 1 px border-ring plus a solid 1 px outer ring (was a 2 px glow at 30 %).
+    const frame = textarea.parentElement as HTMLElement;
+    expect(frame.className).toContain(COMPOSER_FOCUS_FRAME);
+    expect(frame.className).toContain('has-[textarea:focus-visible]:border-ring');
+    expect(frame.className).toContain('has-[textarea:focus-visible]:ring-1');
+    expect(frame.className).toMatch(/has-\[textarea:focus-visible\]:ring-ring(\s|$)/);
+    expect(frame.className).not.toMatch(/ring-ring\/\d+/);
+  });
+
+  it('draws a focus frame whose changed pixels keep 3:1 against what they were, in both themes (measured)', () => {
+    // SPEC-chat T13 and §5.6: the quieter frame must still be seen. The border pixel
+    // changes from `--input` to `--ring` (under 3:1 on its own, which is why it is not
+    // the only change); the solid outer ring pixel changes from the surface behind the
+    // composer to `--ring`.
+    const { light, dark } = parseThemeCss();
+    const themes = { light, dark: new Map<string, string>([...light, ...dark]) };
+    for (const [name, map] of Object.entries(themes)) {
+      const ring = resolveTokenRgb('--ring', map)!;
+      for (const surface of ['--background', '--card'] as const) {
+        const ratio = contrastRatio(ring, resolveTokenRgb(surface, map)!);
+        expect(ratio, `${name} ring on ${surface}`).toBeGreaterThanOrEqual(3);
+      }
+    }
+    expect(COMPOSER_FOCUS_FRAME).not.toMatch(/\/\d+/);
+  });
+
+  it('keeps the key hint out of a narrow composer', async () => {
+    stubComposerWidth(420);
+    const { user, textarea } = setup();
+    await waitFor(() => expect(textarea).toHaveAttribute('placeholder', COMPOSER_PLACEHOLDER_NARROW));
+    await user.click(textarea);
+    expect(screen.queryByTestId('composer-key-hint')).toBeNull();
+  });
+
   it('shows the exact Read-only tooltip and opens the access popover', async () => {
     const { user } = setup({ context: makeContext({}, { cost_usage: 'cost:view' }) });
     const chip = screen.getByRole('button', { name: 'Read-only. What can the assistant access?' });
@@ -86,7 +153,9 @@ describe('Composer — layout and copy', () => {
     expect(within(dialog).getByText('Read AI cost and usage')).toBeInTheDocument();
     expect(within(dialog).getByText('Search logs')).toBeInTheDocument();
     expect(within(dialog).queryByText('Searched logs')).toBeNull();
-    expect(within(dialog).getByText('Needs cost:view')).toBeInTheDocument();
+    // A locked row names the grant as a sentence, the code muted beside it (T24).
+    expect(within(dialog).getByText('Needs permission to view costs')).toBeInTheDocument();
+    expect(within(dialog).getByText('(cost:view)')).toBeInTheDocument();
     expect(within(dialog).getByText('11 of 12 lookups are available to you.')).toBeInTheDocument();
   });
 });
@@ -224,11 +293,12 @@ describe('Composer — while a turn runs', () => {
     const { user } = setup({ busy: true });
     await user.click(screen.getByRole('button', { name: 'Composer options' }));
     expect(await screen.findByRole('menu')).toBeInTheDocument();
-    // Each Esc closes the topmost layer: the trigger's tooltip (opened by the test's
-    // instant hover), then the menu. Neither stops the turn.
-    await user.keyboard('{Escape}');
+    // No tooltip opens over the open menu (SPEC-chat T25), so one Esc closes the menu
+    // and does not stop the turn; nor does the focus it hands back to ⋯ open the tooltip.
+    expect(screen.queryByRole('tooltip')).toBeNull();
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+    expect(screen.queryByRole('tooltip')).toBeNull();
     expect(spies.stop).not.toHaveBeenCalled();
     act(() => screen.getByRole('button', { name: 'Outside' }).focus());
     await user.keyboard('{Escape}');
@@ -280,6 +350,22 @@ describe('Composer — / commands', () => {
     expect(await screen.findByRole('listbox', { name: 'Commands' })).toBeInTheDocument();
   });
 
+  it('opens each new menu on its first row, not on the row highlighted last time (T22)', async () => {
+    const { user, textarea } = setup();
+    await user.type(textarea, '/');
+    let list = await screen.findByRole('listbox', { name: 'Commands' });
+    await user.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}');
+    const third = within(list).getAllByRole('option')[3];
+    expect(textarea).toHaveAttribute('aria-activedescendant', third.id);
+    await user.keyboard('{Escape}{Backspace}');
+    await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull());
+    await user.type(textarea, '/');
+    list = await screen.findByRole('listbox', { name: 'Commands' });
+    const first = within(list).getAllByRole('option')[0];
+    expect(first).toHaveAttribute('aria-selected', 'true');
+    expect(textarea).toHaveAttribute('aria-activedescendant', first.id);
+  });
+
   it('fills an argument command and selects its placeholder instead of sending', async () => {
     const { user, textarea } = setup();
     await user.type(textarea, '/hu');
@@ -313,7 +399,7 @@ describe('Composer — / commands', () => {
     const saved = setup({ conversationId: 'c-1' });
     await saved.user.type(saved.textarea, '/compact the hosts');
     const option = await screen.findByRole('option', { name: /^\/compact/ });
-    expect(option).toHaveTextContent('Text after /compact is not sent.');
+    expect(option).toHaveTextContent('Text after it is not sent.');
     await saved.user.keyboard('{Enter}');
     expect(spies.send).toHaveBeenCalledWith('/compact', { origin: 'command' });
     expect(saved.textarea.value).toBe('');
@@ -340,7 +426,7 @@ describe('Composer — @ scopes and the scope chip', () => {
     const list = await screen.findByRole('listbox', { name: 'Scopes' });
     const logs = within(list).getByRole('option', { name: /@logs/ });
     expect(logs).toHaveAttribute('aria-disabled', 'true');
-    expect(logs).toHaveTextContent('Needs sources:read');
+    expect(logs).toHaveTextContent('Needs permission to read sources (sources:read)');
     await user.type(textarea, 'ca');
     await user.keyboard('{Enter}');
     expect(screen.getByTestId('scopes')).toHaveTextContent('cases');
@@ -354,11 +440,20 @@ describe('Composer — @ scopes and the scope chip', () => {
     const { user } = setup();
     await user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    // The source list is at most 12rem tall; it fades only while it can scroll (T23).
+    const sourceList = within(dialog).getByRole('radiogroup', { name: 'Source' });
+    expect(sourceList).toHaveClass('max-h-48', 'overflow-y-auto');
+    expect(sourceList).not.toHaveAttribute('data-more-below');
     await user.click(within(dialog).getByRole('radio', { name: /Elastic prod/ }));
     expect(spies.setSourceId).toHaveBeenLastCalledWith('e');
+    // One line at rest; the rest behind "How ranges work" (SPEC-chat T23).
+    expect(within(dialog).getByText(AUTO_SHORT)).toBeInTheDocument();
+    expect(within(dialog).queryByText(AUTO_HINT)).toBeNull();
+    await showRanges(user, dialog);
     expect(within(dialog).getByText(AUTO_HINT)).toBeInTheDocument();
     await user.click(within(dialog).getByRole('radio', { name: '7d' }));
     expect(spies.setTimeRange).toHaveBeenLastCalledWith({ from: 'now-7d' });
+    expect(within(dialog).getByText('Last 7 days: questions can narrow this range, not widen it.')).toBeInTheDocument();
     // A chosen range is an outer bound: a question can narrow it, never widen it.
     expect(
       within(dialog).getByText(
@@ -384,6 +479,7 @@ describe('Composer — @ scopes and the scope chip', () => {
     const custom = setup({ timeRange: { from: '2026-10-01T00:00:00Z', to: '2026-10-02T00:00:00Z' } });
     await custom.user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
     let dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    await showRanges(custom.user, dialog);
     expect(
       within(dialog).getByText(
         'From 2026-10-01T00:00:00Z to 2026-10-02T00:00:00Z. Lookups without a window in your question use this range, except that the shift brief covers at most 7 days and agent improvement compares fixed periods. Questions can narrow it, not widen it.',
@@ -403,6 +499,7 @@ describe('Composer — @ scopes and the scope chip', () => {
     );
     await explicit.user.click(screen.getByRole('button', { name: /^Scope: All sources/ }));
     dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    await showRanges(explicit.user, dialog);
     expect(within(dialog).getByRole('radio', { name: '24h' })).toBeChecked();
     expect(within(dialog).getByRole('radio', { name: /^Auto/ })).not.toBeChecked();
     expect(
@@ -431,8 +528,9 @@ describe('Composer — @ scopes and the scope chip', () => {
     const auto = within(group).getByRole('radio', { name: 'Auto (default windows, no outer limit)' });
     expect(auto).toBeChecked();
     expect(within(auto).getByText('(default windows, no outer limit)', { exact: false })).toHaveClass('sr-only');
-    // The hint is the group's description.
-    expect(group).toHaveAccessibleDescription(AUTO_HINT);
+    // The one-line hint is the group's description; the rest is one disclosure away.
+    expect(group).toHaveAccessibleDescription(AUTO_SHORT);
+    await showRanges(user, dialog);
 
     await user.click(within(group).getByRole('radio', { name: '6mo' }));
     // Calendar months, never minutes ("now-6m").
@@ -520,12 +618,42 @@ describe('Composer — @ scopes and the scope chip', () => {
     expect(within(dialog).getByRole('radio', { name: '12mo' })).toBeChecked();
   });
 
+  it('opens on the chosen source, never on "How ranges work", and is never taller than its room', async () => {
+    const { user } = setup();
+    await user.click(await screen.findByRole('button', { name: /^Scope: All sources/ }));
+    let dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole('radio', { name: /All sources/ })));
+    expect(dialog).toHaveClass('max-h-[var(--radix-popover-content-available-height)]', 'overflow-y-auto');
+    // A row reached with the arrow keys scrolls clear of the bottom fade.
+    expect(within(dialog).getByRole('radiogroup', { name: 'Source' })).toHaveClass('scroll-pb-6');
+    // Choose a source, close, open again: focus is on that source.
+    await user.click(within(dialog).getByRole('radio', { name: /Elastic prod/ }));
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Scope' })).toBeNull());
+    await user.click(screen.getByRole('button', { name: /^Scope: Elastic prod/ }));
+    dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole('radio', { name: /Elastic prod/ })));
+    expect(document.activeElement).not.toBe(within(dialog).getByRole('button', { name: 'How ranges work' }));
+  });
+
+  it('opens on the chosen time range when sources cannot be chosen', async () => {
+    stubServer({ sourcesStatus: 403 });
+    const user = userEvent.setup();
+    render(<Harness spies={spies} context={makeContext()} timeRange={{ from: 'now-7d' }} />);
+    await user.click(await screen.findByRole('button', { name: /^Scope:/ }));
+    const dialog = await screen.findByRole('dialog', { name: 'Scope' });
+    await within(dialog).findByText(/Choosing a source needs permission/);
+    await waitFor(() => expect(document.activeElement).toBe(within(dialog).getByRole('radio', { name: '7d' })));
+  });
+
   it('says why a source cannot be chosen without sources:read', async () => {
     stubServer({ sourcesStatus: 403 });
     const user = userEvent.setup();
     render(<Harness spies={spies} context={makeContext()} />);
     await user.click(await screen.findByRole('button', { name: /^Scope:/ }));
-    expect(await screen.findByText(/Choosing a source needs sources:read/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Choosing a source needs permission to read sources \(sources:read\)/),
+    ).toBeInTheDocument();
   });
 
   it('merges Scope and @ chips into "Scope · n" below 560 px', async () => {
@@ -546,15 +674,22 @@ describe('Composer — @ scopes and the scope chip', () => {
 describe('Composer — meter', () => {
   it('estimates the next request from system + history + draft', async () => {
     const { user, textarea } = setup();
+    // At rest (nothing typed, under half the window) the meter keeps its slot unseen and
+    // out of the tab order (SPEC-chat T13).
+    const resting = screen.getByRole('button', { name: /Estimated next request/, hidden: true });
+    expect(resting).toHaveAttribute('tabindex', '-1');
+    expect(resting.closest('[data-meter-state]')).toHaveAttribute('data-meter-state', 'rest');
+    expect(screen.queryByRole('button', { name: /Estimated next request/ })).toBeNull();
     // 1,000 static + 200 history + 400 chars ÷ 4 = 1,300.
     await user.click(textarea);
     await user.paste('x'.repeat(400));
     const estimate = screen.getByRole('button', { name: 'Estimated next request: ≈ 1.3k tokens' });
-    expect(estimate).toHaveTextContent('≈ 1.3k');
+    expect(estimate).toHaveTextContent('≈ 1.3k tokens');
+    expect(estimate).not.toHaveAttribute('tabindex');
     await user.click(estimate);
     expect(await screen.findByText('Next request')).toBeInTheDocument();
     expect(screen.getByText('≈ 1,300')).toBeInTheDocument();
-    expect(screen.getByText('History · last 12 exchanges')).toBeInTheDocument();
+    expect(screen.getByText('History: last 12 exchanges')).toBeInTheDocument();
     expect(screen.getByText('Whole question')).toBeInTheDocument();
     expect(screen.getByText('Per-question limit')).toBeInTheDocument();
     expect(screen.queryByText(/Projected cost/)).toBeNull();
@@ -569,7 +704,7 @@ describe('Composer — meter', () => {
       simulated: false,
       context_window: 4_000,
     });
-    const { user } = setup({ context, conversationTotals: { tokens: 12_400, cost: 0.03 } });
+    const { user } = setup({ context, conversationTotals: { tokens: 12_400, cost: 0.03 }, draft: 'Show me' });
     // Round 12: the bar's ring is CONTEXT-WINDOW use (1,200 of 4,000), never today's spend.
     const ring = screen.getByRole('meter', { name: 'Context window used' });
     expect(ring).toHaveAttribute('aria-valuenow', '30');
@@ -594,20 +729,45 @@ describe('Composer — meter', () => {
     const context = makeContext({ history_tokens: 0, history_exchanges: 0 });
     stubServer();
     render(
-      <Harness spies={spies} context={context} variant="case" persist={false} historySize={{ exchanges: 2, chars: 8_000 }} />,
+      <Harness
+        spies={spies}
+        context={context}
+        variant="case"
+        persist={false}
+        historySize={{ exchanges: 2, chars: 8_000 }}
+        draft="Why?"
+      />,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Estimated next request: ≈ 3k tokens' }));
-    expect(await screen.findByText('History · last 2 exchanges')).toBeInTheDocument();
+    expect(await screen.findByText('History: last 2 exchanges')).toBeInTheDocument();
     expect(screen.getByText('2,000')).toBeInTheDocument();
   });
 
   it('hides the ring without a context window and the whole meter until the context loads', () => {
-    const { view } = setup({ context: makeContext({ context_window: null }) });
+    const { view } = setup({ context: makeContext({ context_window: null }), draft: 'Hi' });
     expect(screen.queryByRole('meter')).toBeNull();
     expect(screen.getByRole('button', { name: /Estimated next request/ })).toBeInTheDocument();
     view.unmount();
     render(<Harness spies={spies} context={null} />);
-    expect(screen.queryByRole('button', { name: /Estimated next request/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Estimated next request/, hidden: true })).toBeNull();
+  });
+
+  it('shows the meter at rest once the context window is half full (SPEC-chat T13)', () => {
+    // 1,000 static + 200 history of a 2,000-token window: 60%, nothing typed.
+    setup({ context: makeContext({ context_window: 2_000 }) });
+    const estimate = screen.getByRole('button', { name: 'Estimated next request: ≈ 1.2k tokens' });
+    expect(estimate.closest('[data-meter-state]')).toHaveAttribute('data-meter-state', 'shown');
+    expect(screen.getByRole('meter', { name: 'Context window used' })).toHaveAttribute('aria-valuenow', '60');
+  });
+
+  it('shows only the ring, inside the estimate button, below 560 px', () => {
+    stubComposerWidth(420);
+    setup({ context: makeContext({ context_window: 4_000 }), draft: 'Show me' });
+    const estimate = screen.getByRole('button', { name: /^Estimated next request: ≈ 1.2k tokens\. 30% of the context window used/ });
+    expect(estimate).not.toHaveTextContent('tokens');
+    expect(within(estimate).getByTestId('context-ring')).toHaveAttribute('aria-hidden', 'true');
+    // The ring is not a second meter beside the button.
+    expect(screen.queryByRole('meter')).toBeNull();
   });
 });
 
@@ -733,13 +893,46 @@ describe('Composer — case variant', () => {
     expect(screen.queryByRole('button', { name: /Read-only/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Scope/ })).toBeNull();
     expect(screen.queryByRole('meter')).toBeNull();
-    expect(screen.getByRole('button', { name: /Estimated next request/ })).toBeInTheDocument();
+    // At rest the estimate is unseen (SPEC-chat T13) and, beside the field, takes no
+    // width either: a reserved slot wrapped the placeholder onto two lines on a phone.
+    const resting = screen.getByRole('button', { name: /Estimated next request/, hidden: true });
+    expect(resting).toHaveAttribute('tabindex', '-1');
+    const slot = resting.closest('[data-meter-state]') as HTMLElement;
+    expect(slot).toHaveAttribute('data-meter-state', 'rest');
+    expect(slot.className.split(/\s+/)).toContain('data-[meter-state=rest]:hidden');
     await user.click(screen.getByRole('button', { name: 'Composer options' }));
     await screen.findByRole('menu');
     expect(screen.getByRole('menuitem', { name: /Model/ })).toBeInTheDocument();
     expect(screen.getByRole('menuitemcheckbox', { name: /Type out answers/ })).toBeInTheDocument();
     expect(screen.queryByRole('menuitem', { name: /Saved prompts/ })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: /Keyboard shortcuts/ })).toBeNull();
+  });
+
+  it('shows only the ring beside a narrow field once there is a draft, so the field keeps its width', async () => {
+    // Round 13 polish: on a phone the "≈ 4.1k tokens" estimate took 85 px from the field
+    // on the first keystroke, and a typical question wrapped to four lines.
+    stubServer();
+    const user = userEvent.setup();
+    const wide = render(<Harness spies={spies} context={makeContext()} variant="case" />);
+    await user.type(screen.getByRole('textbox', { name: 'Ask about this case' }), 'W');
+    let estimate = screen.getByRole('button', { name: /Estimated next request/ });
+    expect(estimate).toHaveTextContent(/^≈ .+ tokens$/);
+    expect(screen.queryByTestId('context-ring')).toBeNull();
+    wide.unmount();
+    stubComposerWidth(358);
+    render(<Harness spies={spies} context={makeContext()} variant="case" />);
+    const field = screen.getByRole('textbox', { name: 'Ask about this case' });
+    expect(screen.getByRole('button', { name: /Estimated next request/, hidden: true }).closest('[data-meter-state]')).toHaveAttribute(
+      'data-meter-state',
+      'rest',
+    );
+    await user.type(field, 'W');
+    estimate = screen.getByRole('button', { name: /Estimated next request/ });
+    // The ring alone (decorative: the button's name carries the estimate and the context).
+    expect(estimate).not.toHaveTextContent(/tokens/);
+    expect(within(estimate).getByTestId('context-ring')).toHaveAttribute('aria-hidden', 'true');
+    expect(estimate.getAttribute('aria-label')).toMatch(/^Estimated next request: ≈ .+ tokens\. /);
+    expect(screen.queryByRole('meter')).toBeNull();
   });
 
   it('does not open the / menu', async () => {
@@ -860,7 +1053,7 @@ describe('Composer — context not loaded or unreadable', () => {
     const deny = { search_logs: 'sources:read', log_stats: 'sources:read', source_health: 'sources:read' };
     const { user, server } = setup({ context: makeContext({}, deny) });
     await user.click(await screen.findByRole('button', { name: /^Scope:/ }));
-    expect(await screen.findByText(/Choosing a source needs sources:read/)).toBeInTheDocument();
+    expect(await screen.findByText(/Choosing a source needs permission to read sources/)).toBeInTheDocument();
     expect(server.calls.some((c) => c.url === '/api/sources')).toBe(false);
   });
 });
@@ -1015,7 +1208,7 @@ describe('Composer — accessibility', () => {
       spent_today: 4.2,
       calibration: 1.5,
     });
-    const { user } = setup({ context, conversationTotals: { tokens: 12_400, cost: 0.03 } });
+    const { user } = setup({ context, conversationTotals: { tokens: 12_400, cost: 0.03 }, draft: 'Top hosts?' });
     await user.click(screen.getByRole('button', { name: /Estimated next request/ }));
     await screen.findByRole('dialog', { name: 'Context and usage' });
     expect(await bodyAxe()).toHaveNoViolations();

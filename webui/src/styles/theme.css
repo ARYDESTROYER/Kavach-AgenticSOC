@@ -84,6 +84,34 @@
     --warning: 36 92% 42%;     --warning-foreground: 222 47% 11%; --warning-text: 36 96% 31%;   /* 4.62:1 on its 10% wash */
     --danger:  358 75% 45%;    --danger-foreground: 0 0% 100%;    --danger-text: 358 75% 42%;   /* aliases critical */
 
+    /* ---- Grouped panels (Round 13; ui-standard "Dashboard bands"). A dashboard module
+       sits on a soft tinted panel (`.surface-panel`) with no border and no shadow: one
+       step DEEPER than the canvas in light (the macOS grouped style), one step LIGHTER in
+       dark. Every neutral step that paints ON a panel moves with it, in the canvas's own
+       order (muted, then hover, then the selected wash, each one notch deeper), and
+       gate-contrast.mjs MEASURES each against the panel: panel vs canvas 1.09:1; muted
+       (tracks, `hover:bg-muted`, secondary badges) 1.08:1, at least the canvas's own
+       1.07:1, with muted text 4.94:1 on it; hover 1.14:1; the selected wash 1.26:1, its 30%
+       KPI wash 1.07:1, no weaker than on the canvas. Foreground 15.58:1, muted text
+       5.34:1 and primary 5.24:1 on the panel. The structural line (`--input`,
+       `--border-strong`, and `--border` under increased contrast) is one step deeper
+       too: 220 15% 58% measured 2.85:1 on the panel, 55% measures 3.17:1 on it and
+       3.46:1 on the canvas. The semantic text steps are deeper still (1 to 2 points of
+       lightness), so a badge on its 10% wash clears 4.5:1 on a resting panel AND on a
+       hovered row (worst 4.60:1, low over the hover). */
+    --panel: 230 22% 94.5%;
+    --panel-muted: 230 12% 91%;
+    --panel-hover: var(--slate-5);
+    --panel-accent: var(--slate-6);
+    --panel-border-strong: 220 15% 55%;
+    --panel-critical-text: 358 75% 39%;
+    --panel-high-text: 22 90% 32%;
+    --panel-medium-text: 40 96% 25%;
+    --panel-low-text: 212 90% 37%;
+    --panel-info-text: 215 16% 37%;
+    --panel-success-text: 158 74% 23%;
+    --panel-warning-text: 36 96% 26.5%;
+
     --radius: 0.625rem;
 
     /* ---- Round-3 extra token set (ALLOW-LISTED; see theme.tsx ALLOWED_TOKENS).
@@ -229,6 +257,28 @@
     --success: 135 50% 62%;  --success-foreground: var(--slate-1); --success-text: 135 50% 62%;  /* #6ecf86 — 7.64:1 on its 10% wash */
     --warning: 41 75% 59%;   --warning-foreground: var(--slate-1); --warning-text: 41 75% 59%;   /* aliases the medium gold */
     --danger:  2 72% 64%;    --danger-foreground: var(--slate-1);  --danger-text: 2 72% 64%;     /* aliases critical */
+
+    /* ---- Grouped panels (dark): one step LIGHTER than the canvas (the iOS secondary
+       grouped background). MEASURED: panel vs canvas 1.12:1; foreground 13.89:1, muted
+       text 6.45:1, primary 6.28:1. The in-panel steps keep the canvas's order: muted
+       1.11:1 (muted text 5.82:1 on it), hover 1.15:1, and the selected wash 1.25:1 (1.09:1
+       above the hover, its 30% KPI wash 1.06:1, no weaker than on the canvas). The
+       structural line keeps its dark value (4.05:1 on the panel). 12.5% is the panel's
+       ceiling: at 13.5% critical text on its wash drops to 4.49:1. The semantic text
+       keeps its dark values except critical, one notch lighter so a critical badge on a
+       hovered row still clears 4.5:1 (4.56:1; the dark value measured 4.00:1 there). */
+    --panel: 222 30% 12.5%;
+    --panel-muted: 220 28% 16%;
+    --panel-hover: var(--slate-6);
+    --panel-accent: 219 25% 19.5%;
+    --panel-border-strong: var(--border-strong);
+    --panel-critical-text: 2 72% 68%;
+    --panel-high-text: var(--high-text);
+    --panel-medium-text: var(--medium-text);
+    --panel-low-text: var(--low-text);
+    --panel-info-text: var(--info-text);
+    --panel-success-text: var(--success-text);
+    --panel-warning-text: var(--warning-text);
 
     /* ---- Round-3 extra token set (dark values). radius/density/font-display are
        MODE-AGNOSTIC and declared ONCE in :root (they resolve on <html> in both
@@ -648,6 +698,19 @@
     font-size: clamp(1.125rem, 15cqi, 1.8333rem);
     line-height: 1;
     letter-spacing: -0.018em;
+  }
+  /* Forced colours paint an opaque backplate behind each line of text, sized to the
+     font's content area. At `line-height: 1` Inter's content area runs about 0.1em above
+     the numeral's line box, so on a tile whose label sits right on the numeral row (the
+     row's tallest label) the backplate covered the label's descenders ("Total Cases",
+     "MTTR"). A 0.125em inset, in forced colours only, keeps the backplate under the
+     label. MEASURED with forced-colours emulation. */
+  @media (forced-colors: active) {
+    .kpi-numeral-fluid,
+    .kpi-numeral-fluid-md,
+    .kpi-numeral-fluid-sm {
+      padding-top: 0.125em;
+    }
   }
 }
 
@@ -1659,6 +1722,81 @@ select:-webkit-autofill:focus {
   }
   .material-surface::after {
     display: none !important;
+  }
+}
+
+/* ---- Grouped panels (Round 13; ui-standard "Dashboard bands") --------------------------
+   The primary dashboard groups each module on its own soft tinted panel, so where one
+   module ends and the next begins reads at a glance without a line or a box edge: the
+   `--panel` surface (light: a step deeper than the canvas; dark: a step lighter), a 14px
+   corner (the `rounded-xl` step, so the brand "Square" preset squares it too), no border
+   and no resting shadow. Nothing here is translucent and nothing moves, so reduced
+   transparency and reduced motion need no special case.
+
+   Inside a panel every neutral step that paints ON it moves with it, so nothing that was
+   visible on the canvas vanishes into the panel: `--card` follows the panel (a chip
+   painted "on the card", such as a flow label, blends in); `--muted` and `--secondary`
+   (progress tracks, `hover:bg-muted`, secondary badges) take `--panel-muted`; hover and
+   the selected wash take `--panel-hover` and `--panel-accent`, in the canvas's own order
+   (muted, hover, selected, each one notch deeper); the structural line (`--input`,
+   `--border-strong`) takes `--panel-border-strong`, so a control edge clears 3:1 against
+   the panel it sits on; and the semantic text steps swap to their `--panel-*-text`
+   values, so a badge on its 10% wash clears 4.5:1 on a resting panel and on a hovered
+   row. gate-contrast.mjs measures every one of these pairs against the panel, in both
+   themes. No operator-writable token (`--primary`, `--radius`, …: ALLOWED_TOKENS in
+   soc/theme-tokens.ts) is redefined, so a custom brand reaches every panel.
+   `--panel-inset-rule` is the column rule a single-row strip draws INSIDE a panel
+   (`[border-image:var(--panel-inset-rule)_0_1_0_0]`): it stops 12px short of the rounded
+   edges, an inset separator rather than a table rule.
+
+   Increased contrast gives the borderless surface a solid 1px structural edge (3.46:1
+   against the light canvas and 3.17:1 against the panel itself; 4.54:1 and 4.05:1 in
+   dark) and re-points the hairline at the panel's structural step, so every rule and
+   divider inside a panel is a ≥3:1 line against the panel, as on the card. Forced colours
+   drop the fill and the border image, so every panel keeps a system-colour edge and a
+   strip falls back to its plain rules. These media blocks sit AFTER the global
+   increased-contrast block above on purpose: that block is the first `prefers-contrast:
+   more` rule in this file. On paper a panel prints as its light (or dark) fill, like
+   every surface here. */
+@layer components {
+  .surface-panel {
+    --card: var(--panel);
+    --muted: var(--panel-muted);
+    --secondary: var(--panel-muted);
+    --hover: var(--panel-hover);
+    --accent: var(--panel-accent);
+    --border-strong: var(--panel-border-strong);
+    --input: var(--panel-border-strong);
+    --critical-text: var(--panel-critical-text);
+    --high-text: var(--panel-high-text);
+    --medium-text: var(--panel-medium-text);
+    --low-text: var(--panel-low-text);
+    --info-text: var(--panel-info-text);
+    --success-text: var(--panel-success-text);
+    --warning-text: var(--panel-warning-text);
+    --panel-inset-rule: linear-gradient(
+      to bottom,
+      transparent 0.75rem,
+      hsl(var(--border) / max(0.7, var(--border-alpha-floor, 0))) 0.75rem,
+      hsl(var(--border) / max(0.7, var(--border-alpha-floor, 0))) calc(100% - 0.75rem),
+      transparent calc(100% - 0.75rem)
+    );
+    background-color: hsl(var(--panel));
+    border-radius: calc(var(--radius) + min(var(--radius), 4px));
+  }
+  @media (prefers-contrast: more) {
+    .surface-panel {
+      /* The global block above set `--border` from the ROOT's structural step; a custom
+         property inherits its resolved value, so the panel re-points it at its own. */
+      --border: var(--panel-border-strong);
+      border: 1px solid hsl(var(--border-strong));
+    }
+  }
+  @media (forced-colors: active) {
+    .surface-panel {
+      --panel-inset-rule: none;
+      border: 1px solid CanvasText;
+    }
   }
 }
 

@@ -3,11 +3,12 @@
  *
  * Renders every entry of {@link CHAT_SHORTCUTS} — the composer keys (Enter,
  * Shift+Enter, ↑, Esc, /, @) and the page shortcuts — as a two-column definition
- * list with `<kbd>` keys, in the platform's notation (⌘ on macOS). A Radix dialog:
+ * list with `<kbd>` keys, in the platform's notation (⌘ on macOS). An entry with
+ * alternative keys reads "Delete or Backspace". A Radix dialog:
  * focus moves in, Esc closes it, and focus returns to the opener.
  */
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/ui/dialog';
-import { CHAT_SHORTCUTS, isApplePlatform, keyLabel, type ChatShortcut } from './shortcut-list';
+import { CHAT_SHORTCUTS, isApplePlatform, keyLabel, type ChatShortcut, type ShortcutKey } from './shortcut-list';
 
 export interface ShortcutSheetProps {
   open: boolean;
@@ -19,10 +20,10 @@ const GROUPS: { where: ChatShortcut['where']; title: string }[] = [
   { where: 'chat', title: 'Anywhere in Chat' },
 ];
 
-function Keys({ shortcut, apple }: { shortcut: ChatShortcut; apple: boolean }) {
+function KeyCombo({ keys, apple }: { keys: readonly ShortcutKey[]; apple: boolean }) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-1">
-      {shortcut.keys.map((key, index) => (
+    <>
+      {keys.map((key, index) => (
         <kbd
           key={`${key}-${index}`}
           className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-2xs text-foreground"
@@ -30,6 +31,21 @@ function Keys({ shortcut, apple }: { shortcut: ChatShortcut; apple: boolean }) {
           {keyLabel(key, apple)}
         </kbd>
       ))}
+    </>
+  );
+}
+
+/** The keys, then "or" and the alternative keys when there are any ("Delete or Backspace"). */
+function Keys({ shortcut, apple }: { shortcut: ChatShortcut; apple: boolean }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1">
+      <KeyCombo keys={shortcut.keys} apple={apple} />
+      {shortcut.altKeys?.length ? (
+        <>
+          <span className="px-0.5 text-xs text-muted-foreground">{' or '}</span>
+          <KeyCombo keys={shortcut.altKeys} apple={apple} />
+        </>
+      ) : null}
     </span>
   );
 }

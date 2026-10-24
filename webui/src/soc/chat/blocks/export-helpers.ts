@@ -22,6 +22,11 @@
  *     reads "Yes" or "No" as the table shows it, in CSV and Copy data too. The KPI
  *     table's Unit column stays the unit key: it is the machine-readable partner of the
  *     raw numeric Value. Only JSON keeps every raw value.
+ *   - A case reads as the screen names it, by its number ("CASE-000045"), the internal id
+ *     only when it has none ({@link caseDisplayRef}): in the "Show table" view, Copy data
+ *     and the Case column of a CSV. A case list carries each row's id beside it
+ *     (`Tabular.caseIds`): the table view links by it, and a CSV (the machine format)
+ *     writes it in its own "Case ID" column after "Case" so other tools can match it.
  */
 import { csvField, tsvField } from '@/lib/csv';
 import { defang } from '@/lib/defang';
@@ -32,6 +37,7 @@ import {
   REPUTATION_LABEL,
   TIMELINE_KIND_LABEL,
   booleanText,
+  entityFacts,
   semanticColumn,
   semanticText,
   type SemanticColumn,
@@ -55,11 +61,26 @@ export interface TabularColumn {
    * file in the words the screen's badge shows ({@link semanticText}).
    */
   semantic?: SemanticColumn;
+  /** An identifier the console shows as is (a case number or id): never defanged. */
+  identifier?: boolean;
 }
 
 export interface Tabular {
   columns: TabularColumn[];
   rows: Cell[][];
+  /**
+   * A case list's internal case id for each row (the rows' first column names the case by
+   * its number). The "Show table" view links by it; {@link toCSV} writes it as "Case ID".
+   */
+  caseIds?: string[];
+}
+
+/**
+ * A case as the screen names it (`CaseRefText`, SPEC-chat T14): its display number
+ * ("CASE-000045") when the block carries one, the internal id only as the fallback.
+ */
+export function caseDisplayRef(c: { case_id: string; case_number?: string }): string {
+  return c.case_number?.trim() || c.case_id;
 }
 
 const TEXT = (label: string): TabularColumn => ({ label, numeric: false });
@@ -142,7 +163,7 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
     case 'case_list':
       return {
         columns: [
-          TEXT('Case'),
+          { label: 'Case', numeric: false, identifier: true },
           TEXT('Title'),
           SEMANTIC('Severity', 'severity'),
           SEMANTIC('Verdict', 'verdict'),
@@ -151,7 +172,7 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
           TEXT('Created (UTC)'),
         ],
         rows: block.items.map((it) => [
-          it.case_id,
+          caseDisplayRef(it),
           it.title,
           it.severity ?? null,
           it.verdict ?? null,
@@ -159,6 +180,7 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
           it.risk ?? null,
           it.created_at ? formatUtc(it.created_at) : null,
         ]),
+        caseIds: block.items.map((it) => it.case_id),
       };
     case 'timeline':
       return {
@@ -176,7 +198,7 @@ export function blockTabular(block: AnswerBlock): Tabular | null {
         rows: [
           ['Kind', ENTITY_KIND_LABEL[block.entity.kind]],
           ['Value', block.entity.value],
-          ...block.facts.map((f): Cell[] => [f.label, f.value]),
+          ...entityFacts(block).map((f): Cell[] => [f.label, f.value]),
           ...block.reputation.map((r): Cell[] => [
             `Reputation: ${r.provider}`,
             r.score === undefined || r.score === null ? REPUTATION_LABEL[r.verdict] : `${REPUTATION_LABEL[r.verdict]} (${r.score})`,
@@ -210,16 +232,17 @@ function displayCell(cell: Cell, col: TabularColumn): Cell {
 }
 
 function encode(tab: Tabular, field: (c: Cell) => string, sep: string, options: EncodeOptions): string {
-  const fang = (cell: Cell, numeric: boolean): Cell =>
-    options.defang && !numeric && typeof cell === 'string' ? defang(cell) : cell;
+  const fang = (cell: Cell, keep: boolean): Cell =>
+    options.defang && !keep && typeof cell === 'string' ? defang(cell) : cell;
   const header = tab.columns.map((c) => field(fang(c.label, false))).join(sep);
   const body = tab.rows.map((row) =>
     tab.columns
       .map((col, i) => {
         const cell = displayCell(row[i] ?? null, col);
         // A non-numeric cell in a numeric column (a legacy string) is still text and is
-        // defused like any other string; a number anywhere is written raw.
-        return field(fang(cell, col.numeric && typeof cell === 'number'));
+        // defused like any other string; a number anywhere is written raw. A case number
+        // or id is an identifier and keeps its exact spelling.
+        return field(fang(cell, (col.numeric && typeof cell === 'number') || col.identifier === true));
       })
       .join(sep),
   );
@@ -231,9 +254,22 @@ export function toTSV(tab: Tabular, options: EncodeOptions = { defang: true }): 
   return encode(tab, tsvField, '\t', options);
 }
 
-/** CSV download text (RFC-4180, defused; not defanged unless asked). */
+/**
+ * CSV download text (RFC-4180, defused; not defanged unless asked). A case list gains a
+ * "Case ID" column after "Case": the Case column names a case as the screen does, and
+ * the id lets other tools match it.
+ */
 export function toCSV(tab: Tabular, options: EncodeOptions = {}): string {
-  return encode(tab, csvField, ',', options);
+  return encode(withCaseIdColumn(tab), csvField, ',', options);
+}
+
+function withCaseIdColumn(tab: Tabular): Tabular {
+  const ids = tab.caseIds;
+  if (!ids) return tab;
+  return {
+    columns: [tab.columns[0], { label: 'Case ID', numeric: false, identifier: true }, ...tab.columns.slice(1)],
+    rows: tab.rows.map((row, i) => [row[0] ?? null, ids[i] ?? null, ...row.slice(1)]),
+  };
 }
 
 /** `{ blocks_version, block }` exactly as received (JSON is never defanged). */

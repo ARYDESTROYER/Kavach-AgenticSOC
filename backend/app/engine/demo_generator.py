@@ -59,10 +59,10 @@ DEMO_SOURCE_IDS: tuple[str, ...] = (
     "demo-splunk", "demo-qradar", "demo-wazuh", "demo-syslog", "demo-entra-id",
 )
 DEMO_SOURCE_NAMES: dict[str, str] = {
-    "demo-splunk": "Splunk Enterprise Security — HEC",
+    "demo-splunk": "Splunk Enterprise Security (HEC)",
     "demo-qradar": "IBM QRadar SIEM",
-    "demo-wazuh": "Wazuh Manager — endpoint telemetry",
-    "demo-syslog": "Network & Linux — RFC 5424 Syslog",
+    "demo-wazuh": "Wazuh Manager (endpoint telemetry)",
+    "demo-syslog": "Network & Linux (RFC 5424 Syslog)",
     "demo-entra-id": "Microsoft Entra ID / Active Directory",
 }
 DEMO_SOURCE_ID = DEMO_SOURCE_IDS[0]
@@ -901,7 +901,7 @@ def _hist_case(
         tags=list(tmpl["tags"]),
         comments=comments,
         assignee=analyst if st in (CaseStatus.ESCALATED, CaseStatus.ON_HOLD) else "",
-        title=f"{et.value}:{entity_val} — {tmpl['rule']}",
+        title=f"{et.value}:{entity_val} · {tmpl['rule']}",
         summary=f"{tmpl['rname']} ({_VERDICT_TEXT[verdict]}).",
         token_cost=round(rng.random() * 0.04, 6),
         notifications_sent=notifications_sent,
@@ -1086,7 +1086,7 @@ def generate_capability_seed_cases(
             )],
             severity_band="high",
             tags=["demo", "needs-human", "identity"],
-            title=f"user:pnair — demo_impossible_travel #{i + 1}",
+            title=f"user:pnair · demo_impossible_travel #{i + 1}",
             summary=f"Impossible-travel sign-in ({_VERDICT_TEXT[Verdict.NEEDS_HUMAN]}).",
             retrieval_history_status="available",
             retrieval_observation_status="not_measured",
@@ -1138,7 +1138,7 @@ def generate_capability_seed_cases(
             )],
             severity_band="low",
             tags=["demo", "noise"],
-            title=f"ip — {DEMO_TUNER_RULE} #{i + 1}",
+            title=f"ip · {DEMO_TUNER_RULE} #{i + 1}",
             summary=f"Benign scanner noise ({_VERDICT_TEXT[Verdict.FALSE_POSITIVE]}).",
             retrieval_history_status="available",
             retrieval_observation_status="not_measured",

@@ -93,6 +93,7 @@ function renderCampaigns(onNavigate = vi.fn()) {
 describe('Campaigns page', () => {
   beforeEach(() => {
     listMock.mockReset();
+    getMock.mockReset();
     recorrelateMock.mockReset();
     apiGetMock.mockReset();
     apiPutMock.mockReset();
@@ -234,9 +235,68 @@ describe('Campaigns page', () => {
     fireEvent.click(row);
     await screen.findByText('case-1');
 
-    const openButtons = screen.getAllByRole('button', { name: /^open$/i });
-    fireEvent.click(openButtons[0]);
+    // Each Open names its case (the visible word first, label in name).
+    fireEvent.click(screen.getByRole('button', { name: /^open case-1$/i }));
     expect(onNavigate).toHaveBeenCalledWith('cases', { caseId: 'case-1' });
+  });
+
+  it('names member cases by their case number, the internal id only in the tooltip and description', async () => {
+    getMock.mockResolvedValue({ campaign: CAMPAIGN, case_numbers: { 'case-1': 'CASE-000045', 'case-2': 'CASE-000046' } });
+    const { onNavigate } = renderCampaigns();
+    fireEvent.click(await screen.findByText('Lateral movement — 10.0.0.5'));
+
+    const number = await screen.findByText('CASE-000045');
+    expect(getMock).toHaveBeenCalledWith('camp-abc123');
+    expect(number).toHaveAttribute('title', 'Internal id: case-1');
+    expect(screen.getByText('CASE-000046')).toBeInTheDocument();
+    // No visible internal id for a numbered member; a member without a number keeps its id.
+    expect(screen.queryByText('case-1')).toBeNull();
+    expect(screen.queryByText('case-2')).toBeNull();
+    expect(screen.getByText('case-3')).toBeInTheDocument();
+
+    const open = screen.getByRole('button', { name: 'Open CASE-000045' });
+    expect(open).toHaveAccessibleDescription('Internal id case-1');
+    expect(screen.getByRole('button', { name: 'Open case-3' })).not.toHaveAttribute('aria-describedby');
+    fireEvent.click(open);
+    expect(onNavigate).toHaveBeenCalledWith('cases', { caseId: 'case-1' });
+  });
+
+  it('lists members in case-number order once the numbers arrive, unnumbered members last (re-shoot PW3-7)', async () => {
+    // Stored by internal id, the numbers read shuffled (CASE-000085, CASE-000087, CASE-000086).
+    const shuffled: Campaign = { ...CAMPAIGN, case_ids: ['case-b7', 'case-0f', 'case-zz', 'case-a1', 'case-c3'] };
+    listMock.mockResolvedValue({ campaigns: [shuffled], total: 1, enabled: true });
+    getMock.mockResolvedValue({
+      campaign: shuffled,
+      case_numbers: { 'case-b7': 'CASE-000087', 'case-0f': 'CASE-000085', 'case-a1': 'CASE-000100', 'case-c3': 'CASE-000086' },
+    });
+    renderCampaigns();
+    fireEvent.click(await screen.findByText('Lateral movement — 10.0.0.5'));
+    await screen.findByText('CASE-000085');
+    const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-member-case]'));
+    expect(rows.map((row) => row.dataset.memberCase)).toEqual(['case-0f', 'case-c3', 'case-b7', 'case-a1', 'case-zz']);
+    // The label each row shows (its first child; the description is hidden text).
+    expect(rows.map((row) => row.firstElementChild?.textContent)).toEqual([
+      'CASE-000085',
+      'CASE-000086',
+      'CASE-000087',
+      'CASE-000100',
+      'case-zz',
+    ]);
+    // Each row still opens its own case.
+    expect(screen.getByRole('button', { name: 'Open CASE-000086' })).toHaveAccessibleDescription('Internal id case-c3');
+  });
+
+  it('holds each member row while the numbers load, then falls back to the id when the read fails', async () => {
+    let fail: (reason: unknown) => void = () => {};
+    getMock.mockReturnValue(new Promise((_resolve, reject) => (fail = reject)));
+    renderCampaigns();
+    fireEvent.click(await screen.findByText('Lateral movement — 10.0.0.5'));
+
+    expect(await screen.findAllByTestId('member-case-pending')).toHaveLength(3);
+    expect(screen.queryByText('case-1')).toBeNull();
+    fail(new Error('offline'));
+    expect(await screen.findByText('case-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('member-case-pending')).toBeNull();
   });
 
   it('Refresh reloads the campaign list without discarding unsaved policy edits', async () => {

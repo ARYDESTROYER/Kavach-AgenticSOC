@@ -507,3 +507,63 @@ export function applyChatActivityMessage(message: ChatActivityMessage): void {
     }
   }
 }
+
+/* ------------------------------------------------------- Demo switch token -- */
+
+/**
+ * The chat's Demo switch token (PR #132 review and verify; the rules are in
+ * `soc/chat/demo-identity.ts`, which the chat views read it through). It lives here,
+ * beside the other state the turn runner, the chat views and the shell's observer
+ * share, because `ActivityEffects` notes the Demo status too and already imports this
+ * module: the runs it makes for turns no chat view started carry the right token even
+ * when no chat view has rendered on the page yet.
+ */
+export type ChatDemoIdentity = string;
+
+/** The part of the Demo context (`useDemo()`) the identity reads. */
+export interface ChatDemoStatusView {
+  active: boolean;
+  /** `false` for the provider's OFF stand-in (no read yet, or a failed read). */
+  confirmed?: boolean;
+  status: { run_id?: string | null };
+}
+
+/** The identity a Demo context value names (`off`, `demo:<run id>`); null for the stand-in. */
+export function chatDemoIdentity(demo: ChatDemoStatusView): string | null {
+  if (demo.confirmed === false) return null;
+  return demo.active ? `demo:${demo.status.run_id ?? ''}` : 'off';
+}
+
+/** The last identity a confirmed read named (null: none yet). */
+let confirmedDemoIdentity: string | null = null;
+/** How many confirmed switches the console has seen. */
+let demoSwitches = 0;
+
+/**
+ * The switch token as of the last Demo status a chat view or the shell's observer
+ * rendered (no hook: the turn runner stamps each run with it, so a turn started or
+ * re-attached before the first status read lands keeps the token that read leaves in
+ * place).
+ */
+export function currentChatDemoIdentity(): ChatDemoIdentity {
+  return `demo-identity:${demoSwitches}`;
+}
+
+/**
+ * Record a Demo context value (render phase, module state only) and return the switch
+ * token. Idempotent: rendering the same value again returns the same token.
+ */
+export function noteChatDemoStatus(demo: ChatDemoStatusView): ChatDemoIdentity {
+  const seen = chatDemoIdentity(demo);
+  if (seen !== null && seen !== confirmedDemoIdentity) {
+    if (confirmedDemoIdentity !== null) demoSwitches += 1;
+    confirmedDemoIdentity = seen;
+  }
+  return currentChatDemoIdentity();
+}
+
+/** Test hook: forget the confirmed identity and the switches seen. */
+export function resetChatDemoIdentityForTests(): void {
+  confirmedDemoIdentity = null;
+  demoSwitches = 0;
+}

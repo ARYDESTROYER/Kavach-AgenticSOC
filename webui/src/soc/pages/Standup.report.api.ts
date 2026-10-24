@@ -66,6 +66,7 @@ export interface WorkloadRow {
   analyst: string;
   open: number;
   escalated: number;
+  /** Open cases in the legacy `needs_human` STATUS ("Open · awaiting analyst"). */
   needs_human: number;
 }
 

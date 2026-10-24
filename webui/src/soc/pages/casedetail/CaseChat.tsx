@@ -10,6 +10,14 @@
  * shared message components in their compact presentation; the composer is the
  * compact `case` variant. Case Manager keeps its one-line status and its quick actions.
  *
+ * Round 13 (SPEC-chat §3.1 `case`, §3.14): before the first message the chat offers the
+ * compact capability line plus three case chips chosen from the case state
+ * (`GET /api/chat/starters?surface=case`, read here once and handed to the empty
+ * state). While those chips are on screen (or still loading) the quick-action row stays
+ * out of the way, so the empty case chat never shows two rows of suggestions that say
+ * the same thing; it appears with the first message, or at once when no chip is
+ * offered. Chips and quick actions both send in THIS case chat with origin `starter`.
+ *
  * Round 12 (SPEC D13): the case's transcript and model history live in the turn
  * runner's session store (memory only, last 20 cases), so switching to another tab or
  * reopening the case keeps them, and a turn still running when the analyst leaves keeps
@@ -25,6 +33,7 @@ import type { ChatStarter } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { useAuth } from '@/soc/auth';
+import { useDemo } from '@/soc/demo';
 import { Composer, type ComposerHandle } from '@/soc/chat/composer/Composer';
 import { EmptyState } from '@/soc/chat/empty/EmptyState';
 import { CONTENT_COL, LANE_GRID } from '@/soc/chat/message/lane';
@@ -32,12 +41,14 @@ import { Transcript } from '@/soc/chat/message/Transcript';
 import { announcedLookupBound, useTurnAnnouncer } from '@/soc/chat/message/useTurnAnnouncer';
 import { useChatContext } from '@/soc/chat/useChatContext';
 import { useChatEngine } from '@/soc/chat/useChatEngine';
+import { useChatStarters } from '@/soc/chat/starters/useChatStarters';
+import { caseStartersScope, takeCaseStartersPrefetch } from './case-starters-prefetch';
 import { ActivityGlyph } from '@/soc/chat-activity/glyph';
 
 const STARTER_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
-  'Summarize Case': ClipboardList,
-  'Check IOCs': FileSearch,
-  'Suggest Remediation': ShieldCheck,
+  'Summarise the case': ClipboardList,
+  'Check indicators': FileSearch,
+  'Suggest remediation': ShieldCheck,
 };
 
 /**
@@ -59,13 +70,19 @@ function useOptionalAuth(): { principal: string | null; canChooseModel: boolean 
 /** The case chat body: status, transcript, quick actions, compact composer. */
 export interface CaseChatProps {
   caseId: string;
+  /**
+   * The case number the case header shows ("CASE-000086"); the status line and the
+   * transcript's name use it, falling back to the internal id. Turns still carry `caseId`.
+   */
+  displayId?: string;
   /** Case Manager's embedded frame (its quick-action icons and presentation tag). */
   caseManager: boolean;
   /** The quick questions shown above the composer. */
   starters: readonly string[];
 }
 
-export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
+export function CaseChat({ caseId, displayId, caseManager, starters }: CaseChatProps) {
+  const caseLabel = displayId?.trim() || caseId;
   const [model, setModel] = React.useState<string | null>(null);
   const [busyMirror, setBusyMirror] = React.useState(false);
   const { principal, canChooseModel } = useOptionalAuth();
@@ -89,6 +106,19 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
   const send = (prompt: string) => {
     if (engine.send(prompt, { origin: 'starter' })) focusComposer();
   };
+  // The case chips (one read, shared with the empty state through the module cache).
+  // The read the Chat tab started as it mounted (`case-starters-prefetch.ts`), if any,
+  // under the same Demo run only (a failed status read names none: the last one holds).
+  const prefetchScope = caseStartersScope(useDemo());
+  const takePrefetched = React.useCallback(
+    () => takeCaseStartersPrefetch(caseId, principal, Date.now(), prefetchScope),
+    [caseId, principal, prefetchScope],
+  );
+  const caseStarters = useChatStarters({ surface: 'case', caseId, principal, enabled: !!caseId, takePrefetched });
+  const chipsOffered =
+    caseStarters.loading || (caseStarters.info?.starters ?? []).some((starter) => (starter.action ?? 'send') === 'send');
+  // The quick actions join once the conversation has started, or when no chip is offered.
+  const showQuickActions = engine.items.length > 0 || !chipsOffered;
 
   return (
     <div
@@ -107,7 +137,7 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-success" aria-hidden />
         )}
         <span className="min-w-0 truncate">
-          Scoped to <span className="font-mono text-foreground">{caseId}</span>
+          Scoped to <span className="font-mono text-foreground">{caseLabel}</span>
         </span>
         <span className="ml-auto shrink-0">{busy ? 'Working…' : 'Ready'}</span>
       </div>
@@ -115,15 +145,23 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
       <Transcript
         engine={engine}
         compact
-        label={`Case ${caseId} messages`}
+        label={`Case ${caseLabel} messages`}
         onFocusComposer={focusComposer}
         empty={
           <EmptyState
             context={ctx}
             variant="case"
+            // The reading column, like the composer below (CONTENT_COL, 42rem): the chip row
+            // ran 32 to 108 px past the composer's right edge (PW4-4).
+            className="max-w-[42rem]"
             disabled={busy}
             error={context.error}
             onRetry={context.refresh}
+            // Round 13 (SPEC-chat §3.14): three case-scoped chips from the case state,
+            // sent in this case chat with origin `starter` (never Workspace history, #5).
+            caseId={caseId}
+            principal={principal}
+            starters={caseStarters}
             onStarter={(starter: ChatStarter) => send(starter.prompt)}
           />
         }
@@ -135,29 +173,31 @@ export function CaseChat({ caseId, caseManager, starters }: CaseChatProps) {
       <div className="shrink-0 space-y-2 overflow-hidden px-1 pb-0.5 pt-2 [scrollbar-gutter:stable_both-edges]">
         <div className={LANE_GRID}>
           <div className={cn(CONTENT_COL, 'space-y-2')}>
-            <div
-              role="group"
-              aria-label="Analyst quick actions"
-              className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain"
-            >
-              {starters.map((prompt) => {
-                const Icon = STARTER_ICON[prompt] ?? MessageSquare;
-                return (
-                  <Button
-                    key={prompt}
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
-                    onClick={() => send(prompt)}
-                    disabled={busy}
-                  >
-                    <Icon aria-hidden />
-                    {prompt}
-                  </Button>
-                );
-              })}
-            </div>
+            {showQuickActions ? (
+              <div
+                role="group"
+                aria-label="Analyst quick actions"
+                className="flex min-w-0 flex-nowrap items-center gap-1.5 overflow-x-auto overscroll-x-contain"
+              >
+                {starters.map((prompt) => {
+                  const Icon = STARTER_ICON[prompt] ?? MessageSquare;
+                  return (
+                    <Button
+                      key={prompt}
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 shrink-0 gap-1.5 px-2.5 text-xs"
+                      onClick={() => send(prompt)}
+                      disabled={busy}
+                    >
+                      <Icon aria-hidden />
+                      {prompt}
+                    </Button>
+                  );
+                })}
+              </div>
+            ) : null}
             <Composer
               ref={composerRef}
               engine={engine}

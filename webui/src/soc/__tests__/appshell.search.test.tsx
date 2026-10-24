@@ -15,7 +15,7 @@
  * are supplied with mocked load-time calls so the test is fully offline.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 vi.mock('@/lib/api', () => {
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
@@ -70,6 +70,7 @@ import { DemoProvider } from '../demo';
 import { RouterProvider } from '../router';
 import { TooltipProvider } from '@/ui/tooltip';
 import { AppShell } from '../AppShell';
+import { clearChatActivity, putChatActivity } from '../chat-activity/activity';
 import type { PageId } from '../nav';
 
 const WIDE_TRIGGER = 'Search cases, sources, and actions';
@@ -294,5 +295,44 @@ describe('AppShell top-nav search (W0.10)', () => {
 
     expect(users).toHaveAttribute('aria-current', 'page');
     await waitFor(() => expect(users).toHaveFocus());
+  });
+});
+
+describe('AppShell mobile menu activity (Round 13, SPEC-chat T32)', () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    clearChatActivity();
+  });
+
+  it('marks a working answer with a 6 px dot on the menu button, never a ring around it', async () => {
+    setMobileViewport(true);
+    putChatActivity({
+      scope: 'conv:c1',
+      kind: 'workspace',
+      conversationId: 'c1',
+      caseId: null,
+      turnId: 't1',
+      requestKey: null,
+      title: 'Investigate host X',
+      label: null,
+      lookups: 0,
+      status: 'running',
+      startedAt: 1,
+      source: 'local',
+    });
+    renderShell();
+    const opener = await screen.findByRole('button', { name: 'Open navigation' });
+    // Let the lazily loaded activity effects settle inside act.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(opener.querySelector('[data-activity="running"]')).toBeNull();
+    const dot = opener.querySelector('[data-activity="working"]');
+    expect(dot).not.toBeNull();
+    expect(dot).toHaveClass('chat-activity', 'chat-activity-badge', 'size-1.5');
+    expect(dot).toHaveAttribute('aria-hidden', 'true');
+    // The words stay in the button's description.
+    expect(opener).toHaveAttribute('aria-describedby', 'mobile-nav-activity');
+    act(() => clearChatActivity());
   });
 });

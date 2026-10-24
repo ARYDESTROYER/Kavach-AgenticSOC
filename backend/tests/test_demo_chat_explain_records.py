@@ -23,6 +23,7 @@ Offline and pure; the end-to-end checks over the seeded demo stores are the
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -233,9 +234,10 @@ def test_explain_each_explains_every_listed_case_in_a_table() -> None:
     assert body.startswith("**19 open cases**: 19 escalated.")
     assert "Highest risk first." in body and "Case by case:" in body
     # Every listed case is explained (not three bare lines), from the list's own facts.
-    lines = [line for line in body.splitlines() if line.startswith("- `demo-")]
+    # Round 13 A8: an unnumbered case leads with what it is about, its id after it.
+    lines = [line for line in body.splitlines() if re.match(r"^- .+ \(`demo-\d{4}`\)", line)]
     assert len(lines) == 10, body
-    assert lines[0] == ("- `demo-0000` (identity signin on user `u0`) is a true positive at 90% confidence, "
+    assert lines[0] == ("- `identity_signin` on user `u0` (`demo-0000`) is a true positive at 90% confidence, "
                         "risk 90/100, severity critical, status escalated.")
     assert "ask to explain that case" in body and "From the Help Center" not in body
     # "… with a table": the case list in its table view, titled for the ranking.
@@ -248,7 +250,7 @@ def test_explain_the_top_3_explains_three_cases() -> None:
     question = "Which cases had the highest risk this week? Explain the top 3"
     inp = {"limit": 3, "sort_field": "risk_score", "sort_order": "desc", "window": "this_week"}
     _header, body = final_of(plan_turn(prompt(question, [call("search_cases", _cases_obs(3), inp=inp)])))
-    assert len([line for line in body.splitlines() if line.startswith("- `demo-")]) == 3
+    assert len([line for line in body.splitlines() if re.match(r"^- .+ \(`demo-\d{4}`\)", line)]) == 3
     assert "Case by case:" in body
 
 
@@ -256,7 +258,7 @@ def test_a_plain_case_list_keeps_its_short_form() -> None:
     _header, body = final_of(plan_turn(prompt("Show the open cases", [
         call("search_cases", _cases_obs(10), inp={"status_group": "active", "limit": 10})])))
     assert "Case by case:" not in body
-    assert len([line for line in body.splitlines() if line.startswith("- `demo-")]) == 3
+    assert len([line for line in body.splitlines() if re.match(r"^- .+ · `demo-\d{4}`", line)]) == 3
 
 
 def test_explain_each_true_positive_explains_every_listed_case() -> None:
@@ -267,7 +269,7 @@ def test_explain_each_true_positive_explains_every_listed_case() -> None:
         call("search_cases", tps, inp={"verdict": "TRUE_POSITIVE", "limit": 10, "window": "this_month"}),
         call("soc_metrics", mix, inp={"kind": "case_mix", "window": "this_month"})])))
     assert "Case by case:" in body
-    assert len([line for line in body.splitlines() if line.startswith("- `demo-")]) == 4
+    assert len([line for line in body.splitlines() if re.match(r"^- .+ \(`demo-\d{4}`\)", line)]) == 4
 
 
 def test_records_and_definitions_are_told_apart_by_their_object() -> None:

@@ -81,7 +81,7 @@ const LATIN_KEY_RE = /^[\x20-\x7e]$/;
  * types "r" (Ctrl+Shift+R is hard reload); matching `code` there would hijack them.
  * Named keys ("Dead", "Unidentified") never fall back either.
  */
-function nonLatinCharacter(key: string): boolean {
+export function nonLatinCharacter(key: string): boolean {
   return Array.from(key).length === 1 && !LATIN_KEY_RE.test(key);
 }
 
