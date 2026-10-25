@@ -11610,3 +11610,10 @@
 - Tests: not run yet.
 - Status: in-progress.
 - Next: research briefs in `docs/research/2026-10-round14/research/`.
+
+### 2026-10-25 17:30Z — Orchestrator — Round 14 research done
+- Context: research workflow for the nine asks (ten agents: runbooks industry and code map, audit log, dashboards, chat drill-down, small asks, navigation animation, two whole-console UI audits, synthesis).
+- Did: briefs in `docs/research/2026-10-round14/research/` (SYNTHESIS.md plus nine briefs). Findings: clicking an Audit row does nothing and the detail is one truncated line; dashboards are per user only, so built-ins need a read-only board concept; the "Severity / count" block shows bare numbers and a bar total that disagrees with its sentence; the left navigation swaps DOM trees and animates layout twice per toggle (eleven defects with frame evidence); about 40 views drift from the Overview grammar; playbooks and runbooks cover the same nine detection families and differ only in how they reach the model, three bundled playbooks are silently truncated in the investigator prompt, and Demo "Run a playbook" reports success without using it. Eleven design choices (C1 to C11) and a prototype plan were drafted.
+- Tests: none (research only).
+- Status: in-progress.
+- Next: option prototypes in isolated worktrees with screenshots and comparison sheets, a design critique and refinement, then the operator's choices.
