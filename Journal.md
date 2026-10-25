@@ -11603,3 +11603,10 @@
 - Tests: backend 8,682 passed, 4 skipped; ruff 0.12.5 fatal selection clean; test:strict 525 files, 5,460 passed, 1 skipped; tsc and lint 0; check:types no drift; build clean; bundle-first-paint 23 passed; entry 371,876 B (+17 B, the confirmed flag; budget 372,027 B).
 - Status: done (pushed; review thread answered and resolved).
 - Next: the Workspace history rail still lists the other side's conversations after a Demo switch until its next refresh (component state, outside this finding).
+
+### 2026-10-25 09:00Z — Orchestrator — Round 14 start: nine operator asks
+- Context: PR #132 (Round 13) merged into Testing as `c00deef`; `claude/round12` restarted from it. The operator asked for: (1) the automatic sign-out notice must not state the session length; (2) a practical Audit log (clicking an entry reveals its detail) with an export; (3) three more built-in dashboards in Dashboards beside the Overview, per industry practice; (4) remove the "Alert flow" and "Cases and response" band headers on the Overview and reclaim the space; (5) triple every Chat assistant "Timeouts and capacity" default; (6) clicking a detection rule in a chat answer opens a drill-down (a rule dashboard or every alert under that rule); (7) the "Severity / count" breakdown says too little (show the rule, or a breakdown choice); (8) a whole-console UI polish to the Overview's standard, starting with the buggy left navigation animation; (9) replace playbooks and runbooks with one rebuilt Runbooks feature per industry practice (operator reference: asp.viperrtp.com).
+- Did: research workflow launched (industry standards and code for every ask, plus a live screenshot audit of every page and the navigation animation); option prototypes with screenshots follow for the operator to choose, then a binding spec, parallel implementation, adversarial review and the gates.
+- Tests: not run yet.
+- Status: in-progress.
+- Next: research briefs in `docs/research/2026-10-round14/research/`.
