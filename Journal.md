@@ -11624,3 +11624,10 @@
 - Tests: prototype branches keep tsc, lint and design gates clean; P0 and U4 ran the full strict suite (5,464 and 5,487 passed); the production entry chunk is unchanged at 371,876 B on every prototype branch.
 - Status: in-progress (waiting for the operator's choices).
 - Next: binding Round 14 SPEC from the choices, then implementation waves.
+
+### 2026-10-26 09:00Z — Orchestrator — Round 14: the operator's choices
+- Context: the operator reviewed the option pack.
+- Did: decisions recorded: C1 A (Audit side sheet), C3 B (one panel gutter), C4 A (rule sheet with "Open all in Logs"), C5 A plus Split by, C6 A (docked rail, stable morph), C7 1 (panels everywhere), C8 1 (title and controls only), C9 A (grouped Settings panels), C10 B (phased runbook with the Next step card), C11 A (structured editor with a Markdown source view), and every proposed default. C2: the library page (option 3) with a change: the app still lands on the Cyber Defence Center; the left navigation "Overview" entry opens the Dashboards library (Built-in and Yours); the Cyber Defence Center card is labelled "Default" instead of "Landing page". The operator asked for occasional progress updates with before and after screenshots side by side in one image.
+- Tests: none.
+- Status: in-progress.
+- Next: binding SPEC with work packages, reviewed, then implementation waves.
