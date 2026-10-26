@@ -376,9 +376,9 @@ describe('Overview — the command lattice', () => {
 
     const strip = screen.getByTestId('kpi-strip');
     const attribution = screen.getByTestId('human-vs-ai');
-    const snapshots = screen.getByRole('region', { name: 'Resolved and open cases' });
+    const snapshots = screen.getByTestId('case-state');
     const queue = screen.getByRole('region', { name: 'Latest cases' });
-    const timing = screen.getByRole('region', { name: 'Mean time to detect / respond' });
+    const timing = screen.getByRole('region', { name: 'Response time' });
 
     // One chain, each link strictly after the one before it. Chaining is what makes the
     // assertion an ORDER rather than six independent presence checks.

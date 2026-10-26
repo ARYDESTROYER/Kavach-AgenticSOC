@@ -1,0 +1,66 @@
+{
+  "package": "W7a",
+  "note": "Round 14 W7a (Runbooks library and editor) owns these files and empties this list.",
+  "entries": [
+    {
+      "rule": "header-overline",
+      "file": "soc/pages/Catalog.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-removed-prop",
+      "file": "soc/pages/Catalog.tsx",
+      "max": 2
+    },
+    {
+      "rule": "uppercase-tracking",
+      "file": "soc/pages/Catalog.tsx",
+      "max": 5
+    },
+    {
+      "rule": "raw-number-input",
+      "file": "soc/pages/Catalog.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-overline",
+      "file": "soc/pages/Intelligence.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-removed-prop",
+      "file": "soc/pages/Intelligence.tsx",
+      "max": 2
+    },
+    {
+      "rule": "header-overline",
+      "file": "soc/pages/Runbooks.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-removed-prop",
+      "file": "soc/pages/Runbooks.tsx",
+      "max": 2
+    },
+    {
+      "rule": "uppercase-tracking",
+      "file": "soc/pages/Runbooks.tsx",
+      "max": 8
+    },
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/pages/Runbooks.tsx",
+      "max": 3
+    },
+    {
+      "rule": "uppercase-tracking",
+      "file": "soc/rules/RuleEditor.tsx",
+      "max": 3
+    },
+    {
+      "rule": "info-alert",
+      "file": "soc/rules/RuleEditor.tsx",
+      "max": 4
+    }
+  ]
+}

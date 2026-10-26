@@ -1,14 +1,17 @@
 /**
- * App shell for the SOC console — a slim left ICON RAIL + a top bar + the routed
- * content slot.
+ * App shell for the SOC console: the left navigation, a top bar and the routed content
+ * slot.
  *
- * - Rail: the registry-derived `NavSidebar` (collapsible groups Overview / Triage /
- *   Intelligence / Analytics / Notifications / Platform, per nav.ts ← registry.FEATURES),
- *   with disclosure groups + fly-outs when collapsed; the active item is highlighted
- *   with a quiet accent surface + edge rail. Width toggles with Cmd/Ctrl-B (persisted).
+ * - Rail: the registry-derived `NavSidebar` (groups Overview / Triage / Intelligence /
+ *   Analytics / Notifications / Platform, per nav.ts ← registry.FEATURES): a docked
+ *   64 px icon rail or 240 px labelled drawer whose icons never move (Round 14, C6 A).
+ *   One explicit toggle switches it (the control under the brand, Ctrl+B or ⌘B, the
+ *   panel's edge strip); its state lives in `nav-store.ts`, so a toggle re-renders the
+ *   navigation only.
  * - Top bar: product breadcrumb ("<Product> / <Page>" using OUR product name from
- *   branding), and on the right a theme toggle, a compact demo-mode chip (shown at
- *   every width while the demo tenant is active — it replaced the full-width banner
+ *   branding; a page such as a dashboard board may add segments through
+ *   `setBreadcrumbTrail`), and on the right a theme toggle, a compact demo-mode chip (shown at
+ *   every width while the demo tenant is active; it replaced the full-width banner
  *   that used to eat content real estate on every route), version badge, a health pill
  *   (polls /api/health, debounced), an optional user chip + logout, and a Cmd-K
  *   hint that opens a cmdk command palette for navigation.
@@ -36,8 +39,6 @@ import {
   Monitor,
   Palette,
   ChevronDown,
-  PanelLeftClose,
-  PanelLeftOpen,
   Menu,
   Search,
   RefreshCw,
@@ -74,6 +75,7 @@ import {
 } from '@/ui/dropdown-menu';
 import { cn } from '@/lib/cn';
 import { api } from '@/lib/api';
+import { comboLabel } from '@/lib/platform-keys';
 import { initialsFrom } from '@/lib/avatar';
 import { humanizeToken } from '@/lib/format';
 import type { AccountProfile, BuildInfoResponse, HealthResponse } from '@/lib/types';
@@ -103,7 +105,8 @@ import type { HealthDegradation } from './components/health-diagnostics-state';
 import type { CommandPaletteProps } from './components/CommandPalette';
 import { GlassSurface } from './components/GlassSurface';
 import { prefetchChunks, retryingLoader } from './lazy-retry';
-import { NavSidebar, useNavPrefs } from './components/NavSidebar';
+import { NavSidebar } from './components/NavSidebar';
+import { navStore, useNavPrefsSync, useNavState } from './nav-store';
 import { NotificationBell } from './components/NotificationBell';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import {
@@ -122,8 +125,14 @@ import { JobMonitor } from './jobs/JobMonitor';
 import { ActivityGlyph } from './chat-activity/glyph';
 import { useChatActivity } from './chat-activity/store';
 import type { ActivityEffectsProps } from './chat-activity/ActivityEffects';
-import { navItem, navLabel, navParentOf, type PageId } from './nav';
-import type { Navigate } from './router';
+import { navItem, navLabel, type PageId } from './nav';
+import { pageHash, type Navigate } from './router';
+
+/**
+ * The breadcrumb trail API for pages (Round 14, SPEC §2.2 item 6): a page adds segments
+ * after the product name while it is mounted. Re-exported from the entry-safe store.
+ */
+export { setBreadcrumbTrail, useBreadcrumbTrail, type BreadcrumbItem } from './nav-store';
 
 // TYPE-ONLY import (elided at build → zero runtime import): motion.dev must NEVER ride
 // the eager App/AppShell first-paint graph, so RouteMotion is reached purely through the
@@ -874,7 +883,7 @@ export const UserAvatar: React.FC<{ src?: string; name: string; className?: stri
   return (
     <span
       className={cn(
-        'flex h-6 w-6 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary',
+        'flex h-6 w-6 items-center justify-center rounded-full bg-primary/15 text-2xs font-semibold text-primary',
         className,
       )}
       aria-hidden
@@ -958,7 +967,7 @@ const UserMenu: React.FC<{
             stores/user_prefs.py). */}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
-            <Palette aria-hidden />
+            <Palette className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
             Appearance
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
@@ -1165,31 +1174,14 @@ export const AppShell: React.FC<AppShellProps> = ({
     supervisedCurrent,
     supervisedJobId,
   ]);
-  // Nav collapse + open-group state (shell-owned; hydrates synchronously from a
-  // localStorage mirror to avoid a first-paint flash, then reconciles with the
-  // server-side UserPrefs.misc and persists every change). See useNavPrefs.
-  const { collapsed, toggleCollapsed, openGroups, toggleGroup, openGroup } = useNavPrefs();
-  const mobileOpenGroups = React.useMemo(() => {
-    const next = new Set(openGroups);
-    const parent = navParentOf(page);
-    if (parent && (parent.children?.length ?? 0) > 0) next.add(parent.id);
-    return next;
-  }, [openGroups, page]);
+  // Navigation state (collapsed rail, open groups) lives in `nav-store.ts`: it hydrates
+  // synchronously from a localStorage mirror (no first-paint flash), reconciles once
+  // with the server-side UserPrefs.misc here, and persists every change. The shell does
+  // not subscribe to it, so a toggle re-renders the navigation only.
+  useNavPrefsSync();
+  // A page's extra breadcrumb segments (a dashboard board), shown while it is current.
+  const trail = useNavState((s) => s.trail);
 
-  const handleMobileNavOpenChange = React.useCallback(
-    (open: boolean) => {
-      // A direct route to a disclosure child (for example #/users) may restore with
-      // its parent collapsed. Expand that trail before Radix moves focus so the
-      // canonical aria-current leaf is mounted and keyboard users land on the page
-      // they are actually viewing.
-      if (open) {
-        const parent = navParentOf(page);
-        if (parent && (parent.children?.length ?? 0) > 0) openGroup(parent.id);
-      }
-      setMobileNavOpen(open);
-    },
-    [openGroup, page],
-  );
 
   // A desktop rail permanently consumes 240px when expanded, which left a 390px
   // viewport with only ~150px of routed content and forced document-wide horizontal
@@ -1387,40 +1379,24 @@ export const AppShell: React.FC<AppShellProps> = ({
         e.preventDefault();
         if (paletteOpen) handlePaletteOpenChange(false);
         else openPalette();
-      } else if (k === 'b') {
+      } else if (k === 'b' && !isMobile) {
+        // The rail exists on a desktop only; on a phone the navigation is a sheet.
         e.preventDefault();
-        toggleCollapsed();
+        navStore.toggleCollapsed();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [handlePaletteOpenChange, openPalette, paletteOpen, toggleCollapsed]);
+  }, [handlePaletteOpenChange, isMobile, openPalette, paletteOpen]);
 
-  // The hamburger toggle, shared by the expanded-header + collapsed-rail slots.
-  const navToggle = (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 shrink-0"
-          onClick={toggleCollapsed}
-          aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
-          aria-keyshortcuts="Control+B Meta+B"
-        >
-          {collapsed ? (
-            <PanelLeftOpen className="h-4 w-4" aria-hidden />
-          ) : (
-            <PanelLeftClose className="h-4 w-4" aria-hidden />
-          )}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side={collapsed ? 'right' : 'bottom'}>
-        {collapsed ? 'Expand navigation' : 'Collapse navigation'}
-        <kbd className="ml-1.5 rounded border border-border bg-muted px-1 text-[10px]">⌘B</kbd>
-      </TooltipContent>
-    </Tooltip>
-  );
+  // The search chip's shortcut in the platform's own spelling ("Ctrl+K" or "⌘K").
+  const searchHint = React.useMemo(() => comboLabel(['Mod', 'K']), []);
+  // On a phone the bell sits inside the Console controls sheet, so its opener carries
+  // agent health (a dot, and the same fact in its name and tooltip).
+  const compactHealthMarked = isMobile && agentDegradations.length > 0;
+  const compactHealthNote = compactHealthMarked ? ', agent health needs attention' : '';
+  // The breadcrumb: a page's own segments while it is current, else its one label.
+  const trailItems = trail && trail.page === page && trail.items.length > 0 ? trail.items : null;
 
   return (
     // AnnouncerProvider mounts the ONE app-level aria-live region (§6.3 / E3) and
@@ -1458,9 +1434,12 @@ export const AppShell: React.FC<AppShellProps> = ({
 
       {/* Mobile navigation is an off-canvas dialog, not a squeezed desktop rail.
           Only one NavSidebar instance is mounted at a time, so disclosure ids and
-          aria-current markers stay unique. */}
+          aria-current markers stay unique. The sheet opens the current page's group
+          itself when it mounts (and keeps its groups still for that open and close
+          cycle), so the one current-page marker is rendered and keyboard users land on
+          the page they are actually viewing. */}
       {isMobile ? (
-        <Sheet open={mobileNavOpen} onOpenChange={handleMobileNavOpenChange}>
+        <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
           <SheetContent
             ref={mobileNavRef}
             side="left"
@@ -1483,57 +1462,29 @@ export const AppShell: React.FC<AppShellProps> = ({
               Navigate between security operations pages.
             </SheetDescription>
             <NavSidebar
+              variant="sheet"
               page={page}
               onNavigate={navigateFromMobile}
-              collapsed={false}
-              openGroups={mobileOpenGroups}
-              onToggleGroup={toggleGroup}
-              onOpenGroup={openGroup}
               logoUrl={logoUrl}
               productName={productName}
-              className="h-full w-full border-r-0"
               reducedMotion={reducedMotion}
-              // Reserve the top-right Sheet close button's footprint so a long,
-              // operator-provided product name never runs underneath it.
-              toggleSlot={<span className="size-8 shrink-0" aria-hidden />}
             />
           </SheetContent>
         </Sheet>
       ) : null}
 
-      {/* ---- Single dockable navigation sidebar (icon rail ↔ labelled drawer) ----
-          The wrapper reserves exactly the persisted footprint: 64px while locked
-          collapsed, 240px while pinned open. A collapsed grouped destination reveals
-          only its compact flyout; hovering never swaps the rail DOM or widens the
-          sidebar over routed content. */}
+      {/* ---- The docked navigation (64 px icon rail or 240 px labelled drawer) ----
+          NavSidebar renders its own in-flow spacer (`desktop-navigation-frame`), which
+          changes width once, at the click; the fixed panel beside it morphs with
+          transform and opacity only, so the icons never move. Hover never widens it. */}
       {!isMobile ? (
-        <div
-          data-testid="desktop-navigation-frame"
-          data-motion={reducedMotion ? 'reduced' : 'full'}
-          className={cn(
-            // Springy ease (the app's `--motion-ease-premium` curve) gives the rail a
-            // physical "settle" without pulling the motion.dev runtime onto the eager
-            // first-paint graph (NavSidebar/AppShell are eager; motion stays lazy, §budget).
-            'relative shrink-0 min-w-0',
-            reducedMotion
-              ? 'transition-none'
-              : 'transition-[width] duration-200 ease-premium',
-            collapsed ? 'z-40 w-16' : 'w-60',
-          )}
-        >
-          <NavSidebar
-            page={page}
-            onNavigate={navigateFromDesktop}
-            collapsed={collapsed}
-            openGroups={openGroups}
-            onToggleGroup={toggleGroup}
-            onOpenGroup={openGroup}
-            logoUrl={logoUrl}
-            productName={productName}
-            toggleSlot={navToggle}
-            reducedMotion={reducedMotion}
-          />
-        </div>
+        <NavSidebar
+          page={page}
+          onNavigate={navigateFromDesktop}
+          logoUrl={logoUrl}
+          productName={productName}
+          reducedMotion={reducedMotion}
+        />
       ) : null}
 
       {/* ---- Main column --------------------------------------------------- */}
@@ -1614,12 +1565,38 @@ export const AppShell: React.FC<AppShellProps> = ({
             >
               /
             </span>
+            {/* A page's own segments (a board: "Dashboards" as a link, then the board
+                name). Below 46rem of bar only the current segment shows. */}
+            {trailItems?.slice(0, -1).map((item, index) => (
+              <React.Fragment key={`${index}-${item.label}`}>
+                {item.page ? (
+                  <a
+                    href={pageHash(item.page, item.opts)}
+                    onClick={(event) => {
+                      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                      event.preventDefault();
+                      onNavigate(item.page as PageId, item.opts);
+                    }}
+                    className="hidden max-w-[12rem] truncate rounded-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring @[46rem]/topbar:block"
+                  >
+                    {item.label}
+                  </a>
+                ) : (
+                  <span className="hidden max-w-[12rem] truncate font-medium text-muted-foreground @[46rem]/topbar:block">
+                    {item.label}
+                  </span>
+                )}
+                <span className="hidden text-muted-foreground @[46rem]/topbar:inline" aria-hidden>
+                  /
+                </span>
+              </React.Fragment>
+            ))}
             <span
               className="line-clamp-2 max-w-[16rem] text-ellipsis font-semibold leading-tight text-foreground"
               aria-current="page"
-              title={pageLabel}
+              title={trailItems ? trailItems[trailItems.length - 1].label : pageLabel}
             >
-              {pageLabel}
+              {trailItems ? trailItems[trailItems.length - 1].label : pageLabel}
             </span>
           </nav>
 
@@ -1673,8 +1650,8 @@ export const AppShell: React.FC<AppShellProps> = ({
               <span className="hidden min-w-0 flex-1 truncate text-left @[19rem]/search:block">
                 Search cases, sources, actions…
               </span>
-              <kbd className="ml-1 hidden shrink-0 rounded border border-border bg-muted px-1 text-[10px] font-medium @[9.5rem]/search:inline-block">
-                ⌘K
+              <kbd className="ml-1 hidden shrink-0 rounded border border-border bg-muted px-1 font-sans text-2xs font-medium @[9.5rem]/search:inline-block">
+                {searchHint}
               </kbd>
             </span>
           </button>
@@ -1859,29 +1836,29 @@ export const AppShell: React.FC<AppShellProps> = ({
                       variant="ghost"
                       size="icon"
                       className={cn('relative h-8 w-8 shrink-0', !isMobile && '@[40rem]/topbar:hidden')}
-                      aria-label="Open console controls"
+                      aria-label={`Open console controls${compactHealthNote}`}
                     >
                       <SlidersHorizontal className="h-4 w-4" aria-hidden />
                       {/* The mobile bell lives INSIDE this Sheet, so without a marker
                           here a degradation would be invisible until the operator
-                          opened the panel. The aria-label is deliberately unchanged —
-                          the bell's own label carries the state to assistive tech at
-                          every width, and the shell's live region announces it. On a
-                          desktop the bell stays in the bar with its own health mark, so
-                          this one would say the same thing twice. */}
-                      {isMobile && agentDegradations.length > 0 ? (
+                          opened the panel. The marker is a small dot (SPEC §4.8.1 Y13: a
+                          triangle on a 32 px control read as a broken icon), and the
+                          button's name carries the same fact, since the bell is out of
+                          the accessibility tree while the Sheet is closed (status is
+                          never colour alone, SPEC §3.3). On a desktop the bell stays in
+                          the bar with its own health mark, so this one would say the
+                          same thing twice. */}
+                      {compactHealthMarked ? (
                         <span
-                          className="absolute -bottom-0.5 -right-0.5 inline-flex h-[15px] min-w-[15px] items-center justify-center rounded-full border border-surface bg-warning px-[3px] text-2xs font-semibold leading-none text-warning-foreground"
+                          className="absolute right-1 top-1 size-2 rounded-full bg-warning ring-2 ring-surface"
                           data-testid="compact-controls-health-marker"
                           aria-hidden
-                        >
-                          <AlertTriangle className="size-2.5" />
-                        </span>
+                        />
                       ) : null}
                     </Button>
                   </SheetTrigger>
                 </TooltipTrigger>
-                <TooltipContent>Console controls</TooltipContent>
+                <TooltipContent>{`Console controls${compactHealthNote}`}</TooltipContent>
               </Tooltip>
               <SheetContent
                 side="right"

@@ -66,10 +66,11 @@ describe('ROUTES — host-tab children route through their host with a forced ta
     ['knowledge', 'intelligence', 'knowledge'],
     ['runbooks', 'intelligence', 'runbooks'],
     ['memory', 'intelligence', 'memory'],
-    ['playbooks', 'intelligence', 'playbooks'],
     ['personas', 'intelligence', 'personas'],
-    // Compatibility deep-link: the retired combined Catalog lands on Playbooks.
-    ['catalog', 'intelligence', 'playbooks'],
+    // Round 14 (D44): `#/playbooks` and `#/catalog` redirect to `#/runbooks` in the
+    // router; their route entries are the defensive fallback and open Runbooks too.
+    ['playbooks', 'intelligence', 'runbooks'],
+    ['catalog', 'intelligence', 'runbooks'],
   ] as const)(
     '#/%s renders its host element with a forced tab',
     (child, host, tab) => {

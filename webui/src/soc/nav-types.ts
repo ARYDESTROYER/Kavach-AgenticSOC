@@ -31,6 +31,7 @@ export type NavOpts = {
    * seeds its severity filter from — one of `critical | high | medium | low | info`
    * (matching the Cases severity dropdown + `severityBand`). Lets the Overview
    * Critical/High KPI + the open-by-severity rows deep-link to a severity-filtered list.
+   * On Logs (Round 14, SPEC §4.6.6) it is a durable hash key: "Severity is High".
    */
   severity?: string;
   /** Exact Noise Reduction outcome cohort used by the dashboard drill-through. */
@@ -86,4 +87,39 @@ export type NavOpts = {
   to?: string;
   /** Logs: the source to browse. */
   sourceId?: string;
+  /*
+   * Round 14 deep links (SPEC §2.2, §4.5.1, §4.6.6, §4.8.2, §4.10.12). Each is a durable
+   * hash key of ONE page, validated by the router (`DEEP_LINK_KEYS` / `hashKeys` in
+   * router.tsx); a bad value drops the whole query. Pages re-validate what they read.
+   */
+  /** Dashboards: the board to open (`builtin:<id>`, a personal id, `u:<sha8>` or `new`). */
+  board?: string;
+  /** Logs and Cases: an exact detection rule value ("Rule is"). */
+  rule?: string;
+  /** Logs: "Severity High or above" (one of `info | low | medium | high | critical`). */
+  severity_gte?: string;
+  /** Case Manager: the queue's "Closed by" filter (`agent`, `analyst`, `analyst_policy`, `system`). */
+  closedBy?: string;
+  /** Runbooks: the runbook the editor opens, or `new`. */
+  id?: string;
+  /** Audit log: the scope (`people`, `agent` or `all`). */
+  scope?: string;
+  /** Audit log: the server-side search text (untrusted, bounded, control-free). */
+  q?: string;
+  /** Audit log: an action (`user.role_changed`) or an event category id. */
+  event?: string;
+  /** Audit log: an exact actor. */
+  actor?: string;
+  /** Audit log: an actor substring. */
+  actor_contains?: string;
+  /** Audit log: the outcome (`success`, `failure`, `denied`, `partial`, `unknown`). */
+  outcome?: string;
+  /** Audit log: rows for one case. */
+  case?: string;
+  /** Audit log: rows for one target id. */
+  target?: string;
+  /** Audit log: rows from one client IP address. */
+  ip?: string;
+  /** Audit log: the record the inspector opens (an opaque store-prefixed id). */
+  record?: string;
 };

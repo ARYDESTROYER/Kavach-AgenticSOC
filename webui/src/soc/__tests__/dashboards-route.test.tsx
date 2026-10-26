@@ -90,10 +90,12 @@ describe('CD5 — #/dashboards resolves as a routable page id', () => {
     expect(pageFromHash()).toBe('dashboards');
   });
 
-  it('does not collide with the fixed `dashboard` (singular) posture route', () => {
+  it('keeps the `dashboard` (singular) id as an alias of the landing page (Round 14, SPEC §2.2 item 3)', () => {
+    // The Cyber Defence Center has one URL: `#/dashboard` resolves (and is normalised)
+    // to `#/overview`, never to the library.
     expect(isPageId('dashboard')).toBe(true);
     window.location.hash = '#/dashboard';
-    expect(pageFromHash()).toBe('dashboard');
+    expect(pageFromHash()).toBe('overview');
   });
 
   it('keeps every previously-registered PageId routable (no deep-link regression)', () => {

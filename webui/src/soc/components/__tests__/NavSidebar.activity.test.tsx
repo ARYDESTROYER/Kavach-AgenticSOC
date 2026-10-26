@@ -18,6 +18,7 @@ vi.mock('../../prefs', () => ({ usePrefs: () => ({ prefs: { misc: {} }, ready: t
 vi.mock('@/lib/api', () => ({ api: { prefs: { putUser: () => Promise.resolve({}) } } }));
 
 import { NavSidebar } from '../NavSidebar';
+import { navStore } from '../../nav-store';
 import { clearChatActivity, putChatActivity, setAnimatedBrand, type ChatActivity } from '../../chat-activity/activity';
 
 function entry(patch: Partial<ChatActivity> & { scope: string }): ChatActivity {
@@ -37,21 +38,20 @@ function entry(patch: Partial<ChatActivity> & { scope: string }): ChatActivity {
   };
 }
 
-function renderNav(props: Partial<React.ComponentProps<typeof NavSidebar>> = {}) {
+/** The navigation with the Workspace group open (rail state from the store). */
+function renderNav({ collapsed = false, ...props }: Partial<React.ComponentProps<typeof NavSidebar>> & { collapsed?: boolean } = {}) {
+  window.localStorage.setItem('soc.nav.collapsed', collapsed ? '1' : '0');
+  window.localStorage.setItem('soc.nav.openGroups', JSON.stringify(['chat']));
+  navStore.beginSession();
   return render(
     <TooltipProvider>
-      <NavSidebar
-        page="overview"
-        onNavigate={vi.fn()}
-        collapsed={false}
-        openGroups={new Set<string>(['chat'])}
-        onToggleGroup={vi.fn()}
-        onOpenGroup={vi.fn()}
-        {...props}
-      />
+      <NavSidebar page="overview" onNavigate={vi.fn()} {...props} />
     </TooltipProvider>,
   );
 }
+
+/** The Workspace row and its Chat page (the host shares its id with that page). */
+const chatRows = () => [screen.getByTestId('nav-chat'), screen.getByTestId('nav-chat-page')];
 
 const describedText = (element: HTMLElement) => {
   const id = element.getAttribute('aria-describedby');
@@ -71,16 +71,14 @@ describe('NavSidebar — chat activity (expanded)', () => {
   it('shows nothing while no answer is being written', () => {
     const { container } = renderNav();
     expect(container.querySelector('[data-activity]')).toBeNull();
-    for (const row of screen.getAllByTestId('nav-chat')) expect(row).not.toHaveAttribute('aria-describedby');
+    for (const row of chatRows()) expect(row).not.toHaveAttribute('aria-describedby');
     expect(container.querySelector('.chat-brand-ring')).toBeNull();
   });
 
   it('turns a ring on the Workspace row and its Chat leaf, describes it, and never sets aria-busy', () => {
     putChatActivity(entry({ scope: 'conv:c1' }));
     const { container } = renderNav();
-    const rows = screen.getAllByTestId('nav-chat');
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
+    for (const row of chatRows()) {
       expect(row.querySelector('[data-activity="running"]')).not.toBeNull();
       expect(describedText(row)).toBe('Chat: 1 answer in progress: Investigate host X');
       // The accessible name stays the plain label.
@@ -95,7 +93,7 @@ describe('NavSidebar — chat activity (expanded)', () => {
     putChatActivity(entry({ scope: 'conv:c1', status: 'unread' }));
     const { container, unmount } = renderNav();
     expect(container.querySelector('.chat-activity[data-activity="unread"]')).not.toBeNull();
-    expect(describedText(screen.getAllByTestId('nav-chat')[0])).toBe('Chat: 1 new answer: Investigate host X');
+    expect(describedText(screen.getByTestId('nav-chat'))).toBe('Chat: 1 new answer: Investigate host X');
     unmount();
     act(() => putChatActivity(entry({ scope: 'conv:c1', status: 'needs_input' })));
     const second = renderNav();
@@ -114,7 +112,7 @@ describe('NavSidebar — chat activity (expanded)', () => {
     const caseManager = screen.getByTestId('nav-case_manager');
     expect(caseManager.querySelector('[data-activity="running"]')).not.toBeNull();
     expect(describedText(caseManager)).toBe('Case chat: 1 answer in progress: Case case-4: Summarize Case');
-    expect(screen.getAllByTestId('nav-chat')[0].querySelector('[data-activity]')).toBeNull();
+    expect(screen.getByTestId('nav-chat').querySelector('[data-activity]')).toBeNull();
   });
 
   it('animates only the ring around an operator’s logo, never the logo', () => {
@@ -128,7 +126,7 @@ describe('NavSidebar — chat activity (expanded)', () => {
     act(() => setAnimatedBrand(false));
     expect(container.querySelector('.chat-brand-ring')).toBeNull();
     // The nav glyph stays: the switch only governs the brand ring.
-    expect(screen.getAllByTestId('nav-chat')[0].querySelector('[data-activity="running"]')).not.toBeNull();
+    expect(screen.getByTestId('nav-chat').querySelector('[data-activity="running"]')).not.toBeNull();
   });
 
   it('explains every amber glyph it draws, and draws none for a question the analyst already looked at', () => {
@@ -139,7 +137,7 @@ describe('NavSidebar — chat activity (expanded)', () => {
       const glyphs = Array.from(container.querySelectorAll('[data-activity="needs_input"]'));
       expect(glyphs.length).toBeGreaterThan(0);
       for (const glyph of glyphs) {
-        const host = glyph.closest('button') as HTMLElement;
+        const host = glyph.closest('a') as HTMLElement;
         expect(describedText(host)).toMatch(/question needs your input: (Case k: )?Which (host|user)\?$/);
       }
       unmount();
@@ -167,19 +165,20 @@ describe('NavSidebar — chat activity (collapsed rail)', () => {
   it('badges the rail button and repeats the state in the flyout', () => {
     putChatActivity(entry({ scope: 'conv:c1' }));
     renderNav({ collapsed: true });
-    const rail = screen.getByRole('button', { name: 'Workspace' });
-    expect(rail.querySelector('.chat-activity-badge[data-activity="running"]')).not.toBeNull();
+    const rail = screen.getByRole('link', { name: 'Workspace' });
+    // The rail badge sits on the icon (top right); the label's glyph is drawer-only.
+    expect(rail.querySelector('.nav-railmark [data-activity="running"]')).not.toBeNull();
     expect(describedText(rail)).toBe('Chat: 1 answer in progress: Investigate host X');
     act(() => rail.focus());
     expect(within(screen.getByTestId('nav-flyout-chat')).getByText('Chat: 1 answer in progress: Investigate host X')).toBeInTheDocument();
-    const chatLeaf = within(screen.getByTestId('nav-flyout-chat')).getByRole('button', { name: 'Chat' });
+    const chatLeaf = within(screen.getByTestId('nav-flyout-chat')).getByRole('link', { name: 'Chat' });
     expect(chatLeaf.querySelector('[data-activity="running"]')).not.toBeNull();
   });
 
   it('says "Working" when the ring stands still (reduced motion)', () => {
     putChatActivity(entry({ scope: 'conv:c1' }));
     renderNav({ collapsed: true, reducedMotion: true });
-    const rail = screen.getByRole('button', { name: 'Workspace' });
+    const rail = screen.getByRole('link', { name: 'Workspace' });
     act(() => rail.focus());
     expect(within(screen.getByTestId('nav-flyout-chat')).getByText(/^Working\. Chat: 1 answer in progress/)).toBeInTheDocument();
   });
@@ -196,7 +195,7 @@ describe('NavSidebar — the brand ring below sm (Round 13, SPEC-chat T32)', () 
     expect(tile).toHaveClass('max-sm:[&>.chat-brand-ring]:hidden');
     expect(tile.querySelector('img, svg')).not.toBeNull();
     // The Chat destination keeps its own turning glyph at every width.
-    for (const row of screen.getAllByTestId('nav-chat')) {
+    for (const row of chatRows()) {
       const glyph = row.querySelector('[data-activity="running"]');
       expect(glyph).not.toBeNull();
       expect(glyph?.closest('.hidden')).toBeNull();

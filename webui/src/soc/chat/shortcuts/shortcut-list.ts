@@ -5,6 +5,12 @@
  * Ctrl/Cmd+B: those belong to the console (command palette, navigation).
  */
 
+// The platform rule lives in the entry-safe `lib/platform-keys` (Round 14, SPEC §3.4), so
+// the shell can label Ctrl+B and Ctrl+K without importing this list.
+import { isApplePlatform, keyLabel } from '@/lib/platform-keys';
+
+export { isApplePlatform, keyLabel };
+
 /** A key token: `Mod` is Ctrl on Windows/Linux and ⌘ on macOS. */
 export type ShortcutKey =
   | 'Mod'
@@ -67,20 +73,6 @@ export const CHAT_SHORTCUTS: readonly ChatShortcut[] = [
   { id: 'shortcuts', label: 'Show keyboard shortcuts', keys: ['Mod', '/'], where: 'chat' },
 ];
 
-/** True on Apple platforms (⌘ instead of Ctrl). */
-export function isApplePlatform(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  const platform = nav.userAgentData?.platform || nav.platform || nav.userAgent || '';
-  return /mac|iphone|ipad|ipod/i.test(platform);
-}
-
-/** Display text for one key on this platform. */
-export function keyLabel(key: ShortcutKey, apple = isApplePlatform()): string {
-  if (key === 'Mod') return apple ? '⌘' : 'Ctrl';
-  if (key === 'Shift') return apple ? '⇧' : 'Shift';
-  return key;
-}
 
 /** "Ctrl+Shift+O" / "⌘⇧O" for menus and tooltips. */
 export function shortcutLabel(keys: readonly ShortcutKey[], apple = isApplePlatform()): string {

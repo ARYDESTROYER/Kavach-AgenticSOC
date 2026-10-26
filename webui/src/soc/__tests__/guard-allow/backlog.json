@@ -1,0 +1,96 @@
+{
+  "package": "backlog",
+  "note": "Files no Round 14 package owns (recorded by W2a when the guard landed). Each entry is exact and only ever goes down. The orchestrator assigns each file to a package (SPEC 7.1), which then moves the entry into its own file and empties it; this file is empty before WP-GEN.",
+  "entries": [
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/chat/report/ReportPanel.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-overline",
+      "file": "soc/chat/report/ReportsLibrary.tsx",
+      "max": 4
+    },
+    {
+      "rule": "header-removed-prop",
+      "file": "soc/chat/report/ReportsLibrary.tsx",
+      "max": 6
+    },
+    {
+      "rule": "tiny-text",
+      "file": "soc/components/CaseTriageHeader.tsx",
+      "max": 5
+    },
+    {
+      "rule": "critical-icon-button",
+      "file": "soc/components/CustomizationSection.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-overline",
+      "file": "soc/components/HeroPanel.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-removed-prop",
+      "file": "soc/components/HeroPanel.tsx",
+      "max": 3
+    },
+    {
+      "rule": "tiny-text",
+      "file": "soc/components/NotificationBell.tsx",
+      "max": 1
+    },
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/components/SystemUpdateControl.tsx",
+      "max": 3
+    },
+    {
+      "rule": "tiny-text",
+      "file": "soc/components/TraceTimeline.tsx",
+      "max": 2
+    },
+    {
+      "rule": "raw-number-input",
+      "file": "soc/components/charts.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-overline",
+      "file": "soc/pages/casedetail/ClusterFormationDiagram.tsx",
+      "max": 3
+    },
+    {
+      "rule": "arbitrary-radius",
+      "file": "soc/pages/casedetail/ClusterFormationDiagram.tsx",
+      "max": 2
+    },
+    {
+      "rule": "info-alert",
+      "file": "soc/rules/lifecycle/RuleLifecycleSheet.tsx",
+      "max": 1
+    },
+    {
+      "rule": "uppercase-tracking",
+      "file": "soc/rules/lifecycle/RulePreviewPanel.tsx",
+      "max": 1
+    },
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/rules/lifecycle/RulePreviewPanel.tsx",
+      "max": 1
+    },
+    {
+      "rule": "info-alert",
+      "file": "soc/rules/lifecycle/RulePreviewPanel.tsx",
+      "max": 2
+    },
+    {
+      "rule": "uppercase-tracking",
+      "file": "soc/rules/lifecycle/RuleVersionLedger.tsx",
+      "max": 1
+    }
+  ]
+}

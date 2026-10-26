@@ -17,8 +17,9 @@
  *
  *   - `chat`         (Workspace)    hosts Chat | Investigate.
  *   - `metrics`      (Analytics)    hosts Metrics | Cost | Models | Baseline | Batch.
- *   - `overview`     (Home)         hosts Dashboard | Standup.
- *   - `intelligence` (Intelligence) hosts Knowledge | Memory | Playbooks.
+ *   - `overview`     (Overview)     groups Cyber Defence Center | Dashboards | Standup;
+ *                                   pressing the row opens Dashboards (Round 14 `target`).
+ *   - `intelligence` (Intelligence) hosts Knowledge | Runbooks | Memory | Personas.
  *
  * The merged sub-pages keep their page ids in the union + the App.renderPage switch
  * (so old `#/cost`, `#/investigate`, … deep-links still resolve), but they are no
@@ -65,6 +66,8 @@ export interface NavItem {
   navPlacement?: 'main' | 'footer';
   /** Optional RBAC gate; the item is hidden unless the user has this grant. */
   perm?: NavPerm;
+  /** The page the row opens when pressed (Round 14); see {@link navTarget}. */
+  target?: PageId;
   /**
    * Optional unified visibility predicate over the three axes (RBAC / prefs-toggle /
    * demo). Carried through from the registry so a consumer can route the item through
@@ -97,6 +100,8 @@ export interface NavChild {
   perm?: NavPerm;
   /** Optional unified visibility predicate (see {@link NavItem.enabled}). */
   enabled?: (ctx: FeatureCtx) => boolean;
+  /** The page this child opens (Round 14); defaults to its id. See {@link navDest}. */
+  target?: PageId;
 }
 
 export interface NavGroup {
@@ -117,6 +122,7 @@ function toNavChild(c: FeatureChild): NavChild {
   // Round-6 #42: carry the unified `enabled` predicate through the derivation so nav
   // consumers can gate on all three axes via navVisible/featureEnabled, not perm alone.
   if (c.enabled) child.enabled = c.enabled;
+  if (c.target) child.target = c.target;
   return child;
 }
 
@@ -141,6 +147,7 @@ function toNavItem(f: FeatureNode): NavItem {
   // Round-6 #42: carry `enabled` through (see toNavChild) so the rail/palette can route
   // visibility through the single featureEnabled authority instead of a perm-only check.
   if (f.enabled) item.enabled = f.enabled;
+  if (f.target) item.target = f.target;
   if (f.children && f.children.length) item.children = f.children.map(toNavChild);
   return item;
 }
@@ -176,10 +183,10 @@ export const NAV_CHILDREN: NavChild[] = NAV_ITEMS.flatMap((i) => i.children ?? [
  * All valid page ids — the rail items PLUS their disclosure children PLUS the
  * hidden-but-routable consolidated sub-pages (Round-2 W4, Round-3 disclosure). The
  * router validates the hash against this set so `#/cost`, `#/investigate`,
- * `#/standup`, `#/knowledge`, `#/memory`, `#/catalog`, `#/dashboard`, `#/models`,
- * `#/playbooks`, `#/roles`, and the Settings-folded account/sessions/security/users/
- * admin_sessions routes still resolve to their App.renderPage arm instead of falling
- * back to Overview. De-duplicated because some children (e.g. `chat`, `metrics`,
+ * `#/standup`, `#/knowledge`, `#/memory`, `#/models`, `#/roles`, the redirect aliases
+ * (`#/dashboard`, `#/catalog`, `#/playbooks`, `#/scans`) and the Settings-folded
+ * account/sessions/security/users/admin_sessions routes still resolve (or redirect)
+ * instead of falling back to Overview. De-duplicated because some children (e.g. `chat`, `metrics`,
  * `inbox`) and hidden entries share an id with a rail item.
  */
 export const PAGE_IDS: PageId[] = Array.from(
@@ -200,12 +207,56 @@ export function navItem(id: PageId): NavItem | undefined {
 }
 
 /**
- * Find the top-level nav item whose subtree (itself or a child) contains `id`.
- * Used by the sidebar to mark the active trail on a collapsed parent and to expand
- * the owning disclosure group.
+ * The page a child opens: its `target`, else its id (Round 14, SPEC §2.2 item 3). A child
+ * is the current page when the page equals this.
+ */
+export function navDest(node: { id: PageId; target?: PageId }): PageId {
+  return node.target ?? node.id;
+}
+
+/**
+ * The page a top-level row opens when pressed (Round 14, SPEC §2.2 item 2): its `target`
+ * when that page is reachable for this viewer, else the row's own id. "Reachable" uses
+ * the one visibility authority: the child that opens the target (or, for a target that is
+ * not a child, the target's own registry entry) must pass {@link navVisible}. So the
+ * Overview row opens the Dashboards library for a viewer with `metrics:view` and the
+ * Cyber Defence Center for everyone else.
+ */
+export function navTarget(
+  item: { id: PageId; target?: PageId; children?: NavChild[] },
+  has: (resource: string, action: string) => boolean,
+): PageId {
+  const target = item.target;
+  if (!target || target === item.id) return item.id;
+  const child = (item.children ?? []).find((c) => navDest(c) === target);
+  const gate = child ?? FEATURES.find((f) => f.id === target);
+  return gate && navVisible(gate, has) ? target : item.id;
+}
+
+/**
+ * Find the top-level nav item whose subtree (itself, its target, or a child's page)
+ * contains `id`. Used by the sidebar to mark the active trail on a collapsed parent and
+ * to open the current page's group in the phone sheet.
  */
 export function navParentOf(id: PageId): NavItem | undefined {
-  return NAV_ITEMS.find((i) => i.id === id || (i.children ?? []).some((c) => c.id === id));
+  return NAV_ITEMS.find(
+    (i) => i.id === id || i.target === id || (i.children ?? []).some((c) => c.id === id || navDest(c) === id),
+  );
+}
+
+/**
+ * The label of the navigation element that is CURRENT for `page` (Round 14, SPEC §4.8.2):
+ * the child whose page (target, else id) equals `page` when one exists, else the
+ * top-level row whose id is `page`. For `overview` that is the child "Cyber Defence
+ * Center", which is also the page's title; group rows are never the answer when a child
+ * names the page. Undefined for a page no nav element opens (hidden routes).
+ */
+export function navCurrentLabel(page: PageId): string | undefined {
+  for (const item of NAV_ITEMS) {
+    const child = (item.children ?? []).find((c) => navDest(c) === page);
+    if (child) return child.label;
+  }
+  return NAV_ITEMS.find((i) => i.id === page)?.label;
 }
 
 /**

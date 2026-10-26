@@ -13,7 +13,7 @@
  * Offline — the api + posture fetch are mocked; no auth, no #3 behaviour touched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { fetchPostureMock } = vi.hoisted(() => ({ fetchPostureMock: vi.fn() }));
@@ -131,26 +131,189 @@ describe('Overview — Cyber Defence Center', () => {
     expect(hero).not.toHaveTextContent('Security Command Center');
   });
 
-  it('opens on Last 24 hours with LIVE refresh visibly active', async () => {
+  it('opens on Last 24 hours with Live refresh visibly active', async () => {
     const user = userEvent.setup();
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(listCasesMock).toHaveBeenCalled());
 
     expect(screen.getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
-    const live = screen.getByRole('combobox', { name: 'Auto-refresh interval: LIVE' });
+    // Sentence case since Round 14 (SPEC §3.1): the cadence reads "Live", never "LIVE".
+    const live = screen.getByRole('combobox', { name: 'Auto-refresh interval: Live' });
     expect(live).toBeInTheDocument();
     expect(live.querySelectorAll('.animate-pulse.bg-success')).toHaveLength(1);
     expect(live.querySelector('.lucide-refresh-cw')).toBeNull();
+    // Round 14 (operator choice C8): ONE neutral refresh, the shared RefreshButton. LIVE
+    // is the pill's pulsing dot above; the refresh no longer turns green or spins for it,
+    // and spins only while a reload the operator pressed is in flight.
     const manualRefresh = screen.getByRole('button', { name: 'Refresh dashboard' });
-    expect(manualRefresh).toHaveClass('text-success-text');
-    expect(manualRefresh.querySelector('.lucide-refresh-cw')).toHaveClass('animate-spin');
+    expect(manualRefresh).not.toHaveClass('text-success-text');
+    await waitFor(() => expect(manualRefresh).toBeEnabled());
+    expect(manualRefresh).toHaveAttribute('aria-busy', 'false');
+    expect(manualRefresh.querySelector('.lucide-refresh-cw')).not.toHaveClass('animate-spin');
 
     const callsBeforeManualRefresh = listCasesMock.mock.calls.length;
     await user.click(manualRefresh);
     await waitFor(() =>
       expect(listCasesMock.mock.calls.length).toBeGreaterThan(callsBeforeManualRefresh),
     );
+  });
+
+  /*
+   * Round 14 review: the busy refresh belongs to a reload the operator PRESSED. A LIVE tick
+   * reloads the same data without turning it busy: a busy button is disabled, and a browser
+   * moves the keyboard focus off a control that disables itself, so a five-second LIVE page
+   * used to throw a keyboard user resting on the button to the page body on every tick.
+   */
+  it('never turns the refresh busy for a LIVE tick, so focus resting on it stays', async () => {
+    // Fake only the interval clock (the auto-refresh is a setInterval); Testing Library's
+    // waits keep their real timeouts.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      render(<Overview onNavigate={vi.fn()} />);
+      await screen.findByTestId('noise-funnel');
+      const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+      await waitFor(() => expect(refresh).toBeEnabled());
+      act(() => refresh.focus());
+      expect(refresh).toHaveFocus();
+
+      // The tick's batch never settles: even a read slower than the LIVE interval must not
+      // hold the control busy.
+      const calls = listCasesMock.mock.calls.length;
+      listCasesMock.mockImplementation(() => new Promise(() => undefined));
+      // Async act: the tick's other reads (posture, metrics) settle inside it.
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => expect(listCasesMock.mock.calls.length).toBeGreaterThan(calls));
+      expect(refresh).toBeEnabled();
+      expect(refresh).toHaveAttribute('aria-busy', 'false');
+      expect(refresh.querySelector('.lucide-refresh-cw')).not.toHaveClass('animate-spin');
+      expect(refresh).toHaveFocus();
+
+      // A second tick over the first, still in flight, changes nothing either.
+      await act(async () => {
+        vi.advanceTimersByTime(5_000);
+      });
+      expect(refresh).toBeEnabled();
+      expect(refresh).toHaveAttribute('aria-busy', 'false');
+      expect(refresh).toHaveFocus();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows a pressed refresh as busy until its own reload settles, then gives focus back', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+
+    let release: () => void = () => undefined;
+    listCasesMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ cases: CASES, total: CASES.length });
+        }),
+    );
+    // A KEYBOARD press: the focus rests on the button, and Enter activates it.
+    act(() => refresh.focus());
+    await user.keyboard('{Enter}');
+    // Busy: one spinner, `aria-busy`, and no second press while the reload runs.
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    expect(refresh).toBeDisabled();
+    expect(refresh.querySelector('.lucide-refresh-cw')).toHaveClass('animate-spin');
+    expect(refresh).toHaveFocus();
+    // A browser moves the focus off the control it just disabled, to the page body. jsdom
+    // neither does that nor blurs a disabled control, so the test drops the focus to the
+    // body the way the browser does: through an element that takes it and goes away.
+    const sink = document.createElement('button');
+    document.body.appendChild(sink);
+    act(() => sink.focus());
+    act(() => sink.remove());
+    expect(document.body).toHaveFocus();
+
+    await act(async () => release());
+    await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'));
+    expect(refresh).toBeEnabled();
+    expect(refresh.querySelector('.lucide-refresh-cw')).not.toHaveClass('animate-spin');
+    // The press held the focus and nothing took it since: it comes back to the button.
+    expect(refresh).toHaveFocus();
+  });
+
+  it('leaves the focus where a pointer press put it, so no stray tooltip reopens', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+
+    let release: () => void = () => undefined;
+    listCasesMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ cases: CASES, total: CASES.length });
+        }),
+    );
+    // A browser never shows the keyboard's focus ring (`:focus-visible`) for the focus a
+    // mouse click lends a button. jsdom treats every focus as focus-visible, so the test
+    // gives the selector the browser's answer for this press and leaves every other
+    // selector to jsdom.
+    const matches = Element.prototype.matches;
+    const spy = vi
+      .spyOn(Element.prototype, 'matches')
+      .mockImplementation(function (this: Element, selector: string) {
+        return selector === ':focus-visible' ? false : matches.call(this, selector);
+      });
+    try {
+      // A POINTER press: `detail` 1, and the click lends the button the focus.
+      await user.click(refresh);
+      expect(refresh).toHaveAttribute('aria-busy', 'true');
+      expect(refresh).toHaveFocus();
+      // The browser moves the focus off the control it just disabled, to the page body.
+      const sink = document.createElement('button');
+      document.body.appendChild(sink);
+      act(() => sink.focus());
+      act(() => sink.remove());
+      // The pointer leaves the button, as it does after a click.
+      await user.unhover(refresh);
+      expect(document.body).toHaveFocus();
+
+      await act(async () => release());
+      await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'));
+      expect(refresh).toBeEnabled();
+      // The focus stays on the body: handing it back would reopen the button's tooltip
+      // after the pointer has gone.
+      expect(document.body).toHaveFocus();
+      expect(screen.queryByRole('tooltip')).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('never pulls focus back to the refresh from wherever the reader moved it', async () => {
+    const user = userEvent.setup();
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('noise-funnel');
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+
+    let release: () => void = () => undefined;
+    listCasesMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ cases: CASES, total: CASES.length });
+        }),
+    );
+    await user.click(refresh);
+    expect(refresh).toHaveAttribute('aria-busy', 'true');
+    const range = screen.getByRole('button', { name: /Time range: Last 24 hours/i });
+    act(() => range.focus());
+
+    await act(async () => release());
+    await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'));
+    expect(range).toHaveFocus();
   });
 
   it('mounts the Human-vs-AI instrument as its own flat cell in the instrument band', async () => {
@@ -243,7 +406,7 @@ describe('Overview — Cyber Defence Center', () => {
     // Same witness, different sibling: this asserts a noise-only failure does not unmount
     // the healthy bands around it. It used to name the Cases-burndown chart, which has
     // moved to Metrics → Posture, so it now names the timing pair that took its cell.
-    expect(screen.getByRole('region', { name: /Mean time to detect/i })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Response time' })).toBeInTheDocument();
 
     await user.click(within(unavailable).getByRole('button', { name: 'Retry noise reduction' }));
     await waitFor(() => expect(screen.queryByTestId('noise-reduction-unavailable')).toBeNull());

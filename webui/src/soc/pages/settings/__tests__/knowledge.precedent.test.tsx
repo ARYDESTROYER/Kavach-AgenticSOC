@@ -115,11 +115,13 @@ describe('Knowledge settings — unconfirmed precedent tier', () => {
       use_unconfirmed_resolved_cases: true,
     });
 
-    expect(screen.getByLabelText('Minimum model confidence')).toHaveValue(0.8);
-    expect(screen.getByLabelText('Minimum recurrence')).toHaveValue(3);
-    expect(screen.getByLabelText('Age-out (days)')).toHaveValue(30);
-    expect(screen.getByLabelText('Maximum context share')).toHaveValue(0.34);
-    expect(screen.getByLabelText('Rank penalty')).toHaveValue(0.5);
-    expect(screen.getByLabelText('Maximum items')).toHaveValue(50);
+    // Round 14: numeric preferences are the shared NumberField (a text field with a
+    // decimal keypad, never a raw number input), so the shown value is its text.
+    expect(screen.getByLabelText('Minimum model confidence')).toHaveValue('0.8');
+    expect(screen.getByLabelText('Minimum recurrence')).toHaveValue('3');
+    expect(screen.getByLabelText('Age-out (days)')).toHaveValue('30');
+    expect(screen.getByLabelText('Maximum context share')).toHaveValue('0.34');
+    expect(screen.getByLabelText('Rank penalty')).toHaveValue('0.5');
+    expect(screen.getByLabelText('Maximum items')).toHaveValue('50');
   });
 });

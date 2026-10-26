@@ -30,7 +30,9 @@ describe('Intelligence host — direct leaf labels', () => {
         <Intelligence tab="catalog" />
       </TooltipProvider>,
     );
-    expect(navLabel('playbooks')).toBe('Response playbooks');
+    // Round 14 (D44): the registry's `playbooks` alias opens the one Runbooks feature (the
+    // router redirects it); this host still renders its legacy view until WP-W7a.
+    expect(navLabel('playbooks')).toBe('Runbooks');
     expect(screen.getByRole('heading', { name: 'Response playbooks' })).toBeInTheDocument();
     expect(screen.getByText('catalog body · playbooks')).toBeInTheDocument();
   });
@@ -41,7 +43,9 @@ describe('Intelligence host — direct leaf labels', () => {
         <Intelligence tab="runbooks" />
       </TooltipProvider>,
     );
-    expect(navLabel('runbooks')).toBe('Reference runbooks');
+    // Round 14 (SPEC §4.8.2): one "Runbooks" destination; the host's own heading is
+    // rewritten with the page (WP-W7a).
+    expect(navLabel('runbooks')).toBe('Runbooks');
     expect(screen.getByRole('heading', { name: 'Reference runbooks' })).toBeInTheDocument();
     expect(screen.getByText('runbooks body')).toBeInTheDocument();
   });

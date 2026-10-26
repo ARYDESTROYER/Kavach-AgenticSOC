@@ -1,0 +1,16 @@
+{
+  "package": "W5",
+  "note": "Round 14 W5 (Audit page rebuild) owns this file and empties this list.",
+  "entries": [
+    {
+      "rule": "header-overline",
+      "file": "soc/pages/Audit.tsx",
+      "max": 1
+    },
+    {
+      "rule": "header-removed-prop",
+      "file": "soc/pages/Audit.tsx",
+      "max": 2
+    }
+  ]
+}

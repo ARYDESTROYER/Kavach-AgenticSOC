@@ -119,10 +119,17 @@ const SheetContent = React.forwardRef<
         {...props}
       >
         {children}
+        {/* Round 14 (F1): `z-30` keeps the close button above any sticky header a sheet's
+            content pins (the case detail header is `z-10`, a sticky page band `z-20`).
+            Without it the header, positioned and later in the stacking order, painted over
+            the button and swallowed its clicks. It also comes AFTER the children in the
+            DOM, so it is the last stop in the sheet's tab order and never hides behind
+            content that renders later. Five bytes in the entry chunk (sheet.tsx ships at
+            first paint through the shell). */}
         <SheetPrimitive.Close
           aria-label="Close"
           className={cn(
-            'absolute right-4 top-4 inline-flex h-7 w-7 items-center justify-center rounded-md',
+            'absolute right-4 top-4 z-30 inline-flex h-7 w-7 items-center justify-center rounded-md',
             'text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
             focusRing,
             'disabled:pointer-events-none',

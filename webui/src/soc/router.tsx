@@ -1,7 +1,9 @@
 /**
  * Tiny hash router for the SOC console.
  *
- * Routes are `#/<pageid>`; an unknown/empty hash resolves to `overview`. Most
+ * Routes are `#/<pageid>`; an unknown/empty hash resolves to `overview`, and an alias
+ * (`#/dashboard`, `#/playbooks`, `#/catalog`, `#/scans`) is replaced by its destination
+ * ({@link redirectRoute}). Most
  * navigation options (`{ status?, severity?, ... }`) live only in React state
  * next to the page id, so a KPI drill-through can pre-seed Cases without turning
  * every ephemeral filter into URL state. The selected `caseId` is the deliberate
@@ -36,6 +38,13 @@ export interface NavigationBlockerOptions {
   description?: string;
   confirmLabel?: string;
   cancelLabel?: string;
+  /**
+   * Also ask before a navigation that stays on this page but changes its URL (a
+   * dashboard board back to the library: `#/dashboards?board=x` to `#/dashboards`).
+   * Off by default, so a page whose own state lives in the query (Settings sections)
+   * keeps its draft through its own jumps without asking.
+   */
+  sameRoute?: boolean;
 }
 
 type RegisterNavigationBlocker = (options: NavigationBlockerOptions) => () => void;
@@ -116,49 +125,106 @@ export function settingsSectionHash(section: string, anchor?: string): string {
 }
 
 /*
- * Chat revamp deep links (SPEC §10.7): the durable keys each page owns in its hash.
- * Ids use the backend's plain-id grammar; a log query is bounded text with no control,
- * format (bidi, zero-width) or separator characters; time bounds are `now[-<n><unit>]`
- * or an ISO-8601 shape (the Logs page re-validates the window). `newChat`, `topic` and
- * the palette's free-text `ask` are absent here on purpose: they stay in memory so a
- * refresh never starts another chat or asks again, and free text never reaches a URL.
- * Kept compact: this module ships in the entry chunk.
+ * Deep links: the durable keys each page owns in its hash (chat revamp SPEC §10.7, Round
+ * 14 SPEC §2.2, §4.5.1, §4.6.6, §4.8.2, §4.10.12). Ids use the backend's plain-id grammar;
+ * free text (a log query, an audit search, a rule) is bounded and has no control, format
+ * (bidi, zero-width) or separator characters; time bounds are `now[-<n><unit>]` or an
+ * ISO-8601 shape (the page re-validates the window). `newChat`, `topic` and the palette's
+ * free-text `ask` are absent on purpose: they stay in memory so a refresh never starts
+ * another chat or asks again. Kept compact: this module ships in the entry chunk.
  */
+type Check = (value: string) => boolean;
+const re = (pattern: RegExp): Check => (value) => pattern.test(value);
+const text = (max: number) => re(new RegExp(`^[^\\p{C}\\u2028\\u2029]{1,${max}}$`, 'u'));
 const NAV_ID = /^[\w.:-]{1,128}$/;
+const navId = re(NAV_ID);
 // No space: a hand-typed `+05:00` reaches URLSearchParams as a space and must fail
 // closed (pageHash writes `+` as `%2B`, which round-trips).
-const NAV_TIME = /^(now(-\d{1,5}[mhdw])?|\d{4}-\d\d-\d\d[\dTt:.Zz+-]{0,24})$/;
-const DEEP_LINK_KEYS: Readonly<Record<string, Readonly<Record<string, RegExp>>>> = {
-  chat: { conversationId: NAV_ID, messageId: NAV_ID },
-  reports: { reportId: NAV_ID },
-  logs: { logQuery: /^[^\p{C}\u2028\u2029]{1,512}$/u, from: NAV_TIME, to: NAV_TIME, sourceId: NAV_ID },
+const navTime = re(/^(now(-\d{1,5}[mhdw])?|\d{4}-\d\d-\d\d[\dTt:.Zz+-]{0,24})$/);
+const severity = re(/^(info|low|medium|high|critical)$/);
+/** "Rule is": the exact rule value, 256 characters, spaces and any letters allowed. */
+const ruleValue = text(256);
+/** An IPv4 dotted quad, or an IPv6 address the URL parser accepts. */
+const ipAddress: Check = (value) => {
+  if (!/^[0-9A-Fa-f:.]{2,45}$/.test(value)) return false;
+  if (!value.includes(':')) return /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.|$)){4}$/.test(value) && !value.endsWith('.');
+  try {
+    return new URL(`http://[${value}]/`).hostname.length > 2;
+  } catch {
+    return false;
+  }
+};
+/** An audit record id (E12 as resolved for WP-A4a): opaque and store-prefixed, at most 947 characters. */
+const auditRecord = re(/^(demo:)?(es:[a-z0-9._+-]{1,255}:[A-Za-z0-9_-]{2,683}|sql:-?[1-9]\d{0,18}|mem:\d{1,12})$/);
+const DEEP_LINK_KEYS: Readonly<Record<string, Readonly<Record<string, Check>>>> = {
+  chat: { conversationId: navId, messageId: navId },
+  reports: { reportId: navId },
+  logs: {
+    logQuery: text(512),
+    from: navTime,
+    to: navTime,
+    sourceId: navId,
+    rule: ruleValue,
+    severity,
+    severity_gte: severity,
+  },
+  // `builtin:<id>`, a personal board id, `u:<sha8>` or `new` (SPEC §2.2 item 4).
+  dashboards: { board: navId },
+  // `new` is reserved, so no runbook can carry it (SPEC §4.10.2).
+  runbooks: { id: re(/^[a-z0-9][a-z0-9_-]{0,63}$/) },
+  audit: {
+    scope: re(/^(people|agent|all)$/),
+    from: navTime,
+    to: navTime,
+    q: text(200),
+    event: re(/^[a-z_]{1,32}(\.[a-z_]{1,32})?$/),
+    actor: text(128),
+    actor_contains: text(128),
+    outcome: re(/^(success|failure|denied|partial|unknown)$/),
+    case: navId,
+    target: navId,
+    ip: ipAddress,
+    record: auditRecord,
+  },
 };
 
 /** The Cases page's two virtual status facets (Overview drill-throughs write them). */
 const isCasesStatus = (value: string) =>
   value === '__active__' || value === '__terminal__' || isSafeCaseResultStatus(value);
 
-/** Case keys are read trimmed; every other key must validate exactly (a log query is kept as typed). */
-const trimsHashValues = (page: PageId) => page === 'cases' || page === 'case_manager';
+/**
+ * Case keys are read trimmed; every other key must validate exactly (a log query and a
+ * rule value are kept as typed, so a rule round-trips byte for byte).
+ */
+const trimsHashValue = (page: PageId, key: string) =>
+  (page === 'cases' || page === 'case_manager') && key !== 'rule';
 
 /** The query keys each page owns in its hash ({@link pageHash}), with their validators. */
-function hashKeys(page: PageId): Readonly<Record<string, (value: string) => boolean>> {
+function hashKeys(page: PageId): Readonly<Record<string, Check>> {
   if (page === 'cases') {
-    return { caseId: isSafeCaseId, status: isCasesStatus, assignee: isSafeCaseResultAssignee, tag: isSafeCaseResultTag };
+    return {
+      caseId: isSafeCaseId,
+      status: isCasesStatus,
+      assignee: isSafeCaseResultAssignee,
+      tag: isSafeCaseResultTag,
+      rule: ruleValue,
+    };
   }
-  if (page === 'case_manager') return { caseId: isSafeCaseId };
+  // The engine's closer values (the `closed_by` filter of GET /api/cases); `#/scans` uses `agent`.
+  if (page === 'case_manager') return { caseId: isSafeCaseId, closedBy: re(/^(agent|analyst|analyst_policy|system)$/) };
   if (page === 'metrics') return { tab: (value) => value === 'effectiveness' };
-  return Object.fromEntries(Object.entries(DEEP_LINK_KEYS[page] ?? {}).map(([key, re]) => [key, (v: string) => re.test(v)]));
+  return DEEP_LINK_KEYS[page] ?? {};
 }
 
 /**
- * Build a page hash while preserving the one operator context that must survive a
- * refresh: the exact case selected in Cases / Case Manager. Other transient list
- * filters remain in memory; Settings keeps its dedicated section hash above. Chat,
- * Reports and Logs serialise their validated deep-link keys ({@link DEEP_LINK_KEYS}).
+ * Build a page hash while preserving the operator context that must survive a refresh:
+ * the exact case selected in Cases / Case Manager and every validated deep-link key
+ * ({@link DEEP_LINK_KEYS}). Other transient list filters remain in memory; Settings
+ * keeps its dedicated section hash above. Empty keys are omitted, never written as `k=`.
  */
 export function pageHash(page: PageId, opts?: NavOpts): string {
   const params = new URLSearchParams();
+  const values = (opts ?? {}) as Record<string, unknown>;
   if ((page === 'cases' || page === 'case_manager') && opts?.caseId) {
     params.set('caseId', opts.caseId);
   }
@@ -170,10 +236,13 @@ export function pageHash(page: PageId, opts?: NavOpts): string {
   if (page === 'metrics' && opts?.tab === 'effectiveness') {
     params.set('tab', opts.tab);
   }
-  for (const [key, re] of Object.entries(DEEP_LINK_KEYS[page] ?? {})) {
-    const value = (opts as Record<string, unknown> | undefined)?.[key];
+  const validated = { ...DEEP_LINK_KEYS[page] };
+  if (page === 'cases') validated.rule = ruleValue;
+  if (page === 'case_manager') validated.closedBy = hashKeys(page).closedBy;
+  for (const [key, valid] of Object.entries(validated)) {
+    const value = values[key];
     // A message anchor without its (valid) conversation would be unreadable on refresh.
-    if (typeof value === 'string' && re.test(value) && (key !== 'messageId' || NAV_ID.test(opts?.conversationId ?? ''))) {
+    if (typeof value === 'string' && valid(value) && (key !== 'messageId' || NAV_ID.test(opts?.conversationId ?? ''))) {
       params.set(key, value);
     }
   }
@@ -181,51 +250,99 @@ export function pageHash(page: PageId, opts?: NavOpts): string {
   return `#/${page}${query ? `?${query}` : ''}`;
 }
 
-/** Parse `#/<pageid>` from the location hash; unknown/empty → 'overview'. */
-export function pageFromHash(): PageId {
-  try {
-    const raw = (window.location.hash || '').replace(/^#\/?/, '').split(/[?&/]/)[0];
-    // A retired standalone route (e.g. `#/roles`) resolves to the `settings` page —
-    // the hash is normalised to `#/settings?s=<id>` in the RouterProvider effect so the
-    // Settings sub-router picks the right section.
-    if (isSettingsRedirect(raw)) return 'settings';
-    return isPageId(raw) ? raw : 'overview';
-  } catch {
-    return 'overview';
+/**
+ * Round 14 page redirects (SPEC §2.2 item 3, D27, D44): an alias or a retired page id
+ * and where it lands. `#/dashboard` is the landing page's old child URL; `#/playbooks`
+ * and `#/catalog` open the one Runbooks feature for one release; `#/scans` opens Case
+ * Manager filtered to the cases the AI agent closed. The router replaces the hash
+ * (`history.replaceState`), so Back never bounces through an alias.
+ */
+const PAGE_REDIRECTS: Readonly<Partial<Record<PageId, { page: PageId; opts?: NavOpts }>>> = {
+  dashboard: { page: 'overview' },
+  playbooks: { page: 'runbooks' },
+  catalog: { page: 'runbooks' },
+  scans: { page: 'case_manager', opts: { closedBy: 'agent' } },
+};
+
+/** The Cyber Defence Center's card id: opened as a board it is the landing page itself. */
+export const LANDING_BOARD_ID = 'builtin:cyber-defence-center';
+
+/**
+ * Apply {@link PAGE_REDIRECTS} and the landing-board rule to a route. Returns
+ * `redirected: true` when the route changed, so the caller can replace the hash.
+ */
+export function redirectRoute(page: PageId, opts?: NavOpts): { page: PageId; opts?: NavOpts; redirected: boolean } {
+  const hit = PAGE_REDIRECTS[page];
+  if (hit) return { page: hit.page, opts: hit.opts ? { ...hit.opts } : undefined, redirected: true };
+  if (page === 'dashboards' && opts?.board === LANDING_BOARD_ID) return { page: 'overview', redirected: true };
+  return { page, opts, redirected: false };
+}
+
+/** The page id segment of a hash (`#/cases?x` gives `cases`). */
+const rawPageOf = (hash: string) => hash.replace(/^#\/?/, '').split(/[?&/]/)[0];
+
+/**
+ * Parse whitelisted deep-link query opts for `page` from `hash`. Only known keys are
+ * read; unknown, duplicate, or malformed keys fail closed (the whole query is dropped).
+ */
+function parseOpts(page: PageId, hash: string): NavOpts | undefined {
+  const qi = hash.indexOf('?');
+  if (qi < 0) return undefined;
+  const rawQuery = hash.slice(qi + 1);
+  if (!hasValidRouteEncoding(rawQuery)) return undefined;
+  const params = new URLSearchParams(rawQuery);
+  const keys = hashKeys(page);
+  if (Array.from(params.keys()).some((key) => !Object.prototype.hasOwnProperty.call(keys, key) || params.getAll(key).length > 1)) return undefined;
+  // Every key must validate ({@link trimsHashValue}); one bad key, or a message anchor
+  // without its conversation, rejects the whole link.
+  const out: Record<string, string> = {};
+  for (const [key, raw] of params) {
+    const value = trimsHashValue(page, key) ? raw.trim() : raw;
+    if (!value || !keys[key](value)) return undefined;
+    out[key] = value;
   }
+  return Object.keys(out).length && (!out.messageId || out.conversationId) ? (out as NavOpts) : undefined;
+}
+
+/**
+ * The route the location hash names: a retired standalone route (e.g. `#/roles`) is the
+ * `settings` page (the RouterProvider rewrites the hash to `#/settings?s=<id>`), an
+ * unknown or empty id is `overview`, and {@link redirectRoute} applies last.
+ */
+function routeFromLocation(): { page: PageId; opts?: NavOpts; redirected: boolean } {
+  try {
+    const hash = window.location.hash || '';
+    const raw = rawPageOf(hash);
+    if (isSettingsRedirect(raw)) return { page: 'settings', redirected: false };
+    const page: PageId = isPageId(raw) ? raw : 'overview';
+    return redirectRoute(page, parseOpts(page, hash));
+  } catch {
+    return { page: 'overview', redirected: false };
+  }
+}
+
+/** Parse `#/<pageid>` from the location hash; unknown/empty → 'overview'; aliases redirect. */
+export function pageFromHash(): PageId {
+  return routeFromLocation().page;
 }
 
 /**
  * Parse whitelisted deep-link query opts from the location hash (e.g.
  * `#/cases?caseId=<id>`), so a FRESH tab / bookmark / refresh lands with the same opts an
  * in-app `navigate(page, opts)` would carry. This is what makes the CaseDetail "Open in
- * new tab" button work: the new tab boots straight into the case sheet. Only known keys
- * are read; unknown, duplicate, or malformed keys fail closed. Returns undefined
- * when nothing valid is present.
+ * new tab" button work: the new tab boots straight into the case sheet. Returns
+ * undefined when nothing valid is present.
  */
 export function optsFromHash(): NavOpts | undefined {
+  return routeFromLocation().opts;
+}
+
+/** Replace the hash without a history entry (and without a `hashchange`). */
+function replaceHash(hash: string): void {
   try {
-    const hash = window.location.hash || '';
-    const qi = hash.indexOf('?');
-    if (qi < 0) return undefined;
-    const page = pageFromHash();
-    const rawQuery = hash.slice(qi + 1);
-    if (!hasValidRouteEncoding(rawQuery)) return undefined;
-    const params = new URLSearchParams(rawQuery);
-    const keys = hashKeys(page);
-    const allowed = new Set(Object.keys(keys));
-    if (Array.from(params.keys()).some((key) => !allowed.has(key) || params.getAll(key).length > 1)) return undefined;
-    // Every key must validate ({@link trimsHashValues}); one bad key, or a message
-    // anchor without its conversation, rejects the whole link.
-    const out: Record<string, string> = {};
-    for (const [key, raw] of params) {
-      const value = trimsHashValues(page) ? raw.trim() : raw;
-      if (!value || !keys[key](value)) return undefined;
-      out[key] = value;
-    }
-    return Object.keys(out).length && (!out.messageId || out.conversationId) ? (out as NavOpts) : undefined;
+    window.history.replaceState(window.history.state, '', hash);
   } catch {
-    return undefined;
+    /* a sandboxed frame may refuse; the in-memory route is already right */
   }
 }
 
@@ -267,7 +384,7 @@ export function samePageOpts(
     const raw = all.length === 1 ? all[0] : undefined;
     if (raw !== undefined && raw === written.get(key)) continue;
     // Read exactly as optsFromHash reads it.
-    const value = raw !== undefined && trimsHashValues(page) ? raw.trim() : raw;
+    const value = raw !== undefined && trimsHashValue(page, key) ? raw.trim() : raw;
     if (value && valid(value)) next[key] = value;
     else if (all.length || written.has(key)) delete next[key];
   }
@@ -283,10 +400,11 @@ export function samePageOpts(
 }
 
 export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [page, setPage] = React.useState<PageId>(() => pageFromHash());
-  // Seed opts from the hash query on first paint so a deep-link / new tab (e.g.
+  // Seed the page and opts from the hash on first paint so a deep-link / new tab (e.g.
   // `#/cases?caseId=<id>`) lands with its opts, exactly like an in-app navigate would.
-  const [opts, setOpts] = React.useState<NavOpts | undefined>(() => optsFromHash());
+  const [boot] = React.useState(routeFromLocation);
+  const [page, setPage] = React.useState<PageId>(boot.page);
+  const [opts, setOpts] = React.useState<NavOpts | undefined>(boot.opts);
 
   // Route-leave guards are registered by the currently mounted page. Keeping the
   // registry in refs avoids re-rendering the whole shell as a form becomes dirty,
@@ -313,11 +431,12 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return () => blockersRef.current.delete(token);
   }, []);
 
-  const resolveNavigation = React.useCallback((next: PageId, nextOpts?: NavOpts) => {
-    const redirect = settingsRedirectHash(next);
+  const resolveNavigation = React.useCallback((target: PageId, targetOpts?: NavOpts) => {
+    const redirect = settingsRedirectHash(target);
     if (redirect) {
       return { page: 'settings' as PageId, opts: undefined, hash: redirect };
     }
+    const { page: next, opts: nextOpts } = redirectRoute(target, targetOpts);
     if (next === 'settings' && nextOpts?.section) {
       return {
         page: next,
@@ -347,13 +466,19 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const navigate = React.useCallback<Navigate>((next, nextOpts) => {
     const target = resolveNavigation(next, nextOpts);
-    // Same-page transitions (notably Settings section/anchor jumps) preserve the
-    // mounted draft, so they must not nag. A route leave is paused BEFORE state/hash
-    // mutation and resumed only after the shared accessible ConfirmDialog resolves.
-    if (target.page !== pageRef.current && blockersRef.current.size > 0) {
-      if (pendingRef.current) return;
-      const blocker = Array.from(blockersRef.current.values()).at(-1);
+    // A route leave is paused BEFORE state/hash mutation and resumed only after the
+    // shared accessible ConfirmDialog resolves. Same-page transitions (notably Settings
+    // section/anchor jumps) preserve the mounted draft, so they ask only when a guard
+    // opted in with `sameRoute` and the URL actually changes (a board back to the
+    // dashboards library).
+    if (blockersRef.current.size > 0) {
+      const leaving = target.page !== pageRef.current;
+      const changing = target.hash !== window.location.hash;
+      const blocker = Array.from(blockersRef.current.values())
+        .filter((b) => leaving || (changing && b.sameRoute === true))
+        .at(-1);
       if (blocker) {
+        if (pendingRef.current) return;
         pendingRef.current = true;
         setPendingNavigation({ page: next, opts: nextOpts, blocker });
         return;
@@ -372,13 +497,15 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (fired !== null && fired !== window.location.hash) return;
       // Normalise a retired standalone-route hash to its Settings section BEFORE
       // resolving the page (so `#/roles` → `#/settings?s=roles` before paint).
-      const raw = (window.location.hash || '').replace(/^#\/?/, '').split(/[?&/]/)[0];
-      const redirect = settingsRedirectHash(raw);
+      const redirect = settingsRedirectHash(rawPageOf(window.location.hash || ''));
       if (redirect && window.location.hash !== redirect) {
         window.location.hash = redirect; // re-fires hashchange; the next pass settles
         return;
       }
-      const next = pageFromHash();
+      // An alias (`#/dashboard`, `#/scans`, ...) is replaced by its destination in place.
+      const route = routeFromLocation();
+      if (route.redirected) replaceHash(pageHash(route.page, route.opts));
+      const next = route.page;
       const hash = window.location.hash || '';
       const own = hash === echoRef.current;
       echoRef.current = null;
@@ -393,7 +520,7 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
         // Back/forward/direct navigation to a different page carries only durable
         // options represented in the hash; transient filter state is intentionally reset.
-        setOpts(optsFromHash());
+        setOpts(route.opts);
         return next;
       });
     };
@@ -404,10 +531,13 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // any `?s=<section>&a=<anchor>` query on a bookmarked/refreshed `#/settings?s=...` is
     // preserved (previously the effect collapsed it to the bare `#/settings`, stripping
     // the section deep-link before the lazy Settings chunk could read it).
-    const initialRaw = (window.location.hash || '').replace(/^#\/?/, '').split(/[?&/]/)[0];
+    const initialRaw = rawPageOf(window.location.hash || '');
     const initialRedirect = settingsRedirectHash(initialRaw);
     if (initialRedirect) {
       if (window.location.hash !== initialRedirect) window.location.hash = initialRedirect;
+    } else if (boot.redirected) {
+      // An alias in a bookmark or a typed link: its destination replaces it (one URL).
+      replaceHash(pageHash(page, opts));
     } else if (initialRaw !== page) {
       // Only rewrite when the current hash's page id differs from the resolved page
       // (e.g. a bare `#`, an unknown id, or a trailing slash) — never when it merely
@@ -469,13 +599,16 @@ export function useNavigate(): Navigate {
  * Pause in-app route leaves while a mounted editor owns unsaved state. Browser
  * reload/tab-close protection remains the responsibility of `useUnsavedChanges`;
  * this hook covers the Console's programmatic hash navigation without `window.confirm`.
+ * Browser Back and Forward change the hash directly and cannot be paused here. Pass
+ * `sameRoute: true` when the unsaved state belongs to one URL of the page (a dashboard
+ * board), so going back to the page's other URLs (the library) asks first too.
  */
 export function useNavigationBlocker(
   enabled: boolean,
   options: NavigationBlockerOptions,
 ): void {
   const ctx = React.useContext(RouteContext);
-  const { title, description, confirmLabel, cancelLabel } = options;
+  const { title, description, confirmLabel, cancelLabel, sameRoute } = options;
   React.useEffect(() => {
     if (!enabled || !ctx) return;
     return ctx.registerNavigationBlocker({
@@ -483,6 +616,7 @@ export function useNavigationBlocker(
       description,
       confirmLabel,
       cancelLabel,
+      sameRoute,
     });
   }, [
     enabled,
@@ -491,6 +625,7 @@ export function useNavigationBlocker(
     description,
     confirmLabel,
     cancelLabel,
+    sameRoute,
   ]);
 }
 

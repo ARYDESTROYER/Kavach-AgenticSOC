@@ -333,7 +333,12 @@
     /* Inter's dynamic-metrics value at 14px (the `base` step in tailwind.config.js), so
        unsized body text tracks like the sized steps around it. */
     letter-spacing: -0.006em;
-    font-variant-numeric: tabular-nums;
+    /* Round 14 (F2): PROPORTIONAL figures on the body. Inter's tabular forms widen the
+       hyphen as well as the digits (5.91px against 8.36px at 13px), so a body-wide
+       `tabular-nums` printed "Auto - tuning" and "Read - only" on every page. Figures
+       line up only where numbers are compared: KPI numerals, numeric table cells, times,
+       counts, meta rows and the time-range pill opt in with `tabular-nums`. */
+    font-variant-numeric: proportional-nums;
     /* Inter disambiguation on body + tables: 0/O, 1/l/I. `ss01`/`cv01`/`zero` are
        the Inter stylistic sets; `calt` keeps contextual ligatures. */
     font-feature-settings: 'ss01' 1, 'cv01' 1, 'zero' 1, 'calt' 1;
@@ -1800,6 +1805,67 @@ select:-webkit-autofill:focus {
   }
 }
 
+/* ---- Round 14: one console grammar (SPEC §4.9; C7 option 1, C8 option 1) -----------------
+   A focus ring's 2px offset is painted in the colour it sits on. On a panel that is the
+   panel, not the canvas: `ring-offset-background` would draw a canvas-coloured halo around
+   every focused control on a tinted module (SPEC §3.3). The class is usually written as a
+   variant (`focus-visible:ring-offset-background`, the shared `focusRing` recipe), and
+   Tailwind emits variants at the very end of the stylesheet at (0,2,0), so this rule
+   repeats its attribute selector to reach (0,3,0): it wins against the base utility and
+   every single-variant form (`focus:`, `focus-visible:`, `focus-within:`, `data-[...]:`)
+   whatever their order. It changes only the offset colour, never the ring. */
+.surface-panel [class*='ring-offset-background'][class*='ring-offset-background'] {
+  --tw-ring-offset-color: hsl(var(--panel));
+}
+
+/* Underline tabs (`ui/tabs.tsx`, `TabsList variant="underline"`). The list reaches 6px past
+   the column on each side so the first and the last tab have room for an inset focus ring
+   that does not touch their labels (the list scrolls, so anything outside it is clipped).
+   Its hairline is inset by the same 6px, so it still starts and ends on the column edges.
+   Forced colours keep the plain bottom border. */
+[role='tablist'][data-variant='underline'] {
+  border-image: linear-gradient(
+      to right,
+      transparent 0.375rem,
+      hsl(var(--border) / max(0.7, var(--border-alpha-floor, 0))) 0.375rem,
+      hsl(var(--border) / max(0.7, var(--border-alpha-floor, 0))) calc(100% - 0.375rem),
+      transparent calc(100% - 0.375rem)
+    )
+    0 0 1 0;
+}
+@media (forced-colors: active) {
+  [role='tablist'][data-variant='underline'] {
+    border-image: none;
+  }
+}
+
+/* The page rhythm `PageContainer` owns (`.page-rhythm`): 24px from the page header to the
+   first module, then one panel gutter between modules, 16px, 20px from 1280px, 24px from
+   1920px (the Overview's spacing on every page). Each selector has the specificity of one
+   type selector (0,0,1), carried by its trailing `:not(template)`; everything else sits in
+   `:where()`. That ties with Preflight's element resets (`p`, `h2`, `ul`, `figure` ...
+   `{ margin: 0 }`) and wins by order (this file comes after `@tailwind base`), so a
+   paragraph or a heading placed directly on the page is spaced like any module. It still
+   loses to every class: a page that sets its own `space-y-*`, a child's own margin
+   utility, and a page laid out as flex or grid (spaced by its `gap`) keep their spacing.
+   Hidden children are skipped, like Tailwind's `space-y-*`. */
+:where(.page-rhythm:not(.flex, .grid, .inline-flex, .inline-grid)) > :where(:not([hidden]) ~ :not([hidden])):not(template) {
+  margin-top: 1rem;
+}
+@media (min-width: 1280px) {
+  :where(.page-rhythm:not(.flex, .grid, .inline-flex, .inline-grid)) > :where(:not([hidden]) ~ :not([hidden])):not(template) {
+    margin-top: 1.25rem;
+  }
+}
+@media (min-width: 1920px) {
+  :where(.page-rhythm:not(.flex, .grid, .inline-flex, .inline-grid)) > :where(:not([hidden]) ~ :not([hidden])):not(template) {
+    margin-top: 1.5rem;
+  }
+}
+:where(.page-rhythm:not(.flex, .grid, .inline-flex, .inline-grid)) > :where([data-page-header='page'] + :not([hidden])):not(template) {
+  margin-top: 1.5rem;
+}
+
 /* ---- Printing a console page (Round 12, WP-OV) ---------------------------------------
    Ctrl/Cmd+P on any console route prints the page's CONTENT, not the console around it:
    the primary navigation, the top bar, the skip link and toasts are hidden; sticky and
@@ -1869,12 +1935,13 @@ select:-webkit-autofill:focus {
      axis, baseline and ticks included — instead of clipping it to a shorter print box
      (that printed a top gridline over a floating partial bar); `flex: none` stops the
      box's on-screen `flex-1` basis from shrinking it back under the SVG; and the card is
-     kept on one page inside a plain block band (a monolithic SVG pushed across a page
-     inside the band's grid painted over the next band). Wider than the paper column, the
-     chart SCALES down to it (Round 12 final review): the SVG carries a viewBox of its
-     drawn size, so `max-width: 100%` with `height: auto` keeps every bucket on paper,
-     the newest included. `max-width`, not `width`, so a narrow chart is never enlarged.
-     The sideways clip stays only as a backstop. */
+     kept on one page inside a plain block row (a monolithic SVG pushed across a page
+     inside the flow row's grid painted over the next row). The flow row is the Overview's
+     `[data-band='flow']` (Round 14: the rows carry no titles; the hook stays). Wider than
+     the paper column, the chart SCALES down to it (Round 12 final review): the SVG
+     carries a viewBox of its drawn size, so `max-width: 100%` with `height: auto` keeps
+     every bucket on paper, the newest included. `max-width`, not `width`, so a narrow
+     chart is never enlarged. The sideways clip stays only as a backstop. */
   #socMain [data-testid='human-vs-ai-figure'] > svg {
     max-width: 100% !important;
     height: auto !important;
@@ -1893,24 +1960,26 @@ select:-webkit-autofill:focus {
   #socMain [data-testid='human-vs-ai'] {
     break-inside: avoid;
   }
-  #socMain [aria-labelledby='overview-band-flow'] > div {
+  #socMain [data-band='flow'] > div {
     display: block !important;
   }
-  #socMain [aria-labelledby='overview-band-flow'] > div > * + * {
+  #socMain [data-band='flow'] > div > * + * {
     margin-top: 2rem;
   }
   /* Latest cases: on screen the list is laid out OUT of flow (absolute, over a rem floor)
-     so its length can never drive the band's height. Paper has no such loop, and a box
-     split across a page break let the rows spill past it over the next band's heading
+     so its length can never drive the row's height. Paper has no such loop, and a box
+     split across a page break let the rows spill past it over the next module's heading
      (MEASURED in a real A4 PDF from 1920). On paper the list is in flow, the box takes
-     its height, and the header and its rows stay on one page. */
+     its height, and the header and its rows stay on one page. The module is reached by
+     its `data-testid` hook (Round 14): its region is named by its heading now, through
+     `aria-labelledby`, so no label attribute is left to select on. */
   #socMain [data-testid='latest-cases-box'] {
     min-height: 0 !important;
   }
   #socMain [data-testid='latest-cases-box'] > ul {
     position: static !important;
   }
-  #socMain section[aria-label='Latest cases'] {
+  #socMain [data-testid='latest-cases'] {
     break-inside: avoid;
   }
 }

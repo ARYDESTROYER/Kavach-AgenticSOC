@@ -98,20 +98,26 @@ describe('KpiTile round-7 props', () => {
     // space, ellipsizing load-bearing subs such as the degraded open-stock line.
     const CAPTION = 'Open now \u00b7 not window-filtered \u00b7 lower bound';
     const sub = () => screen.getByText(CAPTION).className;
-    const { rerender } = render(
-      <KpiTile label="Open Cases" value="12" variant="strip" sub={CAPTION} />,
-    );
-    expect(sub()).not.toMatch(/\bpr-16\b/);
-    rerender(
-      <KpiTile
-        label="Open Cases"
-        value="12"
-        variant="strip"
-        sub={CAPTION}
-        spark={[1, 2, 3, 4, 5]}
-      />,
-    );
-    expect(sub()).toMatch(/\bpr-16\b/);
+    for (const chrome of ['framed', 'strip'] as const) {
+      const { rerender, unmount } = render(
+        <KpiTile label="Open Cases" value="12" variant="strip" chrome={chrome} sub={CAPTION} />,
+      );
+      expect(sub()).not.toMatch(/\bpr-16\b/);
+      rerender(
+        <KpiTile
+          label="Open Cases"
+          value="12"
+          variant="strip"
+          chrome={chrome}
+          sub={CAPTION}
+          spark={[1, 2, 3, 4, 5]}
+        />,
+      );
+      // Framed: the `sub` caption; strip chrome: the hero context line. Either way the
+      // caption wraps short of the corner spark instead of running under it.
+      expect(sub()).toMatch(/\bpr-16\b/);
+      unmount();
+    }
   });
 
   it('accepts an explicit two-point floor for exact previous/current comparisons', () => {

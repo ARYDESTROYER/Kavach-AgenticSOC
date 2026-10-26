@@ -248,7 +248,7 @@ describe('Overview — KPI deep-inspection panel', () => {
 
     const panel = screen.getByTestId('kpi-drilldown');
     expect(panel).toHaveAttribute('data-kpi', 'total-cases');
-    expect(screen.getByTestId('kpi-drilldown-heading')).toHaveTextContent('Total Cases · details');
+    expect(screen.getByTestId('kpi-drilldown-heading')).toHaveTextContent('Total cases · details');
     // The heading is the dialog's accessible NAME, not merely a styled line of text.
     expect(panel).toHaveAttribute(
       'aria-labelledby',
@@ -275,7 +275,7 @@ describe('Overview — KPI deep-inspection panel', () => {
       expect(screen.getByTestId('kpi-drilldown')).toHaveAttribute('data-kpi', 'open-cases'),
     );
     expect(screen.getAllByTestId('kpi-drilldown')).toHaveLength(1);
-    expect(screen.getByTestId('kpi-drilldown-heading')).toHaveTextContent('Open Cases · details');
+    expect(screen.getByTestId('kpi-drilldown-heading')).toHaveTextContent('Open cases · details');
     // The population sentence moved with it, so the panel cannot describe the old cohort —
     // and it is the node a screen reader reads out on open, so it must stay the DESCRIBED
     // one rather than merely be present somewhere in the subtree.
@@ -355,7 +355,7 @@ describe('Overview — KPI deep-inspection panel', () => {
     await userEvent.click(switchTo);
 
     const heading = await screen.findByTestId('kpi-drilldown-heading');
-    await waitFor(() => expect(heading).toHaveTextContent('Resolved / Closed · details'));
+    await waitFor(() => expect(heading).toHaveTextContent('Resolved or closed · details'));
     // The heading, not the switcher button that was just clicked and not the search box:
     // the reader has to hear WHAT they are now reading first.
     await waitFor(() => expect(heading).toHaveFocus());

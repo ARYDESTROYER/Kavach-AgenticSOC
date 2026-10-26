@@ -13,9 +13,13 @@
  *      hover and selected steps visible (the measured figures are recorded here, so a token
  *      change has to restate them). Increased contrast is measured INSIDE the panel too.
  *   3. THE PAGE. Every module, the KPI strip and the Deeper analytics header sit on a
- *      panel, never one inside another; band titles stay outside the panels; the modules
- *      keep their rhythm without sibling margins; the preview switch is gone, so a visit
- *      with `?separation=` in the URL simply shows the normal page.
+ *      panel, never one inside another; there are no band titles (Round 14, operator
+ *      choice C3 B), every module title is inside its panel, and the strip, the two rows
+ *      and the Deeper analytics header are one panel gutter apart, the same gap as between
+ *      the panels inside a row, set by the containers' own `gap` (never a sibling margin);
+ *      the preview switch is gone, so a visit with `?separation=` in the URL simply shows
+ *      the normal page. The measured row positions (the cases row at 777px at 1440 by
+ *      900, and so on) are a live-harness check, not a jsdom one.
  *
  * jsdom applies no stylesheet, so the CSS text is the contract for 1 (the design gates read
  * the same file the same way); 3 asserts the classes the page renders.
@@ -511,6 +515,23 @@ describe('the Overview renders on grouped panels', () => {
     }
   });
 
+  it('lays the strip out two-up on a phone, three-up to xl, then one row of six (Round 14)', async () => {
+    await mount();
+    const strip = screen.getByTestId('kpi-strip');
+    expect(strip).toHaveClass('grid', 'grid-cols-2', 'md:grid-cols-3', 'xl:grid-cols-6');
+    expect(strip).not.toHaveClass('grid-cols-1');
+    expect(strip.className).not.toMatch(/(^|\s)sm:grid-cols-/);
+    // The two-column divider math: a column rule on every odd cell, none on the even
+    // ones, and no row rule under the last row (cells 5 and 6); the old one-column
+    // `last:` rules and the `sm:` rung are gone.
+    for (const item of Array.from(strip.children)) {
+      expect(item).toHaveClass('border-b', 'border-r', '[&:nth-child(2n)]:border-r-0', '[&:nth-child(n+5)]:border-b-0');
+      expect(item.className).not.toMatch(/(^|\s)(last:|sm:)/);
+      // The three- and six-column rungs are unchanged.
+      expect(item).toHaveClass('md:[&:nth-child(3n)]:border-r-0', 'md:[&:nth-child(n+4)]:border-b-0', 'xl:border-b-0');
+    }
+  });
+
   it('starts the first tile of each strip row at the panel padding, so labels share the titles\' edge', async () => {
     await mount();
     const cellOf = (id: string) => screen.getByTestId(id).parentElement!;
@@ -518,28 +539,35 @@ describe('the Overview renders on grouped panels', () => {
     const present = tiles.filter((id) => screen.queryByTestId(id));
     expect(present).toHaveLength(6);
     const first = cellOf(present[0]).className;
-    expect(first).toContain('max-sm:[&>button[data-testid]]:pl-4');
-    expect(first).toContain('sm:max-md:[&>button[data-testid]]:pl-4');
+    expect(first).toContain('max-md:[&>button[data-testid]]:pl-4');
     expect(first).toContain('md:max-xl:[&>button[data-testid]]:pl-4');
     expect(first).toContain('xl:[&>button[data-testid]]:pl-5');
     expect(first).toContain('3xl:[&>button[data-testid]]:pl-6');
-    // Row starts at two columns (odd tiles) and three columns (tiles 1 and 4) only.
-    expect(cellOf(present[2]).className).toContain('sm:max-md:[&>button[data-testid]]:pl-4');
+    // Row starts at two columns (tiles 1, 3 and 5) and three columns (tiles 1 and 4) only.
+    expect(cellOf(present[2]).className).toContain('max-md:[&>button[data-testid]]:pl-4');
+    expect(cellOf(present[4]).className).toContain('max-md:[&>button[data-testid]]:pl-4');
     expect(cellOf(present[3]).className).toContain('md:max-xl:[&>button[data-testid]]:pl-4');
-    expect(cellOf(present[1]).className).not.toContain('sm:max-md:[&>button[data-testid]]:pl-4');
+    for (const i of [1, 3, 5]) {
+      expect(cellOf(present[i]).className).not.toContain('max-md:[&>button[data-testid]]:pl-4');
+    }
     expect(cellOf(present[1]).className).not.toContain('md:max-xl:[&>button[data-testid]]:pl-4');
+    // The one-tile-per-row rung is gone with the one-column phone strip.
+    for (const id of present) expect(cellOf(id).className).not.toContain('max-sm:');
     for (const id of present.slice(1)) expect(cellOf(id).className).not.toContain('xl:[&>button[data-testid]]:pl-5');
     // The tile's own trigger inset is untouched.
     expect(cellOf(present[1])).toHaveClass('xl:max-2xl:[&>button]:px-3');
   });
 
-  it('gives every module of both bands its own padded panel, with panel-sized gutters', async () => {
+  it('gives every module of both rows its own padded panel, with panel-sized gutters', async () => {
     await mount();
+    const flowPanel = screen.getByRole('region', { name: 'Noise reduction flow' });
+    // The flow's region IS its panel, named by the funnel's own heading.
+    expect(panelOf(screen.getByTestId('noise-funnel'))).toBe(flowPanel);
     const modules = [
-      panelOf(screen.getByTestId('noise-funnel')),
+      flowPanel,
       panelOf(screen.getByTestId('human-vs-ai')),
-      screen.getByRole('region', { name: 'Resolved and open cases' }),
-      screen.getByRole('region', { name: 'Mean time to detect / respond' }),
+      screen.getByTestId('case-state'),
+      screen.getByRole('region', { name: 'Response time' }),
       panelOf(screen.getByRole('region', { name: 'Latest cases' })),
     ];
     for (const module of modules) {
@@ -552,20 +580,43 @@ describe('the Overview renders on grouped panels', () => {
     expect(snaps).toHaveLength(2);
     expect(panelOf(snaps[0])).toBe(panelOf(snaps[1]));
     // The gutters between panels match the panel padding.
-    const flowGrid = screen.getByRole('region', { name: 'Alert flow' }).querySelector(':scope > div')!;
+    const flowGrid = document.querySelector('[data-band="flow"] > div')!;
     expect(flowGrid).toHaveClass(...PANEL_GAP);
     expect(screen.getByTestId('cases-band-grid')).toHaveClass(...PANEL_GAP);
     expect(screen.getByTestId('cases-band-grid')).not.toHaveClass('gap-x-6');
   });
 
-  it('keeps band titles outside the panels, on the canvas, and module titles inside', async () => {
+  it('has no band titles; every module title is inside its panel, its window beside it', async () => {
     await mount();
     for (const name of ['Alert flow', 'Cases and response']) {
-      expect(panelOf(screen.getByRole('heading', { name }))).toBeNull();
+      expect(screen.queryByRole('heading', { name })).toBeNull();
+      expect(screen.queryByText(name)).toBeNull();
     }
-    for (const name of ['Human vs AI', 'Open cases', 'Cases resolved', 'Response time', 'Latest cases']) {
-      expect(panelOf(screen.getByRole('heading', { name })), name).not.toBeNull();
+    // The rows are plain containers: no region, no heading, no panel of their own.
+    for (const band of ['flow', 'cases']) {
+      const rowEl = document.querySelector(`[data-band="${band}"]`)!;
+      expect(rowEl, band).not.toBeNull();
+      expect(rowEl.tagName, band).toBe('DIV');
+      expect(rowEl).not.toHaveAttribute('aria-labelledby');
+      expect(rowEl).not.toHaveClass('surface-panel');
+      expect(rowEl.querySelector(':scope > header, :scope > h2')).toBeNull();
     }
+    for (const name of ['Noise reduction flow', 'Human vs AI', 'Open cases', 'Cases resolved', 'Response time', 'Latest cases']) {
+      const heading = screen.getByRole('heading', { name });
+      expect(panelOf(heading), name).not.toBeNull();
+      // Every one is an h2 straight under the page h1.
+      expect(heading.tagName, name).toBe('H2');
+    }
+    // The window rides on the module title row, inside the panel.
+    const captions = screen.getAllByTestId('window-caption');
+    expect(captions.map((c) => c.textContent)).toEqual([
+      'last 24 hours',
+      'last 24 hours',
+      'last 24 hours',
+      'p50 · last 24 hours',
+      'Newest of the last 24 hours',
+    ]);
+    for (const caption of captions) expect(panelOf(caption)).not.toBeNull();
     // The page title and its dashbar are not a panel either.
     expect(panelOf(screen.getByTestId('page-hero'))).toBeNull();
   });
@@ -625,35 +676,49 @@ describe('the Overview renders on grouped panels', () => {
     expect(hero.className).toContain('[&:not([data-scrolled=true])]:bg-transparent');
   });
 
-  it('spaces the modules as one group: 40px strip to bands to Deeper analytics, no sibling margins', async () => {
+  it('spaces the strip, both rows and Deeper analytics one panel gutter apart, no sibling margins', async () => {
     const { container } = await mount();
     const group = screen.getByTestId('overview-modules');
-    expect(group).toHaveClass('space-y-10');
-    // The strip, the bands and the fold are the group's children, in that order.
+    // Round 14 (operator choice C3 B): the gap between rows IS the panel gutter (16px,
+    // 20px from 1280px, 24px from 1920px), set by the container's own `gap`.
+    expect(group).toHaveClass('flex', 'flex-col', ...PANEL_GAP);
+    expect(group.className).not.toMatch(/(^|\s)space-y-/);
+    // The strip, the rows and the fold are the group's children, in that order.
     const children = Array.from(group.children);
+    expect(children).toHaveLength(3);
     expect(children[0]).toContainElement(screen.getByTestId('kpi-strip'));
     expect(children[1]).toBe(screen.getByTestId('hero-row'));
     expect(children[2]).toBe(screen.getByRole('region', { name: 'Deeper analytics' }));
-    // Between the two bands: 40px, 48px from 1920px.
-    expect(screen.getByTestId('hero-row')).toHaveClass('space-y-10', '3xl:space-y-12');
+    // Between the two rows: the same gutter, in DOM order flow then cases.
+    const rows = screen.getByTestId('hero-row');
+    expect(rows).toHaveClass('flex', 'flex-col', ...PANEL_GAP);
+    expect(rows.className).not.toMatch(/(^|\s)(3xl:)?space-y-/);
+    expect(Array.from(rows.children).map((c) => c.getAttribute('data-band'))).toEqual(['flow', 'cases']);
+    // The gutter inside each row is the same value, so rows and panels read as one grid.
+    expect(document.querySelector('[data-band="flow"] > div')).toHaveClass(...PANEL_GAP);
+    expect(screen.getByTestId('cases-band-grid')).toHaveClass(...PANEL_GAP);
     // Nothing overrides a sibling margin with `!important` (ui-standard "Spacing").
     expect(container.querySelector('[class*="!mt-"], [class*="!mb-"], [class*="!my-"]')).toBeNull();
     const source = fs.readFileSync(path.join(WEBUI_ROOT, 'src/soc/pages/Overview.tsx'), 'utf8');
     expect(source).not.toMatch(/!m[tby]-\d/);
   });
 
-  it('spreads Response time\'s spare height between detect and respond', async () => {
+  it('stacks Response time\'s detect and respond from the top, the spare height at its foot', async () => {
     await mount();
-    const response = screen.getByRole('region', { name: 'Mean time to detect / respond' });
+    const response = screen.getByRole('region', { name: 'Response time' });
     expect(response).toHaveClass('flex', 'flex-col');
     const pair = response.querySelector(':scope > .grid');
     expect(pair).not.toBeNull();
-    expect(pair).toHaveClass('flex-auto', 'content-between');
+    // Round 14 (operator choice C3): Respond sits 24px under MTTD; a stretched panel's
+    // spare height falls to its foot instead of opening a gap between the two figures.
+    expect(pair).toHaveClass('content-start', 'gap-6');
+    expect(pair).not.toHaveClass('flex-auto');
+    expect(pair).not.toHaveClass('content-between');
   });
 
   it('tightens the snapshot gaps below 1280px so each legend stays beside its ring', async () => {
     await mount();
-    const region = screen.getByRole('region', { name: 'Resolved and open cases' });
+    const region = screen.getByTestId('case-state');
     expect(region.querySelector(':scope > .grid')).toHaveClass('gap-x-6', 'xl:gap-x-8');
     for (const card of screen.getAllByTestId('snapshot-card')) {
       expect(within(card).getByTestId('snapshot-body')).toHaveClass('gap-x-3', 'xl:gap-x-4');

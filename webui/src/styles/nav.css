@@ -1,0 +1,254 @@
+/* Left navigation (Round 14, SPEC §4.8.1, C6 A "docked rail with a stable morph").
+   Loaded by NavSidebar. Only transform and opacity animate; the in-flow spacer beside the
+   panel changes width ONCE, at the click, with no transition, so the page moves once.
+
+   ONE DOM FOR BOTH STATES: every row is [40 px icon cell at x 12][fixed-width label]; the
+   18 px icon sits at the same x and y in the 64 px rail and the 240 px drawer, and
+   nothing is swapped. The panel (`.nav-root`) is fixed and always 240 px wide:
+   - expand: the surface fills 240 px at the click; only the labels fade in (120 ms after
+     60 ms), and open groups reveal their pages with them;
+   - collapse: a clipping layer (`.nav-clip`) slides closed with `transform` while its
+     content (`.nav-content`) slides back the same amount, over the page that has already
+     moved: the visible edge moves and the icons stay put (160 ms). Group pages collapse
+     at the click, with the spacer, so nothing glides afterwards.
+   Timings are the side-pane standard (SPEC §3.2): open 200 ms, close 160 ms, chevrons and
+   flyouts 150 ms, tooltips 120 ms, all on `ease-standard`. */
+
+.nav-root {
+  --nav-ease: var(--motion-ease-standard, cubic-bezier(0.2, 0, 0, 1));
+}
+
+.nav-clip {
+  overflow: clip; /* never a scroll container: focus must not slide the content sideways */
+}
+
+.nav-clip,
+.nav-content,
+.nav-strip {
+  transition: transform 200ms var(--nav-ease);
+}
+
+.nav-root[data-nav-state='expanded'] .nav-clip,
+.nav-root[data-nav-state='expanded'] .nav-content,
+.nav-root[data-nav-state='expanded'] .nav-strip {
+  transition: none;
+}
+
+/* The click strip sits just past the visible edge (240 px, or 64 px in the rail) and
+   moves with the clipping layer, so it never lies over the destination scrollbar. */
+.nav-root[data-nav-state='collapsed'] .nav-clip,
+.nav-root[data-nav-state='collapsed'] .nav-strip {
+  transform: translate3d(-176px, 0, 0);
+  transition-duration: 160ms;
+}
+
+.nav-root[data-nav-state='collapsed'] .nav-content {
+  transform: translate3d(176px, 0, 0);
+  transition-duration: 160ms;
+}
+
+/* Labels and drawer-only marks fade in with the drawer; rail-only marks (the group
+   divider, the icon-cell tint, the activity badge) do the reverse. Promoted ahead of time
+   so a toggle never pays for creating their layers. */
+.nav-root .nav-label,
+.nav-root .nav-railmark {
+  will-change: opacity;
+}
+
+.nav-label {
+  opacity: 1;
+  transition: opacity 120ms var(--nav-ease) 60ms;
+}
+
+.nav-root[data-nav-state='collapsed'] .nav-label {
+  opacity: 0;
+  pointer-events: none;
+  transition-duration: 80ms;
+  transition-delay: 0ms;
+}
+
+.nav-railmark {
+  opacity: 0;
+  transition: opacity 80ms var(--nav-ease);
+}
+
+.nav-root[data-nav-state='collapsed'] .nav-railmark {
+  opacity: 1;
+  transition-duration: 120ms;
+  transition-delay: 40ms;
+}
+
+/* In the rail a row's link is 48 px wide (its label has a fixed width and fades beside
+   it), so its hit box, focus ring and a Voice Control badge sit on the icon. */
+.nav-root[data-nav-state='collapsed'] .nav-row {
+  flex: 0 0 48px;
+  width: 48px;
+}
+
+/* The brand link's focus ring hugs its 36 px tile in the rail. */
+.nav-root[data-nav-state='collapsed'] .nav-brand {
+  flex: 0 0 36px;
+  width: 36px;
+}
+
+/* A group's pages: a grid-rows reveal plus opacity, inside the panel only. */
+.nav-children {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 200ms var(--nav-ease),
+    opacity 150ms var(--nav-ease);
+}
+
+.nav-children[data-open='true'] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.nav-children > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.nav-root[data-nav-state='collapsed'] .nav-children {
+  transition: none;
+}
+
+.nav-root[data-nav-entering='true'] .nav-children {
+  transition-delay: 60ms;
+}
+
+.nav-chevron {
+  transition: transform 150ms var(--nav-ease);
+}
+
+/* The 6 px click strip strengthens the panel's edge hairline on hover. */
+.nav-strip::after {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  left: -1px;
+  width: 2px;
+  background: transparent;
+  transition: background-color 120ms var(--nav-ease);
+}
+
+.nav-strip:hover::after {
+  background: hsl(var(--border-strong));
+}
+
+/* A 6 px scrollbar that never narrows the label column when a group opens. Chromium
+   ignores ::-webkit-scrollbar while `scrollbar-width` or `scrollbar-color` is set, so
+   both go back to `auto` here; browsers without ::-webkit-scrollbar get `thin`. Not
+   `stable both-edges`: that moves the icon column 2 px off the rail's centre. */
+.nav-scroll {
+  scrollbar-gutter: stable;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+.nav-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.nav-scroll::-webkit-scrollbar-thumb {
+  border-width: 1px;
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .nav-scroll {
+    scrollbar-width: thin;
+  }
+}
+
+/* In the 64 px rail the scroller is as wide as the visible rail, so an overflowing list
+   shows its scrollbar there (at 240 px it would sit in the clipped-away part). The rows
+   are left-anchored, so no icon moves. Collapsing narrows it only once the panel has
+   closed (160 ms), so the fading labels are never cut mid-slide; expanding widens it at
+   the click. */
+.nav-root[data-nav-state='collapsed'] .nav-scroll {
+  margin-right: 176px;
+  transition: margin-right 0s linear 160ms;
+}
+
+/* The collapsed rail's group flyout: a 150 ms fade and 4 px slide, like a menu. */
+@keyframes nav-fly-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-4px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.nav-flyout {
+  animation: nav-fly-in 150ms var(--motion-ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+/* The rail tooltip is centred on its icon with a transform, so its keyframes carry it. */
+@keyframes nav-tip-in {
+  from {
+    opacity: 0;
+    transform: translate3d(-4px, -50%, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, -50%, 0);
+  }
+}
+
+.nav-tip {
+  transform: translate3d(0, -50%, 0);
+  animation: nav-tip-in 120ms var(--motion-ease-standard, cubic-bezier(0.2, 0, 0, 1)) both;
+}
+
+@keyframes nav-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+/* Reduced motion: layout changes are instant; labels, flyouts and the tooltip cross-fade
+   with opacity only. (The global reduced-motion rule in theme.css zeroes every other
+   transition; these selectors are more specific on purpose.) */
+.nav-root[data-reduced-motion='true'] .nav-clip,
+.nav-root[data-reduced-motion='true'] .nav-content,
+.nav-root[data-reduced-motion='true'] .nav-strip,
+.nav-root[data-reduced-motion='true'] .nav-scroll,
+.nav-root[data-reduced-motion='true'] .nav-children,
+.nav-root[data-reduced-motion='true'] .nav-chevron {
+  transition: none !important;
+}
+
+.nav-root[data-reduced-motion='true'] .nav-label,
+.nav-root[data-reduced-motion='true'] .nav-railmark {
+  transition: opacity 100ms linear 0ms !important;
+}
+
+.nav-root[data-reduced-motion='true'] .nav-flyout,
+.nav-root[data-reduced-motion='true'] .nav-tip {
+  animation: nav-fade-in 100ms linear both !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-flyout,
+  .nav-tip {
+    animation: nav-fade-in 100ms linear both !important;
+  }
+}
+
+/* Forced colours (Windows high contrast) drop backgrounds and box-shadow rings, so the
+   tinted current-page pill and the inset focus ring would vanish. The current pill is
+   drawn as a system outline instead (on the visible tint: the drawer row, the rail
+   square, a page in a group or the flyout), and focus keeps the system focus outline
+   (the controls use `focus-visible:outline-none`, a transparent outline that forced
+   colours paints). */
+@media (forced-colors: active) {
+  .nav-tint[data-active] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}

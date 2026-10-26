@@ -72,7 +72,7 @@ describe('Console surface contract', () => {
           label="Page actions"
           controls={<button type="button">Refresh</button>}
         />
-        <FilterBar aria-label="Page filters">
+        <FilterBar aria-label="Page filters" variant="band">
           <button type="button">Severity</button>
         </FilterBar>
         <SettingsCard title="Detection" icon={Settings}>
@@ -82,7 +82,8 @@ describe('Console surface contract', () => {
     );
 
     const controlBar = screen.getByRole('group', { name: 'Page actions' }).parentElement;
-    const filterBar = screen.getByRole('toolbar', { name: 'Page filters' });
+    // A labelled group, never a toolbar (no roving-focus model; Round 14).
+    const filterBar = screen.getByRole('group', { name: 'Page filters' });
     const section = container.querySelector('section');
 
     expect(controlBar).toHaveClass('rounded-md', 'border-border/80');

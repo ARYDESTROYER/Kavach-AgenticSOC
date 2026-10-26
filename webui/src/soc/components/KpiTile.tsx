@@ -6,6 +6,7 @@ import {
   SquareArrowOutUpRight,
   type LucideIcon,
 } from 'lucide-react';
+import { PANEL_PADDING_X } from '@/design-system/panel';
 import { CountUp } from './CountUp';
 import { AskAboutThis } from './AskAboutThis';
 import { HelpTip } from './HelpTip';
@@ -475,8 +476,46 @@ export interface KpiTileProps {
    * this avoids, and it would rename the disclosure trigger on every value change.
    */
   breakdown?: KpiBreakdownRow[];
+  /**
+   * Round 14 (SPEC §4.9.2, C7): the tile's chrome.
+   *
+   *  - `'strip'` (the default) is the page and dashboard grammar, the Overview's strip:
+   *    no border, no card fill and no icon; a quiet 13px sentence-case label above an ink
+   *    numeral that bottom-aligns with its neighbours (the hero grammar); red only for a
+   *    critical tile that counts something above zero. The tile sits on a panel or in a
+   *    `KpiStrip`, whose grid draws the rules between tiles. `variant="bar"` draws no
+   *    accent bar here.
+   *  - `'framed'` is the bordered tile exactly as it was before Round 14 (the icon chip,
+   *    the tracked-capitals label, the `bar` accent edge, the per-variant numeral colour).
+   *    The chat answer blocks and `StatCard` pass it explicitly, so their rendering does
+   *    not change.
+   */
+  chrome?: 'strip' | 'framed';
+  /**
+   * A clickable tile that filters something is a TOGGLE: `pressed` announces its state
+   * (`aria-pressed`) and draws the selected wash plus a 2px base rule, so the state never
+   * rests on the wash alone. Leave it undefined on a tile that navigates or opens a panel.
+   */
+  pressed?: boolean;
+  /**
+   * Inside a `KpiStrip`: this tile starts a second split of the same total (state, then
+   * severity), so the rule before it is the strong structural line instead of a hairline.
+   */
+  breakBefore?: boolean;
   className?: string;
 }
+
+/**
+ * What a `KpiStrip` tells the tiles inside it (Round 14). A tile in a strip defaults to
+ * the strip variant, the strip's density, the strip chrome and the panel's inset, so the
+ * first tile of every row shares the left edge of the module titles under the strip.
+ */
+export interface KpiStripContextValue {
+  density: 'comfortable' | 'compact';
+}
+
+/** Provided by `KpiStrip`; `null` everywhere else. */
+export const KpiStripContext = React.createContext<KpiStripContextValue | null>(null);
 
 /** Slugify a label into a stable, lowercase, dash-joined id for test anchors. */
 function slugId(label: string): string {
@@ -485,6 +524,13 @@ function slugId(label: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 }
+
+/**
+ * The horizontal inset of a tile inside a `KpiStrip`: the panel padding (16px, 20px from
+ * 1280px, 24px from 1920px). Every tile takes it, so each row's first label lines up with
+ * the module titles on the page whatever the column count.
+ */
+const STRIP_INSET_X = PANEL_PADDING_X;
 
 /** Soft tinted chip behind the icon — the only place accent color appears (default variant). */
 const ACCENT_CHIP: Record<KpiAccent, string> = {
@@ -618,9 +664,9 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       delta,
       secondary,
       goodDirection = 'up',
-      variant = 'default',
-      density = 'default',
-      size = 'default',
+      variant: variantProp,
+      density: densityProp,
+      size: sizeProp,
       roll = true,
       numeral = 'default',
       onClick,
@@ -636,18 +682,38 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       askTopic,
       onHelpOpenChange,
       breakdown,
+      chrome = 'strip',
+      pressed,
+      breakBefore = false,
       className,
     },
     ref,
   ) => {
+    // A strip supplies the defaults its tiles share; explicit props still win.
+    const inStrip = React.useContext(KpiStripContext);
+    const variant = variantProp ?? (inStrip ? 'strip' : 'default');
+    const density = densityProp ?? inStrip?.density ?? 'default';
+    const size = sizeProp ?? (inStrip?.density === 'comfortable' ? 'fluid' : 'default');
+    const framed = chrome === 'framed';
     const clickable = typeof onClick === 'function';
     const kpiTestId = `kpi-${testId ?? slugId(label)}`;
-    const bar = variant === 'bar';
+    // The accent BAR is framed chrome; the strip grammar draws no edge of its own.
+    const bar = framed && variant === 'bar';
     const strip = variant === 'strip';
     const compact = density === 'compact';
     const comfortable = density === 'comfortable';
-    const hero = numeral === 'hero';
+    // The strip chrome IS the hero grammar (quiet label, ink numeral, one context line);
+    // `numeral` keeps choosing it only for framed tiles.
+    const hero = numeral === 'hero' || !framed;
     const fluid = size === 'fluid';
+    // The count a critical tile is red for (the hero rule): the rolled integer, else a
+    // plain numeric value. Text values ("12%", "2h") never turn the numeral red.
+    const flagCount =
+      typeof countTo === 'number' && Number.isFinite(countTo)
+        ? countTo
+        : typeof value === 'number' && Number.isFinite(value)
+          ? value
+          : null;
 
     const deltaFacts = delta ? resolveDelta(delta, goodDirection) : null;
 
@@ -710,7 +776,12 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       : strip
         ? compact && !hero
           ? ['text-2xl', 'text-xl', 'text-lg']
-          : HERO_STEPS
+          : compact && !framed && numeral !== 'hero'
+            ? // A compact PAGE strip (strip chrome): 24px numerals, the page strip size, a
+              // step under the landing numeral. `numeral="hero"` still asks for the 30px
+              // landing step explicitly.
+              ['text-3xl', 'text-2xl', 'text-xl']
+            : HERO_STEPS
         : ['text-3xl', 'text-2xl', 'text-xl'];
     const lengthCompact = canCompact && markText.length + heroText.length > HERO_ABBREVIATE_AT;
     const compactStart = canCompact ? ladderRung(markText + formatCompact!(countTo as number)) : 0;
@@ -979,8 +1050,9 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
               hero
                 ? // A quiet label ABOVE the number, in the case it was written: tracked
                   // capitals at 11px read as decoration and outweighed the data they named.
-                  // 13px on a comfortable (page-heading) strip, 12px on a compact one.
-                  cn(comfortable ? 'text-sm' : 'text-xs', 'font-medium text-muted-foreground')
+                  // 13px on a comfortable (page-heading) strip and on every strip-chrome
+                  // tile (Round 14: page strips label at 13px); 12px on a framed compact one.
+                  cn(comfortable || !framed ? 'text-sm' : 'text-xs', 'font-medium text-muted-foreground')
                 : cn(
                     'font-semibold uppercase tracking-wide',
                     strip ? 'text-2xs text-muted-foreground' : 'text-xs text-muted-foreground',
@@ -995,7 +1067,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             {label}
             {helpIsSibling ? null : helpNode}
           </span>
-          {Icon && !bar && !strip ? (
+          {Icon && framed && !bar && !strip ? (
             <span
               className={cn(
                 'inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md',
@@ -1051,8 +1123,9 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
               hero
                 ? // HERO numerals are ink, and colour is a FLAG: only a critical tile that
                   // actually counts something turns red. A green "resolved" or a red zero
-                  // would be colour saying nothing the number does not.
-                  accent === 'critical' && typeof countTo === 'number' && countTo > 0
+                  // would be colour saying nothing the number does not. Every strip-chrome
+                  // tile follows this rule (Round 14, page strips).
+                  accent === 'critical' && flagCount !== null && flagCount > 0
                   ? ACCENT_TEXT.critical
                   : 'text-foreground'
                 : strip && (accent === 'critical' || accent === 'success')
@@ -1094,6 +1167,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
               className={cn(
                 'mt-1.5 block min-h-[2lh] min-w-0 whitespace-normal break-words tabular-nums text-muted-foreground',
                 comfortable ? 'text-sm' : 'text-xs',
+                // The strip spark sits in the bottom-right corner: the line wraps short of it.
+                strip && sparkNode ? 'pr-16' : null,
               )}
               // A data attribute, not a `kpi-*` test id: the strip's specs count every
               // `kpi-*` id inside it to pin the cell count at exactly six.
@@ -1101,7 +1176,16 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             >
               {heroLine}
             </span>
-          ) : null
+          ) : (
+            // No context: the same two-line slot, empty, so this tile's numeral stays on
+            // the row its neighbours' numerals sit on (they are `mt-auto` above a
+            // two-line line) instead of dropping to the bottom of the cell.
+            <span
+              aria-hidden
+              className={cn('mt-1.5 block min-h-[2lh]', comfortable ? 'text-sm' : 'text-xs')}
+              data-kpi-line="none"
+            />
+          )
         ) : sub ? (
           <span
             className={cn(
@@ -1154,29 +1238,53 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     // until something passes `breakdown` again. The compact strip's live density is the
     // `px-3 py-2` on `base` plus the value row's `mt-1`; these two are kept in step with
     // it so the partition path does not come back with a mismatched rhythm.
-    const padX = strip ? (compact ? 'px-3' : comfortable ? 'px-3 xl:px-4 2xl:px-5' : 'px-4') : 'px-4';
-    const padBottom = strip ? (compact ? 'pb-2' : comfortable ? 'pb-3 2xl:pb-4' : 'pb-5') : 'pb-4';
+    // The panel inset belongs to the strip grammar; a framed tile in a strip keeps its own.
+    const stripInset = inStrip !== null && !framed;
+    const padX = stripInset
+      ? STRIP_INSET_X
+      : strip
+        ? compact
+          ? 'px-3'
+          : comfortable
+            ? 'px-3 xl:px-4 2xl:px-5'
+            : 'px-4'
+        : framed
+          ? 'px-4'
+          : 'px-0';
+    const padBottom = strip ? (compact ? 'pb-2' : comfortable ? 'pb-3 2xl:pb-4' : 'pb-5') : framed ? 'pb-4' : 'pb-1';
     // The cell's minimum height belongs to whichever element IS the cell root, so a
     // wrapped tile does not add the partition's height on top of the tile floor.
     const minH = strip ? (compact || comfortable ? 'min-h-0' : 'min-h-28') : null;
-    /** Card chrome (default variant only). It follows the CELL ROOT, so a wrapped tile
-     *  keeps its border/background around the partition instead of leaving it outside. */
-    const chrome = strip ? null : 'rounded-lg border border-border bg-card';
+    /** Card chrome (framed default variant only). It follows the CELL ROOT, so a wrapped
+     *  tile keeps its border/background around the partition instead of leaving it outside. */
+    const cardChrome = framed && !strip ? 'rounded-lg border border-border bg-card' : null;
     const base = cn(
       'relative min-w-0 overflow-hidden text-left',
       needsCellRoot ? null : 'h-full',
       needsCellRoot ? null : minH,
-      needsCellRoot ? null : chrome,
-      breakdownIsSibling && !strip && 'rounded-t-lg',
-      strip
-        ? compact
-          ? 'bg-transparent px-3 py-2'
+      needsCellRoot ? null : cardChrome,
+      breakdownIsSibling && cardChrome && 'rounded-t-lg',
+      stripInset
+        ? // Inside a KpiStrip every tile takes the PANEL inset (16 / 20 / 24px), so the
+          // first tile of each row shares the left edge of the module titles under the
+          // strip at any column count, with no per-row arithmetic.
+          compact
+          ? cn('bg-transparent py-2.5', STRIP_INSET_X)
           : comfortable
-            ? // Between compact and default: ~120px with a fluid numeral. Dense inside,
-              // generous between — the strip's neighbours supply the gutters.
-              'bg-transparent px-3 py-3 xl:px-4 2xl:px-5 2xl:py-4'
-            : 'bg-transparent px-4 py-5'
-        : 'p-4',
+            ? cn('bg-transparent py-3 2xl:py-4', STRIP_INSET_X)
+            : cn('bg-transparent py-5', STRIP_INSET_X)
+        : strip
+          ? compact
+            ? 'bg-transparent px-3 py-2'
+            : comfortable
+              ? // Between compact and default: ~120px with a fluid numeral. Dense inside,
+                // generous between: the strip's neighbours supply the gutters.
+                'bg-transparent px-3 py-3 xl:px-4 2xl:px-5 2xl:py-4'
+              : 'bg-transparent px-4 py-5'
+          : framed
+            ? 'p-4'
+            : // Strip chrome outside a strip: the panel or grid it sits in is the surface.
+              'bg-transparent px-0 py-1',
       // The sibling below carries the tile's bottom padding instead.
       breakdownIsSibling && 'pb-0',
       bar && !strip && 'pl-5',
@@ -1193,10 +1301,21 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           type="button"
           onClick={onClick}
           aria-haspopup={ariaHasPopup}
+          aria-pressed={pressed}
           data-testid={kpiTestId}
+          data-kpi-break={breakBefore && !needsCellRoot ? '' : undefined}
           className={cn(
             base,
-            'block w-full transition-colors hover:bg-accent/30',
+            'block w-full transition-colors',
+            framed ? 'hover:bg-accent/30' : 'hover:bg-hover',
+            // A pressed (filter) tile: the selected wash AND a 2px base rule, so the state
+            // never rests on colour alone. The rule is a BORDER: forced colours replace
+            // backgrounds (the wash, a background rule) with Canvas but keep a border.
+            // Muted text on the wash is 4.2:1 in light (below AA for the 13px label and
+            // the context line), so a pressed tile remaps the muted ink to the foreground
+            // for everything inside it.
+            pressed &&
+              'bg-accent hover:bg-accent [--muted-foreground:var(--foreground)] after:absolute after:inset-x-3 after:bottom-0 after:h-0 after:rounded-full after:border-b-2 after:border-primary',
             /*
              * HERO tiles BOTTOM-ALIGN their numeral, and this is the structural half of it.
              *
@@ -1209,8 +1328,12 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
              * and it is what the row wanted anyway: the number is the thing being compared.
              */
             hero && 'flex h-full flex-col',
-            !strip && !breakdownIsSibling && 'hover:border-primary/40',
-            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+            framed && !strip && !breakdownIsSibling && 'hover:border-primary/40',
+            framed
+              ? 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background'
+              : // A strip tile sits in a clipping grid or panel: an outset ring would be cut
+                // away, so the ring is drawn inside the tile.
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring focus-visible:ring-offset-0',
             needsCellRoot ? null : className,
           )}
         >
@@ -1230,10 +1353,13 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             // The named group the hero overlay reveals itself on (hover or focus anywhere
             // in the cell, including the help button that sits beside the trigger).
             hero && 'group/kpi',
+            // The help button sits on the pressed wash too: the same foreground ink.
+            pressed && '[--muted-foreground:var(--foreground)]',
             minH,
-            chrome,
+            cardChrome,
             className,
           )}
+          data-kpi-break={breakBefore ? '' : undefined}
         >
           {trigger}
           {cellOverlay}
@@ -1250,7 +1376,15 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
     }
 
     return (
-      <div ref={ref as React.Ref<HTMLDivElement>} data-testid={kpiTestId} className={cn(base, className)}>
+      <div
+        ref={ref as React.Ref<HTMLDivElement>}
+        data-testid={kpiTestId}
+        data-kpi-break={breakBefore ? '' : undefined}
+        // A static hero tile takes the same full-height column as a clickable one, so its
+        // numeral bottom-aligns too: in a strip that mixes the two, every numeral shares
+        // one row.
+        className={cn(base, hero && 'flex h-full flex-col', className)}
+      >
         {barEdge}
         {inner}
         {breakdownNode}
@@ -1266,10 +1400,65 @@ export interface KpiTileGridProps extends React.HTMLAttributes<HTMLDivElement> {
   /**
    * `true` (default) draws the closed outer frame; `false` keeps only the inner
    * hairlines, for a grid that already sits inside a framed card (no double frame).
+   * Ignored on `surface="panel"`, which never draws a frame.
    */
   framed?: boolean;
+  /**
+   * `card` (default): the grid described below. `panel` (Round 14, `KpiStrip`): the grid
+   * sits on a tinted panel, so it draws NO frame and its rules only ever separate two tiles:
+   * each tile draws the rule ABOVE it and the rule BEFORE it, and the grid hangs those of
+   * the first row and the first column outside its clip. A ragged last row therefore draws
+   * nothing into the empty slots, at any column count, with no per-breakpoint arithmetic.
+   * While every tile shares one row the column rules stop 12px short of the panel's
+   * rounded edges (`--panel-inset-rule`). Two columns below 768px.
+   */
+  surface?: 'card' | 'panel';
   /** Classes for the outer `@container` wrapper (the `className` lands on the grid). */
   containerClassName?: string;
+}
+
+/**
+ * Column classes for a KPI strip on a panel (`KpiTileGrid surface="panel"`): two columns
+ * below 768px (a phone reads a strip as three short rows, not six stacked tiles), then the
+ * balanced, count-driven steps of `kpiGridColumns` on the strip's own width. `oneRow` is
+ * the container step at which every tile shares one row (the inset column rule), or `''`
+ * when the strip never fits on one row. Literal class strings, so Tailwind sees each one.
+ */
+const STRIP_COLUMNS: Record<number, { cols: string; oneRow: string }> = {
+  1: { cols: 'grid-cols-1', oneRow: '[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]' },
+  2: { cols: 'grid-cols-2', oneRow: '[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]' },
+  3: {
+    cols: 'grid-cols-2 md:@[30rem]:grid-cols-3',
+    oneRow: 'md:@[30rem]:[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]',
+  },
+  4: {
+    cols: 'grid-cols-2 md:@[40rem]:grid-cols-4',
+    oneRow: 'md:@[40rem]:[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]',
+  },
+  5: {
+    cols: 'grid-cols-2 md:@[30rem]:grid-cols-3 md:@[50rem]:grid-cols-5',
+    oneRow: 'md:@[50rem]:[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]',
+  },
+  6: {
+    cols: 'grid-cols-2 md:@[30rem]:grid-cols-3 md:@[60rem]:grid-cols-6',
+    oneRow: 'md:@[60rem]:[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]',
+  },
+  // Seven and eight share one row from 128px a tile (the C7 Cases strip: state, then
+  // severity, in one row at 1440), and fold to four columns below that.
+  7: {
+    cols: 'grid-cols-2 md:@[40rem]:grid-cols-4 md:@[56rem]:grid-cols-7',
+    oneRow: 'md:@[56rem]:[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]',
+  },
+  8: {
+    cols: 'grid-cols-2 md:@[40rem]:grid-cols-4 md:@[64rem]:grid-cols-8',
+    oneRow: 'md:@[64rem]:[&>*]:[border-image:var(--panel-inset-rule)_0_0_0_1]',
+  },
+};
+
+/** The panel-strip column classes for `count` tiles (see `STRIP_COLUMNS`). */
+export function kpiStripColumns(count: number): { cols: string; oneRow: string } {
+  const n = Math.max(1, Math.floor(Number.isFinite(count) ? count : 1));
+  return STRIP_COLUMNS[n] ?? { cols: 'grid-cols-2 md:@[30rem]:grid-cols-3 md:@[60rem]:grid-cols-6', oneRow: '' };
 }
 
 /**
@@ -1280,11 +1469,42 @@ export interface KpiTileGridProps extends React.HTMLAttributes<HTMLDivElement> {
  *   right rule, the grid overhangs its clip by 1px on those two sides, so the outermost
  *   rules disappear under the frame and a ragged last row still reads as one closed box.
  * - Rows stretch, so tiles in a row share one height (KpiTile fills its cell).
+ * - `surface="panel"`: the panel grammar described on the prop.
  *
  * Pass `role="list"` (and give each child `role="listitem"`) when the tiles are a list.
  */
 export const KpiTileGrid = React.forwardRef<HTMLDivElement, KpiTileGridProps>(
-  function KpiTileGrid({ count, framed = true, containerClassName, className, children, ...rest }, ref) {
+  function KpiTileGrid(
+    { count, framed = true, surface = 'card', containerClassName, className, children, ...rest },
+    ref,
+  ) {
+    if (surface === 'panel') {
+      const strip = kpiStripColumns(count);
+      return (
+        <div className={cn('@container min-w-0', containerClassName)} data-kpi-grid-count={count}>
+          <div className="overflow-hidden" data-kpi-grid-frame="panel">
+            <div
+              ref={ref}
+              className={cn(
+                '-ml-px -mt-px grid items-stretch',
+                strip.cols,
+                '[&>*]:border-l [&>*]:border-t [&>*]:border-border/70',
+                strip.oneRow,
+                // A second split of the same total starts with the strong structural line,
+                // never the inset hairline. The grid child is the tile itself, or a wrapper
+                // around it (a hover trend card): `:has()` finds the mark inside a wrapper.
+                '[&>[data-kpi-break]]:border-l-border-strong [&>[data-kpi-break]]:[border-image:none]',
+                '[&>*:has([data-kpi-break])]:border-l-border-strong [&>*:has([data-kpi-break])]:[border-image:none]',
+                className,
+              )}
+              {...rest}
+            >
+              {children}
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={cn('@container min-w-0', containerClassName)} data-kpi-grid-count={count}>
         <div

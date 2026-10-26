@@ -195,3 +195,90 @@ describe('CommandPalette — quick actions group', () => {
     await waitFor(() => expect(headings()).toContain('Actions'));
   });
 });
+
+describe('CommandPalette: destinations open what the navigation opens (Round 14, SPEC §2.2 item 13)', () => {
+  beforeEach(() => {
+    searchMock.mockReset();
+    searchMock.mockResolvedValue({ query: '', cases: [], sources: [], nav: [] });
+    window.localStorage.clear();
+  });
+
+  const item = (value: string) => document.querySelector(`[cmdk-item][data-value="${value}"]`) as HTMLElement | null;
+
+  it('"Cyber Defence Center" opens the landing page and "Dashboards" the library', async () => {
+    const { onNavigate } = await renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    fireEvent.change(input, { target: { value: 'Cyber Defence' } });
+    await waitFor(() => expect(item('navc-overview-dashboard')).toBeTruthy());
+    expect(item('navc-overview-dashboard')).toHaveTextContent('Cyber Defence Center');
+    fireEvent.click(item('navc-overview-dashboard') as HTMLElement);
+    expect(onNavigate).toHaveBeenCalledWith('overview');
+  });
+
+  it('the Overview row opens the Dashboards library, like the navigation', async () => {
+    const { onNavigate } = await renderPalette();
+    await waitFor(() => expect(item('nav-overview')).toBeTruthy());
+    fireEvent.click(item('nav-overview') as HTMLElement);
+    expect(onNavigate).toHaveBeenCalledWith('dashboards');
+  });
+
+  it('lists one Runbooks destination and names the Help Center', async () => {
+    await renderPalette();
+    const input = await screen.findByPlaceholderText(/search cases, sources, settings/i);
+    fireEvent.change(input, { target: { value: 'book' } });
+    await waitFor(() => expect(item('navc-intelligence-runbooks')).toBeTruthy());
+    expect(item('navc-intelligence-runbooks')).toHaveTextContent('Runbooks');
+    expect(item('navc-intelligence-playbooks')).toBeNull();
+    fireEvent.change(input, { target: { value: 'help' } });
+    await waitFor(() => expect(item('nav-docs')).toHaveTextContent('Help Center'));
+  });
+});
+
+describe('CommandPalette: recents read as what they open today (Round 14, D25)', () => {
+  beforeEach(() => {
+    searchMock.mockReset();
+    searchMock.mockResolvedValue({ query: '', cases: [], sources: [], nav: [] });
+    window.localStorage.clear();
+  });
+
+  const recentItems = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[cmdk-item]')).filter((el) =>
+      /^recent /i.test(el.getAttribute('data-value') ?? ''),
+    );
+
+  it('resolves retired routes, renames pages by the navigation and shows each page once', async () => {
+    window.localStorage.setItem(
+      'tlsoc.cmdk.recents',
+      JSON.stringify([
+        { page: 'playbooks', label: 'Response playbooks' },
+        { page: 'runbooks', label: 'Reference runbooks' },
+        { page: 'docs', label: 'Documentation' },
+        { page: 'dashboards', label: 'Overview' },
+        { page: 'scans', label: 'Automated scans (legacy)' },
+        { page: 'cases', label: 'Phishing burst', kind: 'item' },
+      ]),
+    );
+    const { onNavigate } = await renderPalette();
+    await waitFor(() => expect(recentItems().length).toBeGreaterThan(0));
+    expect(recentItems().map((el) => el.textContent)).toEqual([
+      'Runbooks',
+      'Help Center',
+      'Dashboards',
+      'Case Manager',
+      'Phishing burst',
+    ]);
+    expect(document.body.textContent).not.toMatch(/playbook/i);
+    fireEvent.click(recentItems()[0]);
+    expect(onNavigate).toHaveBeenCalledWith('runbooks');
+  });
+
+  it('stores the page a jump resolves to, under its navigation name', async () => {
+    window.localStorage.setItem('tlsoc.cmdk.recents', JSON.stringify([{ page: 'catalog', label: 'Catalog' }]));
+    await renderPalette();
+    await waitFor(() => expect(recentItems()).toHaveLength(1));
+    fireEvent.click(recentItems()[0]);
+    expect(JSON.parse(window.localStorage.getItem('tlsoc.cmdk.recents') ?? '[]')).toEqual([
+      { page: 'runbooks', label: 'Runbooks', kind: 'page' },
+    ]);
+  });
+});

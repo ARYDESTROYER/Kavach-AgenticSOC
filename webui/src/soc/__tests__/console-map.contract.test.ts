@@ -25,7 +25,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { FEATURES, FEATURE_GROUPS, type FeatureNode, type NavPerm } from '@/soc/registry';
+import { FEATURES, FEATURE_GROUPS, type FeatureChild, type FeatureNode, type NavPerm } from '@/soc/registry';
 import { SETTINGS_REDIRECTS } from '@/soc/router';
 import {
   SECTION_GROUP_ORDER,
@@ -90,9 +90,18 @@ interface ConsoleMap {
  * real page ids; a stale key fails the test below.
  */
 const PAGE_KEYWORDS: Record<string, string[]> = {
-  overview: ['home', 'dashboard', 'posture', 'cyber defence center', 'kpi'],
-  dashboard: ['home', 'posture', 'kpi', 'active risk', 'noise reduction'],
-  dashboards: ['custom dashboard', 'widgets', 'layout'],
+  overview: ['home', 'landing page', 'posture', 'cyber defence center', 'kpi', 'active risk', 'noise reduction'],
+  dashboards: [
+    'dashboard',
+    'dashboards library',
+    'built-in dashboards',
+    'soc operations',
+    'detection and data health',
+    'executive summary',
+    'custom dashboard',
+    'widgets',
+    'layout',
+  ],
   standup: ['shift', 'handoff', 'daily summary', 'attention queue'],
   cases: ['triage', 'queue', 'alerts', 'incidents'],
   case_manager: ['split pane', 'queue', 'bulk', 'case detail'],
@@ -101,11 +110,12 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   chat: ['assistant', 'ask', 'question', 'conversation', 'reports', 'prompt library', 'saved prompts', 'promptbook', 'suggestions', 'suggested questions', 'follow-ups', 'catch-up'],
   investigate: ['entity', 'hunt', 'ip', 'host', 'user'],
   approvals: ['proposals', 'pending', 'approve', 'human in the loop'],
-  intelligence: ['knowledge', 'runbooks', 'playbooks', 'memory'],
+  intelligence: ['knowledge', 'runbooks', 'memory'],
   knowledge: ['rag', 'corpus', 'documents', 'import'],
-  runbooks: ['runbook', 'procedure', 'guidance'],
+  // "playbook" stays a search alias so an operator coming from an earlier version finds
+  // the one Runbooks feature (search keywords are never rendered as Console copy).
+  runbooks: ['runbook', 'procedure', 'guidance', 'checklist', 'response', 'playbook'],
   memory: ['operator memory', 'facts', 'remember'],
-  playbooks: ['playbook', 'response', 'procedure'],
   personas: ['agents', 'roster', 'personas'],
   metrics: ['analytics', 'posture', 'mttr', 'mtta', 'false positive rate', 'mitre coverage'],
   effectiveness: ['agent health', 'precedent', 'auto-close health', 'agent improvement'],
@@ -184,14 +194,22 @@ function pageTargets(): ConsoleTarget[] {
   const visible: FeatureNode[] = FEATURES.filter((f) => !f.hidden);
   for (const feature of visible) {
     const group = groupLabel.get(feature.group) ?? '';
-    const childIds = new Set((feature.children ?? []).map((c) => c.id));
-    // A host whose id is also one of its children is reached through that child.
-    if (!childIds.has(feature.id)) add(feature.id, feature.label, [group, feature.label], feature.perm);
+    const childPages = new Set((feature.children ?? []).map(pageOf));
+    // A host whose page is also one of its children's pages is reached through that child
+    // (Workspace > Chat, and the Overview row, whose target is Overview > Dashboards).
+    if (!childPages.has(pageOf(feature))) add(pageOf(feature), feature.label, [group, feature.label], feature.perm);
     for (const child of feature.children ?? []) {
-      add(child.id, child.label, [group, feature.label, child.label], child.perm ?? feature.perm);
+      // A child is named by the page it opens: "Overview > Cyber Defence Center" opens
+      // the landing page `overview` (SPEC §2.2 item 13), as the navigation does.
+      add(pageOf(child), child.label, [group, feature.label, child.label], child.perm ?? feature.perm);
     }
   }
   return [...out.values()];
+}
+
+/** The page a navigation entry opens: its `target`, else its id (Round 14, SPEC §2.2). */
+function pageOf(entry: FeatureNode | FeatureChild): string {
+  return entry.target ?? entry.id;
 }
 
 function settingsTargets(): ConsoleTarget[] {
@@ -314,7 +332,7 @@ describe('console map contract (SPEC §5.4)', () => {
   it('page targets cover every visible feature and never a Settings redirect', () => {
     const pages = new Set(expected.targets.filter((t) => t.kind === 'page').map((t) => t.page));
     for (const feature of FEATURES.filter((f) => !f.hidden)) {
-      for (const id of [feature.id, ...(feature.children ?? []).map((c) => c.id)]) {
+      for (const id of [pageOf(feature), ...(feature.children ?? []).map(pageOf)]) {
         if (Object.prototype.hasOwnProperty.call(SETTINGS_REDIRECTS, id)) {
           expect(pages.has(id), id).toBe(false);
         } else {
@@ -323,6 +341,19 @@ describe('console map contract (SPEC §5.4)', () => {
       }
     }
     expect(expected.targets.find((t) => t.id === 'page:chat')?.crumb).toEqual(['Triage', 'Workspace', 'Chat']);
+  });
+
+  it('names the destinations the navigation actually opens (Round 14, SPEC §2.2 item 13)', () => {
+    const byId = new Map(expected.targets.map((t) => [t.id, t]));
+    // The landing page is "Overview > Cyber Defence Center"; the library is "Overview > Dashboards".
+    expect(byId.get('page:overview')).toMatchObject({ label: 'Cyber Defence Center', crumb: ['Overview', 'Cyber Defence Center'] });
+    expect(byId.get('page:dashboards')).toMatchObject({ label: 'Dashboards', crumb: ['Overview', 'Dashboards'], requires: 'metrics:view' });
+    // The aliases are not destinations of their own.
+    for (const alias of ['page:dashboard', 'page:playbooks', 'page:catalog', 'page:scans']) expect(byId.has(alias), alias).toBe(false);
+    expect(byId.get('page:runbooks')).toMatchObject({ label: 'Runbooks', crumb: ['Intelligence', 'Runbooks'] });
+    expect(byId.get('page:docs')).toMatchObject({ label: 'Help Center' });
+    // No target label is Console copy with the retired word.
+    for (const target of expected.targets) expect(target.label, target.id).not.toMatch(/playbook/i);
   });
 
   it('curated overlays reference real ids', () => {

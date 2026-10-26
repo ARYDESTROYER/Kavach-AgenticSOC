@@ -1,19 +1,23 @@
 /**
- * TimeRangePicker — the in-house compact time-range control for the three-zone
+ * TimeRangePicker: the in-house compact time-range control for the three-zone
  * dashboard control bar (DESIGN_STANDARD §4.3, IMPLEMENTATION Dash-B).
  *
  * It is intentionally dependency-free: NO `@elastic/datemath`, NO `moment` (both
- * drag moment.js — REJECTED in the dep ledger §13). Ranges are stored as **relative
+ * drag moment.js; REJECTED in the dep ledger §13). Ranges are stored as **relative
  * ES date-math strings** (`now-24h`/`now-7d`/`now`) and resolved to absolute ms at
  * render/query time via a small (~40-line) parser below, so a shared/bookmarked URL
  * always reflects "last 24h" rather than a frozen absolute window.
  *
  * Public surface:
  *   - `<TimeRangePicker value onChange refresh onRefreshChange onRefreshTick />`
- *     — a controlled Radix Popover with relative presets + an auto-refresh selector.
+ *     : a controlled Radix Popover with relative presets + an auto-refresh selector.
+ *     Round 14 (SPEC §4.9.2, C8): the picker is the ONE page-level time control, in the
+ *     page header's controls slot. A page that supports fewer ranges or cadences passes
+ *     `presets` (its ranges, in order) and `refreshOptions` (its cadences); the trigger,
+ *     the menu and the accessible names stay the same everywhere.
  *   - Pure helpers (fully unit-testable, no DOM): `parseDateMath`, `resolveRange`,
  *     `serializeRange`, `parseRange`, `PRESETS`, `REFRESH_OPTIONS`.
- *   - `useAutoRefresh(refresh, onTick)` — the interval hook that PAUSES on a hidden
+ *   - `useAutoRefresh(refresh, onTick)`: the interval hook that PAUSES on a hidden
  *     tab (Page Visibility API) and honours a `refresh` of `'off'`.
  *
  * URL round-trip: the parent owns where the range lives (the app uses a hash router
@@ -22,7 +26,7 @@
  *
  * a11y: fully keyboard operable (Radix Popover + roving Tabs/Select); the trigger
  * carries an `aria-label` describing the current range; the auto-refresh Select has
- * an accessible name; every value is plain text (UNTRUSTED-safe — presets/labels are
+ * an accessible name; every value is plain text (UNTRUSTED-safe: presets/labels are
  * app-authored, never operator/log-derived).
  */
 import * as React from 'react';
@@ -54,7 +58,7 @@ export interface TimeRange {
   label: string;
 }
 
-/** An absolute (resolved) range in epoch-ms — what a query actually uses. */
+/** An absolute (resolved) range in epoch-ms: what a query actually uses. */
 export interface ResolvedRange {
   fromMs: number;
   toMs: number;
@@ -77,7 +81,7 @@ export const DEFAULT_RANGE: TimeRange = PRESETS[2]; // Last 24 hours
 /** Auto-refresh options; default is Off (cost-metered). */
 export const REFRESH_OPTIONS: readonly { value: RefreshValue; label: string }[] = [
   { value: 'off', label: 'Off' },
-  { value: 'live', label: 'LIVE' },
+  { value: 'live', label: 'Live' },
   { value: '5s', label: '5 seconds' },
   { value: '30s', label: '30 seconds' },
   { value: '1m', label: '1 minute' },
@@ -87,7 +91,7 @@ export const REFRESH_OPTIONS: readonly { value: RefreshValue; label: string }[] 
 /** Compact trigger copy; the menu and aria-label retain the full option wording. */
 const REFRESH_TRIGGER_LABEL: Record<RefreshValue, string> = {
   off: 'Off',
-  live: 'LIVE',
+  live: 'Live',
   '5s': '5 sec',
   '30s': '30 sec',
   '1m': '1 min',
@@ -101,8 +105,8 @@ export const REFRESH_MS: Record<RefreshValue, number> = {
   '30s': 30_000,
   '1m': 60_000,
   '5m': 300_000,
-  // LIVE uses a visibility-aware five-second poll. It is deliberately explicit in
-  // the UI even though the cadence matches 5s: LIVE is the dashboard's default,
+  // Live uses a visibility-aware five-second poll. It is deliberately explicit in
+  // the UI even though the cadence matches 5s: Live is the dashboard's default,
   // continuously-following operating mode rather than an ad-hoc interval choice.
   live: 5_000,
 };
@@ -204,7 +208,7 @@ const TO_KEY = 'to';
 
 /**
  * Serialize a range into flat query params (`?from=now-24h&to=now`). The label is
- * DERIVED on read (never persisted — it may change with i18n/preset edits), so the
+ * DERIVED on read (never persisted: it may change with i18n/preset edits), so the
  * URL stays minimal and forward-compatible.
  */
 export function serializeRange(
@@ -216,31 +220,44 @@ export function serializeRange(
   return params;
 }
 
-/** Derive a human label for a {from,to} pair: a known preset's label, else "Custom". */
-export function labelForRange(from: string, to: string): string {
-  const hit = PRESETS.find((p) => p.from === from && p.to === to);
+/**
+ * Derive a human label for a {from,to} pair: a known preset's label (from `presets`, the
+ * shared list by default), else the raw pair.
+ */
+export function labelForRange(
+  from: string,
+  to: string,
+  presets: readonly TimeRange[] = PRESETS,
+): string {
+  const matches = (p: TimeRange) => p.from === from && p.to === to;
+  const hit = presets.find(matches) ?? PRESETS.find(matches);
   return hit ? hit.label : `${from} → ${to}`;
 }
 
 /**
  * Parse a range from query params (a `URLSearchParams` or a raw query string). Returns
- * `DEFAULT_RANGE` when either bound is absent, so a bare URL still yields a valid range.
+ * `fallback` (`DEFAULT_RANGE` unless given) when either bound is absent, so a bare URL
+ * still yields a valid range. `presets` names a page's own ranges (Round 14).
  */
-export function parseRange(source: URLSearchParams | string): TimeRange {
+export function parseRange(
+  source: URLSearchParams | string,
+  presets: readonly TimeRange[] = PRESETS,
+  fallback: TimeRange = DEFAULT_RANGE,
+): TimeRange {
   const params =
     typeof source === 'string'
       ? new URLSearchParams(source.replace(/^[?#]/, ''))
       : source;
   const from = params.get(FROM_KEY);
   const to = params.get(TO_KEY);
-  if (!from || !to) return DEFAULT_RANGE;
-  return { from, to, label: labelForRange(from, to) };
+  if (!from || !to) return fallback;
+  return { from, to, label: labelForRange(from, to, presets) };
 }
 
 /* ------------------------------------------------------------- auto-refresh -- */
 
 /**
- * useAutoRefresh — fire `onTick` on the chosen cadence, PAUSING while the tab is
+ * useAutoRefresh: fire `onTick` on the chosen cadence, PAUSING while the tab is
  * hidden (Page Visibility API) so a backgrounded dashboard never burns metered
  * queries. `'off'` (or a hidden tab) means no timer at all. The interval restarts
  * cleanly when the tab becomes visible again.
@@ -309,6 +326,19 @@ export interface TimeRangePickerProps {
   size?: 'sm' | 'md';
   /** Squared, low-contrast command-center chrome used by dense dashboard mastheads. */
   chrome?: 'default' | 'command';
+  /**
+   * The ranges this page supports, in order (Round 14). Defaults to the shared
+   * {@link PRESETS}; Analytics passes the last 24 hours, 7 days and 30 days, Logs adds a
+   * shorter range. The current `value` is always shown on the trigger, even when it is
+   * not one of them (a range read from a shared link).
+   */
+  presets?: readonly TimeRange[];
+  /**
+   * The auto-refresh cadences this page supports (Round 14), as values from
+   * {@link REFRESH_OPTIONS}, which keeps their order and labels. Defaults to all of
+   * them; Logs passes `['off', 'live']`.
+   */
+  refreshOptions?: readonly RefreshValue[];
 }
 
 function formatStamp(ms: number): string {
@@ -328,6 +358,8 @@ export function TimeRangePicker({
   className,
   size = 'md',
   chrome = 'default',
+  presets = PRESETS,
+  refreshOptions,
 }: TimeRangePickerProps) {
   const [open, setOpen] = React.useState(false);
 
@@ -335,14 +367,20 @@ export function TimeRangePicker({
   useAutoRefresh(refresh, onRefreshTick ?? noop);
 
   const pick = React.useCallback(
-    (label: string) => {
-      const preset = PRESETS.find((p) => p.label === label);
-      if (preset) {
-        onChange({ ...preset });
-        setOpen(false);
-      }
+    (preset: TimeRange) => {
+      onChange({ ...preset });
+      setOpen(false);
     },
     [onChange],
+  );
+  // The cadences offered: the page's own subset, in the shared order, and always the
+  // current one (a cadence read from a shared link stays visible and selectable).
+  const cadences = React.useMemo(
+    () =>
+      refreshOptions
+        ? REFRESH_OPTIONS.filter((o) => refreshOptions.includes(o.value) || o.value === refresh)
+        : REFRESH_OPTIONS,
+    [refreshOptions, refresh],
   );
 
   const triggerH = size === 'sm' ? 'h-8' : 'h-9';
@@ -376,19 +414,19 @@ export function TimeRangePicker({
         </PopoverTrigger>
         <PopoverContent align="start" className="w-64 p-3">
           <div className="mb-2 text-xs font-medium text-muted-foreground">Quick ranges</div>
-          {/* A labelled GROUP of plain buttons — NOT a listbox/option composite (each
+          {/* A labelled GROUP of plain buttons, NOT a listbox/option composite (each
               button is its own tab stop with Enter/Space activation and there is no
               roving-tabindex/arrow navigation, so `listbox`/`option` would mis-announce
               the interaction model). `aria-current` marks the active range for AT. */}
           <div role="group" aria-label="Relative time ranges" className="flex flex-col gap-1">
-            {PRESETS.map((p) => {
+            {presets.map((p) => {
               const active = p.from === value.from && p.to === value.to;
               return (
                 <button
-                  key={p.label}
+                  key={`${p.from}|${p.to}`}
                   type="button"
                   aria-current={active || undefined}
-                  onClick={() => pick(p.label)}
+                  onClick={() => pick(p)}
                   className={cn(
                     // 6px items inside the 10px popover (concentric radii, Round 12).
                     'flex items-center justify-between rounded-sm px-2.5 py-1.5 text-left text-sm transition-colors',
@@ -430,7 +468,7 @@ export function TimeRangePicker({
             </span>
           </SelectTrigger>
           <SelectContent>
-            {REFRESH_OPTIONS.map((o) => (
+            {cadences.map((o) => (
               <SelectItem key={o.value} value={o.value}>
                 <span className="inline-flex items-center gap-2">
                   {o.value === 'live' ? (

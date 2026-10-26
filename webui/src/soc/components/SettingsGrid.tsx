@@ -1,12 +1,17 @@
 /**
- * Settings layout primitives — the shared flat Console composition contract.
+ * Settings layout primitives: the shared flat Console composition contract.
  *
- * - `SettingsGrid`   — a responsive settings-section grid (1 → 2 → 3 cols).
- * - `SettingsCard`   — a flat, divider-led section with an anchor id (for the TOC),
- *                      optional description + header actions + footer.
- * - `StickySaveBar`  — a bottom sticky bar with Save / Discard, shown only when a
- *                      page is dirty; respects busy + disabled states.
- * - `SettingsTOC`    — an in-section anchor table-of-contents that scrolls to the
+ * - `SettingsGrid`:   a responsive settings-section grid (1 → 2 → 3 cols).
+ * - `SettingsCard`:   a flat, divider-led section with an anchor id (for the TOC),
+ *                      optional description + header actions + footer. Round 14: replaced
+ *                      by `SettingsSection` / `SettingsGroup` / `SettingRow`
+ *                      (`pages/settings/primitives.tsx`, operator choice C9 option A);
+ *                      kept only until every section has moved (WP-W9a).
+ * - `StickySaveBar`:  a bottom sticky bar with Save / Discard, shown only when a
+ *                      page is dirty; respects busy + disabled states. `width="form"`
+ *                      caps it to a form section (44rem), so it sits under the settings it
+ *                      saves rather than across the whole pane.
+ * - `SettingsTOC`:    an in-section anchor table-of-contents that scrolls to the
  *                      matching `SettingsCard` and highlights the active section.
  *
  * All copy is caller-supplied UI text (plain). Tokenised + AA + reduced-motion via
@@ -19,6 +24,13 @@ import { LoadingGlyph } from '@/design-system';
 import { Button } from '@/ui/button';
 import type { LucideIcon } from 'lucide-react';
 import { Check, RotateCcw } from 'lucide-react';
+
+/**
+ * The width of a form section in Settings (Round 14, SPEC §4.9.6): 44rem (704px), so a
+ * switch or field sits within reach of its label at every width. Table sections take the
+ * full content width.
+ */
+export const SETTINGS_FORM_MAX_WIDTH = 'max-w-[44rem]';
 
 /* ------------------------------------------------------------------------- */
 /* SettingsGrid                                                               */
@@ -152,6 +164,11 @@ export interface StickySaveBarProps {
   /** Save / discard button labels. */
   saveLabel?: string;
   discardLabel?: string;
+  /**
+   * `form`: capped to a form section's width (44rem), under the settings it saves.
+   * `full` (default): the full pane, for a table section or a page.
+   */
+  width?: 'form' | 'full';
   className?: string;
 }
 
@@ -169,6 +186,7 @@ export function StickySaveBar({
   message,
   saveLabel = 'Save changes',
   discardLabel = 'Discard',
+  width = 'full',
   className,
 }: StickySaveBarProps) {
   // A PERSISTENT (always-mounted) polite live region: screen readers only announce
@@ -193,6 +211,7 @@ export function StickySaveBar({
           aria-busy={busy || undefined}
           className={cn(
             'sticky bottom-0 z-20 -mx-1 mt-6 flex flex-wrap items-center gap-3 border-y border-border/90 bg-background px-4 py-3',
+            width === 'form' && SETTINGS_FORM_MAX_WIDTH,
             className,
           )}
         >
@@ -202,7 +221,7 @@ export function StickySaveBar({
           <div className="flex items-center gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onDiscard} disabled={busy}>
               {/* No size override: the shared Button's `[&_svg]:size-4` wins on specificity,
-                  so an `h-3.5 w-3.5` here would be dead — rely on the uniform 16px icon. */}
+                  so an `h-3.5 w-3.5` here would be dead; rely on the uniform 16px icon. */}
               <RotateCcw aria-hidden />
               {discardLabel}
             </Button>
@@ -241,8 +260,8 @@ export interface SettingsTOCProps {
   /** Called with the clicked anchor (caller may smooth-scroll / setActive). */
   onSelect?: (anchor: string) => void;
   /**
-   * Active-item accent orientation. `vertical` (default) draws a left rail — correct for
-   * the stacked rail; `horizontal` draws a bottom underline — correct when the TOC is laid
+   * Active-item accent orientation. `vertical` (default) draws a left rail, correct for
+   * the stacked rail; `horizontal` draws a bottom underline, correct when the TOC is laid
    * out as a `flex-row` tab strip. `responsive` uses that compact horizontal strip below
    * `md`, then becomes the full vertical rail once the editor has enough width.
    */

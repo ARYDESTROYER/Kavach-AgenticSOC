@@ -138,19 +138,19 @@ const STAGE_MEANING: Record<string, string> = {
   // but they have NOT been reasoned over by the strong LLM yet (they sit below the
   // auto-investigate risk floor). They stay $0 candidates until risk/anomaly promotes them.
   candidate:
-    'Clusters the agent risk-scored but kept below the auto-investigate floor — seen and ' +
+    'Clusters the agent risk-scored but kept below the auto-investigate floor; seen and ' +
     'tracked as $0 candidates, not yet reasoned over by the AI.',
   awaiting:
-    'Clusters the agent risk-scored but kept below the auto-investigate floor — seen and ' +
+    'Clusters the agent risk-scored but kept below the auto-investigate floor; seen and ' +
     'tracked as $0 candidates, not yet reasoned over by the AI.',
   cases: 'Clusters the agent promoted into investigable cases.',
-  auto_cleared: 'Cases the agent auto-closed as false positives — no human needed.',
+  auto_cleared: 'Cases the agent auto-closed as false positives, with no human needed.',
   escalated:
     'Every case not false-positive auto-cleared by the agent, including analyst-owned, ' +
     'needs-human, and confirmed residual cases.',
   closed: 'Cases a human analyst drove to a terminal state (resolved / closed).',
   policy_closed:
-    'Cases closed by an operator declaration that the detection is benign here — no ' +
+    'Cases closed by an operator declaration that the detection is benign here. No ' +
     'model was called and no analyst worked the case. Excluded from agent performance.',
   needs_human: 'Cases routed to a human for the final decision.',
   true_positive: 'Cases confirmed as real, actionable threats.',
@@ -1523,9 +1523,82 @@ export interface NoiseFunnelProps {
   defaultView?: NoiseFunnelView;
   /** Optional controlled-mode change callback. */
   onViewChange?: (view: NoiseFunnelView) => void;
+  /**
+   * An id for the title `h2`, so the host's panel can be the region that heading names
+   * (`aria-labelledby`; the Overview, Round 14). Pass it to one funnel per page only: the
+   * full-screen inspection renders its own funnel without it.
+   */
+  headingId?: string;
+  /**
+   * The window the flow covers ("last 24 hours"), shown as 13px muted text after the
+   * title and its help (Round 14, SPEC §4.3.2: the Overview's band caption is gone, so
+   * the flow names its own window).
+   */
+  caption?: string;
+  /**
+   * A quiet line that ties the flow to a figure elsewhere on the page ("Same count as
+   * Total cases above."), on the scale row under the simple flow and as the last line of
+   * the detailed view (Round 14, SPEC §4.3.2; used by the flat variant). The host passes
+   * it only while the two numbers on screen are equal.
+   */
+  crossReference?: string;
 }
 
 export type NoiseFunnelView = 'simple' | 'detailed';
+
+/**
+ * The flow footer's cross-reference ("Same count as Total cases above."), after a `·`
+ * on the scale row (Round 14, SPEC §4.3.2). The row wraps on a narrow panel, and a
+ * separator must never be left at the end of one line or open the next: the dot shows
+ * only while the sentence sits on the same line as the item before the dot. That is
+ * measured (CSS cannot tell where a flex row wrapped), on mount and whenever the row
+ * resizes. The dot is hidden with `visibility`, so it keeps its box and hiding it can
+ * never let the sentence back onto the first line (no measure, hide, re-wrap loop).
+ * Before anything is laid out (jsdom, a hidden panel), the joined form stays.
+ */
+function FooterCrossReference({ text }: { text: string }) {
+  const separatorRef = React.useRef<HTMLSpanElement>(null);
+  const sentenceRef = React.useRef<HTMLSpanElement>(null);
+  const [wrapped, setWrapped] = React.useState(false);
+  React.useLayoutEffect(() => {
+    const separator = separatorRef.current;
+    const sentence = sentenceRef.current;
+    const row = separator?.parentElement;
+    if (!separator || !sentence || !row) return undefined;
+    const measure = () => {
+      const before = separator.previousElementSibling?.getBoundingClientRect();
+      const own = sentence.getBoundingClientRect();
+      if (!before || before.height === 0 || own.height === 0) {
+        setWrapped(false);
+        return;
+      }
+      // Lines stack without a row gap, so a sentence on a later line starts at or below
+      // the bottom of the item before the dot (1px of tolerance for subpixel layout).
+      setWrapped(own.top >= before.bottom - 1);
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    return () => observer.disconnect();
+  }, [text]);
+  return (
+    <>
+      <span
+        ref={separatorRef}
+        aria-hidden
+        className={cn(wrapped && 'invisible')}
+        data-testid="noise-cross-reference-separator"
+        data-wrapped={wrapped ? 'true' : 'false'}
+      >
+        ·
+      </span>
+      <span ref={sentenceRef} data-testid="noise-cross-reference">
+        {text}
+      </span>
+    </>
+  );
+}
 
 function Header({
   hidden,
@@ -1535,7 +1608,11 @@ function Header({
   flat,
   view,
   onViewChange,
+  headingId,
+  caption,
 }: {
+  headingId?: string;
+  caption?: string;
   hidden?: boolean;
   onToggleHidden?: () => void;
   onExpand?: () => void;
@@ -1547,25 +1624,38 @@ function Header({
 }) {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div className="flex items-center gap-1.5">
-        {/* h2, matching every other band heading on the one page that renders this
-            component. It sits directly under the page h1, and since the flow became the
-            lattice's leading cell an h3 here would skip a level in the landing state. */}
-        <h2
-          className={cn(
-            'font-semibold text-foreground',
-            // 14px on the dashboard: an instrument title sits one step under the 15px
-            // band title above it (Round 12 type ladder).
-            flat ? 'text-base' : 'text-sm',
-          )}
-        >
-          {flat ? 'Noise reduction flow' : 'Noise reduction'}
-        </h2>
-        <HelpTip
-          label="What the noise-reduction funnel means"
-          text={view === 'detailed' ? LEGACY_NOISE_FUNNEL_HELP_TEXT : NOISE_FUNNEL_HELP_TEXT}
-          footer={<AskAboutThis topic={KPI_TOPICS['noise-reduction']} subject="Noise reduction" className="pt-1" />}
-        />
+      {/* The title, its help and the window caption, with the design system `Panel`'s
+          caption rule: the caption moves under the title as one unit when the row is too
+          narrow for both, and wraps its own words only in a panel narrower than itself.
+          It sits beside the `h2`, never inside it, so the heading's name stays the
+          module's name. */}
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <div className="flex items-center gap-1.5">
+          {/* h2, matching every other module heading on the one page that renders this
+              component. It sits directly under the page h1, and since the flow became the
+              lattice's leading cell an h3 here would skip a level in the landing state. */}
+          <h2
+            id={headingId}
+            className={cn(
+              'font-semibold text-foreground',
+              // 14px on the dashboard, the size of every module title there (Round 12 type
+              // ladder; Round 14 removed the 15px band titles that sat above them).
+              flat ? 'text-base' : 'text-sm',
+            )}
+          >
+            {flat ? 'Noise reduction flow' : 'Noise reduction'}
+          </h2>
+          <HelpTip
+            label="What the noise-reduction funnel means"
+            text={view === 'detailed' ? LEGACY_NOISE_FUNNEL_HELP_TEXT : NOISE_FUNNEL_HELP_TEXT}
+            footer={<AskAboutThis topic={KPI_TOPICS['noise-reduction']} subject="Noise reduction" className="pt-1" />}
+          />
+        </div>
+        {caption ? (
+          <span className="min-w-0 text-sm text-muted-foreground" data-testid="window-caption">
+            {caption}
+          </span>
+        ) : null}
       </div>
       <div className="flex flex-wrap items-center justify-end gap-1">
         {!hidden ? (
@@ -1636,6 +1726,9 @@ export function NoiseFunnel({
   view: controlledView,
   defaultView = 'simple',
   onViewChange,
+  headingId,
+  caption,
+  crossReference,
 }: NoiseFunnelProps) {
   const [uncontrolledView, setUncontrolledView] = React.useState<NoiseFunnelView>(defaultView);
   const view = controlledView ?? uncontrolledView;
@@ -1867,7 +1960,9 @@ export function NoiseFunnel({
   const overall = data.reduction?.overall_pct;
   const headlinePct = typeof overall === 'number' ? overall : null;
   const degradedNote =
-    derived.mode === 'cases' ? 'Counters warming up — showing case-based funnel' : 'Reduction pending';
+    derived.mode === 'cases'
+      ? 'Counters warming up, showing the case-based funnel'
+      : 'Reduction pending';
   const relativeTo = derived.mode === 'full' ? 'of ingested' : 'of cases';
   const n = derived.rows.length;
   const closedByHuman = derived.rows.find((r) => r.key === 'closed')?.total ?? 0;
@@ -2839,7 +2934,7 @@ export function NoiseFunnel({
               label="How to read these counts and percentages"
               text={
                 "Labels are the exact counts and units. Each percentage is that stage's " +
-                'share of the stage it came from — clusters of alerts ingested, cases of ' +
+                'share of the stage it came from: clusters of alerts ingested, cases of ' +
                 'clusters, the case split of cases opened, and human closure of escalated ' +
                 'cases. The first stage is the baseline, so it shows an em dash. Ribbon ' +
                 'thickness is a square-root scale, so a thin ribbon is thicker than its ' +
@@ -2847,6 +2942,10 @@ export function NoiseFunnel({
               }
               className="align-middle"
             />
+            {/* The cross-reference rides on this row (Round 14), so it costs no line of
+                its own under the flow. On a narrow panel the row wraps, and the separator
+                hides itself whenever the sentence starts a new line. */}
+            {crossReference ? <FooterCrossReference text={crossReference} /> : null}
           </p>
           {validOpenCases ? (
             <button
@@ -3027,9 +3126,17 @@ export function NoiseFunnel({
           flat={flat}
           view={view}
           onViewChange={setView}
+          headingId={headingId}
+          caption={caption}
         />
 
         {hidden ? null : view === 'detailed' ? legacyDetailedView : simpleFlowView}
+        {/* The detailed view has no scale row, so its cross-reference closes the view. */}
+        {crossReference && !hidden && view === 'detailed' ? (
+          <p className="mt-2 text-xs text-muted-foreground" data-testid="noise-cross-reference">
+            {crossReference}
+          </p>
+        ) : null}
       </section>
 
       {expandable ? (

@@ -1,9 +1,9 @@
 /**
- * DataTable — the ONE table primitive for the console.
+ * DataTable: the ONE table primitive for the console.
  *
  * a11y contract (Round-5 W0-E / DESIGN_STANDARD §6.2/§6.3):
  *  - Sortable headers are `<button>` inside `<th scope="col">`; `aria-sort` is set
- *    ONLY on the active column (omitted otherwise — never `"none"`), and the change
+ *    ONLY on the active column (omitted otherwise, never `"none"`), and the change
  *    is ALSO spoken through the shared live region (VoiceOver/TalkBack ignore
  *    `aria-sort`).
  *  - Pointer-clickable rows expose a dedicated, named action button for keyboard
@@ -11,8 +11,19 @@
  *    role because rows can also contain checkboxes, menus, and links.
  *  - `rowAccent` draws an OPT-IN left-edge severity band (non-color-only reading of
  *    row risk, §6.1) as an inset box-shadow (no layout shift, no extra column).
+ *  - Round 14 (SPEC §4.9.2, C7): one table grammar. Compact density by default (36px
+ *    header, about 38px rows); 12px medium sentence-case headers; `table-layout: fixed`
+ *    whenever a column declares a `width`, with every cell (text, or a badge or chip
+ *    group) kept to one line; a cut shows as an ellipsis (text) or a trailing fade (an
+ *    atomic badge or chip), the full value shown on hover only when it is cut
+ *    (`TruncatedText`; a rich cell names its value with the column's `text`); `kind` keeps ids (in the identifier face), times, IPs and numbers on one
+ *    line with tabular figures; a right-edge fade while more columns are scrollable; an
+ *    optional sticky first column; `surface="panel"` drops the table's own box so it bleeds
+ *    to a `Panel padding="none"` edge with its first column on the panel inset;
+ *    `emptyState` replaces the whole table (header row included) when there is nothing to
+ *    list at all (never for an emptied later page, which keeps its pager).
  *  - 2.5.7 Dragging: this table has NO drag interaction. Column reorder ships via the
- *    keyboard-accessible `<ColumnsMenu>` (checklist + move controls), NOT drag — so
+ *    keyboard-accessible `<ColumnsMenu>` (checklist + move controls), NOT drag, so
  *    the no-single-pointer-drag requirement is met by construction. If a future
  *    variant adds drag-to-reorder, it MUST keep a non-drag "move up/down" alternative.
  */
@@ -71,6 +82,16 @@ export interface SortState {
   dir: SortDir;
 }
 
+/**
+ * What a column holds (Round 14). `text` (default) is words: proportional figures, one
+ * truncated line in a fixed-layout table. `number`, `id`, `time` and `ip` never wrap and
+ * use tabular figures, so digits line up down the column and "CASE- / 000109" or a
+ * timestamp never breaks across lines; `id` is also set in the identifier face (12px
+ * JetBrains Mono, SPEC §3.1), so "CASE-000100" fits a 120px column whole; `number` also
+ * aligns right unless `align` says otherwise.
+ */
+export type DataTableColumnKind = 'text' | 'number' | 'id' | 'time' | 'ip';
+
 export interface DataTableColumn<T> {
   /** Stable id, also used as the sort key reported to onSortChange. */
   id: string;
@@ -86,8 +107,33 @@ export interface DataTableColumn<T> {
   className?: string;
   /** Horizontal alignment of the cell + header content. */
   align?: 'left' | 'center' | 'right';
-  /** Fixed/min width hint (e.g. '12rem'). Applied as style.width on th/td. */
+  /**
+   * Width of the column (e.g. '12rem' or 120). Any declared width switches the table to
+   * `table-layout: fixed`, so the width holds and long text truncates instead of widening
+   * the column. Columns without a width share the remaining space.
+   */
   width?: string | number;
+  /**
+   * The narrowest a column WITHOUT a `width` may get in a fixed-layout table (default
+   * 8rem; the Cases title column uses 280px). A fixed layout shares the spare width
+   * EQUALLY among the columns without a width, so the table's minimum width plans for
+   * every one of them at the largest of their minimums; below that the table scrolls
+   * sideways, with the right-edge fade, rather than squeeze a column under its minimum.
+   */
+  minWidth?: string | number;
+  /**
+   * The cell's value as plain text, for a cell that renders a node (a badge, a chip): in
+   * a fixed-layout table it is the hover title when the cell is cut. Without it the
+   * title is the cell's text content.
+   */
+  text?: (row: T, rowIndex: number) => string;
+  /** What the column holds; see {@link DataTableColumnKind}. Default `text`. */
+  kind?: DataTableColumnKind;
+  /**
+   * Let a text cell wrap instead of truncating to one line in a fixed-layout table (a
+   * description column that is meant to be read whole). Default false.
+   */
+  wrap?: boolean;
   /**
    * When true (Wave 7 column customization), this column can never be hidden via
    * the "Columns" menu (e.g. the primary id column). Defaults false.
@@ -99,7 +145,7 @@ export interface DataTableColumn<T> {
    */
   menuLabel?: string;
   /**
-   * Provenance of this column's values (Round-7 #9b) — WHO produced them: the raw
+   * Provenance of this column's values (Round-7 #9b): WHO produced them: the raw
    * `source` (SIEM-asserted), the `ai` agent (LLM), or deterministic `code`. When set,
    * a small `<ProvenanceTag variant="icon">` renders beside the header so the whole
    * column is attributed at a glance. Use for columns whose provenance is CONSTANT
@@ -119,7 +165,11 @@ export interface DataTableProps<T> {
   sort?: SortState | null;
   onSortChange?: (sort: SortState) => void;
 
-  /** Controlled pagination (1-based page). When omitted, the footer pager hides. */
+  /**
+   * Controlled pagination (1-based page). When omitted, the footer pager hides. The
+   * pager also hides when everything fits on one page and no page-size choice would
+   * change that (Round 14: "no pager for one page").
+   */
   page?: number;
   pageSize?: number;
   total?: number;
@@ -150,11 +200,39 @@ export interface DataTableProps<T> {
   loading?: boolean;
   /** Static row-shape hint behind the centered initial loader. */
   loadingRows?: number;
-  /** Empty-state content (string or node). */
+  /**
+   * Empty-state content shown in one row UNDER the header (string or node): use it when
+   * the table is empty because of an active filter, so the columns stay in view.
+   */
   empty?: React.ReactNode;
+  /**
+   * The table's empty state when there is nothing to list at all (Round 14, X12): the
+   * whole table, header row included, is replaced by this node (typically an
+   * `<EmptyState>`), sitting on the panel or card. Takes precedence over `empty`.
+   */
+  emptyState?: React.ReactNode;
 
-  /** Visual density. */
+  /**
+   * Visual density. `compact` (the default since Round 14) is the operational density:
+   * 36px header, about 38px rows. `normal` keeps the roomier pre-Round-14 rows.
+   */
   density?: 'normal' | 'compact';
+
+  /**
+   * `bordered` (default): the table owns one bounded hairline box on the canvas.
+   * `panel`: the table sits in a `Panel padding="none"` and has no box of its own; its
+   * rows bleed to the panel edge and its first and last columns sit on the panel inset
+   * (16px, 20px from 1280px, 24px from 1920px), so the first column lines up with the
+   * panel title.
+   */
+  surface?: 'bordered' | 'panel';
+
+  /**
+   * Keep the first column (after the selection checkbox) in view while the table scrolls
+   * sideways. Its cells get an opaque surface fill and keep the row's hover and
+   * selected tint.
+   */
+  stickyFirstColumn?: boolean;
 
   /** Extra classes on the outer wrapper. */
   className?: string;
@@ -200,6 +278,43 @@ const alignClass = (align?: 'left' | 'center' | 'right') =>
       ? 'text-center'
       : 'text-left';
 
+/** A column's effective alignment: `number` columns align right unless told otherwise. */
+const columnAlign = <T,>(col: DataTableColumn<T>) =>
+  col.align ?? (col.kind === 'number' ? 'right' : undefined);
+
+/** `number`, `id`, `time` and `ip` cells: one line, tabular figures; ids in the identifier face. */
+const kindClass = (kind?: DataTableColumnKind) =>
+  kind === 'id'
+    ? 'whitespace-nowrap tabular-nums font-mono text-xs'
+    : kind && kind !== 'text'
+      ? 'whitespace-nowrap tabular-nums'
+      : undefined;
+
+/** A CSS length for a width/minWidth hint (numbers are pixels). */
+const cssLength = (value: string | number) => (typeof value === 'number' ? `${value}px` : value);
+
+/** The panel inset on the table's leading and trailing edge (`surface="panel"`). */
+const PANEL_EDGE_START = 'pl-4 xl:pl-5 3xl:pl-6';
+const PANEL_EDGE_END = 'pr-4 xl:pr-5 3xl:pr-6';
+
+/**
+ * Sticky-column body cells need an opaque fill (rows scroll underneath them), so they
+ * repaint the row's hover and selected tint themselves as an inset wash over that fill:
+ * the same `muted/40` and `accent/60` steps `TableRow` uses, on whichever surface the
+ * table sits. The leading sticky cell also carries the row's severity band (`rowAccent`)
+ * as a `--row-accent` colour composed into the same shadow, above the wash, so the band,
+ * the hover and the selection all show together (an inline box-shadow would beat the
+ * hover and selected classes).
+ */
+const STICKY_CELL =
+  'sticky z-[1] bg-card ' +
+  'shadow-[inset_3px_0_0_0_var(--row-accent,transparent)] ' +
+  '[tr:hover>&]:shadow-[inset_3px_0_0_0_var(--row-accent,transparent),inset_0_0_0_100vmax_hsl(var(--muted)/0.4)] ' +
+  '[tr[data-state=selected]>&]:shadow-[inset_3px_0_0_0_var(--row-accent,transparent),inset_0_0_0_100vmax_hsl(var(--accent)/0.6)]';
+
+/** Sticky header cells: the opaque fill only (the header row has no hover or selected tint). */
+const STICKY_HEAD = 'sticky z-[1] bg-card';
+
 function SortIcon({ active, dir }: { active: boolean; dir?: SortDir }) {
   if (!active)
     return (
@@ -212,6 +327,175 @@ function SortIcon({ active, dir }: { active: boolean; dir?: SortDir }) {
     <ChevronUp className="ml-1.5 inline-block size-3 text-foreground" aria-hidden />
   ) : (
     <ChevronDown className="ml-1.5 inline-block size-3 text-foreground" aria-hidden />
+  );
+}
+
+export interface TruncatedTextProps extends React.HTMLAttributes<HTMLElement> {
+  /** The text. A string or number child is also the hover title when it is cut. */
+  children?: React.ReactNode;
+  /** The full value for the hover title, when the child is not plain text (else its text content). */
+  fullText?: string;
+  /**
+   * Rich content (a badge, a chip group, a link): a `div` that clips only sideways, so
+   * a focus ring above or below still shows. Inline text that does not fit ends in an
+   * ellipsis; an atomic piece (a badge, a chip, an icon) that cannot take one is cut at
+   * the column edge with its trailing 1.5rem faded (`data-cut="fade"`), so a cut always
+   * shows. Default: one line of plain text in a `span`.
+   */
+  rich?: boolean;
+}
+
+/**
+ * How a cut rich wrapper shows that it is cut, or `null` when everything fits.
+ * `ellipsis`: only inline text overflows, and the wrapper's own `text-overflow` draws
+ * the ellipsis. `fade`: an atomic piece (an inline-flex badge, an icon) or a block child
+ * runs past the wrapper's content edge; the browser cannot ellipsise it, so the wrapper
+ * fades its trailing edge instead. Reads layout only (no writes), so a batch of wrappers
+ * is measured in one pass.
+ */
+export function richCutSignal(el: HTMLElement): 'fade' | 'ellipsis' | null {
+  if (el.scrollWidth <= el.clientWidth + 0.5) return null;
+  const style = getComputedStyle(el);
+  const end =
+    el.getBoundingClientRect().right -
+    (parseFloat(style.paddingRight) || 0) -
+    (parseFloat(style.borderRightWidth) || 0);
+  const queue: Element[] = Array.from(el.children);
+  while (queue.length) {
+    const node = queue.shift() as Element;
+    const css = getComputedStyle(node);
+    if (css.display === 'none') continue;
+    if (css.display === 'inline' || css.display === 'contents') {
+      // Inline boxes share the wrapper's line, so its ellipsis covers their text.
+      queue.push(...Array.from(node.children));
+      continue;
+    }
+    if (node.getBoundingClientRect().right > end + 0.5) return 'fade';
+    const ellipsisOwn = css.textOverflow === 'ellipsis' && css.overflowX !== 'visible';
+    if (!ellipsisOwn && node.scrollWidth > node.clientWidth + 0.5) return 'fade';
+  }
+  return 'ellipsis';
+}
+
+/*
+ * Rich wrappers are measured in one batched pass per frame (every read, then every
+ * write), when they mount or re-render (new content) and when their column changes
+ * width or a web font finishes loading. The attribute is written directly, so a
+ * measurement never re-renders the table.
+ */
+const cutPending = new Set<HTMLElement>();
+const cutMounted = new Set<HTMLElement>();
+let cutFrame: number | null = null;
+let cutResize: ResizeObserver | null | undefined;
+
+function flushCutSignals() {
+  cutFrame = null;
+  const els = Array.from(cutPending).filter((el) => el.isConnected);
+  cutPending.clear();
+  const signals = els.map(richCutSignal);
+  els.forEach((el, i) => writeCutSignal(el, signals[i]));
+}
+
+function writeCutSignal(el: HTMLElement, signal: 'fade' | 'ellipsis' | null) {
+  if (signal) {
+    if (el.getAttribute('data-cut') !== signal) el.setAttribute('data-cut', signal);
+  } else if (el.hasAttribute('data-cut')) {
+    el.removeAttribute('data-cut');
+  }
+}
+
+function scheduleCutSignal(el: HTMLElement) {
+  if (typeof window === 'undefined' || typeof window.requestAnimationFrame !== 'function') return;
+  cutPending.add(el);
+  if (cutFrame === null) cutFrame = window.requestAnimationFrame(flushCutSignals);
+}
+
+function cutObserver(): ResizeObserver | null {
+  if (cutResize === undefined) {
+    cutResize =
+      typeof ResizeObserver === 'function'
+        ? new ResizeObserver((entries) => {
+            for (const entry of entries) scheduleCutSignal(entry.target as HTMLElement);
+          })
+        : null;
+    // A web font that lands after the first measurement changes every text width.
+    const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+    fonts?.addEventListener?.('loadingdone', () => cutMounted.forEach(scheduleCutSignal));
+  }
+  return cutResize;
+}
+
+/** The trailing fade of a cut rich wrapper whose atomic content cannot take an ellipsis. */
+const RICH_CUT_FADE =
+  'data-[cut=fade]:[mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)]';
+
+/**
+ * One line, cut with an ellipsis when it does not fit its cell (Round 14, F6). The full
+ * value is the native hover title ONLY while the content is actually cut, so an
+ * untruncated cell never shows a stray tooltip; the full content stays in the DOM, so a
+ * screen reader always reads all of it. Use it inside custom cells; `DataTable` applies
+ * it to every cell of a fixed-layout table on its own (except `wrap` columns).
+ */
+export function TruncatedText({ children, fullText, rich = false, className, onPointerEnter, ...rest }: TruncatedTextProps) {
+  const ref = React.useRef<HTMLElement | null>(null);
+  const plainChild = typeof children === 'string' || typeof children === 'number' ? String(children) : undefined;
+  // A rich wrapper re-measures after every render (its content may have changed) ...
+  React.useLayoutEffect(() => {
+    if (rich && ref.current) scheduleCutSignal(ref.current);
+  });
+  // ... and whenever its column changes width.
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!rich || !el) return undefined;
+    const observer = cutObserver();
+    cutMounted.add(el);
+    observer?.observe(el);
+    return () => {
+      cutMounted.delete(el);
+      cutPending.delete(el);
+      observer?.unobserve(el);
+    };
+  }, [rich]);
+  const sync = (event: React.PointerEvent<HTMLElement>) => {
+    const el = ref.current;
+    const full = fullText ?? plainChild ?? (el?.textContent?.trim() || undefined);
+    if (el && full) {
+      if (el.scrollWidth > el.clientWidth + 0.5) el.setAttribute('title', full);
+      else el.removeAttribute('title');
+    }
+    if (el && rich) writeCutSignal(el, richCutSignal(el));
+    onPointerEnter?.(event);
+  };
+  if (rich) {
+    return (
+      <div
+        ref={ref as React.Ref<HTMLDivElement>}
+        // The box reaches 4px into the cell's padding on every side (and gives it back as
+        // padding, so nothing moves): a focus ring (2px ring, 2px offset) on a control in
+        // the cell is drawn whole, inside both the sideways clip and the fade's mask.
+        className={cn(
+          'block min-w-0 -mx-1 -my-1 px-1 py-1 overflow-x-clip text-ellipsis whitespace-nowrap',
+          RICH_CUT_FADE,
+          className,
+        )}
+        data-truncated-text="rich"
+        onPointerEnter={sync}
+        {...rest}
+      >
+        {children}
+      </div>
+    );
+  }
+  return (
+    <span
+      ref={ref as React.Ref<HTMLSpanElement>}
+      className={cn('block min-w-0 truncate', className)}
+      data-truncated-text=""
+      onPointerEnter={sync}
+      {...rest}
+    >
+      {children}
+    </span>
   );
 }
 
@@ -244,6 +528,39 @@ function resolveColumns<T>(
   return out;
 }
 
+/**
+ * Track whether a horizontally scrolling region has more content to its right, for the
+ * right-edge fade. Re-measured on scroll, on resize of the region or its content, and
+ * whenever `deps` change (rows or columns). Keyed on the element itself (held in state
+ * through a callback ref), so the listeners follow the region when it remounts, for
+ * example when the table comes back from its `emptyState`.
+ */
+function useOverflowRight(el: HTMLElement | null, deps: unknown[]): boolean {
+  const [more, setMore] = React.useState(false);
+  const measure = React.useCallback(() => {
+    setMore(el ? el.scrollWidth - el.clientWidth - el.scrollLeft > 1 : false);
+  }, [el]);
+  React.useLayoutEffect(() => {
+    measure();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [measure, ...deps]);
+  React.useEffect(() => {
+    if (!el) return undefined;
+    el.addEventListener('scroll', measure, { passive: true });
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      observer = new ResizeObserver(() => measure());
+      observer.observe(el);
+      if (el.firstElementChild) observer.observe(el.firstElementChild);
+    }
+    return () => {
+      el.removeEventListener('scroll', measure);
+      observer?.disconnect();
+    };
+  }, [el, measure]);
+  return more;
+}
+
 export function DataTable<T>({
   columns,
   rows,
@@ -267,15 +584,19 @@ export function DataTable<T>({
   loading = false,
   loadingRows = 8,
   empty,
-  density = 'normal',
+  emptyState,
+  density = 'compact',
+  surface = 'bordered',
+  stickyFirstColumn = false,
   className,
   ariaLabel,
   sticky = false,
   columnState,
   rowAccent,
 }: DataTableProps<T>) {
-  // Shared app-level live announcer (§6.3 / E3) — no-op when no provider is mounted.
+  // Shared app-level live announcer (§6.3 / E3); a no-op when no provider is mounted.
   const announce = useAnnouncer();
+  const [scrollEl, setScrollEl] = React.useState<HTMLDivElement | null>(null);
 
   // Resolve the displayed columns from the user's stored column state (Wave 7).
   const displayColumns = React.useMemo(
@@ -309,9 +630,39 @@ export function DataTable<T>({
   const someSelected =
     selectable && selectableRowIds.some((id) => selectedSet.has(id)) && !allSelected;
 
-  // OpenSearch-style comfortable rows: roomy horizontal padding, breathable
-  // vertical rhythm in normal density, tighter (but still legible) when compact.
+  const onPanel = surface === 'panel';
+  // A declared width anywhere switches the table to fixed layout, so widths hold.
+  const fixedLayout = displayColumns.some((c) => c.width != null);
+
+  // Roomy horizontal padding (below 16px columns visually merge), operational vertical
+  // rhythm in compact density, the pre-Round-14 rows in normal density.
   const cellPad = density === 'compact' ? 'px-4 py-2' : 'px-4 py-3';
+
+  // A fixed-layout table never squeezes a flexible column below its minimum. The browser
+  // gives the fixed columns their widths and splits what is left EQUALLY among the
+  // columns without one, so the table's minimum is the fixed widths plus, for the N
+  // flexible columns, N times the largest of their minimums; below that it scrolls
+  // sideways (with the right-edge fade).
+  const tableMinWidth = React.useMemo(() => {
+    if (!fixedLayout) return undefined;
+    const parts: string[] = [];
+    if (selectable) parts.push(onPanel ? '3rem' : '2.5rem'); // the widest checkbox column
+    const flexMins: string[] = [];
+    for (const col of displayColumns) {
+      if (col.width != null) {
+        const w = cssLength(col.width);
+        if (!w.trim().endsWith('%')) parts.push(w);
+      } else {
+        flexMins.push(cssLength(col.minWidth ?? '8rem'));
+      }
+    }
+    const distinct = Array.from(new Set(flexMins));
+    if (flexMins.length === 1) parts.push(flexMins[0]);
+    else if (distinct.length === 1) parts.push(`${flexMins.length} * ${distinct[0]}`);
+    else if (flexMins.length > 1) parts.push(`${flexMins.length} * max(${distinct.join(', ')})`);
+    if (onRowClick && showRowAction) parts.push('3rem');
+    return parts.length ? `calc(${parts.join(' + ')})` : undefined;
+  }, [fixedLayout, selectable, onPanel, displayColumns, onRowClick, showRowAction]);
 
   // A short plain-text name for a column, for the live announcement (§6.3). Prefer
   // an explicit `menuLabel`, then a string `header`, else the column id.
@@ -360,27 +711,65 @@ export function DataTable<T>({
     displayColumns.length + (selectable ? 1 : 0) + (hasRowAction ? 1 : 0);
 
   // Pagination math.
-  const showPager =
-    page != null && pageSize != null && (onPageChange != null || total != null);
   const effTotal = total ?? rows.length;
   const pageCount =
     pageSize && pageSize > 0 ? Math.max(1, Math.ceil(effTotal / pageSize)) : 1;
   const curPage = page ?? 1;
   const canPrev = curPage > 1;
   const canNext = curPage < pageCount;
+  const smallestPageSize = pageSizeOptions.length ? Math.min(...pageSizeOptions) : pageSize ?? 0;
+  // One page and no page-size choice that would change it: the pager says nothing.
+  const pagerHasWork =
+    pageCount > 1 || curPage > 1 || (onPageSizeChange != null && effTotal > smallestPageSize);
+  const showPager =
+    page != null &&
+    pageSize != null &&
+    (onPageChange != null || total != null) &&
+    (pagerHasWork || (selectable && (selected?.length ?? 0) > 0));
   const initialLoading = loading && rows.length === 0;
   const refreshing = loading && rows.length > 0;
   const loadingLabel = ariaLabel ? `Loading ${ariaLabel}` : 'Loading table';
+  // "Nothing to list at all": an emptied later page (rows closed by bulk work, a stale
+  // page in the link) still has records, so it keeps its header, the `empty` row and
+  // the pager to go back.
+  const showEmptyState =
+    !loading && rows.length === 0 && emptyState != null && effTotal === 0 && curPage <= 1;
+
+  const fadeRight = useOverflowRight(scrollEl, [rows, displayColumns, showEmptyState]);
+
+  // The leading/trailing cell of every row: the panel inset when the table bleeds to a
+  // panel edge, so the first column lines up with the panel title.
+  const firstDataIndex = 0;
+  const lastDataIndex = displayColumns.length - 1;
+  const edgeStart = (isFirstCell: boolean) => (onPanel && isFirstCell ? PANEL_EDGE_START : undefined);
+  const edgeEnd = (isLastCell: boolean) => (onPanel && isLastCell ? PANEL_EDGE_END : undefined);
+  // The checkbox column, when present, is the leading cell; the row action the trailing one.
+  const firstIsData = !selectable;
+  const lastIsData = !hasRowAction;
+  // The checkbox column: its leading inset, the 16px box and 8px to the next column.
+  const selectWidth = onPanel ? 'w-10 xl:w-11 3xl:w-12' : 'w-10';
+  const stickyDataLeft = selectable ? (onPanel ? 'left-10 xl:left-11 3xl:left-12' : 'left-10') : 'left-0';
+
+  const container = cn(
+    'relative',
+    onPanel
+      ? // On a panel the table is part of the module: no box, no radius, no own fill.
+        'bg-transparent'
+      : // A bounded data surface, not a detached card: the hairline owns the edge.
+        'overflow-hidden rounded-md border border-border/80 bg-card',
+    className,
+  );
+
+  if (showEmptyState) {
+    return (
+      <div className={container} data-surface={surface} data-table-empty="">
+        {emptyState}
+      </div>
+    );
+  }
 
   return (
-    <div
-      className={cn(
-        // A bounded data surface, not a detached card: the hairline owns the edge.
-        'relative overflow-hidden rounded-md border border-border/80 bg-card',
-        className,
-      )}
-      aria-busy={loading}
-    >
+    <div className={container} aria-busy={loading} data-surface={surface}>
       <LoadingBar
         active={refreshing}
         size="sm"
@@ -388,290 +777,376 @@ export function DataTable<T>({
         data-testid="data-table-loading-indicator"
         className="absolute inset-x-0 top-0 z-20 rounded-none bg-transparent"
       />
-      <Table aria-label={ariaLabel}>
-        <TableHeader sticky={sticky}>
-          <TableRow className="hover:bg-transparent">
-            {selectable && (
-              <TableHead className="w-10 px-4">
-                <Checkbox
-                  checked={
-                    allSelected ? true : someSelected ? 'indeterminate' : false
-                  }
-                  onCheckedChange={toggleAll}
-                  aria-label={isRowSelectable ? 'Select all available rows' : 'Select all rows'}
-                  disabled={initialLoading || selectableRowIds.length === 0}
-                />
-              </TableHead>
-            )}
-            {displayColumns.map((col) => {
-              const isActive = sort?.id === col.id;
-              return (
-                <TableHead
-                  key={col.id}
-                  scope="col"
-                  style={col.width ? { width: col.width } : undefined}
-                  className={cn(
-                    // Header typography (uppercase/tracking/weight/colour) comes
-                    // from the TableHead primitive; just keep labels on one line.
-                    'whitespace-nowrap',
-                    alignClass(col.align),
-                    col.headerClassName,
-                  )}
-                  // §6.3: reflect the sort ONLY on the actively-sorted sortable
-                  // column; OMIT aria-sort otherwise (never emit "none", which some
-                  // SRs announce as a spurious "not sorted" on every column).
-                  aria-sort={
-                    col.sortable && isActive
-                      ? sort?.dir === 'asc'
-                        ? 'ascending'
-                        : 'descending'
-                      : undefined
-                  }
-                >
-                  {col.sortable ? (
-                    <button
-                      type="button"
-                      onClick={() => handleHeaderSort(col)}
-                      className={cn(
-                        'group -mx-1 inline-flex items-center rounded-sm px-1 py-0.5 ' +
-                          'font-semibold uppercase tracking-wide text-muted-foreground',
-                        'transition-colors hover:text-foreground',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0',
-                        isActive && 'text-foreground',
-                      )}
-                    >
-                      <span>{col.header}</span>
-                      {col.provenance && (
-                        <ProvenanceTag
-                          kind={col.provenance}
-                          variant="icon"
-                          className="ml-1"
-                        />
-                      )}
-                      <SortIcon active={isActive} dir={sort?.dir} />
-                    </button>
-                  ) : (
-                    <span className="inline-flex items-center gap-1">
-                      <span>{col.header}</span>
-                      {col.provenance && (
-                        <ProvenanceTag kind={col.provenance} variant="icon" />
-                      )}
-                    </span>
-                  )}
-                </TableHead>
-              );
-            })}
-            {hasRowAction ? (
-              <TableHead scope="col" className="w-12 px-2 text-right">
-                <span className="sr-only">Row actions</span>
-              </TableHead>
-            ) : null}
-          </TableRow>
-        </TableHeader>
-
-        <TableBody>
-          {initialLoading ? (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={colCount} className="p-0">
-                <LoadingState
-                  data-testid="data-table-initial-loading"
-                  label={loadingLabel}
-                  description="Preparing the latest records."
-                  layout="table"
-                  shape="rows"
-                  shapeRows={loadingRows}
-                />
-              </TableCell>
-            </TableRow>
-          ) : rows.length === 0 ? (
-            <TableRow className="hover:bg-transparent">
-              <TableCell colSpan={colCount} className="h-48 p-0">
-                {empty ?? <EmptyState title="No results" compact />}
-              </TableCell>
-            </TableRow>
-          ) : (
-            rows.map((row, rowIndex) => {
-              const id = rowIds[rowIndex];
-              const isSelected = selectedSet.has(id);
-              const rowSelectable = isRowSelectable?.(row, rowIndex) ?? true;
-              const selectionDisabledReason = rowSelectable
-                ? undefined
-                : getRowSelectionDisabledReason?.(row, rowIndex) ??
-                  `Selection unavailable for row ${id}`;
-              const clickable = !!onRowClick;
-              // Left-edge severity band (§6.1) — opt-in via `rowAccent`. Drawn as an
-              // inset box-shadow so it needs no extra column and never shifts layout.
-              // Decorative: the cell content carries the accessible severity value.
-              const accent = rowAccent?.(row, rowIndex);
-              const accentColor =
-                accent !== null && accent !== undefined && accent !== ''
-                  ? semanticColor(String(accent))
-                  : undefined;
-              return (
-                <TableRow
-                  key={id}
-                  data-state={isSelected ? 'selected' : undefined}
-                  className={cn(
-                    clickable && 'cursor-pointer',
-                  )}
-                  style={
-                    accentColor
-                      ? { boxShadow: `inset 3px 0 0 0 ${accentColor}` }
-                      : undefined
-                  }
-                  onClick={
-                    clickable
-                      ? (event) => {
-                          const target = event.target;
-                          if (
-                            target instanceof Element &&
-                            target.closest(
-                              'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="combobox"], [role="menuitem"]',
-                            )
-                          ) {
-                            return;
-                          }
-                          onRowClick?.(row, rowIndex);
-                        }
-                      : undefined
-                  }
-                >
-                  {selectable && (
-                    <TableCell
-                      className={cellPad}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <span className="inline-flex" title={selectionDisabledReason}>
-                        <Checkbox
-                          checked={isSelected}
-                          disabled={!rowSelectable}
-                          onCheckedChange={() => toggleRow(id, row, rowIndex)}
-                          aria-label={
-                            selectionDisabledReason
-                              ? `${selectionDisabledReason}: ${id}`
-                              : `Select row ${id}`
-                          }
-                        />
-                      </span>
-                    </TableCell>
-                  )}
-                  {displayColumns.map((col) => (
-                    <TableCell
+      <div className="relative">
+        <div ref={setScrollEl} className="relative w-full overflow-auto" data-table-scroll="">
+          <Table
+            unwrapped
+            aria-label={ariaLabel}
+            layout={fixedLayout ? 'fixed' : 'auto'}
+            style={tableMinWidth ? { minWidth: tableMinWidth } : undefined}
+          >
+            <TableHeader sticky={sticky}>
+              <TableRow className="hover:bg-transparent">
+                {selectable && (
+                  <TableHead
+                    density={density}
+                    className={cn(selectWidth, 'px-4', edgeStart(true), stickyFirstColumn && cn(STICKY_HEAD, 'left-0'))}
+                  >
+                    <Checkbox
+                      checked={
+                        allSelected ? true : someSelected ? 'indeterminate' : false
+                      }
+                      onCheckedChange={toggleAll}
+                      aria-label={isRowSelectable ? 'Select all available rows' : 'Select all rows'}
+                      disabled={initialLoading || selectableRowIds.length === 0}
+                    />
+                  </TableHead>
+                )}
+                {displayColumns.map((col, colIndex) => {
+                  const isActive = sort?.id === col.id;
+                  const align = columnAlign(col);
+                  const stickyCell = stickyFirstColumn && colIndex === firstDataIndex;
+                  return (
+                    <TableHead
                       key={col.id}
-                      style={col.width ? { width: col.width } : undefined}
-                      className={cn(cellPad, alignClass(col.align), col.className)}
+                      scope="col"
+                      density={density}
+                      style={col.width ? { width: cssLength(col.width) } : undefined}
+                      className={cn(
+                        // Header typography (12px medium, sentence case, muted) comes
+                        // from the TableHead primitive; keep labels on one line.
+                        'whitespace-nowrap',
+                        alignClass(align),
+                        edgeStart(firstIsData && colIndex === firstDataIndex),
+                        edgeEnd(lastIsData && colIndex === lastDataIndex),
+                        stickyCell && cn(STICKY_HEAD, stickyDataLeft),
+                        col.headerClassName,
+                      )}
+                      // §6.3: reflect the sort ONLY on the actively-sorted sortable
+                      // column; OMIT aria-sort otherwise (never emit "none", which some
+                      // SRs announce as a spurious "not sorted" on every column).
+                      aria-sort={
+                        col.sortable && isActive
+                          ? sort?.dir === 'asc'
+                            ? 'ascending'
+                            : 'descending'
+                          : undefined
+                      }
                     >
-                      {col.cell(row, rowIndex)}
-                    </TableCell>
-                  ))}
-                  {hasRowAction ? (
-                    <TableCell className="w-12 px-2 py-1 text-right">
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 scroll-mt-[var(--header-h)] rounded-sm text-muted-foreground hover:text-foreground"
-                        aria-label={
-                          getRowActionLabel?.(row, rowIndex) ?? `Open row ${id}`
-                        }
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onRowClick?.(row, rowIndex);
-                        }}
-                      >
-                        <ChevronRight className="h-4 w-4" aria-hidden />
-                      </Button>
-                    </TableCell>
-                  ) : null}
+                      {col.sortable ? (
+                        <button
+                          type="button"
+                          onClick={() => handleHeaderSort(col)}
+                          className={cn(
+                            'group -mx-1 inline-flex items-center rounded-sm px-1 py-0.5 ' +
+                              'font-medium text-muted-foreground',
+                            'transition-colors hover:text-foreground',
+                            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0',
+                            isActive && 'text-foreground',
+                          )}
+                        >
+                          <span>{col.header}</span>
+                          {col.provenance && (
+                            <ProvenanceTag
+                              kind={col.provenance}
+                              variant="icon"
+                              className="ml-1"
+                            />
+                          )}
+                          <SortIcon active={isActive} dir={sort?.dir} />
+                        </button>
+                      ) : (
+                        <span className="inline-flex items-center gap-1">
+                          <span>{col.header}</span>
+                          {col.provenance && (
+                            <ProvenanceTag kind={col.provenance} variant="icon" />
+                          )}
+                        </span>
+                      )}
+                    </TableHead>
+                  );
+                })}
+                {hasRowAction ? (
+                  <TableHead
+                    scope="col"
+                    density={density}
+                    className={cn('w-12 px-2 text-right', edgeEnd(true))}
+                  >
+                    <span className="sr-only">Row actions</span>
+                  </TableHead>
+                ) : null}
+              </TableRow>
+            </TableHeader>
+
+            <TableBody>
+              {initialLoading ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={colCount} className="p-0">
+                    <LoadingState
+                      data-testid="data-table-initial-loading"
+                      label={loadingLabel}
+                      description="Preparing the latest records."
+                      layout="table"
+                      shape="rows"
+                      shapeRows={loadingRows}
+                    />
+                  </TableCell>
                 </TableRow>
-              );
-            })
-          )}
-        </TableBody>
-      </Table>
+              ) : rows.length === 0 ? (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={colCount} className="h-48 p-0">
+                    {empty ?? <EmptyState title="No results" compact />}
+                  </TableCell>
+                </TableRow>
+              ) : (
+                rows.map((row, rowIndex) => {
+                  const id = rowIds[rowIndex];
+                  const isSelected = selectedSet.has(id);
+                  const rowSelectable = isRowSelectable?.(row, rowIndex) ?? true;
+                  const selectionDisabledReason = rowSelectable
+                    ? undefined
+                    : getRowSelectionDisabledReason?.(row, rowIndex) ??
+                      `Selection unavailable for row ${id}`;
+                  const clickable = !!onRowClick;
+                  // Left-edge severity band (§6.1), opt-in via `rowAccent`. Drawn as an
+                  // inset box-shadow so it needs no extra column and never shifts layout.
+                  // Decorative: the cell content carries the accessible severity value.
+                  // Under a sticky leading cell (opaque, it would hide the row's band) the
+                  // band moves onto that cell.
+                  const accent = rowAccent?.(row, rowIndex);
+                  const accentColor =
+                    accent !== null && accent !== undefined && accent !== ''
+                      ? semanticColor(String(accent))
+                      : undefined;
+                  const accentShadow = accentColor ? `inset 3px 0 0 0 ${accentColor}` : undefined;
+                  const accentOnRow = accentShadow && !stickyFirstColumn;
+                  // On a sticky leading cell the band is a colour the cell's own shadow
+                  // classes compose (STICKY_CELL), never an inline box-shadow.
+                  const stickyAccent =
+                    stickyFirstColumn && accentColor
+                      ? ({ '--row-accent': accentColor } as React.CSSProperties)
+                      : undefined;
+                  return (
+                    <TableRow
+                      key={id}
+                      data-state={isSelected ? 'selected' : undefined}
+                      className={cn(
+                        clickable && 'cursor-pointer',
+                      )}
+                      style={accentOnRow ? { boxShadow: accentShadow } : undefined}
+                      onClick={
+                        clickable
+                          ? (event) => {
+                              const target = event.target;
+                              if (
+                                target instanceof Element &&
+                                target.closest(
+                                  'button, a, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="combobox"], [role="menuitem"]',
+                                )
+                              ) {
+                                return;
+                              }
+                              onRowClick?.(row, rowIndex);
+                            }
+                          : undefined
+                      }
+                    >
+                      {selectable && (
+                        <TableCell
+                          className={cn(
+                            cellPad,
+                            edgeStart(true),
+                            stickyFirstColumn && cn(STICKY_CELL, 'left-0'),
+                          )}
+                          style={stickyAccent}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <span className="inline-flex" title={selectionDisabledReason}>
+                            <Checkbox
+                              checked={isSelected}
+                              disabled={!rowSelectable}
+                              onCheckedChange={() => toggleRow(id, row, rowIndex)}
+                              aria-label={
+                                selectionDisabledReason
+                                  ? `${selectionDisabledReason}: ${id}`
+                                  : `Select row ${id}`
+                              }
+                            />
+                          </span>
+                        </TableCell>
+                      )}
+                      {displayColumns.map((col, colIndex) => {
+                        const content = col.cell(row, rowIndex);
+                        const plain = typeof content === 'string' || typeof content === 'number';
+                        // A fixed column keeps every cell to one line: plain text truncates
+                        // itself; rich content (a badge, a chip group) is clipped sideways
+                        // only, never over its neighbour: inline text behind an ellipsis, an
+                        // atomic badge or chip behind a trailing fade, with every focus ring
+                        // drawn whole. Both carry the full value as the hover title while
+                        // cut. `wrap` opts out.
+                        const truncate = fixedLayout && !col.wrap;
+                        const fullText = truncate ? col.text?.(row, rowIndex) : undefined;
+                        const stickyCell = stickyFirstColumn && colIndex === firstDataIndex;
+                        const leadingAccent = stickyCell && !selectable ? stickyAccent : undefined;
+                        return (
+                          <TableCell
+                            key={col.id}
+                            style={
+                              col.width || leadingAccent
+                                ? {
+                                    ...(col.width ? { width: cssLength(col.width) } : {}),
+                                    ...leadingAccent,
+                                  }
+                                : undefined
+                            }
+                            className={cn(
+                              cellPad,
+                              alignClass(columnAlign(col)),
+                              kindClass(col.kind),
+                              edgeStart(firstIsData && colIndex === firstDataIndex),
+                              edgeEnd(lastIsData && colIndex === lastDataIndex),
+                              stickyCell && cn(STICKY_CELL, stickyDataLeft),
+                              col.className,
+                            )}
+                          >
+                            {truncate ? (
+                              <TruncatedText rich={!plain} fullText={fullText}>
+                                {content}
+                              </TruncatedText>
+                            ) : (
+                              content
+                            )}
+                          </TableCell>
+                        );
+                      })}
+                      {hasRowAction ? (
+                        <TableCell className={cn('w-12 px-2 py-1 text-right', edgeEnd(true))}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 scroll-mt-[var(--header-h)] rounded-sm text-muted-foreground hover:text-foreground"
+                            aria-label={
+                              getRowActionLabel?.(row, rowIndex) ?? `Open row ${id}`
+                            }
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onRowClick?.(row, rowIndex);
+                            }}
+                          >
+                            <ChevronRight className="h-4 w-4" aria-hidden />
+                          </Button>
+                        </TableCell>
+                      ) : null}
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
+        {/* The right-edge fade: more columns are scrollable to the right. Decorative (the
+            scroll region itself is reachable by keyboard through its cells). */}
+        {fadeRight ? (
+          <div
+            aria-hidden="true"
+            data-testid="data-table-fade-right"
+            className="pointer-events-none absolute inset-y-0 right-0 z-[11] w-10 bg-gradient-to-l from-card to-transparent"
+          />
+        ) : null}
+      </div>
 
       {showPager && (
-        <div className="flex flex-col gap-3 border-t border-border bg-surface/40 px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+        <div
+          className={cn(
+            'flex flex-col gap-3 border-t text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between',
+            onPanel
+              ? cn('border-border/70 bg-transparent py-3', PANEL_EDGE_START, PANEL_EDGE_END)
+              : 'border-border bg-surface/40 px-4 py-3',
+          )}
+        >
           <div className="flex items-center gap-3">
             <span className="tabular-nums">
               {effTotal.toLocaleString()} row{effTotal === 1 ? '' : 's'}
             </span>
             {selectable && (selected?.length ?? 0) > 0 && (
               <span className="font-medium tabular-nums text-foreground">
-                {selected!.length} selected
+                {selected!.length.toLocaleString()} selected
               </span>
             )}
           </div>
 
-          <div className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:w-auto sm:flex-nowrap sm:justify-start sm:gap-5">
-            {onPageSizeChange && pageSize != null && (
-              <div className="flex items-center gap-2">
-                <span className="hidden sm:inline">Rows per page</span>
-                <Select
-                  value={String(pageSize)}
-                  onValueChange={(v) => onPageSizeChange(Number(v))}
+          {pagerHasWork ? (
+            <div className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:w-auto sm:flex-nowrap sm:justify-start sm:gap-5">
+              {onPageSizeChange && pageSize != null && (
+                <div className="flex items-center gap-2">
+                  <span className="hidden sm:inline">Rows per page</span>
+                  <Select
+                    value={String(pageSize)}
+                    onValueChange={(v) => onPageSizeChange(Number(v))}
+                  >
+                    <SelectTrigger className="h-7 w-[4.5rem] text-xs" aria-label="Rows per page">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {pageSizeOptions.map((opt) => (
+                        <SelectItem key={opt} value={String(opt)}>
+                          {opt}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <span className="whitespace-nowrap tabular-nums">
+                Page {curPage.toLocaleString()} of {pageCount.toLocaleString()}
+              </span>
+
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  onClick={() => onPageChange?.(1)}
+                  disabled={!canPrev}
+                  aria-label="First page"
                 >
-                  <SelectTrigger className="h-7 w-[4.5rem] text-xs" aria-label="Rows per page">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {pageSizeOptions.map((opt) => (
-                      <SelectItem key={opt} value={String(opt)}>
-                        {opt}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <ChevronsLeft className="size-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  onClick={() => onPageChange?.(curPage - 1)}
+                  disabled={!canPrev}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  onClick={() => onPageChange?.(curPage + 1)}
+                  disabled={!canNext}
+                  aria-label="Next page"
+                >
+                  <ChevronRight className="size-4" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="size-7"
+                  onClick={() => onPageChange?.(pageCount)}
+                  disabled={!canNext}
+                  aria-label="Last page"
+                >
+                  <ChevronsRight className="size-4" />
+                </Button>
               </div>
-            )}
-
-            <span className="whitespace-nowrap tabular-nums">
-              Page {curPage} of {pageCount}
-            </span>
-
-            <div className="flex shrink-0 items-center gap-1">
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                onClick={() => onPageChange?.(1)}
-                disabled={!canPrev}
-                aria-label="First page"
-              >
-                <ChevronsLeft className="size-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                onClick={() => onPageChange?.(curPage - 1)}
-                disabled={!canPrev}
-                aria-label="Previous page"
-              >
-                <ChevronLeft className="size-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                onClick={() => onPageChange?.(curPage + 1)}
-                disabled={!canNext}
-                aria-label="Next page"
-              >
-                <ChevronRight className="size-4" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="size-7"
-                onClick={() => onPageChange?.(pageCount)}
-                disabled={!canNext}
-                aria-label="Last page"
-              >
-                <ChevronsRight className="size-4" />
-              </Button>
             </div>
-          </div>
+          ) : null}
         </div>
       )}
     </div>

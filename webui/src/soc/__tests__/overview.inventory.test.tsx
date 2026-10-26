@@ -4,13 +4,19 @@
  * The redesign moved every instrument into flat titled bands, flattened Deeper analytics
  * and rebuilt the KPI drill-down's layout. Its one hard rule was "keep every datum". This
  * spec is that rule as a checklist: each item of the inventory is queried by the label an
- * operator reads (or its stable test anchor), band by band, so a datum that silently drops
+ * operator reads (or its stable test anchor), row by row, so a datum that silently drops
  * out of a later refactor fails here by name.
  *
- * It also pins the Round 12 ADDITIONS (per-band freshness, Alert reduction, p90 timing,
- * the cross-reference line, the Deeper summary, the analyst-confirmed false positives) and
- * the glitch fixes (one "Full screen" label, the sentence-case "AI verdicts" centre, one
- * window wording, the AI-verdict FP label).
+ * It also pins the Round 12 ADDITIONS (Alert reduction, p90 timing, the cross-reference
+ * lines, the Deeper summary, the analyst-confirmed false positives) and the glitch fixes
+ * (one "Full screen" label, the sentence-case "AI verdicts" centre, one window wording, the
+ * AI-verdict FP label).
+ *
+ * Round 14 (SPEC §4.3, operator choice C3 B) removed the two band headers ("Alert flow",
+ * "Cases and response"). Nothing they said was dropped: each module names its window after
+ * its own title, the flow's footer says when its cases equal Total cases, and the two
+ * per-band "Updated" stamps became ONE header stamp, the oldest of the slices it speaks
+ * for. The rows are found here by their `data-band` hooks.
  *
  * Offline: the api and the posture fetch are mocked; no auth; nothing here can reach #3.
  */
@@ -66,7 +72,12 @@ vi.mock('@/soc/components/StartDemoButton', () => ({
   StartDemoButton: () => <button type="button">Start demo</button>,
 }));
 
-import Overview, { PAGE_TITLE, latestFloorCss, summarySignatureLabel } from '../pages/Overview';
+import Overview, {
+  PAGE_TITLE,
+  latestFloorCss,
+  oldestFreshness,
+  summarySignatureLabel,
+} from '../pages/Overview';
 import type { PostureResponse } from '../pages/Metrics.posture.api';
 import type { Case, Metrics, MetricsTrends, NoiseReduction, SourceCoverage } from '@/lib/types';
 
@@ -199,6 +210,17 @@ function mountMocks() {
   useOptionalPrefsMock.mockReset().mockReturnValue(null);
 }
 
+/** The case-list mock back to its normal answers (current and previous window). */
+function mountMocksCasesOnly() {
+  listCasesMock.mockReset().mockImplementation((params?: { to?: string }) =>
+    Promise.resolve(
+      params?.to?.startsWith('now-')
+        ? { cases: PREV_CASES, total: PREV_CASES.length }
+        : { cases: CASES, total: CASES.length, window_total_exact: true },
+    ),
+  );
+}
+
 async function mount() {
   const onNavigate = vi.fn();
   render(<Overview onNavigate={onNavigate} />);
@@ -206,6 +228,13 @@ async function mount() {
   await waitFor(() => expect(screen.getByTestId('noise-funnel')).toBeInTheDocument());
   await waitFor(() => expect(within(screen.getByTestId('kpi-total-cases')).getByText('3')).toBeInTheDocument());
   return onNavigate;
+}
+
+/** A row of modules by its `data-band` hook (the rows carry no titles since Round 14). */
+function row(name: 'flow' | 'cases'): HTMLElement {
+  const el = document.querySelector<HTMLElement>(`[data-band="${name}"]`);
+  expect(el, `the ${name} row`).not.toBeNull();
+  return el!;
 }
 
 describe('Overview — Round 12 data inventory (every datum survives the redesign)', () => {
@@ -222,8 +251,41 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(within(controls).getByRole('button', { name: /Time range: Last 24 hours/i })).toBeInTheDocument();
     expect(within(controls).getByRole('combobox', { name: /Auto-refresh interval/i })).toBeInTheDocument();
     expect(within(controls).getByRole('button', { name: 'Refresh dashboard' })).toBeInTheDocument();
-    // Additive: the page's freshness on the dashbar.
-    expect(within(hero).getByTestId('freshness')).toHaveTextContent(/^Updated /);
+    // The page's ONE freshness stamp (Round 14): a `<time>` on the dashbar that names the
+    // slices it speaks for, in UTC. The rows carry no stamps of their own. What it covers
+    // is part of its text for a screen reader, and click, tap and keyboard open it in a
+    // popover: never a mouse-only `title`, never a tooltip that touch cannot open.
+    const stamp = within(hero).getByTestId('freshness');
+    expect(stamp).toHaveTextContent(/^Updated /);
+    expect(stamp.tagName).toBe('TIME');
+    expect(stamp).toHaveAttribute('datetime');
+    expect(stamp).not.toHaveAttribute('title');
+    // The stamp is the text of a quiet button, the trigger of its coverage popover.
+    const trigger = within(hero).getByTestId('freshness-trigger');
+    expect(trigger.tagName).toBe('BUTTON');
+    expect(trigger).toHaveAttribute('type', 'button');
+    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toContainElement(stamp);
+    expect(trigger).not.toHaveAttribute('title');
+    const coverage = within(trigger).getByTestId('freshness-coverage');
+    expect(coverage).toHaveClass('sr-only');
+    expect(coverage.textContent).toMatch(
+      /^\. Oldest of cases, flow and response data: \d{2}:\d{2}:\d{2} UTC$/,
+    );
+    expect(trigger).toHaveAccessibleName(
+      /^Updated .+\. Oldest of cases, flow and response data: \d{2}:\d{2}:\d{2} UTC$/,
+    );
+    expect(screen.getAllByTestId('freshness')).toHaveLength(1);
+    // The refresh is the shared RefreshButton in its page-header form (`display="icon"`):
+    // a still, neutral icon once loaded, its name in the DOM, never reaching into the
+    // primitive's markup to hide its label.
+    const refresh = within(controls).getByRole('button', { name: 'Refresh dashboard' });
+    expect(refresh).toHaveAttribute('data-refresh-display', 'icon');
+    expect(refresh.className).not.toContain('[&>span:last-child]:sr-only');
+    expect(within(refresh).getByText('Refresh dashboard')).toHaveClass('sr-only');
+    expect(refresh.querySelector('.animate-spin')).toBeNull();
+    expect(refresh.className).not.toContain('text-success-text');
     // The dashbar is floating chrome on the Console material — never a card.
     expect(hero).not.toHaveClass('bg-card');
     expect(hero.className).toContain('material-surface');
@@ -236,12 +298,13 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     await mount();
     const strip = screen.getByTestId('kpi-strip');
     const expected: Array<[string, string, string, RegExp]> = [
-      ['kpi-total-cases', 'Total Cases', '3', /^arrivals, last 24 hours$/],
-      ['kpi-total-critical', 'Total Critical', '1', /^33% of 3 cases$/],
-      ['kpi-open-cases', 'Open Cases', '7', /^any arrival date$/],
+      // Sentence-case labels (Round 14, SPEC §4.3.2).
+      ['kpi-total-cases', 'Total cases', '3', /^arrivals, last 24 hours$/],
+      ['kpi-total-critical', 'Total critical', '1', /^33% of 3 cases$/],
+      ['kpi-open-cases', 'Open cases', '7', /^any arrival date$/],
       ['kpi-false-positive-rate', 'AI-verdict FP rate', '33%', /^1 of 3 verdicted$/],
-      ['kpi-resolved-closed', 'Resolved / Closed', '3', /^100% of 3 cases$/],
-      ['kpi-auto-closed', 'Auto Closed', '1', /^33% of worked closes$/],
+      ['kpi-resolved-closed', 'Resolved or closed', '3', /^100% of 3 cases$/],
+      ['kpi-auto-closed', 'Auto-closed', '1', /^33% of worked closes$/],
     ];
     for (const [id, label, value, context] of expected) {
       const tile = within(strip).getByTestId(id);
@@ -262,13 +325,17 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(trended('kpi-open-cases')).toBe(false);
   });
 
-  it('Alert flow band: title, freshness, flow controls, every stage, open-cases action, annotations', async () => {
+  it('Flow row: title, window, flow controls, every stage, open-cases action, annotations', async () => {
     await mount();
-    const band = screen.getByRole('region', { name: 'Alert flow' });
-    expect(within(band).getByText(/How the last 24 hours of alerts became cases/)).toBeInTheDocument();
-    expect(within(band).getByTestId('freshness')).toBeInTheDocument();
-    const funnel = within(band).getByTestId('noise-funnel');
-    expect(within(funnel).getByRole('heading', { name: 'Noise reduction flow' })).toBeInTheDocument();
+    // No band title (Round 14): the flow's own panel is the region its heading names.
+    const flow = screen.getByRole('region', { name: 'Noise reduction flow' });
+    expect(row('flow')).toContainElement(flow);
+    expect(within(row('flow')).queryByTestId('freshness')).toBeNull();
+    const funnel = within(flow).getByTestId('noise-funnel');
+    const heading = within(funnel).getByRole('heading', { name: 'Noise reduction flow' });
+    expect(flow).toHaveAttribute('aria-labelledby', heading.id);
+    // The band caption's window, after the flow's title.
+    expect(within(funnel).getByTestId('window-caption')).toHaveTextContent(/^last 24 hours$/);
     expect(within(funnel).getByRole('button', { name: /What the noise-reduction funnel means/i })).toBeInTheDocument();
     expect(within(funnel).getByRole('radio', { name: 'Simple' })).toBeInTheDocument();
     expect(within(funnel).getByRole('radio', { name: 'Detailed' })).toBeInTheDocument();
@@ -312,13 +379,13 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(within(card).getByTestId('human-vs-ai-chart')).toBeInTheDocument();
     expect(card).toHaveTextContent(/times in UTC/);
     expect(within(card).getByTestId('human-vs-ai-alerts')).toHaveTextContent('30 alerts ingested');
-    // Additive: the repeat is named — AI agent IS the Auto Closed tile's count.
+    // Additive: the repeat is named. AI agent IS the Auto-closed tile's count.
     expect(within(card).getByTestId('human-vs-ai-cross-reference')).toHaveTextContent(
-      'AI agent is the same count as Auto Closed above.',
+      'AI agent is the same count as Auto-closed above.',
     );
   });
 
-  it('Cases and response band: the split and the snapshot legends never cost a severity name (final review)', async () => {
+  it('Cases row: the split and the snapshot legends never cost a severity name (final review)', async () => {
     // At 768px with the navigation pinned, `md:grid-cols-2` made each snapshot card 228px;
     // the legend got 44px, every severity name rendered 0px wide and the counts ran into
     // the chevron (severity told by colour only, WCAG 1.4.1). jsdom cannot measure, so
@@ -336,10 +403,10 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(queueCell.className).not.toMatch(/(^|\s)md:col-span-2(\s|$)/);
     expect(queueCell.className).toContain('max-xl:@[48rem]:col-span-2');
     // The detect / respond pair follows its own cell too.
-    const timing = screen.getByRole('region', { name: 'Mean time to detect / respond' });
+    const timing = screen.getByRole('region', { name: 'Response time' });
     expect(timing).toHaveClass('@container');
 
-    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    const lifecycle = screen.getByTestId('case-state');
     for (const card of within(lifecycle).getAllByTestId('snapshot-card')) {
       const body = within(card).getByTestId('snapshot-body');
       const legend = within(card).getByTestId('snapshot-legend');
@@ -362,17 +429,25 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     }
   });
 
-  it('Cases and response band: snapshots, cross-reference, response time with p90, the live queue', async () => {
+  it('Cases row: snapshots, cross-reference, response time with p90, the live queue', async () => {
     await mount();
-    const band = screen.getByRole('region', { name: 'Cases and response' });
-    expect(within(band).getByTestId('freshness')).toBeInTheDocument();
+    const band = row('cases');
+    // No band title and no row stamp (Round 14): the page header holds the one stamp.
+    expect(within(band).queryByTestId('freshness')).toBeNull();
+    expect(within(band).queryByText(/Cases that arrived in the/)).toBeNull();
 
-    // Snapshots ×2: title, caption, change chip, donut + centre, legend, deep link, trend.
-    const lifecycle = within(band).getByRole('region', { name: 'Resolved and open cases' });
+    // Snapshots ×2: title, window, caption, change chip, donut + centre, legend, deep link,
+    // trend.
+    const lifecycle = within(band).getByTestId('case-state');
     expect(within(lifecycle).getByRole('heading', { name: 'Open cases' })).toBeInTheDocument();
     expect(within(lifecycle).getByRole('heading', { name: 'Cases resolved' })).toBeInTheDocument();
-    expect(within(lifecycle).getByText('Arrived in the last 24 hours, still open')).toBeInTheDocument();
-    expect(within(lifecycle).getByText('Arrived in the last 24 hours, now resolved or closed')).toBeInTheDocument();
+    // The window after each title, so the line under it no longer repeats it.
+    expect(within(lifecycle).getAllByTestId('window-caption').map((c) => c.textContent)).toEqual([
+      'last 24 hours',
+      'last 24 hours',
+    ]);
+    expect(within(lifecycle).getByText('Arrived in this window, still open')).toBeInTheDocument();
+    expect(within(lifecycle).getByText('Arrived in this window, now resolved or closed')).toBeInTheDocument();
     expect(within(lifecycle).getByRole('img', { name: /^changed up by \+1, worse$/ })).toBeInTheDocument();
     expect(within(lifecycle).getByRole('img', { name: 'Open cases by severity' })).toBeInTheDocument();
     expect(within(lifecycle).getByRole('img', { name: 'Resolved cases by severity' })).toBeInTheDocument();
@@ -384,12 +459,16 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(lifecycle.querySelectorAll('[data-testid="metric-trend-trigger"]')).toHaveLength(2);
     // Additive cross-reference: the cohort ties back to the window-exempt stock.
     expect(within(lifecycle).getByTestId('snapshot-footnote')).toHaveTextContent(
-      'Part of the 7 open now, any arrival date (Open Cases above).',
+      'Part of the 7 open now, any arrival date (Open cases above).',
     );
 
     // Response time: both stats, definitions, samples, p90 (additive), Detail.
-    const timing = within(band).getByRole('region', { name: 'Mean time to detect / respond' });
+    const timing = within(band).getByRole('region', { name: 'Response time' });
     expect(within(timing).getByRole('heading', { name: 'Response time' })).toBeInTheDocument();
+    // "p50" stays beside the title with the window; "server-computed" moved to the help.
+    expect(within(timing).getByTestId('window-caption')).toHaveTextContent(/^p50 · last 24 hours$/);
+    expect(within(timing).queryByText(/server-computed/)).toBeNull();
+    expect(within(timing).getByRole('button', { name: 'About Response time' })).toBeInTheDocument();
     expect(within(timing).getByText('MTTD')).toBeInTheDocument();
     expect(within(timing).getByText('Respond')).toBeInTheDocument();
     expect(within(timing).getByText('9m')).toBeInTheDocument();
@@ -402,7 +481,8 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
 
     // Latest cases: rows with title, id, age, status and — terminal — the outcome.
     const queue = within(band).getByRole('region', { name: 'Latest cases' });
-    expect(within(queue).getByText('Real-time triage queue')).toBeInTheDocument();
+    expect(within(queue).getByTestId('window-caption')).toHaveTextContent(/^Newest of the last 24 hours$/);
+    expect(within(queue).queryByText('Real-time triage queue')).toBeNull();
     expect(within(queue).getByRole('button', { name: 'View all' })).toBeInTheDocument();
     const rows = within(queue).getAllByRole('button', { name: /^Open case / });
     expect(rows).toHaveLength(3);
@@ -593,28 +673,40 @@ describe('Overview — Round 12 cross-references and the remembered Deeper choic
     });
     await mount();
 
-    const flow = screen.getByRole('region', { name: 'Alert flow' });
+    // The band caption's "(the 3 in Total Cases above)" is now a quiet footer line in the
+    // flow panel, on its scale row (Round 14, SPEC §4.3.2).
+    const flow = screen.getByRole('region', { name: 'Noise reduction flow' });
     await waitFor(() =>
-      expect(
-        within(flow).getByText(
-          'How the last 24 hours of alerts became cases (the 3 in Total Cases above), and who closed them',
-        ),
-      ).toBeInTheDocument(),
+      expect(within(flow).getByTestId('noise-cross-reference')).toHaveTextContent(
+        'Same count as Total cases above.',
+      ),
     );
-    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    expect(within(flow).getByTestId('noise-share-disclosure')).toContainElement(
+      within(flow).getByTestId('noise-cross-reference'),
+    );
+    const lifecycle = screen.getByTestId('case-state');
     const footnotes = within(lifecycle).getAllByTestId('snapshot-footnote');
     expect(footnotes.map((f) => f.textContent)).toEqual([
-      'Part of the 7 open now, any arrival date (Open Cases above).',
-      'The same cases as Resolved / Closed above, by severity.',
+      'Part of the 7 open now, any arrival date (Open cases above).',
+      'The same cases as Resolved or closed above, by severity.',
     ]);
     expect(within(screen.getByTestId('human-vs-ai')).getByTestId('human-vs-ai-cross-reference')).toBeInTheDocument();
+
+    // The detailed view has no scale row: the line closes the view instead.
+    await userEvent.click(within(flow).getByRole('radio', { name: 'Detailed' }));
+    expect(within(flow).getByTestId('noise-cross-reference')).toHaveTextContent(
+      'Same count as Total cases above.',
+    );
+    expect(within(flow).getByTestId('noise-detailed-view')).not.toContainElement(
+      within(flow).getByTestId('noise-cross-reference'),
+    );
   });
 
   it('says nothing when the repeat and its tile differ', async () => {
     // The flow opened 40 cases against a window of 3; only one of the three window cases
     // on the page is terminal while the rollup counts three; and the rollup's close
     // partition does not reconcile (2 + 1 + 1 ≠ 3), so Human vs AI falls back to the
-    // bucket sums (AI agent 1) while the Auto Closed tile reads the rollup's 2.
+    // bucket sums (AI agent 1) while the Auto-closed tile reads the rollup's 2.
     fetchPostureMock.mockReset().mockResolvedValue({
       ...POSTURE,
       quality: { ...POSTURE.quality, auto_closed_cases: 2 },
@@ -622,13 +714,13 @@ describe('Overview — Round 12 cross-references and the remembered Deeper choic
     render(<Overview onNavigate={vi.fn()} />);
     await waitFor(() => expect(screen.getByTestId('kpi-auto-closed')).toHaveTextContent('2'));
     await waitFor(() => expect(screen.getByTestId('human-vs-ai-ai')).toHaveTextContent('1'));
-    const flow = screen.getByRole('region', { name: 'Alert flow' });
+    const flow = screen.getByRole('region', { name: 'Noise reduction flow' });
     await waitFor(() => expect(within(flow).getByTestId('noise-funnel')).toBeInTheDocument());
-    expect(
-      within(flow).getByText('How the last 24 hours of alerts became cases, and who closed them'),
-    ).toBeInTheDocument();
-    expect(within(flow).queryByText(/in Total Cases above/)).toBeNull();
-    expect(screen.queryByText('The same cases as Resolved / Closed above, by severity.')).toBeNull();
+    // The flow still names its window; only the cross-reference is withheld.
+    expect(within(flow).getByTestId('window-caption')).toHaveTextContent('last 24 hours');
+    expect(within(flow).queryByTestId('noise-cross-reference')).toBeNull();
+    expect(screen.queryByText(/Total cases above/)).toBeNull();
+    expect(screen.queryByText('The same cases as Resolved or closed above, by severity.')).toBeNull();
     expect(screen.queryByTestId('human-vs-ai-cross-reference')).toBeNull();
   });
 
@@ -788,7 +880,7 @@ describe('Overview — Round 12 review: one population per instrument, honest bo
       ),
     );
     await mount();
-    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    const lifecycle = screen.getByTestId('case-state');
     const bounds = within(lifecycle).getAllByTestId('snapshot-bound');
     expect(bounds.map((b) => b.textContent)).toEqual([
       'Lower bound · counted from the newest 3 of 450',
@@ -809,7 +901,7 @@ describe('Overview — Round 12 review: one population per instrument, honest bo
 
   it('a quiet refresh shows the new snapshot and coverage counts without counting up', async () => {
     await mount();
-    const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+    const lifecycle = screen.getByTestId('case-state');
     // First load: the centre is a count-up (static on mount).
     expect(within(lifecycle).getAllByTestId('count-up').length).toBeGreaterThan(0);
     const more = [
@@ -892,7 +984,7 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
     // Three cases → a three-row floor.
     expect(screen.getByTestId('latest-cases-box').style.minHeight).toBe('11rem');
     // Below 1920px the snapshot rings keep the 128px size.
-    const ring = within(screen.getByRole('region', { name: 'Resolved and open cases' })).getByRole(
+    const ring = within(screen.getByTestId('case-state')).getByRole(
       'img',
       { name: 'Open cases by severity' },
     );
@@ -940,7 +1032,7 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
       const grid = screen.getByTestId('cases-band-grid');
       expect(grid.className).toContain('3xl:grid-rows-[auto_1fr]');
       expect(grid.className).toContain('4xl:grid-cols-[minmax(0,1fr)_460px]');
-      const lifecycle = screen.getByRole('region', { name: 'Resolved and open cases' });
+      const lifecycle = screen.getByTestId('case-state');
       expect(lifecycle.className).toContain('3xl:row-start-1');
       // The snapshot rings grow to 192px there, so the instrument — not blank space —
       // takes the height the eight-row queue gives the band.
@@ -951,17 +1043,19 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
         'h-48',
         'w-48',
       );
-      const timing = screen.getByRole('region', { name: 'Mean time to detect / respond' });
+      const timing = screen.getByRole('region', { name: 'Response time' });
       expect(timing.className).toContain('3xl:row-start-2');
       expect(timing.className).toContain('3xl:col-start-1');
       const queueCell = queue.parentElement as HTMLElement;
       expect(queueCell.className).toContain('3xl:row-span-2');
       expect(queueCell.className).toContain('4xl:col-start-2');
       // DOM (and heading) order is unchanged: case state, response time, latest cases.
-      const order = Array.from(grid.children).map(
-        (el) => el.getAttribute('aria-label') ?? el.firstElementChild?.getAttribute('aria-label'),
+      const order = Array.from(grid.children).map((el) =>
+        Array.from(el.querySelectorAll('h2'))
+          .map((h) => h.textContent)
+          .join(' + '),
       );
-      expect(order).toEqual(['Resolved and open cases', 'Mean time to detect / respond', 'Latest cases']);
+      expect(order).toEqual(['Open cases + Cases resolved', 'Response time', 'Latest cases']);
     } finally {
       window.matchMedia = original;
     }
@@ -1044,5 +1138,306 @@ describe('Overview — Round 12 review: layout and keyboard contracts', () => {
     const scroller = within(panel).getByTestId('kpi-drilldown-scroll');
     expect(body).toContainElement(scroller);
     expect(scroller.className).toContain('max-md:flex-none');
+  });
+});
+
+describe('Overview, Round 14: no band headers, one freshness stamp (SPEC §4.3)', () => {
+  beforeEach(() => {
+    localStorage.removeItem('soc.overview.deeperOpen');
+    localStorage.removeItem('tlsoc.overview.noiseFunnelHidden');
+    mountMocks();
+  });
+
+  it('oldestFreshness: the oldest readable slice, naming every slice it speaks for', () => {
+    expect(oldestFreshness([])).toBeNull();
+    expect(oldestFreshness([{ name: 'cases', at: null }, { name: 'flow', at: 'not a time' }])).toBeNull();
+    const at = (mins: number) => new Date(Date.UTC(2026, 9, 26, 14, 30) - mins * 60_000).toISOString();
+    expect(
+      oldestFreshness([
+        { name: 'cases', at: at(0) },
+        { name: 'flow', at: at(5) },
+        { name: 'response', at: at(2) },
+      ]),
+    ).toEqual({ at: at(5), names: ['cases', 'flow', 'response'] });
+    // A slice without a time is left out of both the age and the names.
+    expect(
+      oldestFreshness([
+        { name: 'cases', at: at(1) },
+        { name: 'flow', at: undefined },
+        { name: 'response', at: at(3) },
+      ]),
+    ).toEqual({ at: at(3), names: ['cases', 'response'] });
+  });
+
+  it('stamps the header with the OLDEST slice, in UTC, and names the slices it covers', async () => {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    fetchPostureMock.mockReset().mockResolvedValue({ ...POSTURE, generated_at: tenMinutesAgo });
+    noiseMock.mockReset().mockResolvedValue({
+      ...NOISE,
+      generated_at: new Date(Date.now() - 3 * 60_000).toISOString(),
+    });
+    await mount();
+    const stamp = within(screen.getByTestId('page-hero')).getByTestId('freshness');
+    // The posture rollup is the oldest slice: the stamp says so, never the newest one.
+    await waitFor(() => expect(stamp).toHaveTextContent('Updated 10m ago'));
+    expect(stamp).toHaveAttribute('datetime', tenMinutesAgo);
+    const coverage = `Oldest of cases, flow and response data: ${tenMinutesAgo.slice(11, 19)} UTC`;
+    expect(screen.getByTestId('freshness-coverage')).toHaveTextContent(coverage);
+    const trigger = screen.getByTestId('freshness-trigger');
+    // A screen reader hears the coverage ONCE: it is part of the trigger's name, and
+    // nothing describes the trigger a second time with the same sentence.
+    // (jsdom's name computation puts a space after the `<time>`; a browser does not.)
+    expect(trigger.textContent).toBe(`Updated 10m ago. ${coverage}`);
+    expect(trigger).toHaveAccessibleName(/^Updated 10m ago ?\. Oldest of cases, flow and response data: /);
+    expect(trigger).toHaveAccessibleDescription('');
+    expect(trigger).not.toHaveAttribute('aria-describedby');
+    // Focus alone opens nothing: no tooltip that a touch screen could never open.
+    act(() => trigger.focus());
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(screen.queryByTestId('freshness-popover')).toBeNull();
+  });
+
+  it('opens the stamp coverage on a click or tap, and on Enter or Space', async () => {
+    const user = userEvent.setup();
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    fetchPostureMock.mockReset().mockResolvedValue({ ...POSTURE, generated_at: tenMinutesAgo });
+    await mount();
+    const trigger = within(screen.getByTestId('page-hero')).getByTestId('freshness-trigger');
+    await waitFor(() => expect(trigger).toHaveTextContent('Updated 10m ago'));
+    const coverage = `Oldest of cases, flow and response data: ${tenMinutesAgo.slice(11, 19)} UTC`;
+
+    // A click (a tap is the same press) opens it as a named popover below the stamp.
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const popover = await screen.findByRole('dialog', { name: 'Data freshness' });
+    expect(popover).toHaveAttribute('data-testid', 'freshness-popover');
+    expect(popover).toHaveTextContent(coverage);
+    expect(popover).toHaveAttribute('data-side', 'bottom');
+    // The clock never wraps away from its "UTC" on a narrow screen.
+    expect(within(popover).getByText(`${tenMinutesAgo.slice(11, 19)} UTC`)).toHaveClass(
+      'whitespace-nowrap',
+    );
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    // Escape closes it and gives the focus back to the stamp.
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('freshness-popover')).toBeNull());
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveFocus();
+
+    // The keyboard opens the same popover: Enter, then Space after it closes again.
+    await user.keyboard('{Enter}');
+    expect(await screen.findByRole('dialog', { name: 'Data freshness' })).toHaveTextContent(coverage);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('freshness-popover')).toBeNull());
+    await user.keyboard(' ');
+    expect(await screen.findByRole('dialog', { name: 'Data freshness' })).toHaveTextContent(coverage);
+  });
+
+  it('leaves a hidden flow out of the stamp, since no visible card shows its data', async () => {
+    localStorage.setItem('tlsoc.overview.noiseFunnelHidden', '1');
+    noiseMock.mockReset().mockResolvedValue({
+      ...NOISE,
+      generated_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+    });
+    await mount();
+    const stamp = within(screen.getByTestId('page-hero')).getByTestId('freshness');
+    expect(screen.getByTestId('freshness-coverage').textContent).toMatch(
+      /^\. Oldest of cases and response data: /,
+    );
+    expect(stamp).not.toHaveTextContent('30m ago');
+  });
+
+  it('has no band titles: h1, then one h2 per module in reading order', async () => {
+    await mount();
+    expect(screen.queryByRole('heading', { name: 'Alert flow' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Cases and response' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Alert flow' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Cases and response' })).toBeNull();
+    const outline = Array.from(document.querySelectorAll('h1, h2')).map(
+      (h) => `${h.tagName.toLowerCase()} ${(h.textContent ?? '').trim()}`,
+    );
+    expect(outline.slice(0, 7)).toEqual([
+      `h1 ${PAGE_TITLE}`,
+      'h2 Noise reduction flow',
+      'h2 Human vs AI',
+      'h2 Open cases',
+      'h2 Cases resolved',
+      'h2 Response time',
+      'h2 Latest cases',
+    ]);
+    expect(outline[7]).toMatch(/^h2 Deeper analytics/);
+    expect(outline).toHaveLength(8);
+  });
+
+  it('keeps the moved copy plain: no em dash, no band wording, sentence case', async () => {
+    await mount();
+    const moved = [
+      ...screen.getAllByTestId('window-caption'),
+      ...screen.getAllByTestId('snapshot-footnote'),
+      screen.getByTestId('human-vs-ai-cross-reference'),
+    ].map((el) => el.textContent ?? '');
+    expect(moved.length).toBeGreaterThanOrEqual(7);
+    for (const text of moved) {
+      expect(text, text).not.toMatch(/[–—]/);
+      expect(text.toLowerCase(), text).not.toContain('playbook');
+    }
+    const stampText = within(screen.getByTestId('page-hero')).getByTestId('freshness-trigger').textContent ?? '';
+    expect(stampText).toMatch(/Oldest of cases, flow and response data/);
+    expect(stampText).not.toMatch(/[–—]/);
+    for (const label of ['Total cases', 'Total critical', 'Open cases', 'Resolved or closed', 'Auto-closed']) {
+      expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument();
+    }
+  });
+
+  it('explains "computed on the server" in the Response time help tip', async () => {
+    await mount();
+    const timing = screen.getByRole('region', { name: 'Response time' });
+    await userEvent.click(within(timing).getByRole('button', { name: 'About Response time' }));
+    expect(await screen.findByText(/computed on the server/)).toBeInTheDocument();
+  });
+
+  it('gives the flow region its name before any flow has loaded, too', async () => {
+    noiseMock.mockReset().mockRejectedValue(new Error('noise down'));
+    render(<Overview onNavigate={vi.fn()} />);
+    await screen.findByTestId('page-hero');
+    // The funnel never renders; the panel shows its retry state under the same name.
+    const flow = await screen.findByRole('region', { name: 'Noise reduction flow' });
+    expect(screen.queryByTestId('noise-funnel')).toBeNull();
+    expect(within(flow).getByTestId('noise-reduction-unavailable')).toBeInTheDocument();
+    expect(flow).not.toHaveAttribute('aria-labelledby');
+  });
+
+  it('names every module region by its own visible heading (SPEC §3.3)', async () => {
+    await mount();
+    for (const name of ['Noise reduction flow', 'Open cases', 'Cases resolved', 'Response time', 'Latest cases']) {
+      const region = screen.getByRole('region', { name });
+      const heading = within(region).getByRole('heading', { level: 2, name });
+      expect(region, name).toHaveAttribute('aria-labelledby', heading.id);
+      expect(region, name).not.toHaveAttribute('aria-label');
+    }
+    // The case-state panel holds two modules; it is their container, not a third region
+    // with a name no heading on screen carries.
+    const caseState = screen.getByTestId('case-state');
+    expect(caseState.tagName).toBe('DIV');
+    expect(caseState).not.toHaveAttribute('aria-label');
+    expect(within(caseState).getAllByRole('region').map((r) => r.getAttribute('aria-labelledby'))).toHaveLength(2);
+    expect(screen.queryByRole('region', { name: 'Resolved and open cases' })).toBeNull();
+    expect(screen.queryByRole('region', { name: /Mean time to detect/ })).toBeNull();
+  });
+
+  it("keeps the Response time help in HelpTip's own ink, never a dimmed glyph", async () => {
+    await mount();
+    const help = within(screen.getByRole('region', { name: 'Response time' })).getByRole('button', {
+      name: 'About Response time',
+    });
+    // `text-muted-foreground/70` measured 2.93:1 on the light panel, under the 3:1 a
+    // control's graphic needs (WCAG 1.4.11); the plain muted ink measures 5.34:1.
+    expect(help).toHaveClass('text-muted-foreground');
+    expect(help.className).not.toMatch(/text-muted-foreground\/\d+/);
+  });
+
+  it('words the Response time help as the figures behave: p90 only when reported', async () => {
+    await mount();
+    const timing = screen.getByRole('region', { name: 'Response time' });
+    await userEvent.click(within(timing).getByRole('button', { name: 'About Response time' }));
+    expect(
+      await screen.findByText(/its p90 when the server reports one; a figure that is not measured says why/),
+    ).toBeInTheDocument();
+  });
+
+  /*
+   * The stamp's "cases" slice is the older of the last SUCCESSFUL case-list and metric
+   * reads. A failed read keeps the data the page shows, so it must keep its time too.
+   * Posture and the flow are stamped an hour ahead here, so the cases slice is the oldest
+   * and the stamp's `datetime` is that slice's time.
+   */
+  async function mountWithCasesOldest(): Promise<HTMLElement> {
+    const ahead = new Date(Date.now() + 60 * 60_000).toISOString();
+    fetchPostureMock.mockReset().mockResolvedValue({ ...POSTURE, generated_at: ahead });
+    noiseMock.mockReset().mockResolvedValue({ ...NOISE, generated_at: ahead });
+    await mount();
+    return within(screen.getByTestId('page-hero')).getByTestId('freshness');
+  }
+
+  /** One manual refresh, waited for until the button is idle again. */
+  async function refreshOnce() {
+    const refresh = screen.getByRole('button', { name: 'Refresh dashboard' });
+    await waitFor(() => expect(refresh).toBeEnabled());
+    // A new read is at least a millisecond younger, so a moved stamp is detectable.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await userEvent.click(refresh);
+    await waitFor(() => expect(refresh).toHaveAttribute('aria-busy', 'false'));
+  }
+
+  it('keeps the stamp at the last good case read when the case list fails', async () => {
+    const stamp = await mountWithCasesOldest();
+    const first = stamp.getAttribute('datetime');
+    expect(first).toBeTruthy();
+    expect(screen.getByTestId('freshness-coverage').textContent).toMatch(/Oldest of cases, flow and response data/);
+
+    // The case list fails while the metric totals succeed: the snapshots and Latest cases
+    // still show the first read, so the stamp may not claim a newer one.
+    listCasesMock.mockRejectedValue(new Error('case store unavailable'));
+    const metricsCalls = getMetricsMock.mock.calls.length;
+    await refreshOnce();
+    expect(getMetricsMock.mock.calls.length).toBeGreaterThan(metricsCalls);
+    expect(stamp.getAttribute('datetime')).toBe(first);
+    expect(screen.queryByText('Could not load the dashboard')).toBeNull();
+
+    // Proof the stamp is live: once the case list reads again, it moves.
+    mountMocksCasesOnly();
+    await refreshOnce();
+    await waitFor(() => expect(stamp.getAttribute('datetime')).not.toBe(first));
+  });
+
+  it('keeps the stamp at the last good metric read when the totals fail', async () => {
+    const stamp = await mountWithCasesOldest();
+    const first = stamp.getAttribute('datetime');
+    getMetricsMock.mockRejectedValue(new Error('metrics unavailable'));
+    const caseCalls = listCasesMock.mock.calls.length;
+    await refreshOnce();
+    expect(listCasesMock.mock.calls.length).toBeGreaterThan(caseCalls);
+    // The strip still shows the first totals: the stamp keeps their time.
+    expect(stamp.getAttribute('datetime')).toBe(first);
+  });
+
+  it('on the empty page, stamps only the case read the page shows', async () => {
+    listCasesMock.mockReset().mockResolvedValue({ cases: [], total: 0, window_total_exact: true });
+    getMetricsMock.mockReset().mockResolvedValue({ ...METRICS, total_cases: 0 });
+    render(<Overview onNavigate={vi.fn()} />);
+    expect(await screen.findByText('No triage activity yet')).toBeInTheDocument();
+    // The empty state replaces every module, so no flow and no response data is on screen.
+    expect(screen.queryByTestId('overview-modules')).toBeNull();
+    expect(within(screen.getByTestId('page-hero')).getByTestId('freshness-coverage').textContent).toMatch(
+      /^\. Cases data: \d{2}:\d{2}:\d{2} UTC$/,
+    );
+  });
+
+  it("names the flow's own window: a failed read after a range change keeps the old one", async () => {
+    await mount();
+    const flowCaption = () =>
+      within(screen.getByTestId('noise-funnel')).getByTestId('window-caption');
+    expect(flowCaption()).toHaveTextContent(/^last 24 hours$/);
+
+    noiseMock.mockRejectedValue(new Error('noise counters unavailable'));
+    await userEvent.click(screen.getByRole('button', { name: /Time range: Last 24 hours/i }));
+    await userEvent.click(
+      within(screen.getByRole('group', { name: /Relative time ranges/i })).getByRole('button', {
+        name: /Last 7 days/i,
+      }),
+    );
+    // The last loaded flow (24 hours) stays on screen with its retry notice, so its
+    // caption keeps naming the window it was read for, never the picker's new one.
+    expect(await screen.findByTestId('noise-reduction-unavailable')).toHaveTextContent(
+      'Refresh failed. Showing the last loaded flow.',
+    );
+    expect(flowCaption()).toHaveTextContent(/^last 24 hours$/);
+    // The rest of the page follows the picker.
+    await waitFor(() =>
+      expect(within(screen.getByTestId('case-state')).getAllByTestId('window-caption')[0]).toHaveTextContent(
+        /^last 7 days$/,
+      ),
+    );
   });
 });

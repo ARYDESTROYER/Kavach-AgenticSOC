@@ -269,13 +269,15 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       'rounded-md',
       'bg-transparent',
     );
+    // Round 14: the shared RefreshButton in its page-header form (`display="icon"`), in ONE
+    // neutral colour (operator choice C8). It spins only while a reload the operator
+    // pressed is in flight; LIVE is shown by the pill beside it.
     const manualRefresh = within(controls).getByRole('button', { name: 'Refresh dashboard' });
-    expect(manualRefresh).toHaveClass(
-      'rounded-md',
-      'bg-transparent',
-      'text-success-text',
-    );
-    expect(manualRefresh.querySelector('.lucide-refresh-cw')).toHaveClass('animate-spin');
+    expect(manualRefresh).toHaveAttribute('data-refresh-display', 'icon');
+    expect(manualRefresh).toHaveClass('rounded-md', 'bg-transparent', 'text-muted-foreground');
+    expect(manualRefresh).not.toHaveClass('text-success-text');
+    await waitFor(() => expect(manualRefresh).toHaveAttribute('aria-busy', 'false'));
+    expect(manualRefresh.querySelector('.lucide-refresh-cw')).not.toHaveClass('animate-spin');
   });
 
   it('renders the KPI micro-strip: 6 server-fed tiles (LLM spend NOT a hero tile)', async () => {
@@ -415,7 +417,8 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
      * empty space, or losing the rule that separates it from the next row. The geometric
      * oracle is `right = i mod cols ≠ 0 and i ≠ n`, `bottom = i ≤ n − cols`; the classes
      * below were compiled with this repo's Tailwind and read back from computed styles in
-     * a real browser at 500 / 700 / 900 / 1400px against it. jsdom performs no layout and
+     * a real browser at 390 / 700 / 900 / 1400px against it (Round 14: two columns from
+     * the narrowest width, as on every page strip). jsdom performs no layout and
      * no cascade, so what CAN be pinned here — and what actually regresses — is the class
      * string itself, per breakpoint, character for character.
      *
@@ -434,27 +437,29 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
     const strip = screen.getByTestId('kpi-strip');
 
-    // Six columns at `xl` — the count the whole rule set is written against. 6 % {1,2,3,6}
+    // Six columns at `xl`: the count the whole rule set is written against. 6 % {2,3,6}
     // is 0, so every breakpoint fills whole rows and "last column" coincides with "last
     // child"; five left orphans, which is what the two new rules below repair.
-    expect(strip).toHaveClass('grid-cols-1', 'sm:grid-cols-2', 'md:grid-cols-3', 'xl:grid-cols-6');
+    expect(strip).toHaveClass('grid-cols-2', 'md:grid-cols-3', 'xl:grid-cols-6');
+    expect(strip).not.toHaveClass('grid-cols-1');
+    expect(strip).not.toHaveClass('sm:grid-cols-2');
     expect(strip).not.toHaveClass('xl:grid-cols-5');
     expect(strip.children).toHaveLength(6);
 
     const cells = Array.from(strip.children) as HTMLElement[];
     for (const [i, cell] of cells.entries()) {
       const cls = cell.className;
-      // 1 COLUMN — every cell rules below it, and `last:` lifts it off the final one.
-      expect(cls, `cell ${i + 1}`).toContain('border-b');
-      expect(cls, `cell ${i + 1}`).toContain('border-r-0');
-      expect(cls, `cell ${i + 1}`).toContain('last:border-b-0');
-      expect(cls, `cell ${i + 1}`).toContain('last:border-r-0');
-      // 2 COLUMNS — rule on the left cell of each pair, and no bottom rule under the final
-      // row, which at six cells starts at cell 5. (`n+5` is the half the five-cell string
-      // did not have, and the half a sixth tile broke.)
-      expect(cls, `cell ${i + 1}`).toContain('sm:border-r');
-      expect(cls, `cell ${i + 1}`).toContain('sm:[&:nth-child(2n)]:border-r-0');
-      expect(cls, `cell ${i + 1}`).toContain('sm:[&:nth-child(n+5)]:border-b-0');
+      // 2 COLUMNS (the base, below `md`; Round 14 retired the one-column phone strip):
+      // rule on the left cell of each pair, and no bottom rule under the final row, which
+      // at six cells starts at cell 5.
+      expect(cell, `cell ${i + 1}`).toHaveClass(
+        'border-b',
+        'border-r',
+        '[&:nth-child(2n)]:border-r-0',
+        '[&:nth-child(n+5)]:border-b-0',
+      );
+      expect(cls, `cell ${i + 1}`).not.toMatch(/(^|\s)(last:|sm:)/);
+      expect(cell, `cell ${i + 1}`).not.toHaveClass('border-r-0');
       // 3 COLUMNS — rule after cells 2 and 5 (`2n` MINUS the column ends), off after every
       // 3rd, and no bottom rule under the final row, which starts at cell 4.
       expect(cls, `cell ${i + 1}`).toContain('md:[&:nth-child(2n):not(:nth-child(3n))]:border-r');
@@ -514,8 +519,8 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // Total Critical + Resolved / Closed are both shares of the SAME `case_count` (4),
     // and both come off the one posture payload, so numerator and denominator always
     // describe the same population.
-    expect(await readTileHelp('Total Critical')).toContain('Right now: 25% of 4.');
-    expect(await readTileHelp('Resolved / Closed')).toContain('Right now: 25% of 4.');
+    expect(await readTileHelp('Total critical')).toContain('Right now: 25% of 4.');
+    expect(await readTileHelp('Resolved or closed')).toContain('Right now: 25% of 4.');
     expect(lineOf('kpi-total-critical')).toHaveTextContent(/^25% of 4 cases$/);
     expect(lineOf('kpi-resolved-closed')).toHaveTextContent(/^25% of 4 cases$/);
     // Total Cases IS that denominator, so it carries no share of its own — and no em
@@ -526,7 +531,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(totalCases.queryByText(/% of/)).toBeNull();
     expect(totalCases.queryByText('—')).toBeNull();
     expect(lineOf('kpi-total-cases')).toHaveTextContent(/^arrivals, last /);
-    const totalCasesHelp = await readTileHelp('Total Cases');
+    const totalCasesHelp = await readTileHelp('Total cases');
     expect(totalCasesHelp).toContain('this is the denominator the cohort tiles beside it are shares of');
     expect(totalCasesHelp).not.toContain('Right now:');
     // Open Cases is a window-EXEMPT stock: no window population reconciles with it, so it
@@ -535,7 +540,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await waitFor(() => expect(openCases.getByText('5')).toBeInTheDocument());
     expect(openCases.queryByText(/% of/)).toBeNull();
     expect(lineOf('kpi-open-cases')).toHaveTextContent(/^any arrival date$/);
-    const openCasesHelp = await readTileHelp('Open Cases');
+    const openCasesHelp = await readTileHelp('Open cases');
     expect(openCasesHelp).toContain('Open now, and not window-filtered.');
     expect(openCasesHelp).toContain('this one has no window denominator');
     expect(openCasesHelp).not.toContain('Right now:');
@@ -558,14 +563,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('kpi-total-cases')).toBeInTheDocument());
 
-    expect(await readTileHelp('Total Cases')).toContain(
+    expect(await readTileHelp('Total cases')).toContain(
       'Window arrivals, policy-closed included.',
     );
     // The band NAME, still derived from the severity ladder rather than written out —
     // `overview.topband.test.tsx` moves the ladder's top entry and reads this same string
     // back as "The High band." to prove the derivation survived the move.
-    expect(await readTileHelp('Total Critical')).toContain('The Critical band.');
-    expect(await readTileHelp('Open Cases')).toContain('Open now, and not window-filtered.');
+    expect(await readTileHelp('Total critical')).toContain('The Critical band.');
+    expect(await readTileHelp('Open cases')).toContain('Open now, and not window-filtered.');
   });
 
   it('states the sixth tile’s CONTAINMENT wherever a reader can arrive at it', async () => {
@@ -579,12 +584,13 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await screen.findByTestId('page-hero');
     await waitFor(() => expect(screen.getByTestId('kpi-auto-closed')).toBeInTheDocument());
 
-    const CONTAINMENT = 'A SUBSET of Resolved / Closed, not a sixth independent total.';
+    const CONTAINMENT = 'A subset of Resolved or closed, not a sixth independent total.';
+    // Round 14 copy rule: no em dash as a sentence break.
     const EXCLUSION =
-      'Counted over the agent-worked population only — cases an operator closed under a ' +
+      'Counted over the agent-worked population only: cases an operator closed under a ' +
       '"declared benign" rule policy are excluded';
 
-    const help = await readTileHelp('Auto Closed');
+    const help = await readTileHelp('Auto-closed');
     expect(help).toContain(CONTAINMENT);
     expect(help).toContain(EXCLUSION);
     // Its share names its OWN denominator. "% of Resolved / Closed" would be false: this
@@ -732,7 +738,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // The share is published — in the tile's help, which is where the scale context lives
     // now (see "pairs every KPI numeral…"). Reaching it proves the covered window really
     // did release the share, which a pair of absent captions on the face could not.
-    expect(await readTileHelp('Total Critical')).toContain('Right now: 25% of 4.');
+    expect(await readTileHelp('Total critical')).toContain('Right now: 25% of 4.');
     // …and the UNBOUNDED arm of the bound grammar: no sentence, and no marker EITHER. The
     // sentence alone would keep passing if the mark were left on the numeral with an empty
     // string, so both halves are counted out.
@@ -801,14 +807,14 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     await waitFor(() => expect(tile.getByText('1')).toBeInTheDocument());
     // Read from the tile's help, which is where the scale context moved — the FLOOR RULE
     // travelled with the string it applies to, so this is where it has to be proven now.
-    const help = await readTileHelp('Total Critical');
+    const help = await readTileHelp('Total critical');
     expect(help).toContain('Right now: <1% of 5,000.');
     expect(help).not.toContain('0% of 5,000');
     // A genuine zero still reads "0%" — the floor applies only to a non-zero count.
     expect(help).not.toMatch(/Right now: 0%/);
   });
 
-  it('states the close partition in the Resolved / Closed DRILL-DOWN as three rows, never two', async () => {
+  it('states the close partition in the Resolved or closed DRILL-DOWN as three rows, never two', async () => {
     // `engine/metrics.py` forbids `human = terminal - auto_closed`: that difference
     // absorbs the SYSTEM/legacy residual into the analyst band. The partition therefore
     // renders all three server keys, and the residual stays visible.
@@ -845,7 +851,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // decoration.
   });
 
-  it('counts a POLICY-CLOSED case in Resolved / Closed, and names it in the partition', async () => {
+  it('counts a POLICY-CLOSED case in Resolved or closed, and names it in the partition', async () => {
     // `quality_metrics` strips operator "declared benign" closes before it counts
     // anything, so `terminal_cases` is a policy-EXCLUSIVE number while `case_count`,
     // this tile's drill-down `match` (CLOSED_STATUSES) and its `__terminal__` deep link
@@ -870,7 +876,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     const tile = await screen.findByTestId('kpi-resolved-closed');
     // 5 agent-worked terminal + 5 declared benign === 10 of 10 arrivals.
     await waitFor(() => expect(within(tile).getByText('10')).toBeInTheDocument());
-    const help = await readTileHelp('Resolved / Closed');
+    const help = await readTileHelp('Resolved or closed');
     expect(help).toContain('Right now: 100% of 10.');
     expect(help).not.toContain('50% of 10');
 
@@ -907,7 +913,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // denominator — so the reconciling sentence stays out of the help as well as off the
     // face. A conditional disclosure that shows when it is false is noise, not honesty.
     expect(within(tile).queryByText(/declared benign/i)).toBeNull();
-    expect(await readTileHelp('Resolved / Closed')).not.toContain('This window includes');
+    expect(await readTileHelp('Resolved or closed')).not.toContain('This window includes');
     await openDrilldown('kpi-resolved-closed');
     expect(drilldownBands()?.labels).toEqual(['AI agent', 'Human', 'System']);
   });
@@ -1129,8 +1135,10 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
      * FIRST-LOAD half of that gate is pinned by "captions a FIRST load…" below, so the two
      * arms are proven together and the caption cannot simply be deleted.
      *
-     * The refresh control still shows LIVE and spins, which is the honest place for "a
-     * request is in flight".
+     * The range control names the new window and the LIVE pill keeps pulsing. The refresh
+     * button spins only for a reload the operator pressed (Round 14 review): a busy button
+     * is disabled, and one that disabled itself on every LIVE tick threw a keyboard user's
+     * focus to the page body.
      */
     expect(screen.getByRole('button', { name: /Time range: Last 7 days/i })).toBeInTheDocument();
     expect(within(screen.getByTestId('kpi-false-positive-rate')).getByText('48%')).toBeInTheDocument();
@@ -1168,7 +1176,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       },
     });
     // The fresh 168h payload replaces the stale snapshot atomically...
-    const timingRegion = screen.getByRole('region', { name: /Mean time to detect/i });
+    const timingRegion = screen.getByRole('region', { name: 'Response time' });
     await waitFor(() => expect(within(timingRegion).getByText('4h')).toBeInTheDocument());
     // ...and the swap leaves the tiles carrying no sub at all — a healthy window is the
     // one state the `sub` slot has nothing to say about, which is exactly what gives the
@@ -1215,7 +1223,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(screen.getByRole('heading', { name: 'Cases resolved', level: 2 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Open cases', level: 2 })).toBeInTheDocument();
     // Operational order is live queue first, terminal history second.
-    const lifecycle = within(heroRow).getByRole('region', { name: 'Resolved and open cases' });
+    const lifecycle = within(heroRow).getByTestId('case-state');
     expect(
       within(lifecycle)
         .getAllByRole('heading', { level: 2 })
@@ -1240,9 +1248,13 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(screen.queryByText(/Lifecycle snapshot/i)).toBeNull();
 
     // Bug #1: the donut hole no longer DUPLICATES the card's full <h2> title — each
-    // multi-word title appears exactly once (the heading), never a second time in the ring.
-    expect(screen.getAllByText('Cases resolved', { exact: true })).toHaveLength(1);
-    expect(screen.getAllByText('Open cases', { exact: true })).toHaveLength(1);
+    // multi-word title appears exactly once in its panel (the heading), never a second
+    // time in the ring. Scoped to the snapshots' panel: since Round 14 the strip's
+    // sentence-case "Open cases" tile label reads the same words, as a different figure.
+    const snapshots = screen.getByTestId('case-state');
+    expect(within(snapshots).getAllByText('Cases resolved', { exact: true })).toHaveLength(1);
+    expect(within(snapshots).getAllByText('Open cases', { exact: true })).toHaveLength(1);
+    expect(within(snapshots).getByText('Open cases', { exact: true }).tagName).toBe('H2');
 
     // The ring centers contain numbers only; the headings already identify each lifecycle.
     expect(within(resolvedRing).queryByText('res', { exact: true })).toBeNull();
@@ -1351,7 +1363,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // `order-*` utility anywhere — so this is a reading-order change, not a WCAG 1.3.2
     // regression, and it must never be "fixed" with `xl:order-*`.
     const queue = screen.getByRole('region', { name: /Latest cases/i });
-    const timing = screen.getByRole('region', { name: /Mean time to detect \/ respond/i });
+    const timing = screen.getByRole('region', { name: 'Response time' });
 
     expect(screen.queryByRole('region', { name: /Cases burndown/i })).toBeNull();
     expect(timing.compareDocumentPosition(queue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -1360,7 +1372,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
   it('reads timing from the SERVER posture, honoring the honest "not measured" DASH', async () => {
     render(<Overview onNavigate={vi.fn()} />);
     await screen.findByTestId('page-hero');
-    const timingRegion = screen.getByRole('region', { name: /Mean time to detect/i });
+    const timingRegion = screen.getByRole('region', { name: 'Response time' });
     expect(timingRegion).toBeInTheDocument();
     // MTTD has no posture block here → an explicit "not measured", never a fabricated number.
     await waitFor(() => expect(screen.getByText(/not measured/i)).toBeInTheDocument());
@@ -1410,7 +1422,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     return screen.getByTestId('kpi-drilldown-drillthrough');
   }
 
-  it('drills Open Cases through to every non-terminal status and carries NO window', async () => {
+  it('drills Open cases through to every non-terminal status and carries NO window', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
@@ -1427,7 +1439,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(onNavigate.mock.calls[0][1]).not.toHaveProperty('window');
   });
 
-  it('drills Total Cases through to the whole window cohort, with NO status facet', async () => {
+  it('drills Total cases through to the whole window cohort, with NO status facet', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
@@ -1440,7 +1452,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     expect(onNavigate.mock.calls[0][1]).not.toHaveProperty('status');
   });
 
-  it('drills Resolved / Closed through to the __terminal__ facet, never one status', async () => {
+  it('drills Resolved or closed through to the __terminal__ facet, never one status', async () => {
     const onNavigate = vi.fn();
     render(<Overview onNavigate={onNavigate} />);
     await screen.findByTestId('page-hero');
@@ -1509,7 +1521,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     });
   });
 
-  it('takes Total Critical from the SERVER band tally, never from the bounded page', async () => {
+  it('takes Total critical from the SERVER band tally, never from the bounded page', async () => {
     // The regression this pins: the tile used to count the Critical band over whatever
     // page `listCases` happened to return, which silently reported a sample as a
     // total. The page and the server are deliberately made to DISAGREE here — 2 rows
@@ -1544,7 +1556,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
     // partitions — never "of 5", the page it was rendered beside. It is stated in the
     // tile's help now rather than beside the numeral, and it is the SAME derivation the
     // tile computes, so this still catches a share silently re-based on the case page.
-    const help = await readTileHelp('Total Critical');
+    const help = await readTileHelp('Total critical');
     expect(help).toContain('Right now: 31% of 120.');
     expect(help).not.toMatch(/of 5\./);
 
@@ -1581,7 +1593,7 @@ describe('Overview — Cyber Defence Center (rebuild)', () => {
       q?.to ? { cases: before, total: before.length } : { cases: now, total: now.length },
     );
     render(<Overview onNavigate={vi.fn()} />);
-    const lifecycle = await screen.findByRole('region', { name: 'Resolved and open cases' });
+    const lifecycle = await screen.findByTestId('case-state');
     const chip = await within(lifecycle).findByRole('img', { name: /^changed up by \+3, worse$/ });
     expect(chip).toHaveTextContent('+3');
     expect(chip).not.toHaveTextContent('%');

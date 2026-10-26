@@ -1,0 +1,26 @@
+{
+  "package": "W7b",
+  "note": "Round 14 W7b (the run inside a case) owns these files and empties this list.",
+  "entries": [
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/pages/CaseDetail.tsx",
+      "max": 3
+    },
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/pages/casedetail/BulkCloseDialog.tsx",
+      "max": 1
+    },
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/pages/casedetail/CollaborationPanel.tsx",
+      "max": 2
+    },
+    {
+      "rule": "spinning-refresh",
+      "file": "soc/pages/casedetail/ConfirmActionDialog.tsx",
+      "max": 3
+    }
+  ]
+}

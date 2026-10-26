@@ -34,6 +34,9 @@ export const StatCard = React.forwardRef<HTMLElement, StatCardProps>(
     <KpiTile
       ref={ref}
       variant="bar"
+      // Round 14: the bordered tile with its accent bar is the framed chrome; StatCard
+      // keeps it, so its callers render exactly as before.
+      chrome="framed"
       label={label}
       value={value}
       sub={sub}
