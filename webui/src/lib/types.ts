@@ -78,6 +78,12 @@ export interface AuthMe {
   remembered?: boolean;
   /** The live session summary (authenticated only). */
   session?: AuthSessionSummary;
+  /**
+   * Round 14 (SPEC §4.4.5, D16): true when row-level data scope (`can_object`) is on
+   * and applies to this viewer's role for cases. Case-derived dashboard widgets then
+   * do not fetch and read "Hidden while row-level scope is on.".
+   */
+  object_scoped?: boolean;
 }
 
 // --------------------------------------------------------------------------- //
@@ -1485,7 +1491,9 @@ export type BackgroundJobKind =
   | 'rag_import'
   | 'rag_rebuild'
   | 'tiered_reset'
-  | 'storage_lifecycle_apply';
+  | 'storage_lifecycle_apply'
+  /** Round 14 (SPEC §4.5.6): params `AuditExportJobParams` (`types-audit.ts`). */
+  | 'audit_export';
 
 export interface BackgroundJobProgress {
   done: number;
@@ -2395,6 +2403,8 @@ export interface UserPrefs {
    * invalid value so the org default (`chat_agent.default_stream_mode`) applies.
    * Round 13: `misc.chat_suggest_start` and `misc.chat_suggest_follow_ups` are the
    * personal suggestion switches ({@link ChatSuggestPrefs}; absent means on).
+   * Round 14: `misc.dashboards_hidden` and `misc.dismissed_intros` are lists the
+   * server normalises on load (`Round14PrefsMisc` in `types-dashboards.ts`).
    */
   misc?: Record<string, unknown>;
   /** Saved chat prompts (≤ 50; title ≤ 60, text ≤ 2000). Plain user text (#9). */
@@ -2569,7 +2579,14 @@ export interface Case {
   token_cost?: number;
   error?: string;
   agent_persona?: string;
+  /** Kept readable for cases investigated before Round 14; never written by new code. */
   playbook_id?: string;
+  /**
+   * Round 14 (SPEC §4.10.9): the Published runbook whose guidance the investigator
+   * received, and its version. Null or absent on older cases (history is never rewritten).
+   */
+  runbook_id?: string | null;
+  runbook_version?: number | null;
   /** The source instance this case originated from (additive; mirrors backend). */
   source_id?: string | null;
   /** Human-readable display name of the originating source (additive). */
@@ -2918,6 +2935,18 @@ export interface CaseActionInput {
   status?: CaseStatus;
   /** Deprecated compatibility input; the Console does not expose escalation tiers. */
   level?: number;
+  /**
+   * Round 14 (SPEC §4.10.15, D34): why a person closes with required runbook steps
+   * still open (1 to 500 characters, audited). Also a `case_lifecycle` job param,
+   * where one shared reason covers the whole bulk close.
+   */
+  open_steps_reason?: string;
+  /**
+   * Round 14: ask the server to answer `409 runbook_steps_open` (with the open steps)
+   * instead of closing when required steps are open and no reason is given. The
+   * Console sends it so it can show the close dialog; a close never blocks otherwise.
+   */
+  require_open_steps_reason?: boolean;
 }
 
 /** Response from POST /api/settings/case-id/preview (F7 live preview). */
@@ -6038,6 +6067,16 @@ export interface DashboardLayout {
   schema_version?: number;
   created_at?: string;
   updated_at?: string;
+  /**
+   * Round 14 (SPEC §4.4.1): the window the board's time-range picker starts on.
+   * Absent or null means the client default `now-24h`.
+   */
+  default_window?: 'now-24h' | 'now-7d' | 'now-30d' | 'now-90d' | null;
+  /**
+   * Round 14: the built-in board this one was copied from (for example
+   * `builtin:soc-operations`), shown as "Copied from SOC operations". Plain data.
+   */
+  derived_from?: string | null;
   [key: string]: unknown;
 }
 

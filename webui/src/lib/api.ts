@@ -1479,8 +1479,15 @@ export const api = {
     ),
 
   // ---- Analytics surfaces ---------------------------------------------- //
-  listCases: (query?: Record<string, unknown>) =>
-    request<CasesResponse>('GET', 'cases', { query }),
+  // Round 14 (SPEC §4.6.1): `rule` is an exact match on `Case.rule_ids`; `closed_by`
+  // filters terminal cases by who closed them, in the engine's `CASE_FILTER_FIELDS`
+  // vocabulary (`case_aggregate.closed_by`); the `#/scans` redirect uses `agent`.
+  listCases: (
+    query?: Record<string, unknown> & {
+      rule?: string;
+      closed_by?: 'agent' | 'analyst' | 'analyst_policy' | 'system';
+    },
+  ) => request<CasesResponse>('GET', 'cases', { query }),
   getCase: (caseId: string) =>
     request<Case>('GET', `cases/${encodeURIComponent(caseId)}`),
 

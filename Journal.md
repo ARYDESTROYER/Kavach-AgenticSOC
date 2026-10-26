@@ -11631,3 +11631,10 @@
 - Tests: none.
 - Status: in-progress.
 - Next: binding SPEC with work packages, reviewed, then implementation waves.
+
+### 2026-10-26 08:40Z — Orchestrator — Round 14 WP-0: shared contracts
+- Context: SPEC §7.2, the contracts every later package builds on, plus the BEFORE captures for the operator's progress images.
+- Did: models (dashboard default window and derivation, audit record fields with a canonical record id grammar and helpers, rule summary, metrics breakdown, the full runbook and run models, request bodies), constants, the new permissions (`audit:export`, `runbooks:run`, `runbooks:publish`; `playbooks` still present), type-only web mirrors and lazy client modules, the KPI binding table, optional fields on existing types; 205 backend and 39 web contract tests. Two adversarial reviews found 22 issues (record ids that could not hold keyed Elasticsearch ids, IP values that could break an `ip` mapping, strict dashboard reads that could erase a board, publish without a revision check, non-https evidence links, unbounded request sizes); all fixed and re-reviewed clean. 121 BEFORE shots of an unchanged base build.
+- Tests: backend 8,984 passed, 4 skipped, 6 failed (all pre-existing: five need network or environment the sandbox injects, one records test expects AGENTS.md to name Round 14, owned by WP-DOC); ruff fatal clean; tsc, lint 0/0, gates, 27 web test files green; entry chunk unchanged at 371,876 B (151 B left in the budget).
+- Status: done.
+- Next: wave A backend packages and wave C shared web primitives in parallel.

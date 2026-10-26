@@ -54,12 +54,22 @@ RESOURCES: dict[str, list[str]] = {
     "settings": ["read", "manage"],
     "users": ["manage"],
     "proposals": ["read", "approve"],
+    # ``playbooks`` stays for one release (SPEC Round 14 §3.7): existing routes and
+    # chat tools still gate on it until the runbook feature replaces them, after which
+    # it leaves this vocabulary and every stored grant maps onto ``runbooks``.
     "playbooks": ["read", "run", "manage"],
-    "runbooks": ["read", "manage"],
+    # Round 14 (SPEC §3.7): one runbook feature. ``read`` sees the library and a
+    # case's runs; ``run`` works a case's checklist (steps, decisions, lookups);
+    # ``manage`` authors drafts, duplicates, imports and retires; ``publish`` makes a
+    # version live, the only step that lets runbook text reach the investigator as
+    # trusted guidance (#9).
+    "runbooks": ["read", "run", "manage", "publish"],
     "rag": ["read", "manage"],
     "memory": ["read", "manage"],
     "cost": ["view"],
-    "audit": ["view"],
+    # Round 14 (SPEC §3.7, D5): ``export`` writes a CSV or JSON Lines file of audit
+    # rows. Separate from ``view`` so a role can read the log without bulk extraction.
+    "audit": ["view", "export"],
     "metrics": ["view"],
     # Portable application-state export. Deliberately NOT settings-like: only the
     # two platform-owner roles receive it by default; read-only analysts/auditors do
@@ -135,7 +145,7 @@ _SOC_MANAGER: dict[str, list[str]] = {
     "rag": [ALL],
     "memory": [ALL],
     "cost": ["view"],
-    "audit": ["view"],
+    "audit": ["view", "export"],
     "metrics": ["view"],
     "data_export": ["export"],
     "system_updates": ["read"],
@@ -148,7 +158,7 @@ _ANALYST_TIER2: dict[str, list[str]] = {
     "settings": ["read"],
     "proposals": ["read"],
     "playbooks": ["read", "run"],
-    "runbooks": ["read"],
+    "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
@@ -162,7 +172,9 @@ _ANALYST_TIER1: dict[str, list[str]] = {
     "settings": ["read"],
     "proposals": ["read"],
     "playbooks": ["read"],
-    "runbooks": ["read"],
+    # Round 14 (SPEC E8): working a case's runbook checklist is the analyst's core
+    # task, so every role except the auditor may run it.
+    "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
@@ -177,7 +189,7 @@ _RESPONDER: dict[str, list[str]] = {
     "settings": ["read"],
     "proposals": ["read", "approve"],
     "playbooks": ["read", "run"],
-    "runbooks": ["read"],
+    "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
@@ -186,6 +198,8 @@ _RESPONDER: dict[str, list[str]] = {
 }
 
 # Auditor: read/view only across the board — never any write/manage/close/approve.
+# The one extraction it holds is ``audit:export`` (Round 14 D5): a file of the audit
+# rows it can already read, which changes nothing.
 _AUDITOR: dict[str, list[str]] = {
     "cases": ["read"],
     "sources": ["read"],
@@ -196,7 +210,8 @@ _AUDITOR: dict[str, list[str]] = {
     "rag": ["read"],
     "memory": ["read"],
     "cost": ["view"],
-    "audit": ["view"],
+    # Round 14 (SPEC D5): the auditor exports what it can read.
+    "audit": ["view", "export"],
     "metrics": ["view"],
     **_settings_like(["read"]),
 }

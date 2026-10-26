@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
+import json
 import math
 import re
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, ClassVar, Iterable, Literal, get_args
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Iterable, Literal, NamedTuple, get_args
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 from typing_extensions import TypedDict
@@ -818,6 +821,31 @@ class DashboardWidget(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)  # declarative widget config (#9)
 
 
+#: Round 14 (SPEC §4.4.1): the board windows a dashboard may start on.
+DashboardWindow = Literal["now-24h", "now-7d", "now-30d", "now-90d"]
+DASHBOARD_WINDOWS: tuple[str, ...] = get_args(DashboardWindow)
+#: ``DashboardLayout.derived_from``: a board id in the client's ``NAV_ID`` alphabet.
+DASHBOARD_DERIVED_FROM_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
+_DASHBOARD_DERIVED_FROM_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")
+#: Board ids the server refuses to CREATE (SPEC §2.2 item 4, E4): the builder's draft
+#: id and the two reserved prefixes. Older stored boards keep working whatever their
+#: id; only a new create is refused (``400 dashboard_id_reserved``).
+DASHBOARD_RESERVED_IDS: frozenset[str] = frozenset({"new"})
+DASHBOARD_RESERVED_ID_PREFIXES: tuple[str, ...] = ("builtin:", "u:")
+#: The built-in boards (code-defined in the client's ``dashboard/builtins.ts``, never
+#: stored). The Cyber Defence Center is the landing page and cannot be hidden.
+BUILTIN_DASHBOARD_LANDING_ID = "builtin:cyber-defence-center"
+BUILTIN_DASHBOARD_ID_PATTERN = r"^builtin:[a-z-]{1,40}$"
+_BUILTIN_DASHBOARD_ID_RE = re.compile(BUILTIN_DASHBOARD_ID_PATTERN)
+#: ``UserPrefs.misc.dashboards_hidden`` holds at most this many built-in ids.
+MAX_HIDDEN_DASHBOARDS = 8
+
+
+def is_reserved_dashboard_id(dashboard_id: str) -> bool:
+    """True when ``dashboard_id`` may not be used to CREATE a personal board."""
+    return dashboard_id in DASHBOARD_RESERVED_IDS or dashboard_id.startswith(DASHBOARD_RESERVED_ID_PREFIXES)
+
+
 class DashboardLayout(BaseModel):
     """One named custom dashboard (Round 5 / G7). A user owns a set of these keyed
     by ``id`` on :attr:`UserPrefs.dashboards`. Persisted backend-agnostically as
@@ -845,6 +873,46 @@ class DashboardLayout(BaseModel):
     layouts: dict[str, list[DashboardWidget]] = Field(default_factory=dict)
     created_at: str = Field(default_factory=iso_now)
     updated_at: str = Field(default_factory=iso_now)
+    # --- Round 14 (SPEC §4.4.1; additive, defaulted ``None`` so every stored board
+    # loads unchanged and a build before Round 14 ignores them). ---
+    # The window the board's time-range picker starts on. Only the four relative
+    # presets exist because every widget provider takes a trailing ``window_hours``
+    # (24, 168, 720, 2,160) and ``breakdown`` the same token. Absent means the client
+    # default ``now-24h``. A duplicate of a built-in board copies its window here.
+    default_window: DashboardWindow | None = None
+    # The board this one was copied from (a built-in id such as
+    # ``builtin:soc-operations``). Plain data shown as "Copied from SOC operations";
+    # never a link target the server resolves.
+    derived_from: str | None = Field(default=None, max_length=64, pattern=DASHBOARD_DERIVED_FROM_PATTERN)
+
+    # Read leniently. Every user's boards share ONE stored document, and the store
+    # skips a board that fails validation and re-encodes the rest on the next write,
+    # so a strict read would let one drifted cosmetic value (a window preset added by a
+    # later release, then a rollback to this one) erase that whole board for good.
+    # An unknown value reads as ``None`` instead. Requests are validated strictly by
+    # :class:`DashboardLayoutIn`, which overrides this validator.
+    @field_validator("default_window", "derived_from", mode="before")
+    @classmethod
+    def _lenient_round14_fields(cls, value: Any, info: Any) -> Any:
+        if value is None:
+            return None
+        if info.field_name == "default_window":
+            return value if value in DASHBOARD_WINDOWS else None
+        if isinstance(value, str) and _DASHBOARD_DERIVED_FROM_RE.fullmatch(value):
+            return value
+        return None
+
+
+class DashboardLayoutIn(DashboardLayout):
+    """The create and update request body of a personal board (``POST
+    /api/dashboards``, ``PUT /api/dashboards/{id}``): :class:`DashboardLayout` with the
+    Round 14 fields validated strictly, so a bad ``default_window`` or
+    ``derived_from`` is refused at the write boundary instead of being dropped."""
+
+    @field_validator("default_window", "derived_from", mode="before")
+    @classmethod
+    def _lenient_round14_fields(cls, value: Any, info: Any) -> Any:  # strict: no rewrite
+        return value
 
 
 MAX_CHAT_PROMPTS = 50
@@ -861,6 +929,57 @@ CHAT_PROMPT_CATEGORIES: tuple[str, ...] = get_args(ChatPromptCategory)
 #: (``chat_suggest_start``: start cards and the thread catch-up line;
 #: ``chat_suggest_follow_ups``: follow-up chips). Absent means on; a non-bool is removed.
 CHAT_SUGGEST_PREF_KEYS: tuple[str, ...] = ("chat_suggest_start", "chat_suggest_follow_ups")
+
+#: Round 14 (SPEC §4.4.1, §4.9.2): personal list keys in ``UserPrefs.misc``.
+#: ``dashboards_hidden`` lists the built-in boards the viewer hid from the Dashboards
+#: library; ``dismissed_intros`` lists the ``Callout intro`` notices the viewer
+#: dismissed. Both are normalised on load (never rejected), so a bad value can never
+#: fail the whole prefs bucket.
+DASHBOARDS_HIDDEN_PREF_KEY = "dashboards_hidden"
+DISMISSED_INTROS_PREF_KEY = "dismissed_intros"
+DISMISSED_INTRO_ID_PATTERN = r"^[a-z0-9][a-z0-9_.:-]{0,63}$"
+_DISMISSED_INTRO_ID_RE = re.compile(DISMISSED_INTRO_ID_PATTERN)
+MAX_DISMISSED_INTROS = 50
+
+
+def _normalise_hidden_dashboards(value: Any) -> list[str] | None:
+    """``misc.dashboards_hidden``: built-in ids only (never the landing board), in
+    their first order, de-duplicated, at most :data:`MAX_HIDDEN_DASHBOARDS`. ``None``
+    when the value is not a list (the key is then removed)."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not _BUILTIN_DASHBOARD_ID_RE.fullmatch(item):
+            continue
+        if item == BUILTIN_DASHBOARD_LANDING_ID or item in out:
+            continue
+        out.append(item)
+        if len(out) >= MAX_HIDDEN_DASHBOARDS:
+            break
+    return out
+
+
+def _normalise_dismissed_intros(value: Any) -> list[str] | None:
+    """``misc.dismissed_intros``: notice ids in the lower-case id alphabet, first
+    order, de-duplicated, at most :data:`MAX_DISMISSED_INTROS`; ``None`` for a
+    non-list (the key is then removed)."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not _DISMISSED_INTRO_ID_RE.fullmatch(item) or item in out:
+            continue
+        out.append(item)
+        if len(out) >= MAX_DISMISSED_INTROS:
+            break
+    return out
+
+
+_ROUND14_LIST_PREFS: dict[str, Any] = {
+    DASHBOARDS_HIDDEN_PREF_KEY: _normalise_hidden_dashboards,
+    DISMISSED_INTROS_PREF_KEY: _normalise_dismissed_intros,
+}
 
 
 class ChatPrompt(BaseModel):
@@ -934,7 +1053,11 @@ class UserPrefs(BaseModel):
       invalid value is removed so the org default applies). Round 13 (SPEC-chat
       §3.2.1): ``misc.chat_suggest_start`` (start cards and the thread catch-up line)
       and ``misc.chat_suggest_follow_ups`` (follow-up chips) are personal switches;
-      absent means on, and a value that is not a bool is removed on load.
+      absent means on, and a value that is not a bool is removed on load. Round 14
+      (SPEC §4.4.1, §4.9.2): ``misc.dashboards_hidden`` (built-in board ids hidden
+      from the Dashboards library, never the landing board, at most 8) and
+      ``misc.dismissed_intros`` (dismissed ``Callout intro`` ids, at most 50) are
+      lists normalised on load; a value that is not a list is removed.
     * ``chat_prompts`` — the user's saved chat prompts (chat revamp SPEC §10.4).
     """
 
@@ -958,9 +1081,22 @@ class UserPrefs(BaseModel):
     def _misc_chat_stream_mode(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
-        if "chat_stream_mode" not in value and not any(k in value for k in CHAT_SUGGEST_PREF_KEYS):
+        if (
+            "chat_stream_mode" not in value
+            and not any(k in value for k in CHAT_SUGGEST_PREF_KEYS)
+            and not any(k in value for k in _ROUND14_LIST_PREFS)
+        ):
             return value
         out = dict(value)
+        # Round 14 (SPEC §4.4.1, §4.9.2): the personal list keys are normalised, a
+        # non-list value is removed, never coerced.
+        for key, normalise in _ROUND14_LIST_PREFS.items():
+            if key in out:
+                cleaned = normalise(out[key])
+                if cleaned is None:
+                    out.pop(key, None)
+                else:
+                    out[key] = cleaned
         if "chat_stream_mode" in out:
             mode = out.get("chat_stream_mode")
             normalised = mode.strip().lower() if isinstance(mode, str) else None
@@ -990,6 +1126,18 @@ class UserPrefs(BaseModel):
     def chat_suggest_follow_ups(self) -> bool:
         """Round 13: the viewer's "Suggested follow-ups" switch (default on)."""
         return self.misc.get("chat_suggest_follow_ups") is not False
+
+    @property
+    def dashboards_hidden(self) -> list[str]:
+        """Round 14: the built-in boards this viewer hid from the Dashboards library."""
+        value = self.misc.get(DASHBOARDS_HIDDEN_PREF_KEY)
+        return list(value) if isinstance(value, list) else []
+
+    @property
+    def dismissed_intros(self) -> list[str]:
+        """Round 14: the ``Callout intro`` notices this viewer dismissed."""
+        value = self.misc.get(DISMISSED_INTROS_PREF_KEY)
+        return list(value) if isinstance(value, list) else []
 
 
 # --------------------------------------------------------------------------- #
@@ -1725,7 +1873,15 @@ class Case(BaseModel):
     agent_persona: str = ""
     # The Markdown playbook selected for this case (deterministic match), empty when
     # none matched / playbooks disabled. Recorded for the UI/audit "why".
+    # Round 14 (SPEC §4.10.9): kept readable for stored cases and never written by new
+    # code; readers prefer ``runbook_id``.
     playbook_id: str = ""
+    # Round 14 (SPEC §4.10.9): the Published runbook (built-in or operator) whose
+    # guidance the investigator received, and its version. ``None`` on every case
+    # investigated before Round 14 or with no matching runbook; history is never
+    # rewritten. Advisory provenance only, never read by ``decide()`` (#3).
+    runbook_id: str | None = None
+    runbook_version: int | None = None
     # Append-only analyst feedback on the AI verdict (the eval/quality loop).
     feedback: list[FeedbackEntry] = Field(default_factory=list)
     # Collaboration: free-form analyst tags, threaded comments, and an owner.
@@ -1852,6 +2008,190 @@ class Case(BaseModel):
 # --------------------------------------------------------------------------- #
 # Section 7.2 — tlsoc-agent-audit-* (append-only)
 # --------------------------------------------------------------------------- #
+# Round 14 (SPEC §4.5.3): the structured fields a new audit row may carry. Every one
+# is optional and written at append time only; there is no backfill. Values that come
+# from a caller (a user agent, a forwarded header, a setting value) are bounded here so
+# an audit append never fails because the caller sent something long.
+AuditOutcome = Literal["success", "failure", "denied", "partial", "unknown"]
+AUDIT_OUTCOMES: tuple[str, ...] = get_args(AuditOutcome)
+AuditActorType = Literal["human", "agent", "system", "service"]
+AUDIT_ACTOR_TYPES: tuple[str, ...] = get_args(AuditActorType)
+AuditTargetType = Literal[
+    "case", "user", "role", "source", "setting", "job", "rule", "runbook", "dashboard", "export",
+]
+AUDIT_TARGET_TYPES: tuple[str, ...] = get_args(AuditTargetType)
+#: ``AuditDoc.action``: ``<resource>.<verb>`` (``auth.login``, ``runbook.publish_failed``).
+AUDIT_ACTION_PATTERN = r"^[a-z_]+\.[a-z_]+$"
+_AUDIT_ACTION_RE = re.compile(r"[a-z_]+\.[a-z_]+")
+AUDIT_ACTION_MAX_CHARS = 64
+#: ``X-Request-ID`` is honoured only in this alphabet; otherwise a UUIDv4 is minted.
+AUDIT_REQUEST_ID_PATTERN = r"^[A-Za-z0-9._-]{8,64}$"
+#: ``session_ref``: the first 16 hex characters of an HMAC of the session id.
+AUDIT_SESSION_REF_PATTERN = r"^[0-9a-f]{16}$"
+AUDIT_FORWARDED_FOR_MAX_CHARS = 256
+AUDIT_USER_AGENT_MAX_CHARS = 512
+AUDIT_TARGET_ID_MAX_CHARS = 256
+AUDIT_TARGET_LABEL_MAX_CHARS = 200
+AUDIT_ROLE_MAX_CHARS = 64
+AUDIT_RUN_ID_MAX_CHARS = 128
+AUDIT_MAX_CHANGES = 50
+AUDIT_CHANGE_VALUE_MAX_CHARS = 500
+AUDIT_CHANGE_FIELD_MAX_CHARS = 200
+#: Every free-text audit field is capped at this length when written (the inspector
+#: says "Stored truncated at 1,000 characters" for a field that hit it).
+AUDIT_TEXT_WRITE_CAP = 1_000
+
+
+def _clip_text(value: Any, limit: int) -> Any:
+    """Cut a string to ``limit`` characters; any other value passes to validation."""
+    return value[:limit] if isinstance(value, str) else value
+
+
+_IPV4_WITH_PORT_RE = re.compile(r"(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}")
+_BRACKETED_IPV6_RE = re.compile(r"\[([^\]]{1,64})\](?::\d{1,5})?")
+
+
+def normalise_audit_ip(value: Any) -> str | None:
+    """A client address as Elasticsearch's ``ip`` type stores it, or ``None``.
+
+    ``client.ip`` is mapped as type ``ip`` (SPEC §4.5.3), which rejects the WHOLE
+    document for an empty or non-address value, so an audit row must never carry one.
+    Accepts IPv4, IPv6, a bracketed IPv6 (``[2001:db8::1]:443``), an ``address:port``
+    IPv4 and an IPv6 zone (``fe80::1%eth0``, the zone is dropped); returns the
+    canonical text. Anything else (``""``, ``"testclient"``, ``"unix:"``, a host name)
+    returns ``None``: the raw value stays readable in ``peer`` or ``forwarded_for``.
+    A value that is not a string is left to validation (a programming error)."""
+    if value is None or not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or len(text) > 100:
+        return None
+    bracketed = _BRACKETED_IPV6_RE.fullmatch(text)
+    if bracketed:
+        text = bracketed.group(1)
+    else:
+        with_port = _IPV4_WITH_PORT_RE.fullmatch(text)
+        if with_port:
+            text = with_port.group(1)
+    text = text.split("%", 1)[0]
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError:
+        return None
+
+
+class AuditClient(BaseModel):
+    """Where a request-driven audit row came from (SPEC §4.5.3, personal data, D9).
+
+    ``ip`` is believed from a forwarded header only when the socket peer is a named
+    trusted proxy, and then only the rightmost entry (``ip_source="trusted_proxy"``);
+    otherwise it is the socket peer (``ip_source="peer"``) whatever the caller sent.
+    ``ip`` is always a parsed address or ``None`` (:func:`normalise_audit_ip`): it is
+    mapped as Elasticsearch type ``ip``, which refuses the whole row for ``""`` or a
+    non-address such as a Unix-socket peer. ``peer`` keeps the raw socket address as
+    text. ``forwarded_for`` keeps the raw header as untrusted text, never used to
+    filter or group. Values are bounded on write."""
+
+    ip: str | None = Field(default=None, max_length=64)
+    ip_source: Literal["peer", "trusted_proxy"] = "peer"
+    peer: str = Field(default="", max_length=64)
+    forwarded_for: str | None = None
+    user_agent: str = ""
+
+    @field_validator("ip", mode="before")
+    @classmethod
+    def _parsed_address(cls, value: Any) -> Any:
+        return normalise_audit_ip(value)
+
+    @field_validator("peer", mode="before")
+    @classmethod
+    def _bounded_address(cls, value: Any) -> Any:
+        return "" if value is None else _clip_text(value, 64)
+
+    @field_validator("forwarded_for", mode="before")
+    @classmethod
+    def _bounded_forwarded_for(cls, value: Any) -> Any:
+        return _clip_text(value, AUDIT_FORWARDED_FOR_MAX_CHARS)
+
+    @field_validator("user_agent", mode="before")
+    @classmethod
+    def _bounded_user_agent(cls, value: Any) -> Any:
+        return "" if value is None else _clip_text(value, AUDIT_USER_AGENT_MAX_CHARS)
+
+
+class AuditTarget(BaseModel):
+    """What an audit row acted on: ``{type, id, label, revision}`` (SPEC §4.5.3,
+    §3.6). ``label`` is the human name at the time (a case number, a dashboard name)
+    and is plain data. ``revision`` is the store revision the write creates, written
+    by ``audited_write`` on the action row BEFORE the store write: if the process
+    stops between the two, a reader can see that the named revision never existed
+    (the documented crash limit). ``None`` for targets without a revision."""
+
+    type: AuditTargetType
+    id: str = Field(min_length=1, max_length=AUDIT_TARGET_ID_MAX_CHARS)
+    label: str = ""
+    revision: int | None = Field(default=None, ge=0)
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _bounded_id(cls, value: Any) -> Any:
+        return _clip_text(value, AUDIT_TARGET_ID_MAX_CHARS)
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _bounded_label(cls, value: Any) -> Any:
+        return "" if value is None else _clip_text(value, AUDIT_TARGET_LABEL_MAX_CHARS)
+
+
+def _audit_change_text(value: Any) -> Any:
+    """A changed value as the text ``AuditChange`` stores (``str | None``).
+
+    Settings, role and rule values are often numbers, booleans, lists or objects. They
+    become canonical JSON text (``20``, ``true``, ``["a", "b"]``, sorted keys) so a
+    writer that forgets to stringify one can never fail the audit-first append (a
+    failed append refuses the user's write with ``503 audit_unavailable``)."""
+    if value is None or isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):  # a circular or unsortable structure
+        return str(value)
+
+
+class AuditChange(BaseModel):
+    """One changed field in a settings, user, role, rule or runbook write (SPEC
+    §4.5.3). A secret is written as ``{field, before: None, after: None, secret:
+    True}``; a URL is reduced to scheme and host by the writer, which sets ``secret``
+    when anything was removed. A value that is not text is stored as canonical JSON
+    text (:func:`_audit_change_text`); ``before`` and ``after`` are cut to 500
+    characters."""
+
+    field: str = Field(min_length=1, max_length=AUDIT_CHANGE_FIELD_MAX_CHARS)
+    before: str | None = None
+    after: str | None = None
+    secret: bool = False
+
+    @field_validator("field", mode="before")
+    @classmethod
+    def _bounded_field(cls, value: Any) -> Any:
+        return _clip_text(value, AUDIT_CHANGE_FIELD_MAX_CHARS)
+
+    @field_validator("before", "after", mode="before")
+    @classmethod
+    def _bounded_value(cls, value: Any) -> Any:
+        return _clip_text(_audit_change_text(value), AUDIT_CHANGE_VALUE_MAX_CHARS)
+
+
+#: The Round 14 ``AuditDoc`` keys. A row that leaves one unset is stored without the
+#: key, so every row written by a writer that does not use them keeps its exact
+#: pre-Round-14 shape (and a keyed retry across the upgrade still matches its first
+#: append). Readers treat an absent key as "not recorded".
+AUDIT_ROUND14_FIELDS: tuple[str, ...] = (
+    "outcome", "actor_type", "action", "actor_role", "client", "session_ref",
+    "target", "changes", "request_id", "run_id",
+)
+
+
 class AuditDoc(BaseModel):
     # Optional deterministic idempotency key for privileged append-only events.
     # Proposal decisions use this so a retry after an ambiguous response confirms
@@ -1880,6 +2220,49 @@ class AuditDoc(BaseModel):
     tool_input: Any = None
     tool_output_summary: str | None = None
     result_summary: str | None = None
+    # --- Round 14 (SPEC §4.5.3; additive, optional, new rows only, no backfill). ---
+    # How the action ended. Legacy rows carry none; readers derive ``denied`` for
+    # ``access_denied`` and ``failure`` for ``error`` and mark it derived.
+    outcome: AuditOutcome | None = None
+    # Who acted: a person, the AI agent, the system, or a service acting for a person.
+    actor_type: AuditActorType | None = None
+    # The structured event name, ``<resource>.<verb>`` (``auth.login``,
+    # ``settings.updated``, ``runbook.published``). ``action_type`` stays the coarse
+    # category every existing reader and filter keeps using.
+    action: str | None = Field(default=None, max_length=AUDIT_ACTION_MAX_CHARS, pattern=AUDIT_ACTION_PATTERN)
+    # The actor's role at the time of a request-driven write.
+    actor_role: str | None = Field(default=None, max_length=AUDIT_ROLE_MAX_CHARS)
+    client: AuditClient | None = None
+    session_ref: str | None = Field(default=None, pattern=AUDIT_SESSION_REF_PATTERN)
+    target: AuditTarget | None = None
+    changes: list[AuditChange] | None = None
+    request_id: str | None = Field(default=None, pattern=AUDIT_REQUEST_ID_PATTERN)
+    # One id per investigation run, so the Agent activity scope can group its rows.
+    run_id: str | None = Field(default=None, max_length=AUDIT_RUN_ID_MAX_CHARS)
+
+    @field_validator("actor_role", mode="before")
+    @classmethod
+    def _bounded_actor_role(cls, value: Any) -> Any:
+        return _clip_text(value, AUDIT_ROLE_MAX_CHARS)
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def _bounded_changes(cls, value: Any) -> Any:
+        """At most :data:`AUDIT_MAX_CHANGES` entries, in the writer's order."""
+        if isinstance(value, (list, tuple)):
+            return list(value)[:AUDIT_MAX_CHANGES]
+        return value
+
+    # No return annotation on purpose: pydantic then keeps the field-based schema
+    # (an annotated ``dict`` would publish an untyped object).
+    @model_serializer(mode="wrap")
+    def _omit_unset_round14(self, handler: Any):  # noqa: ANN202
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in AUDIT_ROUND14_FIELDS:
+                if key in data and data[key] is None:
+                    del data[key]
+        return data
 
 
 class TraceStep(BaseModel):
@@ -3937,3 +4320,1580 @@ class InvestigateRequest(BaseModel):
     # investigation (additive; the proxy forwards it). Falls back to
     # ``Preferences.investigate_lookback``. The route auto-widens from here on 0 hits.
     lookback: str | None = None
+
+
+# =========================================================================== #
+# Round 14 contracts (docs/research/2026-10-round14/SPEC.md). This module is the one
+# home of every new wire model; the engines import them (``runbook_model.py`` and the
+# routes never redefine a field) and ``webui/src/lib/types-*.ts`` mirror them. Every
+# model below is presentation or human-workflow data: none is ever read by
+# ``engine/case_manager.decide()`` or ``AutoClosePolicy`` (#3), and every free-text
+# value that came from a log, a case or a person is plain data the Console renders as
+# text and a prompt only ever sees inside an untrusted fence (#9).
+# =========================================================================== #
+
+# --------------------------------------------------------------------------- #
+# §4.4.2 GET /api/metrics/breakdown
+# --------------------------------------------------------------------------- #
+BreakdownKind = Literal["cases", "usage"]
+#: ``by`` and ``then`` for ``kind=cases`` (``case_aggregate`` group fields).
+BreakdownCaseField = Literal[
+    "rule", "source", "severity", "status", "verdict", "closed_by", "assignee",
+    "mitre_tactic", "mitre_technique",
+]
+#: ``by`` and ``then`` for ``kind=usage`` (``case_aggregate.USAGE_GROUP_FIELDS``).
+BreakdownUsageField = Literal["surface", "role", "model", "provider", "service_tier"]
+BreakdownField = Literal[
+    "rule", "source", "severity", "status", "verdict", "closed_by", "assignee",
+    "mitre_tactic", "mitre_technique",
+    "surface", "role", "model", "provider", "service_tier",
+]
+BREAKDOWN_CASE_FIELDS: tuple[str, ...] = get_args(BreakdownCaseField)
+BREAKDOWN_USAGE_FIELDS: tuple[str, ...] = get_args(BreakdownUsageField)
+#: A case counts once in each value of these fields (a case with two rules is in both
+#: rows), so their rows never sum to ``total``.
+BREAKDOWN_MULTI_VALUED_FIELDS: frozenset[str] = frozenset({"rule", "mitre_tactic", "mitre_technique"})
+BreakdownBucket = Literal["hour", "day", "week"]
+BreakdownStatusGroup = Literal["open", "closed"]
+#: The case metric families every ``kind=cases`` group carries. AI verdict family:
+#: ``verdicted = verdict_tp + verdict_fp + verdict_needs_human``. Analyst outcome
+#: family (analyst-policy closes excluded): ``count = analyst_tp + analyst_fp +
+#: analyst_ungraded``. A surface names the family it shows and never mixes them.
+BREAKDOWN_CASE_METRICS: tuple[str, ...] = (
+    "count", "open_now", "verdicted", "verdict_tp", "verdict_fp", "verdict_needs_human",
+    "analyst_tp", "analyst_fp", "analyst_ungraded",
+)
+BREAKDOWN_USAGE_METRICS: tuple[str, ...] = ("calls", "cost_usd")
+BREAKDOWN_DEFAULT_TOP = 10
+BREAKDOWN_MAX_TOP = 50
+BREAKDOWN_DEFAULT_WINDOW = "now-7d"
+#: ``filter_rule``: one exact rule value, 1 to 256 printable characters.
+BREAKDOWN_FILTER_RULE_MAX_CHARS = 256
+
+
+class MetricsBreakdownGroup(BaseModel):
+    """One row of a breakdown. ``key`` is the ``by`` value (``None`` is the empty
+    group, for example the unassigned cases); ``then_key`` the ``then`` value;
+    ``bucket`` the zero-filled calendar bucket label. Keys are untrusted plain
+    strings (rule ids, source names, technique names). Case metrics are filled for
+    ``kind=cases`` and ``None`` for ``kind=usage``; ``calls`` and ``cost_usd`` the
+    other way round (for usage ``count`` equals ``calls``)."""
+
+    key: str | None = None
+    then_key: str | None = None
+    bucket: str | None = None
+    count: int = 0
+    open_now: int | None = None
+    verdicted: int | None = None
+    verdict_tp: int | None = None
+    verdict_fp: int | None = None
+    verdict_needs_human: int | None = None
+    analyst_tp: int | None = None
+    analyst_fp: int | None = None
+    analyst_ungraded: int | None = None
+    calls: int | None = None
+    cost_usd: float | None = None
+
+
+class MetricsBreakdownOther(BaseModel):
+    """The exact remainder past ``top``: how many records and how many groups."""
+
+    count: int = 0
+    groups: int = 0
+    calls: int | None = None
+    cost_usd: float | None = None
+
+
+class MetricsBreakdownBucket(BaseModel):
+    """One zero-filled calendar bucket of a bucketed breakdown, in order."""
+
+    label: str
+    in_progress: bool = False
+
+
+class MetricsBreakdown(BaseModel):
+    """``GET /api/metrics/breakdown`` (SPEC §4.4.2): exact case or usage counts by one
+    or two fields over a window, from the same engine as the chat's ``case_stats``,
+    so dashboards and chat agree on every number. ``exact`` is false and ``partial``
+    true when a store failure cut the scan (the figures are then lower bounds, said
+    so by the widget). ``multi_valued`` warns that rows do not sum to ``total``."""
+
+    kind: BreakdownKind = "cases"
+    by: BreakdownField
+    then: BreakdownField | None = None
+    bucket: BreakdownBucket | None = None
+    status_group: BreakdownStatusGroup | None = None
+    window_label: str = ""
+    window_from: str | None = None
+    window_to: str | None = None
+    total: int = 0
+    exact: bool = True
+    partial: bool = False
+    partial_reason: str | None = None
+    multi_valued: bool = False
+    groups: list[MetricsBreakdownGroup] = Field(default_factory=list)
+    buckets: list[MetricsBreakdownBucket] = Field(default_factory=list)
+    other: MetricsBreakdownOther | None = None
+
+
+# --------------------------------------------------------------------------- #
+# §4.5.5, §4.5.10 the audit read API
+# --------------------------------------------------------------------------- #
+AuditScope = Literal["people", "agent", "all"]
+AUDIT_SCOPES: tuple[str, ...] = get_args(AuditScope)
+AuditCategory = Literal["access", "config", "case_work", "agent", "system"]
+AUDIT_CATEGORIES: tuple[str, ...] = get_args(AuditCategory)
+AuditCountRelation = Literal["eq", "gte"]
+#: E12: opaque store-prefixed record ids, ``demo:`` first for Demo store rows:
+#:
+#: * ``es:<index>:<b64>``: the hit's index (never contains ``:``) and its ``_id`` as
+#:   unpadded base64url of the UTF-8 bytes. Keyed rows use their ``event_id`` as the
+#:   ``_id`` (``job:<id>:transition:3``, ``proposal-decision:<id>:approve``, up to the
+#:   512-byte Elasticsearch limit, so at most 683 encoded characters), and encoding
+#:   every ``_id`` keeps any of them, auto-generated or keyed, inside one URL-safe
+#:   alphabet (no ``/`` or ``%`` in ``GET /api/audit/records/{record_id}``).
+#: * ``sql:<row id>``: canonical decimal; keyed rows have a negative surrogate id.
+#: * ``mem:<n>``: an in-memory store's sequence number.
+#:
+#: Build and parse them only with :func:`encode_audit_record_id` and
+#: :func:`decode_audit_record_id`. ASCII classes on purpose: the Rust regex engine.
+AUDIT_ES_ID_MAX_BYTES = 512
+AUDIT_ES_INDEX_MAX_CHARS = 255
+AUDIT_RECORD_ID_PATTERN = (
+    r"^(demo:)?(es:[a-z0-9._+-]{1,255}:[A-Za-z0-9_-]{2,683}"
+    r"|sql:-?[1-9][0-9]{0,18}|mem:[0-9]{1,12})$"
+)
+#: The longest record id the grammar admits (``demo:es:`` + index + ``:`` + 683).
+AUDIT_RECORD_ID_MAX_CHARS = len("demo:es:") + AUDIT_ES_INDEX_MAX_CHARS + 1 + 683
+_AUDIT_RECORD_ID_RE = re.compile(AUDIT_RECORD_ID_PATTERN)
+_AUDIT_ES_INDEX_RE = re.compile(r"[a-z0-9._+-]{1,255}")
+_SQL_ROW_ID_LIMIT = (1 << 63) - 1
+AuditRecordStore = Literal["es", "sql", "mem"]
+
+
+class AuditRecordRef(NamedTuple):
+    """A parsed audit record id: which store, and where in it. ``ref`` is the raw
+    Elasticsearch ``_id`` (decoded), the SQL row id or the in-memory number."""
+
+    store: AuditRecordStore
+    ref: str | int
+    index: str | None = None
+    demo: bool = False
+
+
+def encode_audit_record_id(
+    store: AuditRecordStore, ref: str | int, *, index: str | None = None, demo: bool = False,
+) -> str:
+    """The E12 ``record_id`` of one stored audit row (the only way to build one).
+    Raises ``ValueError`` for a value the store cannot hold (an empty or over-long
+    ``_id``, an index with ``:`` or upper case, a SQL id of 0 or out of range)."""
+    if store == "es":
+        if not isinstance(index, str) or not _AUDIT_ES_INDEX_RE.fullmatch(index):
+            raise ValueError("an Elasticsearch audit record needs its lower-case index name")
+        raw = str(ref).encode("utf-8")
+        if not raw or len(raw) > AUDIT_ES_ID_MAX_BYTES:
+            raise ValueError("an Elasticsearch _id is 1 to 512 bytes")
+        body = f"es:{index}:{base64.urlsafe_b64encode(raw).rstrip(b'=').decode('ascii')}"
+    elif store == "sql":
+        if isinstance(ref, bool) or not isinstance(ref, int) or ref == 0 or abs(ref) > _SQL_ROW_ID_LIMIT:
+            raise ValueError("a SQL audit row id is a non-zero 64-bit integer")
+        body = f"sql:{ref}"
+    elif store == "mem":
+        if isinstance(ref, bool) or not isinstance(ref, int) or not 0 <= ref < 10**12:
+            raise ValueError("an in-memory audit record number is 0 to 999,999,999,999")
+        body = f"mem:{ref}"
+    else:
+        raise ValueError(f"unknown audit record store {store!r}")
+    record_id = f"demo:{body}" if demo else body
+    if not _AUDIT_RECORD_ID_RE.fullmatch(record_id):  # defensive: never mint an unparsable id
+        raise ValueError("the audit record id does not fit the E12 grammar")
+    return record_id
+
+
+def decode_audit_record_id(record_id: str) -> AuditRecordRef:
+    """Parse an E12 ``record_id`` (``GET /api/audit/records/{record_id}``, the
+    ``#/audit?record=`` link). Raises ``ValueError`` for anything
+    :func:`encode_audit_record_id` would not have produced, including a
+    non-canonical base64url form, so one row has exactly one id."""
+    if not isinstance(record_id, str) or not _AUDIT_RECORD_ID_RE.fullmatch(record_id):
+        raise ValueError("not an audit record id")
+    demo = record_id.startswith("demo:")
+    body = record_id[5:] if demo else record_id
+    store, _, rest = body.partition(":")
+    if store == "sql":
+        row_id = int(rest)
+        if abs(row_id) > _SQL_ROW_ID_LIMIT:
+            raise ValueError("not an audit record id")
+        return AuditRecordRef("sql", row_id, None, demo)
+    if store == "mem":
+        return AuditRecordRef("mem", int(rest), None, demo)
+    index, _, encoded = rest.partition(":")
+    try:
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        doc_id = raw.decode("utf-8")
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("not an audit record id") from exc
+    if not raw or len(raw) > AUDIT_ES_ID_MAX_BYTES or (
+        base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii") != encoded
+    ):
+        raise ValueError("not an audit record id")
+    return AuditRecordRef("es", doc_id, index, demo)
+AUDIT_PAGE_DEFAULT_LIMIT = 50
+AUDIT_LEGACY_DEFAULT_LIMIT = 100
+AUDIT_PAGE_MAX_LIMIT = 200
+AUDIT_TOTAL_TRACK_LIMIT = 10_000
+AUDIT_EXPORT_MAX_ROWS = 100_000
+#: ``GET /api/audit/count?cap=``: at most one past the export ceiling.
+AUDIT_COUNT_MAX_CAP = 100_001
+AUDIT_SEARCH_MAX_CHARS = 200
+
+
+class AuditRecord(BaseModel):
+    """One audit row as the read API returns it (SPEC §4.5.10): the stored
+    :class:`AuditDoc` fields, the Round 14 fields when the row carries them (absent on
+    legacy rows, never shown empty) and the read-time projections.
+
+    Read leniently: a stored row is never rejected because a value drifted. An
+    unknown ``action_type`` keeps its token (it is categorised as System, never
+    hidden); an invalid Round 14 value is dropped as not recorded. ``outcome`` and
+    ``actor_type`` may be derived for a legacy row, which ``*_derived`` says.
+    ``category`` and ``event_label`` come from ``audit/event_categories.json``. Every
+    value renders as plain text (#9); ``prompt_excerpt`` and ``tool_output_summary``
+    carry fenced untrusted log data."""
+
+    record_id: str = Field(pattern=AUDIT_RECORD_ID_PATTERN)
+    event_id: str | None = None
+    app_version: str | None = None
+    build_sha: str | None = None
+    ts: str = ""
+    case_id: str | None = None
+    source_id: str | None = None
+    surface: str = ""
+    actor: str = ""
+    action_type: str = ""
+    model: str | None = None
+    prompt_excerpt: str | None = None
+    query_text: str | None = None
+    tool_name: str | None = None
+    tool_input: Any = None
+    tool_output_summary: str | None = None
+    result_summary: str | None = None
+    outcome: AuditOutcome | None = None
+    actor_type: AuditActorType | None = None
+    action: str | None = Field(default=None, max_length=AUDIT_ACTION_MAX_CHARS, pattern=AUDIT_ACTION_PATTERN)
+    actor_role: str | None = None
+    client: AuditClient | None = None
+    session_ref: str | None = None
+    target: AuditTarget | None = None
+    changes: list[AuditChange] | None = None
+    request_id: str | None = None
+    run_id: str | None = None
+    outcome_derived: bool = False
+    actor_type_derived: bool = False
+    category: AuditCategory = "system"
+    event_label: str = ""
+    demo: bool = False
+    truncated_fields: list[str] = Field(default_factory=list)
+
+    @field_validator("outcome", mode="before")
+    @classmethod
+    def _lenient_outcome(cls, value: Any) -> Any:
+        return _lenient_enum(value, AUDIT_OUTCOMES, None)
+
+    @field_validator("actor_type", mode="before")
+    @classmethod
+    def _lenient_actor_type(cls, value: Any) -> Any:
+        return _lenient_enum(value, AUDIT_ACTOR_TYPES, None)
+
+    @field_validator("action", mode="before")
+    @classmethod
+    def _lenient_action(cls, value: Any) -> Any:
+        if isinstance(value, str) and len(value) <= AUDIT_ACTION_MAX_CHARS and _AUDIT_ACTION_RE.fullmatch(value):
+            return value
+        return None
+
+    @field_validator("client", mode="before")
+    @classmethod
+    def _lenient_client(cls, value: Any) -> Any:
+        return _lenient_model(AuditClient, value)
+
+    @field_validator("target", mode="before")
+    @classmethod
+    def _lenient_target(cls, value: Any) -> Any:
+        return _lenient_model(AuditTarget, value)
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def _lenient_changes(cls, value: Any) -> Any:
+        """A stored ``[]`` is a recorded "no changes"; a value that is not a list, or
+        a non-empty list none of whose entries is readable, is "not recorded"
+        (``None``), never presented as an empty change set."""
+        if not isinstance(value, (list, tuple)):
+            return None
+        if not value:
+            return []
+        return _lenient_models(AuditChange, value, AUDIT_MAX_CHANGES) or None
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _lenient_category(cls, value: Any) -> Any:
+        return _lenient_enum(value, AUDIT_CATEGORIES, "system")
+
+    @field_validator(
+        "case_id", "source_id", "model", "prompt_excerpt", "query_text", "tool_name",
+        "tool_output_summary", "result_summary", "actor_role", "session_ref", "request_id",
+        "run_id", "event_id", "app_version", "build_sha", mode="before",
+    )
+    @classmethod
+    def _optional_text(cls, value: Any) -> Any:
+        if value is None or isinstance(value, str):
+            return value
+        return str(value)
+
+    @field_validator("ts", "surface", "actor", "action_type", "event_label", mode="before")
+    @classmethod
+    def _text(cls, value: Any) -> Any:
+        if value is None:
+            return ""
+        return value if isinstance(value, str) else str(value)
+
+    # Fields a legacy row lacks are omitted from the response, not sent as ``null``
+    # (the inspector shows only what the row recorded).
+    @model_serializer(mode="wrap")
+    def _omit_unrecorded(self, handler: Any):  # noqa: ANN202
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in AUDIT_ROUND14_FIELDS:
+                if key in data and data[key] is None:
+                    del data[key]
+        return data
+
+
+class AuditRetention(BaseModel):
+    """How long the deployment keeps the audit log, for the page's scope line. A
+    volatile store keeps it in memory only (lost on restart)."""
+
+    hot_days: int | None = None
+    warm_days: int | None = None
+    volatile: bool = False
+
+
+class AuditPage(BaseModel):
+    """``GET /api/audit`` (SPEC §4.5.10). ``records`` and ``total`` keep the old
+    ``AuditListResponse`` keys so existing clients keep working. ``total`` is exact
+    when ``total_relation`` is ``eq`` and a lower bound when it is ``gte``.
+    ``run_totals`` gives, for every ``run_id`` on this page, the run's event count
+    under the same filters, so a group split across pages says "6 of 10 steps"."""
+
+    records: list[AuditRecord] = Field(default_factory=list)
+    total: int = 0
+    next_cursor: str | None = None
+    total_relation: AuditCountRelation = "eq"
+    run_totals: dict[str, int] = Field(default_factory=dict)
+    retention: AuditRetention = Field(default_factory=AuditRetention)
+
+
+class AuditCount(BaseModel):
+    """``GET /api/audit/count``: exact up to the requested cap, then ``gte``."""
+
+    count: int = 0
+    relation: AuditCountRelation = "eq"
+
+
+# --------------------------------------------------------------------------- #
+# §4.6.2 GET /api/rules/summary
+# --------------------------------------------------------------------------- #
+SeverityLevel = Literal["info", "low", "medium", "high", "critical"]
+SEVERITY_LEVELS: tuple[str, ...] = get_args(SeverityLevel)
+#: The fixed display order of every severity breakdown (all five, zeros included).
+SEVERITY_LEVELS_DESCENDING: tuple[str, ...] = ("critical", "high", "medium", "low", "info")
+RuleSectionStatus = Literal["ok", "forbidden", "unsupported", "unavailable"]
+RULE_SUMMARY_DEFAULT_WINDOW = "now-3d"
+RULE_VALUE_MAX_CHARS = 256
+RULE_SUMMARY_TOP_ROWS = 10
+RULE_SUMMARY_LATEST_CASES = 5
+
+RuleSummaryWindowWire = TypedDict("RuleSummaryWindowWire", {"label": str, "from": str, "to": str})
+
+
+class RuleSummaryWindow(BaseModel):
+    """The window a rule summary measured: ``{label, from, to}`` (ISO UTC)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    label: str = ""
+    from_: str = Field(default="", alias="from")
+    to: str = ""
+
+    # ``plain`` + a TypedDict return keeps the wire key ``from`` whatever the caller's
+    # ``by_alias`` setting (the TimeRange pattern).
+    @model_serializer(mode="plain")
+    def _serialise(self) -> RuleSummaryWindowWire:
+        return {"label": self.label, "from": self.from_, "to": self.to}
+
+
+class RuleSeverityPoint(BaseModel):
+    """One time bucket of a rule's alerts, counted per named level."""
+
+    t: str
+    critical: int = 0
+    high: int = 0
+    medium: int = 0
+    low: int = 0
+    info: int = 0
+
+
+class RuleSeveritySeries(BaseModel):
+    """Alerts over time by named level. ``bucket`` is the bucket width ("12h")."""
+
+    bucket: str = ""
+    levels: list[SeverityLevel] = Field(default_factory=lambda: list(SEVERITY_LEVELS_DESCENDING))
+    points: list[RuleSeverityPoint] = Field(default_factory=list)
+
+
+class RuleSummarySource(BaseModel):
+    """A source that contributed to the alert figures, and whether it could filter
+    on the rule exactly (``False``: counted from a bounded newest-N sample)."""
+
+    id: str
+    name: str = ""
+    exact: bool = True
+
+
+class RuleSummaryAlerts(BaseModel):
+    """The alert figures. ``count_relation`` is ``gte`` when any source was sampled;
+    the Console then never names the count in "Open all N in Logs"."""
+
+    status: RuleSectionStatus = "ok"
+    reason: str | None = None
+    count: int | None = None
+    count_relation: AuditCountRelation = "eq"
+    first_seen: str | None = None
+    last_seen: str | None = None
+    series: RuleSeveritySeries | None = None
+    sources: list[RuleSummarySource] = Field(default_factory=list)
+
+
+class RuleTopRow(BaseModel):
+    """One row of a top list (an IP, a host or a user) with its count. Untrusted."""
+
+    value: str
+    kind: str | None = None
+    count: int = 0
+
+
+class RuleSummaryTopList(BaseModel):
+    """A bounded top list (at most 10 rows); ``exact`` false when sampled."""
+
+    status: RuleSectionStatus = "ok"
+    reason: str | None = None
+    rows: list[RuleTopRow] = Field(default_factory=list)
+    exact: bool = True
+
+
+class RuleCaseOutcomes(BaseModel):
+    """The analyst-outcome family only (analyst-policy closes excluded); the AI
+    verdict family is never labelled as an analyst outcome."""
+
+    analyst_tp: int = 0
+    analyst_fp: int = 0
+    analyst_ungraded: int = 0
+
+
+class RuleCaseRow(BaseModel):
+    """One of the newest cases from the rule (at most 5), named by case number."""
+
+    case_id: str
+    case_number: str = ""
+    title: str = ""
+    status: str = ""
+    verdict: str | None = None
+
+
+class RuleSummaryCases(BaseModel):
+    """Cases whose ``rule_ids`` hold the rule, exact through ``case_aggregate``."""
+
+    status: RuleSectionStatus = "ok"
+    reason: str | None = None
+    count: int | None = None
+    open_now: int | None = None
+    outcomes: RuleCaseOutcomes | None = None
+    latest: list[RuleCaseRow] = Field(default_factory=list)
+
+
+class RuleSuiteDefinition(BaseModel):
+    """The summary of a suite detection rule (``Preferences.rule_catalog``)."""
+
+    name: str
+    enabled: bool = True
+    description: str = ""
+    mitre: list[str] = Field(default_factory=list)
+    priority: int | None = None
+
+
+class RuleSummaryDefinition(BaseModel):
+    """Where the rule is defined: ``suite`` with its summary, or ``source`` meaning
+    "Defined in the source SIEM" (no settings link)."""
+
+    status: RuleSectionStatus = "ok"
+    reason: str | None = None
+    kind: Literal["suite", "source"] | None = None
+    suite_rule: RuleSuiteDefinition | None = None
+
+
+class RuleSummaryTuning(BaseModel):
+    """The rule's threshold-tuning state (needs ``automation:read``)."""
+
+    status: RuleSectionStatus = "ok"
+    reason: str | None = None
+    wilson_lower_bound: float | None = None
+    samples: int | None = None
+    proposed_change: dict[str, Any] | None = None
+    last_tuned: str | None = None
+
+
+class RuleSummaryAnalystPolicy(BaseModel):
+    """The operator's "declared benign" policy for the rule, or ``None``."""
+
+    status: RuleSectionStatus = "ok"
+    reason: str | None = None
+    policy: dict[str, Any] | None = None
+
+
+class RuleSummary(BaseModel):
+    """``GET /api/rules/summary`` (SPEC §4.6.2): one rule's picture. Each section
+    checks its own grant and carries its own status, so the rule sheet degrades per
+    section. No model call (#6) and no raw rows (#7): the latest alerts come from
+    ``GET /api/logs?rule=``. The rule value and every IP, host and title are
+    untrusted plain strings (#9)."""
+
+    rule: str = Field(min_length=1, max_length=RULE_VALUE_MAX_CHARS)
+    window: RuleSummaryWindow = Field(default_factory=RuleSummaryWindow)
+    alerts: RuleSummaryAlerts = Field(default_factory=RuleSummaryAlerts)
+    top_source_ips: RuleSummaryTopList = Field(default_factory=RuleSummaryTopList)
+    top_targets: RuleSummaryTopList = Field(default_factory=RuleSummaryTopList)
+    cases: RuleSummaryCases = Field(default_factory=RuleSummaryCases)
+    definition: RuleSummaryDefinition = Field(default_factory=RuleSummaryDefinition)
+    tuning: RuleSummaryTuning = Field(default_factory=RuleSummaryTuning)
+    analyst_policy: RuleSummaryAnalystPolicy = Field(default_factory=RuleSummaryAnalystPolicy)
+
+
+# --------------------------------------------------------------------------- #
+# §4.10.2 the runbook model (``engine/runbook_model.py`` imports these and owns
+# ``validate_runbook``, the Markdown parser and ``render_runbook_prompt``).
+#
+# The Pydantic models fix the shape: field types, the closed vocabularies and the
+# numeric bounds. The content rules (lengths, list sizes, id grammars, the closed
+# template-value set, cross-references between steps, the prompt budget) are checked
+# by ``validate_runbook`` so the editor, import and migration report every problem
+# as a plain sentence instead of failing on the first one. A draft may therefore hold
+# content that ``validate_runbook`` rejects; only a valid version can be published,
+# and only Published text ever reaches a prompt as trusted guidance (#9).
+# --------------------------------------------------------------------------- #
+StepKind = Literal["check", "lookup", "decision", "action", "record"]
+STEP_KINDS: tuple[str, ...] = get_args(StepKind)
+#: Phases are a fixed vocabulary (NIST SP 800-61r3 and SANS PICERL, SPEC §4.10.2); a
+#: runbook uses any ordered subset.
+PhaseId = Literal["triage", "investigate", "contain", "eradicate", "recover", "close"]
+PHASE_IDS: tuple[str, ...] = get_args(PhaseId)
+#: Console labels of the phases (sentence case, never the retired word).
+PHASE_LABELS: dict[str, str] = {
+    "triage": "Triage",
+    "investigate": "Investigate",
+    "contain": "Contain",
+    "eradicate": "Eradicate",
+    "recover": "Recover",
+    "close": "Close and learn",
+}
+RunbookEntityType = Literal["ip", "host", "user", "domain", "hash", "url", "email", "process", "file"]
+RUNBOOK_ENTITY_TYPES: tuple[str, ...] = get_args(RunbookEntityType)
+RunbookVerdict = Literal["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_HUMAN"]
+LookupTool = Literal["log_stats", "log_search", "enrich", "related_cases", "campaign", "mitre"]
+LOOKUP_TOOLS: tuple[str, ...] = get_args(LookupTool)
+LookupRunMode = Literal["on_attach", "on_demand"]
+StepEvidenceRule = Literal["none", "note", "note_or_attachment"]
+StepStatus = Literal["todo", "in_progress", "done", "not_applicable", "blocked"]
+STEP_STATUSES: tuple[str, ...] = get_args(StepStatus)
+
+#: Built-in runbook ids: kebab-case.
+RUNBOOK_BUILTIN_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{1,62}$"
+#: Operator runbook ids: the legacy procedure grammar, so migrated ids such as
+#: ``brute_force_login`` stay valid. Also the ``#/runbooks?id=`` deep-link validator.
+RUNBOOK_OPERATOR_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+#: Ids no runbook may take: the fixed sub-paths of ``/api/runbooks`` and the
+#: editor's draft id (``422 runbook_id_reserved``).
+RUNBOOK_RESERVED_IDS: frozenset[str] = frozenset({
+    "new", "metrics", "validate", "import", "progress", "match-preview", "lookup-test",
+    "reindex", "readme", "index",
+})
+#: Step and decision-option ids: a lower-case slug, stable across versions.
+RUNBOOK_SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+#: The closed set of lookup template values (SPEC §4.10.8). Each resolves from the
+#: case's stored values and is bound as a structured parameter, never concatenated
+#: into query text.
+RUNBOOK_TEMPLATE_VALUES: tuple[str, ...] = (
+    "case.rule", "case.source_id", "case.first_seen", "case.last_seen",
+    "entity.ip", "entity.user", "entity.host", "entity.domain", "entity.hash",
+    "entity.url", "entity.email",
+)
+RUNBOOK_DEFAULT_LOOKUP_WINDOW = "case_first_seen-1h..case_last_seen+1h"
+
+# Content limits ``validate_runbook`` enforces (SPEC §4.10.2, §4.10.5, §4.10.7).
+RUNBOOK_MAX_TITLE_CHARS = 120
+RUNBOOK_MAX_SUMMARY_CHARS = 280
+RUNBOOK_MAX_USE_WHEN_CHARS = 500
+RUNBOOK_MAX_PREREQUISITES_CHARS = 500
+RUNBOOK_MAX_PHASES = 6
+RUNBOOK_MAX_STEPS = 40
+RUNBOOK_MAX_RETRIEVAL_QUERIES = 5
+RUNBOOK_MAX_RETRIEVAL_QUERY_CHARS = 200
+RUNBOOK_MAX_REFERENCES = 10
+RUNBOOK_MAX_SOURCE_BYTES = 65_536
+RUNBOOK_STEP_MAX_TITLE_CHARS = 160
+RUNBOOK_STEP_MAX_INSTRUCTIONS_CHARS = 2_000
+RUNBOOK_STEP_MAX_GUIDANCE_CHARS = 300          # focus, escalate_if, benign_if
+RUNBOOK_DECISION_MIN_OPTIONS = 2
+RUNBOOK_DECISION_MAX_OPTIONS = 6
+RUNBOOK_DECISION_MAX_LABEL_CHARS = 80
+RUNBOOK_APPLIES_MAX_RULES = 50
+RUNBOOK_APPLIES_MAX_RULE_CHARS = 256
+RUNBOOK_APPLIES_MAX_MITRE = 50
+RUNBOOK_APPLIES_MAX_SOURCES = 20
+RUNBOOK_APPLIES_MAX_STATUSES = 10
+RUNBOOK_APPLIES_MAX_TAGS = 20
+RUNBOOK_APPLIES_MAX_TAG_CHARS = 64
+RUNBOOK_LOOKUP_MAX_FILTERS = 8
+RUNBOOK_LOOKUP_MAX_GROUP_BY = 2
+RUNBOOK_LOOKUP_MAX_WINDOW_DAYS = 30
+RUNBOOK_LOOKUP_SEARCH_MAX_ROWS = 20
+RUNBOOK_DEFAULT_REVIEW_DAYS = 180
+RUNBOOK_MIN_REVIEW_DAYS = 30
+RUNBOOK_MAX_REVIEW_DAYS = 730
+MAX_OPERATOR_RUNBOOKS = 200
+MAX_RUNBOOK_VERSIONS = 100
+MAX_RUNS_PER_CASE = 5
+
+
+class AppliesWhen(BaseModel):
+    """When a runbook applies to a case. Every present criterion is any-of; all
+    present criteria must match. ``always`` marks only the Generic incident fallback
+    (the lowest specificity). Limits (checked by ``validate_runbook``): ``rule_ids``
+    at most 50 values of 1 to 256 characters; ``mitre`` at most 50 ``T####`` or
+    ``T####.###`` ids (a parent matches its sub-techniques); ``sources`` at most 20
+    source ids or ``type:<SourceType>``; ``statuses`` at most 10 ``CaseStatus``
+    values; ``any_tags`` at most 20 tags of at most 64 characters."""
+
+    rule_ids: list[str] = Field(default_factory=list)
+    mitre: list[str] = Field(default_factory=list)
+    entity_types: list[RunbookEntityType] = Field(default_factory=list)
+    severity_at_least: SeverityLevel | None = None
+    sources: list[str] = Field(default_factory=list)
+    verdicts: list[RunbookVerdict] = Field(default_factory=list)
+    statuses: list[str] = Field(default_factory=list)
+    any_tags: list[str] = Field(default_factory=list)
+    min_event_count: int | None = Field(default=None, ge=1, le=1_000_000)
+    always: bool = False
+
+
+class LookupTemplate(BaseModel):
+    """A declarative, read-only lookup a Lookup step runs (SPEC §4.10.8). ``filter``
+    maps a field (validated against the evidence-fields grammar) to a literal or one
+    ``{{template value}}``, at most 8 entries; ``group_by`` (``log_stats`` only) at
+    most 2 fields; ``indicator`` (``enrich`` only) one template value. The window
+    spans at most 30 days; ``log_search`` returns at most 20 rows."""
+
+    tool: LookupTool
+    filter: dict[str, str] = Field(default_factory=dict)
+    group_by: list[str] = Field(default_factory=list)
+    indicator: str | None = None
+    window: str = RUNBOOK_DEFAULT_LOOKUP_WINDOW
+    limit: int = Field(default=20, ge=1, le=50)
+    run: LookupRunMode = "on_attach"
+
+
+class DecisionOption(BaseModel):
+    """One option of a Decision step. ``marks_not_applicable`` names later step ids
+    this option skips (only steps still To do)."""
+
+    id: str
+    label: str
+    marks_not_applicable: list[str] = Field(default_factory=list)
+
+
+class RunbookStep(BaseModel):
+    """One step (SPEC §4.10.2, §4.10.3). ``id`` is a slug unique in the runbook and
+    stable across versions. Checks are written as questions. ``instructions`` is
+    restricted Markdown for people (never part of the investigator prompt);
+    ``focus``, ``escalate_if`` and ``benign_if`` are what the investigator reads.
+    ``lookup`` is required on Lookup steps and absent elsewhere; ``options`` holds 2
+    to 6 options on Decision steps. ``approval_role`` is honoured only when step
+    approvals are on; ``target_minutes`` is shown, never enforced."""
+
+    id: str
+    phase: PhaseId
+    kind: StepKind
+    title: str
+    instructions: str = ""
+    focus: str | None = None
+    escalate_if: str | None = None
+    benign_if: str | None = None
+    required: bool = True
+    evidence: StepEvidenceRule = "none"
+    owner_role: str | None = None
+    approval_role: str | None = None
+    target_minutes: int | None = Field(default=None, ge=1, le=10_080)
+    lookup: LookupTemplate | None = None
+    options: list[DecisionOption] = Field(default_factory=list)
+    react: str | None = None
+    d3fend: str | None = None
+
+
+class RunbookDefinition(BaseModel):
+    """A runbook's canonical definition (SPEC §4.10.2). It has no ``version`` field:
+    a version is metadata of the stored document (``RunbookVersionDoc.version``) and
+    of a built-in's front matter. ``phases`` is ordered, 1 to 6, each used by at least
+    one step; ``steps`` holds 1 to 40. ``references`` are https links only, at most
+    10. ``review_every_days`` defaults to 180 (E6)."""
+
+    id: str
+    title: str
+    summary: str
+    use_when: str = ""
+    prerequisites: str = ""
+    applies_when: AppliesWhen = Field(default_factory=AppliesWhen)
+    priority: int = Field(default=50, ge=0, le=100)
+    mitre: list[str] = Field(default_factory=list)
+    phases: list[PhaseId] = Field(default_factory=list)
+    steps: list[RunbookStep] = Field(default_factory=list)
+    retrieval_queries: list[str] = Field(default_factory=list)
+    owner: str | None = None
+    review_every_days: int = Field(
+        default=RUNBOOK_DEFAULT_REVIEW_DAYS, ge=RUNBOOK_MIN_REVIEW_DAYS, le=RUNBOOK_MAX_REVIEW_DAYS,
+    )
+    references: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# §4.10.7 per-case runs (``runbook_runs`` KV namespace; ``engine/runbook_runs.py``).
+# --------------------------------------------------------------------------- #
+LookupResultStatus = Literal["ok", "empty", "partial", "error", "not_applicable"]
+LookupTableKind = Literal["aggregate", "rows"]
+RUNBOOK_SYSTEM_RUNNER = "agentic_soc"
+RUNBOOK_LOOKUP_MAX_FACTS = 8
+RUNBOOK_LOOKUP_TABLE_MAX_COLUMNS = 6
+RUNBOOK_LOOKUP_TABLE_MAX_ROWS = 20
+RUNBOOK_LOOKUP_TABLE_MAX_CELL_CHARS = 200
+RUNBOOK_STEP_MAX_NOTE_CHARS = 4_000
+RUNBOOK_STEP_MAX_REASON_CHARS = 500
+RUNBOOK_STEP_MAX_EVIDENCE = 10
+RUNBOOK_EVIDENCE_MAX_URL_CHARS = 500
+RUNBOOK_EVIDENCE_MAX_LABEL_CHARS = 120
+RUNBOOK_ACTION_MAX_WHERE_CHARS = 200
+RUNBOOK_ACTION_MAX_OUTCOME_CHARS = 500
+RUNBOOK_AI_DRAFT_MAX_CHARS = 2_000
+RUNBOOK_CASE_DOC_MAX_BYTES = 1_048_576
+RUNBOOK_CASE_EVIDENCE_MAX_BYTES = 524_288
+RUNBOOK_LEDGER_MONTH_MAX_BYTES = 524_288
+RUNBOOK_LEDGER_MONTHS_KEPT = 13
+#: Characters an https link may never contain: whitespace, controls, the quote and
+#: angle characters that break out of an attribute, and the backslash some browsers
+#: read as a slash.
+_UNSAFE_URL_CHARS_RE = re.compile(r"[\s\x00-\x1f\x7f-\x9f<>\"'`\\]")
+
+
+def https_url(value: Any, *, max_chars: int = RUNBOOK_EVIDENCE_MAX_URL_CHARS) -> str | None:
+    """``value`` as a safe absolute https link, or ``None`` when it is not one.
+
+    Evidence links and runbook references are rendered as ``href``s to every viewer of
+    a case (React 18 still runs ``javascript:`` URLs), so only ``https:`` with a host
+    is ever accepted: never ``javascript:``, ``data:``, ``http:`` or a relative path.
+    The scheme is matched case-insensitively and written lower case; surrounding
+    whitespace is removed. Used strictly on input (a bad link is refused) and leniently
+    on stored rows (a bad stored link reads as no link)."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or len(text) > max_chars or _UNSAFE_URL_CHARS_RE.search(text):
+        return None
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return None
+    if parts.scheme.lower() != "https" or not parts.hostname:
+        return None
+    return "https" + text[len(parts.scheme):]
+
+
+class LookupResult(BaseModel):
+    """The stored result of one lookup run (SPEC §4.10.7, §4.10.8). Every value is
+    untrusted plain text (#9). ``params`` are the resolved values; ``ran_by`` is
+    ``agentic_soc`` for a background ``on_attach`` run or the person who pressed Run.
+    ``table`` is ``{columns <= 6, rows <= 20, cells <= 200 chars}``: an ``aggregate``
+    table holds counts per key; a ``rows`` table holds raw ``log_search`` rows,
+    shown to people only and reduced by code to a row count and top values before
+    any prompt (#7). ``window_clamped`` says ``window_to`` was cut to ``ran_at``."""
+
+    tool: str
+    params: dict[str, str] = Field(default_factory=dict)
+    window_from: str = ""
+    window_to: str = ""
+    ran_at: str = ""
+    ran_by: str = ""
+    status: LookupResultStatus = "ok"
+    reason: str | None = None
+    count: int | None = None
+    count_relation: AuditCountRelation = "eq"
+    facts: list[dict[str, str]] = Field(default_factory=list)
+    table: dict[str, Any] | None = None
+    table_kind: LookupTableKind | None = None
+    window_clamped: bool = False
+
+
+class StepEvidence(BaseModel):
+    """One piece of evidence on a step: a stored lookup result, an https link or a
+    ticket reference (``url`` at most 500, ``label`` at most 120 characters).
+
+    ``url`` is https only (:func:`https_url`). A stored value that is not a safe https
+    link reads as ``None`` (the label still shows), so a row written before this rule,
+    or by hand, can never reach a viewer as a ``javascript:`` or ``data:`` link."""
+
+    kind: Literal["lookup_result", "link", "ticket"]
+    lookup: LookupResult | None = None
+    url: str | None = None
+    label: str | None = None
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _https_only(cls, value: Any) -> Any:
+        return https_url(value)
+
+
+class StepState(BaseModel):
+    """The live state of one step in a run. ``note`` is plain text (at most 4,000);
+    ``reason`` (1 to 500) is required for ``not_applicable`` and ``blocked``.
+
+    The dict-valued fields have fixed shapes (the TypeScript mirror types them):
+    ``decision`` ``{option_id, label, by, at}``; ``action_record`` ``{performed_by,
+    performed_at, where, outcome}``; ``approval`` ``{required_role, status:
+    pending|approved|rejected, by, at, reason}``; ``ai_draft`` ``{text <= 2,000,
+    created_at, model, usage_id, confirmed}``. An AI draft is never part of the case
+    until a person confirms it, and the AI never sets a status (§4.10.10)."""
+
+    status: StepStatus = "todo"
+    assignee: str | None = None
+    started_at: str | None = None
+    completed_at: str | None = None
+    completed_by: str | None = None
+    note: str = ""
+    reason: str | None = None
+    evidence: list[StepEvidence] = Field(default_factory=list)
+    decision: dict[str, Any] | None = None
+    action_record: dict[str, Any] | None = None
+    approval: dict[str, Any] | None = None
+    ai_draft: dict[str, Any] | None = None
+    revision: int = 0
+
+
+RunAttachedBy = Literal["rule", "fallback", "person", "suggestion"]
+RunStatus = Literal["active", "completed", "abandoned"]
+
+
+class RunbookRun(BaseModel):
+    """One runbook run on one case (SPEC §4.10.7). A run pins its version: the
+    ``snapshot`` lets it render without the catalog, and "Switch to v5" is an
+    explicit, audited step. ``attached_reason`` is the match explanation
+    (:class:`MatchExplanation`) or ``{by: <user>, note}``. Completing or abandoning a
+    run never changes the case (#3); one run per case and runbook (#4)."""
+
+    run_id: str
+    case_id: str
+    runbook_id: str
+    version: int
+    title: str = ""
+    snapshot: RunbookDefinition
+    attached_by: RunAttachedBy
+    attached_reason: dict[str, Any] = Field(default_factory=dict)
+    attached_at: str = ""
+    attached_actor: str = ""
+    status: RunStatus = "active"
+    completed_at: str | None = None
+    abandoned_reason: str | None = None
+    steps: dict[str, StepState] = Field(default_factory=dict)
+    revision: int = 0
+
+
+class RunbookProgress(BaseModel):
+    """Progress derived on read from a run (never stored). ``done`` counts only Done
+    steps; Not applicable is counted on its own and never as done. The chip reads
+    "4/11", "5/9 · 1 blocked" or "4/11 · 1 waiting"."""
+
+    done: int = 0
+    not_applicable: int = 0
+    total: int = 0
+    required_open: int = 0
+    blocked: int = 0
+    waiting: int = 0
+
+
+# --------------------------------------------------------------------------- #
+# §4.10.4 the match explanation (``engine/runbook_match.py`` produces it; stored on a
+# run as ``attached_reason`` and returned by the match preview and candidates).
+# --------------------------------------------------------------------------- #
+MatchCriterion = Literal[
+    "rule_ids", "mitre", "entity_types", "severity_at_least", "sources", "verdicts",
+    "statuses", "any_tags", "min_event_count", "always",
+]
+MATCH_CRITERIA: tuple[str, ...] = get_args(MatchCriterion)
+MatchValue = str | int | list[str] | None
+
+
+class MatchedCriterion(BaseModel):
+    """A criterion that matched, and the case value that matched it."""
+
+    criterion: MatchCriterion
+    value: MatchValue = None
+
+
+class MissedCriterion(BaseModel):
+    """A criterion that failed: what the runbook expects and what the case has."""
+
+    criterion: MatchCriterion
+    expected: MatchValue = None
+    actual: MatchValue = None
+
+
+class MatchExplanation(BaseModel):
+    """Why a runbook was chosen (SPEC §4.10.4). ``tier`` is 3 (rule matched), 2
+    (technique matched, the runbook names no rules), 1 (other criteria only) or 0 (the
+    fallback). ``tie`` says a tie survived to the id rule."""
+
+    tier: int = Field(ge=0, le=3)
+    matched: list[MatchedCriterion] = Field(default_factory=list)
+    missed: list[MissedCriterion] = Field(default_factory=list)
+    tie: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# §4.10.15a library and case responses (``routes_runbooks.py``,
+# ``routes_case_runbooks.py``).
+# --------------------------------------------------------------------------- #
+RunbookOrigin = Literal["builtin", "operator", "imported"]
+RunbookState = Literal["draft", "in_review", "published", "retired"]
+RunbookVersionState = Literal["draft", "in_review", "published", "superseded", "retired"]
+
+
+class RunbookRef(BaseModel):
+    """A pinned reference to one version of a runbook (``derived_from``)."""
+
+    id: str
+    version: int
+
+
+class RunbookAppliesTo(BaseModel):
+    """The first rule and technique chips of a library row; ``more`` counts the rest."""
+
+    rule_ids: list[str] = Field(default_factory=list)
+    mitre: list[str] = Field(default_factory=list)
+    more: int = 0
+
+
+class RunbookMigratedFrom(BaseModel):
+    """The legacy document a migrated runbook came from (SPEC §4.10.17)."""
+
+    namespace: str
+    id: str
+    revision: int | None = None
+
+
+class RunbookSummary(BaseModel):
+    """One library row (SPEC §4.10.15a). ``state`` is the most advanced visible
+    state. ``runs_30d`` is ``None`` without ``cases:read``. ``review_due_at`` is
+    ``last_reviewed_at + review_every_days``; imported content is due at once (D38).
+    ``replaced_by`` names the Published operator copy that stopped a built-in
+    matching. Titles and summaries are plain text."""
+
+    id: str
+    title: str = ""
+    summary: str = ""
+    origin: RunbookOrigin
+    state: RunbookState
+    live_version: int | None = None
+    draft_version: int | None = None
+    in_review_version: int | None = None
+    retired: bool = False
+    replaces: str | None = None
+    replaced_by: str | None = None
+    derived_from: RunbookRef | None = None
+    owner: str | None = None
+    phases: list[PhaseId] = Field(default_factory=list)
+    step_count: int = 0
+    applies_to: RunbookAppliesTo = Field(default_factory=RunbookAppliesTo)
+    runs_30d: int | None = None
+    review_due_at: str | None = None
+    last_reviewed_at: str | None = None
+    last_reviewed_by: str | None = None
+    updated_at: str | None = None
+    updated_by: str | None = None
+    migrated_from: RunbookMigratedFrom | None = None
+
+
+class RunbookReviewNote(BaseModel):
+    """A reviewer's note on a version (a rejection reason, a review comment)."""
+
+    by: str
+    at: str
+    text: str
+
+
+class RunbookVersionDoc(BaseModel):
+    """One immutable version (SPEC §4.10.5, §4.10.15a). ``content_hash`` is the
+    SHA-256 of the canonical definition; ``source`` its Markdown; ``prompt_chars`` the
+    investigator rendering's length (the budget is 3,000, E10)."""
+
+    version: int = Field(ge=1)
+    state: RunbookVersionState
+    definition: RunbookDefinition
+    source: str = ""
+    content_hash: str = ""
+    author: str = ""
+    created_at: str = ""
+    submitted_by: str | None = None
+    submitted_at: str | None = None
+    published_by: str | None = None
+    published_at: str | None = None
+    superseded_at: str | None = None
+    retired_by: str | None = None
+    retired_at: str | None = None
+    review_notes: list[RunbookReviewNote] = Field(default_factory=list)
+    import_notes: list[str] = Field(default_factory=list)
+    prompt_chars: int = 0
+
+
+class RunbookVersionListItem(BaseModel):
+    """One row of a runbook's version history."""
+
+    version: int
+    state: RunbookVersionState
+    published_by: str | None = None
+    published_at: str | None = None
+
+
+class RunbookDetail(BaseModel):
+    """``GET /api/runbooks/{id}`` (SPEC §4.10.15a). ``draft`` and ``in_review`` are
+    present only to a holder of ``runbooks:manage`` or ``runbooks:publish``.
+    ``open_runs_by_version`` maps a version to the active runs pinned to it.
+    ``revision`` is the library document's CAS revision, sent back as
+    ``expected_revision``."""
+
+    summary: RunbookSummary
+    live: RunbookVersionDoc | None = None
+    draft: RunbookVersionDoc | None = None
+    in_review: RunbookVersionDoc | None = None
+    versions: list[RunbookVersionListItem] = Field(default_factory=list)
+    open_runs_by_version: dict[int, int] = Field(default_factory=dict)
+    revision: int = 0
+
+
+class RunbookMigrationNotice(BaseModel):
+    """The one-shot migration's counts (from its marker, §4.10.17), for the Runbooks
+    page's dismissible intro: "Your 10 procedures from the previous version are now
+    runbooks. 9 are published and due for review; 1 is a draft with problems to fix."
+    ``None`` on the library response when nothing was migrated."""
+
+    completed_at: str | None = None
+    published: int = 0
+    draft: int = 0
+    skipped: int = 0
+
+
+class RunbookLibrary(BaseModel):
+    """``GET /api/runbooks`` (the new shape): built-ins and operator runbooks. There
+    is no empty library: the 12 built-ins are always listed."""
+
+    runbooks: list[RunbookSummary] = Field(default_factory=list)
+    migration: RunbookMigrationNotice | None = None
+
+
+class RunbookIssue(BaseModel):
+    """One validation problem: where (``steps[3].lookup.filter``), a stable code and
+    a plain sentence naming the fix."""
+
+    path: str = ""
+    code: str
+    message: str
+
+
+class RunbookValidation(BaseModel):
+    """``POST /api/runbooks/validate``: the issues and the investigator guidance
+    length against its budget. Nothing is written."""
+
+    issues: list[RunbookIssue] = Field(default_factory=list)
+    prompt_chars: int = 0
+    prompt_budget: int = 0
+
+
+class MatchPreviewCase(BaseModel):
+    """A case the previewed runbook would get, with why."""
+
+    case_id: str
+    case_number: str = ""
+    title: str = ""
+    explanation: MatchExplanation | None = None
+
+
+class MatchPreviewOther(BaseModel):
+    """A case another runbook would win, naming the winner."""
+
+    case_id: str
+    case_number: str = ""
+    title: str = ""
+    winner_id: str
+    winner_title: str = ""
+
+
+class MatchPreviewNearMiss(BaseModel):
+    """A case that nearly matched, with the criteria that failed."""
+
+    case_id: str
+    case_number: str = ""
+    title: str = ""
+    failed: list[MissedCriterion] = Field(default_factory=list)
+
+
+class MatchPreviewCounts(BaseModel):
+    """Exact group sizes; each list above holds at most 50."""
+
+    gets_it: int = 0
+    another_wins: int = 0
+    near_misses: int = 0
+
+
+class MatchPreview(BaseModel):
+    """``POST /api/runbooks/match-preview`` (SPEC §4.10.15a): which of the last 500
+    cases in 30 days the definition would get. Nothing is attached and no metric
+    changes. ``truncated`` says a list was cut at 50; ``counts`` are always exact."""
+
+    considered: int = 0
+    window_label: str = ""
+    gets_it: list[MatchPreviewCase] = Field(default_factory=list)
+    another_wins: list[MatchPreviewOther] = Field(default_factory=list)
+    near_misses: list[MatchPreviewNearMiss] = Field(default_factory=list)
+    counts: MatchPreviewCounts = Field(default_factory=MatchPreviewCounts)
+    truncated: bool = False
+
+
+class RunbookMetricsRunbookRow(BaseModel):
+    """Runs started, completed and abandoned for one runbook in the window."""
+
+    id: str
+    title: str = ""
+    started: int = 0
+    completed: int = 0
+    abandoned: int = 0
+    median_minutes_to_complete: float | None = None
+
+
+class RunbookMetricsPhaseRow(BaseModel):
+    """The median time to finish one phase of one runbook."""
+
+    runbook_id: str
+    phase: PhaseId
+    median_minutes: float | None = None
+
+
+class RunbookMetricsStepRow(BaseModel):
+    """The median time and the skip count of one step."""
+
+    runbook_id: str
+    step_id: str
+    title: str = ""
+    median_minutes: float | None = None
+    skipped: int = 0
+
+
+class RunbookMetricsCoverage(BaseModel):
+    """Human-handled cases in the window, and how many had a run."""
+
+    cases_with_run: int = 0
+    human_handled_cases: int = 0
+
+
+class RunbookMetricsRuleGap(BaseModel):
+    """A rule seen in the window that no Published runbook matches. Untrusted."""
+
+    rule: str
+    cases: int = 0
+
+
+class RunbookMetricsCohort(BaseModel):
+    """One response-time cohort: its size and median time to resolve."""
+
+    cases: int = 0
+    mttr_p50_minutes: float | None = None
+
+
+class RunbookMetricsCohorts(BaseModel):
+    """Cases with and without a completed run. A comparison, never a cause."""
+
+    with_completed_run: RunbookMetricsCohort = Field(default_factory=RunbookMetricsCohort)
+    without: RunbookMetricsCohort = Field(default_factory=RunbookMetricsCohort)
+    note: Literal["comparison, not cause"] = "comparison, not cause"
+
+
+class RunbookMetricsRecentRun(BaseModel):
+    """One of the most recent runs, for the library's Recent runs panel."""
+
+    run_id: str
+    case_id: str
+    case_number: str = ""
+    runbook_id: str
+    title: str = ""
+    version: int | None = None
+    status: RunStatus = "active"
+    attached_actor: str = ""
+    started_at: str = ""
+    completed_at: str | None = None
+    duration_minutes: float | None = None
+
+
+class RunbookMetrics(BaseModel):
+    """``GET /api/runbooks/metrics`` (SPEC §4.10.15a). ``partial`` is true when a
+    ledger month document reached its cap inside the window. Every figure states its
+    population and none claims a runbook caused a time change."""
+
+    window_label: str = ""
+    partial: bool = False
+    per_runbook: list[RunbookMetricsRunbookRow] = Field(default_factory=list)
+    per_phase: list[RunbookMetricsPhaseRow] = Field(default_factory=list)
+    per_step: list[RunbookMetricsStepRow] = Field(default_factory=list)
+    coverage: RunbookMetricsCoverage = Field(default_factory=RunbookMetricsCoverage)
+    rules_without_runbook: list[RunbookMetricsRuleGap] = Field(default_factory=list)
+    cohorts: RunbookMetricsCohorts = Field(default_factory=RunbookMetricsCohorts)
+    recent_runs: list[RunbookMetricsRecentRun] = Field(default_factory=list)
+
+
+class CaseRunbooks(BaseModel):
+    """``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with
+    evidence redacted per viewer by the lookup grants, progress per run, the newer
+    published version per run, the free-form case tasks ("Other tasks") and the case
+    document's CAS revision."""
+
+    runs: list[RunbookRun] = Field(default_factory=list)
+    progress: dict[str, RunbookProgress] = Field(default_factory=dict)
+    newer_versions: dict[str, int] = Field(default_factory=dict)
+    other_tasks: list[CaseTask] = Field(default_factory=list)
+    revision: int = 0
+
+
+class RunbookCandidate(BaseModel):
+    """One entry of the Start runbook picker (``GET .../runbooks/candidates``)."""
+
+    id: str
+    title: str = ""
+    summary: str = ""
+    version: int
+    origin: RunbookOrigin
+    group: Literal["best", "other", "fallback", "all", "suggested"]
+    phases: list[PhaseId] = Field(default_factory=list)
+    explanation: MatchExplanation | None = None
+    reason: str | None = None
+
+
+class RunbookCandidates(BaseModel):
+    """The Start runbook picker list, best match first."""
+
+    candidates: list[RunbookCandidate] = Field(default_factory=list)
+
+
+class RunbookDiscardResult(BaseModel):
+    """``DELETE /api/runbooks/{id}/draft``: the runbook after its draft is gone, or
+    ``removed`` when it was never published (it disappears)."""
+
+    id: str
+    removed: bool = False
+    detail: RunbookDetail | None = None
+
+
+class RunbookAttachResult(BaseModel):
+    """``POST /api/cases/{case_id}/runbooks``: the new run, or ``already_attached``
+    (idempotent per case and runbook, #4)."""
+
+    already_attached: bool = False
+    run: RunbookRun | None = None
+    progress: RunbookProgress | None = None
+    revision: int = 0
+
+
+class RunbookRunUpdate(BaseModel):
+    """The result of any write to one run: a step update, a lookup, an approval, an AI
+    draft or its confirmation, a version switch or an abandon. ``revision`` is the case
+    document's CAS revision after the write."""
+
+    run: RunbookRun
+    progress: RunbookProgress
+    revision: int = 0
+
+
+class RunbookSuggestion(BaseModel):
+    """``POST /api/cases/{case_id}/runbooks/suggest``: the AI's suggestion, which a
+    person must select (it is never attached), or with ``dry_run=true`` only the
+    estimate of the one gateway call (#6)."""
+
+    candidate: RunbookCandidate | None = None
+    estimate: ReportSummaryEstimate | None = None
+
+
+class RunbookStepDraftResult(BaseModel):
+    """``POST .../steps/{step_id}/draft``: the run with the step's new AI draft
+    (labelled "AI draft" until a person confirms it), or with ``dry_run=true`` only
+    the estimate of the one gateway call (#6)."""
+
+    update: RunbookRunUpdate | None = None
+    estimate: ReportSummaryEstimate | None = None
+
+
+class RunbookStepsOpen(BaseModel):
+    """One required step still open when a person closes a case (``409
+    runbook_steps_open`` when the request asked to be told)."""
+
+    run_id: str
+    step_id: str
+    title: str = ""
+    status: StepStatus = "todo"
+
+
+class RunbookStepsOpenDetail(BaseModel):
+    """The body of ``409 runbook_steps_open``."""
+
+    required_open: int = 0
+    steps: list[RunbookStepsOpen] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# §4.10.15 request bodies. They fix field types and transport bounds only; content
+# rules are ``validate_runbook``'s, so a bad definition becomes a list of issues
+# (``422 runbook_invalid``) instead of a framework error. Every body refuses an
+# unknown key (``extra="forbid"``, the report bodies' convention), so a misspelt field
+# is a 422, never a silent no-op. The old write shape (``{id, content}``) validates
+# as :class:`RunbookSourceBody` with ``content`` set, which the route answers with
+# ``410 runbooks_moved`` (E14).
+# --------------------------------------------------------------------------- #
+#: A transport bound well above the 64 KiB content limit, so an oversized source is
+#: reported as an issue, not refused by the framework.
+RUNBOOK_SOURCE_TRANSPORT_MAX_CHARS = 262_144
+#: The same bound for a structured definition, measured as its JSON text: well above
+#: what ``validate_runbook``'s own limits allow (40 steps of at most about 3,000
+#: characters each), so a realistic overrun is still reported as issues, while an
+#: arbitrarily large body never reaches model or content validation.
+RUNBOOK_DEFINITION_TRANSPORT_MAX_CHARS = 262_144
+#: A lookup template in ``POST /api/runbooks/lookup-test`` (at most 8 filters).
+RUNBOOK_LOOKUP_TRANSPORT_MAX_CHARS = 16_384
+RUNBOOK_NOTE_MAX_CHARS = 500
+RUNBOOK_PROGRESS_MAX_CASES = 100
+RUNBOOK_CASE_ID_MAX_CHARS = 128
+RUNBOOK_ID_MAX_CHARS = 64
+#: ``RunbookPublishBody.content_hash``: the SHA-256 of the canonical definition.
+RUNBOOK_CONTENT_HASH_PATTERN = r"^[0-9a-f]{64}$"
+
+
+def _json_text_chars(value: Any) -> int:
+    """The length of ``value`` as compact JSON text (a model counts as its dump)."""
+    if isinstance(value, BaseModel):
+        return len(value.model_dump_json())
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str))
+
+
+def _within_transport_bound(value: Any, limit: int, what: str) -> Any:
+    if value is not None and _json_text_chars(value) > limit:
+        raise ValueError(f"{what} is larger than {limit:,} characters")
+    return value
+
+
+class _RunbookRequest(BaseModel):
+    """Base of the §4.10.15 request bodies: unknown keys are refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RunbookSourceBody(_RunbookRequest):
+    """``POST /api/runbooks`` (create a draft), ``/validate``, ``/import`` and
+    ``/match-preview``: a definition, or Markdown source, or (match preview only) an
+    existing runbook id.
+
+    ``content`` is the old write shape's key, accepted only so the route can tell
+    ``{id, content}`` apart after validation: any request that sets it (``"content" in
+    model_fields_set``) answers ``410 runbooks_moved``, because an old-shape write
+    cannot be honoured without making unreviewed text trusted (#9, E14)."""
+
+    definition: RunbookDefinition | None = None
+    source: str | None = Field(default=None, max_length=RUNBOOK_SOURCE_TRANSPORT_MAX_CHARS)
+    id: str | None = Field(default=None, max_length=RUNBOOK_ID_MAX_CHARS)
+    content: Any = Field(
+        default=None,
+        description="Legacy key of the old write shape; any value answers 410 runbooks_moved.",
+    )
+
+    @field_validator("definition", mode="before")
+    @classmethod
+    def _bounded_definition(cls, value: Any) -> Any:
+        return _within_transport_bound(value, RUNBOOK_DEFINITION_TRANSPORT_MAX_CHARS, "The definition")
+
+
+class RunbookDraftBody(_RunbookRequest):
+    """``PUT /api/runbooks/{id}/draft``: the new draft and the revision it edits."""
+
+    definition: RunbookDefinition | None = None
+    source: str | None = Field(default=None, max_length=RUNBOOK_SOURCE_TRANSPORT_MAX_CHARS)
+    expected_revision: int = Field(ge=0)
+
+    @field_validator("definition", mode="before")
+    @classmethod
+    def _bounded_definition(cls, value: Any) -> Any:
+        return _within_transport_bound(value, RUNBOOK_DEFINITION_TRANSPORT_MAX_CHARS, "The definition")
+
+
+class RunbookVersionBody(_RunbookRequest):
+    """``POST /api/runbooks/{id}/submit``: the version sent for review. Publishing
+    takes :class:`RunbookPublishBody`, which requires the revision."""
+
+    version: int = Field(ge=1)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class RunbookPublishBody(_RunbookRequest):
+    """``POST /api/runbooks/{id}/publish`` (SPEC §4.10.15): the version and the
+    library revision the publisher reviewed, both required. Publishing is the one
+    transition that makes runbook text trusted investigator guidance (#9), and drafts
+    are edited in place, so a publish is bound to exactly what was reviewed: a stale
+    ``expected_revision`` answers ``409 runbook_conflict`` with the latest state.
+    ``content_hash`` (the reviewed version's ``RunbookVersionDoc.content_hash``) also
+    binds it across a discard and re-create, where a new library document can repeat
+    an old revision number; when given, a different stored hash is ``409
+    runbook_conflict`` too. The Console always sends it."""
+
+    version: int = Field(ge=1)
+    expected_revision: int = Field(ge=0)
+    content_hash: str | None = Field(default=None, pattern=RUNBOOK_CONTENT_HASH_PATTERN)
+
+
+class RunbookRejectBody(_RunbookRequest):
+    """``POST /api/runbooks/{id}/reject``: back to draft with a reason."""
+
+    version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=RUNBOOK_STEP_MAX_REASON_CHARS)
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class RunbookRevisionBody(_RunbookRequest):
+    """``retire``, ``restore``, ``reviewed``, ``duplicate`` and ``versions/{n}/restore``:
+    the revision the action is based on (optional for the idempotent ones)."""
+
+    expected_revision: int | None = Field(default=None, ge=0)
+
+
+class RunbookAttachBody(_RunbookRequest):
+    """``POST /api/cases/{case_id}/runbooks``: attach one runbook by hand."""
+
+    runbook_id: str = Field(min_length=1, max_length=RUNBOOK_ID_MAX_CHARS)
+    note: str | None = Field(default=None, max_length=RUNBOOK_NOTE_MAX_CHARS)
+
+
+class StepDecisionInput(_RunbookRequest):
+    """The option a person picked on a Decision step."""
+
+    option_id: str = Field(min_length=1, max_length=64)
+
+
+class StepActionRecordInput(_RunbookRequest):
+    """What a person recorded on an Action or Record step."""
+
+    where: str = Field(default="", max_length=RUNBOOK_ACTION_MAX_WHERE_CHARS)
+    outcome: str = Field(default="", max_length=RUNBOOK_ACTION_MAX_OUTCOME_CHARS)
+    performed_at: str | None = Field(default=None, max_length=64)
+
+
+class StepEvidenceLinkInput(_RunbookRequest):
+    """An https link or ticket reference attached as evidence. ``url`` must be an
+    absolute https link (:func:`https_url`; ``javascript:``, ``data:``, ``http:`` and
+    relative links are refused with a 422)."""
+
+    kind: Literal["link", "ticket"] = "link"
+    url: str | None = Field(default=None, max_length=RUNBOOK_EVIDENCE_MAX_URL_CHARS)
+    label: str | None = Field(default=None, max_length=RUNBOOK_EVIDENCE_MAX_LABEL_CHARS)
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _https_only(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        url = https_url(value)
+        if url is None:
+            raise ValueError("Use an https link of at most 500 characters.")
+        return url
+
+
+class RunbookStepUpdate(_RunbookRequest):
+    """``PATCH /api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}``. A stale
+    ``expected_revision`` is never retried (``409 runbook_conflict``). ``assignee``
+    sent as ``null`` clears the assignment; an absent key leaves it (the route reads
+    ``model_fields_set``)."""
+
+    expected_revision: int = Field(ge=0)
+    status: StepStatus | None = None
+    assignee: str | None = Field(default=None, max_length=128)
+    note: str | None = Field(default=None, max_length=RUNBOOK_STEP_MAX_NOTE_CHARS)
+    reason: str | None = Field(default=None, max_length=RUNBOOK_STEP_MAX_REASON_CHARS)
+    decision: StepDecisionInput | None = None
+    action_record: StepActionRecordInput | None = None
+    evidence_link: StepEvidenceLinkInput | None = None
+
+
+class StepApprovalBody(_RunbookRequest):
+    """``POST .../steps/{step_id}/approval``: the recorder can never approve."""
+
+    decision: Literal["approve", "reject"]
+    reason: str | None = Field(default=None, max_length=RUNBOOK_STEP_MAX_REASON_CHARS)
+
+
+class StepDraftConfirmBody(_RunbookRequest):
+    """``POST .../steps/{step_id}/draft/confirm``: the draft as the person edited it."""
+
+    text: str = Field(min_length=1, max_length=RUNBOOK_AI_DRAFT_MAX_CHARS)
+
+
+class RunSwitchVersionBody(_RunbookRequest):
+    """``POST .../runbooks/{run_id}/switch-version``."""
+
+    version: int = Field(ge=1)
+
+
+class RunAbandonBody(_RunbookRequest):
+    """``POST .../runbooks/{run_id}/abandon``."""
+
+    reason: str = Field(min_length=1, max_length=RUNBOOK_STEP_MAX_REASON_CHARS)
+
+
+class RunbookProgressBody(_RunbookRequest):
+    """``POST /api/runbooks/progress``: progress for up to 100 cases at once, each id
+    1 to 128 characters (an id becomes part of a store key)."""
+
+    case_ids: list[Annotated[str, Field(min_length=1, max_length=RUNBOOK_CASE_ID_MAX_CHARS)]] = Field(
+        default_factory=list, max_length=RUNBOOK_PROGRESS_MAX_CASES,
+    )
+
+
+class RunbookLookupTestBody(_RunbookRequest):
+    """``POST /api/runbooks/lookup-test``: run a draft lookup against one case,
+    read-only, storing nothing."""
+
+    lookup: LookupTemplate
+    case_id: str = Field(min_length=1, max_length=RUNBOOK_CASE_ID_MAX_CHARS)
+
+    @field_validator("lookup", mode="before")
+    @classmethod
+    def _bounded_lookup(cls, value: Any) -> Any:
+        return _within_transport_bound(value, RUNBOOK_LOOKUP_TRANSPORT_MAX_CHARS, "The lookup")
+
+
+#: §4.10.15 ``open_steps_reason`` on every human terminal transition (D34).
+OPEN_STEPS_REASON_MAX_CHARS = 500
