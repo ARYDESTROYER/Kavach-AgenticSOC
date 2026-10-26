@@ -11638,3 +11638,10 @@
 - Tests: backend 8,984 passed, 4 skipped, 6 failed (all pre-existing: five need network or environment the sandbox injects, one records test expects AGENTS.md to name Round 14, owned by WP-DOC); ruff fatal clean; tsc, lint 0/0, gates, 27 web test files green; entry chunk unchanged at 371,876 B (151 B left in the budget).
 - Status: done.
 - Next: wave A backend packages and wave C shared web primitives in parallel.
+
+### 2026-10-26 12:40Z — Orchestrator — Round 14 run r2b-web: panels, headers, navigation, Overview
+- Context: SPEC §7.5 W2a, W3, W2b, W4a (asks 4 and 8, choices C3 B, C6 A, C7 1, C8 1, C9 A primitives).
+- Did: Panel and SectionTitle, KpiStrip, the strip KpiTile, ChartCard on panels, the title-and-controls PageHeader, page rhythm, underline tabs, the sheet close fix, proportional body figures, duration and case label formatters, the console grammar guard; table, filter bar, time range, refresh, number field and field layouts, list row, row actions, status dot, callout and grouped Settings sections; the docked navigation (stable morph, one toggle, hover never expands, flyouts with hover intent, platform keys), the registry and router (one Runbooks entry, Cyber Defence Center, Help Center, the Overview entry for the Dashboards library, new deep-link keys); the Overview without its two band headers with one panel gutter and window captions inside the cards. Reviews found 90 issues across the four packages; all fixed or recorded, re-reviewed. Progress images sent to the operator (Overview, navigation, headers).
+- Tests: tsc 0, lint 0/0, design gates, 221 web test files covering every importer (one console-map contract test waits for regeneration); entry chunk 384,789 B, 12,913 B over the old budget and under the 400,000 B ceiling (navigation +11,324 B, Field +1,595 B), handed to package R for reduction and one deliberate rebase.
+- Status: done (committed `63e6138`).
+- Next: package R (entry reduction and rebase, console map regeneration); backend run r2a continues.
