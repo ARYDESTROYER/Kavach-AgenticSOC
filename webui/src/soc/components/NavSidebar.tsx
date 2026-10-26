@@ -25,6 +25,13 @@
  * boxes match the visible state: 48 px around the icon in the rail, the full row in the
  * drawer. Collapsing never strands focus: a focused chevron or page hands it to its row.
  *
+ * FIRST PAINT (SPEC §3.4). The flyouts, their hover intent, the tooltip and the handlers
+ * that drive them form one lazy chunk (`nav-rail-interactions.tsx`), prefetched into the
+ * HTTP cache when the browser is idle and loaded on the rail's first pointer move or
+ * focus (`nav-rail-loader.ts`, which replays that first interaction once the handlers are
+ * attached, and retries a failed load on a later interaction after a pause). This file
+ * paints the rows, the toggle and the stable morph, which need nothing from it.
+ *
  * ARIA-CURRENT (SPEC §2.2 item 9): exactly one element in the navigation landmark
  * ("Console destinations", which holds the flyout too) carries `aria-current="page"`:
  * the current child while its list is shown (drawer group open, flyout open, phone
@@ -50,7 +57,7 @@ import { comboLabel } from '@/lib/platform-keys';
 import '@/styles/nav.css';
 import { useAuth } from '../auth';
 import { ActivityGlyph, BrandActivityRing } from '../chat-activity/glyph';
-import { useChatActivity, type ChatActivitySummary } from '../chat-activity/store';
+import { useChatActivity } from '../chat-activity/store';
 import {
   NAV_FOOTER_ITEMS,
   NAV_GROUPS,
@@ -64,21 +71,13 @@ import {
 } from '../nav';
 import { navStore, useNavState } from '../nav-store';
 import {
-  closeFlyout,
-  endFocusSuppression,
-  keyboardOpen,
-  openFlyout,
-  pointerEnterPanel,
-  pointerLeavePanel,
-  pointerLeftTrigger,
-  pointerOverTrigger,
-  pointerTrack,
-  registerPanel,
-  registerTrigger,
-  suppressAfterPress,
-  suppressFocusReopen,
-} from './nav-hover-intent';
-import { RailTipLayer, hideRailTip, railTipHandlers } from './nav-rail-tip';
+  closeRailSurfaces,
+  railPrimers,
+  replayFirstInteraction,
+  useRailInteractions,
+  warmRailInteractionsWhenIdle,
+} from './nav-rail-loader';
+import { activityText, describedBy, followLink, hrefOf, type Destination, type NavActivity } from './nav-shared';
 
 /** One vocabulary for the toggle (ui-standard "Navigation and information architecture"). */
 export const NAV_COPY = {
@@ -95,15 +94,6 @@ const DESTINATIONS_ID = 'nav-destinations';
 /* -------------------------------------------------------------------------- */
 /* Destinations, filtered for the viewer.                                     */
 /* -------------------------------------------------------------------------- */
-
-/** A visible top-level destination: the row, the page it opens and its visible pages. */
-interface Destination {
-  item: NavItem;
-  /** The page the row opens ({@link navTarget}). */
-  target: PageId;
-  /** The group's pages; empty for a plain destination (no chevron, no flyout). */
-  pages: NavChild[];
-}
 
 interface DestinationGroup {
   group: NavGroup;
@@ -147,24 +137,11 @@ function placeOf(dest: Destination, page: PageId): { trail: boolean; current: Na
 /* Agent activity (SPEC D13).                                                 */
 /* -------------------------------------------------------------------------- */
 
-/** Nav item id → its chat activity (`chat`: Workspace chat; `case_manager`: case chat). */
-type NavActivity = Partial<Record<string, ChatActivitySummary>>;
-
 function useNavActivity(): NavActivity {
   const workspace = useChatActivity((snapshot) => snapshot.workspace);
   const caseChat = useChatActivity((snapshot) => snapshot.case);
   return React.useMemo(() => ({ chat: workspace, case_manager: caseChat }), [workspace, caseChat]);
 }
-
-/** The visible state line: with reduced motion the ring stands still, so say "Working". */
-function activityText(activity: ChatActivitySummary | undefined, reducedMotion: boolean): string {
-  if (!activity?.text) return '';
-  return reducedMotion && activity.status === 'running' ? `Working. ${activity.text}` : activity.text;
-}
-
-/** The id of the hidden description a destination points at (`aria-describedby`). */
-const describedBy = (id: string, activity: ChatActivitySummary | undefined) =>
-  activity?.text ? `nav-activity-${id}` : undefined;
 
 /** The hidden descriptions the chat destinations point at (one per destination). */
 function ActivityDescriptions({ activity }: { activity: NavActivity }) {
@@ -184,17 +161,6 @@ function ActivityDescriptions({ activity }: { activity: NavActivity }) {
 /* -------------------------------------------------------------------------- */
 /* Shared parts.                                                              */
 /* -------------------------------------------------------------------------- */
-
-/** A plain left click navigates in-app; a modified click keeps the browser's own behaviour. */
-function followLink(event: React.MouseEvent<HTMLAnchorElement>, go: () => void): void {
-  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-    return;
-  }
-  event.preventDefault();
-  go();
-}
-
-const hrefOf = (page: PageId) => `#/${page}`;
 
 /** A page's test id; a host's own page in its list (Workspace > Chat) gets a suffix. */
 const childTestId = (host: string, child: string) => (child === host ? `nav-${child}-page` : `nav-${child}`);
@@ -274,6 +240,9 @@ function RowTints({ active, open = false, sheet = false }: { active: boolean; op
   );
 }
 
+/** The rail's interaction layer once loaded (`nav-rail-loader.ts`); null before, and in the sheet. */
+type Rail = ReturnType<typeof useRailInteractions>;
+
 /** The brand link: it opens the Cyber Defence Center. */
 function Brand({
   product,
@@ -281,12 +250,14 @@ function Brand({
   go,
   sheet = false,
   collapsed = false,
+  rail = null,
 }: {
   product: string;
   logoUrl?: string;
   go: (page: PageId) => void;
   sheet?: boolean;
   collapsed?: boolean;
+  rail?: Rail;
 }) {
   return (
     <a
@@ -294,7 +265,7 @@ function Brand({
       onClick={(event) => followLink(event, () => go('overview'))}
       aria-label={`${product} home`}
       data-nav-rail-focus={sheet ? undefined : ''}
-      {...railTipHandlers('brand', `${product} home`, '', collapsed)}
+      {...rail?.railTipHandlers('brand', `${product} home`, '', collapsed)}
       className="nav-brand flex min-w-0 flex-1 items-center gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <BrandTile logoUrl={logoUrl} />
@@ -317,6 +288,8 @@ interface RowProps {
   flyoutOpen: boolean;
   activity: NavActivity;
   reducedMotion: boolean;
+  /** The rail's interaction layer (tooltip, flyout); null in the sheet and until it loads. */
+  rail: Rail;
   go: (page: PageId) => void;
   onToggle: (id: string) => void;
 }
@@ -330,6 +303,7 @@ const Row = React.memo(function Row({
   flyoutOpen,
   activity,
   reducedMotion,
+  rail,
   go,
   onToggle,
 }: RowProps) {
@@ -342,13 +316,16 @@ const Row = React.memo(function Row({
   const own = activity[item.id];
   const ref = React.useRef<HTMLAnchorElement>(null);
 
-  React.useEffect(() => {
-    if (!trigger) return undefined;
-    registerTrigger(item.id, ref.current);
-    return () => registerTrigger(item.id, null);
-  }, [trigger, item.id]);
+  // A layout effect: a child's runs before its parent's in the same commit, so the icon is
+  // registered (the flyout's position) before NavRail replays a first interaction that
+  // arrived while the layer was loading. A passive effect would run after the replay, and
+  // a replayed keyboard focus would place its flyout at the top of the window.
+  React.useLayoutEffect(() => {
+    if (!trigger || !rail) return undefined;
+    rail.registerTrigger(item.id, ref.current);
+    return () => rail.registerTrigger(item.id, null);
+  }, [trigger, item.id, rail]);
 
-  const tip = railTipHandlers(item.id, item.label, activityText(own, reducedMotion), collapsed && !trigger);
   const listId = `nav-group-${item.id}`;
   const hover = sheet ? '' : 'hover:text-foreground';
 
@@ -359,52 +336,7 @@ const Row = React.memo(function Row({
           ref={ref}
           href={hrefOf(target)}
           onClick={(event) => followLink(event, () => go(target))}
-          onPointerDown={(event) => {
-            tip.onPointerDown?.();
-            if (trigger && event.button === 0) suppressAfterPress(item.id);
-          }}
-          onPointerMove={(event) => {
-            tip.onPointerMove?.(event);
-            if (trigger) pointerOverTrigger(item.id, { x: event.clientX, y: event.clientY });
-          }}
-          onPointerLeave={(event) => {
-            tip.onPointerLeave?.();
-            if (trigger) pointerLeftTrigger(item.id, { x: event.clientX, y: event.clientY });
-          }}
-          onFocus={(event) => {
-            tip.onFocus?.(event);
-            // Keyboard focus opens at once; a pointer focus never does.
-            if (trigger && event.currentTarget.matches(':focus-visible')) keyboardOpen(item.id);
-          }}
-          onBlur={(event) => {
-            tip.onBlur?.();
-            if (!trigger) return;
-            if ((event.relatedTarget as HTMLElement | null)?.closest('[data-nav-flyout]')) return;
-            endFocusSuppression(item.id);
-            if (navStore.getState().flyout === item.id) closeFlyout();
-          }}
-          onKeyDown={
-            trigger
-              ? (event) => {
-                  if (event.key === 'ArrowRight') {
-                    event.preventDefault();
-                    if (navStore.getState().flyout !== item.id) openFlyout(item.id);
-                    window.requestAnimationFrame(() =>
-                      document.querySelector<HTMLElement>('[data-nav-flyout] [data-nav-fly-item]')?.focus(),
-                    );
-                  } else if (event.key === ' ') {
-                    // A grouped icon does what a click does on Space too (it opens its page).
-                    event.preventDefault();
-                    event.currentTarget.click();
-                  } else if (event.key === 'Escape' && navStore.getState().flyout === item.id) {
-                    // Dismissed: it stays closed while focus stays on the icon.
-                    event.preventDefault();
-                    closeFlyout();
-                    suppressFocusReopen(item.id);
-                  }
-                }
-              : undefined
-          }
+          {...rail?.rowHandlers(item.id, item.label, activityText(own, reducedMotion), collapsed, trigger)}
           aria-current={trail && !((shown || flyoutOpen) && current) ? 'page' : undefined}
           aria-haspopup={trigger ? 'true' : undefined}
           aria-expanded={trigger ? flyoutOpen : undefined}
@@ -554,169 +486,6 @@ function DestinationList({
 /** The navigation landmark's one label (the rail and the phone sheet). */
 const LANDMARK_LABEL = 'Console destinations';
 
-/* -------------------------------------------------------------------------- */
-/* The collapsed rail's flyout.                                               */
-/* -------------------------------------------------------------------------- */
-
-/** The collapsed rail's one flyout, outside the clipping layer so nothing clips it. */
-function RailFlyout({
-  destinations,
-  page,
-  activity,
-  reducedMotion,
-  go,
-}: {
-  destinations: Destination[];
-  page: PageId;
-  activity: NavActivity;
-  reducedMotion: boolean;
-  go: (page: PageId) => void;
-}) {
-  const flyout = useNavState((s) => s.flyout);
-  const top = useNavState((s) => s.flyoutTop);
-  // A flyout belongs to the 64 px rail: never over the labelled drawer (a rest timer that
-  // fires after a keyboard expand finds no flyout to show).
-  const collapsed = useNavState((s) => s.collapsed);
-  const ref = React.useRef<HTMLDivElement>(null);
-  const [placed, setPlaced] = React.useState<number | null>(null);
-  const dest = (collapsed && destinations.find((d) => d.item.id === flyout && d.pages.length > 0)) || null;
-
-  React.useLayoutEffect(() => {
-    registerPanel(ref.current);
-    if (!dest || !ref.current) {
-      setPlaced(null);
-      return;
-    }
-    const height = ref.current.offsetHeight || 200;
-    setPlaced(Math.max(8, Math.min(top - 8, window.innerHeight - height - 8)));
-  }, [dest, top]);
-
-  // One surface at a time: the open flyout hides the rail tooltip.
-  React.useEffect(() => {
-    if (dest) hideRailTip();
-  }, [dest]);
-
-  // Track the pointer while open (the safe triangle), close on a press elsewhere, and
-  // close on Escape wherever focus is (WCAG 1.4.13: content opened by hover can be
-  // dismissed without moving the pointer); it then stays closed until the pointer leaves
-  // the icon. With focus in the flyout or on its icon, their own handlers take Escape
-  // (they also hand focus back).
-  React.useEffect(() => {
-    if (!dest) return undefined;
-    const id = dest.item.id;
-    const owns = (node: Node | null) =>
-      Boolean(node && (ref.current?.contains(node) || document.querySelector(`[data-nav-item="${id}"]`)?.contains(node)));
-    const onMove = (event: PointerEvent) => pointerTrack({ x: event.clientX, y: event.clientY });
-    const onDown = (event: PointerEvent) => {
-      if (owns(event.target as Node | null)) return;
-      closeFlyout();
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented || owns(event.target as Node | null)) return;
-      event.preventDefault();
-      suppressAfterPress(id);
-    };
-    window.addEventListener('pointermove', onMove, { passive: true });
-    window.addEventListener('pointerdown', onDown, true);
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerdown', onDown, true);
-      document.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [dest]);
-
-  if (!dest) return null;
-  const { item, pages } = dest;
-  const own = activity[item.id];
-  const trigger = () => document.querySelector<HTMLElement>(`[data-nav-item="${item.id}"] [data-nav-rail-focus]`);
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const links = Array.from(ref.current?.querySelectorAll<HTMLElement>('[data-nav-fly-item]') ?? []);
-    const index = links.indexOf(document.activeElement as HTMLElement);
-    if (event.key === 'Escape' || event.key === 'ArrowLeft' || (event.key === 'Tab' && event.shiftKey)) {
-      event.preventDefault();
-      closeFlyout();
-      suppressFocusReopen(item.id);
-      trigger()?.focus();
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      links[(index + (event.key === 'ArrowDown' ? 1 : -1) + links.length) % links.length]?.focus();
-    } else if (event.key === 'Home' || event.key === 'End') {
-      event.preventDefault();
-      links[event.key === 'Home' ? 0 : links.length - 1]?.focus();
-    } else if (event.key === 'Tab') {
-      // Tab moves on to the next rail destination, as if the flyout were not there.
-      event.preventDefault();
-      const rail = Array.from(document.querySelectorAll<HTMLElement>('[data-nav-rail-focus]'));
-      const from = trigger();
-      const next = from ? rail[rail.indexOf(from) + 1] : undefined;
-      closeFlyout();
-      (next ?? from)?.focus();
-    }
-  };
-
-  return (
-    // A list of links with roving focus: arrows, Home, End, Escape and Tab are handled here.
-    // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-    <div
-      ref={ref}
-      data-nav-flyout=""
-      data-testid={`nav-flyout-${item.id}`}
-      onPointerEnter={pointerEnterPanel}
-      onPointerLeave={(event) => pointerLeavePanel({ x: event.clientX, y: event.clientY })}
-      onKeyDown={onKeyDown}
-      onBlur={(event) => {
-        const next = event.relatedTarget as Node | null;
-        if (next && (ref.current?.contains(next) || trigger()?.contains(next))) return;
-        closeFlyout();
-      }}
-      style={{ top: placed ?? top - 8, visibility: placed === null ? 'hidden' : undefined }}
-      className="nav-flyout pointer-events-auto fixed left-[4.5rem] z-[60] w-56 before:absolute before:-left-2 before:top-0 before:h-full before:w-2 before:content-['']"
-    >
-      <div className="max-h-[calc(100dvh-1rem)] overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-menu">
-        <p aria-hidden className="px-2.5 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">
-          {item.label}
-        </p>
-        {own?.text ? <p className="break-words px-2.5 pb-1.5 text-xs text-muted-foreground">{activityText(own, reducedMotion)}</p> : null}
-        <ul id={`nav-fly-${item.id}`} aria-label={`${item.label} pages`} className="space-y-0.5">
-          {pages.map((child) => {
-            const childPage = navDest(child);
-            const active = page === childPage;
-            const childActivity = activity[child.id];
-            return (
-              <li key={`fly-${item.id}-${child.id}`}>
-                <a
-                  href={hrefOf(childPage)}
-                  tabIndex={-1}
-                  data-nav-fly-item=""
-                  onClick={(event) =>
-                    followLink(event, () => {
-                      closeFlyout();
-                      go(childPage);
-                    })
-                  }
-                  aria-current={active ? 'page' : undefined}
-                  aria-describedby={describedBy(item.id, childActivity)}
-                  className={cn(
-                    'relative flex h-8 w-full items-center gap-2 rounded-sm px-2.5 text-left text-sm transition-colors duration-150',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    active ? 'bg-primary/10 font-medium text-primary dark:bg-accent' : 'text-foreground hover:bg-muted',
-                  )}
-                >
-                  {active ? <span aria-hidden data-active="" className="nav-tint pointer-events-none absolute inset-0 rounded-sm" /> : null}
-                  <span className="relative truncate">{child.label}</span>
-                  {childActivity?.status ? <ActivityGlyph status={childActivity.status} className="relative ml-auto" /> : null}
-                </a>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </div>
-  );
-}
-
 /**
  * Collapsing is about to make the chevrons and the group pages inert. If one of them has
  * focus, hand it to its row's link (the group icon in the rail), so it is never dropped.
@@ -743,21 +512,20 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
   const openGroups = useNavState((s) => s.openGroups);
   const flyout = useNavState((s) => s.flyout);
   const asideRef = React.useRef<HTMLElement>(null);
+  const rail = useRailInteractions();
   const hint = React.useMemo(() => navToggleShortcut(), []);
   const product = productName || 'Agentic SOC';
   const everything = React.useMemo(() => [...groups.flatMap((g) => g.items), ...footer], [groups, footer]);
 
   const go = React.useCallback(
     (target: PageId) => {
-      closeFlyout();
-      hideRailTip();
+      closeRailSurfaces();
       onNavigate(target);
     },
     [onNavigate],
   );
   const toggle = React.useCallback(() => {
-    closeFlyout();
-    hideRailTip();
+    closeRailSurfaces();
     navStore.toggleCollapsed();
   }, []);
 
@@ -770,10 +538,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
     const entering = wasCollapsed.current && !collapsed;
     const changed = wasCollapsed.current !== collapsed;
     wasCollapsed.current = collapsed;
-    if (changed) {
-      closeFlyout();
-      hideRailTip();
-    }
+    if (changed) closeRailSurfaces();
     const el = asideRef.current;
     if (!entering || !el) return undefined;
     el.dataset.navEntering = 'true';
@@ -793,13 +558,17 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
     });
   }, []);
 
-  React.useEffect(
-    () => () => {
-      closeFlyout();
-      hideRailTip();
-    },
-    [],
-  );
+  React.useEffect(() => closeRailSurfaces, []);
+
+  // Warm the interaction layer into the HTTP cache when the browser is idle (desktop only:
+  // the phone sheet has no rail), so the first interaction loads it from the cache.
+  React.useEffect(warmRailInteractionsWhenIdle, []);
+
+  // The interaction layer has just attached its handlers (they commit before this runs):
+  // hand it the first interaction that started the load, if it is still going on.
+  React.useLayoutEffect(() => {
+    if (rail) replayFirstInteraction();
+  }, [rail]);
 
   const row = (dest: Destination) => (
     <Row
@@ -812,6 +581,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
       flyoutOpen={flyout === dest.item.id}
       activity={activity}
       reducedMotion={reducedMotion}
+      rail={rail}
       go={go}
       onToggle={navStore.toggleGroup}
     />
@@ -826,6 +596,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
         data-nav-state={collapsed ? 'collapsed' : 'expanded'}
         data-reduced-motion={reducedMotion ? 'true' : 'false'}
         className="nav-root pointer-events-none fixed inset-y-0 left-0 z-40 w-60"
+        {...(rail ? null : railPrimers)}
       >
         {/* The landmark holds the panel AND the flyout: the flyout sits outside the
             clipping layer (nothing clips it) but inside the navigation. */}
@@ -833,7 +604,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
           <div className="nav-clip pointer-events-auto absolute inset-y-0 left-0 w-60 border-r border-border bg-surface">
             <div className="nav-content flex h-full w-60 flex-col">
               <div className="flex h-14 shrink-0 items-center border-b border-border pl-3.5 pr-2">
-                <Brand product={product} logoUrl={logoUrl} go={go} collapsed={collapsed} />
+                <Brand product={product} logoUrl={logoUrl} go={go} collapsed={collapsed} rail={rail} />
               </div>
               {/* The toggle: one quiet 28 px control in one fixed slot, never remounted, so
                   focus and the pointer stay on it; 8 px of air before the first destination. */}
@@ -841,7 +612,7 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
                 <button
                   type="button"
                   onClick={toggle}
-                  {...railTipHandlers('toggle', NAV_COPY.expand, hint, collapsed)}
+                  {...rail?.railTipHandlers('toggle', NAV_COPY.expand, hint, collapsed)}
                   aria-label={collapsed ? NAV_COPY.expand : NAV_COPY.collapse}
                   aria-controls={DESTINATIONS_ID}
                   aria-keyshortcuts="Control+B Meta+B"
@@ -888,8 +659,9 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
               collapsed ? 'cursor-e-resize' : 'cursor-w-resize',
             )}
           />
-          <RailFlyout destinations={everything} page={page} activity={activity} reducedMotion={reducedMotion} go={go} />
-          <RailTipLayer />
+          {rail ? (
+            <rail.RailLayers destinations={everything} page={page} activity={activity} reducedMotion={reducedMotion} go={go} />
+          ) : null}
           <ActivityDescriptions activity={activity} />
         </nav>
       </aside>
@@ -941,6 +713,7 @@ function NavSheet({ page, onNavigate, logoUrl, productName, reducedMotion }: Sur
       flyoutOpen={false}
       activity={activity}
       reducedMotion={reducedMotion}
+      rail={null}
       go={onNavigate}
       onToggle={onToggle}
     />

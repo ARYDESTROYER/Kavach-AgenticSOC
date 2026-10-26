@@ -1038,6 +1038,9 @@ detailed amendments (A39–A63) and BLOCKS.md amendments 24–31.
   (371,491 B with CI's commit and build-time stamps): the committed close built 367,201 B
   and the same tree without the three top bar files and the fold 367,279 B, so the bar is
   4,166 B and the rest of the polish 78 B, inside the budget.
+  Round 14 rebased the baseline once more (its SPEC §3.4 and E11): the current value and its
+  per-file deltas are recorded in the "Entry bundle" item of the Round 14 SPEC §11.1
+  (`docs/research/2026-10-round14/SPEC.md`), which the records test reads.
 
 - **Source conversation on older reports.** Index rows written before decision 25 read
   `null` (the library shows no source) until the report next changes.

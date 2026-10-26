@@ -21,7 +21,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
@@ -66,6 +66,7 @@ import {
   safeTriangle,
 } from '../components/nav-hover-intent';
 import { RAIL_TIP_GRACE_MS, RAIL_TIP_REST_MS, resetRailTip } from '../components/nav-rail-tip';
+import { loadRailInteractions } from '../components/nav-rail-loader';
 import { navStore } from '../nav-store';
 import type { PageId } from '../nav';
 
@@ -98,6 +99,13 @@ const currentMarkers = () => {
 const flyouts = () => document.querySelectorAll('[data-testid^="nav-flyout-"]');
 const tips = () => document.querySelectorAll('[data-testid="nav-rail-tip"]');
 const aside = () => screen.getByRole('complementary', { name: 'Primary navigation' });
+
+// The rail's interaction layer is a lazy chunk (`nav-rail-loader.ts`); these tests pin its
+// behaviour once loaded, so it is loaded before the first render. The load itself, and the
+// replay of a first interaction that arrives before it, are pinned in nav.lazy-rail.test.tsx.
+beforeAll(async () => {
+  await loadRailInteractions();
+});
 
 beforeEach(() => {
   grant = () => true;

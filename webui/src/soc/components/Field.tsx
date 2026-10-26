@@ -21,18 +21,16 @@
  *
  * All strings render as plain text (#9), never `dangerouslySetInnerHTML`.
  *
- * Layout (Round 14, SPEC §4.9.2 and §4.9.6): `stacked` (the default) puts the label
- * above the control and the description below it (Carbon). `inline` is the Settings row:
- * the label (14px medium) and its description (13px muted, at most 42rem) on the left,
- * the control on the row's end in a column `--setting-control-w` wide (16rem unless the
- * row says otherwise; a narrower control such as a `NumberField` aligns to the column's
- * end, so every control in a group shares one right edge); below 640px the control
- * stacks under the description. `wide` is the Settings row for a wide control (a text
- * area, a tag list, a segmented control): the same 14px medium label and 13px muted
- * description as `inline`, in that order, with the control at full width under them.
- * A `SettingRow` provides `inline` (or `wide`) to every Field inside it through
- * `FieldLayoutContext`, so `NumberField`, `NumPref`, `TextPref` and the other
- * Field-based controls lay out as rows without a prop.
+ * Layout (Round 14, SPEC §4.9.2 and §4.9.6): `stacked` (the default, and the only
+ * layout this first-paint module draws) puts the label above the control and the
+ * description below it (Carbon). A row layout is a renderer, `FieldLayoutRenderer`, that
+ * places the parts Field has already wired; the Settings rows are two such renderers in
+ * the lazy Settings primitives (`inlineFieldLayout` and `wideFieldLayout`,
+ * `pages/settings/field-layouts.tsx`), so the Login and Wizard pages, which import Field
+ * at first paint, never carry them. A `SettingRow` provides its renderer to every Field
+ * inside it through `FieldLayoutContext`, so `NumberField`, `NumPref`, `TextPref` and the
+ * other Field-based controls lay out as rows without a prop; `layout` on one Field
+ * (a renderer, or `stacked`) wins over the context.
  *
  * Usage (render-prop, explicit; preferred when the control needs the ids):
  *   <Field label="Correlation window" description="Minutes" error={err}>
@@ -48,12 +46,39 @@ import * as React from 'react';
 import { Label } from '@/ui/label';
 import { cn } from '@/lib/cn';
 
-/** How a Field arranges its label, control and description. */
-export type FieldLayout = 'stacked' | 'inline' | 'wide';
+/**
+ * A Field's wired parts, for a row layout to place. The ids are already on the control
+ * (`aria-describedby`, `aria-invalid`, the label's `htmlFor`), so a renderer only
+ * arranges: it must render `description` with `descriptionId` and `error` with `errorId`
+ * (as `role="alert"`), and keep the reading order label, control or description, error.
+ */
+export interface FieldParts {
+  /** The visible label, with the row's own label classes added (`text-base leading-5`). */
+  label: (rowClassName?: string) => React.ReactElement;
+  labelAction?: React.ReactNode;
+  control: React.ReactNode;
+  description?: React.ReactNode;
+  descriptionId?: string;
+  error?: React.ReactNode;
+  errorId?: string;
+  /** The Field's `className`, for the row's root. */
+  className?: string;
+  /** The Field's other `div` props, spread on the row's root after its own attributes. */
+  rootProps: React.HTMLAttributes<HTMLDivElement>;
+  /** The Field's forwarded ref, for the row's root. */
+  rootRef: React.ForwardedRef<HTMLDivElement>;
+}
+
+/** Lays a Field out as a row (the Settings rows: `inlineFieldLayout`, `wideFieldLayout`). */
+export type FieldLayoutRenderer = (parts: FieldParts) => React.ReactElement;
+
+/** How a Field arranges its label, control and description: `stacked` or a row renderer. */
+export type FieldLayout = 'stacked' | FieldLayoutRenderer;
 
 /**
- * The layout a Field takes when it is not given one: `SettingRow` provides `inline` so
- * the controls inside a Settings group read as rows. Outside any provider: `stacked`.
+ * The layout a Field takes when it is not given one: `SettingRow` provides its row
+ * renderer so the controls inside a Settings group read as rows. Outside any provider:
+ * `stacked`.
  */
 export const FieldLayoutContext = React.createContext<FieldLayout>('stacked');
 
@@ -91,9 +116,9 @@ export interface FieldProps extends Omit<React.HTMLAttributes<HTMLDivElement>, '
   /** Extra classes for the label (a dense dialog sets its labels at `text-xs`). */
   labelClassName?: string;
   /**
-   * `stacked` (label above), `inline` (a Settings row, the control on the row's end) or
-   * `wide` (a Settings row with the control under the label and its description).
-   * Defaults to the `FieldLayoutContext`.
+   * `stacked` (label above) or a row renderer (`inlineFieldLayout`: a Settings row, the
+   * control on the row's end; `wideFieldLayout`: a Settings row with the control under
+   * the label and its description). Defaults to the `FieldLayoutContext`.
    */
   layout?: FieldLayout;
   /**
@@ -122,8 +147,6 @@ export const Field = React.forwardRef<HTMLDivElement, FieldProps>(
   ) => {
     const contextLayout = React.useContext(FieldLayoutContext);
     const layout = layoutProp ?? contextLayout;
-    const inline = layout === 'inline';
-    const wide = layout === 'wide';
     const base = React.useId();
     const id = `${base}-control`;
     const labelId = `${base}-label`;
@@ -166,12 +189,8 @@ export const Field = React.forwardRef<HTMLDivElement, FieldProps>(
       control = children;
     }
 
-    const labelNode = (
-      <Label
-        htmlFor={controlId}
-        id={labelId}
-        className={cn((inline || wide) && 'text-base leading-5', labelClassName, hideLabel && 'sr-only')}
-      >
+    const labelNode = (rowClassName?: string) => (
+      <Label htmlFor={controlId} id={labelId} className={cn(rowClassName, labelClassName, hideLabel && 'sr-only')}>
         {label}
         {required ? (
           <span className="ml-0.5 text-critical-text" aria-hidden="true">
@@ -181,79 +200,25 @@ export const Field = React.forwardRef<HTMLDivElement, FieldProps>(
       </Label>
     );
 
-    if (inline) {
-      // DOM order stays label, control, description, error (reading order); the grid
-      // areas place the description under the label and the control on the row's end.
-      return (
-        <div
-          ref={ref}
-          data-field-layout="inline"
-          className={cn(
-            'grid min-w-0 grid-cols-1 gap-x-6 gap-y-1',
-            'sm:grid-cols-[minmax(0,1fr)_var(--setting-control-w,16rem)]',
-            // With a description the control is centred on the label and the description
-            // together; without one it shares the label's line.
-            description
-              ? "[grid-template-areas:'label'_'desc'_'control'_'error'] sm:[grid-template-areas:'label_control'_'desc_control'_'error_error']"
-              : "[grid-template-areas:'label'_'control'_'error'] sm:[grid-template-areas:'label_control'_'error_error']",
-            className,
-          )}
-          {...rest}
-        >
-          <div
-            className={cn(
-              'flex min-w-0 items-center gap-2 [grid-area:label]',
-              description ? 'sm:self-end' : 'sm:self-center',
-            )}
-          >
-            {labelNode}
-            {labelAction ? <div className="ml-auto shrink-0">{labelAction}</div> : null}
-          </div>
-          <div className="mt-1 flex min-w-0 items-center justify-start [grid-area:control] sm:mt-0 sm:justify-end sm:self-center">
-            {control}
-          </div>
-          {description ? (
-            <p id={descId} className="max-w-[42rem] text-sm text-muted-foreground [grid-area:desc]">
-              {description}
-            </p>
-          ) : null}
-          {error ? (
-            <p id={errId} role="alert" className="text-xs font-medium text-critical-text [grid-area:error]">
-              {error}
-            </p>
-          ) : null}
-        </div>
-      );
-    }
-
-    if (wide) {
-      // A Settings row for a wide control: the label, its description, then the control
-      // at full width (reading order is the visual order), the error last.
-      return (
-        <div ref={ref} data-field-layout="wide" className={cn('min-w-0', className)} {...rest}>
-          <div className="flex min-w-0 items-center gap-2">
-            {labelNode}
-            {labelAction ? <div className="ml-auto shrink-0">{labelAction}</div> : null}
-          </div>
-          {description ? (
-            <p id={descId} className="mt-0.5 max-w-[42rem] text-sm text-muted-foreground">
-              {description}
-            </p>
-          ) : null}
-          <div className="mt-2 min-w-0">{control}</div>
-          {error ? (
-            <p id={errId} role="alert" className="mt-1 text-xs font-medium text-critical-text">
-              {error}
-            </p>
-          ) : null}
-        </div>
-      );
+    if (layout !== 'stacked') {
+      return layout({
+        label: labelNode,
+        labelAction,
+        control,
+        description,
+        descriptionId: descId,
+        error,
+        errorId: errId,
+        className,
+        rootProps: rest,
+        rootRef: ref,
+      });
     }
 
     return (
       <div ref={ref} className={cn('space-y-1.5', className)} {...rest}>
         <div className="flex items-center justify-between gap-2">
-          {labelNode}
+          {labelNode()}
           {labelAction ? <div className="shrink-0">{labelAction}</div> : null}
         </div>
         {control}

@@ -51,6 +51,7 @@ import {
   type SettingsTOCItem,
 } from '@/soc/components/SettingsGrid';
 import { Field, FieldLayoutContext } from '@/soc/components/Field';
+import { inlineFieldLayout, wideFieldLayout } from './field-layouts';
 import {
   NumberField,
   defaultNumberFieldSize,
@@ -61,6 +62,9 @@ import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 import { SecretField } from '@/soc/components/SecretField';
 import { HelpTip } from '@/soc/components/HelpTip';
 import { AskAboutThis } from '@/soc/components/AskAboutThis';
+
+/** The Settings row layouts of `Field` (see `field-layouts.tsx`), for a lone Field laid out as a row. */
+export { inlineFieldLayout, wideFieldLayout };
 
 /** The `{ prefs, update }` contract every top-level settings section renderer takes. */
 export type SecProps = {
@@ -522,7 +526,7 @@ export function SettingRow(props: SettingRowProps) {
         )}
         style={controlWidth ? ({ '--setting-control-w': controlWidth } as React.CSSProperties) : undefined}
       >
-        <FieldLayoutContext.Provider value={wide ? 'wide' : 'inline'}>{children}</FieldLayoutContext.Provider>
+        <FieldLayoutContext.Provider value={wide ? wideFieldLayout : inlineFieldLayout}>{children}</FieldLayoutContext.Provider>
       </div>
     );
   }
@@ -555,7 +559,7 @@ export function SettingRow(props: SettingRowProps) {
         className={cn(ROW_PAD, className)}
         style={controlWidth ? ({ '--setting-control-w': controlWidth } as React.CSSProperties) : undefined}
       >
-        <Field label={label} description={help} layout="inline">
+        <Field label={label} description={help} layout={inlineFieldLayout}>
           {({ id: controlId, labelledBy, describedBy }) => (
             <Select value={value} onValueChange={onValueChange} disabled={disabled}>
               <SelectTrigger id={controlId} aria-labelledby={labelledBy} aria-describedby={describedBy} className="w-full">

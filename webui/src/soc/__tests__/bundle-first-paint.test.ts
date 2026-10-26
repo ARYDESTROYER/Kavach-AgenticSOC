@@ -113,8 +113,41 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * and the fold classes on each chip label. The fold must decide before first paint (a
  * lazy chunk would paint the overflowing bar first), so it cannot be split out. Other
  * work keeps the +1,024 B budget over 371,003 B.
+ *
+ * Rebased once for Round 14 (its SPEC §3.4 and E11, package R; the record is that SPEC's
+ * §11.1 "Entry bundle" item). The round's spec commit and WP-0 (07a0a8f) measure
+ * 371,876 B with `vite build`; WP-0, W1, W2a, W2b and W3 took the entry to 384,789 B.
+ * Package R then moved what first paint never needs out of it, keeping every behaviour:
+ *   - the collapsed rail's interaction layer (the group flyouts, their hover intent, the
+ *     one rail tooltip and the handlers that drive them) is the lazy chunk
+ *     nav-rail-interactions.tsx. nav-rail-loader.ts prefetches it into the HTTP cache when
+ *     the browser is idle, loads it on the rail's first pointer move or focus, and replays
+ *     that first interaction once the handlers attach: NavSidebar.tsx -4,744 B,
+ *     nav-rail-tip.tsx -1,900 B, nav-hover-intent.ts -1,719 B, nav-rail-loader.ts
+ *     +1,675 B, nav-shared.ts +295 B (helpers both halves share);
+ *   - Field's two Settings row layouts are renderers in the lazy Settings primitives
+ *     (pages/settings/field-layouts.tsx) that SettingRow hands to Field through
+ *     FieldLayoutContext, so Login and Wizard, which import Field, never carry them:
+ *     Field.tsx -1,380 B.
+ * With +54 B of attribution drift on main.tsx, whose source did not change, that pass
+ * measured 377,070 B (-7,719 B), with W1 (uncommitted then) in the tree. Its
+ * growth over 371,876 B is +5,194 B, per file (each output byte mapped to its source
+ * through the source map): nav-store.ts +2,125 (the rail state, open groups and
+ * breadcrumb trail, hydrated synchronously so the rail never flashes), router.tsx +1,558
+ * (the Round 14 deep-link keys and page redirects, validated on the eager first route),
+ * nav-rail-loader.ts +1,675, platform-keys.ts +332, nav.ts +327, nav-shared.ts +295,
+ * Field.tsx +215 (the row renderer hook), NavSidebar.tsx -710, AppShell.tsx -480,
+ * registry.tsx -191, auth.tsx -120 and Login.tsx -110 (W1), ui/sheet.tsx +11, the
+ * build-written chunk list +14, and +253 of attribution drift on files whose source did
+ * not change (main.tsx +153, EmptyState.tsx +114, others -14). Each of those runs before
+ * or during first paint. The baseline is that measurement; later work (W9b on Login and
+ * Wizard, A7c on the stream channels) keeps the +1,024 B budget over it, and the
+ * 400,000 B ceiling does not move. Package R's review fixes spent 162 B of that budget,
+ * measured at 377,232 B: nav-rail-loader.ts +156 (a failed load is retried on a later
+ * interaction after a pause, never on every pointer move) and NavSidebar.tsx +6 (a
+ * grouped icon registers in a layout effect, before the replayed first interaction).
  */
-const PRE_REVAMP_ENTRY_BYTES = 371_003;
+const PRE_REVAMP_ENTRY_BYTES = 377_070;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {
@@ -186,9 +219,9 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
     const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);
     if (!m) throw new Error('could not find the entry chunk in dist/index.html');
     const bytes = fs.statSync(path.join(DIST, 'assets', m[1])).size;
-    // Hard ceiling below the 537 777-byte regression. After the Round 12 final polish the
-    // entry chunk is ~371 kB, so the headroom is ~29 kB; the recorded-baseline test
-    // below still caps any growth at 1 kB. Keep the figure current when it moves.
+    // Hard ceiling below the 537 777-byte regression. After the Round 14 rebase the entry
+    // chunk is ~377 kB, so the headroom is ~23 kB; the recorded-baseline test below still
+    // caps any growth at 1 kB. Keep the figure current when it moves.
     expect(bytes).toBeLessThan(400_000);
   });
 
@@ -223,6 +256,28 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
       .find((f) => fs.readFileSync(path.join(DIST, 'assets', f), 'utf8').includes(SETTINGS_META_MARKER));
     expect(metaChunk, 'the Settings section metadata must be emitted in some lazy chunk').toBeDefined();
     expect(statics).not.toContain(metaChunk);
+  });
+
+  it("the rail's interaction layer and Field's Settings row layouts stay off first paint", () => {
+    // Round 14 (SPEC §3.4, package R): the rail tooltip carries the `nav-rail-tip` test id
+    // and the row layouts the `data-field-layout` attribute; neither may be in the entry.
+    const entry = readEntry();
+    expect(entry).not.toContain('nav-rail-tip');
+    expect(entry).not.toContain('data-field-layout');
+    const assets = fs.readdirSync(path.join(DIST, 'assets'));
+    const layer = assets.filter((f) => /^nav-rail-interactions-[^/]+\.js$/.test(f));
+    expect(layer, 'the rail interaction layer is its own lazy chunk').toHaveLength(1);
+    expect(fs.readFileSync(path.join(DIST, 'assets', layer[0]), 'utf8')).toContain('nav-rail-tip');
+    expect(readHtml()).not.toMatch(/modulepreload[^>]*nav-rail-interactions/);
+    expect(entryStaticImports()).not.toContain(layer[0]);
+    // The entry reaches it only through import(), and warms it with a build-written chunk
+    // list (a prefetch into the HTTP cache, never an import: lazy-retry.ts).
+    expect(entry).toMatch(new RegExp(`import\\(\\s*["']\\./${layer[0].replace(/\./g, '\\.')}["']\\s*\\)`));
+    const lists = [...entry.matchAll(/\[(?:\\?"[A-Za-z0-9._-]+\.js\\?",?)+\]/g)]
+      .map((mm) => mm[0].replace(/\\"/g, '"'))
+      .filter((text) => text.includes('nav-rail-interactions-'));
+    expect(lists, 'one chunk list naming the rail layer').toHaveLength(1);
+    expect(JSON.parse(lists[0]) as string[]).toContain(layer[0]);
   });
 
   it('the entry prefetches exactly the palette chunks first paint lacks (a build-written list)', () => {
@@ -377,6 +432,33 @@ describe('first-paint shell keeps the palette and Settings metadata lazy (source
       .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
     expect(reached, 'lazy-only modules on the first-paint graph').toEqual([]);
     expect(packages.has('cmdk') ? `cmdk (imported by ${packages.get('cmdk')})` : null).toBeNull();
+  });
+
+  it("no first-paint module statically imports the rail's interaction layer or the Settings row layouts", () => {
+    // Round 14 (SPEC §3.4, package R): the collapsed rail's flyouts, hover intent and
+    // tooltip load on the rail's first interaction; Field's Settings row layouts load with
+    // the Settings primitives. Both stay off the static first-paint graph.
+    const { files } = firstPaintGraph();
+    const lazyOnly = [
+      ['soc', 'components', 'nav-rail-interactions.tsx'],
+      ['soc', 'components', 'nav-hover-intent.ts'],
+      ['soc', 'components', 'nav-rail-tip.tsx'],
+      ['soc', 'pages', 'settings', 'field-layouts.tsx'],
+      ['soc', 'pages', 'settings', 'primitives.tsx'],
+    ].map((seg) => path.join(WEBUI_ROOT, 'src', ...seg));
+    const reached = lazyOnly
+      .filter((file) => files.has(file))
+      .map((file) => `${path.relative(WEBUI_ROOT, file)} (imported by ${files.get(file)})`);
+    expect(reached, 'lazy-only modules on the first-paint graph').toEqual([]);
+    // The navigation itself is on the graph, and reaches the layer only through import().
+    expect(files.has(path.join(WEBUI_ROOT, 'src', 'soc', 'components', 'NavSidebar.tsx'))).toBe(true);
+    const loader = read('soc', 'components', 'nav-rail-loader.ts');
+    expect(loader).toMatch(/import\(\s*['"]\.\/nav-rail-interactions['"]\s*\)/);
+    // The idle warm names the module the layer's chunk is built from (vite.config.ts fails
+    // the build when no chunk is built from a __CHUNK_LIST mark).
+    const mark = loader.match(/'__CHUNK_LIST:([^']+)__'/)?.[1];
+    expect(mark).toBe('src/soc/components/nav-rail-interactions.tsx');
+    expect(fs.existsSync(path.join(WEBUI_ROOT, mark as string))).toBe(true);
   });
 
   it('AppShell reaches the command palette only through import()', () => {

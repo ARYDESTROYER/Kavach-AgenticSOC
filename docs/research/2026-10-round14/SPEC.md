@@ -3466,8 +3466,45 @@ timings), known limitations and the verification record.
 
 ### 11.1 Contract resolutions
 
-(Package R adds here a bullet that starts "Entry bundle." with `PRE_REVAMP_ENTRY_BYTES = <value>`,
-the value in bytes and the per-file deltas; the repointed Round 12 records test reads it, §3.4.)
+- **Entry bundle.** Package R rebased the first-paint baseline once (§3.4, E11):
+  `PRE_REVAMP_ENTRY_BYTES = 377_070` (377,070 B) in
+  `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged +1,024 B budget
+  over it and the unchanged 400,000 B ceiling. Every figure is the entry chunk on disk after
+  `vite build`, attributed to source files through the source map. The spec commit and WP-0
+  (`07a0a8f`) measure 371,876 B (WP-0 added no entry bytes). WP-0, W1, W2a, W2b and W3 took
+  the entry to 384,789 B, 12,762 B over the old budget. Package R first moved what first
+  paint never needs out of the entry, keeping every behaviour. The collapsed rail's
+  interaction layer (the group flyouts, their hover intent, the one rail tooltip and the
+  handlers that drive them) is the lazy chunk `nav-rail-interactions.tsx`;
+  `nav-rail-loader.ts` prefetches it into the HTTP cache when the browser is idle, loads it
+  on the rail's first pointer move or focus, and replays that first interaction once the
+  handlers attach, so a pointer at rest or keyboard focus that arrived first still gets its
+  tooltip or flyout (`NavSidebar.tsx` -4,744 B, `nav-rail-tip.tsx` -1,900 B,
+  `nav-hover-intent.ts` -1,719 B, `nav-rail-loader.ts` +1,675 B, `nav-shared.ts` +295 B).
+  `Field`'s two Settings row layouts are renderers in the lazy Settings primitives
+  (`pages/settings/field-layouts.tsx`, `inlineFieldLayout` and `wideFieldLayout`) that
+  `SettingRow` hands to `Field` through `FieldLayoutContext`, so Login and Wizard, which
+  import `Field`, never carry them (`Field.tsx` -1,380 B). With +54 B of attribution drift
+  on `main.tsx`, whose source did not change, that pass measured 377,070 B (-7,719 B), with
+  W1 in the tree. The round's first-paint growth over 371,876 B is then
+  +5,194 B, per file: `nav-store.ts` +2,125 B (W3: the rail state, open groups and
+  breadcrumb trail, hydrated synchronously so the rail never flashes), `router.tsx`
+  +1,558 B (W3: the Round 14 deep-link keys and page redirects, validated on the eager
+  first route), `nav-rail-loader.ts` +1,675 B (R), `platform-keys.ts` +332 B (W3), `nav.ts`
+  +327 B (W3), `nav-shared.ts` +295 B (R), `Field.tsx` +215 B (W2b, after R: the row
+  renderer hook), `NavSidebar.tsx` -710 B (W3, after R), `AppShell.tsx` -480 B (W3),
+  `registry.tsx` -191 B (W3), `auth.tsx` -120 B and `Login.tsx` -110 B (W1, the sign-out
+  notice), `ui/sheet.tsx` +11 B (W2a), the build-written chunk list +14 B, and +253 B of
+  attribution drift on files whose source did not change (`main.tsx` +153 B,
+  `EmptyState.tsx` +114 B, others -14 B). Each of those runs before or during first paint.
+  Package R's review fixes then spent 162 B of the 1,024 B budget, measured at 377,232 B:
+  `nav-rail-loader.ts` +156 B (a failed load is retried on a later interaction after a
+  pause, never on every pointer move) and `NavSidebar.tsx` +6 B (a grouped icon registers
+  in a layout effect, before the replayed first interaction). Later packages that touch an
+  entry module (W9b on Login and Wizard, A7c on the stream channels) measure inside what
+  remains of the 1,024 B; going over is a finding for the orchestrator, never a second
+  rebase. The Round 12 SPEC §7.3 "Entry bundle" item points
+  here, and `backend/tests/test_docs_round12_records.py` reads this item.
 
 ### 11.2 Per package
 

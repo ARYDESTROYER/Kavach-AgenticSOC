@@ -457,7 +457,13 @@ console grammar guard.
 
 **Forms.** Every labelled control goes through `Field` (label above, help below; inside
 a `SettingRow`, label and help on the left with the control on the row's end, or, for a
-`wide` row, label and help above the control at full width). Every number is a
+`wide` row, label and help above the control at full width). `Field` itself draws only
+the stacked layout, because it ships at first paint with Login and Wizard; a row layout
+is a `FieldLayoutRenderer` that places the parts `Field` has already wired. The two
+Settings rows are `inlineFieldLayout` and `wideFieldLayout` in the lazy Settings
+primitives (`pages/settings/field-layouts.tsx`, re-exported by `primitives.tsx`):
+`SettingRow` provides one through `FieldLayoutContext`, and a lone `Field` takes one
+through its `layout` prop (`layout="stacked"` wins over the context). Every number is a
 `NumberField`: one box holding the number, its unit and, when the field accepts values
 of up to four digits, the − and + steppers inside its right edge (pointer conveniences
 outside the tab order). It is an editable spinbutton: its bounds and value are
@@ -1243,6 +1249,24 @@ own page instead.
   re-renders the navigation only, never the shell or the routed page. It hydrates
   synchronously from a `localStorage` mirror, reconciles once from `UserPrefs.misc`
   (`nav_collapsed`, `nav_open_groups`), and persists every change to both.
+- **First paint** carries only what paints the navigation: the rows, the toggle, the
+  stable morph and the disclosure attributes. The 64px rail's interaction layer (the
+  group flyouts, their hover intent, the one rail tooltip and the handlers that drive
+  them, `components/nav-rail-interactions.tsx`) is a lazy chunk that
+  `components/nav-rail-loader.ts` loads on the rail's first pointer move or focus. A
+  first interaction that arrives before it lands is not lost: once the handlers attach
+  (before paint), the control the pointer still rests on, or that still holds keyboard
+  focus, receives that event again, so the 300ms rest or the keyboard open starts as if
+  the layer had always been there (a grouped icon registers itself, for its flyout's
+  position, in a layout effect, which runs before that replay); a control the pointer or
+  focus has left is forgotten, and a press made meanwhile acts as a press does (no
+  tooltip, and on a grouped icon no flyout until the pointer leaves). The desktop rail
+  also prefetches the chunk into the HTTP cache when the browser is idle, so that first
+  load is a cache read. A failed load is retried on a later interaction after a pause
+  (5s, doubling after each further failure, at most a minute), never on every pointer
+  move, and the rail navigates and toggles without it.
+  Never import the layer, `nav-hover-intent.ts` or `nav-rail-tip.tsx` statically from a
+  first-paint module (`bundle-first-paint.test.ts` guards it).
 - **The phone sheet** (below `md`) is the existing Radix Sheet with the labelled rows at
   touch size: 44px destinations, 40px pages inside a group, no inner fade (the sheet's
   slide is the only motion). It opens the current page's group when it opens and keeps
@@ -1885,7 +1909,8 @@ admin cards:
 - A `SettingRow` is a label (14px medium) and at most one line of help (13px muted, at
   most 42rem) with its control on the row's end: `switch`, `select`, `field` (any
   `Field`-based control: `NumPref`, `NumberField`, `TextPref`, `SecretInput`; the row
-  provides the inline layout through `FieldLayoutContext`, every control in a group
+  provides its row renderer, `inlineFieldLayout` (or `wideFieldLayout` for a `wide` row),
+  through `FieldLayoutContext`, every control in a group
   sharing one right edge in a 16rem column), `status` (a `StatusDot` and an optional
   action), `action` or `link` (a row that opens another page: an `<a href>` with its
   value and a chevron, "Connected sources · 5 of 5 enabled"; a plain click goes through

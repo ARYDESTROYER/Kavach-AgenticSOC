@@ -6,7 +6,7 @@
  * that never animates an operator's logo.
  */
 import * as React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { TooltipProvider } from '@/ui/tooltip';
@@ -19,6 +19,7 @@ vi.mock('@/lib/api', () => ({ api: { prefs: { putUser: () => Promise.resolve({})
 
 import { NavSidebar } from '../NavSidebar';
 import { navStore } from '../../nav-store';
+import { loadRailInteractions } from '../nav-rail-loader';
 import { clearChatActivity, putChatActivity, setAnimatedBrand, type ChatActivity } from '../../chat-activity/activity';
 
 function entry(patch: Partial<ChatActivity> & { scope: string }): ChatActivity {
@@ -57,6 +58,11 @@ const describedText = (element: HTMLElement) => {
   const id = element.getAttribute('aria-describedby');
   return id ? document.getElementById(id)?.textContent ?? null : null;
 };
+
+// The collapsed rail's flyout is a lazy chunk (`nav-rail-loader.ts`): load it before rendering.
+beforeAll(async () => {
+  await loadRailInteractions();
+});
 
 beforeEach(() => {
   clearChatActivity();
