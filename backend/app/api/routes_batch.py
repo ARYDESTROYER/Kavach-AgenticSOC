@@ -26,15 +26,26 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..audit.context import audit_context
+from ..audit.settings_write import audited_settings_write
 from ..config import BatchConfig
 from ..constants import ActionType
-from ..models import BatchJob
+from ..models import AuditTarget, BatchJob
 from ..state import AppState
 from .deps import current_username, get_state, require_permission
 
 logger = logging.getLogger("tlsoc.api.batch")
 
 router = APIRouter(prefix="/api")
+
+
+def _actor(request: Request) -> str:
+    """The authenticated username, or ``""`` when no principal resolves (sign-in off,
+    or a caller without one): the row is then written anonymously, never refused."""
+    try:
+        return current_username(request) or ""
+    except Exception:  # noqa: BLE001 (no resolvable principal; audit anonymously)
+        return ""
 
 
 def _safe(value: Any) -> str:
@@ -152,51 +163,38 @@ async def put_batch_config(
     the Pydantic model; #6 is untouched (this only toggles routing — the batch service
     still writes exactly one UsageDoc per resolved call). Never touches ``decide()`` (#3).
     During Demo Mode the edit remains in the throwaway sandbox; off demo it persists
-    normally. Audited (#2)."""
-    active_prefs = state.execution_prefs
-    current = (getattr(active_prefs, "batch", None) or BatchConfig()).model_dump(mode="json")
-    merged = _deep_update(current, body or {})
-    try:
-        cfg = BatchConfig.model_validate(merged)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=422, detail=f"Invalid batch config: {exc}") from exc
-    prefs = active_prefs.model_copy(update={"batch": cfg})
-    await state.update_execution_prefs(prefs)
-    await _audit(
-        state, request, "batch_config_update",
-        f"enabled={cfg.enabled} severity_floor={cfg.severity_floor} "
-        f"flex={cfg.flex} prefer_discounted_alerts={cfg.prefer_discounted_alerts} "
-        f"fallback_to_standard={cfg.fallback_to_standard} "
-        f"providers={','.join(cfg.providers)}",
+    normally.
+
+    Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+    naming every changed field is appended first, and a failed append answers ``503
+    audit_unavailable`` with nothing saved. The row sits beside the config it describes:
+    the Demo audit for a Demo-only change, the real audit log otherwise (SPEC §3.5)."""
+    saved: dict[str, BatchConfig] = {}
+
+    def _apply(current):
+        cfg_now = (getattr(current, "batch", None) or BatchConfig()).model_dump(mode="json")
+        merged = _deep_update(cfg_now, body or {})
+        try:
+            cfg = BatchConfig.model_validate(merged)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=422, detail=f"Invalid batch config: {exc}") from exc
+        saved["cfg"] = cfg
+        return current.model_copy(update={"batch": cfg})
+
+    def _summary(_changes, _total) -> str:
+        cfg = saved["cfg"]
+        return (
+            "batch_config_update: "
+            f"enabled={cfg.enabled} severity_floor={cfg.severity_floor} "
+            f"flex={cfg.flex} prefer_discounted_alerts={cfg.prefer_discounted_alerts} "
+            f"fallback_to_standard={cfg.fallback_to_standard} "
+            f"providers={','.join(cfg.providers)}"
+        )[:500]
+
+    await audited_settings_write(
+        state, transform=_apply, scope="execution", actor=_actor(request),
+        context=audit_context(request), summary=_summary,
+        action_type=ActionType.USER_MGMT, surface="batch",
+        target=AuditTarget(type="setting", id="batch", label="Discounted inference"),
     )
-    return {"ok": True, "config": cfg.model_dump(mode="json")}
-
-
-# --------------------------------------------------------------------------- #
-# Audit helper (#2 — append-only)
-# --------------------------------------------------------------------------- #
-async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
-    """Append-only audit of an operator batch-config mutation (#2). Best-effort.
-
-    Uses ``USER_MGMT`` with ``surface="batch"`` — constants are frozen this wave so no
-    new ActionType is introduced (mirrors ``routes_campaigns._audit``). The actor is the
-    authenticated username when present. NEVER raises."""
-    # The batch config follows the active execution sandbox.  Keep its audit beside
-    # that config: demo-only changes disappear with the demo stack; off demo this is
-    # the same durable append-only logger as before.
-    audit = getattr(state, "execution_audit", None)
-    if audit is None:
-        return
-    try:
-        actor = current_username(request) or ""
-    except Exception:  # noqa: BLE001 — no resolvable principal; audit anonymously
-        actor = ""
-    try:
-        await audit.record(
-            action_type=ActionType.USER_MGMT,
-            surface="batch",
-            actor=actor,
-            result_summary=f"{event}: {detail}"[:500],
-        )
-    except Exception:  # noqa: BLE001
-        pass
+    return {"ok": True, "config": saved["cfg"].model_dump(mode="json")}

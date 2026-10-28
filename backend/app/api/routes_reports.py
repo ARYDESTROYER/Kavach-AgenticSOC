@@ -67,6 +67,7 @@ from ..agents.blocks import (
 )
 from ..agents.chat_protocol import notice_for_failure, parse_report_summary, turn_error_code
 from ..agents.chat_tools.common import operator_tz
+from ..config import ChatAgentConfig
 from ..constants import MAX_REPORT_ITEMS, MAX_REPORTS_PER_USER, ActionType, Role
 from ..engine.report_digest import bounded_digest, report_summary_messages
 from ..llm.gateway import GatewayError, UsageReceipt, estimate_message_tokens
@@ -130,6 +131,12 @@ SUMMARY_EXPECTED_OUTPUT_TOKENS = 400
 # A summary call may take this many chat model steps' time (``chat_agent.
 # model_step_timeout_s``): one bounded call over a larger prompt than a chat step.
 SUMMARY_TIMEOUT_FACTOR = 2.0
+# ...but never longer than this many seconds (Round 14 SPEC §4.2.3, D20, F20): the
+# summary is one blocking request, and the Web UI proxy gives ``/api/`` 300 s
+# (``webui/nginx.conf``). Waiting past that would leave the server spending on an
+# answer the browser can no longer receive; 280 s answers first with a clean
+# ``report_summary_timeout`` the Console can show.
+SUMMARY_TIMEOUT_CEILING_S = 280.0
 
 # Summary failures speak about the SUMMARY (the chat-turn notices describe a partial
 # answer, which a summary never is: nothing is stored on failure). The code and
@@ -138,9 +145,27 @@ SUMMARY_FAILURE_MESSAGES: dict[str, str] = {
     "budget_blocked": "The AI budget is used up, so no summary was written. Raise the budget or try again later.",
     "breaker_open": "The AI provider is paused after repeated errors, so no summary was written. Try again shortly.",
     "provider_unavailable": "The AI provider is unavailable or not configured, so no summary was written.",
-    "report_summary_timeout": "The summary took too long and was stopped. Try again.",
+    "report_summary_timeout": "The summary took too long. Try again, or summarise fewer items.",
     "internal": "The summary could not be generated. Try again.",
 }
+
+
+def summary_timeout_s(step_timeout_s: Any) -> float:
+    """Seconds one report summary call may wait: :data:`SUMMARY_TIMEOUT_FACTOR` chat
+    model steps (``chat_agent.model_step_timeout_s``), never above
+    :data:`SUMMARY_TIMEOUT_CEILING_S` whatever is stored (Round 14 SPEC §4.2.3, D20).
+    A missing or malformed step value reads as the shipped default, so the wait is
+    always positive and finite."""
+    default = float(ChatAgentConfig.model_fields["model_step_timeout_s"].default)
+    step = default
+    if not isinstance(step_timeout_s, bool):
+        try:
+            step = float(step_timeout_s)
+        except (TypeError, ValueError, OverflowError):
+            step = default
+    if not math.isfinite(step) or step <= 0:
+        step = default
+    return min(step * SUMMARY_TIMEOUT_FACTOR, SUMMARY_TIMEOUT_CEILING_S)
 
 
 # --------------------------------------------------------------------------- #
@@ -1702,8 +1727,8 @@ async def _generate_summary(
             )
     messages = report_summary_messages(report, digest=digest.text)
     receipt = UsageReceipt()
-    step_timeout = getattr(getattr(state.execution_prefs, "chat_agent", None), "model_step_timeout_s", 30)
-    timeout = float(step_timeout or 30) * SUMMARY_TIMEOUT_FACTOR
+    timeout = summary_timeout_s(
+        getattr(getattr(state.execution_prefs, "chat_agent", None), "model_step_timeout_s", None))
     try:
         result = await asyncio.wait_for(
             gateway.complete(Role.CHAT, messages, model_cfg, surface="report", usage_receipt=receipt),
@@ -1751,6 +1776,7 @@ async def _generate_summary(
 
 __all__ = [
     "SUMMARY_FAILURE_MESSAGES",
+    "SUMMARY_TIMEOUT_CEILING_S",
     "ReportAddResponse",
     "ReportFromConversationRequest",
     "ReportFromConversationResponse",
@@ -1764,4 +1790,5 @@ __all__ = [
     "router",
     "save_answer_as_report",
     "summary_guard",
+    "summary_timeout_s",
 ]

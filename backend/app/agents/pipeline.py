@@ -11,6 +11,7 @@ It NEVER raises: any failure yields a NEEDS_HUMAN case (Section 6.7).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import weakref
 from collections.abc import Awaitable, Callable
@@ -93,6 +94,74 @@ _LEDGER_DISPLAY_EPSILON = 0.000001
 CASE_TITLE_SEPARATOR = " \u00b7 "
 
 
+# --------------------------------------------------------------------------- #
+# Investigation run ids (Round 14 SPEC §4.5.3, §4.5.4). Every audit row written while
+# one investigation runs (the pipeline's own rows and the router, investigator and
+# formatter rows, which write through the same stamped logger) carries that run's
+# ``run_id``, so the audit log's Agent activity scope can group one investigation's
+# steps into one row. Each row also says who acted (``actor_type``): the AI agent, or
+# the system for the deterministic actors (``case_manager``, ``analyst_policy``,
+# ``poller``: code decides, never the model, #3), from the one actor table the audit
+# reader uses for older rows (``audit/event_categories.json``).
+# --------------------------------------------------------------------------- #
+_INVESTIGATION_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "investigation_run_id", default=None,
+)
+#: The prefix of an investigation run id (``inv-<32 hex>``), distinct from the
+#: ``run-`` ids of runbook runs.
+INVESTIGATION_RUN_PREFIX = "inv-"
+
+
+def current_investigation_run_id() -> str | None:
+    """The id of the investigation running in this task, or ``None``."""
+    return _INVESTIGATION_RUN_ID.get()
+
+
+def audit_actor_type(actor: str) -> str:
+    """``system`` for a deterministic actor of the audit actor table, else ``agent``."""
+    try:
+        from ..audit.events import TABLE
+
+        if actor in TABLE.system_actors:
+            return "system"
+    except Exception:  # noqa: BLE001 (an unreadable table never blocks an audit row)
+        pass
+    return "agent"
+
+
+class RunStampedAudit:
+    """The pipeline's audit logger: delegates every call, and stamps each appended row
+    with the current investigation's ``run_id`` and the actor's kind. A caller that
+    sets either field keeps its own value."""
+
+    __slots__ = ("_inner",)
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    @property
+    def inner(self) -> Any:
+        return self._inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    @staticmethod
+    def _stamp(fields: dict[str, Any]) -> dict[str, Any]:
+        if fields.get("actor_type") is None:
+            fields["actor_type"] = audit_actor_type(str(fields.get("actor") or ""))
+        run_id = _INVESTIGATION_RUN_ID.get()
+        if run_id is not None and fields.get("run_id") is None:
+            fields["run_id"] = run_id
+        return fields
+
+    async def record(self, **fields: Any) -> Any:
+        return await self._inner.record(**self._stamp(fields))
+
+    async def record_strict(self, **fields: Any) -> Any:
+        return await self._inner.record_strict(**self._stamp(fields))
+
+
 def machine_case_title(cluster: Cluster) -> str:
     """The title of a case the pipeline writes: ``<entity type>:<value> · <rules>``."""
     rules = ", ".join(cluster.rule_values) or "activity"
@@ -137,8 +206,10 @@ class InvestigationPipeline:
         self._gateway = gateway
         self._rag = rag_service
         self._cases = cases
-        self._audit = audit
-        self._router = Router(gateway, audit)
+        # Round 14: every row the pipeline, router, investigator and formatter write
+        # carries the run id and actor kind (see ``RunStampedAudit``).
+        self._audit = audit if isinstance(audit, RunStampedAudit) else RunStampedAudit(audit)
+        self._router = Router(gateway, self._audit)
         # Markdown playbook registry (deterministic per-cluster selection). None →
         # no playbooks (generic investigator), preserving today's behaviour.
         self._playbooks = playbooks
@@ -562,6 +633,26 @@ class InvestigationPipeline:
             )
 
     async def _investigate_cluster_effect(
+        self,
+        cluster: Cluster,
+        source_surface: SourceSurface,
+        prefs: Preferences,
+        *,
+        force: bool = False,
+        force_playbook_id: str | None = None,
+        query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
+    ) -> Case:
+        # One investigation run: every audit row until it returns carries its id.
+        run_token = _INVESTIGATION_RUN_ID.set(new_id(INVESTIGATION_RUN_PREFIX))
+        try:
+            return await self._investigate_cluster_run(
+                cluster, source_surface, prefs,
+                force=force, force_playbook_id=force_playbook_id, query_source=query_source,
+            )
+        finally:
+            _INVESTIGATION_RUN_ID.reset(run_token)
+
+    async def _investigate_cluster_run(
         self,
         cluster: Cluster,
         source_surface: SourceSurface,

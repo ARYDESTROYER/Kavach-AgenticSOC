@@ -39,9 +39,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..audit.context import audit_context
 from ..build_identity import current_record_provenance
 from ..constants import ActionType
 from ..engine.runbooks import parse_runbook_document
+from ..models import AuditTarget
 from ..playbooks.loader import parse_playbook
 from ..playbooks.manifest import MAX_PLAYBOOK_PROMPT_CHARS, render_playbook_prompt
 from ..state import AppState
@@ -1313,9 +1315,40 @@ async def _assemble_archive(
                 raise
 
 
+def export_audit_target(scopes: list[str]) -> AuditTarget:
+    """The ``export`` target of an application data export row: the exported scopes
+    (``cases,audit``), named in plain words."""
+    ordered = [scope for scope in _SCOPE_ORDER if scope in scopes] or list(scopes)
+    return AuditTarget(
+        type="export", id=",".join(ordered) or "all",
+        label="Application data: " + ", ".join(ordered or ["all"]),
+    )
+
+
+def _export_audit_fields(
+    request: Request, *, action: str, scopes: list[str], details: dict[str, Any],
+) -> dict[str, Any]:
+    """The Round 14 record fields (SPEC §4.5.3) of an export delivery row: the action
+    and outcome, the requester's context (client, session, role, request id), the
+    exported scopes as target, and the delivery's details (format, file name, counts,
+    bytes) as ``tool_input``, which is stored but never indexed. A delivery row is
+    appended before the response exists, so its outcome is ``success``: a refused or
+    failed delivery never reaches this row (it fails closed with ``503``)."""
+    context = audit_context(request)
+    return {
+        "action": action,
+        "outcome": "success",
+        "actor_type": "human",
+        "target": export_audit_target(scopes),
+        "tool_input": details,
+        **context.record_fields(),
+    }
+
+
 @router.post("/admin/export")
 async def export_application_data(
     body: DataExportRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     actor: str = Depends(current_username),
     _=Depends(require_permission("data_export", "export")),
@@ -1360,13 +1393,26 @@ async def export_application_data(
         )
 
     # Append-only audit AFTER capture so this download does not unexpectedly add
-    # itself to its own audit scope. A future export will include the event.
+    # itself to its own audit scope. A future export will include the event. The row
+    # is appended before the response is created (audit before visible, Round 14 SPEC
+    # §3.6) with the Round 14 record fields (§4.5.3).
     try:
         await state.control_audit.record_strict(
             action_type=ActionType.DATA_EXPORT,
             surface="settings",
             actor=actor or "local-operator",
             result_summary=f"exported scopes={','.join(scopes)} bytes={len(payload)}",
+            **_export_audit_fields(
+                request, action="export.downloaded", scopes=scopes,
+                details={
+                    "format": "json", "filename": "agentic-soc-export.json",
+                    "bytes": len(payload), "limit_per_scope": int(body.limit_per_scope),
+                    "records": {
+                        scope: int((manifest.get(scope) or {}).get("count") or 0)
+                        for scope in scopes
+                    },
+                },
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — privileged delivery fails closed
         raise HTTPException(
@@ -1464,6 +1510,16 @@ async def export_application_data_archive(
                     f"prepared archive scopes={','.join(scopes)} records={counts} "
                     f"complete=true bytes={archive_size}"
                 ),
+                **_export_audit_fields(
+                    request, action="export.downloaded", scopes=scopes,
+                    details={
+                        "format": "zip", "filename": filename, "bytes": archive_size,
+                        "records": {
+                            scope: int(meta.get("exported") or 0)
+                            for scope, meta in manifest["scopes"].items()
+                        },
+                    },
+                ),
             )
         except Exception as exc:  # noqa: BLE001 — privileged delivery fails closed
             raise HTTPException(
@@ -1501,6 +1557,7 @@ async def export_application_data_archive(
 @router.post("/admin/export/segment", deprecated=True)
 async def export_application_data_segment(
     body: DataExportSegmentRequest,
+    request: Request,
     state: AppState = Depends(get_state),
     actor: str = Depends(current_username),
     _permission=Depends(require_permission("data_export", "export")),
@@ -1547,6 +1604,7 @@ async def export_application_data_segment(
             detail=f"the {body.scope} export scope is temporarily unavailable",
         ) from exc
     segment = envelope["segment"]
+    filename = f"agentic-soc-{body.scope}-part-{int(segment['number']):05d}.json"
     try:
         await state.control_audit.record_strict(
             action_type=ActionType.DATA_EXPORT,
@@ -1556,6 +1614,15 @@ async def export_application_data_segment(
                 f"exported segment scope={body.scope} part={segment['number']} "
                 f"records={segment['count']} cumulative={segment['cumulative_count']} "
                 f"status={segment['status']} bytes={len(payload)}"
+            ),
+            **_export_audit_fields(
+                request, action="export.segment_downloaded", scopes=[str(body.scope)],
+                details={
+                    "format": "json", "filename": filename, "bytes": len(payload),
+                    "part": int(segment["number"]), "records": int(segment["count"]),
+                    "cumulative": int(segment["cumulative_count"]),
+                    "status": str(segment["status"]),
+                },
             ),
         )
     except Exception as exc:  # noqa: BLE001 — privileged delivery fails closed
@@ -1578,7 +1645,6 @@ async def export_application_data_segment(
             ),
         ) from exc
 
-    filename = f"agentic-soc-{body.scope}-part-{int(segment['number']):05d}.json"
     return Response(
         content=payload,
         media_type="application/json",

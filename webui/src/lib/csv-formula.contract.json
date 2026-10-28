@@ -1,0 +1,50 @@
+{
+  "$comment": "The one rule set for spreadsheet formula defusal in every CSV the product writes (Round 14 SPEC section 4.5.6). Read by the backend audit export writer's test (backend/tests/test_audit_export.py, backend/app/engine/audit_export.py) and by the Console's CSV helper test (webui/src/lib/csv.ts), so the two cannot drift. Rule: a text cell whose first character, after any run of ASCII spaces (U+0020), is one of the leads is prefixed with an apostrophe; nothing else in the text changes. Numbers stay bare numbers (a negative count is a number, not a formula), booleans are true or false, null is an empty field. A text field is then quoted per RFC 4180: wrapped in double quotes with each inner double quote doubled; line breaks stay inside the quotes. Each case gives the cell value, the defused text (text cells only) and the CSV field.",
+  "version": 1,
+  "leads": ["=", "+", "-", "@", "\t", "\r", "\n", "＝", "＋", "－", "＠"],
+  "cases": [
+    { "note": "equals", "value": "=1+1", "defused": "'=1+1", "csv": "\"'=1+1\"" },
+    {
+      "note": "a live link stays the rule's name",
+      "value": "=HYPERLINK(\"http://x.example\",\"click\")",
+      "defused": "'=HYPERLINK(\"http://x.example\",\"click\")",
+      "csv": "\"'=HYPERLINK(\"\"http://x.example\"\",\"\"click\"\")\""
+    },
+    { "note": "plus", "value": "+1", "defused": "'+1", "csv": "\"'+1\"" },
+    { "note": "minus as text", "value": "-1", "defused": "'-1", "csv": "\"'-1\"" },
+    { "note": "at sign", "value": "@SUM(A1:A9)", "defused": "'@SUM(A1:A9)", "csv": "\"'@SUM(A1:A9)\"" },
+    { "note": "tab", "value": "\tcmd", "defused": "'\tcmd", "csv": "\"'\tcmd\"" },
+    { "note": "carriage return", "value": "\rcmd", "defused": "'\rcmd", "csv": "\"'\rcmd\"" },
+    { "note": "line feed", "value": "\ncmd", "defused": "'\ncmd", "csv": "\"'\ncmd\"" },
+    { "note": "full-width equals", "value": "＝1+1", "defused": "'＝1+1", "csv": "\"'＝1+1\"" },
+    { "note": "full-width plus", "value": "＋1", "defused": "'＋1", "csv": "\"'＋1\"" },
+    { "note": "full-width minus", "value": "－1", "defused": "'－1", "csv": "\"'－1\"" },
+    { "note": "full-width at sign", "value": "＠SUM(A1)", "defused": "'＠SUM(A1)", "csv": "\"'＠SUM(A1)\"" },
+    { "note": "spaces then equals", "value": "   =1+1", "defused": "'   =1+1", "csv": "\"'   =1+1\"" },
+    { "note": "spaces then tab", "value": "  \tcmd", "defused": "'  \tcmd", "csv": "\"'  \tcmd\"" },
+    { "note": "spaces then line feed", "value": " \ncmd", "defused": "' \ncmd", "csv": "\"' \ncmd\"" },
+    { "note": "spaces then full-width at sign", "value": "  ＠x", "defused": "'  ＠x", "csv": "\"'  ＠x\"" },
+    { "note": "a lone lead", "value": "=", "defused": "'=", "csv": "\"'=\"" },
+    { "note": "plain text", "value": "login failed", "defused": "login failed", "csv": "\"login failed\"" },
+    { "note": "a lead inside the text", "value": "a=b+c", "defused": "a=b+c", "csv": "\"a=b+c\"" },
+    { "note": "a date", "value": "2026-10-25T15:09:15Z", "defused": "2026-10-25T15:09:15Z", "csv": "\"2026-10-25T15:09:15Z\"" },
+    { "note": "an apostrophe already", "value": "'=kept", "defused": "'=kept", "csv": "\"'=kept\"" },
+    { "note": "empty text", "value": "", "defused": "", "csv": "\"\"" },
+    { "note": "spaces only", "value": "   ", "defused": "   ", "csv": "\"   \"" },
+    { "note": "inner quotes doubled", "value": "say \"hi\"", "defused": "say \"hi\"", "csv": "\"say \"\"hi\"\"\"" },
+    { "note": "a comma stays inside the quotes", "value": "a, b", "defused": "a, b", "csv": "\"a, b\"" },
+    {
+      "note": "a line break inside the text",
+      "value": "line one\r\nline two",
+      "defused": "line one\r\nline two",
+      "csv": "\"line one\r\nline two\""
+    },
+    { "note": "non-ASCII text", "value": "École fermée", "defused": "École fermée", "csv": "\"École fermée\"" },
+    { "note": "a whole number", "value": 1284, "csv": "1284" },
+    { "note": "a negative number stays a number", "value": -5, "csv": "-5" },
+    { "note": "zero", "value": 0, "csv": "0" },
+    { "note": "true", "value": true, "csv": "true" },
+    { "note": "false", "value": false, "csv": "false" },
+    { "note": "not recorded", "value": null, "csv": "" }
+  ]
+}

@@ -303,7 +303,10 @@ def test_metrics_breakdown_usage_and_bucketed_shapes() -> None:
         buckets=[m.MetricsBreakdownBucket(label="2026-10-25"), m.MetricsBreakdownBucket(label="2026-10-26", in_progress=True)],
         groups=[m.MetricsBreakdownGroup(key="high", bucket="2026-10-26", count=3)],
     )
-    assert _roundtrip(m.MetricsBreakdown, trend)["buckets"][1] == {"label": "2026-10-26", "in_progress": True}
+    assert _roundtrip(m.MetricsBreakdown, trend)["buckets"][1] == {
+        "label": "2026-10-26", "in_progress": True, "other_count": None,
+    }
+    assert (trend.missing_created, trend.missing_in_total) == (0, True)
     assert set(m.BREAKDOWN_CASE_FIELDS) | set(m.BREAKDOWN_USAGE_FIELDS) == set(get_args(m.BreakdownField))
     assert m.BREAKDOWN_MULTI_VALUED_FIELDS == {"rule", "mitre_tactic", "mitre_technique"}
     with pytest.raises(ValidationError):

@@ -4405,10 +4405,14 @@ class MetricsBreakdownOther(BaseModel):
 
 
 class MetricsBreakdownBucket(BaseModel):
-    """One zero-filled calendar bucket of a bucketed breakdown, in order."""
+    """One zero-filled calendar bucket of a bucketed breakdown, in order. When ``top``
+    cut groups, ``other_count`` is this bucket's share of ``other`` (``count``, or
+    ``calls`` for usage), so the bucket's listed groups plus it are the bucket's total;
+    ``None`` when nothing was cut."""
 
     label: str
     in_progress: bool = False
+    other_count: int | None = None
 
 
 class MetricsBreakdown(BaseModel):
@@ -4416,7 +4420,11 @@ class MetricsBreakdown(BaseModel):
     or two fields over a window, from the same engine as the chat's ``case_stats``,
     so dashboards and chat agree on every number. ``exact`` is false and ``partial``
     true when a store failure cut the scan (the figures are then lower bounds, said
-    so by the widget). ``multi_valued`` warns that rows do not sum to ``total``."""
+    so by the widget). ``multi_valued`` warns that rows do not sum to ``total``.
+    ``missing_created`` counts the matching records with no readable creation time
+    (cases) or timestamp (usage), never silently dropped; ``missing_in_total`` says
+    whether ``total`` holds them (all time: yes, in the "no date" bucket; a bounded
+    window cannot place them)."""
 
     kind: BreakdownKind = "cases"
     by: BreakdownField
@@ -4434,6 +4442,8 @@ class MetricsBreakdown(BaseModel):
     groups: list[MetricsBreakdownGroup] = Field(default_factory=list)
     buckets: list[MetricsBreakdownBucket] = Field(default_factory=list)
     other: MetricsBreakdownOther | None = None
+    missing_created: int = 0
+    missing_in_total: bool = True
 
 
 # --------------------------------------------------------------------------- #

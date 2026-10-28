@@ -1,25 +1,27 @@
 /**
- * "Remember me" — the device-side half (Round 12, SPEC D14).
+ * "Remember me": the device-side half (Round 12, SPEC D14).
  *
  * The SESSION is remembered by the server (a persistent, server-bounded cookie the
  * page never sees). This module only keeps three NON-SECRET conveniences on this
  * device, under the `soc.login.*` prefix (AGENTS.md: no new compatibility-prefixed
  * keys):
  *
- *   - `soc.login.rememberedUsername` — the account name, written only after a
+ *   - `soc.login.rememberedUsername`: the account name, written only after a
  *     successful remembered sign-in, so the next visit opens on the password step.
- *   - `soc.login.rememberAck`        — the warning was accepted by the person whose
+ *   - `soc.login.rememberAck`: the warning was accepted by the person whose
  *     username this device remembers. It is written only after a successful
  *     remembered sign-in and removed with the username, so it never lets someone
  *     else on a shared device skip the warning.
- *   - `soc.login.rememberedUntil`    — when the remembered session ends (epoch ms) and
- *     its length, so the sign-in page can say "you were signed out after 24 hours"
- *     even though the browser dropped the expired cookie.
+ *   - `soc.login.rememberedUntil`: when the remembered session ends (epoch ms),
+ *     written as `{ until }`, so the sign-in page can say the session ended even
+ *     though the browser dropped the expired cookie. It never says how long the
+ *     session lasted (Round 14 SPEC §4.1); a marker an earlier build wrote as
+ *     `{ until, lifetime }` is still read, and its `lifetime` is ignored.
  *
  * The PASSWORD is never written to any app storage (localStorage, sessionStorage,
  * IndexedDB or a readable cookie). Remembering it is the browser password manager's
  * job: correct `autocomplete` attributes, a hidden username field in the password
- * step, and — in Chromium — an explicit `PasswordCredential` store.
+ * step, and (in Chromium) an explicit `PasswordCredential` store.
  *
  * Every storage access is wrapped: a private window, blocked site data or a quota
  * error degrades to "nothing remembered" and never breaks sign-in.
@@ -45,7 +47,7 @@ function write(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value);
   } catch {
-    /* storage unavailable — the convenience is simply not kept */
+    /* storage unavailable: the convenience is simply not kept */
   }
 }
 
@@ -94,7 +96,7 @@ export function rememberAckCovers(username: string): boolean {
 export function recordSignIn(
   username: string,
   remembered: boolean,
-  opts: { expiresAt?: string | null; lifetimeSeconds?: number | null } = {},
+  opts: { expiresAt?: string | null } = {},
 ): void {
   const name = username.trim();
   if (!remembered || !name || name.length > MAX_USERNAME) {
@@ -107,8 +109,7 @@ export function recordSignIn(
   write(REMEMBERED_USERNAME_KEY, name);
   const until = opts.expiresAt ? Date.parse(opts.expiresAt) : NaN;
   if (Number.isFinite(until)) {
-    const lifetime = Math.max(0, Math.round(Number(opts.lifetimeSeconds ?? 0)) || 0);
-    write(REMEMBERED_UNTIL_KEY, JSON.stringify({ until, lifetime }));
+    write(REMEMBERED_UNTIL_KEY, JSON.stringify({ until }));
   } else {
     remove(REMEMBERED_UNTIL_KEY);
   }
@@ -130,31 +131,31 @@ export function clearRememberedSessionEnd(): void {
 }
 
 /**
- * When a remembered session on this device has already ended by time, return its
- * length once (and clear the marker) so the sign-in page can explain it. Null when
- * there is nothing to explain.
+ * Whether a remembered session on this device has already ended by time. Reports it
+ * once (and clears the marker) so the sign-in page can explain it; null when there is
+ * nothing to explain. A marker an earlier build wrote as `{ until, lifetime }` is read
+ * the same way: the notice never states how long the session lasted.
  */
-export function takeExpiredRememberedSession(now: number = Date.now()): { lifetimeSeconds: number } | null {
+export function takeExpiredRememberedSession(now: number = Date.now()): { expired: true } | null {
   const raw = read(REMEMBERED_UNTIL_KEY);
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as { until?: unknown; lifetime?: unknown };
-    const until = Number(parsed.until);
+    const parsed = JSON.parse(raw) as { until?: unknown } | null;
+    const until = Number(parsed?.until);
     if (!Number.isFinite(until)) {
       remove(REMEMBERED_UNTIL_KEY);
       return null;
     }
     if (until > now) return null;
     remove(REMEMBERED_UNTIL_KEY);
-    const lifetime = Math.max(0, Math.round(Number(parsed.lifetime) || 0));
-    return { lifetimeSeconds: lifetime };
+    return { expired: true };
   } catch {
     remove(REMEMBERED_UNTIL_KEY);
     return null;
   }
 }
 
-/** "24 hours", "6 hours", "1 hour", "90 minutes" — plain duration copy. */
+/** "24 hours", "6 hours", "1 hour", "90 minutes": plain duration copy. */
 export function formatRememberDuration(seconds: number | null | undefined): string {
   const s = Math.max(0, Math.round(Number(seconds) || 0));
   if (s >= 3600 && s % 3600 === 0) {
@@ -169,26 +170,28 @@ export function formatRememberDuration(seconds: number | null | undefined): stri
   return `${m} ${m === 1 ? 'minute' : 'minutes'}`;
 }
 
-/** "the next hour" / "the next 24 hours" — the window phrase for the warning. */
+/** "the next hour" or "the next 24 hours": the window phrase for the warning. */
 export function formatRememberWindow(seconds: number | null | undefined): string {
   const s = Math.max(0, Math.round(Number(seconds) || 0));
   if (s === 3600) return 'the next hour';
   return `the next ${formatRememberDuration(s)}`;
 }
 
+/** The neutral notice: a time limit, or a reason this console does not know yet. */
+export const SIGNED_OUT_NOTICE = 'For your security, you were signed out. Sign in to continue.';
+
 /**
  * The calm sign-out notice for a session that ended on its own (never an error
- * tone). Null for reasons that need no explanation.
+ * tone). It says why, never how long the session lasted (Round 14 SPEC §4.1): a
+ * session that reached its time limit gets the neutral sentence, and so does any
+ * other reason the server sends (the union is open), so a newer server is never
+ * left unexplained. Null only when there is no reason at all.
  */
-export function signedOutNotice(
-  reason: SessionEndReason | null | undefined,
-  lifetimeSeconds?: number | null,
-): string | null {
-  switch (reason) {
-    case 'absolute_expired':
-      return lifetimeSeconds && lifetimeSeconds > 0
-        ? `For your security, you were signed out after ${formatRememberDuration(lifetimeSeconds)}. Sign in to continue.`
-        : 'For your security, your session ended. Sign in to continue.';
+export function signedOutNotice(reason: SessionEndReason | null | undefined): string | null {
+  const value = typeof reason === 'string' ? reason.trim() : '';
+  switch (value) {
+    case '':
+      return null;
     case 'idle_expired':
       return 'For your security, you were signed out after a period of inactivity. Sign in to continue.';
     case 'revoked':
@@ -196,7 +199,8 @@ export function signedOutNotice(
     case 'tv_mismatch':
       return 'All of your sessions were signed out. Sign in to continue.';
     default:
-      return null;
+      // 'absolute_expired' (standard or remembered) and every other reason.
+      return SIGNED_OUT_NOTICE;
   }
 }
 
@@ -247,7 +251,7 @@ interface PasswordCredentialCtor {
  * Chromium only: hand the credential to the browser's password manager explicitly
  * (progressive enhancement; Firefox/Safari rely on their own form heuristics and
  * the hidden username field). Feature-detected, fire-and-forget, never throws and
- * never blocks sign-in. The password goes to the browser API only — never to app
+ * never blocks sign-in. The password goes to the browser API only, never to app
  * storage.
  */
 export function storePasswordCredential(username: string, password: string): void {
@@ -275,14 +279,11 @@ export function storePasswordCredential(username: string, password: string): voi
  */
 export function afterSignIn(
   res: LoginResult,
-  opts: { username: string; requested: boolean; password?: string; lifetimeSeconds?: number | null },
+  opts: { username: string; requested: boolean; password?: string },
 ): void {
   const name = (res.user?.username || opts.username).trim();
   const remembered = Boolean(res.remembered);
-  recordSignIn(name, remembered, {
-    expiresAt: res.session_expires_at,
-    lifetimeSeconds: opts.lifetimeSeconds,
-  });
+  recordSignIn(name, remembered, { expiresAt: res.session_expires_at });
   if (remembered) {
     setRememberAck();
     // Never offer a temporary password the user must change right now; the change
@@ -310,6 +311,6 @@ export function explainRememberRefusedParam(): void {
     const message = rememberRefusedMessage(refused);
     if (message) toast(message);
   } catch {
-    /* no URL API — nothing to explain */
+    /* no URL API: nothing to explain */
   }
 }

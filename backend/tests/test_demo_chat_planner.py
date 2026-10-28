@@ -31,6 +31,7 @@ from app.agents.chat_protocol import PriorExchange, parse_reply, parse_report_su
 from app.agents.chat_tools.base import Artifact, render_tool_call_header, render_tool_signatures
 from app.agents.chat_tools.registry import catalogue, get_tool
 from app.agents.prompts import fence_block, render_chat_agent_system
+from app.config import CHAT_AGENT_BOUNDS, ChatAgentConfig
 from app.engine import demo_chat
 from app.engine.demo_chat import DEMO_STARTERS, classify, plan_turn, read_prompt, summarise_report
 from app.knowledge import render_app_docs
@@ -48,7 +49,12 @@ ALL_TOOLS = tuple(t.name for t in catalogue())
 # --------------------------------------------------------------------------- #
 # Prompt builders (mirroring agents/chat.py exactly).
 # --------------------------------------------------------------------------- #
-def system(tools: tuple[str, ...] | list[str] = ALL_TOOLS, *, max_parallel: int = 4,
+#: Lookups at once as the engine renders it by default: the configured
+#: ``chat_agent.max_parallel`` (12 since Round 14, SPEC §4.2), never a literal.
+DEFAULT_PARALLEL = ChatAgentConfig().max_parallel
+
+
+def system(tools: tuple[str, ...] | list[str] = ALL_TOOLS, *, max_parallel: int = DEFAULT_PARALLEL,
            window: str | None = None, case_scoped: bool = False,
            scopes: tuple[str, ...] = (), disabled: tuple[str, ...] = ()) -> dict[str, str]:
     granted = [get_tool(name) for name in tools if name not in disabled]
@@ -197,6 +203,28 @@ def test_read_prompt_takes_tools_question_and_bounds_from_the_engine_prompt() ->
     assert view.case_scoped is True
     assert view.question == "How are we doing?"
     assert view.rounds == []
+
+
+@pytest.mark.parametrize("configured", [DEFAULT_PARALLEL, 1, 16])
+def test_read_prompt_takes_lookups_at_once_from_the_configured_value(configured: int) -> None:
+    """Round 14 SPEC §4.2.3: the planner reads the configured "Lookups at once" (12 by
+    default) from the engine's prompt, never a fixed 4."""
+    assert DEFAULT_PARALLEL == 12
+    assert read_prompt(prompt("How are we doing?", max_parallel=configured)).max_parallel == configured
+
+
+def test_the_new_lookups_ceiling_keeps_a_working_plan() -> None:
+    """The highest configurable value (24) still yields a working plan. The Demo planner
+    reads at most 16 lookups at once (its own clamp in ``read_prompt``), so a configured
+    17 to 24 plans 16 a step in Demo Mode. Pinned exactly so any change to that clamp
+    is deliberate and moves this test with it."""
+    assert CHAT_AGENT_BOUNDS["max_parallel"] == (1, 24)
+    assert read_prompt(prompt("How are we doing?", max_parallel=24)).max_parallel == 16
+    assert read_prompt(prompt("How are we doing?", max_parallel=DEFAULT_PARALLEL)).max_parallel == 12
+    # A brief plans its whole first batch at the ceiling, the same as at the default.
+    wide = tools_of(plan_turn(prompt("/shift-brief", max_parallel=24)))
+    assert wide == tools_of(plan_turn(prompt("/shift-brief", max_parallel=DEFAULT_PARALLEL)))
+    assert [t for t, _ in wide] == ["shift_report", "soc_metrics", "list_campaigns"]
 
 
 def test_results_observations_and_refs_come_only_from_trusted_headers() -> None:

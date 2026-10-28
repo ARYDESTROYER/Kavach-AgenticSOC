@@ -116,10 +116,19 @@ point-in-time rollback in version 0.1.
   chats offer only the everyday questions, with no catch-up line; Case Manager chat
   keeps its case questions, which name no data.
 - **Timeouts and capacity** (in both modes): how many lookups run side by side in one
-  step (in Bounded mode never more than the per-question lookup limit), how long one
-  lookup may take, how long a model call may go silent before it is retried (300
-  seconds by default), and how many questions may run at once per user (4) and in
-  total on this backend (16). Over those bounds a question waits and starts by itself.
+  step (12 by default; in Bounded mode never more than the per-question lookup limit,
+  so 10 with the default limit), how long one lookup may take (45 seconds), how long a
+  model call may go silent before it is retried (900 seconds, fifteen minutes, by
+  default), and how many questions may run at once per user (12) and in total on this
+  backend (48). Over those bounds a question waits and starts by itself. Higher values
+  run more lookups and questions at once; on small model plans this can reach the
+  provider's per-minute limits, and Agentic SOC retries those calls. After an upgrade
+  from the previous build, each of these values that still equals its earlier default
+  (4 lookups at once, a 15-second lookup timeout, a 300-second model call timeout, 4
+  questions per user and 16 in total) moves to the new default once; a value you
+  changed to anything else stays as you set it. A value you chose that happens to equal
+  an earlier default cannot be told apart from it, so it moves too; set it again after
+  the upgrade.
 - **Indicator lookups:** how many indicators chat may send to enrichment providers per
   question and per conversation (0 turns the lookup off, and chat's access list then
   says it is turned off on this deployment), internal domain suffixes that are never
@@ -132,10 +141,13 @@ change anything: the assistant is read-only by construction. The keys are listed
 
 **Upgrading from an earlier build.** The first time a stored configuration is read, it
 moves to **Unlimited** unless an administrator had changed a per-question limit from
-its shipped value; then it stays **Bounded** with those values. The old defaults for
-the model call timeout (30 seconds, Unlimited only) and the questions-at-once bounds (2
-per user, 8 in total) move to the new ones; values an administrator had chosen are
-kept. This happens once and is never repeated.
+its shipped value; then it stays **Bounded** with those values. Values that still hold
+the shipped default of the build that saved them move to today's defaults (see
+**Timeouts and capacity** above). A configuration from an older build, with a 30-second
+model call timeout and 2 questions per user and 8 in total, first takes 300 seconds
+(Unlimited only), 4 and 16, and then the current 900 seconds, 12 and 48; a Bounded
+configuration keeps its 30 seconds. Values an administrator had chosen are kept, even
+when one equals a later default. Each move happens once and is never repeated.
 
 ## Updates and release channels
 

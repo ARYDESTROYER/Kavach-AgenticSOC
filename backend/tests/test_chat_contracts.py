@@ -585,7 +585,7 @@ def test_chat_agent_clamp_details() -> None:
     })
     assert agent.max_model_calls == 1
     assert agent.turn_token_ceiling == 1_000_000
-    assert agent.max_parallel == ChatAgentConfig().max_parallel        # malformed → default
+    assert agent.max_parallel == ChatAgentConfig().max_parallel == 12  # malformed → default (Round 14)
     assert agent.default_stream_mode == "text"
     assert agent.allow_text_streaming is False
     assert agent.internal_domains == ["corp.example", "lab.example"]

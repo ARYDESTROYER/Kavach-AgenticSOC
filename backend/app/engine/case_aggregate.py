@@ -48,6 +48,10 @@ Honesty
   (a COUNT push-down where the backend can), so it never widens the windowed scan.
 * Cancel (``cancel.set()``) is honoured between pages and raises
   :class:`AggregationCancelled`; the scan cursor is always released.
+* A refused request (an unknown field, metric, filter value or unit, too many buckets)
+  raises :class:`AggregateRequestError`, a ``ValueError``; a store that cannot be read
+  raises its own error. A caller that answers a refusal and a store failure differently
+  (``GET /api/metrics/breakdown``: 400 against 503) catches the request error alone.
 
 Field mappings (``group_by`` and ``filters``), each verified against ``models.Case``:
 
@@ -76,6 +80,9 @@ Field mappings (``group_by`` and ``filters``), each verified against ``models.Ca
 ``closed_by``       terminal cases only: ``analyst_policy`` (``precedent.is_policy_closed``),
                     ``agent``, ``analyst``, else ``system`` (deterministic routing and legacy
                     rows with no recorded decider); ``None`` = not closed
+``rule_exact``      filter only: a value of ``Case.rule_ids`` exactly as stored (case
+                    sensitive, unstripped: the key of a ``rule`` group row), where the
+                    ``rule`` filter matches case-insensitively
 ``entity``          filter only: ``Case.entity.value`` exactly
 ``text``            filter only: case-insensitive substring of id, number, title, entity,
                     source name, tags and rule ids (the ``search_cases`` haystack)
@@ -98,6 +105,16 @@ Metric semantics reuse :mod:`app.engine.metrics` (the dashboards' definitions):
   classification), the same authority the tuner and precedent use, over the same
   population as the dashboards' ``analyst_confirmed_fp`` (analyst-rule-policy closes
   excluded: no model ran on them);
+* Round 14 (SPEC §4.4.2) names the two families a surface may show, never mixed:
+
+  - AI verdict: ``verdicted`` (cases with any investigator verdict, policy closes
+    excluded: the same counter ``fp_rate``/``tp_rate`` divide by, so "cases
+    investigated"), and ``verdict_tp`` / ``verdict_fp`` / ``verdict_needs_human`` (the
+    current AI verdict), so ``verdict_tp + verdict_fp + verdict_needs_human =
+    verdicted``;
+  - analyst outcome: ``analyst_tp`` (the ``analyst_fp`` rule, true positive),
+    ``analyst_fp`` and ``analyst_ungraded = count - analyst_tp - analyst_fp`` (policy
+    closes and cases no analyst classified are ungraded), so the three sum to ``count``;
 * ``mtta_*`` / ``mttr_*`` / ``mttd_*`` — minutes, p50/p90 by ``metrics.percentile`` over the
   ``lifecycle_intervals`` samples (MTTA is HUMAN acknowledgement only), ``None`` when no
   case made the transition;
@@ -143,7 +160,15 @@ CASE_GROUP_FIELDS: tuple[str, ...] = (
 CASE_METRICS: tuple[str, ...] = (
     "count", "auto_closed", "human_closed", "fp_rate", "tp_rate", "analyst_fp",
     "mtta_p50", "mtta_p90", "mttr_p50", "mttr_p90", "mttd_p50", "mttd_p90", "mean_risk", "open_now",
+    # Round 14 (SPEC §4.4.2): the AI verdict and analyst outcome families, named.
+    "verdicted", "verdict_tp", "verdict_fp", "verdict_needs_human", "analyst_tp", "analyst_ungraded",
 )
+#: The AI verdict family: every metric that reads the current investigator verdict.
+VERDICT_FAMILY_METRICS: frozenset[str] = frozenset({
+    "fp_rate", "tp_rate", "verdicted", "verdict_tp", "verdict_fp", "verdict_needs_human",
+})
+#: The analyst outcome family: every metric that reads the independent ground truth.
+ANALYST_FAMILY_METRICS: frozenset[str] = frozenset({"analyst_fp", "analyst_tp", "analyst_ungraded"})
 USAGE_GROUP_FIELDS: tuple[str, ...] = ("role", "model", "surface", "provider", "service_tier")
 USAGE_METRICS: tuple[str, ...] = ("calls", "input_tokens", "output_tokens", "total_tokens", "cost_usd")
 
@@ -152,7 +177,7 @@ USAGE_METRICS: tuple[str, ...] = ("calls", "input_tokens", "output_tokens", "tot
 CASE_FILTER_FIELDS: tuple[str, ...] = (
     "text", "status", "status_group", "verdict", "entity", "severity", "priority",
     "assignee", "rule", "source", "surface", "disposition", "decided_by", "closed_by",
-    "mitre_tactic", "mitre_technique", "assignee_user",
+    "mitre_tactic", "mitre_technique", "assignee_user", "rule_exact",
 )
 USAGE_FILTER_FIELDS: tuple[str, ...] = ("role", "model", "surface", "provider", "service_tier",
                                         "case_id")
@@ -190,6 +215,31 @@ class BucketMismatch(RuntimeError):
     """A push-down returned a bucket key that is not one of the calendar starts the
     engine computed (for example a backend whose zone rules differ from Python's tz
     database). The engine folds instead of silently dropping those rows."""
+
+
+class AggregateRequestError(ValueError):
+    """The REQUEST was refused: an unknown group field, metric, filter key or value, a
+    bad bucket unit or ``top_n``, or more buckets than one answer holds. Its message
+    names what to ask for instead and echoes only the caller's own value, never a
+    stored one.
+
+    A ``ValueError`` subclass, so every caller that catches ``ValueError`` keeps
+    working; a caller that must tell a refused request from a store failure (a
+    ``json.JSONDecodeError`` or a pydantic ``ValidationError`` raised while reading,
+    which are ``ValueError`` too) catches this class alone."""
+
+
+class BucketBudgetError(AggregateRequestError):
+    """More calendar buckets than :data:`MAX_RESULT_BUCKETS` for the window. ``count``
+    is how many the unit would zero-fill, ``unit`` the unit asked for, ``suggestion``
+    the unit ``time_windows.auto_bucket`` picks for the window, so a caller that offers
+    fewer units can word its own advice."""
+
+    def __init__(self, message: str, *, count: int, unit: str, suggestion: str) -> None:
+        super().__init__(message)
+        self.count = count
+        self.unit = unit
+        self.suggestion = suggestion
 
 
 @dataclass(frozen=True)
@@ -283,9 +333,10 @@ def _check_bucket_budget(window: ResolvedWindow, unit: Any, *, earliest: Any = N
     count = bucket_count(window, unit, earliest=earliest, latest=latest)
     if count > MAX_RESULT_BUCKETS:
         suggestion = auto_bucket(window, earliest=earliest, latest=latest)
-        raise ValueError(
+        raise BucketBudgetError(
             f"{count} {unit} buckets is too many for {window.label}; use {suggestion} "
-            f"buckets (at most {MAX_RESULT_BUCKETS} per answer)"
+            f"buckets (at most {MAX_RESULT_BUCKETS} per answer)",
+            count=int(count), unit=str(unit), suggestion=str(suggestion),
         )
 
 
@@ -293,23 +344,28 @@ def _validate_common(group_by: tuple[str, ...], bucket: Any, metrics: tuple[str,
                      top_n: Any, groups_allowed: tuple[str, ...],
                      metrics_allowed: tuple[str, ...]) -> None:
     if len(group_by) > MAX_GROUP_BY:
-        raise ValueError(f"group_by takes at most {MAX_GROUP_BY} fields, got {len(group_by)}")
+        raise AggregateRequestError(f"group_by takes at most {MAX_GROUP_BY} fields, got {len(group_by)}")
     if len(set(group_by)) != len(group_by):
-        raise ValueError("group_by fields must be distinct")
+        raise AggregateRequestError("group_by fields must be distinct")
     unknown = [g for g in group_by if g not in groups_allowed]
     if unknown:
-        raise ValueError(
+        raise AggregateRequestError(
             f"Unknown group_by field(s) {unknown}; use {', '.join(groups_allowed)}"
         )
     if bucket is not None and bucket not in BUCKET_UNITS:
-        raise ValueError(f"Unknown bucket {bucket!r}; use {', '.join(BUCKET_UNITS)}")
+        raise AggregateRequestError(f"Unknown bucket {bucket!r}; use {', '.join(BUCKET_UNITS)}")
     if not metrics:
-        raise ValueError("Ask for at least one metric")
+        raise AggregateRequestError("Ask for at least one metric")
     bad = [m for m in metrics if m not in metrics_allowed]
     if bad:
-        raise ValueError(f"Unknown metric(s) {bad}; use {', '.join(metrics_allowed)}")
-    if top_n is not None and (isinstance(top_n, bool) or int(top_n) < 1):
-        raise ValueError("top_n must be a positive whole number")
+        raise AggregateRequestError(f"Unknown metric(s) {bad}; use {', '.join(metrics_allowed)}")
+    if top_n is not None:
+        try:
+            whole = None if isinstance(top_n, bool) else int(top_n)
+        except (TypeError, ValueError, OverflowError):
+            whole = None
+        if whole is None or whole < 1:
+            raise AggregateRequestError("top_n must be a positive whole number")
 
 
 # =========================================================================== #
@@ -397,11 +453,16 @@ class _CaseView:
     truth, the lifecycle clocks). Count-style folds therefore never pay for model
     validation, which dominates a full-population scan. Values are memoised per case."""
 
-    __slots__ = ("row", "prefs", "_cache", "_case", "_invalid", "unreadable")
+    __slots__ = ("row", "prefs", "model_fields", "_cache", "_case", "_invalid", "unreadable")
 
-    def __init__(self, row: Any, prefs: Any) -> None:
+    def __init__(self, row: Any, prefs: Any, *, model_fields: tuple[str, ...] | None = None) -> None:
         self.row = row
         self.prefs = prefs
+        # The stored fields the fold reads (``_raw_projection``), or ``None`` for the
+        # whole document. The model is validated from these fields alone, so a store
+        # that honours the projection (Elasticsearch ``_source`` filtering) and one that
+        # returns whole documents (SQL) build the same model and flag the same cases.
+        self.model_fields = model_fields
         self._cache: dict[str, Any] = {}
         self._case = None if isinstance(row, dict) else row
         self._invalid = False
@@ -413,12 +474,18 @@ class _CaseView:
     def case(self) -> Any:
         """The validated ``Case``, or ``None`` when the stored document no longer
         validates (a status written by a newer version, a corrupted field). One such
-        document must never take a whole aggregate down; it is reported instead."""
+        document must never take a whole aggregate down; it is reported instead.
+
+        With a projection, only the projected fields are validated: a damaged field the
+        figure never reads does not hide it."""
         if self._case is None and not self._invalid:
             from ..models import Case
 
+            row = self.row
+            if self.model_fields is not None and isinstance(row, dict):
+                row = {name: row[name] for name in self.model_fields if name in row}
             try:
-                self._case = Case.model_validate(self.row)
+                self._case = Case.model_validate(row)
             except Exception:  # noqa: BLE001 — pydantic ValidationError and kin
                 self._invalid = True
         if self._case is None:
@@ -579,56 +646,70 @@ def _as_values(raw: Any) -> list[Any]:
     return [raw]
 
 
-def normalise_case_filters(filters: dict[str, Any]) -> dict[str, list[str]]:
-    """Validate + normalise ``filters`` → ``{key: [allowed values]}`` (blank keys dropped).
+def _exact_values(raw: Any) -> list[Any]:
+    """Every present value, a blank or whitespace-only string included: an exact filter
+    matches a stored value as it is, so a rule id of three spaces (log-derived,
+    attacker-influenceable, #9) filters to the cases carrying it instead of being
+    dropped and leaving the filter off. Only ``None`` means "no value"."""
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        return [v for v in raw if v is not None]
+    return [] if raw is None else [raw]
 
-    Raises ``ValueError`` for an unknown key or an invalid enum value."""
+
+def normalise_case_filters(filters: dict[str, Any]) -> dict[str, list[str]]:
+    """Validate + normalise ``filters`` → ``{key: [allowed values]}`` (blank keys dropped;
+    ``rule_exact`` keeps every present value, a blank one included).
+
+    Raises :class:`AggregateRequestError` (a ``ValueError``) for an unknown key or an
+    invalid enum value."""
     out: dict[str, list[str]] = {}
     for key, raw in (filters or {}).items():
         if key not in CASE_FILTER_FIELDS:
-            raise ValueError(
+            raise AggregateRequestError(
                 f"Unknown case filter {key!r}; use {', '.join(CASE_FILTER_FIELDS)}"
             )
-        values = _as_values(raw)
+        values = _exact_values(raw) if key == "rule_exact" else _as_values(raw)
         if not values:
             continue
         normalised: list[str] = []
         for value in values:
-            text = str(value).strip()
+            # ``rule_exact`` is a stored rule value matched as it is (a group row's key),
+            # so it is never trimmed; every other value is.
+            text = str(value) if key == "rule_exact" else str(value).strip()
             if key == "status":
                 from ..constants import CaseStatus
 
                 text = text.lower().replace(" ", "_").replace("-", "_")
                 if text not in {s.value for s in CaseStatus}:
-                    raise ValueError(f"Unknown status {value!r}")
+                    raise AggregateRequestError(f"Unknown status {value!r}")
             elif key == "status_group":
                 text = _STATUS_GROUP_ALIASES.get(text.lower(), "")
                 if not text:
-                    raise ValueError(f"Unknown status_group {value!r}; use active or terminal")
+                    raise AggregateRequestError(f"Unknown status_group {value!r}; use active or terminal")
             elif key == "verdict":
                 text = text.upper().replace(" ", "_").replace("-", "_")
                 if text not in {"TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_HUMAN"}:
-                    raise ValueError(f"Unknown verdict {value!r}")
+                    raise AggregateRequestError(f"Unknown verdict {value!r}")
             elif key == "severity":
                 text = text.lower()
                 if text not in SEVERITY_BANDS:
-                    raise ValueError(f"Unknown severity {value!r}; use {', '.join(SEVERITY_BANDS)}")
+                    raise AggregateRequestError(f"Unknown severity {value!r}; use {', '.join(SEVERITY_BANDS)}")
             elif key == "priority":
                 text = text.upper()
                 if text not in {"P1", "P2", "P3", "P4"}:
-                    raise ValueError(f"Unknown priority {value!r}; use P1, P2, P3 or P4")
+                    raise AggregateRequestError(f"Unknown priority {value!r}; use P1, P2, P3 or P4")
             elif key in ("decided_by", "closed_by"):
                 text = text.lower()
                 allowed = {"agent", "analyst", "system", "analyst_policy"}
                 if text not in allowed:
-                    raise ValueError(f"Unknown {key} {value!r}; use {', '.join(sorted(allowed))}")
+                    raise AggregateRequestError(f"Unknown {key} {value!r}; use {', '.join(sorted(allowed))}")
             elif key == "disposition":
                 from ..constants import Disposition
 
                 text = text.lower().replace(" ", "_").replace("-", "_")
                 allowed_dispositions = [d.value for d in Disposition]
                 if text not in allowed_dispositions:
-                    raise ValueError(
+                    raise AggregateRequestError(
                         f"Unknown disposition {value!r}; use {', '.join(allowed_dispositions)}"
                     )
             elif key == "surface":
@@ -637,7 +718,7 @@ def normalise_case_filters(filters: dict[str, Any]) -> dict[str, list[str]]:
                 text = text.lower().replace(" ", "_").replace("-", "_")
                 allowed_surfaces = [v.value for v in SourceSurface]
                 if text not in allowed_surfaces:
-                    raise ValueError(
+                    raise AggregateRequestError(
                         f"Unknown surface {value!r}; use {', '.join(allowed_surfaces)}"
                     )
             elif key == "mitre_technique":
@@ -647,7 +728,7 @@ def normalise_case_filters(filters: dict[str, Any]) -> dict[str, list[str]]:
             normalised.append(text)
         out[key] = normalised
     if "status" in out and "status_group" in out:
-        raise ValueError("Choose status or status_group, not both")
+        raise AggregateRequestError("Choose status or status_group, not both")
     return out
 
 
@@ -666,7 +747,7 @@ def _canonical_technique(value: Any) -> str:
         _TECHNIQUE_SHAPE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
     text = str(value).strip().upper()
     if not _TECHNIQUE_SHAPE.match(text):
-        raise ValueError(
+        raise AggregateRequestError(
             f"Unknown ATT&CK technique {value!r}; use a technique id such as T1059 or T1110.001"
         )
     try:
@@ -680,7 +761,7 @@ def _canonical_technique(value: Any) -> str:
         return str(meta["id"]).strip().upper()
     if not loaded:
         return text  # no corpus to check against: the shape is all that can be verified
-    raise ValueError(
+    raise AggregateRequestError(
         f"Unknown ATT&CK technique {value!r}: it is not in the bundled ATT&CK corpus"
     )
 
@@ -707,7 +788,7 @@ def _canonical_tactic(value: Any) -> str:
     text = " ".join(str(value).strip().lower().replace("_", " ").replace("-", " ").split())
     known = _known_tactics()
     if known and text not in known:
-        raise ValueError(
+        raise AggregateRequestError(
             f"Unknown ATT&CK tactic {value!r}; use one of {', '.join(sorted(known))}"
         )
     return text
@@ -752,6 +833,8 @@ def _compile_case_filters(filters: dict[str, Any], prefs: Any) -> Callable[[_Cas
             checks.append(lambda v, w=lowered: bool(
                 {str(r).lower() for r in v.get("rule_ids") or []} & w
             ))
+        elif key == "rule_exact":
+            checks.append(lambda v, w=wanted: any(str(r) in w for r in v.get("rule_ids") or []))
         elif key == "source":
             lowered = {x.lower() for x in values}
 
@@ -801,8 +884,9 @@ def _compile_case_filters(filters: dict[str, Any], prefs: Any) -> Callable[[_Cas
 class _Acc:
     """The counters for one result row (or the totals). Merges exactly."""
 
-    __slots__ = ("count", "auto_closed", "human_closed", "verdicted", "fp", "tp",
-                 "analyst_fp", "risk_sum", "risk_n", "open", "mtta", "mttr", "mttd")
+    __slots__ = ("count", "auto_closed", "human_closed", "verdicted", "fp", "tp", "nh",
+                 "analyst_fp", "analyst_tp", "risk_sum", "risk_n", "open", "mtta", "mttr",
+                 "mttd")
 
     def __init__(self) -> None:
         self.count = 0
@@ -811,7 +895,9 @@ class _Acc:
         self.verdicted = 0
         self.fp = 0
         self.tp = 0
+        self.nh = 0
         self.analyst_fp = 0
+        self.analyst_tp = 0
         self.risk_sum = 0.0
         self.risk_n = 0
         self.open = 0
@@ -826,7 +912,9 @@ class _Acc:
         self.verdicted += facts.verdicted
         self.fp += facts.fp
         self.tp += facts.tp
+        self.nh += facts.nh
         self.analyst_fp += facts.analyst_fp
+        self.analyst_tp += facts.analyst_tp
         if facts.risk is not None:
             self.risk_sum += facts.risk
             self.risk_n += 1
@@ -844,8 +932,8 @@ class _Acc:
         self.open += int(open_count)
 
     def merge(self, other: "_Acc") -> None:
-        for name in ("count", "auto_closed", "human_closed", "verdicted", "fp", "tp",
-                     "analyst_fp", "risk_n", "open"):
+        for name in ("count", "auto_closed", "human_closed", "verdicted", "fp", "tp", "nh",
+                     "analyst_fp", "analyst_tp", "risk_n", "open"):
             setattr(self, name, getattr(self, name) + getattr(other, name))
         self.risk_sum += other.risk_sum
         self.mtta.extend(other.mtta)
@@ -873,6 +961,19 @@ class _Acc:
                 out["verdicted"] = self.verdicted
             elif name == "analyst_fp":
                 out["analyst_fp"] = self.analyst_fp
+            elif name == "verdicted":
+                out["verdicted"] = self.verdicted
+            elif name == "verdict_tp":
+                out["verdict_tp"] = self.tp
+            elif name == "verdict_fp":
+                out["verdict_fp"] = self.fp
+            elif name == "verdict_needs_human":
+                out["verdict_needs_human"] = self.nh
+            elif name == "analyst_tp":
+                out["analyst_tp"] = self.analyst_tp
+            elif name == "analyst_ungraded":
+                # Policy closes and cases no analyst classified: the rest of ``count``.
+                out["analyst_ungraded"] = self.count - self.analyst_tp - self.analyst_fp
             elif name in _PERCENTILE_METRICS:
                 series, pct = _PERCENTILE_METRICS[name]
                 samples = getattr(self, series)
@@ -893,7 +994,9 @@ class _Facts:
     verdicted: int = 0
     fp: int = 0
     tp: int = 0
+    nh: int = 0
     analyst_fp: int = 0
+    analyst_tp: int = 0
     risk: float | None = None
     open: int = 0
     mtta: float | None = None
@@ -908,16 +1011,20 @@ def _facts(view: _CaseView, metrics: frozenset[str]) -> _Facts:
     if metrics & {"auto_closed", "human_closed"} and view.terminal and not view.policy_closed:
         facts.auto_closed = 1 if view.decided_by == "agent" else 0
         facts.human_closed = 1 if view.decided_by == "analyst" else 0
-    if metrics & {"fp_rate", "tp_rate"} and not view.policy_closed:
+    # The AI verdict family (``quality_metrics``' verdicted population): analyst-rule-
+    # policy closes are excluded (no model ran on them), so ``verdict_tp + verdict_fp +
+    # verdict_needs_human`` is exactly the ``verdicted`` denominator of ``fp_rate``.
+    if metrics & VERDICT_FAMILY_METRICS and not view.policy_closed:
         verdict = view.verdict
         if verdict is not None:
             facts.verdicted = 1
             facts.fp = 1 if verdict == "FALSE_POSITIVE" else 0
             facts.tp = 1 if verdict == "TRUE_POSITIVE" else 0
+            facts.nh = 1 if verdict == "NEEDS_HUMAN" else 0
     # The dashboards' population (``quality_metrics.analyst_confirmed_fp`` and every
     # trend bucket): analyst-rule-policy closes are outside the agent's measured work
     # and are excluded here too, so chat and the dashboard report the same number.
-    if "analyst_fp" in metrics and not view.policy_closed:
+    if metrics & ANALYST_FAMILY_METRICS and not view.policy_closed:
         case = view.case
         outcome = None
         if case is not None:
@@ -928,6 +1035,7 @@ def _facts(view: _CaseView, metrics: frozenset[str]) -> _Facts:
             except Exception:  # noqa: BLE001 — a malformed case is not ground truth
                 outcome = None
         facts.analyst_fp = 1 if outcome == "false_positive" else 0
+        facts.analyst_tp = 1 if outcome == "true_positive" else 0
     if "mean_risk" in metrics:
         risk = view.get("risk_score")
         if isinstance(risk, (int, float)) and not isinstance(risk, bool) and math.isfinite(risk):
@@ -1430,9 +1538,12 @@ async def aggregate_cases(
         except BucketMismatch as exc:
             logger.warning("case aggregate push-down buckets did not align; folding: %s", exc)
             pushed = None
-        except ValueError:
+        except AggregateRequestError:
             raise  # an invalid request (e.g. too many buckets): the fold would say the same
         except Exception as exc:  # noqa: BLE001 — a push-down glitch falls back to the fold
+            # Any other error, a ``ValueError`` the store raised while reading included
+            # (a corrupt document's ``json.JSONDecodeError``), is the push-down's own
+            # failure: the fold answers instead, and reports what it could not read.
             logger.warning("case aggregate push-down failed; folding instead: %s", exc)
             pushed = None
         if isinstance(pushed, AggregateResult):
@@ -1485,11 +1596,23 @@ async def _open_stock(
     return await aggregate_cases(store, stock_spec, cancel=cancel)
 
 
-# What a COUNT-style fold reads from a stored document, per group field / filter. A
-# spec whose every group field and filter is here, and whose metrics are only ``count``
-# / ``open_now``, needs just these fields (plus the identity, creation time and status
-# every row is checked against); anything else — a derived band, the analyst ground
-# truth, lifecycle clocks, the free-text haystack — needs the whole document.
+#: The fields ``models.Case`` requires. A projection whose figures validate the case
+#: model (the analyst outcome) carries them, so the projected document validates
+#: whenever the fields the figure reads do.
+_CASE_REQUIRED_FIELDS: tuple[str, ...] = ("case_id", "cluster_signature", "source_surface", "entity")
+#: What ``analyst_outcomes.analyst_confirmed_outcome`` reads (graded feedback, else an
+#: explicit analyst classification in the history with the decider and disposition),
+#: plus the two fields ``_CaseView.policy_closed`` reads on a raw document.
+_ANALYST_FIELDS: tuple[str, ...] = (
+    "feedback", "history", "decision_by", "disposition", "analyst_policy", *_CASE_REQUIRED_FIELDS,
+)
+
+# What a fold reads from a stored document, per group field / filter. A spec whose
+# every group field and filter is here, and whose metrics are in
+# ``_METRIC_RAW_FIELDS``, needs just these fields (plus the identity, creation time and
+# status every row is checked against); anything else (a derived severity band or
+# priority, lifecycle clocks, the risk mean, the free-text haystack) needs the whole
+# document.
 _RAW_FIELDS_OF: dict[str, tuple[str, ...]] = {
     "verdict": ("verdict",),
     "status": ("status",),
@@ -1505,17 +1628,46 @@ _RAW_FIELDS_OF: dict[str, tuple[str, ...]] = {
     "mitre_tactic": ("mitre",),
     "mitre_technique": ("mitre",),
     "entity": ("entity",),
+    "rule_exact": ("rule_ids",),
 }
-_PROJECTABLE_METRICS = frozenset({"count", "open_now"})
+# Metrics a fold answers from these stored fields alone (beside the group fields and
+# filters): the counts; the AI verdict counts, which read the verdict plus the two
+# fields ``_CaseView.policy_closed`` reads on a raw document; and the analyst outcome
+# family, which validates the case model from :data:`_ANALYST_FIELDS` alone. The rates,
+# the clocks and the risk mean need the whole document.
+_METRIC_RAW_FIELDS: dict[str, tuple[str, ...]] = {
+    "count": (),
+    "open_now": (),
+    "verdicted": ("verdict", "decision_by", "analyst_policy"),
+    "verdict_tp": ("verdict", "decision_by", "analyst_policy"),
+    "verdict_fp": ("verdict", "decision_by", "analyst_policy"),
+    "verdict_needs_human": ("verdict", "decision_by", "analyst_policy"),
+    "analyst_fp": _ANALYST_FIELDS,
+    "analyst_tp": _ANALYST_FIELDS,
+    "analyst_ungraded": _ANALYST_FIELDS,
+}
+_PROJECTABLE_METRICS = frozenset(_METRIC_RAW_FIELDS)
+#: The projectable metrics whose figures validate the case model, so the fold
+#: validates in a worker thread as a whole-document fold does.
+_MODEL_METRICS = ANALYST_FAMILY_METRICS
+
+
+def _validates_model(spec: CaseAggregateSpec, norm: dict[str, list[str]]) -> bool:
+    """Whether a fold of ``spec`` validates the case model for (nearly) every case: a
+    whole-document fold, or a projected one that reads the analyst outcome family."""
+    return bool(set(spec.metrics) & _MODEL_METRICS) or _raw_projection(spec, norm) is None
 
 
 def _raw_projection(spec: CaseAggregateSpec, norm: dict[str, list[str]]) -> tuple[str, ...] | None:
     """The stored fields a fold of ``spec`` reads, or ``None`` when it needs whole
-    documents (see :data:`_RAW_FIELDS_OF`). Used only as a transfer hint: a repository
-    that ignores it returns whole documents and the fold reads the same values."""
+    documents (see :data:`_RAW_FIELDS_OF`). A transfer hint for the store and the
+    validation set for the fold: a repository that ignores it returns whole documents,
+    and the fold reads the same values and validates the model from the same fields."""
     if not set(spec.metrics) <= _PROJECTABLE_METRICS:
         return None
     needed = {"case_id", "created_at", "status"}
+    for metric in spec.metrics:
+        needed.update(_METRIC_RAW_FIELDS[metric])
     for name in tuple(spec.group_by) + tuple(norm):
         wanted = _RAW_FIELDS_OF.get(name)
         if wanted is None:
@@ -1550,6 +1702,7 @@ async def fold_cases(
     unit = spec.bucket
     missing_counts = _missing_in_total(window)
     state = RowSet()
+    fields = _raw_projection(spec, norm)
 
     def consume(page: list[Any]) -> None:
         for case in page:
@@ -1557,7 +1710,7 @@ async def fold_cases(
             inside = missing_counts if created is None else window.contains(created)
             if created is not None and not inside:
                 continue  # the scan pre-filter may over-keep; this is the exact rule
-            view = _CaseView(case, spec.prefs)
+            view = _CaseView(case, spec.prefs, model_fields=fields)
             if not predicate(view):
                 if view.unreadable and inside:
                     state.unreadable += 1  # it may have matched: the figures are not exact
@@ -1580,12 +1733,20 @@ async def fold_cases(
             for gkey in dict.fromkeys(gkeys):
                 state.acc(gkey, bkey).add(facts)
 
+    async def consume_off_loop(page: list[Any]) -> None:
+        # A fold that validates the case model (whole documents, or the analyst outcome
+        # from its projected fields) spends tens of microseconds a case, so tens of ms per page
+        # of 1,000: that work runs in a worker thread so the event loop keeps serving
+        # other requests between pages. Pages are still folded one at a time (the scan
+        # awaits each before reading the next), so ``state`` has one writer.
+        await asyncio.to_thread(consume, list(page))
+
     outcome = await scan_cases(
-        store, consume,
+        store, consume_off_loop if _validates_model(spec, norm) else consume,
         created_from=window.start,
         created_to=None if window.open_end else window.end,
         progress=progress, cancel=cancel, raw=True, statuses=_scan_statuses(norm),
-        fields=_raw_projection(spec, norm),
+        fields=fields,
     )
     state.scanned = outcome.scanned
     exact = outcome.complete
@@ -1652,7 +1813,7 @@ def _compile_usage_filters(filters: dict[str, Any]) -> Callable[[dict[str, Any]]
     checks: list[Callable[[dict[str, Any]], bool]] = []
     for key, raw in (filters or {}).items():
         if key not in USAGE_FILTER_FIELDS:
-            raise ValueError(
+            raise AggregateRequestError(
                 f"Unknown usage filter {key!r}; use {', '.join(USAGE_FILTER_FIELDS)}"
             )
         values = {str(v).strip() for v in _as_values(raw)}
@@ -1961,9 +2122,9 @@ async def aggregate_usage(
         except BucketMismatch as exc:
             logger.warning("usage aggregate push-down buckets did not align; folding: %s", exc)
             pushed = None
-        except ValueError:
-            raise
-        except Exception as exc:  # noqa: BLE001
+        except AggregateRequestError:
+            raise  # an invalid request: the fold would say the same
+        except Exception as exc:  # noqa: BLE001 -- a store glitch, ValueError included
             logger.warning("usage aggregate push-down failed; folding instead: %s", exc)
             pushed = None
         if isinstance(pushed, AggregateResult):
@@ -2029,11 +2190,14 @@ async def fold_usage(
 
 
 __all__ = [
+    "AggregateRequestError",
     "AggregateResult",
     "AggregationCancelled",
+    "BucketBudgetError",
     "BucketMismatch",
     "CASE_FILTER_FIELDS",
     "CASE_GROUP_FIELDS",
+    "ANALYST_FAMILY_METRICS",
     "CASE_METRICS",
     "CaseAggregateSpec",
     "MISSING_BUCKET",
@@ -2047,6 +2211,7 @@ __all__ = [
     "USAGE_GROUP_FIELDS",
     "USAGE_METRICS",
     "UsageAggregateSpec",
+    "VERDICT_FAMILY_METRICS",
     "UsageRowSet",
     "aggregate_cases",
     "aggregate_usage",

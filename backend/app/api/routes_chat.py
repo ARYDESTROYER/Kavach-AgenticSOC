@@ -45,9 +45,9 @@ Round 12 (SPEC D1, D6, D11, D13, §3.2, §3.6):
   owner's other consoles drop its mark (it stores nothing). Turns, their event rings and Stop are bound to
   the owner's ACCOUNT generation (a deleted and re-created username sees none of its
   predecessor's turns), and a reset or shutdown forgets finished turns' rings.
-* **Concurrency** comes from ``ChatAgentConfig`` (defaults 4 per user, 16 per
-  backend); a refusal is 429 ``chat_busy`` with ``retry_after``, ``scope`` and
-  ``limit``.
+* **Concurrency** comes from ``ChatAgentConfig`` (defaults 12 per user, 48 per
+  backend since Round 14); a refusal is 429 ``chat_busy`` with ``retry_after``,
+  ``scope`` and ``limit``.
 * **Conversation summary** (D4): the stored summary is loaded and handed to the engine
   (``summary_text``/``summary_covers_through``); a new one in the turn outcome is
   stored on the conversation. **Step observations**: the outcome's per-step
@@ -1699,8 +1699,8 @@ async def run_chat_turn(request: Request, body: ChatRequest, state: AppState) ->
     generation = await _generation_or_503(state, author)
     cfg = state.execution_prefs.chat_agent
     registry = state.chat_turns
-    per_user = int(getattr(cfg, "max_concurrent_turns_per_user", 4) or 4)
-    global_limit = int(getattr(cfg, "max_concurrent_turns_global", 16) or 16)
+    per_user = int(getattr(cfg, "max_concurrent_turns_per_user", 12) or 12)
+    global_limit = int(getattr(cfg, "max_concurrent_turns_global", 48) or 48)
     effective_case_id = body.case_id or (body.context.case_id if body.context else None)
     if body.persist_conversation and not effective_case_id and body.idempotency_key:
         holder = registry.running_with_key(owner, body.idempotency_key, generation)
@@ -2758,7 +2758,9 @@ async def chat_context(
     unlimited = getattr(cfg, "limits_mode", "unlimited") != "bounded"
     timezone_name = operator_tz(ctx)
     system = render_chat_agent_system(
-        toolbox.signatures(), max_parallel=cfg.max_parallel, case_scoped=bool(case_id),
+        # The same lookups-at-once figure a turn's prompt carries (estimate parity): in
+        # Bounded mode never more than the per-question lookup limit.
+        toolbox.signatures(), max_parallel=cfg.effective_parallel, case_scoped=bool(case_id),
         # The same configuration-disabled line a turn's prompt carries (estimate parity).
         disabled_tools=toolbox.disabled if (unlimited or cfg.max_model_calls > 1) else (),
         timezone=timezone_name,

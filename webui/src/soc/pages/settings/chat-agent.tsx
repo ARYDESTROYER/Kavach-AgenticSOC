@@ -50,16 +50,16 @@ import { SectionTitle, SubHeader, SwitchPref, type SecProps } from './primitives
 export const CHAT_AGENT_DEFAULTS: Readonly<ChatAgentConfig> = Object.freeze({
   max_model_calls: 5,
   max_tool_calls: 10,
-  max_parallel: 4,
-  tool_timeout_s: 15,
-  model_step_timeout_s: 300,
+  max_parallel: 12,
+  tool_timeout_s: 45,
+  model_step_timeout_s: 900,
   turn_timeout_s: 90,
   turn_token_ceiling: 60_000,
   final_reserve_tokens: 12_000,
   observation_chars: 6_000,
   final_max_tokens: 4_000,
-  max_concurrent_turns_per_user: 4,
-  max_concurrent_turns_global: 16,
+  max_concurrent_turns_per_user: 12,
+  max_concurrent_turns_global: 48,
   max_indicator_lookups: 3,
   max_indicator_lookups_per_conversation: 10,
   default_stream_mode: 'steps',
@@ -126,15 +126,15 @@ export type ChatAgentNumericKey = {
 export const CHAT_AGENT_BOUNDS: Readonly<Record<ChatAgentNumericKey, readonly [number, number]>> = {
   max_model_calls: [1, 12],
   max_tool_calls: [1, 40],
-  max_parallel: [1, 8],
+  max_parallel: [1, 24],
   tool_timeout_s: [1, 120],
-  model_step_timeout_s: [5, 900],
+  model_step_timeout_s: [5, 1_800],
   turn_timeout_s: [10, 600],
   turn_token_ceiling: [4_000, 1_000_000],
   final_reserve_tokens: [1_000, 200_000],
   observation_chars: [1_500, 60_000],
   final_max_tokens: [256, 32_000],
-  max_concurrent_turns_per_user: [1, 10],
+  max_concurrent_turns_per_user: [1, 24],
   max_concurrent_turns_global: [1, 100],
   max_indicator_lookups: [0, 10],
   max_indicator_lookups_per_conversation: [0, 50],
@@ -162,7 +162,7 @@ export function normaliseInternalDomain(raw: string): string | null {
 
 /**
  * The block as the editor shows it: stored values over the defaults, then the same
- * cross-field repair `ChatAgentConfig._coherent` applies on save — the final-answer
+ * cross-field repair `ChatAgentConfig._coherent` applies on save: the final-answer
  * reserve must leave room for lookups inside the ceiling. Lookups at once is never
  * rewritten here: in Bounded mode one batch is limited by the per-question lookup budget
  * at run time ({@link effectiveParallel}, the backend's `effective_parallel`), so a
@@ -207,10 +207,29 @@ export const DYNAMIC_STARTERS_HELP =
 /**
  * Lookups that really run side by side in one step (backend
  * `ChatAgentConfig.effective_parallel`): the stored value, and in Bounded mode never more
- * than Lookups per question. Display only — never written back.
+ * than Lookups per question. Display only, never written back as such: a value the
+ * operator types or steps to is stored as entered.
  */
 export function effectiveParallel(cfg: Pick<ChatAgentConfig, 'limits_mode' | 'max_parallel' | 'max_tool_calls'>): number {
   return cfg.limits_mode === 'bounded' ? Math.max(1, Math.min(cfg.max_parallel, cfg.max_tool_calls)) : cfg.max_parallel;
+}
+
+/**
+ * The `defaultValue` of the Lookups at once field: the value its Reset stores, and the
+ * value the field compares with to decide whether to offer Reset.
+ *
+ * Reset always stores the shipped default, never the value Bounded mode shows for it, so
+ * a switch back to Unlimited shows the default again (SPEC D1, switching modes is
+ * lossless). In Bounded mode the field shows the value that applies
+ * ({@link effectiveParallel}, at most Lookups per question). When that is already what
+ * the default would apply (12 lookups at once against the default budget of 10 both run
+ * 10), Reset is not offered, so the value shown is returned. Typed and stepped values
+ * never pass through here: they are stored as entered, and Unlimited then shows them.
+ */
+export function parallelFieldDefault(cfg: Pick<ChatAgentConfig, 'limits_mode' | 'max_parallel' | 'max_tool_calls'>): number {
+  const shipped = CHAT_AGENT_DEFAULTS.max_parallel;
+  const applied = effectiveParallel(cfg);
+  return applied === effectiveParallel({ ...cfg, max_parallel: shipped }) ? applied : shipped;
 }
 
 /* -------------------------------------------------------------- rendering --- */
@@ -355,7 +374,9 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
   // the stepper never offers a value the server would repair. Lookups at once is
   // bounded by Lookups per question only where that is a cap (Bounded mode), and there
   // the field shows the value that really applies; the stored value is kept as is, so
-  // switching back to Unlimited shows it again (display only, never saved).
+  // switching back to Unlimited shows it again (display only, never saved). A value the
+  // operator types or steps to is stored as entered; its Reset stores the shipped default
+  // (`parallelFieldDefault`).
   const maxFor = (key: ChatAgentNumericKey): number => {
     const [, hi] = CHAT_AGENT_BOUNDS[key];
     if (key === 'max_parallel' && bounded) return Math.min(hi, cfg.max_tool_calls);
@@ -364,7 +385,7 @@ export function ChatAgentSection({ prefs, update }: SecProps) {
   };
   const shown = (key: ChatAgentNumericKey): number => (key === 'max_parallel' ? effectiveParallel(cfg) : cfg[key]);
   const defaultFor = (key: ChatAgentNumericKey): number =>
-    key === 'max_parallel' ? effectiveParallel({ ...cfg, max_parallel: CHAT_AGENT_DEFAULTS.max_parallel }) : CHAT_AGENT_DEFAULTS[key];
+    key === 'max_parallel' ? parallelFieldDefault(cfg) : CHAT_AGENT_DEFAULTS[key];
 
   const describe = (spec: LimitSpec): string =>
     spec.key === 'max_parallel' && bounded

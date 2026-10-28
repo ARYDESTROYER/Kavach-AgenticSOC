@@ -15,6 +15,9 @@ untouched. These serve the rich, server-side rollup the posture dashboards consu
   append-only decision trail (first-decision anchored, immune to later analyst
   re-tags, with recorded dependency outages excluded). Shipped BESIDE the legacy
   endpoint above, which is unchanged; the two are expected to differ.
+* ``GET /api/metrics/breakdown`` (Round 14, SPEC §4.4.2): exact case (or usage) counts by
+  one or two fields over a window, from the SAME ``engine.case_aggregate`` engine as the
+  chat's ``case_stats`` tool, so the dashboards and chat agree on every number.
 * ``GET /api/mitre/coverage`` — per-tactic technique coverage vs the bundled corpus.
 * ``GET /api/mitre/coverage/navigator.layer.json`` — an ATT&CK Navigator v4.5 layer
   dict the UI can hand straight to the Navigator.
@@ -29,12 +32,15 @@ also assert the narrow ``metrics:view`` grant. No non-GET routes.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import math
+import re
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any
+from time import monotonic as _monotonic
+from typing import Any, Awaitable, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..constants import ActionType
 from ..engine.agent_improvement import agent_improvement_metrics
@@ -50,8 +56,20 @@ from ..engine.metrics import (
 )
 from ..engine.mitre_coverage import compute_mitre_coverage, navigator_layer
 from ..engine.noise_counters import build_noise_reduction
+from ..models import (
+    BREAKDOWN_CASE_FIELDS,
+    BREAKDOWN_DEFAULT_TOP,
+    BREAKDOWN_DEFAULT_WINDOW,
+    BREAKDOWN_FILTER_RULE_MAX_CHARS,
+    BREAKDOWN_MAX_TOP,
+    BREAKDOWN_USAGE_FIELDS,
+    MetricsBreakdown,
+    MetricsBreakdownBucket,
+    MetricsBreakdownGroup,
+    MetricsBreakdownOther,
+)
 from ..state import AppState
-from ..utils import iso_now
+from ..utils import iso_now, now_utc, parse_es_timestamp
 from .deps import get_state, require_permission
 from .metrics_shared import (
     CasePopulation,
@@ -831,6 +849,823 @@ async def metrics_agent_improvement(
     )
 
 
+# --------------------------------------------------------------------------- #
+# GET /api/metrics/breakdown (Round 14, SPEC §4.4.2)
+# --------------------------------------------------------------------------- #
+#: The case metrics every ``kind=cases`` group carries: the counts, the window-exempt
+#: open stock, and the two named families (AI verdict; analyst outcome). Exactly the
+#: ``CaseAggregateSpec`` metrics the spec fixes, so a row means what the chat's
+#: ``case_stats`` says for the same window and grouping.
+BREAKDOWN_SPEC_METRICS: tuple[str, ...] = (
+    "count", "open_now", "verdicted", "verdict_tp", "verdict_fp", "verdict_needs_human",
+    "analyst_tp", "analyst_fp", "analyst_ungraded",
+)
+_BREAKDOWN_USAGE_SPEC_METRICS: tuple[str, ...] = ("calls", "cost_usd")
+_BREAKDOWN_KINDS: tuple[str, ...] = ("cases", "usage")
+#: The bucket units the endpoint offers, finest first.
+_BREAKDOWN_BUCKETS: tuple[str, ...] = ("hour", "day", "week")
+#: ``status_group`` (the wire words) → the engine's status-group filter value.
+_BREAKDOWN_STATUS_GROUPS: dict[str, str] = {"open": "active", "closed": "terminal"}
+#: The longest ``window`` text the endpoint parses (every documented form is far shorter).
+_BREAKDOWN_WINDOW_MAX_CHARS = 200
+_PARTIAL_CASES = "The case store stopped answering partway, so these figures are lower bounds."
+_PARTIAL_UNREADABLE = (
+    "Some stored cases could not be read in full, so the figures that need them are lower bounds."
+)
+_PARTIAL_USAGE = "The usage ledger stopped answering partway, so these figures are lower bounds."
+_PARTIAL_USAGE_UNVERIFIED = (
+    "The usage ledger could not be read in one consistent pass, so these figures may be incomplete."
+)
+_UNAVAILABLE = "The store could not be read, so this breakdown is not available right now."
+_TIMED_OUT = (
+    "This breakdown took too long to read, so it is not available right now. "
+    "Try a shorter window."
+)
+
+# Resource bounds. Every breakdown needs the analyst outcome family, which reads the
+# full case model, so neither store push-down (COUNT and the open stock only) answers it
+# and each read is a fold over every case in the window: about 50 microseconds a case.
+# A board asks for several keys and refreshes them every minute for every viewer, so:
+#
+# * one answer per question is shared for ``BREAKDOWN_CACHE_TTL_SECONDS``, and a
+#   question already being read is joined rather than read again (single flight). The
+#   response carries nothing caller-specific (the grant and the row-scope refusal are
+#   checked before the cache), so sharing it across callers is safe. The key holds the
+#   store's identity and the Demo run, so a Demo switch never serves the other store's
+#   answer, and the operator time zone, which places calendar windows and buckets;
+# * at most ``BREAKDOWN_MAX_CONCURRENT_READS`` distinct reads run at once on an event
+#   loop (the rest queue), so dashboards cannot crowd out the rest of the API;
+# * a read, queueing included, gets ``BREAKDOWN_READ_TIMEOUT_SECONDS``; past it the
+#   caller gets ``503 breakdown_unavailable`` (nothing measured, never a zero);
+# * one answer holds at most ``BREAKDOWN_MAX_ROWS`` group rows. A bucketed answer
+#   zero-fills every kept group across every bucket, so ``top`` times the bucket count
+#   is checked before the read and a larger request is refused with advice (``400
+#   breakdown_bad_param``); an answer that still came out larger is returned but never
+#   kept. The widest built-in board query (severity by day over 90 days at the default
+#   ``top``) is 910 rows;
+# * the shared answers hold at most ``BREAKDOWN_CACHE_MAX_ROWS`` group rows in all,
+#   not only ``BREAKDOWN_CACHE_MAX_ENTRIES`` answers: one large answer is several
+#   megabytes, so a caller who varies the window text cannot fill the process with
+#   them. The oldest answers go first; a refreshed answer counts as the newest. Four
+#   answers of the largest size fit, and every built-in board question is far smaller;
+# * the shared answers hold a reference to the store they were read from, so every
+#   request first drops the expired ones and any read from a store this process no
+#   longer serves (the Demo stack after Demo Mode ends, the real stores while it runs).
+#
+# The fold reads only the stored fields its metrics and groups need
+# (``case_aggregate._raw_projection``) and validates them into the case model in a
+# worker thread (``case_aggregate.fold_cases``), so the event loop keeps serving other
+# requests between pages.
+BREAKDOWN_CACHE_TTL_SECONDS = 5.0
+BREAKDOWN_CACHE_MAX_ENTRIES = 64
+BREAKDOWN_CACHE_MAX_ROWS = 20_000
+BREAKDOWN_MAX_CONCURRENT_READS = 2
+BREAKDOWN_READ_TIMEOUT_SECONDS = 60.0
+BREAKDOWN_MAX_ROWS = 5_000
+
+
+class _BreakdownEntry:
+    """One shared answer. Holds a STRONG reference to the store it was read from, so the
+    identity check can never match a recycled object id."""
+
+    __slots__ = ("store", "value", "expires_at", "rows")
+
+    def __init__(self, store: Any, value: MetricsBreakdown, expires_at: float) -> None:
+        self.store = store
+        self.value = value
+        self.expires_at = expires_at
+        # What the answer weighs against BREAKDOWN_CACHE_MAX_ROWS (an answer with no
+        # group rows still holds its totals, so it weighs one).
+        self.rows = max(1, len(value.groups))
+
+
+_breakdown_cache: dict[tuple[Any, ...], _BreakdownEntry] = {}
+_breakdown_inflight: dict[tuple[Any, ...], tuple[Any, "asyncio.Task[tuple[MetricsBreakdown, bool]]"]] = {}
+# One semaphore per event loop (an asyncio primitive is bound to the loop that first
+# uses it; tests run many loops).
+_breakdown_slots: dict[Any, asyncio.Semaphore] = {}
+
+
+def invalidate_breakdown_cache() -> None:
+    """Drop every shared answer, in-flight marker and read slot (test isolation)."""
+    _breakdown_cache.clear()
+    _breakdown_inflight.clear()
+    _breakdown_slots.clear()
+
+
+def _read_slots() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    slots = _breakdown_slots.get(loop)
+    if slots is None:
+        for stale in [known for known in _breakdown_slots if known.is_closed()]:
+            _breakdown_slots.pop(stale, None)
+        slots = asyncio.Semaphore(BREAKDOWN_MAX_CONCURRENT_READS)
+        _breakdown_slots[loop] = slots
+    return slots
+
+
+def _prune_breakdown_cache(now: float) -> None:
+    """Drop the expired answers, then the oldest ones (insertion order) until at most
+    :data:`BREAKDOWN_CACHE_MAX_ENTRIES` answers holding at most
+    :data:`BREAKDOWN_CACHE_MAX_ROWS` group rows in all remain."""
+    for key in [k for k, entry in _breakdown_cache.items() if entry.expires_at <= now]:
+        _breakdown_cache.pop(key, None)
+    rows = sum(entry.rows for entry in _breakdown_cache.values())
+    while _breakdown_cache and (
+        len(_breakdown_cache) > BREAKDOWN_CACHE_MAX_ENTRIES or rows > BREAKDOWN_CACHE_MAX_ROWS
+    ):
+        oldest = _breakdown_cache.pop(next(iter(_breakdown_cache)))
+        rows -= oldest.rows
+
+
+def _forget_other_stores(live: tuple[Any, ...]) -> None:
+    """Drop every shared answer read from a store that is not one of ``live`` (the case
+    store and the usage ledger this process serves right now). Such an answer can never
+    be served again (the key names the store and the Demo run), and keeping it would
+    keep that store alive: after Demo Mode ends, the whole in-memory Demo stack."""
+    for key in [k for k, entry in _breakdown_cache.items()
+                if not any(entry.store is store for store in live)]:
+        _breakdown_cache.pop(key, None)
+
+
+async def _bounded_read(
+    compute: Callable[[], Awaitable[tuple[MetricsBreakdown, bool]]],
+) -> tuple[MetricsBreakdown, bool]:
+    async def run() -> tuple[MetricsBreakdown, bool]:
+        async with _read_slots():
+            return await compute()
+
+    return await asyncio.wait_for(run(), timeout=BREAKDOWN_READ_TIMEOUT_SECONDS)
+
+
+async def _shared_breakdown(
+    key: tuple[Any, ...],
+    store: Any,
+    compute: Callable[[], Awaitable[tuple[MetricsBreakdown, bool]]],
+) -> MetricsBreakdown:
+    """The answer to ``key`` read from ``store``: a fresh shared answer, the read already
+    in flight for it, or a new bounded read. ``compute`` returns ``(answer,
+    cacheable)``; only an answer read to the end is shared after it completes (a read a
+    store failure cut short, and any error, are never kept).
+
+    The read runs as its own task: a caller that goes away does not cancel it, so the
+    callers that joined it, and the next refresh, still get its answer."""
+    now = _monotonic()
+    # Every request releases the expired answers (and the stores they hold), not only
+    # the next one that completes a read.
+    _prune_breakdown_cache(now)
+    hit = _breakdown_cache.get(key)
+    if hit is not None and hit.store is store and hit.expires_at > now:
+        return hit.value
+    loop = asyncio.get_running_loop()
+    pending = _breakdown_inflight.get(key)
+    if (
+        pending is not None
+        and pending[0] is store
+        and not pending[1].done()
+        and pending[1].get_loop() is loop
+    ):
+        task = pending[1]
+    else:
+        task = loop.create_task(_bounded_read(compute), name="metrics-breakdown")
+        _breakdown_inflight[key] = (store, task)
+
+        def settle(done: "asyncio.Task[tuple[MetricsBreakdown, bool]]") -> None:
+            current = _breakdown_inflight.get(key)
+            if current is not None and current[1] is done:
+                del _breakdown_inflight[key]
+            if done.cancelled() or done.exception() is not None:
+                return  # reading the exception marks it retrieved; a failure is never kept
+            value, cacheable = done.result()
+            if cacheable:
+                stamp = _monotonic()
+                # Re-inserted, not overwritten in place, so a refreshed answer is the
+                # newest and the size bound evicts the answers nobody asked for since.
+                _breakdown_cache.pop(key, None)
+                _breakdown_cache[key] = _BreakdownEntry(
+                    store, value, stamp + float(BREAKDOWN_CACHE_TTL_SECONDS),
+                )
+                _prune_breakdown_cache(stamp)
+
+        task.add_done_callback(settle)
+    value, _cacheable = await asyncio.shield(task)
+    return value
+
+
+def _breakdown_error(code: str, message: str, status: int = 400) -> HTTPException:
+    """A coded, plain-text refusal (``{code, message}``; the Console's error parser
+    shows ``message``). Messages name what to use instead and never echo a stored value."""
+    return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
+def _bad_param(message: str) -> HTTPException:
+    return _breakdown_error("breakdown_bad_param", message)
+
+
+def _unavailable(message: str = _UNAVAILABLE) -> HTTPException:
+    return _breakdown_error("breakdown_unavailable", message, status=503)
+
+
+def _too_many_buckets(exc: Any) -> str:
+    """The advice for a :class:`~app.engine.case_aggregate.BucketBudgetError`, in the
+    endpoint's own units (the engine may name month, quarter or year, which this
+    endpoint does not offer)."""
+    from ..engine.case_aggregate import MAX_RESULT_BUCKETS
+
+    unit = str(getattr(exc, "unit", "") or "")
+    coarser = _BREAKDOWN_BUCKETS[_BREAKDOWN_BUCKETS.index(unit) + 1:] if unit in _BREAKDOWN_BUCKETS else ()
+    suggestion = str(getattr(exc, "suggestion", "") or "")
+    if suggestion in coarser:
+        advice = f"use bucket={suggestion} or a shorter window"
+    elif coarser:
+        advice = f"use bucket={coarser[-1]} or a shorter window"
+    else:
+        advice = "use a shorter window"
+    count = getattr(exc, "count", None)
+    head = f"{count} {unit} buckets" if isinstance(count, int) and unit else "That many buckets"
+    return f"{head} is too many for this window (at most {MAX_RESULT_BUCKETS}); {advice}"
+
+
+def _operator_tz(prefs: Any) -> str:
+    """The operator timezone exactly as the chat's case lookups resolve it
+    (``chat_tools.common.operator_tz``: ``SlaPolicy.timezone`` when it is a valid IANA
+    name, else UTC), so a calendar window or bucket starts on the same instant in both."""
+    from types import SimpleNamespace
+
+    from ..agents.chat_tools.common import operator_tz
+
+    return operator_tz(SimpleNamespace(prefs=prefs))
+
+
+def _resolve_breakdown_window(window: str, *, tz: str) -> Any:
+    """``window`` (the Round 12 grammar) resolved in the operator zone and counted the
+    way every case lookup in chat counts it: a relative window of whole days, weeks,
+    months or years spans whole periods of its unit, the last in progress
+    (``time_windows.align_whole_periods``, Round 12 SPEC §7.2 decision 28), so "last 7
+    days" here and in ``case_stats`` start on the same instant and hold the same cases.
+    The response's ``window_label`` and ``window_from`` say what was measured; a rolling
+    hours window is labelled by :func:`_rolling_hours_label`."""
+    from ..engine.time_windows import align_whole_periods, resolve_window
+
+    text = (window or "").strip() or BREAKDOWN_DEFAULT_WINDOW
+    if len(text) > _BREAKDOWN_WINDOW_MAX_CHARS:
+        raise _bad_param(f"window is too long (at most {_BREAKDOWN_WINDOW_MAX_CHARS} characters)")
+    try:
+        resolved = resolve_window(text, tz=tz, now=now_utc(), default=BREAKDOWN_DEFAULT_WINDOW)
+    except ValueError:
+        raise _bad_param(
+            "window is not a time window this endpoint understands; use all, a relative "
+            "window such as now-24h or now-7d, a calendar period such as this_month, or a "
+            "range such as 2026-10-01..2026-10-26"
+        ) from None
+    return _rolling_hours_label(align_whole_periods(resolved))
+
+
+_ROLLING_HOURS = re.compile(r"now-([0-9]+)h")
+
+
+def _rolling_hours_label(window: Any) -> Any:
+    """A rolling hours window (``now-Nh``) labelled the way a board names it, with the
+    instant it starts: ``now-168h`` is "last 7 days (since 21 Oct 2026, 12:00)" rather
+    than the engine's "last 168 hours". A board sends its 7, 30 and 90 day windows as
+    hours tokens so its breakdowns count the rolling span its posture figures count
+    (SPEC §4.4.3), and a caption begins with this label, so it must read like the board
+    window next to it. A whole number of days is named in days (24 hours keeps "last 24
+    hours", the picker's own name), any other count in hours with a thousands
+    separator; the start is in the operator zone, named when it is not UTC. Only the
+    label changes: the span, and so every number, is exactly as resolved."""
+    from ..engine.time_windows import period_label, zone_for
+
+    match = _ROLLING_HOURS.fullmatch(str(getattr(window, "token", "") or ""))
+    if match is None or getattr(window, "kind", "") != "relative" or window.start is None:
+        return window
+    hours = int(match.group(1))
+    if hours > 24 and hours % 24 == 0:
+        name = f"last {hours // 24:,} days"
+    else:
+        name = f"last {hours:,} hour{'' if hours == 1 else 's'}"
+    zone, zone_name = zone_for(window.tz)
+    local = window.start.astimezone(zone)
+    since = f"{period_label(window.start, 'day', zone)}, {local.hour:02d}:{local.minute:02d}"
+    if zone_name != "UTC":
+        since = f"{since}, {zone_name}"
+    return dataclasses.replace(window, label=f"{name} (since {since})")
+
+
+class _RowBudgetError(ValueError):
+    """A bucketed request whose zero-filled answer could hold more than
+    :data:`BREAKDOWN_MAX_ROWS` group rows (``top`` groups times the buckets). The
+    message names a request that fits; it echoes only the caller's own parameters."""
+
+
+def _too_many_rows(*, top_n: int, buckets: int, unit: str, fits_unit: str) -> str:
+    rows = top_n * buckets
+    advice: list[str] = []
+    if fits_unit:
+        advice.append(f"bucket={fits_unit}")
+    advice.append("a shorter window")
+    smaller_top = BREAKDOWN_MAX_ROWS // max(1, buckets)
+    if 1 <= smaller_top < top_n:
+        advice.append(f"a top of {smaller_top} or fewer")
+    joined = ", ".join(advice[:-1]) + f" or {advice[-1]}" if len(advice) > 1 else advice[0]
+    return (
+        f"This breakdown could return {rows} rows ({top_n} groups in each of {buckets} "
+        f"{unit} buckets), more than the {BREAKDOWN_MAX_ROWS} one answer holds; use {joined}"
+    )
+
+
+async def _check_bucket_budget(
+    kind: str, store: Any, window: Any, unit: str, *, top_n: int, filters: dict[str, Any],
+    prefs: Any,
+) -> None:
+    """Refuse, before the read, a bucket unit that would zero-fill more calendar buckets
+    than one answer holds, or more group rows (``top_n`` times the buckets) than
+    :data:`BREAKDOWN_MAX_ROWS`, with advice in the endpoint's own units. A bounded window
+    is measured directly; all time first asks for the dated span of the selection (one
+    COUNT the bundled stores push down, else a count-only fold), so an over-fine request
+    is refused without folding every case first."""
+    from ..engine.case_aggregate import (
+        MAX_RESULT_BUCKETS,
+        BucketBudgetError,
+        CaseAggregateSpec,
+        UsageAggregateSpec,
+        aggregate_cases,
+        aggregate_usage,
+    )
+    from ..engine.time_windows import align_window, bucket_count
+
+    earliest = latest = None
+    if window.start is None:
+        if kind == "usage":
+            probe = await aggregate_usage(store, UsageAggregateSpec(
+                window=window, metrics=("calls",),
+            ))
+        else:
+            probe = await aggregate_cases(store, CaseAggregateSpec(
+                window=window, filters=filters, metrics=("count",), prefs=prefs,
+            ))
+        earliest = parse_es_timestamp(probe.earliest) if probe.earliest else None
+        latest = parse_es_timestamp(probe.latest) if probe.latest else None
+        if earliest is None:
+            return  # nothing dated: no calendar axis to fill
+
+    def count(candidate: str) -> int:
+        return int(bucket_count(align_window(window, candidate), candidate,
+                                earliest=earliest, latest=latest))
+
+    # All time may add the "no date" bucket for undatable cases: count it, so the row
+    # bound holds whatever the read finds.
+    undated_bucket = 1 if window.start is None else 0
+    wanted = count(unit)
+    coarser = _BREAKDOWN_BUCKETS[_BREAKDOWN_BUCKETS.index(unit) + 1:]
+    if wanted > MAX_RESULT_BUCKETS:
+        fits = next((candidate for candidate in coarser if count(candidate) <= MAX_RESULT_BUCKETS), "")
+        raise BucketBudgetError(
+            f"{wanted} {unit} buckets is too many for this window", count=wanted, unit=unit,
+            suggestion=fits,
+        )
+    if top_n * (wanted + undated_bucket) <= BREAKDOWN_MAX_ROWS:
+        return
+    fits_rows = next(
+        (candidate for candidate in coarser
+         if top_n * (count(candidate) + undated_bucket) <= BREAKDOWN_MAX_ROWS),
+        "",
+    )
+    raise _RowBudgetError(_too_many_rows(
+        top_n=top_n, buckets=wanted + undated_bucket, unit=unit, fits_unit=fits_rows,
+    ))
+
+
+def _caller_role(request: Request) -> str:
+    """The signed-in caller's base role ("" when auth is off)."""
+    from .deps import current_user
+
+    try:
+        user = current_user(request)
+    except Exception:  # noqa: BLE001 -- the no-auth profile
+        user = None
+    role = getattr(user, "role", "") if user is not None else ""
+    return str(getattr(role, "value", role) or "")
+
+
+def _object_scoped(state: AppState, request: Request) -> bool:
+    """Row-level (object) data scope applies to this caller's case reads: the SAME
+    rule the chat starters and ``GET /api/auth/me`` use (``chat_starters.object_scoped``,
+    fail closed). Aggregates do not respect row scope yet (SPEC D16), so a scoped
+    caller gets no case-derived breakdown at all rather than counts over cases it may
+    not read."""
+    from ..engine.chat_starters import object_scoped
+
+    return bool(object_scoped(state, _caller_role(request)))
+
+
+def _key_text(value: Any) -> str | None:
+    """A group value as the plain string the wire carries (``None`` = the empty group).
+    Rule ids, source ids and technique names are untrusted: returned as data only (#9)."""
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
+def _other_per_bucket(result: Any, metric: str) -> dict[str, int]:
+    """``{bucket label: records past top}``: the engine's per-bucket ``Other`` rows, so a
+    stacked chart can reach each bucket's total although only ``top`` groups are listed."""
+    out: dict[str, int] = {}
+    for row in getattr(result, "groups", None) or []:
+        label = row.get("bucket")
+        if row.get("other") and label is not None:
+            value = (row.get("metrics") or {}).get(metric) or 0
+            out[str(label)] = out.get(str(label), 0) + int(value)
+    return out
+
+
+def _breakdown_buckets(result: Any, *, metric: str = "count") -> list[MetricsBreakdownBucket]:
+    """The zero-filled calendar axis, in order, plus the "no date" bucket when an
+    all-time breakdown placed undatable records in it (never dropped, #4).
+
+    When ``top`` cut groups, each bucket also carries ``other_count``, the records of
+    that bucket in the groups past ``top`` (``count``, or ``calls`` for usage), so a
+    bucket's listed groups plus ``other_count`` are its total."""
+    from ..engine.case_aggregate import MISSING_BUCKET, MISSING_USAGE_BUCKET
+
+    trimmed = bool(getattr(result, "other", None))
+    other = _other_per_bucket(result, metric) if trimmed else {}
+
+    def bucket(label: str, in_progress: bool) -> MetricsBreakdownBucket:
+        extra: dict[str, Any] = {"other_count": other.get(label, 0)} if trimmed else {}
+        return MetricsBreakdownBucket(label=label, in_progress=in_progress, **extra)
+
+    buckets = [
+        bucket(str(label), bool(in_progress))
+        for label, in_progress in (getattr(result, "buckets", None) or [])
+    ]
+    labels = {b.label for b in buckets}
+    for row in getattr(result, "groups", None) or []:
+        label = row.get("bucket")
+        if label in (MISSING_BUCKET, MISSING_USAGE_BUCKET) and label not in labels:
+            buckets.append(bucket(str(label), False))
+            labels.add(label)
+    return buckets
+
+
+def _undated(result: Any) -> dict[str, Any]:
+    """The records with no readable creation time (cases) or timestamp (usage), never
+    silently dropped (Round 12): ``missing_created`` is how many matched, and
+    ``missing_in_total`` says whether they are inside ``total`` (all time: yes, in the
+    "no date" bucket) or outside it (a bounded window cannot place them). The chat's
+    ``case_stats`` states the same figure, so the two never disagree in silence."""
+    return {
+        "missing_created": int(getattr(result, "missing_created", 0) or 0),
+        "missing_in_total": bool(getattr(result, "missing_in_total", True)),
+    }
+
+
+def _int_or_none(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _window_caption(label: Any) -> str:
+    """The engine's window label as a caption start in sentence case ("Last 7 days
+    (since 20 Oct 2026)"): a widget caption begins with it (SPEC §4.4.3). Only the first
+    character changes; chat keeps the engine's own lowercase form inside its sentences,
+    and the window itself (``window_from``, ``window_to``) is the same in both. A rolling
+    hours window already carries the board's name for it (:func:`_rolling_hours_label`),
+    where chat says "last 168 hours"; the span is the same."""
+    text = str(label or "")
+    return text[:1].upper() + text[1:]
+
+
+def _case_breakdown(
+    result: Any, *, by: str, then: str | None, bucket: str | None, status_group: str | None,
+) -> MetricsBreakdown:
+    """An ``AggregateResult`` of a case spec as the wire :class:`MetricsBreakdown`.
+
+    The exact ``Other`` remainder past ``top`` is reported once in ``other`` (its rows are
+    not repeated in ``groups``: a group value could itself read "Other"); with buckets,
+    each bucket's share of it is that bucket's ``other_count``."""
+    groups: list[MetricsBreakdownGroup] = []
+    for row in result.groups:
+        if row.get("other"):
+            continue
+        key = row.get("key") or {}
+        metrics = row.get("metrics") or {}
+        groups.append(MetricsBreakdownGroup(
+            key=_key_text(key.get(by)),
+            then_key=_key_text(key.get(then)) if then else None,
+            bucket=row.get("bucket"),
+            count=int(metrics.get("count") or 0),
+            open_now=_int_or_none(metrics.get("open_now")),
+            verdicted=_int_or_none(metrics.get("verdicted")),
+            verdict_tp=_int_or_none(metrics.get("verdict_tp")),
+            verdict_fp=_int_or_none(metrics.get("verdict_fp")),
+            verdict_needs_human=_int_or_none(metrics.get("verdict_needs_human")),
+            analyst_tp=_int_or_none(metrics.get("analyst_tp")),
+            analyst_fp=_int_or_none(metrics.get("analyst_fp")),
+            analyst_ungraded=_int_or_none(metrics.get("analyst_ungraded")),
+        ))
+    other = None
+    if result.other:
+        other = MetricsBreakdownOther(
+            count=int((result.other.get("metrics") or {}).get("count") or 0),
+            groups=int(result.other.get("groups") or 0),
+        )
+    exact = bool(result.exact)
+    reason = None
+    if result.partial:
+        reason = _PARTIAL_CASES
+    elif not exact:
+        reason = _PARTIAL_UNREADABLE
+    return MetricsBreakdown(
+        kind="cases", by=by, then=then, bucket=bucket, status_group=status_group,
+        window_label=_window_caption(result.window_label), window_from=result.window_from,
+        window_to=result.window_to, total=int(result.total), exact=exact,
+        partial=not exact, partial_reason=reason,
+        multi_valued=bool(getattr(result, "multi_valued", ()) or ()),
+        groups=groups, buckets=_breakdown_buckets(result, metric="count"), other=other,
+        **_undated(result),
+    )
+
+
+def _usage_breakdown(result: Any, *, by: str, then: str | None, bucket: str | None) -> MetricsBreakdown:
+    """An ``AggregateResult`` of a usage spec as the wire :class:`MetricsBreakdown`
+    (``count`` is the number of ledger rows, one per model call, #6)."""
+    groups: list[MetricsBreakdownGroup] = []
+    for row in result.groups:
+        if row.get("other"):
+            continue
+        key = row.get("key") or {}
+        metrics = row.get("metrics") or {}
+        calls = int(metrics.get("calls") or 0)
+        groups.append(MetricsBreakdownGroup(
+            key=_key_text(key.get(by)),
+            then_key=_key_text(key.get(then)) if then else None,
+            bucket=row.get("bucket"),
+            count=calls, calls=calls, cost_usd=float(metrics.get("cost_usd") or 0.0),
+        ))
+    other = None
+    if result.other:
+        metrics = result.other.get("metrics") or {}
+        calls = int(metrics.get("calls") or 0)
+        other = MetricsBreakdownOther(
+            count=calls, groups=int(result.other.get("groups") or 0), calls=calls,
+            cost_usd=float(metrics.get("cost_usd") or 0.0),
+        )
+    exact = bool(result.exact)
+    reason = None
+    if result.partial:
+        reason = _PARTIAL_USAGE
+    elif not exact:
+        reason = _PARTIAL_USAGE_UNVERIFIED
+    return MetricsBreakdown(
+        kind="usage", by=by, then=then, bucket=bucket, status_group=None,
+        window_label=_window_caption(result.window_label), window_from=result.window_from,
+        window_to=result.window_to, total=int(result.total), exact=exact,
+        partial=not exact, partial_reason=reason, multi_valued=False,
+        groups=groups, buckets=_breakdown_buckets(result, metric="calls"), other=other,
+        **_undated(result),
+    )
+
+
+_TOP_TEXT = re.compile(r"[0-9]{1,3}")
+
+
+def _parse_top(raw: Any) -> int:
+    """``top`` as a whole number from 1 to :data:`BREAKDOWN_MAX_TOP`, written in ASCII
+    digits (absent or blank is the default), else the coded ``400``."""
+    if isinstance(raw, bool):
+        raise _bad_param(f"top must be a whole number from 1 to {BREAKDOWN_MAX_TOP}")
+    text = str(raw if raw is not None else "").strip()
+    if not text:
+        return BREAKDOWN_DEFAULT_TOP
+    if _TOP_TEXT.fullmatch(text) and 1 <= int(text) <= BREAKDOWN_MAX_TOP:
+        return int(text)
+    raise _bad_param(f"top must be a whole number from 1 to {BREAKDOWN_MAX_TOP}")
+
+
+def _enum_query(description: str, values: tuple[str, ...], default: Any = None) -> Any:
+    """A query parameter typed as an enum in the OpenAPI contract but validated by the
+    route itself, so a value outside it is the endpoint's coded ``400
+    breakdown_bad_param`` rather than the framework's generic 422."""
+    return Query(default=default, description=description, json_schema_extra={"enum": list(values)})
+
+
+@router.get("/metrics/breakdown", response_model=MetricsBreakdown)
+async def metrics_breakdown(
+    request: Request,
+    by: str = _enum_query(
+        "The grouping. kind=cases: rule, source, severity, status, verdict, closed_by, "
+        "assignee, mitre_tactic, mitre_technique. kind=usage: surface, role, model, "
+        "provider, service_tier.",
+        tuple(dict.fromkeys(BREAKDOWN_CASE_FIELDS + BREAKDOWN_USAGE_FIELDS)),
+        default=...,
+    ),
+    kind: str = _enum_query("cases (gate metrics:view) or usage (gate cost:view).",
+                            _BREAKDOWN_KINDS, default="cases"),
+    then: str | None = _enum_query(
+        "An optional second grouping from the same set, not equal to by (an exact cross-tab).",
+        tuple(dict.fromkeys(BREAKDOWN_CASE_FIELDS + BREAKDOWN_USAGE_FIELDS)),
+    ),
+    window: str = Query(
+        default=BREAKDOWN_DEFAULT_WINDOW,
+        description=(
+            "The Round 12 window grammar: all, now-24h, now-7d, now-30d, calendar tokens "
+            "(this_month, last_week, ...), period literals or ranges (A..B), resolved in "
+            "the operator timezone. A relative window of days, weeks, months or years "
+            "spans whole periods, the last in progress, exactly as chat counts it."
+        ),
+    ),
+    bucket: str | None = _enum_query("Optional zero-filled time buckets over the window.",
+                                     _BREAKDOWN_BUCKETS),
+    # Typed as an integer in the OpenAPI contract but taken as sent and validated by the
+    # route (``_parse_top``), so a value that is not a whole number is the coded 400 like
+    # every other bad parameter, never the framework's generic 422.
+    top: Any = Query(
+        default=BREAKDOWN_DEFAULT_TOP,
+        description=f"Groups kept, 1 to {BREAKDOWN_MAX_TOP}; the rest is one exact other row.",
+        json_schema_extra={"type": "integer", "minimum": 1, "maximum": BREAKDOWN_MAX_TOP},
+    ),
+    filter_rule: str | None = Query(
+        default=None,
+        description=(
+            "kind=cases only: count only cases carrying this exact rule value, matched as "
+            "stored (1 to "
+            f"{BREAKDOWN_FILTER_RULE_MAX_CHARS} printable characters, case sensitive, "
+            "spaces included)."
+        ),
+    ),
+    status_group: str | None = _enum_query(
+        "kind=cases only: open (the open stock; with window=all for open-now figures) or "
+        "closed (closed or resolved cases).",
+        tuple(_BREAKDOWN_STATUS_GROUPS),
+    ),
+    state: AppState = Depends(get_state),
+) -> MetricsBreakdown:
+    """Exact case or usage counts by one field (``by``) or two (``by`` then ``then``) over
+    a window, optionally bucketed by time (SPEC §4.4.2).
+
+    ``kind=cases`` hands one ``CaseAggregateSpec`` (window, group_by, bucket, top_n,
+    filters; metrics ``count``, ``open_now`` and the two named families) to
+    ``engine.case_aggregate.aggregate_cases``, the engine the chat's ``case_stats`` uses,
+    over the case store this caller reads (the Demo store while Demo Mode is on), with
+    the same prefs and operator timezone, so the dashboards and chat agree on every
+    number. The two families are never mixed: AI verdicts (``verdicted = verdict_tp +
+    verdict_fp + verdict_needs_human``) and the analyst outcome (``count = analyst_tp +
+    analyst_fp + analyst_ungraded``; analyst-policy closes are never graded). In an
+    un-bucketed row ``open_now`` is the window-exempt open stock: the open cases matching
+    the row whenever they were created, so it can exceed the row's windowed ``count``; in
+    a bucketed row it is the open part of that bucket's cohort. ``window_label`` is the
+    window as a caption start in sentence case ("Last 7 days (since 20 Oct 2026)"); a
+    relative window of days, weeks, months or years counts whole local periods exactly
+    as chat does, and an hours window (``now-168h``) is the rolling span the other
+    ``window_hours`` metrics count, labelled as a board names it ("Last 7 days (since 21
+    Oct 2026, 12:00)"). ``multi_valued`` is true for ``rule``, ``mitre_tactic``
+    and ``mitre_technique``: a case counts once in each of its values, so rows never sum
+    to ``total``. ``exact`` false (``partial`` true, with ``partial_reason``) marks lower
+    bounds; a zero is never invented for a figure that was not measured. Cases with no
+    readable creation date are disclosed in ``missing_created`` (``missing_in_total``
+    says whether ``total`` holds them), and with buckets cut by ``top`` each bucket's
+    ``other_count`` holds its share of ``other``.
+
+    ``kind=usage`` aggregates the usage ledger (``engine.case_aggregate.aggregate_usage``,
+    metrics ``calls`` and ``cost_usd``, ranked by spend) and is gated on ``cost:view``.
+
+    One answer per question is shared for a few seconds and a question being read is
+    joined, never read twice; at most two reads run at once, a read gets a bounded time,
+    an answer holds at most 5,000 group rows and the shared answers 20,000 in all. Every read
+    folds the cases of the window, because the analyst outcome family needs the case
+    model; the fold reads only the stored fields its metrics and groups need.
+
+    Errors: ``400 breakdown_bad_param`` (an unknown value, ``then`` equal to ``by``, a
+    case-only parameter with ``kind=usage``, an empty ``filter_rule``, a ``top`` that is
+    not a whole number from 1 to 50, a window it cannot read, too many buckets, or
+    ``top`` times the buckets over 5,000 rows); ``403`` without the grant; ``409
+    breakdown_scope_unsupported`` for a case breakdown while row-level data scope applies
+    to the caller (aggregates do not honour row scope yet, SPEC D16); ``503
+    breakdown_unavailable`` when the store could not be read at all or the read ran past
+    its time (nothing was measured, so no figure is returned). A read: no audit row, no
+    model call (#6), aggregates only (#7); nothing here is read by
+    ``case_manager.decide()`` (#3)."""
+    from ..engine.case_aggregate import (
+        AggregateRequestError,
+        BucketBudgetError,
+        CaseAggregateSpec,
+        UsageAggregateSpec,
+        aggregate_cases,
+        aggregate_usage,
+    )
+
+    kind_value = (kind or "").strip() or "cases"
+    # The grant first, so an unauthorised caller learns nothing from parameter checks.
+    if kind_value == "usage":
+        await require_permission("cost", "view")(request)
+    else:
+        await require_permission("metrics", "view")(request)
+    if kind_value not in _BREAKDOWN_KINDS:
+        raise _bad_param("kind must be cases or usage")
+    allowed = BREAKDOWN_USAGE_FIELDS if kind_value == "usage" else BREAKDOWN_CASE_FIELDS
+    by_value = (by or "").strip()
+    if by_value not in allowed:
+        raise _bad_param(f"by must be one of {', '.join(allowed)} for kind={kind_value}")
+    then_value = (then or "").strip() or None
+    if then_value is not None:
+        if then_value not in allowed:
+            raise _bad_param(f"then must be one of {', '.join(allowed)} for kind={kind_value}")
+        if then_value == by_value:
+            raise _bad_param("then must differ from by")
+    bucket_value = (bucket or "").strip() or None
+    if bucket_value is not None and bucket_value not in _BREAKDOWN_BUCKETS:
+        raise _bad_param(f"bucket must be one of {', '.join(_BREAKDOWN_BUCKETS)}")
+    top_n = _parse_top(top)
+    group_value = (status_group or "").strip() or None
+    # ``filter_rule`` is matched exactly as stored, never trimmed: a rule id of spaces is
+    # a real (log-derived, #9) value and filters to the cases that carry it. Present but
+    # empty is refused rather than read as "no filter".
+    rule_value = filter_rule
+    if kind_value == "usage":
+        if group_value is not None or rule_value is not None:
+            raise _bad_param("status_group and filter_rule apply to kind=cases only")
+    else:
+        if group_value is not None and group_value not in _BREAKDOWN_STATUS_GROUPS:
+            raise _bad_param("status_group must be open or closed")
+        if rule_value is not None and not (
+            1 <= len(rule_value) <= BREAKDOWN_FILTER_RULE_MAX_CHARS and rule_value.isprintable()
+        ):
+            raise _bad_param(
+                f"filter_rule must be 1 to {BREAKDOWN_FILTER_RULE_MAX_CHARS} printable characters"
+            )
+        if _object_scoped(state, request):
+            raise _breakdown_error(
+                "breakdown_scope_unsupported",
+                "Case breakdowns are hidden while row-level data scope is on.",
+                status=409,
+            )
+
+    prefs = state.execution_prefs
+    tz = _operator_tz(prefs)
+    window_text = (window or "").strip() or BREAKDOWN_DEFAULT_WINDOW
+    resolved = _resolve_breakdown_window(window_text, tz=tz)
+    group_by = (by_value, then_value) if then_value else (by_value,)
+    filters: dict[str, Any] = {}
+    if group_value is not None:
+        filters["status_group"] = _BREAKDOWN_STATUS_GROUPS[group_value]
+    if rule_value is not None:
+        filters["rule_exact"] = rule_value
+    store = state.usage_store if kind_value == "usage" else state.cases
+
+    async def compute() -> tuple[MetricsBreakdown, bool]:
+        if bucket_value is not None:
+            await _check_bucket_budget(kind_value, store, resolved, bucket_value,
+                                       top_n=top_n, filters=filters, prefs=prefs)
+        if kind_value == "usage":
+            usage_result = await aggregate_usage(store, UsageAggregateSpec(
+                window=resolved, group_by=group_by, bucket=bucket_value,  # type: ignore[arg-type]
+                metrics=_BREAKDOWN_USAGE_SPEC_METRICS, top_n=top_n,
+            ))
+            body = _usage_breakdown(usage_result, by=by_value, then=then_value, bucket=bucket_value)
+            return body, not usage_result.partial and len(body.groups) <= BREAKDOWN_MAX_ROWS
+        case_result = await aggregate_cases(store, CaseAggregateSpec(
+            window=resolved, filters=filters, group_by=group_by,
+            bucket=bucket_value,  # type: ignore[arg-type]
+            metrics=BREAKDOWN_SPEC_METRICS, top_n=top_n, prefs=prefs,
+        ))
+        body = _case_breakdown(
+            case_result, by=by_value, then=then_value, bucket=bucket_value,
+            status_group=group_value,
+        )
+        # A read cut short is never shared, and neither is an answer over the row bound
+        # (the pre-check makes that unreachable; this keeps the cache bounded anyway).
+        return body, not case_result.partial and len(body.groups) <= BREAKDOWN_MAX_ROWS
+
+    key = (
+        kind_value, id(store), getattr(state, "demo_run_id", None), by_value, then_value,
+        bucket_value, top_n, rule_value, group_value, window_text, tz,
+    )
+    _forget_other_stores((state.cases, state.usage_store))
+    try:
+        return await _shared_breakdown(key, store, compute)
+    except HTTPException:
+        raise
+    except BucketBudgetError as exc:
+        raise _bad_param(_too_many_buckets(exc)) from None
+    except _RowBudgetError as exc:
+        raise _bad_param(str(exc)) from None
+    except AggregateRequestError as exc:
+        # The engine refused the request itself; its message names what to ask for
+        # instead and echoes only the caller's own value.
+        raise _bad_param(str(exc)[:300]) from None
+    except TimeoutError:
+        logger.warning("metrics breakdown read ran past %ss (%s by %s)",
+                       BREAKDOWN_READ_TIMEOUT_SECONDS, kind_value, by_value)
+        raise _unavailable(_TIMED_OUT) from None
+    except Exception as exc:  # noqa: BLE001 -- nothing could be read: say so, never a zero
+        # A store failure, including a ``ValueError`` it raised while reading (a corrupt
+        # document's JSON error, a model validation error): logged here, never echoed.
+        logger.warning("metrics breakdown read failed (%s by %s): %s: %s",
+                       kind_value, by_value, type(exc).__name__, exc)
+        raise _unavailable() from None
+
+
 @router.get("/metrics/noise-reduction")
 async def metrics_noise_reduction(
     window_hours: int = 24,
@@ -850,16 +1685,31 @@ async def metrics_noise_reduction(
     up (``counters.available: false``) the ingested/clustered totals are ``null`` and the
     headline ``reduction.overall_pct`` is a DASH, so the UI degrades to a case-only funnel.
 
+    ``events_per_min`` (Round 14, SPEC §4.4.3, the detection board's "Events per minute")
+    is the mean raw alerts per minute over the whole hours the counters summed
+    (:func:`_events_per_min`), rounded to 0.01. When the counters began inside the
+    window (``counters.incomplete``, a fresh install, a Demo) the hour they began in is
+    left out, because it can hold a backfilled burst (a cold-start lookback, the Demo's
+    history written at once): the rate then covers the hours after it. ``null`` while
+    ``counters.available`` is false or less than five minutes are measured, never a
+    made-up 0 and never a burst read as a rate. ``events_per_min_since`` is the ISO
+    start of the span the rate covers (``null`` with no rate) and
+    ``events_per_min_reason`` a plain sentence saying why the rate is not measured or,
+    when the counters began inside the window, that it covers only the time since the
+    end of the hour they began in (``null`` when the rate covers the whole window).
+
     DETERMINISTIC + advisory: nothing here is read by ``case_manager.decide()`` (#3); every
     band name is plain framework data the UI renders escaped."""
     wh = _window(window_hours)
     population = await _population(state, wh or None)
+    # One instant for the counter read, the case window and the rate's covered span.
+    now = now_utc()
     try:
-        counters = await state.noise_counters.read_window(wh)
+        counters = await state.noise_counters.read_window(wh, now=now)
     except Exception as exc:  # noqa: BLE001 — a counter glitch degrades to case-only funnel
         logger.warning("noise-reduction counter read soft-failed: %s", exc)
         counters = {"available": False}
-    return await _rollup(
+    payload = await _rollup(
         build_noise_reduction,
         population.cases,
         counters,
@@ -871,7 +1721,125 @@ async def metrics_noise_reduction(
         # come from the demo stack, so the real tenant prefs are the wrong authority).
         prefs=getattr(state, "execution_prefs", None),
         generated_at=iso_now(),
+        now=now,
     )
+    rate = await _events_per_min(state, payload, counters, window_hours=wh, now=now)
+    payload["events_per_min"] = rate.per_min
+    payload["events_per_min_since"] = rate.since
+    payload["events_per_min_reason"] = rate.reason
+    return payload
+
+
+def _ingested_total(payload: dict[str, Any]) -> int | None:
+    """The funnel's ``ingested`` stage total (``None`` while the counters warm up)."""
+    for stage in payload.get("stages") or []:
+        if isinstance(stage, dict) and stage.get("key") == "ingested":
+            total = stage.get("total")
+            return total if isinstance(total, int) and not isinstance(total, bool) else None
+    return None
+
+
+#: The shortest span a mean rate is stated over. Below it a handful of events would read
+#: as a rate of many per minute, so the rate is not measured.
+_EVENTS_PER_MIN_MIN_SPAN_MINUTES = 5.0
+# The reasons a reader shows beside the rate (plain sentences, no stored value in them).
+_EPM_NOT_AVAILABLE = "The alert counters are not available yet, so the rate is not measured."
+_EPM_NO_START = "The alert counters do not say when they started, so the rate is not measured."
+_EPM_TOO_RECENT = (
+    "The alert counters started recently: the hour they started in is left out, and fewer "
+    "than five minutes have been measured since."
+)
+_EPM_TOO_SHORT = "Fewer than five minutes of this window have been measured, so the rate is not measured."
+_EPM_HOURLY_FAILED = "The hourly alert counters could not be read, so the rate is not measured."
+_EPM_PARTIAL_SPAN = (
+    "The alert counters started inside this window, so the rate covers only the time "
+    "since the end of the hour they started in."
+)
+
+
+class _EventsPerMin:
+    """The detection board's "Events per minute": ``per_min`` (``None`` = not measured),
+    ``since`` (ISO start of the span the rate covers, ``None`` when there is no rate) and
+    ``reason`` (why it is not measured, or why it covers less than the window)."""
+
+    __slots__ = ("per_min", "since", "reason")
+
+    def __init__(self, per_min: float | None, since: str | None, reason: str | None) -> None:
+        self.per_min = per_min
+        self.since = since
+        self.reason = reason
+
+
+def _not_measured(reason: str) -> _EventsPerMin:
+    return _EventsPerMin(None, None, reason)
+
+
+async def _events_per_min(
+    state: AppState, payload: dict[str, Any], counters: dict[str, Any], *,
+    window_hours: int, now: datetime,
+) -> _EventsPerMin:
+    """Mean raw alerts per minute over the whole hours the durable counters measured.
+
+    The counters are hourly: ``read_window`` sums every hour from the hour the window
+    starts in up to the current, partly elapsed hour, and nothing before the counters'
+    ``coverage_start`` (their first observation, bounded by retention) exists.
+
+    * The counters reach back past the window's first hour: every summed hour was
+      measured as it happened, so the rate is the ingested total over ``[start of the
+      window's first hour, now]`` and ``since`` is that start, with no reason.
+    * The counters began inside the window (a fresh install, a Demo, all time): the
+      hour they began in can hold a burst recorded at once, the cold-start lookback of
+      a first poll or the history a Demo writes when it is turned on, so that hour is
+      left out and the rate is the hours after it over ``[the next hour boundary,
+      now]``. ``since`` is that boundary and ``reason`` says the rate covers only part
+      of the window, so a reader never sets it beside the whole-window "Alerts
+      ingested" as if both measured the same span.
+
+    Rounded to 0.01. Not measured (``per_min`` ``None`` with a reason) while the
+    counters are unavailable or fewer than :data:`_EVENTS_PER_MIN_MIN_SPAN_MINUTES`
+    minutes are measured, so a reader shows "Not measured" rather than 0 or a burst read
+    as a rate."""
+    if not bool((payload.get("counters") or {}).get("available")):
+        return _not_measured(_EPM_NOT_AVAILABLE)
+    total = _ingested_total(payload)
+    if total is None:
+        return _not_measured(_EPM_NOT_AVAILABLE)
+    coverage = parse_es_timestamp(counters.get("coverage_start") or counters.get("since"))
+    if coverage is None:
+        return _not_measured(_EPM_NO_START)
+    now_ts = now.timestamp()
+    coverage_ts = coverage.timestamp()
+    first_hour_ts = (
+        math.floor((now_ts - window_hours * 3600.0) / 3600.0) * 3600.0 if window_hours > 0 else None
+    )
+    reason: str | None = None
+    if first_hour_ts is not None and coverage_ts <= first_hour_ts:
+        start_ts = first_hour_ts
+        ingested = total
+        too_short = _EPM_TOO_SHORT
+    else:
+        burst_hour = math.floor(coverage_ts / 3600.0)
+        start_ts = (burst_hour + 1) * 3600.0
+        too_short = _EPM_TOO_RECENT
+        if (now_ts - start_ts) / 60.0 < _EVENTS_PER_MIN_MIN_SPAN_MINUTES:
+            return _not_measured(too_short)  # no whole measured stretch yet: no second read
+        try:
+            hourly = await state.noise_counters.read_hourly_ingested(window_hours, now=now)
+        except Exception as exc:  # noqa: BLE001 -- the rate degrades to "Not measured"
+            logger.warning("noise-reduction hourly counter read soft-failed: %s", exc)
+            return _not_measured(_EPM_HOURLY_FAILED)
+        if not hourly.get("available"):
+            return _not_measured(_EPM_HOURLY_FAILED)
+        ingested = sum(
+            int(count) for hour, count in (hourly.get("hours") or {}).items()
+            if isinstance(hour, int) and hour > burst_hour and isinstance(count, int)
+        )
+        reason = _EPM_PARTIAL_SPAN
+    minutes = (now_ts - start_ts) / 60.0
+    if not math.isfinite(minutes) or minutes < _EVENTS_PER_MIN_MIN_SPAN_MINUTES:
+        return _not_measured(too_short)
+    since = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat()
+    return _EventsPerMin(round(ingested / minutes, 2), since, reason)
 
 
 @router.get("/metrics/noise-reduction/lineage")

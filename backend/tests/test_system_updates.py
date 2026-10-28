@@ -47,6 +47,7 @@ from app.engine.update_supervisor import (
 )
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
+from app.middleware.request_id import RequestIdMiddleware
 from app.state import AppState
 from app.stores.sql import SqlKVStore, build_async_engine, create_all
 from app.stores.update_operations import (
@@ -219,6 +220,9 @@ def _client(
     api = FastAPI(lifespan=lifespan)
     api.include_router(base_router, dependencies=[Depends(require_auth)])
     api.include_router(updates_router, dependencies=[Depends(require_auth)])
+    # The production stack (main.py): every request gets its own request id, so the
+    # same-key retries below run exactly as they do in a deployment.
+    api.add_middleware(RequestIdMiddleware)
     return TestClient(api), service
 
 
@@ -248,27 +252,45 @@ def test_browser_update_bodies_are_minimal_and_forbid_artifact_inputs() -> None:
     ).id == "updater"
 
 
-def test_explicit_login_super_admin_can_preflight_and_audit_is_idempotent(
+def test_explicit_login_super_admin_can_preflight_and_each_request_is_audited_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The audit is idempotent per request: the same request sent again (its request
+    id, session and address) confirms its rows, while a retry as a new request (a new
+    request id) is recorded with its own rows (Round 14 SPEC §4.5.3: who asked, from
+    where). The supervisor is idempotent on the key either way."""
     client, service = _client(monkeypatch, rbac_enabled=True)
     with client:
         _login(client)
         body = {"release_id": "v0.1.3", "idempotency_key": _IDEMPOTENCY}
-        first = client.post("/api/system-updates/preflight", json=body)
-        second = client.post("/api/system-updates/preflight", json=body)
-        assert first.status_code == second.status_code == 200
+        same = {"X-Request-ID": "update-request-0001"}
+        first = client.post("/api/system-updates/preflight", json=body, headers=same)
+        resent = client.post("/api/system-updates/preflight", json=body, headers=same)
+        assert first.status_code == resent.status_code == 200
         state = _STATE["state"]
         # The actual append-only store is queried below with a tiny event-loop helper.
         import asyncio
 
-        rows = asyncio.run(
-            state.control_audit.records(
-                action_type=ActionType.SYSTEM_UPDATE.value, limit=50
+        def _rows() -> list[dict]:
+            return asyncio.run(
+                state.control_audit.records(
+                    action_type=ActionType.SYSTEM_UPDATE.value, limit=50
+                )
             )
-        )
+
+        rows = _rows()
         assert len(rows) == 2
-        assert len(service.calls) == 2
+        assert {r["request_id"] for r in rows} == {"update-request-0001"}
+        retry = client.post("/api/system-updates/preflight", json=body)
+        assert retry.status_code == 200
+        rows = _rows()
+        assert len(rows) == 4
+        assert sorted(r["action"] for r in rows) == [
+            "update.preflight_accepted", "update.preflight_accepted",
+            "update.preflight_requested", "update.preflight_requested",
+        ]
+        assert len({r["request_id"] for r in rows}) == 2
+        assert len(service.calls) == 3
 
 
 def test_direct_mint_lazy_session_is_not_deployment_authority(

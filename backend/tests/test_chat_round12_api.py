@@ -241,19 +241,56 @@ async def test_the_lease_heartbeat_renews_a_running_turn(gated_state, monkeypatc
 
 
 async def test_concurrency_defaults_and_429_retry_after(gated_state) -> None:  # noqa: F811
+    """Round 14 SPEC §4.2.1 (ask 5): 12 questions at once per user and 48 in total by
+    default; the thirteenth question from one user is refused with 429 ``chat_busy``."""
     state, provider = gated_state
-    assert state.prefs.chat_agent.max_concurrent_turns_per_user == 4
-    assert state.prefs.chat_agent.max_concurrent_turns_global == 16
-    running = [await _start(state, idempotency_key=f"r12-conc-{n:04d}") for n in range(4)]
+    assert state.prefs.chat_agent.max_concurrent_turns_per_user == 12
+    assert state.prefs.chat_agent.max_concurrent_turns_global == 48
+    running = [await _start(state, idempotency_key=f"r12-conc-{n:04d}") for n in range(12)]
     await asyncio.wait_for(provider.entered.wait(), 5)
+    assert len({start.handle.turn_id for start, _ in running}) == 12      # all twelve admitted
     with pytest.raises(HTTPException) as busy:
         await _start(state, idempotency_key="r12-conc-0099")
     assert busy.value.status_code == 429
     assert busy.value.detail["retry_after"] == routes_chat.CHAT_BUSY_RETRY_AFTER_S
-    assert busy.value.detail["scope"] == "user" and busy.value.detail["limit"] == 4
+    assert busy.value.detail["scope"] == "user" and busy.value.detail["limit"] == 12
     provider.gate.set()
     for start, _ in running:
         await asyncio.wait_for(start.handle.finished.wait(), 10)
+
+
+@pytest.mark.parametrize("mode,expected", [("bounded", 10), ("unlimited", 12)])
+async def test_the_context_estimate_renders_the_turns_lookups_at_once(
+    gated_state, monkeypatch, mode: str, expected: int,  # noqa: F811
+) -> None:
+    """Round 14 SPEC §4.2.3: the composer's prompt estimate renders the same "at most N
+    lookups" a turn's prompt carries. With the defaults (12 lookups at once, a 10-lookup
+    limit) Bounded mode is 10 and Unlimited 12."""
+    import app.agents.chat as chat_engine
+    import app.agents.prompts as prompts
+
+    state, provider = gated_state
+    agent = state.prefs.chat_agent.model_copy(update={"limits_mode": mode})
+    await state.update_prefs(state.prefs.model_copy(update={"chat_agent": agent}))
+    assert state.execution_prefs.chat_agent.effective_parallel == expected
+    seen: dict[str, int] = {}
+    original = prompts.render_chat_agent_system
+
+    def recording(where: str):  # noqa: ANN202
+        def render(*args: Any, **kwargs: Any) -> str:
+            seen[where] = kwargs["max_parallel"]
+            return original(*args, **kwargs)
+        return render
+
+    monkeypatch.setattr(prompts, "render_chat_agent_system", recording("context"))
+    monkeypatch.setattr(chat_engine, "render_chat_agent_system", recording("turn"))
+    await routes_chat.chat_context(_request(state, "/api/chat/context"), conversation_id=None,
+                                   model=None, case_id=None, state=state, _=None)
+    start, _body = await _start(state, idempotency_key=f"r14-parity-{mode}")
+    await asyncio.wait_for(provider.entered.wait(), 5)
+    provider.gate.set()
+    await asyncio.wait_for(start.handle.finished.wait(), 10)
+    assert seen == {"context": expected, "turn": expected}
 
 
 # --------------------------------------------------------------------------- #

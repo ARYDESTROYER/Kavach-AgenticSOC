@@ -1220,12 +1220,12 @@ By default chat has **no per-question limits**: a question runs until the assist
 answered or you press **Stop**, however many lookups and model calls that takes, and
 answers are never cut short. Guards still stop a question that is going nowhere: the
 same lookup never runs twice in one question, a question that stops making progress is
-asked to answer from what it has, a model call that goes silent for five minutes is
+asked to answer from what it has, a model call that goes silent for fifteen minutes is
 retried once, and an exceptionally long investigation wraps up with what it found.
 
 Some bounds always apply:
 
-- **Answers at once:** each user can run 4 questions at once, and the backend 16 in
+- **Answers at once:** each user can run 12 questions at once, and the backend 48 in
   total. Over that, a new question waits ("Waiting for another answer to finish") and
   starts by itself as soon as it can; after five minutes of waiting it stops and offers
   **Retry**.

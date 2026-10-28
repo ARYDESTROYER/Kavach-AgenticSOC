@@ -24,7 +24,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..audit.context import audit_context
+from ..audit.write import audited_write
 from ..constants import ActionType
+from ..models import AuditChange, AuditTarget
 from ..state import AppState
 from .deps import current_username, get_state, require_permission
 
@@ -151,36 +154,61 @@ async def set_notification_channel_secret(
 ) -> dict[str, Any]:
     """Set/clear one notification channel's secret field (notifications:manage). The value
     goes to the SECRET tier (in memory), NEVER to Preferences; only a configured-
-    boolean is returned. Also stamps the channel's ``configured_secrets`` (names only)."""
-    state.secrets.set_notification_secret(channel_id, body.field or "secret", body.value)
-    configured = sorted(state.secrets.notification_channel_secrets(channel_id).keys())
-    # Reflect the configured field NAMES (not values) onto the channel config so the
-    # UI can show ✓ across reloads. Best-effort — never blocks the secret write.
-    try:
-        def _stamp(current):
-            cfg = getattr(current, "notifications", None)
-            if cfg is None:
-                return current
-            channels = list(cfg.channels)
-            for i, channel in enumerate(channels):
-                if channel.id == channel_id:
-                    channels[i] = channel.model_copy(
-                        update={"configured_secrets": configured}
-                    )
-                    return current.model_copy(update={
-                        "notifications": cfg.model_copy(update={"channels": channels}),
-                    })
-            return current
+    boolean is returned. Also stamps the channel's ``configured_secrets`` (names only).
 
+    Round 14 (SPEC §3.6): audited before the credential changes. A
+    ``notification.secrets_updated`` row naming the field (never its value, #10) is
+    appended first; a failed append answers ``503 audit_unavailable`` and the
+    credential is unchanged. The configured field NAMES are saved first and the
+    credential changes in memory only after that save succeeds, so a failed save leaves
+    the credential as it was and its failure row ("Not applied") is true."""
+    field = body.field or "secret"
+    clearing = not body.value
+    channel = next(
+        (c for c in getattr(getattr(state.prefs, "notifications", None), "channels", None) or []
+         if c.id == channel_id),
+        None,
+    )
+    configured: list[str] = []
+
+    def _stamp(current):
+        cfg = getattr(current, "notifications", None)
+        if cfg is None:
+            return current
+        names = set(state.secrets.notification_channel_secrets(channel_id))
+        names = (names - {field}) if clearing else (names | {field})
+        channels = list(cfg.channels)
+        for i, entry in enumerate(channels):
+            if entry.id == channel_id:
+                channels[i] = entry.model_copy(update={"configured_secrets": sorted(names)})
+                return current.model_copy(update={
+                    "notifications": cfg.model_copy(update={"channels": channels}),
+                })
+        return current
+
+    async def _write() -> None:
+        # Reflect the configured field NAMES (not values) onto the channel config so the
+        # UI can show ✓ across reloads, then change the credential in memory.
         await state.mutate_prefs(_stamp)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("notification configured_secrets stamp failed for %s: %s", channel_id, exc)
-    await state.control_audit.record(
-        action_type=ActionType.NOTIFICATION, surface="notification",
-        actor=current_username(request),
+        state.secrets.set_notification_secret(channel_id, field, body.value)
+        configured[:] = sorted(state.secrets.notification_channel_secrets(channel_id).keys())
+
+    await audited_write(
+        state, sink="control", action="notification.secrets_updated",
+        target=AuditTarget(
+            type="setting", id=f"notifications.channels[{channel_id}]",
+            label=(getattr(channel, "name", "") or channel_id) if channel else channel_id,
+        ),
+        expected_revision=None,
+        changes=[AuditChange(
+            field=f"notifications.channels[{channel_id}].secrets.{field}",
+            before=None, after=None, secret=True,
+        )],
+        write=_write, action_type=ActionType.NOTIFICATION, actor=current_username(request),
+        surface="notification", context=audit_context(request),
         result_summary=(
-            f"channel secret '{body.field or 'secret'}' "
-            f"{'set' if body.value else 'cleared'} for '{channel_id}'"
+            f"channel secret '{field}' "
+            f"{'cleared' if clearing else 'set'} for '{channel_id}'"
         ),
     )
     return {"ok": True, "configured": bool(configured), "configured_secrets": configured}

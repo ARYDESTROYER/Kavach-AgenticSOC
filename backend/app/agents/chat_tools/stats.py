@@ -89,6 +89,10 @@ BUCKETS: tuple[str, ...] = ("hour", "day", "week", "month", "quarter", "year")
 METRICS: tuple[str, ...] = (
     "count", "auto_closed", "human_closed", "fp_rate", "tp_rate", "analyst_fp",
     "mtta_p50", "mtta_p90", "mttr_p50", "mttr_p90", "mttd_p50", "mttd_p90", "mean_risk", "open_now",
+    # Round 14 (SPEC §4.4.2): the named AI verdict and analyst outcome families, the same
+    # ``engine.case_aggregate.CASE_METRICS`` the dashboards' breakdown endpoint reads, so
+    # chat and the dashboards agree on every number.
+    "verdicted", "verdict_tp", "verdict_fp", "verdict_needs_human", "analyst_tp", "analyst_ungraded",
 )
 MAX_GROUP_BY = 2
 MAX_METRICS = 6
@@ -125,6 +129,8 @@ _METRIC_ALIASES = {
     "auto_close": "auto_closed", "auto_closes": "auto_closed", "automation": "auto_closed",
     "human_close": "human_closed", "closed_by_human": "human_closed",
     "analyst_confirmed_fp": "analyst_fp", "confirmed_fp": "analyst_fp",
+    "analyst_confirmed_tp": "analyst_tp", "confirmed_tp": "analyst_tp",
+    "investigated": "verdicted", "ungraded": "analyst_ungraded",
     "mtta": "mtta_p50", "mttr": "mttr_p50", "mttd": "mttd_p50",
     "avg_risk": "mean_risk", "risk": "mean_risk", "average_risk": "mean_risk",
     "open": "open_now", "still_open": "open_now",
@@ -135,6 +141,9 @@ _METRIC_LABELS = {
     "analyst_fp": "Confirmed false positives", "mtta_p50": "MTTA (median)", "mtta_p90": "MTTA (p90)",
     "mttr_p50": "MTTR (median)", "mttr_p90": "MTTR (p90)", "mttd_p50": "MTTD (median)",
     "mttd_p90": "MTTD (p90)", "mean_risk": "Average risk", "open_now": "Still open",
+    "verdicted": "With an AI verdict", "verdict_tp": "AI verdict: true positive",
+    "verdict_fp": "AI verdict: false positive", "verdict_needs_human": "AI verdict: needs human",
+    "analyst_tp": "Confirmed true positives", "analyst_ungraded": "Not graded by an analyst",
 }
 # ``open_now`` is a STOCK in totals and in un-bucketed rows (every matching case open
 # now, whenever it was created, not limited to the window) and a cohort figure in a
@@ -153,6 +162,8 @@ _METRIC_UNITS = {
     "open_now": "count", "fp_rate": "percent", "tp_rate": "percent", "mean_risk": "score",
     "mtta_p50": "minutes", "mtta_p90": "minutes", "mttr_p50": "minutes", "mttr_p90": "minutes",
     "mttd_p50": "minutes", "mttd_p90": "minutes",
+    "verdicted": "count", "verdict_tp": "count", "verdict_fp": "count",
+    "verdict_needs_human": "count", "analyst_tp": "count", "analyst_ungraded": "count",
 }
 _GOOD = {"fp_rate": "down", "mtta_p50": "down", "mtta_p90": "down", "mttr_p50": "down",
          "mttr_p90": "down", "mttd_p50": "down", "mttd_p90": "down", "open_now": "down",

@@ -16,6 +16,7 @@ from . import __version__
 from . import api as api_pkg
 from .api.deps import require_auth
 from .api.routes import router
+from .audit.context import configure_trusted_proxies, trusted_proxies
 from .build_identity import log_build_identity_advisories
 from .config import Secrets
 from .logging_setup import configure_logging
@@ -25,6 +26,7 @@ from .middleware import (
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
 )
+from .middleware.request_id import RequestIdMiddleware, internal_error_response
 from .state import AppState
 
 logger = logging.getLogger("tlsoc.main")
@@ -77,6 +79,11 @@ async def lifespan(app: FastAPI):
     log_build_identity_advisories(logger)
     state = AppState.create(secrets=secrets)
     app.state.tlsoc = state
+    # Resolve the trusted proxy host names for the audit client address in a worker
+    # thread (Round 14 SPEC §4.5.3); never waits on DNS, and the request-id middleware
+    # repeats it every 5 minutes, retrying within seconds a name that does not resolve
+    # yet (the bundled Web UI starts only once this backend is healthy).
+    trusted_proxies().refresh_in_background()
     await state.startup()
     # Build the bundled Help Center index off the event loop now, so the first chat
     # turn after a restart does not pay ~350 ms of CPU on the loop for the $0
@@ -131,6 +138,16 @@ if _sec.rate_limit_enabled:
     )
 if _sec.security_headers_enabled:
     app.add_middleware(SecurityHeadersMiddleware)
+
+# Request ids (Round 14 SPEC §4.5.3): added LAST so it is the outermost layer and every
+# response, a rate-limit or CSRF refusal included, echoes ``X-Request-ID``; the audit
+# rows a request writes carry the same id. The trusted proxies for the audit client
+# address come from ``TRUSTED_PROXIES`` (default: the bundled Web UI service).
+configure_trusted_proxies(_sec.trusted_proxies)
+app.add_middleware(RequestIdMiddleware)
+# The 500 of an unhandled error is sent outside every middleware; this handler gives
+# it the request's id too (``internal_error_response``).
+app.add_exception_handler(Exception, internal_error_response)
 
 # Auth gate on the WHOLE /api router (deny-by-default; a strict no-op when auth is
 # disabled). Every /api route inherits it → a new route is protected automatically.

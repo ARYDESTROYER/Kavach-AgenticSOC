@@ -24,7 +24,8 @@ mount the monolith uses). It surfaces the deterministic, no-LLM nightly tuner
 (``CorrelationRule.n`` / a feed ``severity_floor``) that the pipeline already reads
 live — it never sets a case status/disposition/verdict/risk. #4: the tuner never
 recomputes a ``cluster_signature``. #2: every apply / rollback / config change writes
-an append-only ``ActionType.TUNING`` audit row (best-effort). #9: every rule id /
+an append-only ``ActionType.TUNING`` audit row BEFORE it takes effect (Round 14 SPEC
+§3.6; a failed append answers ``503 audit_unavailable`` and nothing changes). #9: every rule id /
 error string returned is PLAIN, length-bounded, attacker-influenceable data — the UI
 renders it escaped and it is never fed back into a prompt. A suppression DROP proposal
 is returned as a HITL Proposal (linked to ``/api/proposals``); the router NEVER
@@ -38,16 +39,30 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from ..audit.context import audit_context
+from ..audit.settings_write import ExecutionStack, audited_settings_write, demo_mode_changed
+from ..audit.write import audited_write
 from ..config import ThresholdTuningConfig
 from ..constants import ActionType
 from ..engine import threshold_tuner as tuner
-from ..models import Case
+from ..models import AuditTarget, Case
 from ..state import AppState
 from .deps import current_username, get_state, require_permission
 
 logger = logging.getLogger("tlsoc.api.tuning")
 
 router = APIRouter(prefix="/api")
+
+#: ``409 demo_mode_changed`` messages (Demo Mode turned on or off while a tuning write
+#: ran; see :class:`app.audit.settings_write.ExecutionStack`).
+_APPLY_DEMO_MESSAGE = (
+    "Demo Mode was turned on or off while the recommendation was processed, so no "
+    "threshold was changed. Try again."
+)
+_ROLLBACK_DEMO_MESSAGE = (
+    "Demo Mode was turned on or off while rolling back, so the threshold was not "
+    "restored. Try again."
+)
 
 # How many CLOSED cases we page for the trailing window when computing a dry-run
 # recommendation / applying a single-rule change. Bounded so a busy tenant can't
@@ -95,15 +110,19 @@ async def _window_cases(state: AppState) -> list[Case]:
 async def _confirmed_ledger_and_guards(
     state: AppState,
     cfg: ThresholdTuningConfig,
+    tuning_store: Any = None,
 ) -> tuple[list[Any], dict[str, int], set[str]]:
     """Read one complete ledger snapshot and derive the shared window guards.
 
     Recommendations and explicit apply are authority-bearing views: if history is
     unavailable they must not say "no prior tuning" and derive another bump.  The
     background scheduler uses the same pure projection in ``run_once``.
+    ``tuning_store`` is the ledger a write bound to its execution stack (default: the
+    active one).
     """
+    store = tuning_store if tuning_store is not None else state.tuning_store
     try:
-        ledger = await state.tuning_store.list_strict()
+        ledger = await store.list_strict()
     except Exception as exc:  # noqa: BLE001 — false-empty would be unsafe here
         logger.warning("tuning ledger unavailable: %s", exc)
         raise HTTPException(
@@ -270,16 +289,27 @@ async def put_tuning_config(
     _=Depends(require_permission("automation", "manage")),
 ) -> dict[str, Any]:
     """Update the ``threshold_tuning`` policy. Additive + validated by the Pydantic
-    model; never touches ``decide()`` (#3). Audited (#2)."""
-    await state.mutate_execution_prefs(
-        lambda prefs: prefs.model_copy(update={"threshold_tuning": body})
-    )
-    await _audit(
-        state, request, "tuning_config_update",
-        f"enabled={body.enabled} cadence={body.cadence} "
-        f"fp_target={body.fp_rate_target} min_samples={body.min_samples} "
-        f"max_n_step={body.max_n_step} shadow_eval={body.shadow_eval} "
-        f"auto_apply_confirmed={body.auto_apply_confirmed}",
+    model; never touches ``decide()`` (#3).
+
+    Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+    naming every changed field is appended first, and a failed append answers ``503
+    audit_unavailable`` with nothing saved. The tuning policy follows the active
+    execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+    to the Demo audit (SPEC §3.5)."""
+    await audited_settings_write(
+        state,
+        transform=lambda prefs: prefs.model_copy(update={"threshold_tuning": body}),
+        scope="execution", actor=current_username(request) or "",
+        context=audit_context(request),
+        summary=(
+            "tuning_config_update: "
+            f"enabled={body.enabled} cadence={body.cadence} "
+            f"fp_target={body.fp_rate_target} min_samples={body.min_samples} "
+            f"max_n_step={body.max_n_step} shadow_eval={body.shadow_eval} "
+            f"auto_apply_confirmed={body.auto_apply_confirmed}"
+        )[:500],
+        action_type=ActionType.TUNING, surface="tuning",
+        target=AuditTarget(type="setting", id="threshold_tuning", label="Auto-tuning"),
     )
     return {"ok": True, "config": body.model_dump(mode="json")}
 
@@ -303,17 +333,28 @@ async def apply_tuning(
     calls ``decide()`` (#3). Returns the applied, queued, and shadow-blocked outcomes.
 
     404 when no proposal exists for ``rule_id`` (the rule isn't noisy / cleared the
-    bar) so the caller gets an honest signal rather than a silent no-op."""
+    bar) so the caller gets an honest signal rather than a silent no-op.
+
+    One execution stack (:class:`app.audit.settings_write.ExecutionStack`): the
+    settings, cases and ledger it reads, the approval queue and ledger it writes, the
+    settings it changes and the audit log of its rows are the real ones or the Demo
+    sandbox's, never a mix. When Demo Mode is turned on or off while it runs it answers
+    ``409 demo_mode_changed``: with no row when nothing was attempted yet, and with no
+    threshold changed in either stack once its row is appended."""
     rid = tuner.normalize_rule_id(rule_id)
     if not rid:
         raise HTTPException(status_code=400, detail="rule_id is required")
 
+    # One synchronous step: the generation, the audit log and every store this uses.
+    stack = ExecutionStack(state)
     prefs = state.execution_prefs
+    tuning_store = state.tuning_store
+    approvals = state.proposals
     cfg = getattr(prefs, "threshold_tuning", None) or ThresholdTuningConfig()
     cases = await _window_cases(state)
     stats = tuner._accumulate_rule_stats(cases, ewma_alpha=cfg.ewma_alpha, z=cfg.wilson_z)
     _ledger, already_tuned, already_tuned_floors = await _confirmed_ledger_and_guards(
-        state, cfg
+        state, cfg, tuning_store
     )
     proposals = [
         p for p in tuner.derive_proposals(
@@ -335,74 +376,111 @@ async def apply_tuning(
         "severity_floor": tuner.apply_severity_floor,
     }
     outcome = tuner.TuningOutcome(ran=True, rule_stats=stats)
-    current_prefs = prefs
-    pending: list = []
-    try:
-        for prop in proposals:
-            # _handle_proposal now returns (running_prefs, pending_record); the record is
-            # persisted ONLY after the prefs write is confirmed (audit #24).
-            current_prefs, rec = await tuner._handle_proposal(
-                prop, current_prefs, cases, cfg,
-                proposals=state.proposals, audit=state.audit,
-                tuning_store=state.tuning_store, writers=writers, outcome=outcome,
-            )
-            if rec is not None:
-                pending.append((prop, rec))
-    except Exception as exc:  # noqa: BLE001 — the tuner must never break the caller
-        logger.warning("tuning apply for %s failed: %s", rid, exc)
-        raise HTTPException(status_code=500, detail=_safe(exc)) from exc
 
-    if outcome.persistence_errors:
-        logger.warning(
-            "tuning apply for %s did not confirm its approval-queue writes: %s",
-            rid,
-            outcome.persistence_errors,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Tuning review work could not be confirmed; no success was reported",
-        )
-
-    # Preferences and rollback provenance are separate KV documents.  Reuse the
-    # engine's compensating commit so an explicit apply cannot leave an untracked
-    # threshold behind when the ledger write fails.
-    if pending:
+    async def _process() -> None:
+        stack.check(_APPLY_DEMO_MESSAGE)
+        current_prefs = prefs
+        pending: list = []
         try:
-            await tuner._commit_pending_auto_changes(
-                pending=pending,
-                current_prefs=current_prefs,
-                tuning_store=state.tuning_store,
-                write_prefs=state.update_execution_prefs,
-                mutate_prefs=state.mutate_execution_prefs,
-                writers=writers,
+            for prop in proposals:
+                # _handle_proposal now returns (running_prefs, pending_record); the record is
+                # persisted ONLY after the prefs write is confirmed (audit #24).
+                current_prefs, rec = await tuner._handle_proposal(
+                    prop, current_prefs, cases, cfg,
+                    proposals=approvals, audit=stack.audit,
+                    tuning_store=tuning_store, writers=writers, outcome=outcome,
+                )
+                if rec is not None:
+                    pending.append((prop, rec))
+        except Exception as exc:  # noqa: BLE001 (the tuner must never break the caller)
+            logger.warning("tuning apply for %s failed: %s", rid, exc)
+            raise HTTPException(status_code=500, detail=_safe(exc)) from exc
+
+        if outcome.persistence_errors:
+            logger.warning(
+                "tuning apply for %s did not confirm its approval-queue writes: %s",
+                rid,
+                outcome.persistence_errors,
             )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("tuning apply write for %s failed: %s", rid, exc)
             raise HTTPException(
                 status_code=503,
-                detail="Tuning apply could not be durably recorded; no success was reported",
-            ) from exc
-        for prop, rec in pending:
-            outcome.auto_applied.append(rec)
-            await tuner._audit_tuning(state.audit, prop, rec)
+                detail="Tuning review work could not be confirmed; no success was reported",
+            )
+
+        # Preferences and rollback provenance are separate KV documents.  Reuse the
+        # engine's compensating commit so an explicit apply cannot leave an untracked
+        # threshold behind when the ledger write fails.
+        if pending:
+            try:
+                await tuner._commit_pending_auto_changes(
+                    pending=pending,
+                    current_prefs=current_prefs,
+                    tuning_store=tuning_store,
+                    # The settings writers pick the active stack when called, so each
+                    # checks first that it is still this one.
+                    write_prefs=stack.guard(state.update_execution_prefs, _APPLY_DEMO_MESSAGE),
+                    mutate_prefs=stack.guard(state.mutate_execution_prefs, _APPLY_DEMO_MESSAGE),
+                    writers=writers,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("tuning apply write for %s failed: %s", rid, exc)
+                if stack.moved():
+                    raise demo_mode_changed(_APPLY_DEMO_MESSAGE) from exc
+                raise HTTPException(
+                    status_code=503,
+                    detail="Tuning apply could not be durably recorded; no success was reported",
+                ) from exc
+            for prop, rec in pending:
+                outcome.auto_applied.append(rec)
+                await tuner._audit_tuning(stack.audit, prop, rec)
+
+    # #2, Round 14 SPEC §3.6: the operator's request is audited BEFORE any proposal is
+    # processed (a failed append answers 503 audit_unavailable and nothing is applied or
+    # queued). At that point it is not known what each proposal becomes: under the
+    # default review-first policy every one is only queued for approval, and only an
+    # explicitly enabled automatic policy applies a change. So the row is
+    # ``rule.tuning_requested``, naming the rule and every proposal it processes, and
+    # the engine's own rows record each applied change and each approval it opens. A
+    # processing failure appends ``rule.tuning_request_failed``. The tuning ledger, the
+    # approval queue and the execution settings follow the active execution stack, so
+    # in Demo Mode the rows go to the Demo audit (SPEC §3.5).
+    await audited_write(
+        state, sink=stack.audit, action="rule.tuning_requested",
+        target=AuditTarget(type="rule", id=rid, label=rid),
+        expected_revision=None, changes=None, write=_process,
+        action_type=ActionType.TUNING, actor=current_username(request) or "",
+        surface="tuning", context=audit_context(request),
+        result_summary=f"tuning_apply: rule={rid} proposals={len(proposals)}"[:500],
+        tool_input={"proposals": [_proposal_input(p) for p in proposals[:_MAX_INPUT_PROPOSALS]]},
+        # Planned from another stack's evidence: nothing attempted, so no row.
+        precheck=lambda: stack.check(_APPLY_DEMO_MESSAGE),
+    )
 
     applied = [r.to_json() for r in outcome.auto_applied]
     queued = [
         {"id": _safe(p.id), "kind": _safe(p.kind), "status": _safe(p.status)}
         for p in outcome.proposals
     ]
-    # #2 — an explicit apply is audited even if the engine already audited an auto-apply.
-    await _audit(
-        state, request, "tuning_apply",
-        f"rule={rid} applied={len(applied)} queued={len(queued)} "
-        f"shadow_blocked={outcome.shadow_blocked}",
-    )
     return {
         "ok": True,
         "rule_id": _safe(rid),
         "applied": applied,
         "queued_proposals": queued,
         "shadow_blocked": [_safe(x) for x in outcome.shadow_blocked],
+    }
+
+
+#: Proposals named in one apply row's ``tool_input`` (one rule yields a handful).
+_MAX_INPUT_PROPOSALS = 20
+
+
+def _proposal_input(prop: tuner.TuningProposal) -> dict[str, Any]:
+    """One proposal as the apply row records it: what would move, from what to what."""
+    return {
+        "kind": _safe(prop.kind)[:64],
+        "before": prop.before,
+        "after": prop.after,
+        "feed_key": _safe(prop.feed_key)[:200] if prop.feed_key else None,
     }
 
 
@@ -421,15 +499,23 @@ async def rollback_tuning(
     ``rule_id`` here is the LEDGER key: a ``CorrelationRule`` id for an ``n`` raise, or
     the ``"<source_id>:<feed_id>"`` feed key for a ``severity_floor`` raise. Restores
     the record's ``before`` via the SAME config-writers the apply used (never a case /
-    verdict / signature). 404 when there is no active record for the key."""
+    verdict / signature). 404 when there is no active record for the key.
+
+    Bound to one execution stack like the apply: the ledger it reads and marks, the
+    settings it restores and the audit log of its rows. When Demo Mode is turned on or
+    off while it runs it answers ``409 demo_mode_changed`` and restores nothing."""
     rid = tuner.normalize_rule_id(rule_id)
     if not rid:
         raise HTTPException(status_code=400, detail="rule_id is required")
 
+    # One synchronous step: the generation, the audit log, the ledger and the settings.
+    stack = ExecutionStack(state)
+    tuning_store = state.tuning_store
+    prefs = state.execution_prefs
     try:
         active = [
             r
-            for r in await state.tuning_store.list_strict(
+            for r in await tuning_store.list_strict(
                 rule_id=rid, active_only=True
             )
         ]
@@ -446,36 +532,64 @@ async def rollback_tuning(
 
     # list() is newest-first — roll back the most recent active record for the rule.
     record = active[0]
-    ok = await tuner.rollback(
-        record.id, state.execution_prefs,
-        tuning_store=state.tuning_store, write_prefs=state.update_execution_prefs,
-        mutate_prefs=state.mutate_execution_prefs,
-        audit=state.audit,
-    )
-    if not ok:
-        raise HTTPException(status_code=409, detail="rollback could not be applied")
-    await _audit(
-        state, request, "tuning_rollback",
-        f"rule={rid} record={record.id} {record.target} {record.after}->{record.before}",
+
+    async def _restore() -> None:
+        stack.check(_ROLLBACK_DEMO_MESSAGE)
+        ok = await tuner.rollback(
+            record.id, prefs,
+            tuning_store=tuning_store,
+            # The settings writers pick the active stack when called, so each checks
+            # first that it is still this one (a refusal makes the rollback fail).
+            write_prefs=stack.guard(state.update_execution_prefs, _ROLLBACK_DEMO_MESSAGE),
+            mutate_prefs=stack.guard(state.mutate_execution_prefs, _ROLLBACK_DEMO_MESSAGE),
+            audit=stack.audit,
+        )
+        if not ok:
+            if stack.moved():
+                raise demo_mode_changed(_ROLLBACK_DEMO_MESSAGE)
+            raise HTTPException(status_code=409, detail="rollback could not be applied")
+
+    # #2, Round 14 SPEC §3.6: audited before the threshold is restored. A refused
+    # restore (a stale or already restored record) appends
+    # ``rule.tuning_rollback_failed`` and answers 409.
+    await audited_write(
+        state, sink=stack.audit, action="rule.tuning_rolled_back",
+        failure="rule.tuning_rollback_failed",
+        target=_rollback_target(rid, record), expected_revision=None,
+        changes=[{
+            "field": _tuning_field(record), "before": record.after, "after": record.before,
+        }],
+        write=_restore, action_type=ActionType.TUNING,
+        actor=current_username(request) or "", surface="tuning",
+        context=audit_context(request),
+        result_summary=(
+            f"tuning_rollback: rule={rid} record={record.id} "
+            f"{record.target} {record.after}->{record.before}"
+        )[:500],
+        tool_input={"record_id": _safe(record.id)[:200]},
+        # Read from another stack's ledger: nothing attempted, so no row.
+        precheck=lambda: stack.check(_ROLLBACK_DEMO_MESSAGE),
     )
     return {"ok": True, "rule_id": _safe(rid), "record_id": _safe(record.id)}
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
-    """Append-only ``ActionType.TUNING`` audit of an operator tuning mutation (#2).
-    Best-effort; the actor is the authenticated username when present."""
-    audit = getattr(state, "_real_audit", None) or getattr(state, "audit", None)
-    if audit is None:
-        return
-    try:
-        await audit.record(
-            action_type=ActionType.TUNING,
-            surface="tuning",
-            actor=current_username(request) or "",
-            result_summary=f"{event}: {detail}"[:500],
-        )
-    except Exception:  # noqa: BLE001
-        pass
+def _feed_parts(record: Any) -> tuple[str, str]:
+    """``(source_id, feed_id)`` of a severity-floor ledger key ``source:feed``."""
+    source_id, _sep, feed_id = str(record.rule_id).partition(":")
+    return source_id, feed_id
+
+
+def _tuning_field(record: Any) -> str:
+    """The settings field a tuning record moved, as the settings audit names it."""
+    if record.target == "severity_floor":
+        source_id, feed_id = _feed_parts(record)
+        return f"sources[{source_id}].feeds[{feed_id}].severity_floor"
+    return f"correlation_rules.{record.rule_id}.n"
+
+
+def _rollback_target(rid: str, record: Any) -> AuditTarget:
+    """A severity floor belongs to a source feed; a correlation threshold to a rule."""
+    if record.target == "severity_floor":
+        source_id, _feed_id = _feed_parts(record)
+        return AuditTarget(type="source", id=source_id or rid, label=rid)
+    return AuditTarget(type="rule", id=rid, label=rid)

@@ -1,21 +1,20 @@
-"""Global-search + audit-viewer routes — Round 5 (Coupling-E extraction).
+"""Global-search routes: Round 5 (Coupling-E extraction).
 
 A cohesive slice carved OUT of the ``routes.py`` monolith with **byte-identical
 paths, methods, auth dependencies, request/response bodies**. Handlers moved verbatim
 (imports re-homed); the router is mounted in ``main.py`` under the SAME ``require_auth``
 gate the monolith uses, so ``test_route_auth_coverage`` stays green.
 
-It owns two read-only operator surfaces:
+It owns one read-only operator surface:
 
 * ``GET /api/search`` — the command-palette / top-bar fuzzy jump (cases + sources +
   static nav targets). Gated on ``cases:read``.
-* ``GET /api/audit`` — bounded, read-only listing of the append-only audit (#2).
-  Gated on ``audit:view``.
 
-NON-NEGOTIABLES held: #9 — all matched case/source text and audit rows carry fenced
-UNTRUSTED log excerpts and are returned VERBATIM for the UI to render as PLAIN text.
-#2 — the audit index is append-only; this endpoint only reads ``records(...)`` and
-never mutates.
+The audit log read API (``GET /api/audit`` and its record and count routes) moved to
+``routes_audit.py`` in Round 14 with every old parameter keeping its meaning.
+
+NON-NEGOTIABLES held: #9, all matched case/source text carries operator/log data and
+is returned VERBATIM for the UI to render as PLAIN text.
 """
 
 from __future__ import annotations
@@ -42,14 +41,6 @@ class SearchResponse(BaseModel):
     cases: list[dict[str, Any]] = Field(default_factory=list)
     sources: list[dict[str, Any]] = Field(default_factory=list)
     nav: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class AuditListResponse(BaseModel):
-    """The audit-viewer envelope. ``records`` are append-only audit rows returned
-    verbatim (fenced UNTRUSTED excerpts rendered PLAIN by the UI, #9)."""
-
-    records: list[dict[str, Any]] = Field(default_factory=list)
-    total: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -163,41 +154,3 @@ async def global_search(
         "sources": source_hits,
         "nav": nav_hits,
     }
-
-
-# --------------------------------------------------------------------------- #
-# Audit viewer (W7c) — bounded, read-only listing of the append-only audit (#2).
-# --------------------------------------------------------------------------- #
-@router.get("/audit", response_model=AuditListResponse)
-async def list_audit(
-    actor: str | None = None,
-    action: str | None = None,
-    surface: str | None = None,
-    case_id: str | None = None,
-    source_id: str | None = None,
-    from_: str | None = Query(None, alias="from"),
-    to: str | None = None,
-    limit: int = 100,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("audit", "view")),
-) -> dict[str, Any]:
-    """Bounded, READ-ONLY list of the append-only audit records for the admin audit
-    viewer (W7c). Gated on ``audit:view`` (the auditor/admin grant). Reads the audit
-    repository's ``records(...)`` (#2 — never mutates; the index has no update/delete
-    path). NEWEST first, hard-capped. All text is returned verbatim for the UI to
-    render as PLAIN (#9 — audit rows carry fenced UNTRUSTED log excerpts)."""
-    cap = max(1, min(int(limit or 100), 500))
-    audit = getattr(state, "audit", None)
-    if audit is None:  # pragma: no cover — audit is always wired in real app/startup
-        return {"records": [], "total": 0}
-    rows = await audit.records(
-        actor=actor or None,
-        action_type=action or None,
-        surface=surface or None,
-        case_id=case_id or None,
-        source_id=source_id or None,
-        ts_from=from_ or None,
-        ts_to=to or None,
-        limit=cap,
-    )
-    return {"records": rows, "total": len(rows)}

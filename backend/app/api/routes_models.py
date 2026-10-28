@@ -37,7 +37,12 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ..audit.changes import diff_changes, redact_text, reduce_url
+from ..audit.context import audit_context
+from ..audit.settings_write import audited_settings_write
+from ..audit.write import audited_write
 from ..config import BudgetConfig, ModelConfig
+from ..constants import ActionType
 from ..llm.pricing import (
     EMBEDDING_CAPABILITY,
     base_url_for,
@@ -49,7 +54,9 @@ from ..llm.pricing import (
     registry_entry,
 )
 from ..llm.providers import classify_http_error
+from ..models import AuditChange, AuditTarget
 from ..state import AppState
+from ..stores.custom_models import _MAX_MODELS as _MAX_CUSTOM_MODELS
 from .deps import current_username, get_state, require_permission
 
 logger = logging.getLogger("tlsoc.api.models")
@@ -593,17 +600,32 @@ async def llm_model_pricing(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("models", "manage")),
 ) -> dict[str, Any]:
+    """Set an operator price override for one model. Audited before it is saved (#2,
+    Round 14 SPEC §3.6): a ``model.pricing_updated`` row with the old and new rates is
+    appended first, and a failed append answers ``503 audit_unavailable`` with nothing
+    saved."""
     mid = (model_id or "").strip()
     if not mid:
         raise HTTPException(status_code=400, detail="model id is required")
+    prior = await state.price_overlay.get_model(mid)
+    after = {"input": float(body.input_per_million), "output": float(body.output_per_million)}
     try:
-        row = await state.price_overlay.set_price(
-            mid, body.input_per_million, body.output_per_million,
+        row = await audited_write(
+            state, sink="control", action="model.pricing_updated",
+            target=_model_target(mid), expected_revision=None,
+            changes=diff_changes(_price_doc(prior), after, prefix="pricing"),
+            write=lambda: state.price_overlay.set_price(
+                mid, body.input_per_million, body.output_per_million,
+            ),
+            action_type=ActionType.USER_MGMT, actor=current_username(request) or "",
+            surface="models", context=audit_context(request),
+            result_summary=(
+                f"model_pricing_set: override {mid} -> in=${after['input']}/1M "
+                f"out=${after['output']}/1M"
+            )[:500],
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_safe(exc)) from exc
-    await _audit(state, request, "model_pricing_set",
-                 f"override {mid} -> in=${row['input']}/1M out=${row['output']}/1M")
     return {"ok": True, "model": _safe(mid), "pricing": row, "pricing_source": "exact"}
 
 
@@ -614,12 +636,36 @@ async def llm_model_pricing_delete(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("models", "manage")),
 ) -> dict[str, Any]:
+    """Clear one model's price override. Audited before it is removed (#2, Round 14
+    SPEC §3.6); a model without an override changes nothing and writes no row."""
     mid = (model_id or "").strip()
-    removed = await state.price_overlay.delete(mid)
-    if removed:
-        await _audit(state, request, "model_pricing_clear", f"cleared override for {mid}")
+    prior = await state.price_overlay.get_model(mid) if mid else None
+    removed = False
+    if prior is not None:
+        removed = await audited_write(
+            state, sink="control", action="model.pricing_cleared",
+            failure="model.pricing_clear_failed",
+            target=_model_target(mid), expected_revision=None,
+            changes=diff_changes(_price_doc(prior), {}, prefix="pricing"),
+            write=lambda: state.price_overlay.delete(mid),
+            action_type=ActionType.USER_MGMT, actor=current_username(request) or "",
+            surface="models", context=audit_context(request),
+            result_summary=f"model_pricing_clear: cleared override for {mid}"[:500],
+        )
     return {"ok": True, "model": _safe(mid), "removed": removed,
             "pricing_source": pricing_source(mid)}
+
+
+def _model_target(mid: str) -> AuditTarget:
+    """The audit target of a model setting: the model, named by its id."""
+    return AuditTarget(type="setting", id=f"model:{mid}", label=mid)
+
+
+def _price_doc(row: dict[str, Any] | None) -> dict[str, Any]:
+    """A stored override as the audit compares it (``{}`` without one)."""
+    if not row:
+        return {}
+    return {"input": row.get("input"), "output": row.get("output")}
 
 
 # --------------------------------------------------------------------------- #
@@ -691,32 +737,68 @@ async def add_custom_model(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("models", "manage")),
 ) -> dict[str, Any]:
+    """Register (or update) a self-hosted OpenAI-compatible model. Audited before it is
+    saved (#2, Round 14 SPEC §3.6): a ``model.added`` (or ``model.updated``) row with
+    the model's settings is appended first; an endpoint key is recorded by name only,
+    as a secret (#10). A failed append answers ``503 audit_unavailable`` with nothing
+    saved."""
     mid = _safe(body.model_id).strip()
     if not mid:
         raise HTTPException(status_code=400, detail="model_id is required")
     base_url = _validate_base_url(body.base_url)
     label = _safe(body.label).strip()
-    try:
-        row = await state.custom_models.add(
+    registered = await state.custom_models.get()
+    prior = registered.get(mid)
+    if prior is None and len(registered) >= _MAX_CUSTOM_MODELS:
+        raise HTTPException(
+            status_code=400, detail=f"too many custom models (max {_MAX_CUSTOM_MODELS})",
+        )
+    has_key = bool((body.api_key or "").strip())
+    proposed = {
+        "label": label or mid, "base_url": base_url, "provider": "openai_compatible",
+        "context_window": int(body.context_window or 0),
+    }
+    changes = _model_changes(prior, proposed)
+    if has_key:
+        changes.append(AuditChange(
+            field="secrets.litellm_api_key", before=None, after=None, secret=True,
+        ))
+
+    async def _register() -> dict[str, Any]:
+        stored = await state.custom_models.add(
             mid, label=label, base_url=base_url, provider="openai_compatible",
             context_window=int(body.context_window or 0),
         )
+        # Belt-and-suspenders $0: a $0 PriceOverlay so cost_for meters a real $0 (the
+        # store row + the gateway's _effective_price_tuple are the other belts).
+        # Best-effort.
+        try:
+            await state.price_overlay.set_price(mid, 0.0, 0.0)
+        except Exception as exc:  # noqa: BLE001 (the store row and the gateway fallback still guarantee $0)
+            logger.warning("setting $0 overlay for custom model %s failed (%s)", mid, exc)
+        # The optional endpoint key → the SECRET tier (in-memory), NEVER the config store.
+        if has_key:
+            try:
+                await state.apply_secrets({"litellm_api_key": body.api_key.strip()})
+            except Exception as exc:  # noqa: BLE001 (the model is still added; the key can be set again)
+                logger.warning("storing litellm_api_key failed (%s)", exc)
+        return stored
+
+    try:
+        row = await audited_write(
+            state, sink="control", action="model.updated" if prior else "model.added",
+            failure="model.update_failed" if prior else "model.add_failed",
+            target=_model_target(mid), expected_revision=None, changes=changes,
+            write=_register, action_type=ActionType.USER_MGMT,
+            actor=current_username(request) or "", surface="models",
+            context=audit_context(request),
+            result_summary=(
+                f"custom_model_add: added {mid} @ {_url_for_audit(base_url)} "
+                "(provider=openai_compatible, $0)"
+            )[:500],
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=_safe(exc)) from exc
-    # Belt-and-suspenders $0: a $0 PriceOverlay so cost_for meters a real $0 (the store
-    # row + the gateway's _effective_price_tuple are the other belts). Best-effort.
-    try:
-        await state.price_overlay.set_price(mid, 0.0, 0.0)
-    except Exception as exc:  # noqa: BLE001 — the store row + gateway fallback still guarantee $0
-        logger.warning("setting $0 overlay for custom model %s failed (%s)", mid, exc)
-    # The optional endpoint key → the SECRET tier (in-memory), NEVER the config store.
-    if (body.api_key or "").strip():
-        try:
-            await state.apply_secrets({"litellm_api_key": body.api_key.strip()})
-        except Exception as exc:  # noqa: BLE001 — model still added; key can be re-set
-            logger.warning("storing litellm_api_key failed (%s)", exc)
-    await _audit(state, request, "custom_model_add",
-                 f"added {mid} @ {base_url} (provider=openai_compatible, $0)")
     return {"ok": True, "model": row, "configured": state.secrets.configured_status()}
 
 
@@ -727,16 +809,77 @@ async def remove_custom_model(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("models", "manage")),
 ) -> dict[str, Any]:
+    """Remove a registered self-hosted model. Audited before it is removed (#2, Round
+    14 SPEC §3.6); an unknown model changes nothing and writes no row."""
     mid = _safe(model_id).strip()
-    removed = await state.custom_models.remove(mid)
-    if removed:
-        # Clear its $0 overlay so the id is fully forgotten (best-effort).
-        try:
-            await state.price_overlay.delete(mid)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("clearing overlay for removed custom model %s failed (%s)", mid, exc)
-        await _audit(state, request, "custom_model_remove", f"removed {mid}")
+    prior = await state.custom_models.get_model(mid) if mid else None
+    if prior is None:
+        return {"ok": True, "model": _safe(mid), "removed": False}
+
+    async def _remove() -> bool:
+        removed = await state.custom_models.remove(mid)
+        if removed:
+            # Clear its $0 overlay so the id is fully forgotten (best-effort).
+            try:
+                await state.price_overlay.delete(mid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("clearing overlay for removed custom model %s failed (%s)", mid, exc)
+        return removed
+
+    removed = await audited_write(
+        state, sink="control", action="model.removed", failure="model.remove_failed",
+        target=_model_target(mid),
+        expected_revision=None,
+        changes=_model_changes(prior, None),
+        write=_remove, action_type=ActionType.USER_MGMT,
+        actor=current_username(request) or "", surface="models",
+        context=audit_context(request),
+        result_summary=f"custom_model_remove: removed {mid}"[:500],
+    )
     return {"ok": True, "model": _safe(mid), "removed": removed}
+
+
+#: The fields of a self-hosted model a ``model.*`` row records (never its key).
+_MODEL_AUDIT_KEYS = ("label", "base_url", "provider", "context_window")
+
+
+def _endpoint_for_audit(url: str) -> tuple[str, bool]:
+    """``(recorded, removed)``: a model endpoint as the audit log may hold it, reduced
+    to scheme, host and port like every other address (SPEC §4.5.3), because an
+    OpenAI-compatible proxy may carry its key in the path or the query
+    (``?api-key=...``) as well as in ``user:password@``. ``removed`` is true when
+    anything was left out."""
+    reduced, cut = reduce_url(url)
+    text, redacted = redact_text(reduced)
+    return text, cut or redacted
+
+
+def _url_for_audit(url: str) -> str:
+    """A model endpoint as an audit summary may show it (see :func:`_endpoint_for_audit`)."""
+    return _endpoint_for_audit(url)[0]
+
+
+def _model_changes(
+    before: dict[str, Any] | None, after: dict[str, Any] | None,
+) -> list[AuditChange]:
+    """The recorded change set of a self-hosted model: every changed field under
+    ``custom_model.``, the endpoint reduced by :func:`_endpoint_for_audit` and marked
+    ``secret`` when anything was left out of it. An endpoint whose only change is in a
+    withheld part (a rotated query key) is still recorded as changed, with the same
+    reduced value on both sides and ``secret`` set."""
+    old = {k: (before or {}).get(k) for k in _MODEL_AUDIT_KEYS} if before else {}
+    new = {k: (after or {}).get(k) for k in _MODEL_AUDIT_KEYS} if after else {}
+    old_url, new_url = old.pop("base_url", None), new.pop("base_url", None)
+    changes = diff_changes(old, new, prefix="custom_model")
+    if (old_url or None) != (new_url or None):
+        recorded_old, cut_old = _endpoint_for_audit(str(old_url)) if old_url else (None, False)
+        recorded_new, cut_new = _endpoint_for_audit(str(new_url)) if new_url else (None, False)
+        changes.append(AuditChange(
+            field="custom_model.base_url", before=recorded_old, after=recorded_new,
+            secret=cut_old or cut_new,
+        ))
+        changes.sort(key=lambda change: change.field)
+    return changes
 
 
 class ProviderTestBody(BaseModel):
@@ -847,13 +990,20 @@ async def put_budget(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("models", "manage")),
 ) -> dict[str, Any]:
-    await state.mutate_prefs(
-        lambda current: current.model_copy(update={"budget": body})
-    )
-    await _audit(
-        state, request, "budget_update",
-        f"budget enabled={body.enabled} daily=${body.daily_usd} "
-        f"monthly=${body.monthly_usd} on_exceed={body.on_exceed}",
+    """Replace the cost-budget ceiling config. Audited before it is saved (#2, Round 14
+    SPEC §3.6): a ``settings.updated`` row naming every changed field is appended first,
+    and a failed append answers ``503 audit_unavailable`` with nothing saved. The budget
+    is real tenant state, so the row always goes to the real audit log (SPEC §3.5)."""
+    await audited_settings_write(
+        state,
+        transform=lambda current: current.model_copy(update={"budget": body}),
+        actor=current_username(request) or "", context=audit_context(request),
+        summary=(
+            f"budget_update: budget enabled={body.enabled} daily=${body.daily_usd} "
+            f"monthly=${body.monthly_usd} on_exceed={body.on_exceed}"
+        )[:500],
+        action_type=ActionType.USER_MGMT, surface="models",
+        target=AuditTarget(type="setting", id="budget", label="AI budget"),
     )
     return {"ok": True, "budget": body.model_dump(mode="json")}
 
@@ -881,25 +1031,3 @@ def _budget_gate(state: AppState):
 
     usage = getattr(state, "_real_usage_store", None) or getattr(state, "usage", None)
     return BudgetGate(get_budget=lambda: getattr(state.prefs, "budget", None), usage_store=usage)
-
-
-async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
-    """Append-only audit of a models/budget config mutation (#2). Best-effort.
-
-    Uses ``USER_MGMT`` with ``surface="models"`` — the established action type for an
-    operator settings-scope mutation (constants.py is frozen this wave, so no new
-    ActionType is introduced). The actor is the authenticated username when present."""
-    audit = getattr(state, "control_audit", None)
-    if audit is None:
-        return
-    try:
-        from ..constants import ActionType
-
-        await audit.record(
-            action_type=ActionType.USER_MGMT,
-            surface="models",
-            actor=current_username(request) or "",
-            result_summary=f"{event}: {detail}"[:500],
-        )
-    except Exception:  # noqa: BLE001
-        pass

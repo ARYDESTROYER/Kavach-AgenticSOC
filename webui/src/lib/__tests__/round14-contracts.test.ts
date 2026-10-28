@@ -121,6 +121,8 @@ const BREAKDOWN_EXAMPLE: MetricsBreakdown = {
   ],
   buckets: [],
   other: { count: 210, groups: 37, calls: null, cost_usd: null },
+  missing_created: 0,
+  missing_in_total: true,
 };
 
 const RULE_SUMMARY_EXAMPLE: RuleSummary = {

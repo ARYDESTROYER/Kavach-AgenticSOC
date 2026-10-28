@@ -73,9 +73,10 @@ def test_server_allowlist_matches_canonical_contract() -> None:
     )
 
 
-def test_contract_file_is_the_expected_nine() -> None:
+def test_contract_file_is_the_expected_twenty_five() -> None:
     """A tripwire so adding/removing a widget forces a conscious update of the contract
-    (and thus both allowlists). Mirrors the webui contract test's expected list."""
+    (and thus both allowlists). Mirrors the webui contract test's expected list. Round 14
+    (SPEC §4.4.3) added the sixteen modules of the built-in boards."""
     assert _canonical_types() == {
         "kpi.needs_human",
         "kpi.cost_budget",
@@ -86,7 +87,41 @@ def test_contract_file_is_the_expected_nine() -> None:
         "table.recent_cases",
         "mitre.heatmap",
         "gauge.active_risk",
+        # Round 14
+        "kpi.strip",
+        "kpi.auto_close_health",
+        "kpi.agent_quality",
+        "chart.case_trend",
+        "chart.case_breakdown",
+        "chart.severity_trend",
+        "chart.backlog_aging",
+        "chart.noise_funnel",
+        "table.attention_queue",
+        "table.workload",
+        "table.sla_breaches",
+        "table.top_rules",
+        "table.noisy_rules",
+        "table.top_techniques",
+        "table.campaigns",
+        "table.telemetry_gaps",
     }
+
+
+def test_contract_file_lists_each_type_once() -> None:
+    """A duplicate in the committed list could hide a one-sided divergence."""
+    data = json.loads(_CONTRACT_PATH.read_text(encoding="utf-8"))
+    assert len(data["widget_types"]) == len(set(data["widget_types"]))
+
+
+def test_every_client_registry_entry_matches_the_contract() -> None:
+    """The client union in ``registry.ts`` names exactly the contract set (the webui
+    contract test checks the runtime registry; this reads the source so a backend-only
+    run also catches a one-sided edit of the union)."""
+    import re
+
+    registry = (_CONTRACT_PATH.parent / "registry.ts").read_text(encoding="utf-8")
+    union = registry.split("export type WidgetType =", 1)[1].split(";", 1)[0]
+    assert set(re.findall(r"\|\s*'([a-z_.]+)'", union)) == _canonical_types()
 
 
 # --------------------------------------------------------------------------- #

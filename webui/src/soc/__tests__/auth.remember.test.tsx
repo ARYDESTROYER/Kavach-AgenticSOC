@@ -6,7 +6,9 @@
  *    reports `authenticated:false` with a `reason`, the provider drops to the
  *    sign-in page and the page explains why (App → Login, real wiring).
  *  - `sessionEnded` is derived from the server reason and cleared by a deliberate
- *    sign-out, which also drops the device's "remembered until" marker.
+ *    sign-out, which also drops the device's "remembered until" marker. Round 14
+ *    (SPEC §4.1): it never carries the session's length; the server still sends
+ *    `lifetime_seconds` (D2) and the console ignores it.
  *  - A single sign-on landing that carries `remember_refused` explains it once with
  *    a toast and removes the parameter from the address bar.
  */
@@ -150,11 +152,10 @@ describe('AuthProvider — registry-aware /auth/me', () => {
     await act(async () => {
       await probe?.refresh();
     });
-    expect(probe?.sessionEnded).toEqual({
-      reason: 'absolute_expired',
-      lifetimeSeconds: 86_400,
-      remembered: true,
-    });
+    expect(probe?.sessionEnded).toEqual({ reason: 'absolute_expired', remembered: true });
+    // The server's `lifetime_seconds` never reaches the sign-in page.
+    expect(Object.keys(probe?.sessionEnded ?? {})).not.toContain('lifetimeSeconds');
+    expect(JSON.stringify(probe?.sessionEnded)).not.toContain('86400');
     // Signing in again clears it.
     meMock.mockResolvedValue(SIGNED_IN);
     await act(async () => {
@@ -213,5 +214,25 @@ describe('App — a lapsed session lands on sign-in with a calm notice', () => {
         'For your security, you were signed out after a period of inactivity. Sign in to continue.',
       ),
     ).toBeInTheDocument();
+  });
+
+  it('never states how long a session that reached its time limit lasted (Round 14 SPEC §4.1)', async () => {
+    // The server still reports the limit (D2); the console does not show it.
+    meMock.mockResolvedValue({
+      auth_enabled: true,
+      authenticated: false,
+      user: null,
+      reason: 'absolute_expired',
+      lifetime_seconds: 86_400,
+      remembered: true,
+    });
+    render(<App />);
+    expect(await screen.findByLabelText('Username')).toBeInTheDocument();
+    const notice = await screen.findByText(
+      'For your security, you were signed out. Sign in to continue.',
+    );
+    const region = notice.closest('[data-login-notice-region]');
+    expect(region).not.toBeNull();
+    expect(region?.textContent ?? '').not.toMatch(/\d|hours?|minutes?|days?|weeks?/i);
   });
 });

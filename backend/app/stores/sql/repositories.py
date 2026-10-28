@@ -25,10 +25,13 @@ from sqlalchemy import (
     and_,
     cast,
     delete,
+    false,
     func,
+    literal,
     or_,
     select,
     text,
+    true,
     update,
 )
 from sqlalchemy.exc import IntegrityError
@@ -47,22 +50,33 @@ from ...constants import (
     OPEN_CASE_STATUSES,
     SourceSurface,
 )
-from ...models import AuditDoc, Case, Cursor, UsageDoc
+from ...models import (
+    AuditChange,
+    AuditClient,
+    AuditDoc,
+    AuditRecordRef,
+    AuditTarget,
+    Case,
+    Cursor,
+    UsageDoc,
+)
 from ...realtime import publish_case_changed
 from ...utils import (
     now_utc,
     parse_es_timestamp,
     relative_to_iso_utc_strict,
     to_millis,
-    truncate,
 )
 from ..base import (
+    AuditHit,
     AuditRepository,
+    AuditSearchPage,
     CaseRepository,
     ConfigRepository,
     CursorRepository,
     KVStore,
     UsageRepository,
+    build_audit_doc_best_effort,
     status_group_statuses,
     window_bounds_proven,
 )
@@ -1220,6 +1234,62 @@ async def _sql_usage_pushdown(sessionmaker: Any, spec: Any) -> Any | None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# The audit read predicate (``app.audit.query``) as a SQL expression. Every leaf is
+# two-valued (``IS NOT NULL AND ...``), so ``NOT`` means what it means in Python and
+# Elasticsearch: a row without the field does not match ``Eq`` and does match
+# ``Not(Eq)``. Real columns are used where they exist (``ts``, ``action_type``,
+# ``case_id``); everything else is read from the JSON document.
+# --------------------------------------------------------------------------- #
+def _audit_field(name: str) -> Any:
+    if name == "action_type":
+        return AuditRow.action_type
+    if name == "case_id":
+        return AuditRow.case_id
+    path = tuple(name.split("."))
+    return (AuditRow.doc[path[0]] if len(path) == 1 else AuditRow.doc[path]).as_string()
+
+
+def _like_escape(text_value: str) -> str:
+    return text_value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _audit_sql(pred: Any) -> Any:
+    from ...audit.events import ascii_lower
+    from ...audit.query import And, Contains, Eq, In, Not, Or, Prefix, Present, TsRange
+
+    if isinstance(pred, And):
+        return and_(*(_audit_sql(i) for i in pred.items)) if pred.items else true()
+    if isinstance(pred, Or):
+        return or_(*(_audit_sql(i) for i in pred.items)) if pred.items else false()
+    if isinstance(pred, Not):
+        return ~_audit_sql(pred.item)
+    if isinstance(pred, TsRange):
+        clauses = []
+        if pred.gte is not None:
+            clauses.append(AuditRow.ts >= pred.gte.astimezone(timezone.utc).isoformat())
+        if pred.lte is not None:
+            clauses.append(AuditRow.ts <= pred.lte.astimezone(timezone.utc).isoformat())
+        return and_(*clauses) if clauses else true()
+    expr = _audit_field(pred.field)
+    present = expr.is_not(None)
+    if isinstance(pred, Present):
+        return present
+    if isinstance(pred, Eq):
+        return and_(present, expr == pred.value)
+    if isinstance(pred, In):
+        return and_(present, expr.in_(list(pred.values))) if pred.values else false()
+    if isinstance(pred, Prefix):
+        return and_(present, func.substr(expr, 1, len(pred.prefix)) == pred.prefix)
+    if isinstance(pred, Contains):
+        # Both sides are lowered by the database, so the folding is the same on both:
+        # ASCII on SQLite (as the Python reference), Unicode on PostgreSQL. The needle
+        # is ASCII-lowered first so SQLite and the reference agree byte for byte.
+        pattern = f"%{_like_escape(ascii_lower(pred.text))}%"
+        return and_(present, func.lower(expr).like(func.lower(literal(pattern)), escape="\\"))
+    raise TypeError(f"not an audit predicate: {pred!r}")
+
+
 class SqlAuditRepository(AuditRepository):
     """Append-only audit log. INSERT only — no update/delete path exists."""
 
@@ -1298,23 +1368,47 @@ class SqlAuditRepository(AuditRepository):
         tool_input: Any = None,
         tool_output_summary: str | None = None,
         result_summary: str | None = None,
+        outcome: str | None = None,
+        actor_type: str | None = None,
+        action: str | None = None,
+        actor_role: str | None = None,
+        client: AuditClient | dict[str, Any] | None = None,
+        session_ref: str | None = None,
+        target: AuditTarget | dict[str, Any] | None = None,
+        changes: list[AuditChange | dict[str, Any]] | None = None,
+        request_id: str | None = None,
+        run_id: str | None = None,
     ) -> None:
-        await self.write(
-            AuditDoc(
+        try:
+            doc = build_audit_doc_best_effort(
                 action_type=action_type,
                 surface=surface,
                 actor=actor,
                 case_id=case_id,
                 source_id=source_id,
                 model=model,
-                prompt_excerpt=truncate(prompt_excerpt, 1000) if prompt_excerpt else None,
+                prompt_excerpt=prompt_excerpt,
                 query_text=query_text,
                 tool_name=tool_name,
                 tool_input=tool_input,
-                tool_output_summary=truncate(tool_output_summary, 1000) if tool_output_summary else None,
-                result_summary=truncate(result_summary, 1000) if result_summary else None,
+                tool_output_summary=tool_output_summary,
+                result_summary=result_summary,
+                outcome=outcome,
+                actor_type=actor_type,
+                action=action,
+                actor_role=actor_role,
+                client=client,
+                session_ref=session_ref,
+                target=target,
+                changes=changes,
+                request_id=request_id,
+                run_id=run_id,
             )
-        )
+        except Exception as exc:  # noqa: BLE001 (best effort: never raise into the caller)
+            logger.error("AUDIT WRITE FAILED (action=%s case=%s): invalid row: %s",
+                         action_type, case_id, exc)
+            return
+        await self.write(doc)
 
     async def records_for_case(self, case_id: str, limit: int = 500) -> list[dict[str, Any]]:
         """Newest bounded audit rows, returned oldest-first for the trace timeline."""
@@ -1336,28 +1430,23 @@ class SqlAuditRepository(AuditRepository):
 
     async def records_for_actor(self, actor: str, limit: int = 50) -> list[dict[str, Any]]:
         """Recent audit rows attributed to ``actor`` (NEWEST first) — the per-user
-        account-activity feed (Wave 3). ``actor`` lives inside the JSON ``doc`` (not a
-        column), so we scan a bounded recent window (ts desc) and filter in Python —
-        cross-dialect + correct on SQLite + Postgres. Never raises."""
+        account-activity feed (Wave 3). ``actor`` lives inside the JSON ``doc``; the
+        filter is pushed into SQL through a JSON accessor (Round 14), so a sparse
+        actor's rows are found however far back they are. Never raises."""
+        from ...audit.query import Eq
+
         if not actor:
             return []
-        scan = max(limit * 20, 500)
         stmt = (
             select(AuditRow)
+            .where(_audit_sql(Eq("actor", actor)))
             .order_by(AuditRow.ts.desc(), AuditRow.id.desc())
-            .limit(scan)
+            .limit(max(1, int(limit)))
         )
         try:
             async with self._sm() as session:
                 rows = (await session.execute(stmt)).scalars().all()
-            out: list[dict[str, Any]] = []
-            for r in rows:
-                doc = r.doc or {}
-                if str(doc.get("actor", "")) == actor:
-                    out.append(doc)
-                    if len(out) >= limit:
-                        break
-            return out
+            return [r.doc or {} for r in rows]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Audit read for actor %s failed: %s", actor, exc)
             return []
@@ -1376,59 +1465,142 @@ class SqlAuditRepository(AuditRepository):
     ) -> list[dict[str, Any]]:
         """Filtered, bounded listing for the admin audit viewer (W7c), NEWEST first.
 
-        ``action_type`` + ``case_id`` are real columns (pushed into SQL); ``actor`` +
-        ``surface`` + ``source_id`` (A5.3) live inside the JSON ``doc``, so we bound-scan a
-        recent ts window and filter those in Python (cross-dialect, correct on SQLite +
-        Postgres). The ``ts`` range is applied in SQL on the column. Read-only; never
-        raises."""
-        base = select(AuditRow)
-        if action_type:
-            base = base.where(AuditRow.action_type == action_type)
-        if case_id:
-            base = base.where(AuditRow.case_id == case_id)
-        if ts_from:
-            base = base.where(AuditRow.ts >= ts_from)
-        if ts_to:
-            base = base.where(AuditRow.ts <= ts_to)
-        base = base.order_by(AuditRow.ts.desc(), AuditRow.id.desc())
+        ``action_type``, ``case_id`` and the ``ts`` range use their real columns;
+        ``actor``, ``surface`` and ``source_id`` (A5.3) live inside the JSON ``doc``
+        and are pushed into SQL through JSON accessors (Round 14 SPEC §4.5.3) instead
+        of the former paged Python scan, so the result is exact at any depth.
+        Read-only; never raises."""
+        from ...audit.query import Eq, all_of
 
-        # actor/surface/source_id live inside the JSON doc → filtered in Python. A single
-        # fixed scan window could return FEWER than ``limit`` matches even when more exist
-        # further back (a sparse actor's rows fall outside the window), silently
-        # under-returning (audit #40). PAGE the ts-descending scan until ``limit`` matches
-        # are collected or the (ts-bounded) table is exhausted; a page-count backstop
-        # bounds a pathological scan.
-        json_filtered = bool(actor or surface or source_id)
-        page_size = max(limit * 20, 500) if json_filtered else limit
-        max_pages = 200
-        out: list[dict[str, Any]] = []
-        offset = 0
+        parts = [
+            Eq(name, value)
+            for name, value in (("actor", actor), ("surface", surface), ("source_id", source_id))
+            if value
+        ]
+        where = [_audit_sql(all_of(*parts))]
+        if action_type:
+            where.append(AuditRow.action_type == action_type)
+        if case_id:
+            where.append(AuditRow.case_id == case_id)
+        if ts_from:
+            where.append(AuditRow.ts >= ts_from)
+        if ts_to:
+            where.append(AuditRow.ts <= ts_to)
+        stmt = (
+            select(AuditRow)
+            .where(and_(*where))
+            .order_by(AuditRow.ts.desc(), AuditRow.id.desc())
+            .limit(max(1, int(limit)))
+        )
         try:
             async with self._sm() as session:
-                for _ in range(max_pages):
-                    rows = (await session.execute(
-                        base.limit(page_size).offset(offset)
-                    )).scalars().all()
-                    if not rows:
-                        break
-                    for r in rows:
-                        doc = r.doc or {}
-                        if actor and str(doc.get("actor", "")) != actor:
-                            continue
-                        if surface and str(doc.get("surface", "")) != surface:
-                            continue
-                        if source_id and str(doc.get("source_id", "")) != source_id:
-                            continue
-                        out.append(doc)
-                        if len(out) >= limit:
-                            return out
-                    if len(rows) < page_size:
-                        break  # table exhausted within the ts window
-                    offset += len(rows)
-            return out
+                rows = (await session.execute(stmt)).scalars().all()
+            return [r.doc or {} for r in rows]
         except Exception as exc:  # noqa: BLE001
             logger.warning("Audit records read failed: %s", exc)
             return []
+
+    # ------------------------------------------------------------------ #
+    # Round 14 read API (SPEC §4.5.5): filters pushed into SQL through JSON
+    # accessors (no Python scan, no migration), keyset pages on ``(ts, id)`` and
+    # exact counts.
+    # ------------------------------------------------------------------ #
+    async def search_page(
+        self,
+        predicate: Any,
+        *,
+        order: str = "desc",
+        limit: int = 50,
+        cursor: Any = None,
+        track_total: int = 10_000,
+    ) -> AuditSearchPage:
+        """Keyset page on ``(ts, id)`` (both orders) with an exact total.
+
+        ``cursor`` is ``{"ts": <ts>, "id": <row id>, "hw": <time>}`` of the last row
+        already shown. ``hw`` is the read's snapshot: the newest row time when its
+        first page was read. Every page, its total and its per-run totals are bounded
+        by it, so rows appended while a person pages (in either order) neither shift
+        the pages nor change the total, as an Elasticsearch point-in-time behaves. A
+        row committed later with an older time than ``hw`` can still appear (a
+        clock-skewed or retried keyed append); that is the documented limit."""
+        size = max(1, min(int(limit or 50), 1000))
+        ascending = order == "asc"
+        state = dict(cursor) if isinstance(cursor, dict) else {}
+        async with self._sm() as session:
+            if "hw" not in state:
+                state["hw"] = (await session.execute(select(func.max(AuditRow.ts)))).scalar()
+            where = self._within_snapshot(_audit_sql(predicate), state)
+            keyset = where
+            if "ts" in state and "id" in state:
+                try:
+                    last_ts, last_id = str(state["ts"]), int(state["id"])
+                except (TypeError, ValueError):
+                    last_ts, last_id = None, None
+                if last_ts is not None:
+                    if ascending:
+                        after = or_(AuditRow.ts > last_ts, and_(AuditRow.ts == last_ts, AuditRow.id > last_id))
+                    else:
+                        after = or_(AuditRow.ts < last_ts, and_(AuditRow.ts == last_ts, AuditRow.id < last_id))
+                    keyset = and_(where, after)
+            ordering = (
+                (AuditRow.ts.asc(), AuditRow.id.asc()) if ascending else (AuditRow.ts.desc(), AuditRow.id.desc())
+            )
+            stmt = select(AuditRow).where(keyset).order_by(*ordering).limit(size + 1)
+            rows = list((await session.execute(stmt)).scalars().all())
+            total = int((await session.execute(
+                select(func.count()).select_from(AuditRow).where(where)
+            )).scalar() or 0)
+        more = len(rows) > size
+        hw = state["hw"]
+        hits = [
+            AuditHit("sql", int(row.id), None, dict(row.doc or {}), {"ts": row.ts, "id": int(row.id), "hw": hw})
+            for row in rows[:size]
+        ]
+        return AuditSearchPage(hits=hits, total=total, relation="eq", exhausted=not more, start=state)
+
+    @staticmethod
+    def _within_snapshot(where: Any, snapshot: Any) -> Any:
+        """``where`` bounded by a read's high-water time (no bound for a read of an
+        empty table, or without a snapshot)."""
+        hw = snapshot.get("hw") if isinstance(snapshot, dict) else None
+        return and_(where, AuditRow.ts <= str(hw)) if hw is not None else where
+
+    async def count_matching(self, predicate: Any, *, cap: int) -> tuple[int, str]:
+        """Exact up to ``cap``: counts at most ``cap + 1`` matching rows."""
+        cap = max(1, int(cap))
+        inner = select(AuditRow.id).where(_audit_sql(predicate)).limit(cap + 1).subquery()
+        async with self._sm() as session:
+            count = int((await session.execute(select(func.count()).select_from(inner))).scalar() or 0)
+        if count > cap:
+            return cap, "gte"
+        return count, "eq"
+
+    async def run_totals(
+        self, predicate: Any, run_ids: list[str], *, snapshot: Any = None,
+    ) -> dict[str, int]:
+        """Per run id, its matching rows, inside the page's high-water ``snapshot``
+        when one is given (the same bound as the page and its total)."""
+        wanted = sorted({r for r in run_ids if isinstance(r, str) and r})
+        if not wanted:
+            return {}
+        run_expr = AuditRow.doc["run_id"].as_string()
+        stmt = (
+            select(run_expr, func.count())
+            .where(and_(self._within_snapshot(_audit_sql(predicate), snapshot), run_expr.in_(wanted)))
+            .group_by(run_expr)
+        )
+        async with self._sm() as session:
+            pairs = (await session.execute(stmt)).all()
+        return {str(run): int(count) for run, count in pairs if run is not None and count}
+
+    async def get_record(self, ref: AuditRecordRef) -> AuditHit | None:
+        if ref.store != "sql" or not isinstance(ref.ref, int):
+            return None
+        async with self._sm() as session:
+            row = await session.get(AuditRow, ref.ref)
+        if row is None:
+            return None
+        return AuditHit("sql", int(row.id), None, dict(row.doc or {}), None)
 
     async def export_page(
         self, *, limit: int = 1000, cursor: Any = None,

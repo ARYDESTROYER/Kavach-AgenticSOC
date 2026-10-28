@@ -26,6 +26,7 @@ from app.config import Secrets
 from app.constants import ActionType
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
+from app.middleware.request_id import RequestIdMiddleware
 from app.models import AuditDoc
 from app.state import AppState
 
@@ -84,6 +85,9 @@ def _export_app(
         )
     else:
         api.include_router(routes_export.router)
+    # The production request-id middleware (``main.py``), so audit rows carry the id
+    # the response echoes (Round 14 SPEC §4.5.3).
+    api.add_middleware(RequestIdMiddleware)
     return api, holder
 
 
@@ -1040,8 +1044,11 @@ def test_archive_audit_records_actor_and_counts_only_after_integrity_verificatio
         real_record = state.control_audit.record_strict
 
         async def capture_audit(*args: Any, **kwargs: Any) -> Any:
-            order.append("audited")
-            audit_calls.append(dict(kwargs))
+            # Sign-in and session rows are strict appends too (Round 14 SPEC §4.5.4);
+            # this test pins the export row only.
+            if kwargs.get("action_type") == ActionType.DATA_EXPORT:
+                order.append("audited")
+                audit_calls.append(dict(kwargs))
             return await real_record(*args, **kwargs)
 
         state.control_audit.record_strict = capture_audit  # type: ignore[method-assign]
@@ -1077,6 +1084,15 @@ def test_archive_audit_records_actor_and_counts_only_after_integrity_verificatio
         f"prepared archive scopes=configuration records=configuration={exported} "
     )
     assert " complete=true bytes=" in audit_calls[0]["result_summary"]
+    # Round 14 record fields (SPEC §4.5.3): the delivery row names its action, outcome,
+    # the requester's role, session and request, and the exported scopes as target.
+    row = audit_calls[0]
+    assert row["action"] == "export.downloaded" and row["outcome"] == "success"
+    assert row["actor_type"] == "human" and row["actor_role"] == "super_admin"
+    assert row["session_ref"] and row["request_id"] == response.headers["X-Request-ID"]
+    assert row["target"].type == "export" and row["target"].id == "configuration"
+    assert row["tool_input"]["format"] == "zip"
+    assert row["tool_input"]["records"] == {"configuration": exported}
     assert not archive_path.exists()
     _assert_archive_slot_free()
 

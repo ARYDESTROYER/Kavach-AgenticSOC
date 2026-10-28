@@ -23,12 +23,12 @@ const loadRememberDevice = () => import('@/soc/components/auth/rememberMe');
 
 /**
  * Why the previous session ended, as reported by the registry-aware
- * GET /api/auth/me (Round 12). The sign-in page turns it into a calm notice.
+ * GET /api/auth/me (Round 12). The sign-in page turns it into a calm notice that
+ * never states how long the session lasted (Round 14 SPEC §4.1), so the server's
+ * `lifetime_seconds` is not carried here.
  */
 export interface SessionEnded {
   reason: SessionEndReason;
-  /** The limit that ended it, in seconds, when known. */
-  lifetimeSeconds?: number;
   /** Whether the ended session had been remembered. */
   remembered?: boolean;
 }
@@ -108,7 +108,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // reason until someone signs in again or signs out on purpose.
     setMe((prev) =>
       next && !next.authenticated && !next.reason && prev?.reason && !prev.authenticated
-        ? { ...next, reason: prev.reason, lifetime_seconds: prev.lifetime_seconds, remembered: prev.remembered }
+        ? { ...next, reason: prev.reason, remembered: prev.remembered }
         : next,
     );
     setLoadError(meFailed);
@@ -160,7 +160,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       /* drop to unauthenticated regardless */
     }
     // A deliberate sign-out is not an expiry: the sign-in page must not later say
-    // "you were signed out after 24 hours".
+    // the session ended on its own.
     void loadRememberDevice().then((m) => m.clearRememberedSessionEnd(), () => undefined);
     setMe((prev) => (prev ? { auth_enabled: prev.auth_enabled, authenticated: false, user: null } : prev));
     setMatrix(EMPTY_MATRIX);
@@ -172,11 +172,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const isAuthenticated = !authEnabled || Boolean(me?.authenticated);
   const endedReason = authEnabled && !me?.authenticated ? me?.reason : undefined;
   const sessionEnded = React.useMemo<SessionEnded | null>(
-    () =>
-      endedReason
-        ? { reason: endedReason, lifetimeSeconds: me?.lifetime_seconds, remembered: me?.remembered }
-        : null,
-    [endedReason, me?.lifetime_seconds, me?.remembered],
+    () => (endedReason ? { reason: endedReason, remembered: me?.remembered } : null),
+    [endedReason, me?.remembered],
   );
   const role = me?.user?.role ?? null;
   const username = me?.user?.username ?? null;

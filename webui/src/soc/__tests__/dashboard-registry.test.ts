@@ -21,6 +21,7 @@ import {
   buildDefaultWidgets,
   ROLE_DEFAULT_WIDGETS,
   ALLOW_ALL,
+  PENDING_WIDGET_TYPES,
   type WidgetType,
   type PermissionCheck,
 } from '@/soc/dashboard/registry';
@@ -51,7 +52,29 @@ describe('widget registry', () => {
       expect(def.defaultSize.h).toBeGreaterThan(0);
       expect(def.defaultSize.minW).toBeLessThanOrEqual(def.defaultSize.w);
       expect(def.defaultSize.minH).toBeLessThanOrEqual(def.defaultSize.h);
-      expect(def.sources.length).toBeGreaterThan(0);
+      // A real body names the shared sources it reads (they drive the fetch pre-warm).
+      // A Round 14 stub (SPEC §4.4.1) reads nothing until WP-W4c lands its body, which
+      // takes the type out of PENDING_WIDGET_TYPES and puts it under the first rule.
+      const pending = PENDING_WIDGET_TYPES.has(def.type);
+      expect(def.sources.length > 0, `${def.type} sources`).toBe(!pending);
+    }
+  });
+
+  it('only Round 14 module types can be pending, never a shipped widget', () => {
+    const shipped = [
+      'kpi.needs_human',
+      'kpi.cost_budget',
+      'chart.verdict_mix',
+      'chart.autonomous_vs_human',
+      'kpi.lifecycle_timing',
+      'table.connector_health',
+      'table.recent_cases',
+      'mitre.heatmap',
+      'gauge.active_risk',
+    ] as const;
+    for (const t of shipped) {
+      expect(PENDING_WIDGET_TYPES.has(t), t).toBe(false);
+      expect(WIDGET_REGISTRY.get(t)!.sources.length, t).toBeGreaterThan(0);
     }
   });
 });

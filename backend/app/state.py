@@ -513,6 +513,14 @@ class AppState:
         return self._real_audit
 
     @property
+    def demo_audit(self):
+        """The Demo stack's audit store while Demo Mode is on, else None. The audit
+        read API (Round 14 SPEC §4.5.5) reads it beside :attr:`control_audit`, so
+        real sign-ins and settings changes show next to demo agent rows (D11)."""
+        demo = self._demo
+        return demo.audit if demo is not None else None
+
+    @property
     def usage_store(self):
         return self._demo.usage_store if self._demo is not None else self._real_usage_store
 

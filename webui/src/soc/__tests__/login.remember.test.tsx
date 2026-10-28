@@ -26,6 +26,8 @@
  *  8. No storage write ever contains the password.
  *  9. The signed-out notice copy for every reason (server reason + local expiry),
  *     in a live region present from first paint and linked to the focused field.
+ *     Round 14 (SPEC §4.1): it never states how long the session lasted; a time
+ *     limit and any reason this console does not know get the neutral sentence.
  * 12. axe: the row and the dialog have no violations.
  */
 import * as React from 'react';
@@ -515,9 +517,11 @@ describe('Login — Remember me', () => {
     await waitFor(() => expect(window.localStorage.getItem(REMEMBERED_USERNAME_KEY)).toBe('alice'));
     // The acknowledgement is recorded with the remembered account, after success.
     expect(window.localStorage.getItem(REMEMBER_ACK_KEY)).toBe('1');
-    expect(JSON.parse(window.localStorage.getItem(REMEMBERED_UNTIL_KEY) ?? '{}').lifetime).toBe(
-      86_400,
-    );
+    // Only the end instant is kept (Round 14 SPEC §4.1): the notice never states a
+    // duration, so the device has no reason to remember one.
+    expect(JSON.parse(window.localStorage.getItem(REMEMBERED_UNTIL_KEY) ?? '{}')).toEqual({
+      until: expect.any(Number),
+    });
     expect(toastMock).not.toHaveBeenCalled();
   });
 
@@ -628,7 +632,7 @@ describe('Login — Remember me', () => {
   });
 
   // ---- 7 ------------------------------------------------------------------ //
-  function stubPasswordCredential(store: ReturnType<typeof vi.fn>) {
+  function stubPasswordCredential(store: (...args: never[]) => unknown) {
     class FakePasswordCredential {
       id: string;
       password: string;
@@ -758,12 +762,15 @@ describe('Login — Remember me', () => {
   });
 
   // ---- 9 ------------------------------------------------------------------ //
+  // The two time-limit rows carry a stray lifetime (an older context double, or what
+  // the server still reports in `lifetime_seconds`): the copy never states it.
   it.each([
-    ['absolute_expired', 86_400, 'For your security, you were signed out after 24 hours. Sign in to continue.'],
-    ['absolute_expired', 6 * 3600, 'For your security, you were signed out after 6 hours. Sign in to continue.'],
+    ['absolute_expired', 86_400, 'For your security, you were signed out. Sign in to continue.'],
+    ['absolute_expired', 6 * 3600, 'For your security, you were signed out. Sign in to continue.'],
     ['idle_expired', undefined, 'For your security, you were signed out after a period of inactivity. Sign in to continue.'],
     ['revoked', undefined, 'This session was ended from another device or by an administrator. Sign in to continue.'],
     ['tv_mismatch', undefined, 'All of your sessions were signed out. Sign in to continue.'],
+    ['future_reason', undefined, 'For your security, you were signed out. Sign in to continue.'],
   ])('explains a %s session end calmly', async (reason, lifetimeSeconds, copy) => {
     authCtx.current = { sessionEnded: { reason, lifetimeSeconds } };
     renderLogin();
@@ -778,22 +785,32 @@ describe('Login — Remember me', () => {
   });
 
   it('explains a remembered session that ran out while the browser was closed', async () => {
+    // A marker the previous build wrote ({ until, lifetime }): read, lifetime ignored.
     window.localStorage.setItem(REMEMBERED_USERNAME_KEY, 'alice');
     window.localStorage.setItem(
       REMEMBERED_UNTIL_KEY,
       JSON.stringify({ until: Date.now() - 60_000, lifetime: 86_400 }),
     );
-    renderLogin();
+    const first = renderLogin();
     const pw = await screen.findByLabelText('Password');
-    expect(document.querySelector('[data-login-notice]')).toHaveTextContent(
-      'For your security, you were signed out after 24 hours.',
+    await waitFor(() =>
+      expect(document.querySelector('[data-login-notice]')).toHaveTextContent(
+        'For your security, you were signed out. Sign in to continue.',
+      ),
     );
+    expect(document.querySelector('[data-login-notice]')).not.toHaveTextContent(/\d|hour/);
     // The password field (focused on this step) is described by the notice.
     await waitFor(() =>
-      expect(pw).toHaveAccessibleDescription(/you were signed out after 24 hours/),
+      expect(pw).toHaveAccessibleDescription(
+        'For your security, you were signed out. Sign in to continue.',
+      ),
     );
-    // Shown once: the marker is consumed.
+    // Shown once: the marker is consumed, so the next visit has no notice.
     expect(window.localStorage.getItem(REMEMBERED_UNTIL_KEY)).toBeNull();
+    first.unmount();
+    renderLogin();
+    await screen.findByLabelText('Password');
+    expect(document.querySelector('[data-login-notice]')).toBeNull();
   });
 
   it('shows no notice for a fresh visit', async () => {

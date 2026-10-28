@@ -28,7 +28,9 @@ all**, as ``disposition=false_positive`` / ``decision_by=analyst_policy``
     never train on its own output — and it is excluded from every agent-performance
     statistic so it can never flatter the agent.
   * **#2 — every mutation is audited.** Create / update / enable / disable / delete each
-    append an ``ActionType.STATUS`` row with the acting operator.
+    append an ``ActionType.STATUS`` row with the acting operator, BEFORE the change is
+    saved (Round 14 SPEC §3.6: a failed append answers ``503 audit_unavailable`` and
+    nothing changes).
   * **#9 — rule ids and reasons are PLAIN, length-bounded, operator-supplied strings.**
     They are rendered escaped by the Console. The one that reaches a prompt (the rule
     identity in the precedent block) is UNTRUSTED-fenced at the prompt seam.
@@ -50,9 +52,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
+from ..audit.context import audit_context
+from ..audit.settings_write import audited_settings_write
 from ..config import AnalystRulePolicy, Preferences
 from ..constants import ActionType
 from ..engine.precedent import normalize_rule_id
+from ..models import AuditTarget
 from ..state import AppState
 from ..utils import new_id
 from .deps import current_username, get_state, require_permission
@@ -161,20 +166,40 @@ def _describe_change(prior: AnalystRulePolicy | None, current: AnalystRulePolicy
     return "changed " + ("; ".join(moved) if moved else "nothing")
 
 
-async def _audit(state: AppState, request: Request, event: str, detail: str) -> None:
-    """Append-only operator-lifecycle audit (#2). Best-effort; never breaks the edit."""
-    audit = getattr(state, "_real_audit", None) or getattr(state, "audit", None)
-    if audit is None:
-        return
-    try:
-        await audit.record(
-            action_type=ActionType.STATUS,
-            surface="analyst_policy",
-            actor=current_username(request) or "",
-            result_summary=f"{event}: {detail}"[:500],
-        )
-    except Exception:  # noqa: BLE001
-        pass
+async def _write_policy(
+    state: AppState,
+    request: Request,
+    transform: Any,
+    *,
+    action: Any,
+    outcome: dict[str, Any],
+    policy_id: str,
+    summary: Any,
+) -> None:
+    """Apply one declaration change to the freshest preferences, audited BEFORE it is
+    saved (#2, Round 14 SPEC §3.6).
+
+    The ``analyst_policy.*`` row (``ActionType.STATUS``, surface ``analyst_policy``, the
+    declared rule as target, every changed field as ``changes``, the declaration id in
+    ``tool_input``) is appended to the real audit log first; a failed append answers
+    ``503 audit_unavailable`` and nothing changes. The save is a compare-and-swap on the
+    recorded change set under the preferences write lock, so a concurrent edit can
+    neither be clobbered nor make the row untrue. ``transform`` records what it found in
+    ``outcome``; ``action`` and ``summary`` read it after the edit ran. An
+    ``HTTPException`` the transform raises (an unknown declaration, the cap) writes no
+    row. Declarations are real tenant state, so the row always goes to the real audit
+    log (SPEC §3.5)."""
+    await audited_settings_write(
+        state, transform=transform, action=action,
+        actor=current_username(request) or "", context=audit_context(request),
+        summary=lambda _changes, _total: str(summary())[:500],
+        action_type=ActionType.STATUS, surface="analyst_policy",
+        target=lambda _changes: AuditTarget(
+            type="rule", id=str(outcome.get("rule_id") or policy_id),
+            label=str(outcome.get("rule_id") or policy_id),
+        ),
+        tool_input={"policy_id": policy_id},
+    )
 
 
 def _replace(prefs: Preferences, policies: list[AnalystRulePolicy]) -> Preferences:
@@ -274,15 +299,20 @@ async def upsert_analyst_policy(
         outcome["policy"] = policy
         outcome["prior"] = prior
         outcome["created"] = prior is None
+        outcome["rule_id"] = rule_id
         return _replace(prefs, [p for p in current if p.id != target_id] + [policy])
 
-    await state.mutate_prefs(_apply)
-    policy = outcome["policy"]
-    await _audit(
-        state, request,
-        "analyst_policy.upsert" if outcome["created"] else "analyst_policy.update",
-        f"id={target_id} " + _describe_change(outcome.get("prior"), policy),
+    await _write_policy(
+        state, request, _apply, outcome=outcome, policy_id=target_id,
+        action=lambda: (
+            "analyst_policy.created" if outcome["created"] else "analyst_policy.updated"
+        ),
+        summary=lambda: (
+            ("analyst_policy.upsert" if outcome["created"] else "analyst_policy.update")
+            + f": id={target_id} " + _describe_change(outcome.get("prior"), outcome["policy"])
+        ),
     )
+    policy = outcome["policy"]
     return {"policy": _public(policy), "created": outcome["created"]}
 
 
@@ -312,11 +342,13 @@ async def set_analyst_policy_enabled(
         outcome["was_enabled"] = target.enabled
         return _replace(prefs, updated)
 
-    await state.mutate_prefs(_apply)
-    await _audit(
-        state, request, "analyst_policy.enabled",
-        f"id={policy_id} rule={outcome['rule_id']} "
-        f"enabled: {outcome['was_enabled']} -> {enabled}",
+    await _write_policy(
+        state, request, _apply, outcome=outcome, policy_id=policy_id,
+        action="analyst_policy.enabled" if enabled else "analyst_policy.disabled",
+        summary=lambda: (
+            f"analyst_policy.enabled: id={policy_id} rule={outcome['rule_id']} "
+            f"enabled: {outcome['was_enabled']} -> {enabled}"
+        ),
     )
     return {"policy": _public(outcome["policy"])}
 
@@ -342,9 +374,11 @@ async def delete_analyst_policy(
         )
         return _replace(prefs, [p for p in current if p.id != policy_id])
 
-    await state.mutate_prefs(_apply)
-    await _audit(
-        state, request, "analyst_policy.delete",
-        f"id={policy_id} deleted {outcome['deleted_state']}",
+    await _write_policy(
+        state, request, _apply, outcome=outcome, policy_id=policy_id,
+        action="analyst_policy.deleted",
+        summary=lambda: (
+            f"analyst_policy.delete: id={policy_id} deleted {outcome['deleted_state']}"
+        ),
     )
     return {"deleted": 1, "id": policy_id}

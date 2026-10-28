@@ -2,10 +2,13 @@
 
 It implements exactly the query/aggregation shapes the suite emits (see
 ``querybuilder.py``): bool(filter/must/should/must_not), term/terms/range/ids/
-exists/match/match_all, sort, size/from, and the standup aggregations
-(terms/cardinality/value_count/date_histogram with calendar intervals in a
-``time_zone``) plus the ``composite`` aggregation the exact case aggregate push-down
-pages through. It deliberately does NOT compute metric aggregations (``sum``/``avg``):
+exists/match/match_phrase/wildcard/prefix/match_all, sort, size/from, an integer
+``track_total_hits`` (a lower bound past it, as Elasticsearch reports), the standup
+aggregations (terms/cardinality/value_count/date_histogram with calendar intervals in
+a ``time_zone``), the ``composite`` aggregation the exact case aggregate push-down
+pages through and the query-based ``filters`` aggregation (the audit read API's
+per-run totals). Fields named ``ip`` or ``*.ip`` compare as Elasticsearch ``ip``
+fields do: by address, and a ``term`` value in CIDR form matches its network. It deliberately does NOT compute metric aggregations (``sum``/``avg``):
 callers detect their absence and fall back to an exact scan (``stores/usage``). It is
 NOT a general ES emulator; it is a faithful stand-in for the structures this codebase
 actually issues.
@@ -16,11 +19,14 @@ from __future__ import annotations
 import copy
 import fnmatch
 import functools
+import ipaddress
+import itertools
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Union
 
-from ..constants import AUDIT_INDEX, USAGE_INDEX
+from ..constants import AUDIT_INDEX, AUDIT_READ_PATTERN, USAGE_INDEX
 from ..utils import coerce_float, dotted_get, new_id, parse_es_timestamp
 from .base import BaseESClient
 
@@ -80,6 +86,32 @@ def _to_comparable_uncached(value: Any) -> float | None:
     return None
 
 
+#: Read patterns of append-only ledgers (#2: an audit row is never changed or
+#: removed once written). A point-in-time over one of them needs no copy.
+_APPEND_ONLY_PATTERNS = frozenset({AUDIT_READ_PATTERN})
+
+
+@dataclass(frozen=True)
+class _HighWaterSnapshot:
+    """A point-in-time over an append-only ledger: each backing index's row count when
+    it opened. The rows before each mark are the snapshot (a row is never changed, and
+    the in-memory index keeps insertion order); rows appended later lie past it. Memory
+    is one integer per index, not a copy of every row."""
+
+    marks: dict[str, int]
+
+    def rows(self, docs: dict[str, dict[str, dict[str, Any]]]) -> list[tuple[str, str, dict[str, Any]]]:
+        out: list[tuple[str, str, dict[str, Any]]] = []
+        for name, count in self.marks.items():
+            bucket = docs.get(name)
+            if bucket:
+                out.extend((name, did, src) for did, src in itertools.islice(bucket.items(), count))
+        return out
+
+
+_StateSnapshot = Union[list[tuple[str, str, dict[str, Any]]], _HighWaterSnapshot]
+
+
 class InMemoryESClient(BaseESClient):
     storage_lifecycle_backend = "memory"
 
@@ -87,9 +119,13 @@ class InMemoryESClient(BaseESClient):
         self.docs: dict[str, dict[str, dict[str, Any]]] = {}
         self.alias_to_index: dict[str, str] = {}
         self.templates: dict[str, dict[str, Any]] = {}
+        #: Each concrete index's mapping: the explicit one it was created with, else
+        #: the matching template's (as Elasticsearch applies it at creation), then
+        #: whatever :meth:`put_index_mapping` added.
+        self.index_mappings: dict[str, dict[str, Any]] = {}
         self.lifecycle_policies: dict[str, dict[str, Any]] = {}
         self.index_settings: dict[str, dict[str, Any]] = {}
-        self._state_pits: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
+        self._state_pits: dict[str, _StateSnapshot] = {}
         self.lifecycle_capabilities: dict[str, Any] = {
             "supported": True,
             "can_manage": True,
@@ -145,6 +181,11 @@ class InMemoryESClient(BaseESClient):
     async def open_state_pit(self, index: str, keep_alive: str = "10m") -> str | None:
         del keep_alive
         pit_id = f"fake-state-pit:{new_id()}"
+        if index in _APPEND_ONLY_PATTERNS:
+            self._state_pits[pit_id] = _HighWaterSnapshot(
+                {name: len(self.docs[name]) for name in self._matching_indices(index)}
+            )
+            return pit_id
         # Deep-copy the source payloads: case documents are mutable, so retaining
         # references would not model Elasticsearch PIT snapshot semantics. The
         # type-preserving tree copy is several times faster than ``copy.deepcopy`` on
@@ -167,9 +208,61 @@ class InMemoryESClient(BaseESClient):
         return self._resolve(name) in self.docs
 
     async def create_index(self, name: str, body: dict[str, Any] | None = None) -> None:
+        if name not in self.docs:
+            mapping = (body or {}).get("mappings")
+            if not isinstance(mapping, dict):
+                mapping = self._template_mapping(name)
+            if mapping is not None:
+                self.index_mappings[name] = copy.deepcopy(mapping)
         self.docs.setdefault(name, {})
         for alias in (body or {}).get("aliases", {}):
             self.alias_to_index[alias] = name
+
+    def _template_mapping(self, name: str) -> dict[str, Any] | None:
+        """The mapping of the highest-priority template whose patterns match ``name``."""
+        best: tuple[int, dict[str, Any]] | None = None
+        for body in self.templates.values():
+            patterns = body.get("index_patterns") or []
+            if isinstance(patterns, str):
+                patterns = [patterns]
+            if not any(fnmatch.fnmatchcase(name, str(pattern)) for pattern in patterns):
+                continue
+            mapping = ((body.get("template") or {}).get("mappings"))
+            priority = int(body.get("priority") or 0)
+            if isinstance(mapping, dict) and (best is None or priority > best[0]):
+                best = (priority, mapping)
+        return best[1] if best is not None else None
+
+    # ----- templates and mappings (the audit contract's additive upgrade) -----
+    async def get_index_template(self, name: str) -> dict[str, Any] | None:
+        """The stored composable template body, or ``None`` (Elasticsearch's
+        ``GET _index_template/<name>``, unwrapped from ``index_templates``)."""
+        body = self.templates.get(name)
+        return copy.deepcopy(body) if body is not None else None
+
+    async def get_index_mapping(self, index: str) -> dict[str, dict[str, Any]]:
+        """``{concrete index: {"mappings": ...}}`` for every index ``index`` names (a
+        name, an alias, or a comma list of patterns), as ``GET <index>/_mapping``
+        answers with ``ignore_unavailable``; an index created without a mapping
+        answers an empty one."""
+        return {
+            name: {"mappings": copy.deepcopy(self.index_mappings.get(name, {}))}
+            for name in self._matching_indices(index)
+        }
+
+    async def put_index_mapping(self, index: str, body: dict[str, Any]) -> None:
+        """Add to the mapping of every index ``index`` names, as ``PUT
+        <index>/_mapping`` does: new properties are added, a top-level parameter such
+        as ``date_detection`` is set, and a property that exists with another type is
+        refused (Elasticsearch never changes a field's type in place)."""
+        names = self._matching_indices(index)
+        if not names:
+            raise RuntimeError(f"index_not_found_exception: no such index [{index}]")
+        for name in names:
+            # All or nothing per index, as Elasticsearch applies one mapping update.
+            merged = copy.deepcopy(self.index_mappings.get(name, {}))
+            _merge_mapping(merged, body, prefix="")
+            self.index_mappings[name] = merged
 
     async def index_doc(
         self, index: str, doc: dict[str, Any], doc_id: str | None = None, refresh: bool = False
@@ -219,6 +312,7 @@ class InMemoryESClient(BaseESClient):
             targets.add(target)
         for concrete in targets:
             self.docs.pop(concrete, None)
+            self.index_mappings.pop(concrete, None)
         for alias, backing in list(self.alias_to_index.items()):
             if backing in targets or alias == name:
                 self.alias_to_index.pop(alias, None)
@@ -375,7 +469,8 @@ class InMemoryESClient(BaseESClient):
         if pit_id and str(pit_id).startswith("fake-state-pit:"):
             if str(pit_id) not in self._state_pits:
                 raise RuntimeError("point-in-time snapshot was not found or has expired")
-            candidates = self._state_pits[str(pit_id)]
+            snapshot = self._state_pits[str(pit_id)]
+            candidates = snapshot.rows(self.docs) if isinstance(snapshot, _HighWaterSnapshot) else snapshot
         else:
             candidates = self._all_hits(pattern)
         matched = [
@@ -396,6 +491,12 @@ class InMemoryESClient(BaseESClient):
                 )
 
         total = len(matched)
+        relation = "eq"
+        track = body.get("track_total_hits")
+        if isinstance(track, int) and not isinstance(track, bool) and track >= 0 and total > track:
+            # Elasticsearch counts accurately up to the integer, then reports it as a
+            # lower bound.
+            total, relation = track, "gte"
         normalised_sort = _normalise_sort(sort)
         search_after = body.get("search_after")
         if search_after is not None and normalised_sort:
@@ -423,8 +524,11 @@ class InMemoryESClient(BaseESClient):
             for (idx, did, src) in window
         ]
         result: dict[str, Any] = {
-            "hits": {"total": {"value": total, "relation": "eq"}, "hits": hits},
+            "hits": {"total": {"value": total, "relation": relation}, "hits": hits},
         }
+        if pit_id:
+            # A point-in-time search answers with the (possibly refreshed) PIT id.
+            result["pit_id"] = str(pit_id)
         aggs = body.get("aggs") or body.get("aggregations")
         if aggs:
             result["aggregations"] = _aggregate(aggs, [src for (_i, _d, src) in matched])
@@ -497,6 +601,29 @@ def _split_patterns(patterns: list[str]) -> tuple[set[str], list[str]]:
     return exact, [pat for pat in patterns if pat not in exact]
 
 
+def _merge_mapping(current: dict[str, Any], update: dict[str, Any], *, prefix: str) -> None:
+    """Merge a ``PUT _mapping`` body into ``current`` (see
+    :meth:`InMemoryESClient.put_index_mapping`)."""
+    for key, value in update.items():
+        if key != "properties":
+            current[key] = copy.deepcopy(value)
+            continue
+        properties = current.setdefault("properties", {})
+        for name, spec in (value or {}).items():
+            existing = properties.get(name)
+            if not isinstance(existing, dict):
+                properties[name] = copy.deepcopy(spec)
+                continue
+            old_type, new_type = existing.get("type", "object"), spec.get("type", "object")
+            if old_type != new_type:
+                raise RuntimeError(
+                    f"illegal_argument_exception: mapper [{prefix}{name}] cannot be changed "
+                    f"from type [{old_type}] to [{new_type}]"
+                )
+            if isinstance(spec.get("properties"), dict):
+                _merge_mapping(existing, {"properties": spec["properties"]}, prefix=f"{prefix}{name}.")
+
+
 _ATOMIC_TYPES = (str, int, float, bool, type(None))
 
 
@@ -530,6 +657,8 @@ def _matches(
         return _term_match(src, field, value, index=index)
     if "terms" in query:
         (field, values), = query["terms"].items()
+        if _is_ip_field(field):
+            return any(_term_match(src, field, v, index=index) for v in values)
         actual = index if field == "_index" else dotted_get(src, field)
         actual_list = actual if isinstance(actual, list) else [actual]
         return any(str(a) in {str(v) for v in values} for a in actual_list)
@@ -544,6 +673,32 @@ def _matches(
         (field, value), = query["match"].items()
         actual = dotted_get(src, field)
         return actual is not None and str(value).lower() in str(actual).lower()
+    if "match_phrase" in query:
+        # A stand-in for an analysed phrase: a case-insensitive substring.
+        (field, value), = query["match_phrase"].items()
+        if isinstance(value, dict):
+            value = value.get("query", "")
+        actual = dotted_get(src, field)
+        values = actual if isinstance(actual, list) else [actual]
+        needle = str(value).lower()
+        return any(v is not None and needle in str(v).lower() for v in values)
+    if "wildcard" in query:
+        (field, spec), = query["wildcard"].items()
+        if isinstance(spec, dict):
+            pattern = str(spec.get("value", spec.get("wildcard", "")))
+            insensitive = bool(spec.get("case_insensitive", False))
+        else:
+            pattern, insensitive = str(spec), False
+        regex = _wildcard_regex(pattern, insensitive)
+        actual = dotted_get(src, field)
+        values = actual if isinstance(actual, list) else [actual]
+        return any(isinstance(v, str) and regex.fullmatch(v) is not None for v in values)
+    if "prefix" in query:
+        (field, spec), = query["prefix"].items()
+        prefix = str(spec.get("value", "")) if isinstance(spec, dict) else str(spec)
+        actual = dotted_get(src, field)
+        values = actual if isinstance(actual, list) else [actual]
+        return any(isinstance(v, str) and v.startswith(prefix) for v in values)
     if "multi_match" in query:
         mm = query["multi_match"]
         needle = str(mm.get("query", "")).lower()
@@ -587,9 +742,17 @@ def _matches_bool(
     if should:
         has_hard = bool(b.get("filter") or b.get("must"))
         min_should = int(b.get("minimum_should_match", 0 if has_hard else 1))
-        hits = sum(1 for c in should if _matches(c, doc_id, src, index))
-        if hits < min_should:
-            return False
+        if min_should <= 0:
+            return True
+        # Stop at the first ``min_should`` matching clauses (a query never reads the
+        # rest, and a large ``should`` list is evaluated once per document).
+        hits = 0
+        for clause in should:
+            if _matches(clause, doc_id, src, index):
+                hits += 1
+                if hits >= min_should:
+                    return True
+        return False
     return True
 
 
@@ -599,9 +762,57 @@ def _term_match(
     actual = index if field == "_index" else dotted_get(src, field)
     if actual is None:
         return False
+    if _is_ip_field(field):
+        return _ip_match(actual, value)
     if isinstance(actual, list):
         return str(value) in {str(a) for a in actual}
     return str(actual) == str(value)
+
+
+def _is_ip_field(field: str) -> bool:
+    """Fields Elasticsearch maps as ``ip`` here and in ECS (``client.ip``,
+    ``source.ip``): their last path segment is ``ip``."""
+    return field == "ip" or field.endswith(".ip")
+
+
+def _ip_match(actual: Any, value: Any) -> bool:
+    """An ``ip`` field term: equal addresses (in any spelling), or an address inside
+    a CIDR value. A value that is not an address falls back to text equality."""
+    values = actual if isinstance(actual, list) else [actual]
+    text = str(value).strip()
+    try:
+        network = ipaddress.ip_network(text, strict=False) if "/" in text else None
+        address = None if network is not None else ipaddress.ip_address(text)
+    except ValueError:
+        return any(str(a) == text for a in values)
+    for item in values:
+        try:
+            candidate = ipaddress.ip_address(str(item).strip())
+        except ValueError:
+            continue
+        if network is not None and candidate.version == network.version and candidate in network:
+            return True
+        if address is not None and candidate == address:
+            return True
+    return False
+
+
+@functools.lru_cache(maxsize=1024)
+def _wildcard_regex(pattern: str, insensitive: bool) -> "re.Pattern[str]":
+    """An Elasticsearch ``wildcard`` pattern (``*`` any run, ``?`` one character,
+    ``\\`` escapes the next) as an anchored regular expression."""
+    out: list[str] = []
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < len(pattern):
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        out.append(".*" if ch == "*" else "." if ch == "?" else re.escape(ch))
+        i += 1
+    flags = re.DOTALL | (re.IGNORECASE if insensitive else 0)
+    return re.compile("".join(out), flags)
 
 
 def _range_match(src: dict[str, Any], field: str, bounds: dict[str, Any]) -> bool:
@@ -716,6 +927,14 @@ def _aggregate(aggs: dict[str, Any], sources: list[dict[str, Any]]) -> dict[str,
             }
         elif "composite" in body:
             out[name] = _composite(body, sources)
+        elif "filters" in body:
+            named = (body["filters"] or {}).get("filters") or {}
+            out[name] = {
+                "buckets": {
+                    key: {"doc_count": sum(1 for src in sources if _matches(query, "", src))}
+                    for key, query in named.items()
+                }
+            }
     return out
 
 

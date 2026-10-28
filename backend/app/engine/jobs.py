@@ -17,7 +17,7 @@ import re
 import time
 import uuid
 import zipfile
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -25,8 +25,15 @@ from urllib.parse import quote
 from fastapi import HTTPException
 
 from ..constants import ActionType, JobKind, JobStatus, ResetScope
-from ..models import InAppNotification, Job, JobArtifact, JobPermission, JobResult
-from ..stores.jobs import TERMINAL_STATUSES, JobStore, public_job
+from ..models import (
+    AuditTarget,
+    InAppNotification,
+    Job,
+    JobArtifact,
+    JobPermission,
+    JobResult,
+)
+from ..stores.jobs import ARTIFACT_SUFFIXES, TERMINAL_STATUSES, JobStore, public_job
 
 logger = logging.getLogger("tlsoc.engine.jobs")
 
@@ -37,6 +44,11 @@ _PROGRESS_PERCENT_STEP = 5
 _ARTIFACT_CHUNK = 1024 * 1024
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _ARTIFACT_ID = re.compile(r"^[0-9a-f]{32}$")
+#: Kinds whose handler runs the first checkpoint itself, inside its own failure
+#: handling, so an export that loses its authority while queued (Demo Mode turned on,
+#: a grant removed, the fresh sign-in expired) still closes its request with an
+#: outcome row (Round 14 SPEC §4.5.6).
+_HANDLER_FIRST_CHECKPOINT_KINDS = frozenset({JobKind.AUDIT_EXPORT})
 
 
 class JobCancelled(RuntimeError):
@@ -44,7 +56,15 @@ class JobCancelled(RuntimeError):
 
 
 class JobAuthorityLost(RuntimeError):
-    """Live RBAC or bounded step-up authority no longer permits execution."""
+    """Live RBAC or bounded step-up authority no longer permits execution.
+
+    ``code`` names which authority ended: ``job_demo_mode`` (Demo Mode is on),
+    ``job_permission_lost`` (the actor is inactive or lost a required grant) or
+    ``job_reauth_expired`` (the bounded step-up window ended or was revoked)."""
+
+    def __init__(self, message: str, *, code: str = "job_authority_lost") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def account_generation(username: str, created_at: str) -> str:
@@ -91,11 +111,50 @@ def job_url(job: Job) -> str:
     if kind == JobKind.REPLAY_EXPERIMENT:
         # No dedicated Console surface; the unified Jobs page owns it.
         return "#/batchjobs"
+    if kind == JobKind.AUDIT_EXPORT:
+        # The audit log the file came from (SPEC §4.5.8), in the exported scope.
+        scope = str(job.params.get("scope") or "")
+        return f"#/audit?scope={scope}" if scope in {"people", "agent", "all"} else "#/audit"
     return "#/settings?s=storage"
+
+
+#: A coded failure reason (``"<code>: <message>"``), as the audit export writes it.
+_CODED_REASON = re.compile(r"^([a-z][a-z0-9_]{2,63}): (\S.*)$", re.DOTALL)
+
+
+def _events(count: int) -> str:
+    return f"{count:,} {'event' if count == 1 else 'events'}"
+
+
+def _audit_export_summary(job: Job) -> str:
+    """The Inbox line of an audit export, in events (never items), for every state."""
+    result_counts = job.result.counts if job.result is not None else {}
+    if job.status == JobStatus.SUCCEEDED:
+        if "events" in result_counts:
+            return f"{_events(int(result_counts.get('events') or 0))} exported"
+        return "Audit export finished"
+    if job.status == JobStatus.CANCELLED:
+        return "Export cancelled. No file was kept."
+    if job.status in TERMINAL_STATUSES:
+        # Every refusal and failure reason is "<code>: <plain sentence>"; the sentence
+        # already says that no file was kept and what to do next.
+        reasons = [f.reason for f in job.failures if f.item_ref == "job"] or [
+            f.reason for f in job.failures
+        ]
+        coded = _CODED_REASON.match(reasons[-1]) if reasons else None
+        if coded is not None and coded.group(1).startswith("audit_"):
+            return coded.group(2)
+        return "Audit export failed. No file was kept."
+    done, total = int(job.progress.done or 0), int(job.progress.total or 0)
+    if job.status == JobStatus.QUEUED and not done:
+        return f"Waiting to export {_events(total)}"
+    return f"{done:,} of {_events(total)} exported"
 
 
 def _summary(job: Job) -> str:
     result_counts = job.result.counts if job.result is not None else {}
+    if job.kind == JobKind.AUDIT_EXPORT:
+        return _audit_export_summary(job)
     succeeded = int(
         result_counts.get(
             "succeeded",
@@ -144,6 +203,64 @@ def _export_record_progress(
         else max(1, len(scopes))
     )
     return done, estimated_total
+
+
+#: The audit outcome of a finished reset job (Round 14 SPEC §4.5.3).
+_RESET_OUTCOMES: dict[JobStatus, str] = {
+    JobStatus.SUCCEEDED: "success",
+    JobStatus.PARTIAL: "partial",
+    JobStatus.FAILED: "failure",
+}
+
+_RESET_LABELS: dict[ResetScope, str] = {
+    ResetScope.CASES: "Cases reset",
+    ResetScope.SOURCES: "Sources reset",
+    ResetScope.FACTORY: "Factory reset",
+}
+
+
+def reset_audit_target(job_id: str, scope: ResetScope) -> AuditTarget:
+    """The ``job`` target of a reset row: the reset job, named by what it resets.
+
+    Public so that every row about one reset names the job the same way: the worker's
+    ``reset.started``, ``reset.completed`` and ``reset.failed`` rows here, and a row
+    written for the request that submitted the job (``reset.requested``), which is the
+    only row that can record who asked and from where."""
+    return AuditTarget(type="job", id=job_id, label=_RESET_LABELS.get(scope, "Reset"))
+
+
+def data_export_audit_target(job_id: str, scopes: Sequence[str]) -> AuditTarget:
+    """The ``export`` target of every row about one application data export job: the
+    request (``export.requested``), the worker's ``export.created`` and each download
+    of its file (``job.artifact_downloaded``). Like a reset's and an audit export's
+    rows, they all name the job, so the audit log tells one job's story under one
+    target (``GET /api/audit?target=<job id>``, the inspector's "All events for this
+    target"). The label names the exported scopes in the export's own order
+    ("Application data: cases, audit"; ``all`` is named scope by scope). The direct,
+    job-less deliveries of ``/api/admin/export*`` keep the scope target of
+    :func:`app.api.routes_export.export_audit_target`."""
+    from ..api.routes_export import _select_scopes, export_audit_target
+
+    selected = _select_scopes([str(scope) for scope in scopes] or ["all"])
+    return AuditTarget(type="export", id=job_id, label=export_audit_target(selected).label)
+
+
+# Keyed job rows and the Round 14 record fields (SPEC §4.5.3). A worker row with a
+# deterministic event id is appended again whenever its job resumes (after a shutdown,
+# a lost lease or an upgrade), and the ledger compares the retry's whole payload with
+# the first append. Two rules follow:
+# * A keyed row that carries the structured fields uses an id no earlier build writes
+#   (``reset-started``, ``export-created``; earlier builds wrote ``reset-intent`` and
+#   ``data-export`` without them). A job resumed by another build then appends that
+#   build's own row instead of colliding with this one and failing.
+# * It records only what the job itself fixes: the action, outcome, target, inputs and
+#   the human actor kind. Nothing a resumed attempt would work out again is on it. The
+#   actor's role is read live from the user store and may differ between attempts (a
+#   factory reset clears the users). A session reference is an HMAC keyed from the
+#   signing secret, which changes on every restart when no secret is configured and
+#   whenever an operator rotates it; recomputed by the resuming worker it would no
+#   longer match the first append. Session references belong to request-driven rows
+#   (SPEC §4.5.3); a worker has no request, so these rows carry none.
 
 
 class JobRunner:
@@ -243,7 +360,8 @@ class JobRunner:
             name=f"job-lease-{job.job_id}",
         )
         try:
-            await self.checkpoint(job.job_id, token)
+            if job.kind not in _HANDLER_FIRST_CHECKPOINT_KINDS:
+                await self.checkpoint(job.job_id, token)
             handler = {
                 JobKind.CASE_REINVESTIGATE: self._case_reinvestigate,
                 JobKind.CASE_LIFECYCLE: self._case_lifecycle,
@@ -258,6 +376,7 @@ class JobRunner:
                 JobKind.TIERED_RESET: self._tiered_reset,
                 JobKind.STORAGE_LIFECYCLE_APPLY: self._storage_apply,
                 JobKind.REPLAY_EXPERIMENT: self._replay_experiment,
+                JobKind.AUDIT_EXPORT: self._audit_log_export,
             }[job.kind]
             await handler(job, token)
         except JobCancelled:
@@ -343,13 +462,20 @@ class JobRunner:
         if current.cancel_requested:
             raise JobCancelled("job cancellation requested")
         if self.state.demo_active:
-            raise JobAuthorityLost("durable jobs cannot execute while Demo Mode is active")
+            raise JobAuthorityLost(
+                "durable jobs cannot execute while Demo Mode is active",
+                code="job_demo_mode",
+            )
         if not await self._permission_alive(current):
             raise JobAuthorityLost(
-                "actor is inactive or no longer holds the required permission"
+                "actor is inactive or no longer holds the required permission",
+                code="job_permission_lost",
             )
         if not await self._fresh_authority_alive(current):
-            raise JobAuthorityLost("the bounded step-up authorization expired or was revoked")
+            raise JobAuthorityLost(
+                "the bounded step-up authorization expired or was revoked",
+                code="job_reauth_expired",
+            )
         current = await self.store.renew(
             job_id, token, lease_millis=_LEASE_MILLIS
         )
@@ -889,14 +1015,295 @@ class JobRunner:
     async def _audit_export(self, job: Job, scopes: list[str], size: int) -> None:
         await self.state.control_audit.record_strict(
             action_type=ActionType.DATA_EXPORT,
-            event_id=f"job:{job.job_id}:data-export",
+            # Not the earlier builds' ``data-export`` id (see "Keyed job rows" above).
+            event_id=f"job:{job.job_id}:export-created",
             surface="settings",
             actor=job.actor,
             result_summary=(
                 f"assembled durable export scopes={','.join(scopes)} bytes={size} "
                 f"job={job.job_id} delivery=pending"
             ),
+            # Round 14 record fields (SPEC §4.5.3): the export file now exists and is
+            # waiting for download (each download is audited on its own).
+            action="export.created",
+            outcome="success",
+            # The job, as the request's and each download's rows name it.
+            target=data_export_audit_target(job.job_id, scopes),
+            tool_input={"job_id": job.job_id, "kind": job.kind.value, "bytes": size},
+            **self._job_record_fields(),
         )
+
+    @staticmethod
+    def _job_record_fields() -> dict[str, Any]:
+        """The Round 14 record fields (SPEC §4.5.3) a job worker states about the person
+        who submitted the job: only that a human did. The value stays the same on every
+        attempt, so a resumed job's keyed row repeats its first append (see "Keyed job
+        rows" above). A worker has no request, so the request-driven fields (client,
+        request id, session reference, live role) are not recorded; the Console shows
+        them as not recorded."""
+        return {"actor_type": "human"}
+
+    async def _audit_log_export(self, job: Job, token: str) -> None:
+        """The audit log export (Round 14 SPEC §4.5.6, :mod:`app.engine.audit_export`).
+
+        Counts again with the read API's own call, then reads oldest first inside one
+        snapshot per store, with a job checkpoint (cancel, live grant, fresh sign-in,
+        progress in events) at every page boundary and a free-space check before every
+        write, into one plain file in the private artifact root. The file becomes
+        visible (attached to the job) only after its ``audit.exported`` row, naming the
+        file's size and SHA-256, is appended (audit before visible, E16).
+
+        Every attempt that makes no file closes its ``audit.export_requested`` row with
+        exactly one ``audit.export_failed`` row naming a coded reason: a refusal
+        (``audit_export_too_large``, ``audit_export_unverifiable``,
+        ``audit_export_incomplete``, ``audit_export_expired``), a store that cannot be
+        read or an ``audit.exported`` row that cannot be appended
+        (``audit_unavailable``), a full volume (``audit_export_no_space``) or a lost
+        authority (``audit_export_denied``, outcome ``denied``: Demo Mode turned on, a
+        grant removed or the fresh sign-in expired, including while the job was still
+        queued, since this handler runs the job's first checkpoint itself). An
+        ``audit.exported`` row whose file then fails to attach is closed the same way. A
+        cancel is audited as the job's own transition, and a worker that lost its lease
+        to another worker before its ``audit.exported`` row writes no row and leaves the
+        new owner's file alone. Nothing partial is ever kept. These are worker rows: they
+        carry no request field (the ``audit.export_requested`` row has the request's
+        client, request id and session reference). They go to the control audit
+        whatever the Demo state (SPEC §3.5); a job never runs while Demo Mode is on."""
+        from ..api.routes_export import _ensure_archive_capacity
+        from ..utils import parse_es_timestamp
+        from . import audit_export as export
+
+        # The file name is known once the range parses; until then the rows name the job.
+        target = AuditTarget(type="export", id=job.job_id)
+        # True once this attempt's ``audit.exported`` row exists: from then on a file
+        # that does not become visible is always closed by a failure row, even after
+        # the lease moved to another worker (the row is this attempt's own claim).
+        exported_row = False
+        expired: list[JobArtifact] = []
+        try:
+            fmt = str(job.params.get("format") or "")
+            if fmt not in export.EXPORT_FORMATS:
+                raise export.AuditExportError(
+                    "The export's format is not one this version can write, so nothing "
+                    "was exported."
+                )
+            ts_from, ts_to = export.export_range(job.params)
+            file_name = export.export_file_name(fmt, ts_from, ts_to)
+            target = export.export_target(job.job_id, file_name)
+            # Ends before the millisecond the person pressed Export in (see
+            # audit_export.submission_cap).
+            filters = export.export_filters(
+                job.params, read_until=parse_es_timestamp(job.created_at)
+            )
+            # The job's first checkpoint: inside this handler's failure handling, so an
+            # authority lost while the job was queued is closed with a row too.
+            current = await self.checkpoint(job.job_id, token)
+            if current.artifact is not None:
+                await self._discard_attached_artifact(current)
+            await self._drop_stale_reservation(current, token)
+            # Re-check the count with the same call the dialog and the submit used.
+            count, relation = await export.count_events(self.state, filters)
+            export.refuse_unless_exportable(count, relation)
+            await self.checkpoint(
+                job.job_id, token, done=0, total=count, unit="events", emit=True
+            )
+            path, artifact_id = await self._reserve_artifact_path(
+                job, token, export.EXPORT_SUFFIXES[fmt]
+            )
+
+            async def ensure_capacity(nbytes: int) -> None:
+                # The data export's own rule: the write plus a megabyte of headroom,
+                # with its fixed reserve kept free for the state and the audit log.
+                try:
+                    await asyncio.to_thread(
+                        _ensure_archive_capacity, str(path), nbytes + _ARTIFACT_CHUNK
+                    )
+                except HTTPException as exc:
+                    if exc.status_code == 507:
+                        raise export.AuditExportNoSpace() from exc
+                    raise
+
+            async def page_boundary(done: int) -> None:
+                await self.checkpoint(
+                    job.job_id,
+                    token,
+                    done=done,
+                    total=max(count, done),
+                    unit="events",
+                    emit=True,
+                )
+
+            try:
+                await ensure_capacity(0)
+                written = await export.write_export(
+                    self.state,
+                    filters=filters,
+                    fmt=fmt,
+                    path=path,
+                    checkpoint=page_boundary,
+                    ensure_capacity=ensure_capacity,
+                )
+                await self.checkpoint(
+                    job.job_id,
+                    token,
+                    done=written.rows,
+                    total=written.rows,
+                    unit="events",
+                )
+                artifact = await self._artifact_meta(
+                    path, artifact_id, file_name, export.EXPORT_CONTENT_TYPES[fmt]
+                )
+                noun = "event" if written.rows == 1 else "events"
+                # Audit before visible (E16): the ``audit.exported`` row first, then
+                # the attach. A worker row, so it records no request field (no client,
+                # request id or session reference: a worker has no request; the
+                # ``audit.export_requested`` row carries the submitting request's).
+                try:
+                    await self.state.control_audit.record_strict(
+                        action_type=ActionType.DATA_EXPORT,
+                        surface="audit",
+                        actor=job.actor,
+                        action="audit.exported",
+                        outcome="success",
+                        target=target,
+                        result_summary=(
+                            f"exported {written.rows:,} audit {noun} to "
+                            f"{artifact.filename} ({artifact.size:,} bytes, SHA-256 "
+                            f"{artifact.sha256})"
+                        ),
+                        tool_input={
+                            "job_id": job.job_id,
+                            "format": fmt,
+                            "events": written.rows,
+                            "bytes": artifact.size,
+                            "sha256": artifact.sha256,
+                            "artifact_id": artifact.artifact_id,
+                        },
+                        **self._job_record_fields(),
+                    )
+                except Exception as exc:  # noqa: BLE001 (every append failure means "not audited")
+                    # The ``audit.exported`` row could not be appended, so the attach
+                    # never runs: the file is not kept, and the failure row below
+                    # tries once more to close the request.
+                    raise export.AuditExportUnaudited() from exc
+                exported_row = True
+                # A failed attach after its row is closed by the failure row below
+                # (the same ``export`` target pairs it with the exported row).
+                _attached, expired = await self.store.attach_artifact(
+                    job.job_id, token, artifact
+                )
+            except BaseException:
+                # This worker's own reserved file is always removed. Shared state (the
+                # pending reservation, an attached artifact) is touched only while this
+                # worker still owns the job: after a lease moved to another worker,
+                # the attached file is that worker's.
+                self._safe_unlink(path)
+                if await self._owns(job.job_id, token):
+                    try:
+                        await self.store.clear_pending_artifact(
+                            job.job_id, token, artifact_id
+                        )
+                    except Exception:
+                        pass
+                    latest = await self.store.get(job.job_id)
+                    if latest is not None and latest.artifact is not None:
+                        await self._discard_attached_artifact(latest)
+                raise
+        except (JobCancelled, asyncio.CancelledError):
+            # A cancel is audited as the job's own transition; a shutdown resumes.
+            raise
+        except JobAuthorityLost as exc:
+            denied = export.AuditExportDenied(getattr(exc, "code", None))
+            if await self._owns(job.job_id, token):
+                await self._audit_export_failed(job, target, denied, outcome="denied")
+            raise denied from exc
+        except Exception as exc:
+            if exported_row or await self._owns(job.job_id, token):
+                await self._audit_export_failed(job, target, exc, outcome="failure")
+            raise
+        # Exported, audited and attached: the export is committed. Removing the files
+        # of jobs the registry pruned is best effort and can never undo it.
+        try:
+            await self.delete_artifacts(expired)
+        except Exception as exc:  # noqa: BLE001 (an orphan file is swept later)
+            logger.warning(
+                "Audit export %s: pruned artifacts were not removed: %s", job.job_id, exc
+            )
+        await self._finish(
+            current,
+            token,
+            JobStatus.SUCCEEDED,
+            result=JobResult(
+                kind="audit_export",
+                artifact_id=artifact.artifact_id,
+                counts={"events": written.rows, "bytes": artifact.size},
+            ),
+        )
+
+    async def _drop_stale_reservation(self, job: Job, token: str) -> None:
+        """Forget a file reservation an earlier attempt of this job left behind (a
+        shutdown, a crash, a lease that moved to this worker) and remove that
+        attempt's file. This attempt then reserves a file of its own under a fresh
+        name, so it never collides with the earlier file, and a late cleanup by the
+        earlier worker can never remove this attempt's file."""
+        stale = job.pending_artifact_id
+        if not stale:
+            return
+        await self.store.clear_pending_artifact(job.job_id, token, stale)
+        try:
+            path = self.artifact_path(stale, f"stale{job.pending_artifact_suffix or ''}")
+        except FileNotFoundError:
+            return
+        await asyncio.to_thread(self._safe_unlink, path)
+
+    async def _owns(self, job_id: str, token: str) -> bool:
+        """Whether this worker still owns ``job_id``'s running lease (a fresh read; an
+        unreadable registry is "no", so nothing shared is touched)."""
+        try:
+            latest = await self.store.get(job_id)
+        except Exception:  # noqa: BLE001 (ownership uncertain: touch nothing shared)
+            return False
+        return (
+            latest is not None
+            and latest.status == JobStatus.RUNNING
+            and latest.lease_token == token
+        )
+
+    async def _audit_export_failed(
+        self, job: Job, target: AuditTarget, exc: BaseException, *, outcome: str
+    ) -> None:
+        """The ``audit.export_failed`` row that closes an export which made no file,
+        so its ``audit.export_requested`` row is always followed by an outcome. The
+        row names the coded reason (``tool_input.code``, also the first word of the
+        summary). The job itself fails either way (its transition is audited too), so
+        a failed append here is logged, never raised."""
+        reason = self._reason(exc)
+        code = getattr(exc, "code", None)
+        if not isinstance(code, str):
+            detail = getattr(exc, "detail", None)
+            code = detail.get("code") if isinstance(detail, Mapping) else None
+        try:
+            await self.state.control_audit.record_strict(
+                action_type=ActionType.DATA_EXPORT,
+                surface="audit",
+                actor=job.actor,
+                actor_type="human",
+                action="audit.export_failed",
+                outcome=outcome,
+                target=target,
+                result_summary=f"audit export failed: {reason}"[:1000],
+                tool_input={
+                    "job_id": job.job_id,
+                    "format": job.params.get("format"),
+                    "code": code if isinstance(code, str) else None,
+                },
+            )
+        except Exception as audit_exc:  # noqa: BLE001 (the job failure is what is reported)
+            logger.error(
+                "Audit export %s: the failure row could not be appended: %s",
+                job.job_id,
+                audit_exc,
+            )
 
     async def _precedent_bootstrap(self, job: Job, token: str) -> None:
         from ..api.routes_rag import (
@@ -1130,12 +1537,22 @@ class JobRunner:
             )
             return
         scope = ResetScope(job.params["scope"])
+        # The reset is audited before anything is cleared (#2, Round 14 SPEC §3.6): a
+        # failed append fails the job with nothing changed. A factory reset clears this
+        # row with the rest of the audit log; its sanitized receipt below then records
+        # the outcome as the system. Not the earlier builds' ``reset-intent`` id (see
+        # "Keyed job rows" above).
         await self.state.control_audit.record_strict(
             action_type=ActionType.RESET,
-            event_id=f"job:{job.job_id}:reset-intent",
+            event_id=f"job:{job.job_id}:reset-started",
             surface="admin",
             actor=job.actor,
             result_summary=f"reset scope={scope.value} confirm=ok job={job.job_id}",
+            action="reset.started",
+            outcome="success",
+            target=reset_audit_target(job.job_id, scope),
+            tool_input={"scope": scope.value},
+            **self._job_record_fields(),
         )
         await self.store.begin_item(job.job_id, token, "reset")
         runtime_snapshot: dict[str, bool] | None = None
@@ -1223,12 +1640,17 @@ class JobRunner:
                 result["cleared"].append(
                     f"runtime_secret_overlays:{sum(restored.values())}"
                 )
-        except BaseException:
+        except BaseException as exc:
             # A post-fence reset failure may be partially destructive. Leave both
             # durable fences and local producers stopped: this is an intentional
             # fail-closed safe-stop, not a state from which old work may resume.
             if scope == ResetScope.FACTORY and factory_destructive:
                 await self.state.mutation_gate.mark_degraded(job.job_id)
+            # Only an error ends the reset with ``reset.failed``. A cancellation (process
+            # shutdown, a lost lease) is an interruption: the runner leaves the lease
+            # behind, the next worker resumes the reset and its run records how it ends.
+            if scope != ResetScope.FACTORY and isinstance(exc, Exception):
+                await self._audit_reset_failure(job, scope, exc)
             raise
         # Factory reset intentionally removes the initiating user/session. Do not
         # reinterpret that expected self-revocation as a failed completed reset.
@@ -1292,6 +1714,19 @@ class JobRunner:
                         f"factory reset receipt status={status.value} "
                         f"attempted={attempted} cleared={cleared} failed={failed}"
                     ),
+                    # Round 14 record fields (SPEC §4.5.3), sanitized: the system
+                    # records the outcome; the initiating person is never named here.
+                    # Each field restates the summary's status and counts, so a
+                    # replay of this keyed row by this build repeats it exactly; a
+                    # retry of a factory reset is a new job with its own receipt.
+                    action="reset.completed",
+                    outcome=_RESET_OUTCOMES.get(status, "unknown"),
+                    actor_type="system",
+                    target=reset_audit_target(job.job_id, scope),
+                    tool_input={
+                        "scope": scope.value, "attempted": attempted,
+                        "cleared": cleared, "failed": failed,
+                    },
                 )
                 if not await self.reconcile_audits():
                     raise RuntimeError(
@@ -1313,7 +1748,66 @@ class JobRunner:
                 await self.state.mutation_gate.mark_degraded(job.job_id)
                 raise
             return
+        await self._audit_reset_result(
+            job, scope, status, attempted=attempted, cleared=cleared, failed=failed,
+        )
         await self._finish(current, token, status, result=result_model)
+
+    async def _audit_reset_result(
+        self, job: Job, scope: ResetScope, status: JobStatus, *,
+        attempted: int, cleared: int, failed: int,
+    ) -> None:
+        """The outcome row of a cases or sources reset (Round 14 SPEC §4.5.3):
+        ``reset.completed`` with outcome success, partial or failure and the counts.
+        Its deterministic event id keeps a retried append to one row. The reset has
+        already happened, so a failed append is logged and the job still finishes; the
+        job's own transition rows record its terminal status."""
+        try:
+            await self.state.control_audit.record_strict(
+                action_type=ActionType.RESET,
+                event_id=f"job:{job.job_id}:reset-result",
+                surface="admin",
+                actor=job.actor,
+                result_summary=(
+                    f"reset scope={scope.value} status={status.value} "
+                    f"attempted={attempted} cleared={cleared} failed={failed} job={job.job_id}"
+                ),
+                action="reset.completed",
+                outcome=_RESET_OUTCOMES.get(status, "unknown"),
+                target=reset_audit_target(job.job_id, scope),
+                tool_input={
+                    "scope": scope.value, "attempted": attempted, "cleared": cleared,
+                    "failed": failed,
+                },
+                **self._job_record_fields(),
+            )
+        except Exception as exc:  # noqa: BLE001 (the reset is done; the job still finishes)
+            logger.warning("Reset outcome audit for job %s failed: %s", job.job_id, exc)
+
+    async def _audit_reset_failure(
+        self, job: Job, scope: ResetScope, exc: BaseException,
+    ) -> None:
+        """The outcome row of a cases or sources reset that stopped with an error
+        (``reset.failed``, outcome failure). Some tiers may already be cleared, which
+        the summary says. Never raises: the reset's own error is the one reported."""
+        try:
+            await self.state.control_audit.record_strict(
+                action_type=ActionType.RESET,
+                event_id=f"job:{job.job_id}:reset-failed",
+                surface="admin",
+                actor=job.actor,
+                result_summary=(
+                    f"reset scope={scope.value} stopped with {type(exc).__name__}; "
+                    f"some data may already be cleared job={job.job_id}"
+                ),
+                action="reset.failed",
+                outcome="failure",
+                target=reset_audit_target(job.job_id, scope),
+                tool_input={"scope": scope.value},
+                **self._job_record_fields(),
+            )
+        except Exception as audit_exc:  # noqa: BLE001
+            logger.warning("Reset failure audit for job %s failed: %s", job.job_id, audit_exc)
 
     async def _pause_factory_runtime(self) -> dict[str, bool]:
         """Quiesce every local producer that can repopulate state during factory reset."""
@@ -1636,7 +2130,7 @@ class JobRunner:
         if not _ARTIFACT_ID.fullmatch(artifact_id or ""):
             raise FileNotFoundError("artifact id is invalid")
         suffix = Path(filename).suffix.lower()
-        if suffix not in {".zip"}:
+        if suffix not in ARTIFACT_SUFFIXES:
             raise FileNotFoundError("artifact type is invalid")
         root = self._artifact_root()
         candidate = root / f"{artifact_id}{suffix}"
@@ -1727,7 +2221,7 @@ class JobRunner:
             for path in root.iterdir():
                 if path.is_symlink() or not path.is_file():
                     continue
-                if path.suffix != ".zip" or not _ARTIFACT_ID.fullmatch(path.stem):
+                if path.suffix not in ARTIFACT_SUFFIXES or not _ARTIFACT_ID.fullmatch(path.stem):
                     continue
                 # Durable reservations protect every in-flight replica. A genuinely
                 # abandoned file is removed only after two full lease windows so a
@@ -1748,7 +2242,7 @@ class JobRunner:
                 if (
                     path.is_file()
                     and not path.is_symlink()
-                    and path.suffix == ".zip"
+                    and path.suffix in ARTIFACT_SUFFIXES
                     and _ARTIFACT_ID.fullmatch(path.stem)
                 ):
                     self._safe_unlink(path)
@@ -1772,7 +2266,17 @@ class JobRunner:
     @staticmethod
     def _reason(exc: BaseException) -> str:
         if isinstance(exc, HTTPException):
-            return str(exc.detail)[:500]
+            detail = exc.detail
+            if isinstance(detail, Mapping):
+                # A coded refusal reads as "<code>: <message>", never a dict's repr.
+                text = ": ".join(
+                    str(part)
+                    for part in (detail.get("code"), detail.get("message") or detail.get("reason"))
+                    if part
+                )
+                if text:
+                    return text[:500]
+            return str(detail)[:500]
         if isinstance(exc, (ValueError, RuntimeError)):
             return str(exc)[:500]
         return "internal error"

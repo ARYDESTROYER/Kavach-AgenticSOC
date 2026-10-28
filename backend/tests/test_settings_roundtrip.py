@@ -135,17 +135,20 @@ def _settings_audit_rows(client) -> list[dict]:
 
 
 def test_put_settings_writes_an_append_only_audit_row(client):
-    """P12 (#2 audit / #10 secrets): a settings PUT — which now carries the
-    decision-critical ``auto_close`` policy ``decide()`` reads — must leave an
-    append-only who/when trail recording the CHANGED top-level keys (never their
-    VALUES → never a secret)."""
+    """P12 (#2 audit / #10 secrets), Round 14 audit-first (SPEC §3.6, §4.5.3): a
+    settings PUT, which carries the decision-critical ``auto_close`` policy
+    ``decide()`` reads, appends exactly one ``settings.updated`` row BEFORE the save is
+    visible. The one-line summary names the CHANGED top-level keys only; the
+    structured ``changes`` record each changed field from its stored value to the
+    validated new one."""
     before = _settings_audit_rows(client)
 
     # Flip the flagship auto-close policy (the exact field bug-#1 repointed here — the
     # ``prefs.auto_close.false_positive.enabled`` that ``decide()`` reads) so a change to
     # WHICH cases auto-close is provably audited.
     prefs = _get_prefs(client)
-    patch_val = not bool(prefs["auto_close"]["false_positive"]["enabled"])
+    old_val = bool(prefs["auto_close"]["false_positive"]["enabled"])
+    patch_val = not old_val
     _put(client, {"auto_close": {"false_positive": {"enabled": patch_val}}})
 
     after = _settings_audit_rows(client)
@@ -153,26 +156,66 @@ def test_put_settings_writes_an_append_only_audit_row(client):
     row = after[0]  # NEWEST first
     assert row["surface"] == "settings"
     assert row["action_type"] == "status"
+    assert row["action"] == "settings.updated"
+    assert row["outcome"] == "success"
+    assert row["actor_type"] == "human"
+    assert row["request_id"]
+    assert row["target"]["type"] == "setting" and row["target"]["id"] == "auto_close"
     summary = row.get("result_summary") or ""
-    # Records the CHANGED top-level key by NAME…
+    # The summary records the CHANGED top-level key by NAME, never its value…
     assert "updated settings" in summary
     assert "auto_close" in summary
-    # …and never the VALUE / any secret marker (#10).
     assert str(patch_val).lower() not in summary.lower()
+    # …and the structured change carries the before and after of the one field.
+    assert row["changes"] == [{
+        "field": "auto_close.false_positive.enabled",
+        "before": str(old_val).lower(), "after": str(patch_val).lower(), "secret": False,
+    }]
     for forbidden in ("es_api_key", "anthropic_api_key", "auth_jwt_secret", "bearer "):
         assert forbidden not in summary.lower()
 
 
-def test_put_settings_audit_never_leaks_a_value(client):
-    """The audit summary lists only key NAMES, even for a block whose values change —
-    it must never serialise the block's contents (defence for #10)."""
+def test_put_settings_audit_summary_names_keys_and_changes_withhold_secrets(client):
+    """The summary lists only key NAMES (it never serialises a block's contents);
+    ordinary values live in the structured ``changes``, where secrets and webhook URL
+    paths are never written (SPEC §4.5.3, defence for #10)."""
     before = _settings_audit_rows(client)
-    _put(client, {"branding": {"org_name": "Umbrella-Corp-SECRET-MARKER"}})
+    _put(client, {
+        "branding": {"org_name": "Umbrella-Corp-SECRET-MARKER"},
+        "notifications": {"channels": [{
+            "id": "slack-sec", "type": "slack",
+            "config": {"url": "https://hooks.slack.com/services/T9/B9/WEBHOOKTOKEN"},
+        }]},
+    })
     after = _settings_audit_rows(client)
     assert len(after) == len(before) + 1
-    summary = (after[0].get("result_summary") or "")
+    row = after[0]
+    summary = row.get("result_summary") or ""
     assert "branding" in summary            # the key NAME is recorded…
     assert "Umbrella-Corp-SECRET-MARKER" not in summary  # …never the VALUE
+    changes = {c["field"]: c for c in row["changes"]}
+    assert changes["branding.org_name"]["after"] == "Umbrella-Corp-SECRET-MARKER"
+    url = changes["notifications.channels[slack-sec].config.url"]
+    assert url["after"] == "https://hooks.slack.com" and url["secret"] is True
+    assert "WEBHOOKTOKEN" not in repr(row)
+
+
+def test_put_settings_is_refused_and_unsaved_when_the_audit_cannot_be_written(client, monkeypatch):
+    """Round 14 audit-first (SPEC §3.6, E16): the old best-effort audit ("never fail
+    the settings save") is gone. When the audit row cannot be appended the save
+    answers ``503 audit_unavailable`` and the stored settings are unchanged."""
+    before = _get_prefs(client)["rag"]["top_k"]
+    state = client.app.state.tlsoc
+
+    async def _down(**_kwargs):
+        raise RuntimeError("audit store unreachable")
+
+    monkeypatch.setattr(state.control_audit, "record_strict", _down)
+    r = client.put("/api/settings", json={"rag": {"top_k": before + 3}})
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "audit_unavailable"
+    monkeypatch.undo()
+    assert _get_prefs(client)["rag"]["top_k"] == before
 
 
 def test_secrets_never_appear_in_settings_dump(client):

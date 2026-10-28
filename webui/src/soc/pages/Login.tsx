@@ -457,12 +457,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   // A SUCCESSFUL sign-in (password, MFA, or mandated enrollment) — never a failed
   // one, so a typo or a probed name is never remembered.
   const recordSuccessfulSignin = (res: LoginResult) => {
-    const opts = {
-      username,
-      requested: rememberRequestedRef.current,
-      password,
-      lifetimeSeconds: rememberStatus?.duration_seconds,
-    };
+    const opts = { username, requested: rememberRequestedRef.current, password };
     void loadRememberDevice().then((m) => m.afterSignIn(res, opts), () => undefined);
   };
 
@@ -806,11 +801,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
             </CardHeader>
             <CardContent className="px-0 pb-0 pt-9">
               {!error && mode === 'signin' && SessionEndNotice ? (
-                <SessionEndNotice
-                  reason={endedSession?.reason}
-                  lifetimeSeconds={endedSession?.lifetimeSeconds}
-                  onShownChange={setNoticeShown}
-                />
+                <SessionEndNotice reason={endedSession?.reason} onShownChange={setNoticeShown} />
               ) : null}
               {error ? (
                 <Alert

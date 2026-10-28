@@ -8,6 +8,7 @@
       "number_of_replicas": 0
     },
     "mappings": {
+      "date_detection": false,
       "properties": {
         "ts": {
           "type": "date"
@@ -60,6 +61,76 @@
         },
         "result_summary": {
           "type": "text"
+        },
+        "outcome": {
+          "type": "keyword"
+        },
+        "actor_type": {
+          "type": "keyword"
+        },
+        "action": {
+          "type": "keyword"
+        },
+        "actor_role": {
+          "type": "keyword"
+        },
+        "client": {
+          "properties": {
+            "ip": {
+              "type": "ip"
+            },
+            "ip_source": {
+              "type": "keyword"
+            },
+            "peer": {
+              "type": "keyword",
+              "index": false,
+              "doc_values": false
+            },
+            "forwarded_for": {
+              "type": "text",
+              "index": false
+            },
+            "user_agent": {
+              "type": "text",
+              "index": false
+            }
+          }
+        },
+        "session_ref": {
+          "type": "keyword"
+        },
+        "target": {
+          "properties": {
+            "type": {
+              "type": "keyword"
+            },
+            "id": {
+              "type": "keyword"
+            },
+            "label": {
+              "type": "text",
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 256
+                }
+              }
+            },
+            "revision": {
+              "type": "long"
+            }
+          }
+        },
+        "changes": {
+          "type": "object",
+          "enabled": false
+        },
+        "request_id": {
+          "type": "keyword"
+        },
+        "run_id": {
+          "type": "keyword"
         }
       }
     }

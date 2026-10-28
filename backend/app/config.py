@@ -20,7 +20,7 @@ import logging
 import math
 import re
 from datetime import datetime, timezone
-from typing import Any, ClassVar, Literal, Mapping, Sequence
+from typing import Any, Callable, ClassVar, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -242,6 +242,18 @@ class Secrets(BaseSettings):
     rate_limit_enabled: bool = False
     rate_limit_capacity: int = 120
     rate_limit_refill_per_second: float = 2.0
+    # --- Audit client address (Round 14 SPEC §4.5.3, E15). The proxies whose
+    # ``X-Forwarded-For`` header the audit log believes: a comma list of host names,
+    # IP addresses or CIDR ranges (env ``TRUSTED_PROXIES``). Only when the socket peer
+    # is one of them is the rightmost forwarded entry that is not itself a trusted
+    # proxy recorded as the client address (at most the last 32 entries are read);
+    # otherwise the peer itself is recorded, whatever the caller sent. Host names are
+    # resolved at startup and every 5 minutes: a name that has never resolved is
+    # ignored, and a name that stops resolving keeps its last addresses for 3 rounds.
+    # The default is the bundled Web UI service, so the Compose stack needs no setting; a
+    # deployment behind another proxy adds that proxy here. Metadata for the audit
+    # trail only, never an authorization input.
+    trusted_proxies: str = "tlsoc-webui"
 
     # When true the backend persists to Elasticsearch; when ES is unreachable it
     # automatically falls back to an in-memory store so the spine still runs.
@@ -1530,10 +1542,15 @@ class BudgetConfig(BaseModel):
 
 _DOMAIN_SUFFIX_RE = re.compile(r"^(?=.{1,253}$)[a-z0-9_](?:[a-z0-9_-]{0,62})(?:\.[a-z0-9_](?:[a-z0-9_-]{0,62}))*$")
 
-# --- Round 12 chat limits migration (SPEC D1/D6). ---------------------------------- #
+# --- Chat limits migration (Round 12 SPEC D1/D6; Round 14 SPEC §4.2.2). ------------- #
 # Bumped when stored chat configurations must adopt a new limits posture exactly once
-# (the ``autopilot_config_version`` pattern, held inside the chat block).
-CURRENT_CHAT_LIMITS_VERSION = 1
+# (the ``autopilot_config_version`` pattern, held inside the chat block). Each version
+# is one step; a stored block runs every step above its own version, in order, so a
+# block from any earlier release lands on the current defaults (see
+# :func:`_migrate_chat_limits`).
+#   1. Round 12: ``limits_mode`` decided; stall timeout and concurrency raised.
+#   2. Round 14: the "Timeouts and capacity" defaults tripled.
+CURRENT_CHAT_LIMITS_VERSION = 2
 # The per-question limit knobs and the values they shipped with before Round 12. A
 # stored configuration that still holds every one of them (or omits them) never chose
 # a limit, so it adopts ``unlimited``; one that changed any of them keeps ``bounded``
@@ -1555,8 +1572,19 @@ _CHAT_CHANGED_DEFAULTS: dict[str, tuple[int, int]] = {
     "max_concurrent_turns_per_user": (2, 4),
     "max_concurrent_turns_global": (8, 16),
 }
+# Version 2 (Round 14, ask 5): every "Timeouts and capacity" default tripled. A stored
+# value equal to the Round 12 default moves to the tripled one, in both limits modes
+# (Round 14 D18); any other value is an administrator's choice and stays. Pinned against
+# the field defaults by ``test_chat_limits_migration.py``.
+_CHAT_TRIPLED_DEFAULTS: dict[str, tuple[int, int]] = {
+    "max_parallel": (4, 12),
+    "tool_timeout_s": (15, 45),
+    "model_step_timeout_s": (300, 900),
+    "max_concurrent_turns_per_user": (4, 12),
+    "max_concurrent_turns_global": (16, 48),
+}
 # Keys every full ``ChatAgentConfig`` dump carries (a persisted block) but a small
-# programmatic construction does not: the changed-defaults move applies to persisted
+# programmatic construction does not: the changed-defaults moves apply to persisted
 # blocks only, so ``ChatAgentConfig(model_step_timeout_s=30)`` keeps its 30.
 _CHAT_PERSISTED_MARKERS = ("max_indicator_lookups_per_conversation", "internal_domains", "allow_email_lookup")
 
@@ -1572,29 +1600,99 @@ def _repair_chat_cap(raw: Any) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
-def _migrate_chat_limits(out: dict[str, Any]) -> dict[str, Any]:
-    """The one-time Round 12 chat limits migration on an already-repaired block.
+def _is_persisted_chat_block(out: Mapping[str, Any]) -> bool:
+    """True for a full stored dump (see :data:`_CHAT_PERSISTED_MARKERS`)."""
+    return all(key in out for key in _CHAT_PERSISTED_MARKERS)
 
-    A block at :data:`CURRENT_CHAT_LIMITS_VERSION` is left alone (an operator's later
-    choice is never re-decided). Otherwise an explicit ``limits_mode`` is kept; without
-    one the block becomes ``bounded`` when any limit knob differs from its shipped
-    default and ``unlimited`` otherwise; old defaults of the changed knobs move to the
-    new ones (persisted blocks only); and the marker is stamped. Never raises."""
-    version = out.get("chat_limits_version")
-    if isinstance(version, int) and not isinstance(version, bool) and version >= CURRENT_CHAT_LIMITS_VERSION:
-        return out
+
+def _move_old_defaults(out: dict[str, Any], moves: Mapping[str, tuple[int, int]],
+                       *, skip: frozenset[str] = frozenset()) -> frozenset[str]:
+    """Move each knob still holding exactly its old shipped default to the new one, and
+    return the knobs that hold an operator's choice instead.
+
+    A stored value that is not exactly the old default (another number, a type the
+    repair already normalised) is a choice: it is never touched, and the caller keeps it
+    out of every later step, so a value chosen under one release's defaults is not
+    mistaken for a later release's default. A knob in ``skip`` is never moved; it is
+    reported as a choice only when it differs from the old default."""
+    chosen: set[str] = set()
+    for name, (old, new) in moves.items():
+        if name not in out:
+            continue
+        value = out[name]
+        if not (isinstance(value, int) and not isinstance(value, bool) and value == old):
+            chosen.add(name)
+        elif name not in skip:
+            out[name] = new
+    return frozenset(chosen)
+
+
+def _migrate_chat_limits_v1(out: dict[str, Any], chosen: frozenset[str]) -> frozenset[str]:
+    """Version 1 (Round 12 SPEC D1/D6): decide ``limits_mode`` and raise the stall
+    timeout and concurrency defaults.
+
+    An explicit ``limits_mode`` is kept; without one the block becomes ``bounded`` when
+    any limit knob differs from its shipped default and ``unlimited`` otherwise. Old
+    defaults of the changed knobs move to the new ones (persisted blocks only); a
+    ``bounded`` block keeps its stall timeout, as Round 12 shipped. Returns the knobs
+    that hold an operator's choice (see :func:`_move_old_defaults`)."""
     mode = out.get("limits_mode")
     if mode not in ("unlimited", "bounded"):
         changed = [name for name, default in _CHAT_LIMIT_KNOB_DEFAULTS.items()
                    if name in out and out[name] != default]
         mode = "bounded" if changed else "unlimited"
         out["limits_mode"] = mode
-    if all(key in out for key in _CHAT_PERSISTED_MARKERS):
-        for name, (old, new) in _CHAT_CHANGED_DEFAULTS.items():
-            if name == "model_step_timeout_s" and mode == "bounded":
-                continue
-            if out.get(name) == old:
-                out[name] = new
+    if not _is_persisted_chat_block(out):
+        return frozenset()
+    skip = chosen | {"model_step_timeout_s"} if mode == "bounded" else chosen
+    return _move_old_defaults(out, _CHAT_CHANGED_DEFAULTS, skip=skip)
+
+
+def _migrate_chat_limits_v2(out: dict[str, Any], chosen: frozenset[str]) -> frozenset[str]:
+    """Version 2 (Round 14 SPEC §4.2.2): the tripled "Timeouts and capacity" defaults.
+    Persisted blocks only, in both limits modes (D18: a ``bounded`` call is still cut
+    at the question's remaining time, so a longer stall timeout never lengthens it).
+    A knob an earlier step found chosen stays, even when its value happens to equal a
+    Round 12 default (a pre-Round-12 block that chose 4 questions per user keeps 4)."""
+    if not _is_persisted_chat_block(out):
+        return frozenset()
+    return _move_old_defaults(out, _CHAT_TRIPLED_DEFAULTS, skip=chosen)
+
+
+# One migration step: it moves old defaults in place, never moves a knob in ``chosen``,
+# and returns the knobs it found chosen.
+_ChatLimitsStep = Callable[[dict[str, Any], frozenset[str]], frozenset[str]]
+# The migration steps, in order: ``(version, step)``. A stored block runs every step
+# whose version is above its own marker, then is stamped with the last one.
+_CHAT_LIMITS_STEPS: tuple[tuple[int, _ChatLimitsStep], ...] = (
+    (1, _migrate_chat_limits_v1),
+    (2, _migrate_chat_limits_v2),
+)
+
+
+def _migrate_chat_limits(out: dict[str, Any]) -> dict[str, Any]:
+    """The staged chat limits migration on an already-repaired block.
+
+    A block at :data:`CURRENT_CHAT_LIMITS_VERSION` is left alone (an operator's later
+    choice is never re-decided). Otherwise every step above the stored marker runs in
+    order (an absent marker is a block from before Round 12, version 0), so a
+    pre-Round-12 block chains through both: 30 s / 2 / 8 becomes 300 / 4 / 16 in step 1
+    and 900 / 12 / 48 in step 2. A value the first step to judge a knob finds chosen
+    (it differs from that release's default) is kept by every later step, so a
+    pre-Round-12 choice of 4 questions per user is not mistaken for the Round 12
+    default. The marker is then stamped. Never raises.
+
+    Known limitation (documented): an administrator who deliberately chose exactly the
+    default of the release the block was stored by cannot be told apart from it and is
+    moved once."""
+    version = out.get("chat_limits_version")
+    stored = version if isinstance(version, int) and not isinstance(version, bool) else 0
+    if stored >= CURRENT_CHAT_LIMITS_VERSION:
+        return out
+    chosen: frozenset[str] = frozenset()
+    for step_version, step in _CHAT_LIMITS_STEPS:
+        if stored < step_version:
+            chosen |= step(out, chosen)
     out["chat_limits_version"] = CURRENT_CHAT_LIMITS_VERSION
     return out
 
@@ -1624,7 +1722,13 @@ class ChatAgentConfig(BaseModel):
     either way so a stored configuration keeps validating and switching back is
     lossless. A one-time ``chat_limits_version`` migration (:meth:`_repair`) moves a
     stored configuration to ``unlimited`` unless an operator changed a limit knob away
-    from its shipped default."""
+    from its shipped default.
+
+    Round 14 (SPEC §4.2, ask 5): the "Timeouts and capacity" defaults are tripled
+    (lookups at once 12, lookup timeout 45 s, model call timeout 900 s, questions at
+    once 12 per user and 48 in total) and two ceilings rise to fit them. Version 2 of
+    the same migration moves a stored value that still equals the Round 12 default, in
+    both limits modes; any other value stays."""
 
     # ``model_step_timeout_s`` / ``max_model_calls`` are about the LLM, not pydantic.
     model_config = {"protected_namespaces": ()}
@@ -1642,14 +1746,14 @@ class ChatAgentConfig(BaseModel):
         default=10, ge=1, le=40, description="Lookups (tool calls) per chat question.",
     )
     max_parallel: int = Field(
-        default=4, ge=1, le=8, description="Lookups the assistant may run at once in one step.",
+        default=12, ge=1, le=24, description="Lookups the assistant may run at once in one step.",
     )
     tool_timeout_s: int = Field(
-        default=15, ge=1, le=120,
+        default=45, ge=1, le=120,
         description="Seconds one lookup may take (log fan-out keeps per-source timeouts inside it).",
     )
     model_step_timeout_s: int = Field(
-        default=300, ge=5, le=900,
+        default=900, ge=5, le=1_800,
         description=("Seconds one model call may stay silent before it counts as stalled "
                      "(a stalled call is retried once). With per-question limits, a call also "
                      "ends when the question's time runs out."),
@@ -1675,10 +1779,10 @@ class ChatAgentConfig(BaseModel):
         description="Output tokens for the final answer (at least the chat model's own limit).",
     )
     max_concurrent_turns_per_user: int = Field(
-        default=4, ge=1, le=10, description="Chat questions one user may have running at the same time.",
+        default=12, ge=1, le=24, description="Chat questions one user may have running at the same time.",
     )
     max_concurrent_turns_global: int = Field(
-        default=16, ge=1, le=100, description="Chat questions this backend runs at the same time.",
+        default=48, ge=1, le=100, description="Chat questions this backend runs at the same time.",
     )
     max_indicator_lookups: int = Field(
         default=3, ge=0, le=10,

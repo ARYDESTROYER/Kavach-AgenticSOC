@@ -35,6 +35,19 @@ import {
   ListChecks,
   Crosshair,
   Gauge,
+  AlarmClock,
+  BadgeCheck,
+  ChartArea,
+  Filter,
+  Hourglass,
+  LayoutDashboard,
+  ListOrdered,
+  ListTodo,
+  Megaphone,
+  Network,
+  RadioTower,
+  TrendingUp,
+  Users,
 } from 'lucide-react';
 
 import type { DashboardWidget } from '@/lib/types';
@@ -59,7 +72,24 @@ export type WidgetType =
   | 'table.connector_health'
   | 'table.recent_cases'
   | 'mitre.heatmap'
-  | 'gauge.active_risk';
+  | 'gauge.active_risk'
+  // Round 14 (SPEC §4.4.3): the built-in boards' modules, also offered in the builder.
+  | 'kpi.strip'
+  | 'chart.case_trend'
+  | 'chart.case_breakdown'
+  | 'chart.severity_trend'
+  | 'chart.backlog_aging'
+  | 'chart.noise_funnel'
+  | 'table.attention_queue'
+  | 'table.workload'
+  | 'table.sla_breaches'
+  | 'table.top_rules'
+  | 'table.noisy_rules'
+  | 'table.top_techniques'
+  | 'kpi.auto_close_health'
+  | 'table.campaigns'
+  | 'table.telemetry_gaps'
+  | 'kpi.agent_quality';
 
 /** A single `resource:action` RBAC requirement (mirrors the `<Can>` matrix). */
 export interface WidgetPermission {
@@ -144,6 +174,50 @@ const TITLE_FIELD: WidgetConfigField = {
   kind: 'text',
   placeholder: 'Override the widget title (plain text)',
 };
+
+// --------------------------------------------------------------------------- //
+// Round 14 stub bodies (SPEC §4.4.1). Every new widget type is registered now so the
+// client union, this registry and the server allowlist move together with the
+// contract file; until WP-W4c replaces each stub with its real lazy body, a stub reads
+// nothing and renders the shared "Not available yet" state inside the standard frame.
+// --------------------------------------------------------------------------- //
+const PendingWidget = React.lazy(async () => {
+  const [{ WidgetShell }, { EmptyState }] = await Promise.all([
+    import('./widgets/common'),
+    import('@/soc/components/EmptyState'),
+  ]);
+  function PendingWidgetBody({ title }: WidgetProps) {
+    return React.createElement(WidgetShell, {
+      title: title || 'Widget',
+      icon: Hourglass,
+      emptyMessage: React.createElement(EmptyState, {
+        state: 'unavailable',
+        title: 'Not available yet',
+        compact: true,
+      }),
+      children: null,
+    });
+  }
+  return { default: PendingWidgetBody };
+});
+
+const METRICS_VIEW: WidgetPermission = { resource: 'metrics', action: 'view' };
+const CASES_READ: WidgetPermission = { resource: 'cases', action: 'read' };
+
+/**
+ * A "Rows" select over whole-number choices. `fallback` is the number of rows the body
+ * shows while the option is not set (SPEC §4.4.3 names it per widget), so the sheet
+ * states it rather than leaving an empty select unexplained.
+ */
+const ROWS_FIELD = (key: 'top' | 'limit', choices: number[], fallback: number): WidgetConfigField => ({
+  key,
+  label: 'Rows',
+  kind: 'select',
+  choices: choices.map((n) => ({ value: String(n), label: String(n) })),
+  placeholder: `Default ${fallback}`,
+});
+
+const TOP_FIELD = (choices: number[]): WidgetConfigField => ROWS_FIELD('top', choices, 10);
 
 // --------------------------------------------------------------------------- //
 // The registry
@@ -262,6 +336,269 @@ const DEFS: WidgetDef[] = [
     requires: { resource: 'cases', action: 'read' },
     configFields: [TITLE_FIELD],
   },
+  // ---- Round 14 stubs (SPEC §4.4.3; WP-W4c replaces each Component) ---- //
+  {
+    type: 'kpi.strip',
+    title: 'KPI strip',
+    description: 'Six headline figures for operations, detection or executive reporting.',
+    icon: LayoutDashboard,
+    category: 'kpi',
+    Component: PendingWidget,
+    defaultSize: { w: 12, h: 2, minW: 6, minH: 2 },
+    // A stub reads nothing. WP-W4c's body reads: posture, breakdown, shift, sourcesHealth, noise, coverage, autoClose.
+    sources: [],
+    // No widget-level grant: each cell has its own and a denied cell shows "No access".
+    configFields: [
+      TITLE_FIELD,
+      {
+        key: 'preset',
+        label: 'Figures',
+        kind: 'select',
+        choices: [
+          { value: 'operations', label: 'Operations' },
+          { value: 'detection', label: 'Detection' },
+          { value: 'executive', label: 'Executive' },
+        ],
+      },
+    ],
+  },
+  {
+    type: 'chart.case_trend',
+    title: 'Cases over time',
+    description: 'Arrivals and closures, alerts and cases, or outcomes per day.',
+    icon: TrendingUp,
+    category: 'chart',
+    Component: PendingWidget,
+    defaultSize: { w: 8, h: 5, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: trends.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [
+      TITLE_FIELD,
+      {
+        key: 'series',
+        label: 'Series',
+        kind: 'select',
+        choices: [
+          { value: 'flow', label: 'Arrivals and closures' },
+          { value: 'alerts', label: 'Alerts and cases' },
+          { value: 'outcomes', label: 'Outcomes' },
+        ],
+      },
+    ],
+  },
+  {
+    type: 'chart.case_breakdown',
+    title: 'Case breakdown',
+    description: 'Cases in the window broken down by one field, as ranked bars.',
+    icon: BarChart3,
+    category: 'chart',
+    Component: PendingWidget,
+    defaultSize: { w: 4, h: 5, minW: 3, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: metrics, breakdown.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [
+      TITLE_FIELD,
+      {
+        key: 'by',
+        label: 'Break down by',
+        kind: 'select',
+        choices: [
+          { value: 'status', label: 'Status' },
+          { value: 'verdict', label: 'AI verdict' },
+          { value: 'severity', label: 'Severity' },
+          { value: 'source', label: 'Source' },
+          { value: 'rule', label: 'Detection rule' },
+          { value: 'closed_by', label: 'Closed by' },
+          { value: 'assignee', label: 'Assignee' },
+          { value: 'mitre_tactic', label: 'ATT&CK tactic' },
+          { value: 'mitre_technique', label: 'ATT&CK technique' },
+        ],
+      },
+      TOP_FIELD([5, 10]),
+    ],
+  },
+  {
+    type: 'chart.severity_trend',
+    title: 'Cases by severity over time',
+    description: 'Daily or weekly case counts stacked by severity level.',
+    icon: ChartArea,
+    category: 'chart',
+    Component: PendingWidget,
+    defaultSize: { w: 8, h: 5, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: breakdown.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [
+      TITLE_FIELD,
+      {
+        key: 'bucket',
+        label: 'Bucket',
+        kind: 'select',
+        choices: [
+          { value: 'day', label: 'Day' },
+          { value: 'week', label: 'Week' },
+        ],
+      },
+    ],
+  },
+  {
+    type: 'chart.backlog_aging',
+    title: 'Backlog aging',
+    description: 'Open cases by how long they have been open.',
+    icon: Hourglass,
+    category: 'chart',
+    Component: PendingWidget,
+    defaultSize: { w: 4, h: 5, minW: 3, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: posture.
+    sources: [],
+    requires: CASES_READ,
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'chart.noise_funnel',
+    title: 'Noise reduction',
+    description: 'Raw alerts reduced to cases and outcomes over the window.',
+    icon: Filter,
+    category: 'chart',
+    Component: PendingWidget,
+    defaultSize: { w: 4, h: 5, minW: 3, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: noise.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'table.attention_queue',
+    title: 'Needs attention now',
+    description: 'Open cases ranked by breached targets, then by urgency.',
+    icon: ListTodo,
+    category: 'table',
+    Component: PendingWidget,
+    defaultSize: { w: 8, h: 6, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: shift.
+    sources: [],
+    requires: CASES_READ,
+    configFields: [TITLE_FIELD, ROWS_FIELD('limit', [5, 8, 10], 8)],
+  },
+  {
+    type: 'table.workload',
+    title: 'Analyst workload',
+    description: 'Open cases per analyst, with the unassigned queue.',
+    icon: Users,
+    category: 'table',
+    Component: PendingWidget,
+    defaultSize: { w: 4, h: 6, minW: 3, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: shift.
+    sources: [],
+    requires: CASES_READ,
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'table.sla_breaches',
+    title: 'SLA breaches and at risk',
+    description: 'Open cases past or near their response and resolve targets.',
+    icon: AlarmClock,
+    category: 'table',
+    Component: PendingWidget,
+    defaultSize: { w: 4, h: 5, minW: 3, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: posture.
+    sources: [],
+    requires: CASES_READ,
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'table.top_rules',
+    title: 'Top detection rules',
+    description: 'The rules behind the most cases in the window.',
+    icon: ListOrdered,
+    category: 'table',
+    Component: PendingWidget,
+    defaultSize: { w: 6, h: 6, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: breakdown.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [TITLE_FIELD, TOP_FIELD([5, 10])],
+  },
+  {
+    type: 'table.noisy_rules',
+    title: 'Noisiest rules',
+    description: 'Rules with the highest false-positive load and their tuning state.',
+    icon: Megaphone,
+    category: 'table',
+    Component: PendingWidget,
+    defaultSize: { w: 6, h: 6, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: tuning.
+    sources: [],
+    requires: { resource: 'automation', action: 'read' },
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'table.top_techniques',
+    title: 'Top techniques',
+    description: 'The ATT&CK techniques seen on the most cases.',
+    icon: Crosshair,
+    category: 'coverage',
+    Component: PendingWidget,
+    defaultSize: { w: 4, h: 6, minW: 3, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: mitre.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [TITLE_FIELD, TOP_FIELD([5, 10])],
+  },
+  {
+    type: 'kpi.auto_close_health',
+    title: 'Auto-close health',
+    description: 'How many cases the agent closed on its first decision, and whether that holds.',
+    icon: Bot,
+    category: 'kpi',
+    Component: PendingWidget,
+    defaultSize: { w: 4, h: 4, minW: 3, minH: 3 },
+    // A stub reads nothing. WP-W4c's body reads: autoClose.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'table.campaigns',
+    title: 'Active campaigns',
+    description: 'Groups of related cases that share entities.',
+    icon: Network,
+    category: 'table',
+    Component: PendingWidget,
+    defaultSize: { w: 6, h: 5, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: campaigns.
+    sources: [],
+    requires: CASES_READ,
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'table.telemetry_gaps',
+    title: 'Telemetry gaps',
+    description: 'Data the detections need that no source is sending.',
+    icon: RadioTower,
+    category: 'coverage',
+    Component: PendingWidget,
+    defaultSize: { w: 8, h: 5, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: telemetry.
+    sources: [],
+    requires: CASES_READ,
+    configFields: [TITLE_FIELD],
+  },
+  {
+    type: 'kpi.agent_quality',
+    title: 'Agent quality',
+    description: 'How often analysts agreed with the agent, against the previous weeks.',
+    icon: BadgeCheck,
+    category: 'kpi',
+    Component: PendingWidget,
+    defaultSize: { w: 6, h: 5, minW: 4, minH: 4 },
+    // A stub reads nothing. WP-W4c's body reads: agentImprovement.
+    sources: [],
+    requires: METRICS_VIEW,
+    configFields: [TITLE_FIELD],
+  },
 ];
 
 /** The widget registry — a `type → WidgetDef` map (read-only). */
@@ -271,6 +608,16 @@ export const WIDGET_REGISTRY: ReadonlyMap<WidgetType, WidgetDef> = new Map(
 
 /** All registered widget types (stable order — powers the server allowlist mirror). */
 export const WIDGET_TYPES: readonly WidgetType[] = DEFS.map((d) => d.type);
+
+/**
+ * The Round 14 types whose body is still the shared "Not available yet" stub (SPEC
+ * §4.4.1). A stub reads no data source; every other widget reads at least one. Derived
+ * from the registry, so replacing a stub's `Component` with its real body (WP-W4c)
+ * takes the type out of this set without a second list to keep in step.
+ */
+export const PENDING_WIDGET_TYPES: ReadonlySet<WidgetType> = new Set(
+  DEFS.filter((d) => d.Component === PendingWidget).map((d) => d.type),
+);
 
 /** True when `type` is a currently-registered widget. */
 export function isKnownWidgetType(type: string): type is WidgetType {

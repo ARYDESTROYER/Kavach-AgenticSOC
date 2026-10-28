@@ -456,7 +456,7 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **36 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters), ALL
+                     + /sources/health) + **38 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters; Round 14 added routes_audit and routes_rule_summary), ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
@@ -472,8 +472,8 @@ backend/app/
                      routes_prefs [`/branding`, `/prefs/*`, `/terminology`, `/views*`],
                      routes_rag [`/rag/*`, `/memory*`; direct RAG import and precedent
                      bootstrap remain executable OpenAPI-deprecated compatibility
-                     primitives], routes_search [`/search`,
-                     `/audit`] (none of these paths remain in `routes.py`; there is no
+                     primitives], routes_search [`/search`; Round 14 moved `/audit` to
+                     routes_audit] (none of these paths remain in `routes.py`; there is no
                      `/branding/presets` endpoint). All paths byte-identical across the
                      decomposition; +`POST /api/triage/preview-decision` [rule Test/Preview
                      that NEVER calls decide()/bills the LLM #3/#6] + typed baseline/
@@ -535,6 +535,15 @@ backend/app/
                      (home/thread/case suggestions, 60 s per-caller cache, pure read, no
                      audit) + `POST /api/chat/starters/events` (viewed/used/dismissed,
                      opaque keys, 30/min)] ·
+                     routes_audit [Round 14: `GET /api/audit` (scopes, search,
+                     signed cursor, honest totals; every old parameter keeps its
+                     meaning), `/api/audit/count`, `/api/audit/records/{record_id}`;
+                     audit:view; Demo split; coalesced `audit_view` rows] ·
+                     routes_rule_summary [Round 14: `GET /api/rules/summary`, one rule's
+                     picture in seven sections, each with its own grant and status; exact
+                     where a source counts all of its data, "at least" where it cannot (a
+                     live-tail ring, a sample, a failed shard), a top list the store
+                     approximates across shards said so; cases all time; no model call] ·
                      routes_reports [`/api/reports*` owner-scoped reports,
                      server-resolved add, one-call AI summary with dry-run estimate;
                      Round 12: `from-answer`, `from-conversation`, 60 items,

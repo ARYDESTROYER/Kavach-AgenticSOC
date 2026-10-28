@@ -28,6 +28,8 @@ Stdlib only — see :mod:`app.auth.tokens` and :mod:`app.auth.passwords`.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import secrets
 from dataclasses import dataclass, field
@@ -58,6 +60,13 @@ _MFA_PENDING_CLAIM = "pending"
 # so a client can neither add nor strip it.
 _REMEMBER_CLAIM = "rm"
 _REMEMBER_MAX_SECONDS = 24 * 3600
+
+# Round 14 (SPEC §4.5.3): the audit log names a session by an HMAC of its id, never
+# by the id or the token. The key is derived from the signing secret with this label,
+# so the reference is stable for the life of the secret, cannot be reversed to a
+# session id, and is never a key that can sign anything.
+_SESSION_REF_LABEL = b"agentic-soc/audit/session-ref/v1"
+_SESSION_REF_HEX_CHARS = 16
 
 
 @dataclass
@@ -180,11 +189,26 @@ class AuthService:
                 "TLSOC_AUTH_JWT_SECRET when using the Compose stack) for production."
             )
         self._jwt_secret = secret
+        self._session_ref_key: bytes | None = (
+            hmac.new(secret.encode("utf-8"), _SESSION_REF_LABEL, hashlib.sha256).digest()
+            if secret else None
+        )
 
     @property
     def is_enabled(self) -> bool:
         """Whether authentication enforcement is turned on."""
         return self._enabled
+
+    def session_ref(self, sid: str | None) -> str | None:
+        """The audit reference of a session (SPEC §4.5.3): the first 16 hex
+        characters of HMAC-SHA-256 of the session id, keyed by a key derived from the
+        signing secret. ``None`` without a session id or a signing secret (sign-in
+        off). Never the token, never the id itself."""
+        key = self._session_ref_key
+        if key is None or not isinstance(sid, str) or not sid:
+            return None
+        digest = hmac.new(key, sid.encode("utf-8"), hashlib.sha256).hexdigest()
+        return digest[:_SESSION_REF_HEX_CHARS]
 
     def set_users(self, store_users: list, *, allow_empty: bool = False) -> None:
         """Refresh the synced view from the persistent ``UserStore`` (call after the

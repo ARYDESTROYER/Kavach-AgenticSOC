@@ -115,10 +115,15 @@ export interface MetricsBreakdownOther {
   cost_usd: number | null;
 }
 
-/** One zero-filled calendar bucket of a bucketed breakdown, in order. */
+/**
+ * One zero-filled calendar bucket of a bucketed breakdown, in order. When `top` cut
+ * groups, `other_count` is this bucket's share of `other`, so its listed groups plus
+ * `other_count` are the bucket's total; `null` when nothing was cut.
+ */
 export interface MetricsBreakdownBucket {
   label: string;
   in_progress: boolean;
+  other_count?: number | null;
 }
 
 /**
@@ -143,10 +148,16 @@ export interface MetricsBreakdown {
   groups: MetricsBreakdownGroup[];
   buckets: MetricsBreakdownBucket[];
   other: MetricsBreakdownOther | null;
+  /** Matching records with no readable creation date, never silently dropped. */
+  missing_created: number;
+  /** Whether `total` holds them (all time: yes; a bounded window cannot place them). */
+  missing_in_total: boolean;
 }
 
 /** Error codes of the breakdown endpoint, for the widget states. */
 export type MetricsBreakdownErrorCode =
   | 'breakdown_bad_param'
   /** Row-level data scope is on (D16): "Hidden while row-level scope is on." */
-  | 'breakdown_scope_unsupported';
+  | 'breakdown_scope_unsupported'
+  /** 503: the store could not be read or the read ran past its time; nothing was measured. */
+  | 'breakdown_unavailable';
