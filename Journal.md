@@ -11708,3 +11708,10 @@
 - Tests: gates agent full backend 11,791 tests, 11,779 passed, 6 failed (5 sandbox env, 1 WP-DOC records), 6 skipped; ruff fatal clean; tsc 0, eslint 0/0, design gates and docs check pass; orchestrator re-ran every demo test (pass) and the lookup, runbooks and parity suites (pass).
 - Status: done.
 - Next: Wave D before/after screenshots; FX3 leftover package; WP-DOC; WP-GEN.
+
+### 2026-10-29 15:55Z — orchestrator — Round 14 page migration progress composites
+- Context: operator asked for before/after images after each wave (ask 8, pages follow the Overview grammar).
+- Did: a screenshot sub-agent captured 27 side-by-side images (base 1cf20a7 vs the Round 14 branch) from two seeded demos started together: Cases (desktop, dark, phone), Logs, Case Manager with the Closed by the AI agent filter (was Automated scans), Metrics, Cost, Agent effectiveness, Standup, Campaigns, Reports, Approvals, Inbox, Settings General and Users, Sources, Auto-tuning, Knowledge, Models, Detection rules and the sign-in notice. Eleven were sent to the operator. No repository file changed.
+- Tests: none (screenshots); every capture had no page error and no horizontal overflow.
+- Status: done.
+- Next: r6b-fix (FX3b2) and r6w-fix (FX3wa, FX3wb, FX3wc) running; then WP-DOC and WP-GEN.
