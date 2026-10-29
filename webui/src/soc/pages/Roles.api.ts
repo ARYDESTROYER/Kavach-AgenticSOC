@@ -4,17 +4,17 @@
  * Kept OUT of the shared `lib/api.ts` (parallel-build hygiene): everything the
  * Roles surface needs lives here and rides the low-level `api.get/post/put/del`
  * verbs. The endpoints (all under `/api`) are:
- *   GET    /roles                  — the role → resource → [actions] matrix + roster.
- *   POST   /roles                  — create a custom role.
- *   PUT    /roles                  — update (replace by name) a custom role.
- *   DELETE /roles/{name}           — delete a custom role.
- *   POST   /roles/preview          — resolve a DRAFT role + diff vs the live matrix.
- *   GET    /roles/simulate         — can() outcome for role × resource × action.
- *   GET    /account/permissions    — the CALLER's resolved grants (drives capability).
- *   PUT    /users/{username}/roles — assign a base role + custom_roles[] to a user.
+ *   GET    /roles: the role → resource → [actions] matrix + roster.
+ *   POST   /roles: create a custom role.
+ *   PUT    /roles: update (replace by name) a custom role.
+ *   DELETE /roles/{name}: delete a custom role.
+ *   POST   /roles/preview: resolve a DRAFT role + diff vs the live matrix.
+ *   GET    /roles/simulate: can() outcome for role × resource × action.
+ *   GET    /account/permissions: the CALLER's resolved grants (drives capability).
+ *   PUT    /users/{username}/roles: assign a base role + custom_roles[] to a user.
  *
  * #9: role names / descriptions / grant maps are operator-influenceable; they are
- * returned as PLAIN data and rendered escaped (plain text / CodeBlock) — never as
+ * returned as PLAIN data and rendered escaped (plain text / CodeBlock): never as
  * HTML and never interpolated into a prompt.
  */
 import { api } from '@/lib/api';
@@ -31,7 +31,7 @@ export interface CustomRole {
   denies: GrantMap;
 }
 
-/** GET /api/roles — the resolved matrix + the built-in role roster. */
+/** GET /api/roles: the resolved matrix + the built-in role roster. */
 export interface RolesMatrixResponse {
   roles: string[];
   default_role: string;
@@ -41,7 +41,7 @@ export interface RolesMatrixResponse {
    * The RAW operator-defined custom-role definitions (Round-6 #20): the exact
    * `name`/`description`/`inherits`/`grants`/`denies` as stored, so the editor can
    * restore a faithful draft on Edit/Clone. The `matrix` above is the RESOLVED view
-   * (inheritance flattened into explicit grants, no description) — prefer these raw
+   * (inheritance flattened into explicit grants, no description): prefer these raw
    * defs when seeding a draft. Additive + optional (an older backend omits it → the
    * page falls back to `matrix`). #9: names/descriptions/grant maps are rendered
    * escaped, never fed to a prompt.
@@ -55,7 +55,7 @@ export interface ResourceDiff {
   removed: string[];
 }
 
-/** POST /api/roles/preview — a no-persistence resolution + diff of a draft role. */
+/** POST /api/roles/preview: a no-persistence resolution + diff of a draft role. */
 export interface RolePreviewResponse {
   name: string;
   /** role → resource → [actions] (this role's resolved row, wildcards intact). */
@@ -67,7 +67,7 @@ export interface RolePreviewResponse {
   is_new: boolean;
 }
 
-/** GET /api/roles/simulate — a single can() spot-check. */
+/** GET /api/roles/simulate: a single can() spot-check. */
 export interface SimulateResponse {
   role: string;
   resource: string;
@@ -81,7 +81,7 @@ export interface SimulateResponse {
   role_exists: boolean;
 }
 
-/** GET /api/account/permissions — the caller's resolved grants. */
+/** GET /api/account/permissions: the caller's resolved grants. */
 export interface AccountPermissions {
   authenticated: boolean;
   role: string;
@@ -126,8 +126,8 @@ export const rolesApi = {
  * The canonical resource → actions vocabulary (mirrors backend
  * `rbac/policy.RESOURCES`). The matrix editor builds its grid from THIS so a column
  * appears for every action a resource supports even when no role grants it yet. The
- * server is authoritative — an unknown resource/action submitted in a draft is
- * dropped leniently — but keeping this in sync gives the editor a complete grid.
+ * server is authoritative: an unknown resource/action submitted in a draft is
+ * dropped leniently: but keeping this in sync gives the editor a complete grid.
  * (Round-11 drift fix: `runbooks`, `system_updates`, and `rules` had been added to
  * the backend vocabulary but were missing from this mirror, so the editor grid and
  * the role-permission summary never showed them.) Round 14 (SPEC §3.7): the retired

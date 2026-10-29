@@ -49,7 +49,7 @@ describe('Knowledge settings — unconfirmed precedent tier', () => {
     // two and stop testing the tier it is named for.
     const tierCard = screen
       .getByText('Unconfirmed precedent (lower trust)')
-      .closest('section, article, div[class*="rounded"]') as HTMLElement;
+      .closest('[data-settings-group]') as HTMLElement;
     expect(within(tierCard).getByText('Off by default')).toBeInTheDocument();
     expect(screen.getByText('its own prior model judgements')).toBeInTheDocument();
     expect(screen.getByText('analyst-confirmed outcomes only')).toBeInTheDocument();

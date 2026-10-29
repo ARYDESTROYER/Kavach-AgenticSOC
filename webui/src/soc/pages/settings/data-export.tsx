@@ -1,23 +1,18 @@
-/** Durable, server-assembled portable export jobs. */
+/**
+ * Data export settings section: durable, server-assembled portable export jobs (Round 14
+ * grouped panels).
+ */
 import * as React from 'react';
-import { Archive, Loader2, LockKeyhole, ShieldCheck } from 'lucide-react';
+import { Archive } from 'lucide-react';
 import { toast } from 'sonner';
 
 import type { DataExportScope } from '@/lib/api';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/errorMessage';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
+import { LoadingGlyph } from '@/design-system';
 import { Button } from '@/ui/button';
 import { Checkbox } from '@/ui/checkbox';
-import { Label } from '@/ui/label';
 import { RadioGroup, RadioGroupItem } from '@/ui/radio-group';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/ui/select';
 import { Can } from '@/soc/components/Can';
 import {
   announceJobAccepted,
@@ -25,7 +20,7 @@ import {
   type JobSubmissionIntent,
 } from '@/soc/jobs/jobs';
 import { useNavigateOptional } from '@/soc/router';
-import { SectionTitle } from './primitives';
+import { SettingRow, SettingsGroup, SettingsSection } from './primitives';
 
 type ExportScope = DataExportScope;
 type ExportMode = 'archive' | 'segment';
@@ -40,6 +35,7 @@ const SCOPES: Array<{ id: ExportScope; title: string; description: string }> = [
 ];
 
 const SEGMENT_SIZES = [500, 1000, 2500, 5000];
+const SEGMENT_OPTIONS = SEGMENT_SIZES.map((value) => ({ value: String(value), label: value.toLocaleString('en-US') }));
 
 export function DataExportSection() {
   const navigate = useNavigateOptional();
@@ -90,111 +86,102 @@ export function DataExportSection() {
 
   return (
     <Can resource="data_export" action="export">
-      <div className="space-y-6">
-        <SectionTitle
-          title="Portable full-history export"
-          sub="Build one verified ZIP in the background. Navigation or reload no longer interrupts assembly."
-        />
-
-        <fieldset className="space-y-2" disabled={submitting}>
-          <legend className="text-sm font-semibold text-foreground">Assembly mode</legend>
-          <RadioGroup
-            value={mode}
-            onValueChange={(value) => setMode(value as ExportMode)}
-            className="grid gap-2 sm:grid-cols-2"
-            aria-label="Export assembly mode"
-          >
-            <label htmlFor="export-mode-archive" className="flex cursor-pointer items-start gap-3 border border-border p-3">
-              <RadioGroupItem id="export-mode-archive" value="archive" className="mt-0.5" />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium text-foreground">Archive</span>
-                <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                  Assemble selected scopes directly into one ZIP artifact.
-                </span>
-              </span>
-            </label>
-            <label htmlFor="export-mode-segment" className="flex cursor-pointer items-start gap-3 border border-border p-3">
-              <RadioGroupItem id="export-mode-segment" value="segment" className="mt-0.5" />
-              <span className="min-w-0">
-                <span className="block text-sm font-medium text-foreground">Segmented assembly</span>
-                <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
-                  Follow bounded server cursors, then package every JSON envelope into one ZIP.
-                </span>
-              </span>
-            </label>
-          </RadioGroup>
-        </fieldset>
-
-        <Alert>
-          <ShieldCheck className="h-4 w-4" aria-hidden />
-          <AlertTitle>Durable, server-verified artifact</AlertTitle>
-          <AlertDescription>
-            Credentials, tokens, sessions, users, environment secrets and upstream raw logs are never included. The server assembles and verifies the complete ZIP before exposing Download in Inbox.
-          </AlertDescription>
-        </Alert>
-
-        <fieldset className="space-y-3" disabled={submitting}>
-          <legend className="text-sm font-semibold text-foreground">Data to include</legend>
-          <label className="flex cursor-pointer items-start gap-3 border-b border-border py-3">
-            <Checkbox
-              checked={allSelected ? true : selected.length ? 'indeterminate' : false}
-              onCheckedChange={(value) => toggleAll(value === true)}
-              aria-label="Select all export scopes"
+      <SettingsSection title="Data export">
+        <SettingsGroup
+          title="Assembly"
+          caption="The server builds and verifies one ZIP before Download appears in Inbox. Leaving this page does not cancel the job."
+        >
+          <SettingRow variant="block">
+            <fieldset disabled={submitting}>
+              <legend className="sr-only">Assembly mode</legend>
+              <RadioGroup
+                value={mode}
+                onValueChange={(value) => setMode(value as ExportMode)}
+                className="space-y-3"
+                aria-label="Export assembly mode"
+              >
+                <label htmlFor="export-mode-archive" className="flex cursor-pointer items-start gap-3">
+                  <RadioGroupItem id="export-mode-archive" value="archive" className="mt-0.5" />
+                  <span className="min-w-0">
+                    <span className="block text-base font-medium text-foreground">Archive</span>
+                    <span className="mt-0.5 block text-sm text-muted-foreground">
+                      Assemble the selected data straight into one ZIP.
+                    </span>
+                  </span>
+                </label>
+                <label htmlFor="export-mode-segment" className="flex cursor-pointer items-start gap-3">
+                  <RadioGroupItem id="export-mode-segment" value="segment" className="mt-0.5" />
+                  <span className="min-w-0">
+                    <span className="block text-base font-medium text-foreground">Segmented assembly</span>
+                    <span className="mt-0.5 block text-sm text-muted-foreground">
+                      Follow bounded server cursors, then package every segment into one ZIP.
+                    </span>
+                  </span>
+                </label>
+              </RadioGroup>
+            </fieldset>
+          </SettingRow>
+          {mode === 'segment' ? (
+            <SettingRow
+              variant="select"
+              label="Records per server segment"
+              help="A server memory bound; the final delivery is still one ZIP."
+              value={String(segmentSize)}
+              options={SEGMENT_OPTIONS}
+              disabled={submitting}
+              onValueChange={(value) => setSegmentSize(Number(value))}
+              controlWidth="10rem"
             />
-            <span>
-              <span className="block text-sm font-medium text-foreground">All supported export scopes</span>
-              <span className="mt-0.5 block text-xs text-muted-foreground">Include every supported secret-free application scope.</span>
-            </span>
-          </label>
-          <div className="grid gap-x-6 sm:grid-cols-2 xl:grid-cols-3">
-            {SCOPES.map((scope) => (
-              <label key={scope.id} className="flex cursor-pointer items-start gap-3 border-b border-border/70 py-3">
+          ) : null}
+        </SettingsGroup>
+
+        <SettingsGroup title="Data to include">
+          <SettingRow variant="block">
+            <fieldset disabled={submitting}>
+              <legend className="sr-only">Data to include</legend>
+              <label className="flex cursor-pointer items-start gap-3">
                 <Checkbox
-                  checked={selected.includes(scope.id)}
-                  onCheckedChange={(value) => toggleScope(scope.id, value === true)}
-                  aria-label={`Include ${scope.title}`}
+                  checked={allSelected ? true : selected.length ? 'indeterminate' : false}
+                  onCheckedChange={(value) => toggleAll(value === true)}
+                  aria-label="Select all export scopes"
+                  className="mt-0.5"
                 />
-                <span className="min-w-0">
-                  <span className="block text-sm font-medium text-foreground">{scope.title}</span>
-                  <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{scope.description}</span>
+                <span>
+                  <span className="block text-base font-medium text-foreground">Everything</span>
+                  <span className="mt-0.5 block text-sm text-muted-foreground">Every supported secret-free scope.</span>
                 </span>
               </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <div className="flex flex-wrap items-end justify-between gap-4 border-t border-border pt-5">
-          {mode === 'segment' ? (
-            <div className="space-y-1.5">
-              <Label htmlFor="export-segment-size">Records per server segment</Label>
-              <Select value={String(segmentSize)} onValueChange={(value) => setSegmentSize(Number(value))} disabled={submitting}>
-                <SelectTrigger id="export-segment-size" className="w-52" aria-label="Records per server segment">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SEGMENT_SIZES.map((value) => <SelectItem key={value} value={String(value)}>{value.toLocaleString()}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">A server memory bound; the final delivery is still one ZIP.</p>
-            </div>
-          ) : (
-            <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
-              Leaving this page does not cancel the job. Inbox is the durable progress and download surface.
-            </p>
-          )}
-          <Button onClick={() => void submitExport()} disabled={!selected.length || submitting}>
-            {submitting ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Archive className="h-4 w-4" aria-hidden />}
-            {submitting ? 'Queuing export…' : 'Build ZIP in background'}
-          </Button>
-        </div>
-
-        <div className="flex items-start gap-2 text-xs text-muted-foreground">
-          <LockKeyhole className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-          <span>
-            Requires <code className="font-mono text-foreground">data_export:export</code> and a fresh sign-in. Every job is recorded in the audit trail.
-          </span>
-        </div>
-      </div>
+              <div className="mt-3 grid gap-x-6 gap-y-3 border-t border-border/70 pt-3 sm:grid-cols-2">
+                {SCOPES.map((scope) => (
+                  <label key={scope.id} className="flex cursor-pointer items-start gap-3">
+                    <Checkbox
+                      checked={selected.includes(scope.id)}
+                      onCheckedChange={(value) => toggleScope(scope.id, value === true)}
+                      aria-label={`Include ${scope.title}`}
+                      className="mt-0.5"
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-base font-medium text-foreground">{scope.title}</span>
+                      <span className="mt-0.5 block text-sm text-muted-foreground">{scope.description}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          </SettingRow>
+          <SettingRow
+            variant="action"
+            label="Build the export"
+            help="Needs the data export permission and a fresh sign-in. Every job is recorded in the audit log."
+            action={
+              <Button onClick={() => void submitExport()} disabled={!selected.length || submitting} aria-busy={submitting || undefined}>
+                {submitting ? <LoadingGlyph size="sm" className="size-4" /> : <Archive className="h-4 w-4" aria-hidden />}
+                Build ZIP in background
+              </Button>
+            }
+          />
+        </SettingsGroup>
+      </SettingsSection>
     </Can>
   );
 }

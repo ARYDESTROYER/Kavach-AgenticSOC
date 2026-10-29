@@ -8,6 +8,10 @@
  * Third re-shoot review: a shared entity's kind reads in the console's words ("IP:", not
  * the "Ip:" `humanizeToken` made of "ip"), and the title sets proportional numerals, so an
  * id's hyphen is not set wide.
+ *
+ * Round 14 (D29): the list and the sheet title name a campaign by its shared entity and
+ * case count ("10.0.0.5 · 3 cases"); the title is plain text with no icon, and the
+ * internal id is said in the body.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
@@ -99,19 +103,20 @@ describe('Campaign detail sheet', () => {
     apiGetMock.mockResolvedValue({ config: { enabled: true, cadence: 'daily' } });
   });
 
-  it('insets the body like the header and keeps the title icon beside a long wrapped title', async () => {
+  it('insets the body like the header, titles the sheet with the readable label and says the id in the body', async () => {
     renderCampaigns();
-    fireEvent.click(await screen.findByText('campaign-4039d3c5ab857211899383250c57b5dc'));
+    fireEvent.click(await screen.findByText('10.0.0.5 · 3 cases'));
     const sheet = await screen.findByRole('dialog');
     const title = within(sheet).getByRole('heading', { level: 2 });
-    const icon = title.querySelector('svg') as SVGElement;
-    expect(icon).toHaveClass('shrink-0');
-    // The title text wraps in its own box, so the icon is never the item that shrinks.
-    expect(title.querySelector('span')).toHaveClass('min-w-0', 'break-words');
+    // Plain text that wraps, no icon chip beside it.
+    expect(title).toHaveTextContent('10.0.0.5 · 3 cases');
+    expect(title.querySelector('svg')).toBeNull();
+    expect(title).toHaveClass('min-w-0', 'break-words');
+    expect(within(sheet).getByTestId('campaign-id')).toHaveTextContent('campaign-4039d3c5ab857211899383250c57b5dc');
     // Every body row and the scrolling sections sit on the header's p-6 inset.
     const badges = within(sheet).getByText('High').closest('div.flex-wrap') as HTMLElement;
     expect(badges).toHaveClass('px-6');
-    expect(within(sheet).getByText('First seen').parentElement?.parentElement).toHaveClass('px-6');
+    expect(within(sheet).getByText('First seen').closest('dl')).toHaveClass('px-6');
     const sections = within(sheet).getByRole('heading', { level: 3, name: 'Shared entities' }).closest('section')?.parentElement as HTMLElement;
     expect(sections).toHaveClass('px-6', 'pb-6', 'overflow-y-auto');
   });
@@ -130,14 +135,14 @@ describe('Campaign detail sheet', () => {
     });
     getMock.mockResolvedValue({ campaign: { ...CAMPAIGN, entities }, case_numbers: {} });
     renderCampaigns();
-    fireEvent.click(await screen.findByText('campaign-4039d3c5ab857211899383250c57b5dc'));
+    fireEvent.click(await screen.findByText('192.0.2.90 · 3 cases'));
     const sheet = await screen.findByRole('dialog');
     const section = within(sheet).getByRole('heading', { level: 3, name: 'Shared entities' }).closest('section') as HTMLElement;
     const kinds = Array.from(section.querySelectorAll('span.text-muted-foreground'), (n) => n.textContent);
     expect(kinds).toEqual(['IP:', 'User:', 'File hash:', 'Host:']);
     expect(section).not.toHaveTextContent('Ip:');
     const title = within(sheet).getByRole('heading', { level: 2 });
-    expect(title.querySelector('span')).toHaveClass('proportional-nums');
+    expect(title).toHaveClass('proportional-nums');
   });
 
   it("uses the rules editor's words for every entity kind (one list, not imported, so no extra chunk)", () => {

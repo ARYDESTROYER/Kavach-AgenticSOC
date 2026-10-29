@@ -1,14 +1,15 @@
 /**
- * Cases — Round-7 #8 polish + #11 auto-closed cell (W1.C).
+ * Cases: default columns and the one-badge status cell.
  *
  * Two behaviours:
- *  1. CASES_DEFAULT_HIDDEN: when the user has NEVER customized the table (no stored
- *     ColumnState), the curated secondary columns (disposition/alerts/playbooks/
- *     enrichments/category/urgency) open hidden while the dominant signal columns
- *     (Status/Severity/Confidence/Verdict/Risk) stay visible. Any stored state wins
- *     verbatim (the default no longer applies).
- *  2. AutoClosedBadge cell: an AI-closed case (terminal status + decision_by='agent')
- *     shows "Auto-closed by AI" in its Status cell; an analyst-closed one does not.
+ *  1. CASES_DEFAULT_HIDDEN (Round 14, SPEC §4.9.4, C7): when the user has NEVER
+ *     customized the table (no stored ColumnState), the list opens on the columns a
+ *     triage pass reads (Case ID, Title, Severity, Status, Outcome, Assignee, Updated) and
+ *     the secondary signals and counts open hidden. Any stored state wins verbatim (the
+ *     default no longer applies). The retired Playbooks count column never comes back.
+ *  2. One status badge per row: who closed a case is the Outcome column's job, so an
+ *     AI-closed case (terminal status + decision_by='agent') reads "Auto-closed" in its
+ *     Outcome cell and an analyst-closed one does not.
  *
  * Fully mocked (offline); nothing here touches #3 runtime behaviour.
  */
@@ -97,10 +98,10 @@ function rowFor(title: string): HTMLElement {
 // The curated default-hidden secondary columns + the dominant kept columns.
 // Round 12 (D15): the analyst's outcome is visible by default — the old hidden
 // "Disposition" column is now the shown "Outcome" column.
-const HIDDEN_HEADERS = ['Alerts', 'Playbooks', 'Enrichments', 'Category', 'Urgency'];
-const KEPT_HEADERS = ['Status', 'Severity', 'Confidence', 'Verdict', 'Risk', 'Outcome'];
+const HIDDEN_HEADERS = ['Confidence', 'Verdict', 'Risk', 'Entity', 'Category', 'Urgency', 'Alerts', 'Enrichments'];
+const KEPT_HEADERS = ['Case ID', 'Title', 'Severity', 'Status', 'Outcome', 'Assignee', 'Updated'];
 
-describe('Cases — CASES_DEFAULT_HIDDEN (#8)', () => {
+describe('Cases: CASES_DEFAULT_HIDDEN (Round 14)', () => {
   beforeEach(() => {
     prefsState.tables = {};
     seed([
@@ -112,12 +113,10 @@ describe('Cases — CASES_DEFAULT_HIDDEN (#8)', () => {
   it('opens with the curated secondary columns hidden when nothing is stored', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    // The dominant signal columns are visible…
-    for (const name of KEPT_HEADERS) {
-      expect(
-        screen.getByRole('columnheader', { name: new RegExp(name, 'i') }),
-      ).toBeInTheDocument();
-    }
+    // The triage columns are visible, in reading order…
+    const headers = screen.getAllByRole('columnheader').map((th) => th.textContent?.trim() ?? '');
+    const visible = headers.filter((text) => KEPT_HEADERS.includes(text));
+    expect(visible).toEqual(KEPT_HEADERS);
     // …and the curated secondary columns are hidden by default (reversible via Columns).
     for (const name of HIDDEN_HEADERS) {
       expect(
@@ -137,20 +136,31 @@ describe('Cases — CASES_DEFAULT_HIDDEN (#8)', () => {
         screen.getByRole('columnheader', { name: new RegExp(`^${name}`, 'i') }),
       ).toBeInTheDocument();
     }
+    // Runbooks replaced playbooks (Round 14): the old count column is gone, even for a
+    // stored state that still names it.
+    expect(screen.queryByRole('columnheader', { name: /^playbooks/i })).toBeNull();
+  });
+
+  it('ignores a stored column state that still names the retired Playbooks column', async () => {
+    prefsState.tables = { cases: { hidden: ['playbooks'], order: ['playbooks', 'case_id', 'title'] } };
+    renderCases();
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    expect(screen.queryByRole('columnheader', { name: /^playbooks/i })).toBeNull();
+    expect(screen.getByRole('columnheader', { name: /case id/i })).toBeInTheDocument();
   });
 });
 
-describe('Cases — AutoClosedBadge status cell (#11)', () => {
+describe('Cases: one status badge, the closer in Outcome (Round 14)', () => {
   beforeEach(() => {
     prefsState.tables = {};
     window.localStorage.clear();
   });
 
-  it('shows "Auto-closed by AI" for an agent-closed case, not an analyst-closed one', async () => {
+  it('says "Auto-closed" in the Outcome cell of an agent-closed case, not an analyst-closed one', async () => {
     seed([
       {
         case_id: 'c-ai', case_number: 'T-AI', title: 'AiClosed', status: 'closed',
-        decision_by: 'agent', risk_score: 30,
+        decision_by: 'agent', verdict: 'FALSE_POSITIVE', risk_score: 30,
         updated_at: '2026-06-29T01:00:00Z', tags: [], comments: [],
       },
       {
@@ -162,16 +172,18 @@ describe('Cases — AutoClosedBadge status cell (#11)', () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('AiClosed')).toBeInTheDocument());
 
-    // The agent-closed row carries the badge…
-    expect(
-      within(rowFor('AiClosed')).getByText(/Auto-closed by AI/i),
-    ).toBeInTheDocument();
+    // The agent-closed row says so in its Outcome cell…
+    const aiOutcome = within(rowFor('AiClosed')).getByTestId('case-outcome');
+    expect(aiOutcome).toHaveAttribute('data-outcome-source', 'agent_auto');
+    expect(aiOutcome).toHaveTextContent(/^Auto-closed/);
+    // Round 14: the table cell is the short label so it fits its column; the verdict it
+    // closed on is in the tooltip and read to assistive technology.
+    expect(aiOutcome).toHaveAttribute('title', 'Auto-closed as false positive');
+    expect(aiOutcome).toHaveTextContent('Auto-closed, auto-closed as false positive');
     // …the analyst-closed row does NOT (a human/system close is not an AI auto-close).
-    expect(
-      within(rowFor('AnalystClosed')).queryByText(/Auto-closed by AI/i),
-    ).toBeNull();
-    // Exactly one badge across the whole table.
-    expect(screen.getAllByText(/Auto-closed by AI/i)).toHaveLength(1);
+    expect(within(rowFor('AnalystClosed')).queryByText(/Auto-closed/i)).toBeNull();
+    // The Status cell holds the status alone: no second "Auto-closed by AI" badge.
+    expect(screen.queryByText(/Auto-closed by AI/i)).toBeNull();
   });
 
   it('does not show the badge on a still-open agent case (non-terminal)', async () => {

@@ -26,7 +26,6 @@ import {
   GitBranch,
   Clock,
   Telescope,
-  History,
   Database,
   ShieldCheck,
 } from 'lucide-react';
@@ -38,7 +37,6 @@ import { DASH, fmtMoney, humanizeAge, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/ui/card';
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
 import {
@@ -48,8 +46,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/select';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
-import { LoadingState } from '@/design-system';
+import { LoadingState, Panel, PANEL_GAP } from '@/design-system';
 
 import { PageHeader } from '@/soc/components/PageHeader';
 import { EmptyState } from '@/soc/components/EmptyState';
@@ -145,14 +142,35 @@ function riskFactors(c: Case): BarListItem[] {
   return [];
 }
 
+/** The page's explanation, in its help tip (Round 14, C8: never a line under the title). */
+export const INVESTIGATE_HELP =
+  'Check one IP, user or host across the selected log window. Matching evidence is correlated, investigated and saved as a case.';
+
+/** How an investigation works, shown before the first run. */
+const INVESTIGATE_STEPS: ReadonlyArray<{ icon: LucideIcon; title: string; body: string }> = [
+  {
+    icon: Database,
+    title: '1. Scope telemetry',
+    body: 'Search configured sources for one IP, user, or host in the selected lookback.',
+  },
+  {
+    icon: ShieldCheck,
+    title: '2. Analyze evidence',
+    body: 'Correlate matching events, enrich context, score risk, and explain the assessment.',
+  },
+  {
+    icon: Save,
+    title: '3. Create a case',
+    body: 'Persist the result in the shared case queue for review, assignment, and action.',
+  },
+];
+
 /* ------------------------------------------------------------ result view -- */
 
-/** Muted small-caps section label (OpenSearch-style). UNTRUSTED-safe: children
- *  are static literals only. */
+/** A section title inside the result (sentence case, the panel's sub-heading). UNTRUSTED-
+ *  safe: children are static literals only. */
 const SectionLabel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-    {children}
-  </h4>
+  <h3 className="text-sm font-semibold text-foreground">{children}</h3>
 );
 
 const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
@@ -168,38 +186,35 @@ const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
   const ruleIds: string[] = Array.isArray(c.rule_ids) ? c.rule_ids : [];
 
   return (
-    <Card>
-      <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
+    // The result is one module on the tinted panel (Round 14, C7): no card inside it.
+    <Panel as="article" aria-label="Investigation result" data-testid="investigation-result">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 space-y-1.5">
-          <CardTitle className="text-lg leading-snug">
+          <h2 className="text-lg font-semibold leading-snug text-foreground">
             {c.title || `Investigation: ${entityLabel}`}
-          </CardTitle>
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+          </h2>
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted-foreground">
             {c.entity ? (
               <span className="inline-flex items-center gap-1.5">
-                <span className="font-medium uppercase tracking-wide text-muted-foreground">
-                  {humanizeToken(c.entity.type)}
-                </span>
+                <span>{humanizeToken(c.entity.type)}</span>
                 <InlineCode value={c.entity.value} />
               </span>
             ) : (
               <span>{DASH}</span>
             )}
-            <span className="text-border" aria-hidden>
-              ·
-            </span>
+            <span aria-hidden>·</span>
             <span>updated {humanizeAge(c.updated_at || c.created_at)}</span>
           </p>
         </div>
         {onOpen && c.case_id ? (
           <Button size="sm" onClick={() => onOpen(c.case_id)}>
-            <ExternalLink className="h-4 w-4" />
+            <ExternalLink className="size-4" aria-hidden />
             Open case
           </Button>
         ) : null}
-      </CardHeader>
+      </div>
 
-      <CardContent className="space-y-6">
+      <div className="mt-5 space-y-6">
         {/* Badge row */}
         <div className="flex flex-wrap items-center gap-2">
           <VerdictBadge verdict={c.verdict} />
@@ -210,49 +225,39 @@ const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
 
         {/* Summary */}
         {c.summary ? (
-          <p className="whitespace-pre-wrap text-sm text-foreground">{c.summary}</p>
+          <p className="max-w-prose whitespace-pre-wrap text-sm text-foreground">{c.summary}</p>
         ) : null}
 
         {/* Recommended action */}
         {c.recommended_action ? (
-          <Alert>
-            <Megaphone className="h-4 w-4" />
-            <AlertTitle>Recommended action</AlertTitle>
-            <AlertDescription>
-              <p className="whitespace-pre-wrap text-foreground">
-                {c.recommended_action}
-              </p>
-            </AlertDescription>
-          </Alert>
+          <section className="space-y-2.5">
+            <SectionLabel>
+              <span className="inline-flex items-center gap-1.5">
+                <Megaphone className="size-4 text-muted-foreground" aria-hidden />
+                Recommended action
+              </span>
+            </SectionLabel>
+            <p className="max-w-prose whitespace-pre-wrap text-sm text-foreground">{c.recommended_action}</p>
+          </section>
         ) : null}
 
         {/* Evidence */}
         {evidence.length ? (
           <section className="space-y-2.5">
             <SectionLabel>Evidence</SectionLabel>
-            <ul className="space-y-2">
+            <ul className="divide-y divide-border/70">
               {evidence.map((ev, i) => (
-                <li
-                  key={i}
-                  className="flex items-start gap-3 rounded-md border border-border bg-muted/20 px-3.5 py-3"
-                >
-                  <span
-                    className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
-                    aria-hidden
-                  />
+                <li key={i} className="flex items-start gap-3 py-3 first:pt-0">
+                  <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-primary" aria-hidden />
                   <div className="min-w-0 flex-1 space-y-1.5">
-                    <p className="text-sm leading-relaxed text-foreground">
-                      {ev.summary}
-                    </p>
+                    <p className="text-sm leading-relaxed text-foreground">{ev.summary}</p>
                     {ev.event_ids && ev.event_ids.length ? (
                       <p className="text-xs text-muted-foreground">
                         {ev.event_ids.length} event
                         {ev.event_ids.length === 1 ? '' : 's'}
                       </p>
                     ) : null}
-                    {ev.query ? (
-                      <CodeBlock value={ev.query} caption="query" wrap />
-                    ) : null}
+                    {ev.query ? <CodeBlock value={ev.query} caption="query" wrap /> : null}
                   </div>
                 </li>
               ))}
@@ -270,7 +275,7 @@ const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
                   key={m}
                   className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground"
                 >
-                  <GitBranch className="h-3 w-3 text-muted-foreground" aria-hidden />
+                  <GitBranch className="size-3 text-muted-foreground" aria-hidden />
                   {m}
                 </span>
               ))}
@@ -295,18 +300,16 @@ const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
         ) : null}
 
         {/* Facts grid */}
-        <dl className="grid grid-cols-1 gap-x-8 gap-y-2.5 border-t border-border pt-5 text-sm sm:grid-cols-2">
+        <dl className="grid grid-cols-1 gap-x-8 gap-y-2.5 border-t border-border/70 pt-5 text-sm sm:grid-cols-2">
           <div className="flex items-baseline justify-between gap-3">
-            <dt className="text-muted-foreground">Case ID</dt>
+            <dt className="text-muted-foreground">Case</dt>
             <dd className="min-w-0 truncate text-right">
-              <InlineCode value={c.case_id} />
+              <InlineCode value={c.case_number || c.case_id} />
             </dd>
           </div>
           <div className="flex items-baseline justify-between gap-3">
             <dt className="text-muted-foreground">Entity</dt>
-            <dd className="min-w-0 truncate text-right text-foreground">
-              {entityLabel}
-            </dd>
+            <dd className="min-w-0 truncate text-right text-foreground">{entityLabel}</dd>
           </div>
           {ruleIds.length ? (
             <div className="flex items-baseline justify-between gap-3">
@@ -318,26 +321,29 @@ const ResultCard: React.FC<{ c: Case; onOpen?: (caseId: string) => void }> = ({
           ) : null}
           <div className="flex items-baseline justify-between gap-3">
             <dt className="text-muted-foreground">Members</dt>
-            <dd className="text-right text-foreground">
+            <dd className="text-right tabular-nums text-foreground">
               {String(c.member_event_keys?.length || c.member_event_ids?.length || 0)} events
             </dd>
           </div>
           <div className="flex items-baseline justify-between gap-3">
             <dt className="text-muted-foreground">Investigation cost</dt>
-            <dd className="text-right font-mono tabular-nums text-foreground">
-              {fmtMoney(c.token_cost)}
-            </dd>
+            <dd className="text-right font-mono tabular-nums text-foreground">{fmtMoney(c.token_cost)}</dd>
           </div>
         </dl>
 
-        <p className="flex items-center gap-1.5 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-          <Save className="h-3.5 w-3.5 shrink-0" aria-hidden />
-          Saved to the case queue — review it on the Cases tab.
+        <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <Save className="size-4 shrink-0" aria-hidden />
+          Saved to the case queue. Review it in Cases.
         </p>
-      </CardContent>
-    </Card>
+      </div>
+    </Panel>
   );
 };
+
+/** The standalone page's column: modules one panel gutter apart. */
+function StandaloneColumn({ children }: { children?: React.ReactNode }) {
+  return <div className={cn('flex flex-col', PANEL_GAP)}>{children}</div>;
+}
 
 /* ---------------------------------------------------------------- page ----- */
 
@@ -493,137 +499,101 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
     </Button>
   );
 
+  // Embedded in Workspace, the modules are the host page's own children (its page rhythm
+  // spaces them); standalone, the page's own column does, one panel gutter apart.
+  const Shell = embedded ? React.Fragment : StandaloneColumn;
   return (
-    <div className="space-y-7">
-      {embedded ? (
-        <div className="flex flex-wrap items-center justify-end gap-2">{viewCasesAction}</div>
-      ) : (
+    <Shell>
+      {embedded ? null : (
         <PageHeader
-          icon={Telescope}
-          eyebrow="Ad-hoc triage"
           title="Entity investigation"
-          description="Check one entity against in-scope telemetry and save the resulting analysis as a case."
+          help={INVESTIGATE_HELP}
           actions={viewCasesAction}
         />
       )}
 
-      <section
-        aria-label="Entity investigation workflow"
-        className="grid border-y border-border md:grid-cols-3 md:divide-x md:divide-border"
-      >
-        {[
-          {
-            icon: Database,
-            title: '1. Scope telemetry',
-            body: 'Search configured sources for one IP, user, or host in the selected lookback.',
-          },
-          {
-            icon: ShieldCheck,
-            title: '2. Analyze evidence',
-            body: 'Correlate matching events, enrich context, score risk, and explain the assessment.',
-          },
-          {
-            icon: Save,
-            title: '3. Create a case',
-            body: 'Persist the result in the shared case queue for review, assignment, and action.',
-          },
-        ].map(({ icon: Icon, title, body }) => (
-          <div key={title} className="flex min-w-0 gap-3 px-1 py-4 md:px-5">
-            <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold text-foreground">{title}</h2>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{body}</p>
-            </div>
-          </div>
-        ))}
-      </section>
-
       {/* Form */}
-      <section className="border-b border-border pb-6">
-        <div className="py-1">
-          {/* items-start keeps the controls aligned to the top of the row so the
-              entity-value validation message (which grows the cell) never shifts
-              the Lookback/Run cells down (they top-align, not bottom-align). */}
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-12 md:items-start">
-            {/* Entity type */}
-            <div className="space-y-1.5 md:col-span-4">
-              <Label>Entity type</Label>
-              <SegmentedControl<EntityType>
-                fitted
-                aria-label="Entity type"
-                value={entityType}
-                onValueChange={setEntityType}
-                options={ENTITY_OPTIONS.map((o) => ({
-                  value: o.id,
-                  label: o.label,
-                  icon: <o.icon className="h-4 w-4" />,
-                }))}
-              />
-            </div>
+      <Panel title="New investigation" data-testid="investigate-form">
+        {/* items-start keeps the controls aligned to the top of the row so the
+            entity-value validation message (which grows the cell) never shifts
+            the Lookback/Run cells down (they top-align, not bottom-align). */}
+        <div className="grid grid-cols-1 gap-5 md:grid-cols-12 md:items-start">
+          {/* Entity type */}
+          <div className="space-y-1.5 md:col-span-4">
+            <Label>Entity type</Label>
+            <SegmentedControl<EntityType>
+              fitted
+              aria-label="Entity type"
+              value={entityType}
+              onValueChange={setEntityType}
+              options={ENTITY_OPTIONS.map((o) => ({
+                value: o.id,
+                label: o.label,
+                icon: <o.icon className="size-4" />,
+              }))}
+            />
+          </div>
 
-            {/* Entity value */}
-            <div className="space-y-1.5 md:col-span-4">
-              <Label htmlFor="investigate-entity">{selected.label} value</Label>
-              <Input
-                id="investigate-entity"
-                placeholder={selected.placeholder}
-                value={entityValue}
-                onChange={(e) => {
-                  setEntityValue(e.target.value);
-                  if (emptySubmit && e.target.value.trim()) setEmptySubmit(false);
-                }}
-                onKeyDown={onKeyDown}
-                aria-invalid={emptySubmit || undefined}
-                aria-describedby={emptySubmit ? 'investigate-entity-error' : undefined}
-                aria-label={`${selected.label} to investigate`}
-                className={cn(emptySubmit && 'border-critical focus-visible:ring-critical')}
-              />
-              {emptySubmit ? (
-                <p
-                  id="investigate-entity-error"
-                  role="alert"
-                  className="text-xs font-medium text-critical-text"
-                >
-                  Enter a {selected.label.toLowerCase()} value to investigate.
-                </p>
-              ) : null}
-            </div>
+          {/* Entity value */}
+          <div className="space-y-1.5 md:col-span-4">
+            <Label htmlFor="investigate-entity">{selected.label} value</Label>
+            <Input
+              id="investigate-entity"
+              placeholder={selected.placeholder}
+              value={entityValue}
+              onChange={(e) => {
+                setEntityValue(e.target.value);
+                if (emptySubmit && e.target.value.trim()) setEmptySubmit(false);
+              }}
+              onKeyDown={onKeyDown}
+              aria-invalid={emptySubmit || undefined}
+              aria-describedby={emptySubmit ? 'investigate-entity-error' : undefined}
+              aria-label={`${selected.label} to investigate`}
+              className={cn(emptySubmit && 'border-critical focus-visible:ring-critical')}
+            />
+            {emptySubmit ? (
+              <p id="investigate-entity-error" role="alert" className="text-xs font-medium text-critical-text">
+                Enter a {selected.label.toLowerCase()} value to investigate.
+              </p>
+            ) : null}
+          </div>
 
-            {/* Lookback */}
-            <div className="space-y-1.5 md:col-span-2">
-              <Label>Lookback</Label>
-              <Select value={lookback} onValueChange={setLookback}>
-                <SelectTrigger aria-label="Lookback window">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {LOOKBACK_OPTIONS.map((o) => (
-                    <SelectItem key={o.value} value={o.value}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+          {/* Lookback */}
+          <div className="space-y-1.5 md:col-span-2">
+            <Label>Lookback</Label>
+            <Select value={lookback} onValueChange={setLookback}>
+              <SelectTrigger aria-label="Lookback window">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {LOOKBACK_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
-            {/* Run — the invisible md-only spacer label reserves the label row so
-                the button aligns with the other controls under items-start. */}
-            <div className="space-y-1.5 md:col-span-2">
-              <Label aria-hidden="true" className="invisible hidden md:block">
-                Run
-              </Label>
-              <Button
-                className="w-full"
-                onClick={() => void run()}
-                disabled={loading || (!entityValue.trim() && !emptySubmit)}
-              >
-                <Play className="h-4 w-4" />
-                {loading ? 'Running…' : 'Run investigation'}
-              </Button>
+          {/* Run: the invisible md-only spacer reserves the label row so the button lines
+              up with the other controls under items-start. It wraps the label in a block,
+              as the other cells' inline labels sit in their div's line box: a block label
+              alone (leading-none) is a shorter row, and the button sat 7px high. */}
+          <div className="space-y-1.5 md:col-span-2">
+            <div aria-hidden="true" className="invisible hidden md:block" data-testid="investigate-run-spacer">
+              <Label>Run</Label>
             </div>
+            <Button
+              className="w-full"
+              onClick={() => void run()}
+              disabled={loading || (!entityValue.trim() && !emptySubmit)}
+            >
+              <Play className="size-4" />
+              {loading ? 'Running…' : 'Run investigation'}
+            </Button>
           </div>
         </div>
-      </section>
+      </Panel>
 
       {/* Loading */}
       {loading ? (
@@ -642,8 +612,9 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
 
       {/* Neutral no-events empty state */}
       {!loading && noEvents ? (
-        <section className="border-b border-border pb-4">
+        <Panel aria-label="No in-scope events">
           <EmptyState
+            compact
             icon={Search}
             title={`No in-scope events for ${noEvents.entity.type}:${noEvents.entity.value}`}
             description={`Nothing matched in ${lookbackLabelFor(
@@ -658,7 +629,7 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
               ) : undefined
             }
           />
-        </section>
+        </Panel>
       ) : null}
 
       {/* Result */}
@@ -666,89 +637,83 @@ export default function Investigate({ onNavigate, embedded = false }: Investigat
         <ResultCard c={result} onOpen={setOpenCaseId} />
       ) : null}
 
-      {/* Idle empty state */}
+      {/* Idle: how an investigation works (Round 14, EI2: shown only before the first
+          run, never above the form on every visit). */}
       {!loading && !result && !error && !noEvents ? (
-        <div className="border-b border-border pb-2">
-          <EmptyState
-            icon={Telescope}
-            title="Start with an entity"
-            description={`Pick an entity type, enter a value (e.g. ${selected.placeholder.replace(
-              'e.g. ',
-              '',
-            )}), and run an investigation over ${lookbackLabelFor(
-              lookback,
-            ).toLowerCase()}. This is an explicit analyst action and the result is saved to Cases.`}
-          />
-        </div>
+        <Panel
+          title="How an investigation works"
+          caption={`This is an explicit analyst action over ${lookbackLabelFor(lookback).toLowerCase()}, and the result is saved to Cases.`}
+          aria-label="Entity investigation workflow"
+        >
+          <ol className="grid gap-4 md:grid-cols-3">
+            {INVESTIGATE_STEPS.map(({ icon: Icon, title, body }) => (
+              <li key={title} className="flex min-w-0 gap-3">
+                <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                <div className="min-w-0">
+                  <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+                  <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{body}</p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </Panel>
       ) : null}
 
       {/* Recent (this session) */}
       {recent.length ? (
-        <section className="space-y-3">
-          <div className="flex items-center gap-2">
-            <History className="h-4 w-4 text-muted-foreground" aria-hidden />
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Recent investigations (this session)
-            </h3>
-          </div>
-          <ul className="space-y-2">
+        <Panel title="Recent investigations" caption="this session" padding="none" data-testid="investigate-recent">
+          <ul className="divide-y divide-border/70 border-t border-border/70">
             {recent.map((r) => {
               const Icon = entityIcon(r.entity.type);
               return (
-                <li key={r.id}>
-                  {/* The Card is a plain container: the replay affordance and the
-                      "Open" button are separate controls so we never nest an
-                      interactive element inside another (invalid a11y semantics). */}
-                  <Card className="flex items-center gap-3 px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => replayRecent(r)}
-                      aria-label={`Replay ${humanizeToken(r.entity.type)}:${r.entity.value}`}
-                      className={cn(
-                        'flex min-w-0 flex-1 items-center gap-3 rounded-md text-left transition-colors',
-                        'hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      )}
+                <li key={r.id} className="flex items-center gap-3 px-4 py-2.5 xl:px-5 3xl:px-6">
+                  {/* The replay control and "Open" are separate buttons, never nested
+                      (one interactive element inside another is invalid). */}
+                  <button
+                    type="button"
+                    onClick={() => replayRecent(r)}
+                    aria-label={`Replay ${humanizeToken(r.entity.type)}:${r.entity.value}`}
+                    className={cn(
+                      'flex min-w-0 flex-1 items-center gap-3 rounded-md text-left transition-colors',
+                      'hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    )}
+                  >
+                    <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-foreground">
+                        {humanizeToken(r.entity.type)}:{r.entity.value}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {r.case.title || r.case.case_number || r.case.case_id} · {lookbackLabelFor(r.lookback)}
+                      </p>
+                    </div>
+                  </button>
+                  <VerdictBadge verdict={r.case.verdict} />
+                  <RiskBadge score={r.case.risk_score} />
+                  {r.case.case_id ? (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setOpenCaseId(r.case.case_id)}
+                      aria-label={`Open ${r.case.case_number || r.case.case_id}`}
                     >
-                      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-primary">
-                        <Icon className="h-4 w-4" aria-hidden />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-foreground">
-                          {humanizeToken(r.entity.type)}:{r.entity.value}
-                        </p>
-                        <p className="truncate text-xs text-muted-foreground">
-                          {r.case.title || r.case.case_id} ·{' '}
-                          {lookbackLabelFor(r.lookback)}
-                        </p>
-                      </div>
-                    </button>
-                    <VerdictBadge verdict={r.case.verdict} />
-                    <RiskBadge score={r.case.risk_score} />
-                    {r.case.case_id ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setOpenCaseId(r.case.case_id)}
-                        aria-label={`Open case ${r.case.case_id}`}
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                        Open
-                      </Button>
-                    ) : null}
-                  </Card>
+                      <ExternalLink className="size-4" aria-hidden />
+                      Open
+                    </Button>
+                  ) : null}
                 </li>
               );
             })}
           </ul>
-        </section>
+        </Panel>
       ) : null}
 
-      {/* Case detail sheet — opened from the result card or a recent row. */}
+      {/* Case detail sheet, opened from the result card or a recent row. */}
       <CaseDetail
         caseId={openCaseId}
         onClose={() => setOpenCaseId(null)}
         onNavigate={navigate}
       />
-    </div>
+    </Shell>
   );
 }

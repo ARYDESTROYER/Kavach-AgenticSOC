@@ -152,8 +152,72 @@ describe('unified Jobs surface', () => {
     expect(screen.getByText('batch-abc123')).toBeInTheDocument();
     expect(screen.getByText('claude-opus-4-8')).toBeInTheDocument();
     expect(screen.getByText('50% off')).toBeInTheDocument();
-    expect(await screen.findByText('Discounted inference')).toBeInTheDocument();
-    expect(mocks.getConfig).toHaveBeenCalledTimes(1);
+    // D30: the discounted-inference settings moved to their own Settings section (General,
+    // Discounted inference, as built); Jobs keeps one line that names it and links there,
+    // and no longer reads the policy itself.
+    const moved = screen.getByTestId('jobs-discounted-inference-moved');
+    expect(moved).toHaveTextContent('Discounted inference settings moved to Settings, General, Discounted inference.');
+    expect(within(moved).getByRole('link', { name: 'Settings, General, Discounted inference' })).toHaveAttribute(
+      'href',
+      '#/settings?s=discounted-inference',
+    );
+    expect(screen.queryByRole('switch', { name: /prefer discounted alert inference/i })).toBeNull();
+    expect(mocks.getConfig).not.toHaveBeenCalled();
+  });
+
+  it('reads like the Overview (Round 14): title, help and Refresh in the header, every module on a panel', async () => {
+    mocks.permissions = new Set(['models:read']);
+    renderPage();
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Jobs' });
+    const header = h1.closest('[data-page-header]') as HTMLElement;
+    expect(within(header).getByRole('button', { name: 'About Jobs' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: 'Refresh jobs' })).toBeInTheDocument();
+    const own = await screen.findByRole('region', { name: 'Your jobs' });
+    expect(own).toHaveClass('surface-panel');
+    // An empty list is the empty state on the panel, never a header row over nothing.
+    expect(within(own).queryByRole('columnheader')).toBeNull();
+    expect(within(own).getByText('No application jobs yet')).toBeInTheDocument();
+    // The Batch figures sit inside the Batch panel, above its table, never as a
+    // free-standing strip that reads as a summary of the whole page.
+    const batch = screen.getByTestId('jobs-llm-batch');
+    const summary = within(batch).getByRole('group', { name: 'Related LLM Batch summary' });
+    const body = within(batch).getByText('No LLM Batch jobs yet');
+    expect(summary.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole('group', { name: 'Related LLM Batch summary' })).toHaveLength(1);
+    expect(document.querySelector('[data-kpi-strip]')).toBeNull();
+    const text = document.body.textContent ?? '';
+    expect(text).not.toMatch(/\u2014/);
+    expect(text).not.toMatch(/playbook/i);
+  });
+
+  it('says "never" for a worker that has not succeeded yet, never a dash', async () => {
+    mocks.permissions = new Set(['automation:read']);
+    mocks.listJobs.mockResolvedValue(
+      response({
+        system_workers: {
+          scheduler_runtime_running: false,
+          workers: {
+            baseline_producer: {
+              enabled: true,
+              gated: false,
+              running: false,
+              cadence: 'on_ingest',
+              last_attempt_at: null,
+              last_success_at: null,
+              last_error: '',
+              processed: 0,
+            },
+          },
+        },
+      }),
+    );
+    renderPage();
+    const section = await screen.findByRole('region', { name: 'System workers' });
+    expect(within(section).getByText(/last success never/)).toBeInTheDocument();
+    // The schedule in words, never the raw token.
+    expect(within(section).getByText(/^On every ingest · 0 processed/)).toBeInTheDocument();
+    expect(section).not.toHaveTextContent('on_ingest');
+    expect(within(section).getByText('Scheduler unavailable')).toBeInTheDocument();
   });
 
   it('shows automation-authorized worker health without turning workers into personal jobs', async () => {

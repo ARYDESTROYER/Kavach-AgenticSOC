@@ -1,36 +1,36 @@
 /**
- * Settings — the full Preferences console, driven by a data-driven section registry.
+ * Settings: the full Preferences console, driven by a data-driven section registry.
  *
  * Round-5 Sett-A: the former 2673-line god-file was decomposed into a single-source
  * section registry (`settings/settings-sections.ts`) + one extracted renderer per
- * section under `settings/*`. This page now:
+ * section under `settings/*`. This page:
  *   - loads GET /api/settings (`prefs` + `configured` + `read_only`) + GET /api/models;
  *   - buffers an editable `prefs` draft against the last saved snapshot;
  *   - lights a per-section "modified" dot from the DERIVED `SECTION_KEYS` map;
  *   - saves via PUT /api/settings sending ONLY the changed top-level keys (a minimal
- *     deep-merge-safe patch, never a full-doc replace — a sibling block is never wiped);
+ *     deep-merge-safe patch, never a full-doc replace, so a sibling block is never wiped);
  *   - pushes write-only secret keys separately via the dedicated secrets route (the
- *     console only ever sees whether a key is configured — a boolean, never a value).
+ *     console only ever sees whether a key is configured: a boolean, never a value).
  *
- * The section rail, group structure, id union, and per-section keys are all DERIVED
- * from the ONE registry (kills the former 3-file hand-sync). The Save/Discard bar is
- * the single StickySaveBar for the whole page (no more parallel save mechanisms).
+ * Round 14 (SPEC §4.9.6, operator choice C9 option A, "grouped panels"): the page header
+ * is the title and a help tip, nothing else at rest. The rail lists the groups in 13px
+ * sentence case with no counts and ends with "Re-run setup wizard". There is no context
+ * line above a section: the section's own title row (`SettingsSection`) carries its name,
+ * help tip and "Ask about this", from the `SettingsSectionContext` this page provides,
+ * and the unsaved state is the rail's dot plus the save bar, capped to the section's
+ * width. The write-only footer note shows only on sections that hold preferences or
+ * secrets.
+ *
+ * Saving needs `settings:manage` (the server's gate on PUT /api/settings). A viewer
+ * without it can open every section the rail shows them, but on a section whose changes
+ * go through this page's save a warning says so and Save stays off, the same treatment as
+ * the settings lock, so an edit never ends in a refused save.
  *
  * Security: every preference value here is operator-entered (trusted); the only
  * displayed externally-derived values are model ids (plain text). No secrets are shown.
  */
 import * as React from 'react';
-import {
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Lock,
-  Menu,
-  Search,
-  Settings as SettingsIcon,
-  Wand2,
-  X,
-} from 'lucide-react';
+import { ChevronDown, Lock, Menu, Search, Wand2, X } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -43,8 +43,6 @@ import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
-import { Badge } from '@/ui/badge';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import {
   Sheet,
   SheetContent,
@@ -53,16 +51,15 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/ui/sheet';
-import { LoadingState } from '@/design-system';
+import { Callout, LoadingState } from '@/design-system';
 
 import { PageHeader } from '@/soc/components/PageHeader';
-import { AskAboutThis } from '@/soc/components/AskAboutThis';
 import { settingsTopic } from '@/soc/components/ask-topics';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { Can } from '@/soc/components/Can';
-import { StickySaveBar } from '@/soc/components/SettingsGrid';
+import { SETTINGS_FORM_MAX_WIDTH, StickySaveBar } from '@/soc/components/SettingsGrid';
 import {
   changedKeys as computeChangedKeys,
   changedPatch,
@@ -71,7 +68,8 @@ import {
 import {
   SECTION_BY_ID,
   SECTION_GROUPS,
-  GRID_SECTIONS,
+  SECTION_KEYS,
+  FULL_WIDTH_SECTIONS,
   isSectionId,
   sectionMatchesQuery,
   matchedAnchorsForSection,
@@ -79,13 +77,17 @@ import {
   type SectionRenderContext,
   type SettingsSectionDef,
 } from '@/soc/pages/settings/settings-sections';
-import { errMsg } from '@/soc/pages/settings/primitives';
+import { errMsg, SettingsSectionContext } from '@/soc/pages/settings/primitives';
 import { useNavigate, useNavigationBlocker, settingsSectionHash } from '@/soc/router';
 import { useAuth } from '@/soc/auth';
 import { usePrefersReducedMotion } from '@/soc/hooks/usePrefersReducedMotion';
 import { useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
 
 /* -------------------------------------------------------------------- page -- */
+
+/** The page's help tip (C8 option 1: explanations live in the help tip, not a line). */
+const SETTINGS_HELP =
+  'How Agentic SOC reads, investigates, automates and governs your workspace. Changes take effect when you save them.';
 
 export interface SettingsPageProps {
   /** Re-launch the first-run setup wizard. */
@@ -113,7 +115,7 @@ interface SettingsSectionListProps {
  * The registry-derived Settings navigation shared by the desktop rail and the
  * narrow-screen chooser. The compact copy receives distinct test ids and only mounts
  * while its Sheet is open, so there is one settings landmark in the accessibility tree
- * during routine page use.
+ * during routine page use. Group labels are 13px sentence case with no counts (ST3).
  */
 function SettingsSectionList({
   groups,
@@ -127,18 +129,21 @@ function SettingsSectionList({
   return (
     <div className="space-y-5">
       {groups.map((group) => (
-        <section key={group.id} aria-labelledby={`settings-group-${compact ? 'compact-' : ''}${group.id}`}>
-          <div className="mb-1 flex items-center justify-between gap-3 px-2">
-            <div
-              id={`settings-group-${compact ? 'compact-' : ''}${group.id}`}
-              className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground"
-            >
-              {group.label}
-            </div>
-            <span className="font-mono text-2xs tabular-nums text-muted-foreground/70" aria-hidden>
-              {group.sections.length}
-            </span>
-          </div>
+        // A labelled group, not a region landmark: the rail is one navigation landmark,
+        // and five region entries inside it would only lengthen the landmark list.
+        <div
+          key={group.id}
+          role="group"
+          aria-labelledby={`settings-group-${compact ? 'compact-' : ''}${group.id}`}
+        >
+          {/* A label, not a heading: the section's h2 is the one heading below the page h1. */}
+          <p
+            id={`settings-group-${compact ? 'compact-' : ''}${group.id}`}
+            className="mb-1 px-2.5 text-sm font-medium text-muted-foreground"
+            data-settings-group-label=""
+          >
+            {group.label}
+          </p>
 
           <div className="flex flex-col gap-0.5">
             {group.sections.map((item) => {
@@ -154,7 +159,7 @@ function SettingsSectionList({
                     onClick={() => onSelect(item.id as SectionId)}
                     aria-current={active ? 'page' : undefined}
                     data-testid={`${compact ? 'settings-mobile-section' : 'settings-section'}-${item.id}`}
-                    title={modified ? `${item.blurb} (unsaved changes)` : item.blurb}
+                    title={item.blurb}
                     className={cn(
                       'group inline-flex min-h-9 items-center gap-2.5 border-l-2 px-2.5 py-1.5 text-left text-sm transition-colors',
                       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
@@ -172,11 +177,12 @@ function SettingsSectionList({
                     />
                     <span className="min-w-0 flex-1 truncate">{item.title}</span>
                     {modified ? (
-                      <span
-                        className="inline-flex h-2 w-2 shrink-0 rounded-full bg-warning"
-                        aria-label="Unsaved changes in this section"
-                        title="Unsaved changes"
-                      />
+                      // The section's one unsaved-changes mark (a dot with its words for
+                      // assistive technology; the save bar carries the count). In forced
+                      // colours the system would drop its fill, so it is drawn in CanvasText.
+                      <span className={DIRTY_DOT} data-settings-dirty-dot="">
+                        <span className="sr-only">Unsaved changes</span>
+                      </span>
                     ) : null}
                   </button>
 
@@ -188,7 +194,7 @@ function SettingsSectionList({
                           type="button"
                           onClick={() => onSelect(item.id as SectionId, anchor.anchor)}
                           data-testid={`${compact ? 'settings-mobile-anchor' : 'settings-anchor'}-${anchor.anchor}`}
-                          title={`Jump to “${anchor.label}” in ${item.title}`}
+                          title={`Go to ${anchor.label} in ${item.title}`}
                           className="truncate px-2 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                         >
                           {anchor.label}
@@ -200,9 +206,33 @@ function SettingsSectionList({
               );
             })}
           </div>
-        </section>
+        </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * The unsaved-changes dot. A background-only mark vanishes in forced colours (the system
+ * replaces backgrounds), so there it opts out of the adjustment and paints in CanvasText.
+ */
+const DIRTY_DOT =
+  'inline-flex h-2 w-2 shrink-0 rounded-full bg-warning forced-colors:bg-[CanvasText] forced-colors:[forced-color-adjust:none]';
+
+/** "Re-run setup wizard" at the foot of the Settings navigation (C9). */
+function RerunWizardButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="w-full justify-start text-muted-foreground hover:text-foreground"
+      onClick={onClick}
+      data-testid="settings-rerun-wizard"
+    >
+      <Wand2 aria-hidden />
+      Re-run setup wizard
+    </Button>
   );
 }
 
@@ -223,7 +253,7 @@ function SettingsSearch({ value, onChange, id }: SettingsSearchProps) {
         id={id}
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        placeholder="Search settings…"
+        placeholder="Search settings"
         aria-label="Search settings sections"
         className="h-9 pl-8 pr-8 shadow-none"
       />
@@ -244,8 +274,9 @@ function SettingsSearch({ value, onChange, id }: SettingsSearchProps) {
 /** Read the active section from the hash query (`#/settings?s=<id>`). */
 function sectionFromHash(): SectionId | null {
   try {
-    // Allow underscores so deep-links like `#/settings?s=admin_users` resolve.
-    const m = (window.location.hash || '').match(/[?&]s=([a-z0-9_]+)/i);
+    // Underscores and hyphens, so `#/settings?s=admin_users` and
+    // `#/settings?s=discounted-inference` both resolve.
+    const m = (window.location.hash || '').match(/[?&]s=([a-z0-9_-]+)/i);
     const id = m?.[1];
     return id && isSectionId(id) ? id : null;
   } catch {
@@ -254,9 +285,9 @@ function sectionFromHash(): SectionId | null {
 }
 
 /**
- * Read the in-section card anchor from the hash query (`#/settings?s=<id>&a=<anchor>`),
- * decoded. Returns `null` when absent. Used to scroll+highlight a specific `SettingsCard`
- * on a card-level deep-link. Anchor ids are `[a-z0-9_-]`-shaped.
+ * Read the in-section group anchor from the hash query (`#/settings?s=<id>&a=<anchor>`),
+ * decoded. Returns `null` when absent. Used to scroll to and highlight one `SettingsGroup`
+ * on a group-level deep-link. Anchor ids are `[a-z0-9_-]`-shaped.
  */
 function anchorFromHash(): string | null {
   try {
@@ -271,6 +302,8 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
   const navigate = useNavigate();
   const onNavigate = onNavigateProp ?? navigate;
   const { hasPermission } = useAuth();
+  // PUT /api/settings needs settings:manage; without it nothing this page saves can land.
+  const canSave = hasPermission('settings', 'manage');
 
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
@@ -283,13 +316,13 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
   const [query, setQuery] = React.useState('');
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
-  // The pending card anchor to scroll+highlight (from `#/settings?s=<id>&a=<anchor>`).
+  // The pending group anchor to scroll+highlight (from `#/settings?s=<id>&a=<anchor>`).
   // Set on mount + on any hashchange carrying an `a=`; cleared once consumed by the
   // scroll/highlight effect so a re-render never re-scrolls.
   const [pendingAnchor, setPendingAnchor] = React.useState<string | null>(() => anchorFromHash());
   const reducedMotion = usePrefersReducedMotion();
 
-  // Persist the active section (and optional card anchor) in the hash query
+  // Persist the active section (and optional group anchor) in the hash query
   // (`#/settings?s=<id>[&a=<anchor>]`) via the ONE shared hash builder, WITHOUT disturbing
   // the router (which keys on the bare page id before `?`). Writing the FULL hash directly
   // is the fix for the historical strip-bug where a bare `#/settings` dropped `?s=`/`&a=`.
@@ -317,7 +350,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  // Scroll to + briefly highlight the deep-linked card once the active section is
+  // Scroll to + briefly highlight the deep-linked group once the active section is
   // rendered. Reduced-motion-safe: `scrollIntoView` uses `auto` (no smooth scroll) under
   // reduced motion, and the highlight is a ring flash (box-shadow only, no transform) that
   // the global reduced-motion reset collapses to ~0 duration; either way it self-clears.
@@ -411,7 +444,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
   const save = React.useCallback(async () => {
     if (!prefs) return;
     // Send ONLY the changed top-level keys (a minimal patch) rather than the whole
-    // object — additive/omitted fields are safe, and we never clobber a key the user
+    // object, additive/omitted fields are safe, and we never clobber a key the user
     // did not touch (the backend PUT deep-merges). `sources`/`setup_complete` are
     // excluded inside `changedPatch`.
     const patch = changedPatch(
@@ -490,7 +523,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
 
   // Filtered, RBAC-aware grouped section list for the rail. A section with a `perm`
   // is hidden from users without the grant; the search matches title/blurb/keywords.
-  // RULES OF HOOKS: these hooks MUST run unconditionally — i.e. ABOVE the
+  // RULES OF HOOKS: these hooks MUST run unconditionally, i.e. ABOVE the
   // `if (loading)` / `if (!prefs)` early returns below. If they sit after a return,
   // the hook count changes once `loading` flips false on the first data load and React
   // throws #310 ("Rendered more hooks than during the previous render"). They read only
@@ -501,7 +534,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
       ...g,
       sections: g.sections.filter((s) => {
         if (s.perm && !hasPermission(s.perm.resource, s.perm.action)) return false;
-        // Round-5 Sett-C: deepened section- AND setting-level match — a hit on any card
+        // Round-5 Sett-C: deepened section- AND setting-level match, a hit on any group
         // within a section (e.g. "auto-close", "kill switch") keeps the section visible.
         return sectionMatchesQuery(s, query);
       }),
@@ -514,7 +547,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
   );
 
   // If a search/RBAC change hides the active section, jump to the first visible one.
-  // Use `setSection` (the hash-writing callback) — NOT the bare `setSectionState` — so
+  // Use `setSection` (the hash-writing callback), NOT the bare `setSectionState`, so
   // the `#/settings?s=<id>` hash stays in sync with the auto-selected section (otherwise
   // a reload / back-forward would snap back to the now-hidden section id).
   React.useEffect(() => {
@@ -527,8 +560,8 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
 
   if (loading) {
     return (
-      <PageContainer variant="wide" className="space-y-6">
-        <PageHeader icon={SettingsIcon} eyebrow="Platform" title="Settings" />
+      <PageContainer variant="wide">
+        <PageHeader title="Settings" help={SETTINGS_HELP} />
         <LoadingState
           label="Loading settings"
           description="Retrieving your preferences and access controls."
@@ -541,8 +574,8 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
 
   if (!prefs) {
     return (
-      <PageContainer variant="wide" className="space-y-6">
-        <PageHeader icon={SettingsIcon} eyebrow="Platform" title="Settings" />
+      <PageContainer variant="wide">
+        <PageHeader title="Settings" help={SETTINGS_HELP} />
         <LoadError
           error={error}
           fallback="The backend did not return preferences. Check connectivity and try again."
@@ -564,26 +597,39 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
     readOnly,
     onNavigate: onNavigate as SectionRenderContext['onNavigate'],
     setSection,
+    canSave,
     secretDraft,
     setSecretDraft,
     saving,
   };
 
+  const activeDef = SECTION_BY_ID[section] ?? SECTION_BY_ID.general;
+  const fullWidth = FULL_WIDTH_SECTIONS.has(activeDef.id);
+  const activeSectionDirty =
+    sectionIsDirty(activeDef.id, changed) || (activeDef.id === 'keys' && pendingSecretCount > 0);
+  const pendingChangeCount = changedCount + pendingSecretCount;
+  // The write-only footer belongs to sections that hold preferences or secrets (ST4).
+  const savesThroughPage = activeDef.id in SECTION_KEYS || activeDef.id === 'keys';
+  const showSaveNote = savesThroughPage;
+  // A viewer without settings:manage may read this section but not save it: a live
+  // condition, so it is the one warning above the section (never on a section that saves
+  // through its own controls, such as Profile or Users).
+  const viewOnly = !canSave && savesThroughPage;
+
   /**
-   * Render the active section from the registry. Perm-gated sections are wrapped in a
-   * <Can> guard so a direct deep-link (`#/settings?s=admin_users`) that bypasses the
-   * rail filter still degrades to a "restricted" notice rather than the body. The
-   * no-perm personal sections (profile/account_security/sessions/customization/
-   * general/models/keys/standup/enrichment) render unguarded (auth-off back-compat).
+   * Render the active section from the registry, inside the context its
+   * `SettingsSection` reads (its title, help, "Ask about this" topic and unsaved state).
+   * Perm-gated sections are wrapped in a <Can> guard so a direct deep-link
+   * (`#/settings?s=admin_users`) that bypasses the rail filter still degrades to a
+   * "restricted" notice rather than the body. The no-perm personal sections render
+   * unguarded (auth-off back-compat).
    */
   const renderSection = (def: SettingsSectionDef): React.ReactNode => {
     const body = def.Component(renderCtx);
-    if (!def.perm) return body;
-    const { resource, action } = def.perm;
-    return (
+    const content = def.perm ? (
       <Can
-        resource={resource}
-        action={action}
+        resource={def.perm.resource}
+        action={def.perm.action}
         fallback={
           <EmptyState
             icon={def.icon}
@@ -594,82 +640,56 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
       >
         {body}
       </Can>
+    ) : (
+      body
+    );
+    return (
+      <SettingsSectionContext.Provider
+        value={{
+          title: def.title,
+          // The registry is the one source of a section's help (its blurb when it has
+          // none), so the rail, the help tip and the Help Center never disagree.
+          help: def.help ?? def.blurb,
+          askTopic: settingsTopic(def.id),
+          modified: activeSectionDirty,
+          width: fullWidth ? 'full' : 'form',
+        }}
+      >
+        {content}
+      </SettingsSectionContext.Provider>
     );
   };
-
-  const activeDef = SECTION_BY_ID[section] ?? SECTION_BY_ID.general;
-  const ActiveSectionIcon = activeDef.icon;
-  const isGrid = GRID_SECTIONS.has(activeDef.id);
-  const activeGroup = SECTION_GROUPS.find((group) =>
-    group.sections.some((candidate) => candidate.id === activeDef.id),
-  );
-  const activeSectionDirty =
-    sectionIsDirty(activeDef.id, changed) || (activeDef.id === 'keys' && pendingSecretCount > 0);
-  const pendingChangeCount = changedCount + pendingSecretCount;
 
   const selectFromCompactNav = (id: SectionId, anchor?: string) => {
     setSection(id, anchor);
     setMobileNavOpen(false);
   };
 
-  // When the settings lock is ON, Save is disabled — EXCEPT when the operator's pending
+  // When the settings lock is ON, Save is disabled, EXCEPT when the operator's pending
   // draft turns the lock itself back OFF. That is the one PUT the backend explicitly
   // permits while locked (`read_only_settings_mode: false`), so blocking it would make
   // the lock a one-way trap only recoverable via a raw API call.
   const unlockingNow =
-    readOnly && (prefs as Record<string, unknown>).read_only_settings_mode === false;
-  const saveLocked = readOnly && !unlockingNow;
+    canSave && readOnly && (prefs as Record<string, unknown>).read_only_settings_mode === false;
+  // Without settings:manage the server refuses every save, so Save stays off whatever the
+  // lock says (the lock's own exception, turning it off, needs the same permission).
+  const saveLocked = !canSave || (readOnly && !unlockingNow);
+  const saveWidth = fullWidth ? 'full' : 'form';
 
   return (
-    <PageContainer variant="wide" className="space-y-5">
-      <PageHeader
-        icon={SettingsIcon}
-        breadcrumb={[{ label: 'Platform' }]}
-        title="Settings"
-        description="Configure how Agentic SOC ingests, investigates, automates, and governs your workspace."
-        meta={
-          <div aria-live="polite">
-            {readOnly ? (
-              <Badge variant="warning">
-                <Lock className="h-3 w-3" aria-hidden />
-                Read-only
-              </Badge>
-            ) : dirty || pendingSecretCount > 0 ? (
-              <Badge variant="warning">
-                <span className="h-1.5 w-1.5 rounded-full bg-warning" aria-hidden />
-                {pendingChangeCount} pending {pendingChangeCount === 1 ? 'change' : 'changes'}
-              </Badge>
-            ) : (
-              <Badge variant="outline">
-                <CheckCircle2 className="h-3 w-3 text-success-text" aria-hidden />
-                Preferences saved
-              </Badge>
-            )}
-          </div>
-        }
-        actions={
-          onRerunWizard ? (
-            <Button variant="outline" size="sm" onClick={onRerunWizard}>
-              <Wand2 className="h-4 w-4" aria-hidden />
-              Re-run setup wizard
-            </Button>
-          ) : null
-        }
-      />
+    <PageContainer variant="wide">
+      <PageHeader title="Settings" help={SETTINGS_HELP} />
 
-      {readOnly ? (
-        <Alert variant="warning">
-          <Lock className="h-4 w-4" aria-hidden />
-          <AlertTitle>Read-only mode</AlertTitle>
-          <AlertDescription>
-            Settings are read-only in this deployment. Edits cannot be saved — turn the
-            lock off in Advanced › Settings lock to make changes again.
-          </AlertDescription>
-        </Alert>
+      {readOnly && canSave ? (
+        // A live condition, not an explanation: the settings lock is on right now.
+        <Callout intent="warning" title="Settings are read-only">
+          Changes cannot be saved while the settings lock is on. Turn it off in Advanced to make
+          changes again.
+        </Callout>
       ) : null}
 
       {/* Narrow layouts use a single contextual chooser instead of stacking the entire
-          25-section rail above the active editor. The full grouped/searchable list mounts
+          section rail above the active editor. The full grouped, searchable list mounts
           inside the Sheet only while open. */}
       <div className="lg:hidden">
         <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
@@ -679,15 +699,14 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
               variant="outline"
               className="h-auto w-full justify-between px-3 py-2 text-left"
               data-testid="settings-mobile-nav-trigger"
+              // The name carries the unsaved state the dot shows (status never by colour
+              // alone, SPEC §3.3).
+              aria-label={`Settings section: ${activeDef.title}${activeSectionDirty ? ', unsaved changes' : ''}. Choose a section`}
             >
               <span className="flex min-w-0 items-center gap-2.5">
                 <Menu className="h-4 w-4 text-muted-foreground" aria-hidden />
-                <span className="min-w-0">
-                  <span className="block text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    {activeGroup?.label ?? 'Settings'}
-                  </span>
-                  <span className="block truncate text-sm text-foreground">{activeDef.title}</span>
-                </span>
+                <span className="min-w-0 truncate text-sm text-foreground">{activeDef.title}</span>
+                {activeSectionDirty ? <span className={DIRTY_DOT} aria-hidden /> : null}
               </span>
               <ChevronDown className="h-4 w-4 text-muted-foreground" aria-hidden />
             </Button>
@@ -695,7 +714,7 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
           <SheetContent side="left" size="sm" className="gap-0">
             <SheetHeader>
               <SheetTitle>Settings</SheetTitle>
-              <SheetDescription>Choose a configuration section.</SheetDescription>
+              <SheetDescription>Choose a section.</SheetDescription>
             </SheetHeader>
             <div className="border-b border-border p-4">
               <SettingsSearch id="settings-search-compact" value={query} onChange={setQuery} />
@@ -719,26 +738,29 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
                 />
               )}
             </nav>
+            {onRerunWizard ? (
+              <div className="border-t border-border p-4">
+                <RerunWizardButton
+                  onClick={() => {
+                    setMobileNavOpen(false);
+                    onRerunWizard();
+                  }}
+                />
+              </div>
+            ) : null}
           </SheetContent>
         </Sheet>
       </div>
 
       <div className="grid border-t border-border lg:grid-cols-[248px_minmax(0,1fr)]">
-        {/* Desktop section rail: one quiet, sticky configuration index with the search
-            fixed above a separately scrolling registry-derived section list. */}
+        {/* Desktop section rail: one quiet, sticky index with the search fixed above a
+            separately scrolling registry-derived section list and "Re-run setup wizard"
+            at its foot. */}
         <aside className="hidden border-r border-border pr-5 pt-5 lg:block">
           <nav
             aria-label="Settings categories"
             className="sticky top-[calc(var(--header-h)+1rem)] flex max-h-[calc(100dvh-var(--header-h)-2rem)] min-h-0 flex-col"
           >
-            <div className="mb-3 flex items-center justify-between gap-3 px-1">
-              <span className="text-xs font-semibold uppercase tracking-wider text-foreground">
-                Configuration
-              </span>
-              <span className="font-mono text-2xs tabular-nums text-muted-foreground">
-                {flatVisible.length} sections
-              </span>
-            </div>
             <SettingsSearch id="settings-search-desktop" value={query} onChange={setQuery} />
             <div
               data-testid="settings-desktop-section-scroll"
@@ -757,48 +779,43 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
                 />
               )}
             </div>
+            {onRerunWizard ? (
+              <div className="mt-3 border-t border-border pb-4 pt-3">
+                <RerunWizardButton onClick={onRerunWizard} />
+              </div>
+            ) : null}
           </nav>
         </aside>
 
-        {/* The renderer owns the one visible section heading. This compact context line
-            supplies location and draft status without repeating that title as another h2. */}
-        <div className="min-w-0 space-y-5 pt-5 lg:pl-8">
-          <div
-            data-testid="settings-active-context"
-            className="flex min-h-9 flex-wrap items-center justify-between gap-3 border-b border-border pb-3"
-          >
-            <div className="flex min-w-0 items-center gap-2 text-sm">
-              <ActiveSectionIcon className="h-4 w-4 shrink-0 text-primary" aria-hidden />
-              <span className="truncate text-muted-foreground">{activeGroup?.label ?? 'Settings'}</span>
-              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground/70" aria-hidden />
-              <span className="truncate font-medium text-foreground">{activeDef.title}</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-              {/* "Ask about this" (SPEC §10.7): a new chat asks this section's templated
-                  question; shown only to a caller who can use chat. */}
-              <AskAboutThis topic={settingsTopic(activeDef.id)} subject={activeDef.title} />
-              <span className={cn('text-xs', activeSectionDirty ? 'text-warning-text' : 'text-muted-foreground')}>
-                {activeSectionDirty ? 'Modified in this section' : 'No unsaved changes in this section'}
-              </span>
-            </div>
-          </div>
+        <div className="min-w-0 pt-6 lg:pl-8 xl:pt-8" data-testid="settings-active-section">
+          {viewOnly ? (
+            <Callout
+              intent="warning"
+              title="You can view these settings but not change them"
+              className={cn('mb-6 xl:mb-8', saveWidth === 'form' && SETTINGS_FORM_MAX_WIDTH)}
+              data-testid="settings-view-only"
+            >
+              Changing them needs the settings management permission. Ask an administrator.
+            </Callout>
+          ) : null}
+          {renderSection(activeDef)}
 
-          <section className={cn('min-w-0', !isGrid && 'border-b border-border pb-6')}>
-            {renderSection(activeDef)}
-          </section>
-
-          {/* One Settings-wide save/discard bar for ordinary preferences and write-only
-              secret drafts. Each API keeps its narrow partial-update contract. */}
+          {/* One Settings-wide save and discard bar for ordinary preferences and
+              write-only secret drafts, capped to the section's width. Each API keeps its
+              narrow partial-update contract. */}
           <StickySaveBar
             visible={dirty || pendingSecretCount > 0}
             busy={saving}
             saveDisabled={saveLocked}
             onSave={() => void save()}
             onDiscard={discard}
-            saveLabel={unlockingNow ? 'Unlock & save' : 'Save changes'}
+            width={saveWidth}
+            saveLabel={unlockingNow ? 'Unlock and save' : 'Save changes'}
             message={
-              saveLocked
-                ? 'Settings are read-only — turn the lock off (Advanced › Settings lock) to save.'
+              !canSave
+                ? 'You can view these settings but not change them.'
+                : saveLocked
+                ? 'Settings are read-only. Turn off the settings lock in Advanced to save.'
                 : unlockingNow
                   ? `Saving will unlock settings and apply ${pendingChangeCount} pending ${pendingChangeCount === 1 ? 'change' : 'changes'}.`
                   : changedCount > 0 && pendingSecretCount > 0
@@ -809,13 +826,21 @@ export default function Settings({ onRerunWizard, onNavigate: onNavigateProp }: 
             }
           />
 
-          <p className="flex items-start gap-2 border-t border-border pt-4 text-xs leading-relaxed text-muted-foreground">
-            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span>
-              Preference changes take effect after Save. Secret values stay write-only; the
-              Console only reports whether a key is configured.
-            </span>
-          </p>
+          {showSaveNote ? (
+            <p
+              className={cn(
+                'mt-10 flex items-start gap-2 text-xs leading-relaxed text-muted-foreground',
+                saveWidth === 'form' && SETTINGS_FORM_MAX_WIDTH,
+              )}
+              data-testid="settings-save-note"
+            >
+              <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span>
+                Preference changes take effect after Save. Secret values stay write-only; the
+                Console only reports whether a key is configured.
+              </span>
+            </p>
+          ) : null}
         </div>
       </div>
     </PageContainer>

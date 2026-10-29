@@ -1,6 +1,6 @@
 /**
- * Settings shared form bits: the small building blocks every settings section
- * renderer composes (Round-5 Sett-A decomposition).
+ * Settings shared form bits: the building blocks every settings section renderer
+ * composes (Round-5 Sett-A decomposition, Round 14 grouped panels).
  *
  * Round 14 (SPEC §4.9.6, operator choice C9 option A, "grouped panels"): a section is
  * one `SettingsSection` (its `h2` title, a help tip, "Ask about this" and its actions in
@@ -11,28 +11,25 @@
  * at most 42rem) with the control on the row's end: a switch, a select, a field (any
  * Field-based control: `NumPref`, `TextPref`, `NumberField`, `SecretInput`), a status
  * (`StatusDot`) or an action; wide fields sit under their label; a link row opens
- * another page. Below 640px every field stacks under its label, so a field never draws
- * over its label on a phone. `SectionTitle`, `SectionShell` and `SettingsCard` remain
- * only until every section has moved (WP-W9a).
+ * another page; a block row holds free content (a table, a preview) on the row inset.
+ * Below 640px every field stacks under its label, so a field never draws over its
+ * label on a phone.
  *
- * These were previously private functions inside the 2673-line `Settings.tsx`
- * god-file. They now compose the shared `Field`, input, select, switch, and Settings
- * section primitives so every extracted `<section>.tsx` inherits one accessible,
- * divider-led command-surface grammar without a circular import back into the page.
+ * `SectionTitle` stays as the compatibility title row for section bodies that live
+ * outside this folder (branding, appearance, notifications, Demo, danger zone): inside
+ * the Settings page it renders the same title row as `SettingsSection`, with the
+ * section's registry title and help, so every section reads the same.
  *
  * Security: every value rendered here is operator-entered (trusted). No secrets are
  * displayed; secret rows render a `configured` boolean only.
  */
 import * as React from 'react';
-import type { LucideIcon } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 
 import type { ModelConfig, ModelsResponse, Preferences } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
-import { materialBar } from '@/lib/ui-recipes';
-import { useScrollEdgeRef } from '@/design-system/material';
 import { Panel } from '@/design-system/panel';
-import { ChevronRight } from 'lucide-react';
 
 import { Input } from '@/ui/input';
 import { Label } from '@/ui/label';
@@ -45,11 +42,7 @@ import {
   SelectValue,
 } from '@/ui/select';
 
-import {
-  SETTINGS_FORM_MAX_WIDTH,
-  SettingsTOC,
-  type SettingsTOCItem,
-} from '@/soc/components/SettingsGrid';
+import { SETTINGS_FORM_MAX_WIDTH } from '@/soc/components/SettingsGrid';
 import { Field, FieldLayoutContext } from '@/soc/components/Field';
 import { inlineFieldLayout, wideFieldLayout } from './field-layouts';
 import {
@@ -62,6 +55,7 @@ import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
 import { SecretField } from '@/soc/components/SecretField';
 import { HelpTip } from '@/soc/components/HelpTip';
 import { AskAboutThis } from '@/soc/components/AskAboutThis';
+import { PageHeader } from '@/soc/components/PageHeader';
 
 /** The Settings row layouts of `Field` (see `field-layouts.tsx`), for a lone Field laid out as a row. */
 export { inlineFieldLayout, wideFieldLayout };
@@ -79,187 +73,45 @@ export function errMsg(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
 }
 
-export interface SectionTitleProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title'> {
-  title: string;
-  sub?: string;
-  /** Optional actions that belong to this active settings section. */
-  actions?: React.ReactNode;
-}
-
-export function SectionTitle({ title, sub, actions, className, ...rest }: SectionTitleProps) {
-  return (
-    <div
-      className={cn(
-        'flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-border/80 pb-5',
-        className,
-      )}
-      {...rest}
-    >
-      <div className="min-w-0 flex-1 space-y-1.5">
-        <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
-        {sub ? <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{sub}</p> : null}
-      </div>
-      {actions ? <div className="flex max-w-full flex-wrap items-center justify-end gap-2">{actions}</div> : null}
-    </div>
-  );
-}
-
-/** A subsection heading used to group related controls inside one Settings section. */
-export function SubHeader({ title, children }: { title: string; children?: React.ReactNode }) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-2">
-      <h3 className="text-sm font-semibold tracking-tight text-foreground">{title}</h3>
-      {children}
-    </div>
-  );
-}
-
-/**
- * Track which anchored `SettingsCard` is currently in view, so the in-section TOC can
- * highlight it. Pure scroll-spy via IntersectionObserver; no-ops in non-DOM envs.
- */
-export function useActiveAnchor(anchors: string[]): string {
-  const [active, setActive] = React.useState<string>(anchors[0] ?? '');
-  React.useEffect(() => {
-    setActive((cur) => (anchors.includes(cur) ? cur : anchors[0] ?? ''));
-    if (typeof document === 'undefined' || typeof IntersectionObserver === 'undefined') return;
-    const visible = new Map<string, number>();
-    const obs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) visible.set(e.target.id, e.intersectionRatio);
-          else visible.delete(e.target.id);
-        }
-        let best = '';
-        let bestRatio = -1;
-        for (const [id, ratio] of visible) {
-          if (ratio > bestRatio) {
-            best = id;
-            bestRatio = ratio;
-          }
-        }
-        if (best) setActive(best);
-      },
-      { rootMargin: '-96px 0px -55% 0px', threshold: [0, 0.25, 0.5, 1] },
-    );
-    const els = anchors
-      .map((a) => document.getElementById(a))
-      .filter((el): el is HTMLElement => Boolean(el));
-    els.forEach((el) => obs.observe(el));
-    return () => obs.disconnect();
-    // anchors is a stable literal per section; join for a stable dep.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anchors.join('|')]);
-  return active;
-}
-
-/**
- * The shared wrapper for a multi-card Settings section: a section title and, for
- * long sections (≥ 2 TOC items), a sticky in-section anchor TOC that scroll-spies the
- * cards. The TOC sits as a thin sticky bar above the cards and uses the full width.
- */
-export function SectionShell({
-  title,
-  sub,
-  toc,
-  children,
-  actions,
-  rail,
-}: {
-  title: string;
-  sub?: string;
-  toc?: SettingsTOCItem[];
-  children: React.ReactNode;
-  /** Optional header actions rendered on the section title's right (e.g. Reset). */
-  actions?: React.ReactNode;
-  /**
-   * Render the in-section anchor TOC as a LEFT vertical rail beside the cards (matching
-   * the focused-section mockups) instead of the default horizontal sticky strip. Opt-in
-   * per section so other sections keep the horizontal bar. Falls back to no rail when the
-   * section has < 2 anchors.
-   */
-  rail?: boolean;
-}) {
-  const anchors = React.useMemo(() => (toc ?? []).map((t) => t.anchor), [toc]);
-  const active = useActiveAnchor(anchors);
-  const showToc = (toc?.length ?? 0) >= 2;
-  // The horizontal strip's scroll-edge fade (declared before the rail's early return).
-  const stripRef = useScrollEdgeRef<HTMLDivElement>(undefined, showToc && !rail);
-
-  const heading = <SectionTitle title={title} sub={sub} actions={actions} />;
-
-  // Vertical left-rail layout (opt-in): the anchor TOC sticks on the left, cards flow on
-  // the right. Card anchors + scroll-spy are unchanged, so deep-links/tests still work.
-  if (rail && showToc) {
-    return (
-      <div className="space-y-8">
-        {heading}
-        <div className="grid gap-6 md:grid-cols-[12rem_minmax(0,1fr)] md:gap-8">
-          <div className="overflow-x-auto border-y border-border/80 py-1 md:sticky md:top-[calc(var(--header-h)+1rem)] md:self-start md:overflow-visible md:border-y-0 md:border-r md:py-0 md:pr-5">
-            <SettingsTOC
-              items={toc!}
-              active={active}
-              orientation="responsive"
-              className="min-w-max md:min-w-0"
-            />
-          </div>
-          <div className="min-w-0">{children}</div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-8">
-      {heading}
-      {showToc ? (
-        // Sticky chrome over the scrolling section: the ONE Console material (solid under
-        // reduced transparency or increased contrast), never a page-local translucent fill.
-        // Pinned FLUSH under the top bar: an offset left a slit between the two through
-        // which scrolled fields showed. Once pinned over scrolled content its top hairline
-        // gives way to the top bar's own (no doubled rule) and the scroll-edge fade shows.
-        // The horizontal scroll lives on an inner row: an `overflow` on the material itself
-        // would clip that fade (it hangs below the bar) and scroll it into view.
-        <div
-          ref={stripRef}
-          className={cn(
-            'sticky top-[var(--header-h)] z-10 -mx-1 border-y border-border/80',
-            'data-[scrolled=true]:border-t-transparent',
-            materialBar,
-          )}
-        >
-          <div className="overflow-x-auto px-1 py-1">
-            <SettingsTOC items={toc!} active={active} orientation="horizontal" className="min-w-max flex-row gap-1" />
-          </div>
-        </div>
-      ) : null}
-      {children}
-    </div>
-  );
-}
-
 /* ------------------------------------------------------------------------------------ */
 /* Round 14: SettingsSection, SettingsGroup, SettingRow (C9 option A, grouped panels)    */
 /* ------------------------------------------------------------------------------------ */
 
 /**
  * What the Settings shell knows about the active section and hands to its
- * `SettingsSection` without every renderer threading it: the "Ask about this" topic and
- * whether the section holds unsaved changes. A prop on the section wins over this.
+ * `SettingsSection` without every renderer threading it: the section's registry title
+ * and help, the "Ask about this" topic, whether the section holds unsaved changes and
+ * how wide it renders. Inside the Settings page the registry (`settings-sections-meta.ts`)
+ * is the one source of a section's title and help: they win over a `title` or `help`
+ * prop, which only applies where no shell provides them (a standalone page, a test).
  */
 export interface SettingsSectionContextValue {
+  /** The section's title in `settings-sections-meta.ts` (the rail label, also its `h2`). */
+  title?: string;
+  /** The section's help tip text. */
+  help?: string;
   /** The `console_map` topic of "Ask about this" (`settings:<id>`). */
   askTopic?: string;
   /** The section holds unsaved changes (it keeps room for the save bar under its last row). */
   modified?: boolean;
+  /** `form` (44rem) or `full` (a table section). */
+  width?: 'form' | 'full';
 }
 
 export const SettingsSectionContext = React.createContext<SettingsSectionContextValue>({});
 
 export interface SettingsSectionProps {
-  /** The section title, the same words as its entry in `settings-sections-meta.ts`; the section's `h2`. */
-  title: string;
-  /** One or two plain sentences on what the section controls, shown in a help tip beside the title. */
+  /**
+   * The section title, the same words as its entry in `settings-sections-meta.ts`; the
+   * section's `h2`. Inside the Settings page the registry title wins (one source); this
+   * applies only where no shell provides one.
+   */
+  title?: string;
+  /**
+   * One or two plain sentences on what the section controls, shown in a help tip beside
+   * the title. Inside the Settings page the registry help wins (one source); this applies
+   * only where no shell provides one.
+   */
   help?: string;
   /** Section actions on the title row (Refresh as a `RefreshButton`, Add user). */
   actions?: React.ReactNode;
@@ -267,10 +119,51 @@ export interface SettingsSectionProps {
   askTopic?: string;
   /** Unsaved changes in this section; defaults to the shell's context. Only keeps room for the save bar. */
   modified?: boolean;
-  /** `form` (default): capped at 44rem so a control sits within reach of its label. `full`: a table section. */
+  /**
+   * `form` (the default): capped at 44rem so a control sits within reach of its label.
+   * `full`: a table section. Defaults to the shell's context, then `form`.
+   */
   width?: 'form' | 'full';
   className?: string;
   children?: React.ReactNode;
+}
+
+/**
+ * The section title row: the `h2`, the help tip beside it, then "Ask about this" and the
+ * section's actions on the row's end. Shared by `SettingsSection` and the compatibility
+ * `SectionTitle`, so every section starts the same way.
+ */
+function SectionTitleRow({
+  id,
+  title,
+  help,
+  askTopic,
+  actions,
+  className,
+}: {
+  id?: string;
+  title: string;
+  help?: string;
+  askTopic?: string;
+  actions?: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn('flex flex-wrap items-center gap-x-4 gap-y-2', className)} data-settings-section-title="">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <h2 id={id} className="min-w-0 break-words text-2xl text-foreground">
+          {title}
+        </h2>
+        {help ? <HelpTip text={help} label={`About ${title}`} alwaysPopover /> : null}
+      </div>
+      {askTopic || actions ? (
+        <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
+          {askTopic ? <AskAboutThis topic={askTopic} subject={title} /> : null}
+          {actions}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -284,47 +177,103 @@ export function SettingsSection({
   actions,
   askTopic,
   modified,
-  width = 'form',
+  width,
   className,
   children,
 }: SettingsSectionProps) {
   const ctx = React.useContext(SettingsSectionContext);
+  // The registry is the one source of the title and help inside Settings (the rail label,
+  // the h2 and the help tip can never disagree); the props cover a standalone render.
+  const name = ctx.title ?? title ?? '';
+  const helpText = ctx.help ?? help;
   const topic = askTopic ?? ctx.askTopic;
   const dirty = modified ?? ctx.modified ?? false;
+  const measure = width ?? ctx.width ?? 'form';
   const titleId = `${React.useId()}-title`;
   return (
     <section
       aria-labelledby={titleId}
-      data-settings-section={width}
+      data-settings-section={measure}
       className={cn(
         'min-w-0',
-        width === 'form' ? SETTINGS_FORM_MAX_WIDTH : 'max-w-none',
+        measure === 'form' ? SETTINGS_FORM_MAX_WIDTH : 'max-w-none',
         // The save bar pins over the bottom of the content: keep 72px of room under the
         // last row so it never covers a control.
         dirty && 'pb-[72px]',
         className,
       )}
     >
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2" data-settings-section-title="">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <h2 id={titleId} className="min-w-0 break-words text-2xl text-foreground">
-            {title}
-          </h2>
-          {help ? <HelpTip text={help} label={`About ${title}`} alwaysPopover /> : null}
-        </div>
-        {topic || actions ? (
-          <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
-            {topic ? <AskAboutThis topic={topic} subject={title} /> : null}
-            {actions}
-          </div>
-        ) : null}
-      </div>
+      <SectionTitleRow id={titleId} title={name} help={helpText} askTopic={topic} actions={actions} />
       <div className="mt-6 space-y-10 xl:mt-8">{children}</div>
     </section>
   );
 }
 
-export interface SettingsGroupProps {
+export interface SectionTitleProps {
+  title: string;
+  /** The section's explanation: shown in the help tip (never as a line under the title). */
+  sub?: string;
+  /** Actions that belong to this section, on the title row's end. */
+  actions?: React.ReactNode;
+  className?: string;
+}
+
+/**
+ * The title row for a section body that lives outside this folder and lays out its own
+ * content (branding, appearance, notifications, Demo, danger zone). Inside the Settings
+ * page it shows the section's registry title and help (so the `h2` always equals the
+ * rail label) and "Ask about this"; elsewhere it shows its own title and `sub`. New
+ * section bodies use `SettingsSection`.
+ */
+export function SectionTitle({ title, sub, actions, className }: SectionTitleProps) {
+  const ctx = React.useContext(SettingsSectionContext);
+  return (
+    <SectionTitleRow
+      title={ctx.title ?? title}
+      help={ctx.help ?? sub}
+      askTopic={ctx.askTopic}
+      actions={actions}
+      className={cn('mb-6 xl:mb-8', className)}
+    />
+  );
+}
+
+/**
+ * A body that is both a Settings section and (for an old bookmark) a standalone page:
+ * embedded, the `SettingsSection` title row; standalone, the page header (title, help
+ * tip and actions) above the same content.
+ */
+export function SettingsPageSection({
+  embedded,
+  title,
+  help,
+  actions,
+  width,
+  children,
+}: {
+  embedded: boolean;
+  title: string;
+  help?: string;
+  actions?: React.ReactNode;
+  width?: 'form' | 'full';
+  children?: React.ReactNode;
+}) {
+  if (embedded) {
+    return (
+      <SettingsSection title={title} help={help} actions={actions} width={width}>
+        {children}
+      </SettingsSection>
+    );
+  }
+  return (
+    <div className="space-y-8">
+      <PageHeader title={title} help={help} actions={actions} />
+      <div className={cn('space-y-10', width !== 'full' && SETTINGS_FORM_MAX_WIDTH)}>{children}</div>
+    </div>
+  );
+}
+
+export interface SettingsGroupProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title' | 'children'> {
   /** The group title (15px semibold, sentence case); an `h3` under the section `h2`. */
   title: string;
   /** One optional line under the title. */
@@ -341,19 +290,28 @@ export interface SettingsGroupProps {
 /**
  * One group of related settings: its title and caption above one tinted panel, on the
  * rows' inset (16px, 20px from 1280px), and the rows inside divided by hairlines.
+ *
+ * A group is a labelled `group`, not a region landmark: the section is the one labelled
+ * region (its `h2`, SPEC §3.3) and its groups are `h3` subdivisions, so a screen reader's
+ * landmark list holds one entry per section, never one per group.
+ *
+ * The title and caption take the row's free width and the action stays at the row's end
+ * from 640px (a long caption wraps beside it); below 640px the action sits under them.
  */
-export function SettingsGroup({ title, caption, action, id, className, children }: SettingsGroupProps) {
+export function SettingsGroup({ title, caption, action, id, className, children, ...rest }: SettingsGroupProps) {
   const generated = React.useId();
   const titleId = `${id ?? generated}-title`;
   return (
-    <section
+    <div
+      {...rest}
       id={id}
+      role="group"
       aria-labelledby={titleId}
       data-settings-group=""
       className={cn('min-w-0 scroll-mt-24 space-y-2', className)}
     >
-      <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-1 px-4 xl:px-5">
-        <div className="min-w-0">
+      <div className="flex flex-col gap-2 px-4 sm:flex-row sm:items-end sm:justify-between sm:gap-4 xl:px-5">
+        <div className="min-w-0 flex-1">
           <h3 id={titleId} className="text-md font-semibold text-foreground">
             {title}
           </h3>
@@ -364,7 +322,7 @@ export function SettingsGroup({ title, caption, action, id, className, children 
       <Panel as="div" padding="none" className="divide-y divide-border/70" data-settings-panel="">
         {children}
       </Panel>
-    </section>
+    </div>
   );
 }
 
@@ -381,7 +339,11 @@ interface SettingRowText {
   className?: string;
 }
 
-/** A switch on the row's end: the label names it. */
+/**
+ * A switch on the row's end: the label names it. A disabled switch dims itself (the
+ * Switch primitive); the row's label and help stay at full contrast, as a disabled
+ * field row's do, so a turned-off group never drops its text below AA.
+ */
 export interface SettingSwitchRowProps extends SettingRowText {
   variant: 'switch';
   checked: boolean;
@@ -426,6 +388,36 @@ export interface SettingStatusRowProps extends SettingRowText {
   action?: React.ReactNode;
 }
 
+/**
+ * A control that names itself (a segmented control, a radio group): the row shows the
+ * label as text and the help under it, and the control takes the label as its
+ * `aria-label` and the help as its description (`helpId`). `wide` puts the control under
+ * the text; otherwise it sits on the row's end (under the text below 640px). `liveHelp`
+ * reads a changed help line politely (a mode switch that changes what it means).
+ */
+export interface SettingControlRowProps extends SettingRowText {
+  variant: 'control';
+  control: React.ReactNode;
+  /** The id the control's `aria-describedby` points at (the help line). */
+  helpId?: string;
+  wide?: boolean;
+  liveHelp?: boolean;
+  /** Test anchor on the help line. */
+  helpTestId?: string;
+}
+
+/**
+ * Free content on the row inset (a table, a preview, a list that is not a setting): the
+ * group panel's padding and hairline, nothing else.
+ */
+export interface SettingBlockRowProps {
+  variant: 'block';
+  children: React.ReactNode;
+  className?: string;
+  /** Let a table bleed to the panel's edges (no inset). */
+  bleed?: boolean;
+}
+
 /** One action on the row's end (a button that does something here). */
 export interface SettingActionRowProps extends SettingRowText {
   variant: 'action';
@@ -452,7 +444,9 @@ export type SettingRowProps =
   | SettingFieldRowProps
   | SettingStatusRowProps
   | SettingActionRowProps
-  | SettingLinkRowProps;
+  | SettingLinkRowProps
+  | SettingBlockRowProps
+  | SettingControlRowProps;
 
 function RowText({ label, help, htmlFor, helpId }: { label: string; help?: React.ReactNode; htmlFor?: string; helpId?: string }) {
   return (
@@ -536,7 +530,7 @@ export function SettingRow(props: SettingRowProps) {
     return (
       <div
         data-setting-row="switch"
-        className={cn('flex items-start justify-between gap-6', ROW_PAD, disabled && 'opacity-60', className)}
+        className={cn('flex items-start justify-between gap-6', ROW_PAD, className)}
       >
         <RowText label={label} help={help} htmlFor={id} helpId={help ? helpId : undefined} />
         <Switch
@@ -581,6 +575,49 @@ export function SettingRow(props: SettingRowProps) {
 
   if (props.variant === 'link') {
     return <SettingLinkRow {...props} />;
+  }
+
+  if (props.variant === 'control') {
+    const { label, help, control, helpId, wide, liveHelp, helpTestId, className } = props;
+    const helpLine = help ? (
+      <p
+        id={helpId}
+        className={ROW_HELP}
+        aria-live={liveHelp ? 'polite' : undefined}
+        data-testid={helpTestId}
+      >
+        {help}
+      </p>
+    ) : null;
+    if (wide) {
+      return (
+        <div data-setting-row="control" className={cn('min-w-0', ROW_PAD, className)}>
+          <p className={ROW_LABEL}>{label}</p>
+          {helpLine}
+          <div className="mt-2 min-w-0">{control}</div>
+        </div>
+      );
+    }
+    return (
+      <div
+        data-setting-row="control"
+        className={cn('flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-6', ROW_PAD, className)}
+      >
+        <div className="min-w-0 flex-1">
+          <p className={ROW_LABEL}>{label}</p>
+          {helpLine}
+        </div>
+        <div className="flex shrink-0 items-center">{control}</div>
+      </div>
+    );
+  }
+
+  if (props.variant === 'block') {
+    return (
+      <div data-setting-row="block" className={cn(props.bleed ? 'min-w-0' : cn('min-w-0', ROW_PAD), props.className)}>
+        {props.children}
+      </div>
+    );
   }
 
   // status and action: the row's text on the left, the status and/or action on the end
@@ -708,64 +745,22 @@ export function NumPref({
   );
 }
 
-export function SwitchPref({
-  label,
-  help,
-  checked,
-  disabled,
-  onChange,
-  className,
-}: {
-  label: string;
-  help?: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-  className?: string;
-}) {
-  const id = React.useId();
-  const helpId = help ? `${id}-help` : undefined;
-  return (
-    <div
-      className={cn(
-        'flex min-h-12 items-start justify-between gap-5 border-b border-border/70 py-3 first:pt-0 last:border-b-0 last:pb-0',
-        disabled && 'opacity-60',
-        className,
-      )}
-    >
-      <div className="min-w-0 flex-1 space-y-1">
-        <Label htmlFor={id} className="block cursor-pointer leading-snug">
-          {label}
-        </Label>
-        {help ? (
-          <p id={helpId} className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-            {help}
-          </p>
-        ) : null}
-      </div>
-      <Switch
-        id={id}
-        checked={checked}
-        disabled={disabled}
-        onCheckedChange={onChange}
-        aria-label={label}
-        aria-describedby={helpId}
-        className="mt-0.5"
-      />
-    </div>
-  );
-}
-
 export function ModelPicker({
   role,
   models,
   value,
   onChange,
+  label,
+  help,
 }: {
   role: string;
   models: ModelsResponse | null;
   value?: ModelConfig;
   onChange: (next: ModelConfig) => void;
+  /** The field label; defaults to "<Role> model". */
+  label?: string;
+  /** One plain line on what the role does. */
+  help?: string;
 }) {
   const options = React.useMemo(() => {
     const out: Array<{ value: string; label: string; provider: string }> = [];
@@ -781,7 +776,7 @@ export function ModelPicker({
   const hasCurrent = !current || options.some((o) => o.value === current);
 
   return (
-    <Field label={`${humanizeToken(role)} model`}>
+    <Field label={label ?? `${humanizeToken(role)} model`} description={help}>
       {({ id, labelledBy, describedBy, invalid }) => (
         <Select
           value={current || undefined}
@@ -869,41 +864,3 @@ export function SecretInput({
     />
   );
 }
-
-export function PostureTile({
-  label,
-  on,
-  onText,
-  offText,
-}: {
-  label: string;
-  on: boolean;
-  onText: string;
-  offText: string;
-}) {
-  return (
-    <div
-      className={cn(
-        'border-l-2 px-3 py-1.5 first:border-l-0',
-        on ? 'border-success' : 'border-border',
-      )}
-    >
-      <p className="text-xs font-medium uppercase tracking-[0.04em] text-muted-foreground">{label}</p>
-      <div className="mt-2 flex items-center gap-2">
-        <span
-          className={cnDot(on)}
-          aria-hidden
-        />
-        <span className="text-sm font-semibold text-foreground">{on ? onText : offText}</span>
-      </div>
-    </div>
-  );
-}
-
-function cnDot(on: boolean): string {
-  return on
-    ? 'inline-block h-2 w-2 rounded-full bg-success'
-    : 'inline-block h-2 w-2 rounded-full bg-muted-foreground/40';
-}
-
-export type { LucideIcon };

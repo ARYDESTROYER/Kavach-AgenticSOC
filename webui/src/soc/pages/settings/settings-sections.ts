@@ -1,32 +1,32 @@
 /**
- * settings-sections — the SINGLE source of truth for the Settings page (Round-5 Sett-A).
+ * settings-sections, the SINGLE source of truth for the Settings page (Round-5 Sett-A).
  *
  * Historically the Settings page hand-synced THREE parallel structures: a `SectionId`
  * union, a `SECTION_GROUPS` rail array, and a `SECTION_KEYS` dirty-map (in
- * `settings-dirty.ts`). This module collapses all three into one authoritative table —
- * {@link SETTINGS_SECTIONS} — an array of {@link SettingsSectionDef}
+ * `settings-dirty.ts`). This module collapses all three into one authoritative table,
+ * {@link SETTINGS_SECTIONS}, an array of {@link SettingsSectionDef}
  * `{ id, group, perm, ownedKeys, title, blurb, icon, Component }`. From it we DERIVE:
  *   - {@link SectionId} (the id union),
  *   - {@link SECTION_GROUPS} (the grouped rail),
  *   - {@link SECTION_KEYS} (consumed by `settings-dirty.ts` for the per-section dot),
- *   - {@link GRID_SECTIONS} (sections that render their own full-width card grid),
+ *   - {@link FULL_WIDTH_SECTIONS} (table sections that take the full content width),
  *   - the render lookup (kills the giant switch).
  *
  * Each section's renderer receives a single {@link SectionRenderContext} and picks the
  * props it needs. This keeps the registry data-driven while every section keeps its
  * exact current label / id / markup / save behaviour (Sett-B relabels later).
  *
- * Round-5 Coupling-A — the COMPONENT-FREE half (section metadata + the search/jump
+ * Round-5 Coupling-A, the COMPONENT-FREE half (section metadata + the search/jump
  * helpers + the `SECTION_KEYS` dirty-map) now lives in `settings-sections-meta.ts`, which
  * this module re-exports UNCHANGED. Only the two EAGER consumers that never touch a
- * renderer — `components/CommandPalette.tsx` (the always-on Cmd-K jump) and
- * `pages/settings-dirty.ts` — import that meta module directly, so the heavy Settings
+ * renderer, `components/CommandPalette.tsx` (the always-on Cmd-K jump) and
+ * `pages/settings-dirty.ts`, import that meta module directly, so the heavy Settings
  * renderer tree (BrandingEditor / RolesInner / DangerZone / …) no longer rides the eager
  * CommandPalette into the first-paint entry chunk. This file layers the `Component`
  * renderers on top of the metadata; it is still the one import site for the full page.
  *
  * IMPORTANT (import graph): this file imports the section renderer components. It is
- * imported by `settings-dirty.ts` (for `SECTION_KEYS`) — which is in turn imported by
+ * imported by `settings-dirty.ts` (for `SECTION_KEYS`), which is in turn imported by
  * `useDirtyDraft` (only for `deepEqual`). No section renderer imports `useDirtyDraft`,
  * so there is NO import cycle. `settings-dirty.ts` still owns the pure diff helpers.
  *
@@ -57,6 +57,7 @@ import {
 // Section renderers (each keeps its exact former markup + behaviour).
 import { GeneralSection } from './general';
 import { ModelsSection } from './models';
+import { DiscountedInferenceSection } from './discounted-inference';
 import { ChatAgentSection } from './chat-agent';
 import { KeysSection } from './keys';
 import { DetectionSection } from './detection';
@@ -66,6 +67,7 @@ import { CasePolicySection } from './case-policy';
 import { AutomationSection } from './automation';
 import { StandupSection } from './standup';
 import { KnowledgeSection } from './knowledge';
+import { RunbooksSection } from './runbooks';
 import { EnrichmentSection } from './enrichment';
 import { AdvancedSection } from './advanced';
 import { AdvancedSchemaSection } from './advanced-schema';
@@ -90,13 +92,13 @@ import { DangerZone } from '@/soc/components/DangerZone';
 /* ------------------------------------------------------- re-export the meta -- *
  * Everything the metadata module owns is re-exported here UNCHANGED so every existing
  * `import { ... } from '.../settings-sections'` site keeps working (the search helpers,
- * SETTING_ANCHORS, GRID_SECTIONS, SECTION_KEYS, isSectionId, the id/group/perm types, …). */
+ * SETTING_ANCHORS, FULL_WIDTH_SECTIONS, SECTION_KEYS, isSectionId, the id/group/perm types, ...). */
 export {
   SETTINGS_SECTIONS_META,
   SECTION_GROUP_ORDER,
   SECTION_META_BY_ID,
   SECTION_GROUPS_META,
-  GRID_SECTIONS,
+  FULL_WIDTH_SECTIONS,
   SECTION_KEYS,
   isSectionId,
   SETTING_ANCHORS,
@@ -133,6 +135,11 @@ export interface SectionRenderContext {
   onNavigate: NavigateFn;
   /** Switch to another Settings section by id (used by the Profile → 2FA hand-off). */
   setSection: (id: SectionId) => void;
+  /**
+   * Whether the viewer may save this page (`settings:manage`, the server's gate on PUT
+   * /api/settings). A section that should read as read-only without it uses this.
+   */
+  canSave: boolean;
   /** Write-only secret draft state (Keys section only). */
   secretDraft: Record<string, string>;
   setSecretDraft: (d: Record<string, string>) => void;
@@ -144,7 +151,7 @@ export interface SectionRenderContext {
 export type SectionRenderer = (ctx: SectionRenderContext) => React.ReactElement;
 
 /**
- * One Settings section — the SINGLE source of truth for id/group/perm/keys/render. It
+ * One Settings section, the SINGLE source of truth for id/group/perm/keys/render. It
  * is the {@link SectionMeta} shape (metadata) plus the `Component` renderer, so a
  * consumer can index the same table for both the rail label AND the body.
  */
@@ -157,7 +164,7 @@ export interface SettingsSectionDef extends SectionMeta {
   blurb: string;
   icon: LucideIcon;
   keywords?: string[];
-  grid?: boolean;
+  width?: 'full';
   /** The section body renderer. */
   Component: SectionRenderer;
 }
@@ -189,13 +196,15 @@ const SECTION_COMPONENTS: Record<string, SectionRenderer> = {
       models: ctx.models,
       onNavigate: ctx.onNavigate,
     }),
+  'discounted-inference': (ctx) =>
+    h(DiscountedInferenceSection, { prefs: ctx.prefs, update: ctx.update, readOnly: !ctx.canSave }),
   chat_agent: (ctx) => h(ChatAgentSection, { prefs: ctx.prefs, update: ctx.update }),
   detection: (ctx) => h(DetectionSection, { prefs: ctx.prefs, update: ctx.update }),
   detection_rules: (ctx) => h(DetectionRulesSection, { prefs: ctx.prefs, update: ctx.update }),
   cases: (ctx) => h(CaseIdSection, { prefs: ctx.prefs, update: ctx.update }),
   case_policy: (ctx) => h(CasePolicySection, { prefs: ctx.prefs, update: ctx.update }),
-  // The per-rule editor lives in the Detection & rules home now; this section links there
-  // via `setSection('detection_rules')` (Round-6 de-dup).
+  // The per-rule editor lives in the Detection & rules home; this section links there via
+  // `setSection('detection_rules')` (Round-6 de-dup).
   automation: (ctx) =>
     h(AutomationSection, {
       prefs: ctx.prefs,
@@ -207,10 +216,16 @@ const SECTION_COMPONENTS: Record<string, SectionRenderer> = {
   enrichment: (ctx) => h(EnrichmentSection, { prefs: ctx.prefs, update: ctx.update }),
   knowledge: (ctx) =>
     h(KnowledgeSection, { prefs: ctx.prefs, update: ctx.update, onNavigate: ctx.onNavigate }),
+  runbooks: (ctx) => h(RunbooksSection, { prefs: ctx.prefs, update: ctx.update }),
   admin_users: () => h(UsersInner, { embedded: true }),
   roles: () => h(RolesInner, { embedded: true }),
   security: (ctx) =>
-    h(OrgSecuritySection, { prefs: ctx.prefs, update: ctx.update, configured: ctx.configured }),
+    h(OrgSecuritySection, {
+      prefs: ctx.prefs,
+      persistedPrefs: ctx.persistedPrefs,
+      update: ctx.update,
+      configured: ctx.configured,
+    }),
   admin_sessions: () => h(AdminSessionsInner, { embedded: true }),
   keys: (ctx) =>
     h(KeysSection, {
@@ -229,7 +244,12 @@ const SECTION_COMPONENTS: Record<string, SectionRenderer> = {
       readOnly: ctx.readOnly,
     }),
   advanced: (ctx) =>
-    h(AdvancedSection, { prefs: ctx.prefs, update: ctx.update, onNavigate: ctx.onNavigate }),
+    h(AdvancedSection, {
+      prefs: ctx.prefs,
+      persistedPrefs: ctx.persistedPrefs,
+      update: ctx.update,
+      onNavigate: ctx.onNavigate,
+    }),
   advanced_all: (ctx) => h(AdvancedSchemaSection, { prefs: ctx.prefs, update: ctx.update }),
   demo: () => h(DemoModeSection),
   storage: (ctx) =>
@@ -246,7 +266,7 @@ const SECTION_COMPONENTS: Record<string, SectionRenderer> = {
 /**
  * The one authoritative section table. Order is authoritative (drives rail order within
  * each group). Built by pairing the component-free metadata ({@link SETTINGS_SECTIONS_META},
- * in `settings-sections-meta.ts`) with its `Component` renderer — every existing section +
+ * in `settings-sections-meta.ts`) with its `Component` renderer, every existing section +
  * its exact current label/id/render is preserved.
  */
 export const SETTINGS_SECTIONS: SettingsSectionDef[] = SETTINGS_SECTIONS_META.map((m) => {

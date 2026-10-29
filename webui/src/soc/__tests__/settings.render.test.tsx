@@ -17,8 +17,8 @@
  * at the end so the loading→ready transition is exercised there too.
  */
 import type * as React from 'react';
-import { beforeEach, describe, it, expect, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 // Mock the typed api client BEFORE importing anything that pulls it in.
@@ -102,6 +102,7 @@ import { api } from '@/lib/api';
 import { TooltipProvider } from '@/ui/tooltip';
 import Settings from '../pages/Settings';
 import Overview, { PAGE_TITLE } from '../pages/Overview';
+import { SECTION_META_BY_ID } from '../pages/settings/settings-sections-meta';
 
 function renderWithProviders(node: React.ReactNode) {
   return render(
@@ -181,20 +182,57 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     }
   });
 
-  it('uses one renderer-owned section heading with explicit workspace context', async () => {
+  it('shows the page title with a help tip and one section heading, nothing else at rest', async () => {
     renderWithProviders(<Settings />);
     await waitFor(
       () => expect(screen.getByTestId('settings-section-general')).toBeInTheDocument(),
       { timeout: 5000 },
     );
 
-    expect(screen.getByText('Preferences saved')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('General');
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('Data scope');
+    // SPEC §4.9.6: the header is the title and a help tip; no description, no
+    // "Preferences saved" pill, no section count, no breadcrumb context line.
+    expect(screen.getByRole('heading', { name: 'Settings', level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'About Settings' })).toBeInTheDocument();
+    expect(screen.queryByText('Preferences saved')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('settings-active-context')).not.toBeInTheDocument();
+    expect(screen.queryByText(/sections$/i)).not.toBeInTheDocument();
+    // The rail group labels are text, not headings: one h2, the active section's title.
     expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Data scope', level: 2 })).toBeInTheDocument();
+    const labels = [...document.querySelectorAll('[data-settings-group-label]')].map((el) => el.textContent);
+    expect(labels).toContain('General');
+    for (const label of labels) expect(label).not.toMatch(/\d/);
+    // Without a wizard handler there is no Re-run action at all.
+    expect(screen.queryByTestId('settings-rerun-wizard')).not.toBeInTheDocument();
   });
 
-  it('keeps the embedded SSO editor under one section heading and flat subsections', async () => {
+  it('puts Re-run setup wizard at the foot of the Settings rail', async () => {
+    const onRerunWizard = vi.fn();
+    renderWithProviders(<Settings onRerunWizard={onRerunWizard} />);
+    const rerun = await screen.findByTestId('settings-rerun-wizard', undefined, { timeout: 5000 });
+    // In the rail's navigation, after the last group, never in the page header.
+    const nav = rerun.closest('nav') as HTMLElement;
+    expect(nav).not.toBeNull();
+    const groups = nav.querySelectorAll('[data-settings-group-label]');
+    expect(
+      groups[groups.length - 1].compareDocumentPosition(rerun) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await userEvent.click(rerun);
+    expect(onRerunWizard).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the save footer only on sections that own preferences or secrets', async () => {
+    window.location.hash = '#/settings?s=general';
+    renderWithProviders(<Settings />);
+    await screen.findByLabelText('Log index pattern');
+    expect(screen.getByTestId('settings-save-note')).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('settings-section-admin_users'));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Users', level: 2 })).toBeInTheDocument());
+    expect(screen.queryByTestId('settings-save-note')).not.toBeInTheDocument();
+    window.location.hash = '';
+  });
+
+  it('keeps the embedded SSO editor under one section heading with grouped panels', async () => {
     const user = userEvent.setup();
     renderWithProviders(<Settings />);
     await waitFor(
@@ -205,14 +243,16 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     await user.click(screen.getByTestId('settings-section-security'));
 
     expect(
-      await screen.findByRole('heading', { name: 'Security & single sign-on', level: 2 }),
+      await screen.findByRole('heading', { name: 'Single sign-on & policy', level: 2 }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole('heading', { level: 2 })).toHaveLength(1);
-    expect(screen.getByRole('heading', { name: 'Token & session policy', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Session lifetime', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Single sign-on (OIDC)', level: 3 })).toBeInTheDocument();
 
-    const ssoToggle = screen.getByLabelText('Enable single sign-on');
-    expect(ssoToggle.closest('.bg-transparent')).toHaveClass('border-t');
+    // The switch is a row on its group's panel.
+    const ssoToggle = screen.getByRole('switch', { name: 'Enable single sign-on' });
+    expect(ssoToggle.closest('[data-setting-row="switch"]')).not.toBeNull();
+    expect(ssoToggle.closest('[data-settings-panel]')).not.toBeNull();
   });
 
   it('contains nested section-rail momentum instead of chaining it into the page', async () => {
@@ -274,8 +314,11 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     await userEvent.clear(indexPattern);
     await userEvent.type(indexPattern, 'security-events-*');
 
-    expect(screen.getByText('1 pending change')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('Modified in this section');
+    // The rail dot marks the section; the save bar carries the count (nothing else).
+    expect(
+      screen.getByTestId('settings-section-general').querySelector('[data-settings-dirty-dot]'),
+    ).not.toBeNull();
+    expect(screen.queryByText('1 pending change')).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Unsaved changes' })).toBeInTheDocument();
 
     const unload = new Event('beforeunload', { cancelable: true });
@@ -293,8 +336,9 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
 
     await userEvent.type(openAiKey, 'replacement-key');
 
-    expect(screen.getByText('1 pending change')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-active-context')).toHaveTextContent('Modified in this section');
+    expect(
+      screen.getByTestId('settings-section-keys').querySelector('[data-settings-dirty-dot]'),
+    ).not.toBeNull();
     expect(screen.queryByRole('button', { name: 'Update keys' })).not.toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Unsaved changes' })).toHaveTextContent(
       '1 unsaved secret value',
@@ -375,7 +419,9 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
     expect(screen.getByRole('region', { name: 'Unsaved changes' })).toHaveTextContent(
       '1 unsaved secret value',
     );
-    expect(screen.getByText('1 pending change')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('settings-section-keys').querySelector('[data-settings-dirty-dot]'),
+    ).not.toBeNull();
   });
 
   it('discards preference and write-only secret drafts together', async () => {
@@ -482,6 +528,132 @@ describe('Settings IA consolidation (Round-5 Sett-B: 5 groups, Security promoted
       { timeout: 5000 },
     );
     window.location.hash = '';
+  });
+});
+
+/**
+ * Sign in as a role with exactly these grants (RBAC on), instead of the auth-off default
+ * where every grant is held. Restored after each test.
+ */
+function signInWith(grants: Record<string, string[]>) {
+  vi.mocked(api.auth.me).mockResolvedValue({
+    auth_enabled: true,
+    authenticated: true,
+    user: { username: 'viewer', role: 'analyst_tier1' },
+  } as never);
+  vi.mocked(api.roles.get).mockResolvedValue({
+    roles: ['analyst_tier1'],
+    default_role: 'analyst_tier1',
+    rbac_enabled: true,
+    matrix: { analyst_tier1: grants },
+  } as never);
+}
+
+describe('Settings Round 14 review fixes', () => {
+  const defaultMe = { auth_enabled: false, authenticated: true, user: null };
+  const defaultRoles = { roles: [], default_role: 'analyst_tier1', rbac_enabled: false, matrix: {} };
+  afterEach(() => {
+    vi.mocked(api.auth.me).mockResolvedValue(defaultMe as never);
+    vi.mocked(api.roles.get).mockResolvedValue(defaultRoles as never);
+    window.location.hash = '';
+  });
+
+  it('opens a hyphenated section id from the hash (#/settings?s=discounted-inference)', async () => {
+    window.location.hash = '#/settings?s=discounted-inference';
+    renderWithProviders(<Settings />);
+    expect(
+      await screen.findByRole('heading', { name: 'Discounted inference', level: 2 }, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('settings-section-discounted-inference')).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('hides Discounted inference without models:read and falls back from its deep link', async () => {
+    signInWith({ settings: ['read'] });
+    window.location.hash = '#/settings?s=discounted-inference';
+    renderWithProviders(<Settings />);
+    // The deep link falls back to the first section the viewer can see, and the hash follows.
+    await waitFor(() => expect(screen.getByTestId('settings-section-profile')).toHaveAttribute('aria-current', 'page'), {
+      timeout: 5000,
+    });
+    expect(window.location.hash).toBe('#/settings?s=profile');
+    expect(screen.queryByTestId('settings-section-discounted-inference')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Discounted inference' })).not.toBeInTheDocument();
+    // Runbooks needs settings management, which this viewer lacks.
+    expect(screen.queryByTestId('settings-section-runbooks')).not.toBeInTheDocument();
+  });
+
+  it('shows a read-only viewer the warning, keeps Save off, and disables Discounted inference', async () => {
+    signInWith({ settings: ['read'], models: ['read'] });
+    window.location.hash = '#/settings?s=discounted-inference';
+    renderWithProviders(<Settings />);
+    await screen.findByRole('heading', { name: 'Discounted inference', level: 2 }, { timeout: 5000 });
+    const warning = screen.getByTestId('settings-view-only');
+    expect(warning).toHaveTextContent('You can view these settings but not change them');
+    expect(warning).toHaveAttribute('data-callout', 'warning');
+    expect(screen.getByRole('switch', { name: 'Batch routing' })).toBeDisabled();
+
+    // A section that saves through the page: an edit shows the bar with Save off.
+    await userEvent.click(screen.getByTestId('settings-section-general'));
+    const indexPattern = await screen.findByLabelText('Log index pattern');
+    expect(screen.getByTestId('settings-view-only')).toBeInTheDocument();
+    await userEvent.clear(indexPattern);
+    await userEvent.type(indexPattern, 'x-*');
+    const bar = screen.getByRole('region', { name: 'Unsaved changes' });
+    expect(bar).toHaveTextContent('You can view these settings but not change them.');
+    expect(within(bar).getByRole('button', { name: 'Save changes' })).toBeDisabled();
+    expect(api.putSettings).not.toHaveBeenCalled();
+  });
+
+  it('does not show the read-only warning on a section that saves through its own controls', async () => {
+    signInWith({ settings: ['read'], models: ['read'] });
+    window.location.hash = '#/settings?s=profile';
+    renderWithProviders(<Settings />);
+    await screen.findByRole('heading', { name: 'Profile', level: 2 }, { timeout: 5000 });
+    expect(screen.queryByTestId('settings-view-only')).not.toBeInTheDocument();
+  });
+
+  it.each(['detection', 'enrichment', 'admin_users', 'sessions', 'admin_sessions', 'discounted-inference'])(
+    'shows %s the registry help, never a second copy from the section body',
+    async (id) => {
+      window.location.hash = `#/settings?s=${id}`;
+      const meta = SECTION_META_BY_ID[id];
+      renderWithProviders(<Settings />);
+      const tip = await screen.findByRole('button', { name: `About ${meta.title}` }, { timeout: 5000 });
+      await userEvent.click(tip);
+      expect(await screen.findByText(meta.help as string)).toBeInTheDocument();
+    },
+    15_000,
+  );
+
+  it('names the unsaved state in the compact section button, and draws the dot in forced colours', async () => {
+    window.location.hash = '#/settings?s=general';
+    renderWithProviders(<Settings />);
+    const indexPattern = await screen.findByLabelText('Log index pattern');
+    const trigger = screen.getByTestId('settings-mobile-nav-trigger');
+    expect(trigger).toHaveAccessibleName('Settings section: Data scope. Choose a section');
+    await userEvent.type(indexPattern, 'x');
+    expect(trigger).toHaveAccessibleName('Settings section: Data scope, unsaved changes. Choose a section');
+    const dot = screen.getByTestId('settings-section-general').querySelector('[data-settings-dirty-dot]') as HTMLElement;
+    expect(dot.className).toContain('forced-colors:bg-[CanvasText]');
+    expect(dot.className).toContain('forced-colors:[forced-color-adjust:none]');
+  });
+
+  it('labels the rail groups as groups inside the one navigation landmark', async () => {
+    renderWithProviders(<Settings />);
+    await screen.findByTestId('settings-section-general', undefined, { timeout: 5000 });
+    expect(screen.getByRole('group', { name: 'General' })).toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Settings categories' });
+    expect(nav.querySelectorAll('section')).toHaveLength(0);
+  });
+
+  it('states the kill switch from the saved settings, never from the draft', async () => {
+    window.location.hash = '#/settings?s=advanced';
+    renderWithProviders(<Settings />);
+    const toggle = await screen.findByRole('switch', { name: 'Kill switch' }, { timeout: 5000 });
+    await userEvent.click(toggle);
+    expect(toggle).toBeChecked();
+    // Turned on in the draft only: nothing is stopped yet, so no warning.
+    expect(screen.queryByText('The kill switch is on')).not.toBeInTheDocument();
   });
 });
 

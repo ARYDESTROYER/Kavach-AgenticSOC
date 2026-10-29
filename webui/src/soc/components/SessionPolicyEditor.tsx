@@ -2,7 +2,7 @@
  * Token / session policy editor (Round-2 Wave 3; Round 12 adds "Remember me").
  *
  * Admin-only (mount it inside `<Can resource="settings" action="manage">`). Edits
- * `prefs.session_policy` and persists it via the existing settings PUT — no new
+ * `prefs.session_policy` and persists it via the existing settings PUT, no new
  * endpoint. Durations are entered in friendly units (minutes / hours) and stored
  * as SECONDS to match the backend model. Two notify toggles gate the optional
  * new-device / terminate emails.
@@ -17,33 +17,38 @@
  * idle timeout. It reads the public sign-in status (`GET /api/setup/status`) to show
  * how long a sign-in without Remember me lasts (`AUTH_TOKEN_HOURS`) and whether the
  * server marks its cookies secure; the plain-HTTP switch appears only when it can
- * matter (secure cookies off). The inert `access_ttl` lives under Advanced.
+ * matter (secure cookies off). The inert `access_ttl` has its own last group, Access
+ * tokens, whose caption says it is not enforced.
  *
- * Self-contained: loads its own settings slice and saves independently so it can be
- * dropped onto the Security page now and folded into Settings > Security in W4.
+ * Self-contained: loads its own settings slice and saves independently when it is not
+ * given a controlled value (the standalone route).
+ *
+ * Round 14 (SPEC §4.9.6, C9 option A): grouped panels. Session lifetime, Remember me,
+ * Session emails and Access tokens are `SettingsGroup`s of `SettingRow`s, every number a
+ * `NumberField` with its unit inside (never a raw number input) and a reading of a long
+ * duration in its help ("(12 hours)", "(30 days)"). A disabled control dims itself; row
+ * text keeps full contrast.
  */
 import * as React from 'react';
-import { Timer, Save, Loader2, ShieldAlert, Info } from 'lucide-react';
+import { Save, Loader2, ShieldAlert, Info } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api, ApiError } from '@/lib/api';
 import type { RememberMePolicy, RememberMeStatus, SessionPolicy } from '@/lib/types';
 import { Button } from '@/ui/button';
 import { Checkbox } from '@/ui/checkbox';
-import { Input } from '@/ui/input';
-import { Label } from '@/ui/label';
-import { Switch } from '@/ui/switch';
-import { Card, CardContent } from '@/ui/card';
 import { LoadingState } from '@/design-system';
 import { LoadError } from '@/soc/components/LoadError';
 import { NumberField } from '@/soc/components/NumberField';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { ROLE_LABELS } from '@/soc/pages/Roles.api';
 import { formatRememberDuration } from '@/soc/components/auth/rememberMe';
+import { SettingRow, SettingsGroup } from '@/soc/pages/settings/primitives';
+import { durationReading, withReading } from '@/soc/pages/settings/duration';
 
 /**
  * The backend defaults (`config.SessionPolicyConfig`), mirrored exactly so a blank
- * stored policy never shows — or saves — values the server does not use. A test
+ * stored policy never shows, or saves, values the server does not use. A test
  * pins this against the backend's numbers.
  */
 export const SESSION_POLICY_DEFAULTS: Required<
@@ -79,7 +84,7 @@ export const REMEMBER_PRESETS: { value: string; seconds: number; label: string }
 /**
  * The server's sign-in status for THIS console (public `GET /api/setup/status`):
  * whether cookies are marked secure, whether this connection would refuse Remember
- * me, and how long a sign-in without it lasts. Null while loading or unavailable —
+ * me, and how long a sign-in without it lasts. Null while loading or unavailable;
  * the editor then shows everything, as before.
  */
 function useSigninRuntime(): RememberMeStatus | null {
@@ -136,9 +141,13 @@ export function rbacEnabledOf(prefs: unknown): boolean | null {
   return Boolean(rbac && typeof rbac === 'object' && rbac.enabled === true);
 }
 
-/** A labelled duration field that edits seconds via a `unit` divisor. */
+/**
+ * A labelled duration that edits seconds in a friendlier unit (minutes or hours), on the
+ * shared `NumberField`. A cleared field or a value of 0 or less commits the safe default:
+ * persisting 0 would immediately idle out or expire every live session (a lockout
+ * footgun). Shown as a Settings row.
+ */
 function DurationField({
-  id,
   label,
   help,
   seconds,
@@ -148,65 +157,38 @@ function DurationField({
   onChange,
   disabled,
 }: {
-  id: string;
   label: string;
   help: string;
   seconds: number;
   unit: number;
   unitLabel: string;
-  /** The safe fallback committed when the field is cleared / non-positive. */
+  /** The safe fallback committed when the field is cleared or not positive. */
   defaultSeconds: number;
   onChange: (seconds: number) => void;
   disabled?: boolean;
 }) {
-  const asText = React.useCallback(
-    (s: number) => String(Math.round((s > 0 ? s : defaultSeconds) / unit)),
-    [defaultSeconds, unit],
-  );
-  // A raw text buffer so the field can be CLEARED and retyped; we only parse/clamp on
-  // commit (blur / Enter). A cleared or <=0 value commits the safe default — persisting
-  // 0 would immediately idle-out / expire every live session (a lockout footgun).
-  const [text, setText] = React.useState(() => asText(seconds));
-  const [editing, setEditing] = React.useState(false);
-  React.useEffect(() => {
-    if (!editing) setText(asText(seconds));
-  }, [seconds, editing, asText]);
-
-  const commit = (raw: string) => {
-    const n = Number(raw);
-    const next = Number.isFinite(n) && n > 0 ? Math.round(n * unit) : defaultSeconds;
-    setEditing(false);
-    setText(asText(next));
-    if (next !== seconds) onChange(next);
-  };
-
+  const effective = seconds > 0 ? seconds : defaultSeconds;
+  const shown = Math.round(effective / unit);
   return (
-    <div className="space-y-1.5">
-      <Label htmlFor={id} className="text-xs">
-        {label}
-      </Label>
-      <div className="flex items-center gap-2">
-        <Input
-          id={id}
-          type="number"
-          min={1}
-          className="h-9 w-28"
-          value={text}
-          disabled={disabled}
-          onFocus={() => setEditing(true)}
-          onChange={(e) => {
-            setEditing(true);
-            setText(e.target.value);
-          }}
-          onBlur={(e) => commit(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commit((e.target as HTMLInputElement).value);
-          }}
-        />
-        <span className="text-xs text-muted-foreground">{unitLabel}</span>
-      </div>
-      <p className="text-xs text-muted-foreground">{help}</p>
-    </div>
+    <SettingRow variant="field" controlWidth="9rem">
+      <NumberField
+        label={label}
+        // A long duration also reads in a larger unit ("720 min" is "12 hours").
+        description={withReading(help, durationReading(effective, unit))}
+        value={shown}
+        min={0}
+        unit={unitLabel}
+        // Unbounded, so it would plan for 12rem; five digits and the unit fit 8rem.
+        size="sm"
+        empty="default"
+        defaultValue={Math.round(defaultSeconds / unit)}
+        disabled={disabled}
+        onChange={(value) => {
+          const next = Number.isFinite(value) && value > 0 ? Math.round(value * unit) : defaultSeconds;
+          if (next !== seconds) onChange(next);
+        }}
+      />
+    </SettingRow>
   );
 }
 
@@ -263,205 +245,191 @@ export function RememberMeGroup({
       : null;
 
   return (
-    <section
-      className="space-y-4 border-t border-border pt-4"
-      data-session-policy-remember
-      aria-labelledby="sp-remember-heading"
-      aria-describedby="sp-remember-help"
+    <SettingsGroup
+      title="Remember me"
+      caption="Lets people keep a device signed in after they choose “Remember me”. When the time runs out they sign in again, including two-factor authentication. Sensitive actions still ask for the password."
     >
-      <div className="space-y-1">
-        <h4 id="sp-remember-heading" className="text-sm font-semibold text-foreground">
-          Remember me
-        </h4>
-        <p id="sp-remember-help" className="max-w-prose text-xs text-muted-foreground">
-          Lets people keep a device signed in after they choose “Remember me”. When the
-          time runs out they sign in again, including two-factor authentication. Sensitive
-          actions still ask for the password.
-        </p>
-      </div>
-
-      <div className="flex items-center gap-3">
-        <Switch
-          id="sp-remember-enabled"
+      <div data-session-policy-remember="" className="divide-y divide-border/70">
+        <SettingRow
+          variant="switch"
+          label="Offer “Remember me” on the sign-in page"
           checked={value.enabled}
           onCheckedChange={(v) => patch({ enabled: v })}
           disabled={disabled}
         />
-        <Label htmlFor="sp-remember-enabled" className="text-sm">
-          Offer “Remember me” on the sign-in page
-        </Label>
-      </div>
 
-      <div className="space-y-2">
-        <span className="block text-xs font-medium text-foreground" aria-hidden="true">
-          Keep devices signed in for
-        </span>
-        <div className="flex flex-wrap items-center gap-3">
-          <SegmentedControl<string>
-            aria-label="Keep devices signed in for"
-            value={segment}
-            onValueChange={(v) => {
-              if (v === 'custom') {
-                setCustomPicked(true);
-                return;
-              }
-              const preset = REMEMBER_PRESETS.find((p) => p.value === v);
-              setCustomPicked(false);
-              if (preset) patch({ duration_seconds: preset.seconds });
-            }}
-            options={[
-              ...REMEMBER_PRESETS.map((p) => ({ value: p.value, label: p.label })),
-              { value: 'custom', label: 'Custom' },
-            ]}
-            disabled={off}
-          />
-          {segment === 'custom' ? (
-            <NumberField
-              label="Custom duration"
-              value={Math.round(value.duration_seconds / HOUR)}
-              onChange={(hours) => patch({ duration_seconds: hours * HOUR })}
-              min={1}
-              max={24}
-              unit="hours"
-              disabled={off}
-              className="w-40"
-            />
-          ) : null}
-        </div>
-        <p className="max-w-prose text-xs text-muted-foreground">
-          How long a remembered device stays signed in before a full sign-in is needed. NIST
-          SP 800-63B recommends no more than 24 hours for accounts that use two-factor
-          authentication.
-        </p>
-        {capped && value.enabled ? (
-          <p className="max-w-prose text-xs text-foreground" data-remember-capped>
-            Remembered devices sign out after {formatRememberDuration(effective.absolute)} here,
-            because the absolute lifetime is shorter.
-          </p>
-        ) : null}
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center gap-3">
-          <Switch
-            id="sp-remember-idle"
-            checked={idleOn}
-            onCheckedChange={(v) => patch({ idle_seconds: v ? 3600 : null })}
-            disabled={off}
-          />
-          <Label htmlFor="sp-remember-idle" className="text-sm">
-            Also sign out remembered devices after inactivity
-          </Label>
-        </div>
-        {idleOn ? null : (
-          <p className="max-w-prose text-xs text-muted-foreground" data-remember-idle-default>
-            When this is off, remembered devices follow the idle timeout (
-            {formatRememberDuration(Math.min(standardIdle, effective.absolute))} without activity).
-          </p>
-        )}
-        {idleOn ? (
-          <NumberField
-            label="Inactivity limit"
-            value={Math.round((value.idle_seconds ?? 3600) / 60)}
-            onChange={(minutes) => patch({ idle_seconds: minutes * 60 })}
-            min={5}
-            max={1440}
-            step={5}
-            unit="minutes"
-            disabled={off}
-            className="w-44"
-          />
-        ) : null}
-      </div>
-
-      <div className="space-y-2">
-        <span className="block text-xs font-medium text-foreground" id="sp-remember-roles-label">
-          Never remember these roles
-        </span>
-        <div
-          role="group"
-          aria-labelledby="sp-remember-roles-label"
-          aria-describedby={
-            rbacOffNote ? 'sp-remember-roles-help sp-remember-roles-rbac' : 'sp-remember-roles-help'
+        <SettingRow
+          variant="control"
+          wide
+          label="Keep devices signed in for"
+          help="How long a remembered device stays signed in before a full sign-in is needed. NIST SP 800-63B recommends no more than 24 hours for accounts that use two-factor authentication."
+          control={
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-end gap-3">
+                <SegmentedControl<string>
+                  aria-label="Keep devices signed in for"
+                  value={segment}
+                  onValueChange={(v) => {
+                    if (v === 'custom') {
+                      setCustomPicked(true);
+                      return;
+                    }
+                    const preset = REMEMBER_PRESETS.find((p) => p.value === v);
+                    setCustomPicked(false);
+                    if (preset) patch({ duration_seconds: preset.seconds });
+                  }}
+                  options={[
+                    ...REMEMBER_PRESETS.map((p) => ({ value: p.value, label: p.label })),
+                    { value: 'custom', label: 'Custom' },
+                  ]}
+                  disabled={off}
+                />
+                {segment === 'custom' ? (
+                  <NumberField
+                    label="Custom duration"
+                    value={Math.round(value.duration_seconds / HOUR)}
+                    onChange={(hours) => patch({ duration_seconds: hours * HOUR })}
+                    min={1}
+                    max={24}
+                    unit="hours"
+                    // An emptied field keeps the duration; it never becomes the 1 hour minimum.
+                    empty="keep"
+                    disabled={off}
+                  />
+                ) : null}
+              </div>
+              {capped && value.enabled ? (
+                <p className="max-w-[42rem] text-sm text-foreground" data-remember-capped>
+                  Remembered devices sign out after {formatRememberDuration(effective.absolute)} here,
+                  because the absolute lifetime is shorter.
+                </p>
+              ) : null}
+            </div>
           }
-          className="flex flex-wrap gap-x-5 gap-y-1"
-        >
-          {Object.entries(ROLE_LABELS).map(([role, label]) => (
-            <label
-              key={role}
-              className={`flex min-h-9 items-center gap-2 text-sm ${off ? 'cursor-not-allowed text-muted-foreground' : 'cursor-pointer text-foreground'}`}
-            >
-              <Checkbox
-                checked={excluded.has(role)}
-                disabled={off}
-                onCheckedChange={(v) => {
-                  const next = new Set(excluded);
-                  if (v === true) next.add(role);
-                  else next.delete(role);
-                  patch({
-                    excluded_roles: Object.keys(ROLE_LABELS).filter((r) => next.has(r))
-                      .concat(value.excluded_roles.filter((r) => !(r in ROLE_LABELS))),
-                  });
-                }}
-              />
-              {label}
-            </label>
-          ))}
-        </div>
-        <p id="sp-remember-roles-help" className="text-xs text-muted-foreground">
-          People with these roles stay signed in only until they close the browser.
-        </p>
-        {rbacOffNote ? (
-          <p
-            id="sp-remember-roles-rbac"
-            className="flex max-w-prose items-start gap-1.5 text-xs text-warning-text"
-            data-remember-rbac-note
-          >
-            <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span>{rbacOffNote}</span>
-          </p>
-        ) : null}
-      </div>
+        />
 
-      <div className="space-y-1.5" data-remember-transport>
-        {runtime && runtime.insecure_blocked && value.enabled ? (
-          <p className="flex max-w-prose items-start gap-1.5 text-xs text-foreground" data-remember-transport-status>
-            <Info className="mt-px h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-            <span>
-              People who open the console the way you did can&apos;t use Remember me yet:{' '}
-              {secureCookies
-                ? 'this connection is not secure.'
-                : 'the server does not mark its sign-in cookies as secure. Serve the console over HTTPS and set AUTH_COOKIE_SECURE=true.'}
-            </span>
-          </p>
+        <SettingRow
+          variant="switch"
+          label="Also sign out remembered devices after inactivity"
+          help={
+            idleOn ? undefined : (
+              <span data-remember-idle-default>
+                When this is off, remembered devices follow the idle timeout (
+                {formatRememberDuration(Math.min(standardIdle, effective.absolute))} without activity).
+              </span>
+            )
+          }
+          checked={idleOn}
+          onCheckedChange={(v) => patch({ idle_seconds: v ? 3600 : null })}
+          disabled={off}
+        />
+        {idleOn ? (
+          // Four digits, "min" and the steppers need the field's 12rem (never a narrower column).
+          <SettingRow variant="field" controlWidth="12rem">
+            <NumberField
+              label="Inactivity limit"
+              value={Math.round((value.idle_seconds ?? 3600) / 60)}
+              onChange={(minutes) => patch({ idle_seconds: minutes * 60 })}
+              min={5}
+              max={1440}
+              step={5}
+              unit="min"
+              // An emptied field keeps the limit; it never becomes the 5 minute minimum.
+              empty="keep"
+              disabled={off}
+            />
+          </SettingRow>
         ) : null}
-        {showInsecureSwitch ? (
-          <>
-            <div className="flex items-center gap-3">
-              <Switch
-                id="sp-remember-insecure"
+
+        <SettingRow variant="block">
+          <p className="text-base font-medium leading-5 text-foreground" id="sp-remember-roles-label">
+            Never remember these roles
+          </p>
+          <p id="sp-remember-roles-help" className="mt-0.5 max-w-[42rem] text-sm text-muted-foreground">
+            People with these roles stay signed in only until they close the browser.
+          </p>
+          <div
+            role="group"
+            aria-labelledby="sp-remember-roles-label"
+            aria-describedby={
+              rbacOffNote ? 'sp-remember-roles-help sp-remember-roles-rbac' : 'sp-remember-roles-help'
+            }
+            className="mt-2 flex flex-wrap gap-x-5 gap-y-1"
+          >
+            {Object.entries(ROLE_LABELS).map(([role, label]) => (
+              <label
+                key={role}
+                className={`flex min-h-9 items-center gap-2 text-sm ${off ? 'cursor-not-allowed text-muted-foreground' : 'cursor-pointer text-foreground'}`}
+              >
+                <Checkbox
+                  checked={excluded.has(role)}
+                  disabled={off}
+                  onCheckedChange={(v) => {
+                    const next = new Set(excluded);
+                    if (v === true) next.add(role);
+                    else next.delete(role);
+                    patch({
+                      excluded_roles: Object.keys(ROLE_LABELS).filter((r) => next.has(r))
+                        .concat(value.excluded_roles.filter((r) => !(r in ROLE_LABELS))),
+                    });
+                  }}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+          {rbacOffNote ? (
+            <p
+              id="sp-remember-roles-rbac"
+              className="mt-2 flex max-w-[42rem] items-start gap-1.5 text-sm text-warning-text"
+              data-remember-rbac-note
+            >
+              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span>{rbacOffNote}</span>
+            </p>
+          ) : null}
+        </SettingRow>
+
+        {(runtime && runtime.insecure_blocked && value.enabled) || showInsecureSwitch ? (
+          <div data-remember-transport="" className="divide-y divide-border/70">
+            {runtime && runtime.insecure_blocked && value.enabled ? (
+              <SettingRow variant="block">
+                <p className="flex max-w-[42rem] items-start gap-1.5 text-sm text-foreground" data-remember-transport-status>
+                  <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                  <span>
+                    People who open the Console the way you did can&apos;t use Remember me yet:{' '}
+                    {secureCookies
+                      ? 'this connection is not secure.'
+                      : 'the server does not mark its sign-in cookies as secure. Serve the Console over HTTPS and set AUTH_COOKIE_SECURE=true.'}
+                  </span>
+                </p>
+              </SettingRow>
+            ) : null}
+            {showInsecureSwitch ? (
+              <SettingRow
+                variant="switch"
+                label="Allow on plain HTTP (not recommended)"
+                help={
+                  // One span (the warning glyph, then the sentence) so the sentence is the
+                  // span's whole text.
+                  <span className="text-warning-text">
+                    <ShieldAlert className="mr-1.5 inline h-3.5 w-3.5 shrink-0 align-[-2px]" aria-hidden />
+                    {secureCookies
+                      ? 'Sign-in cookies are marked secure, so this setting has no effect.'
+                      : runtime
+                        ? `Secure cookies are off (${secureCookiesSetting(runtime)}), so Remember me is offered only when the Console is opened directly on the server. Allowing it on plain HTTP keeps a long-lived sign-in on a connection that is not encrypted.`
+                        : 'Remember me is normally offered only over HTTPS with secure cookies (AUTH_COOKIE_SECURE=true), or when the Console is opened directly on the server. Allowing it on plain HTTP keeps a long-lived sign-in on a connection that is not encrypted.'}
+                  </span>
+                }
                 checked={value.allow_insecure_http}
                 onCheckedChange={(v) => patch({ allow_insecure_http: v })}
                 disabled={off}
               />
-              <Label htmlFor="sp-remember-insecure" className="text-sm">
-                Allow on plain HTTP (not recommended)
-              </Label>
-            </div>
-            <p className="flex max-w-prose items-start gap-1.5 text-xs text-warning-text">
-              <ShieldAlert className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
-              <span>
-                {secureCookies
-                  ? 'Sign-in cookies are marked secure, so this setting has no effect.'
-                  : runtime
-                    ? `Secure cookies are off (${secureCookiesSetting(runtime)}), so Remember me is offered only when the console is opened directly on the server. Allowing it on plain HTTP keeps a long-lived sign-in on a connection that is not encrypted.`
-                    : 'Remember me is normally offered only over HTTPS with secure cookies (AUTH_COOKIE_SECURE=true), or when the console is opened directly on the server. Allowing it on plain HTTP keeps a long-lived sign-in on a connection that is not encrypted.'}
-              </span>
-            </p>
-          </>
+            ) : null}
+          </div>
         ) : null}
       </div>
-    </section>
+    </SettingsGroup>
   );
 }
 
@@ -480,7 +448,7 @@ function secureCookiesSetting(runtime: Pick<RememberMeStatus, 'secure_cookies_co
 export interface SessionPolicyEditorProps {
   /**
    * Controlled value (embedded in Settings). When provided, the editor edits the
-   * parent's `prefs.session_policy` via `onChange` and hides its own Save button —
+   * parent's `prefs.session_policy` via `onChange` and hides its own Save button;
    * Settings owns the single Save. When omitted, the editor self-loads settings and
    * renders its own Save (the standalone /security route).
    */
@@ -581,137 +549,119 @@ export function SessionPolicyEditor({
     );
   }
 
+  void embedded;
   return (
-    <Card
-      variant={embedded ? 'flat' : 'default'}
-      className={embedded ? 'rounded-none border-t border-border/70' : undefined}
-    >
-      <CardContent className={embedded ? 'space-y-5 px-1 pb-5 pt-5' : 'space-y-5 p-5'}>
-        <div className="grid gap-4 sm:grid-cols-3">
-          <DurationField
-            id="sp-idle"
-            label="Idle timeout"
-            help="A sign-in ends after this long without activity. Remembered devices follow it too, unless they have their own limit below."
-            seconds={policy.idle_timeout ?? DEFAULTS.idle_timeout}
-            unit={60}
-            unitLabel="minutes"
-            defaultSeconds={DEFAULTS.idle_timeout}
-            onChange={(v) => set({ idle_timeout: v })}
-            disabled={saving}
-          />
-          <DurationField
-            id="sp-absolute"
-            label="Absolute lifetime"
-            help="A hard cap on every sign-in, regardless of activity. A remembered device never stays signed in longer than this."
-            seconds={policy.absolute_lifetime ?? DEFAULTS.absolute_lifetime}
-            unit={3600}
-            unitLabel="hours"
-            defaultSeconds={DEFAULTS.absolute_lifetime}
-            onChange={(v) => set({ absolute_lifetime: v })}
-            disabled={saving}
-          />
-          <DurationField
-            id="sp-sudo"
-            label="Re-auth (sudo) window"
-            help="Sensitive actions re-prompt for the password after this long."
-            seconds={policy.sudo_reauth_window ?? DEFAULTS.sudo_reauth_window}
-            unit={60}
-            unitLabel="minutes"
-            defaultSeconds={DEFAULTS.sudo_reauth_window}
-            onChange={(v) => set({ sudo_reauth_window: v })}
-            disabled={saving}
-          />
-        </div>
-        {runtime?.standard_session_seconds ? (
-          <p className="max-w-prose text-xs text-muted-foreground" data-session-standard-limit>
-            A sign-in without “Remember me” also ends after{' '}
-            {formatRememberDuration(runtime.standard_session_seconds)} (set on the server with
-            AUTH_TOKEN_HOURS), or when the browser closes.
-          </p>
-        ) : null}
-
-        <RememberMeGroup
-          value={rememberOf(policy)}
-          onChange={(next) => set({ remember_me: next })}
+    <div className="space-y-10" data-session-policy="">
+      <SettingsGroup
+        id="session-policy"
+        title="Session lifetime"
+        caption="How long sign-ins last and when sensitive actions ask for the password again."
+      >
+        <DurationField
+          label="Idle timeout"
+          help="A sign-in ends after this long without activity. Remembered devices follow it too, unless they have their own limit below."
+          seconds={policy.idle_timeout ?? DEFAULTS.idle_timeout}
+          unit={60}
+          unitLabel="min"
+          defaultSeconds={DEFAULTS.idle_timeout}
+          onChange={(v) => set({ idle_timeout: v })}
           disabled={saving}
-          policy={policy}
-          runtime={runtime}
-          rbacEnabled={rbacEnabled}
         />
-
-        <div className="space-y-3 border-t border-border pt-4">
-          <div className="flex items-center gap-3">
-            <Switch
-              id="sp-notify-new-device"
-              checked={Boolean(policy.notify_on_new_device)}
-              onCheckedChange={(v) => set({ notify_on_new_device: v })}
-              disabled={saving}
-            />
-            <Label htmlFor="sp-notify-new-device" className="text-sm">
-              Email users when a session signs in from a new device or location
-            </Label>
-          </div>
-          <div className="flex items-center gap-3">
-            <Switch
-              id="sp-notify-terminate"
-              checked={Boolean(policy.notify_on_terminate)}
-              onCheckedChange={(v) => set({ notify_on_terminate: v })}
-              disabled={saving}
-            />
-            <Label htmlFor="sp-notify-terminate" className="text-sm">
-              Email users when one of their sessions is terminated
-            </Label>
-          </div>
-        </div>
-
-        <details className="border-t border-border pt-4" data-session-policy-advanced>
-          <summary className="cursor-pointer text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            Advanced
-          </summary>
-          <div className="mt-4 max-w-xs">
-            <DurationField
-              id="sp-access-ttl"
-              label="Access token TTL"
-              help="Not enforced in this version: it is kept for API clients that rotate tokens. Browser sign-ins follow the limits above."
-              seconds={policy.access_ttl ?? DEFAULTS.access_ttl}
-              unit={60}
-              unitLabel="minutes"
-              defaultSeconds={DEFAULTS.access_ttl}
-              onChange={(v) => set({ access_ttl: v })}
-              disabled={saving}
-            />
-          </div>
-        </details>
-
-        {/* In controlled (Settings) mode the parent owns the single Save button. */}
-        {!controlled ? (
-          <div className="flex justify-end">
-            <Button size="sm" onClick={() => void save()} disabled={saving}>
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Save className="h-4 w-4" aria-hidden />}
-              Save session policy
-            </Button>
-          </div>
+        <DurationField
+          label="Absolute lifetime"
+          help="A hard cap on every sign-in, regardless of activity. A remembered device never stays signed in longer than this."
+          seconds={policy.absolute_lifetime ?? DEFAULTS.absolute_lifetime}
+          unit={3600}
+          unitLabel="h"
+          defaultSeconds={DEFAULTS.absolute_lifetime}
+          onChange={(v) => set({ absolute_lifetime: v })}
+          disabled={saving}
+        />
+        <DurationField
+          label="Re-authentication window"
+          help="Sensitive actions ask for the password again after this long."
+          seconds={policy.sudo_reauth_window ?? DEFAULTS.sudo_reauth_window}
+          unit={60}
+          unitLabel="min"
+          defaultSeconds={DEFAULTS.sudo_reauth_window}
+          onChange={(v) => set({ sudo_reauth_window: v })}
+          disabled={saving}
+        />
+        {runtime?.standard_session_seconds ? (
+          <SettingRow variant="block">
+            <p className="max-w-[42rem] text-sm text-muted-foreground" data-session-standard-limit>
+              A sign-in without “Remember me” also ends after{' '}
+              {formatRememberDuration(runtime.standard_session_seconds)} (set on the server with
+              AUTH_TOKEN_HOURS), or when the browser closes.
+            </p>
+          </SettingRow>
         ) : null}
-      </CardContent>
-    </Card>
+      </SettingsGroup>
+
+      <RememberMeGroup
+        value={rememberOf(policy)}
+        onChange={(next) => set({ remember_me: next })}
+        disabled={saving}
+        policy={policy}
+        runtime={runtime}
+        rbacEnabled={rbacEnabled}
+      />
+
+      <SettingsGroup title="Session emails">
+        <SettingRow
+          variant="switch"
+          label="Email users when a session signs in from a new device or location"
+          checked={Boolean(policy.notify_on_new_device)}
+          onCheckedChange={(v) => set({ notify_on_new_device: v })}
+          disabled={saving}
+        />
+        <SettingRow
+          variant="switch"
+          label="Email users when one of their sessions is signed out by an administrator"
+          checked={Boolean(policy.notify_on_terminate)}
+          onCheckedChange={(v) => set({ notify_on_terminate: v })}
+          disabled={saving}
+        />
+      </SettingsGroup>
+
+      {/* A group like the others (not a native disclosure between panels); its caption
+          says plainly that the value is not enforced. */}
+      <SettingsGroup
+        title="Access tokens"
+        caption="Not enforced in this version; kept for API clients that rotate tokens."
+        data-session-policy-advanced=""
+      >
+        <DurationField
+          label="Access token lifetime"
+          help="Browser sign-ins follow the limits above."
+          seconds={policy.access_ttl ?? DEFAULTS.access_ttl}
+          unit={60}
+          unitLabel="min"
+          defaultSeconds={DEFAULTS.access_ttl}
+          onChange={(v) => set({ access_ttl: v })}
+          disabled={saving}
+        />
+      </SettingsGroup>
+
+      {/* In controlled (Settings) mode the parent owns the single Save button. */}
+      {!controlled ? (
+        <div className="flex justify-end">
+          <Button size="sm" onClick={() => void save()} disabled={saving}>
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Save className="h-4 w-4" aria-hidden />}
+            Save session policy
+          </Button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
-/** A titled section wrapper for the Security page. Forwards controlled props. */
+/**
+ * The session policy for the Single sign-on and policy section. Forwards controlled
+ * props; the groups carry their own titles.
+ */
 export function SessionPolicySection(props: SessionPolicyEditorProps = {}) {
-  const Heading = props.embedded ? 'h3' : 'h2';
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Timer className="h-4 w-4 text-muted-foreground" aria-hidden />
-        <Heading className="text-sm font-semibold text-foreground">Token &amp; session policy</Heading>
-      </div>
-      <p className="text-xs text-muted-foreground">
-        Control how long sign-ins last and when sensitive actions require re-authentication.
-      </p>
-      <SessionPolicyEditor {...props} />
-    </section>
-  );
+  return <SessionPolicyEditor {...props} />;
 }
 
 export default SessionPolicyEditor;

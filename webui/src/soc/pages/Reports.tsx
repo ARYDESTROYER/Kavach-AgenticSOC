@@ -11,9 +11,11 @@
  * Every `/api/reports` route needs `cases:read`, and so does the rail/palette entry
  * (its registry `perm`). A role without it can still reach `#/reports` by a typed or
  * shared link, so it gets a plain explanation here instead of a 403 error state.
+ *
+ * Round 14 (SPEC §4.9.3): the shell's own header is the Overview's grammar, the title
+ * "Reports" with the library's explanation as its help tip; no icon or overline.
  */
 import * as React from 'react';
-import { FileText } from 'lucide-react';
 
 import { LoadingState } from '@/design-system';
 import { useAuth } from '@/soc/auth';
@@ -23,6 +25,10 @@ import { PageHeader } from '@/soc/components/PageHeader';
 import { useRoute } from '@/soc/router';
 
 const ReportsLibrary = React.lazy(() => import('@/soc/chat/report/ReportsLibrary'));
+
+/** The page help, the same explanation the library gives once it has loaded. */
+export const REPORTS_HELP =
+  'Reports you built from chat answers. Open one to read it, export it or go back to the conversation it came from.';
 
 export interface ReportsPageProps {
   /**
@@ -38,8 +44,8 @@ export default function Reports({ reportId: explicit }: ReportsPageProps = {}) {
   const reportId = explicit ?? (route.page === 'reports' ? route.opts?.reportId : undefined);
   if (!hasPermission('cases', 'read')) {
     return (
-      <PageContainer variant="wide" className="space-y-6">
-        <PageHeader icon={FileText} eyebrow="Workspace" title="Reports" />
+      <PageContainer variant="wide">
+        <PageHeader title="Reports" help={REPORTS_HELP} />
         <EmptyState
           state="unavailable"
           title="Reports need access to cases"
@@ -51,8 +57,8 @@ export default function Reports({ reportId: explicit }: ReportsPageProps = {}) {
   return (
     <React.Suspense
       fallback={
-        <PageContainer variant="wide" className="space-y-6">
-          <PageHeader icon={FileText} eyebrow="Workspace" title="Reports" />
+        <PageContainer variant="wide">
+          <PageHeader title="Reports" help={REPORTS_HELP} />
           <LoadingState label="Loading reports" layout="page" />
         </PageContainer>
       }

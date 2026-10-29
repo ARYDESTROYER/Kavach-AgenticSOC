@@ -1,5 +1,6 @@
 /**
- * Roles — RBAC role administration (Round 3 / Feature 6).
+ * Roles and permissions: RBAC role administration (Round 3 Feature 6; Round 14 renders
+ * it as the "Roles & permissions" Settings section).
  *
  * Lists the six immutable BUILT-IN roles plus any operator-defined CUSTOM roles
  * (resolved matrix from GET /api/roles). An admin can create / clone / edit a custom
@@ -11,31 +12,20 @@
  * RBAC: the whole page is gated behind <ProtectedRoute resource="roles" action="manage">.
  * GET /api/account/permissions drives a small capability banner (what the CURRENT user
  * may do here). Every role name / description / action is operator-influenceable and
- * rendered as PLAIN text or in a CodeBlock (#9) — never HTML, never into a prompt.
+ * rendered as plain text or in a CodeBlock (#9): never HTML, never into a prompt.
  *
  * #3 is untouched: RBAC only gates WHO may call a close/escalate endpoint; nothing on
  * this page feeds the deterministic case_manager.decide().
  */
 import * as React from 'react';
-import {
-  ShieldCheck,
-  Plus,
-  Copy,
-  Pencil,
-  Trash2,
-  RefreshCw,
-  Loader2,
-  Lock,
-  FlaskConical,
-  ArrowRight,
-} from 'lucide-react';
+import { Plus, Copy, Pencil, Trash2, ArrowRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { ApiError } from '@/lib/api';
-import { humanizeToken } from '@/lib/format';
+import { DASH, humanizeToken } from '@/lib/format';
 import { Button } from '@/ui/button';
 import { Badge } from '@/ui/badge';
 import { Label } from '@/ui/label';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
+import { Callout, LoadingGlyph, RowActions, type RowAction } from '@/design-system';
 import {
   Dialog,
   DialogContent,
@@ -51,11 +41,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/select';
-import { PageHeader } from '@/soc/components/PageHeader';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { LoadError } from '@/soc/components/LoadError';
-import { Card, CardContent } from '@/ui/card';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { ProtectedRoute, useCan } from '@/soc/components/Can';
 import { CodeBlock } from '@/soc/components/CodeBlock';
 import {
@@ -76,6 +65,16 @@ import {
   type AccountPermissions,
   type GrantMap,
 } from './Roles.api';
+import { SettingRow, SettingsGroup, SettingsPageSection } from './settings/primitives';
+import { SECTION_META_BY_ID } from './settings/settings-sections-meta';
+
+/** The section's help tip: the registry's `roles` help, the one source. */
+const ROLES_HELP = SECTION_META_BY_ID.roles?.help;
+
+/** The busy glyph inside a dialog's button. */
+function BusyGlyph() {
+  return <LoadingGlyph size="sm" className="size-4" aria-hidden />;
+}
 
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
@@ -115,14 +114,14 @@ function cloneMap(m?: GrantMap): GrantMap {
  * Build an editor draft for an EXISTING custom role.
  *
  * The full raw definition (`row.custom`) is only cached after an in-session
- * create/update — GET /api/roles returns just the RESOLVED matrix. On a fresh page
+ * create or update; GET /api/roles returns just the RESOLVED matrix. On a fresh page
  * load `row.custom` is undefined, so seeding an empty draft here would let a save
  * blank the role (silent RBAC data loss). When the raw definition is absent we seed
  * the draft's grants from the resolved matrix row (`matrix[name]`), so a subsequent
  * save re-persists the role's CURRENT effective permissions instead of wiping them.
- * Inheritance/denies flatten into explicit grants — permissions are preserved, never
+ * Inheritance and denies flatten into explicit grants: permissions are preserved, never
  * reduced. (A backend change returning raw custom-role definitions would let Edit
- * restore the exact grants/denies/inherits + description — see the handoff.)
+ * restore the exact grants, denies, inherits and description; see the handoff.)
  */
 export function draftFromRow(row: RoleRow, matrix: Record<string, GrantMap>): RoleDraft {
   const c = row.custom;
@@ -184,7 +183,7 @@ export function RolesInner({ embedded = false }: RolesInnerProps) {
       if (ap) setPerms(ap);
     } catch (e) {
       // The roster ALWAYS contains the six built-ins, so an empty table means the
-      // fetch failed — surface a retryable error, not a misleading "No roles yet."
+      // fetch failed: surface a retryable error, not a misleading "No roles yet."
       setError(e);
     } finally {
       setLoading(false);
@@ -267,137 +266,93 @@ export function RolesInner({ embedded = false }: RolesInnerProps) {
     void load();
   };
 
+  // One action in view, the rest in the row menu; every action is neutral at rest and
+  // Delete is confirmed in a dialog, where the red button lives.
+  const rowActions = (r: RoleRow): RowAction[] => {
+    const disabled = busy || !canManage;
+    const clone: RowAction = {
+      id: 'clone',
+      label: `Clone ${r.name}`,
+      icon: Copy,
+      onSelect: () => openClone(r),
+      disabled,
+    };
+    if (r.builtin) return [clone];
+    return [
+      { id: 'edit', label: `Edit ${r.name}`, icon: Pencil, onSelect: () => openEdit(r), disabled },
+      clone,
+      { id: 'delete', label: `Delete ${r.name}`, icon: Trash2, onSelect: () => setDeleteRow(r), disabled, destructive: true },
+    ];
+  };
+
+  // Declared widths make the table fixed-layout: every cell is one line (cut text keeps a
+  // hover title) and a narrow screen scrolls the table sideways instead of wrapping words.
   const columns: DataTableColumn<RoleRow>[] = [
     {
       id: 'name',
       header: 'Role',
-      cell: (r) => (
-        <div className="flex items-center gap-2">
-          {r.builtin ? (
-            <Lock className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-          ) : (
-            <ShieldCheck className="h-3.5 w-3.5 text-primary" aria-hidden />
-          )}
-          <span className="font-medium text-foreground">{roleLabel(r.name)}</span>
-          {r.builtin ? (
-            <Badge variant="secondary" className="text-2xs">
-              Built-in
-            </Badge>
-          ) : (
-            <Badge variant="info" className="text-2xs">
-              Custom
-            </Badge>
-          )}
-        </div>
-      ),
+      minWidth: '10rem',
+      text: (r) => roleLabel(r.name),
+      cell: (r) => <span className="font-medium text-foreground">{roleLabel(r.name)}</span>,
+    },
+    {
+      id: 'type',
+      header: 'Type',
+      width: '7rem',
+      cell: (r) => <span className="text-sm text-muted-foreground">{r.builtin ? 'Built-in' : 'Custom'}</span>,
     },
     {
       id: 'description',
       header: 'Description',
+      minWidth: '12rem',
+      text: (r) => (r.builtin ? 'Platform-defined role' : r.description || DASH),
       cell: (r) => (
         <span className="text-sm text-muted-foreground">
-          {r.builtin ? 'Platform-defined role' : r.description || '—'}
+          {r.builtin ? 'Platform-defined role' : r.description || DASH}
         </span>
       ),
     },
     {
       id: 'resources',
       header: 'Resources',
-      align: 'center',
+      align: 'right',
+      kind: 'number',
+      width: '7rem',
       cell: (r) => <span className="tabular-nums text-sm text-foreground">{r.resourceCount}</span>,
     },
     {
       id: 'actions',
       header: '',
       align: 'right',
-      cell: (r) => (
-        <div className="flex items-center justify-end gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => openClone(r)}
-            disabled={busy || !canManage}
-            aria-label={`Clone ${r.name}`}
-            title="Clone into a new custom role"
-          >
-            <Copy className="h-4 w-4" aria-hidden />
-          </Button>
-          {!r.builtin && (
-            <>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={() => openEdit(r)}
-                disabled={busy || !canManage}
-                aria-label={`Edit ${r.name}`}
-                title="Edit"
-              >
-                <Pencil className="h-4 w-4" aria-hidden />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-critical hover:text-critical"
-                onClick={() => setDeleteRow(r)}
-                disabled={busy || !canManage}
-                aria-label={`Delete ${r.name}`}
-                title="Delete"
-              >
-                <Trash2 className="h-4 w-4" aria-hidden />
-              </Button>
-            </>
-          )}
-        </div>
-      ),
+      width: '6.5rem',
+      cell: (r) => <RowActions subject={r.name} actions={rowActions(r)} />,
     },
   ];
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        embedded={embedded}
-        icon={ShieldCheck}
-        eyebrow="Administration"
-        title="Roles & permissions"
-        description="Define custom RBAC roles on a resource × action matrix. Built-in roles are immutable."
-        actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-              <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden />
-              Refresh
-            </Button>
-            <Button size="sm" onClick={openCreate} disabled={!canManage}>
-              <Plus className="h-4 w-4" aria-hidden />
-              New custom role
-            </Button>
-          </div>
-        }
-      />
-
-      {perms && perms.rbac_enabled ? (
-        <Alert>
-          <ShieldCheck className="h-4 w-4" aria-hidden />
-          <AlertTitle>
-            You are signed in as {roleLabel(perms.role)}
-            {perms.custom_roles.length ? ` (+ ${perms.custom_roles.length} custom)` : ''}
-          </AlertTitle>
-          <AlertDescription>
-            You hold {Object.keys(perms.permissions).length} resource grants.
-            {canManage
-              ? ' You can create, edit, and delete custom roles.'
-              : ' You can view roles but not modify them.'}
-          </AlertDescription>
-        </Alert>
-      ) : perms && !perms.rbac_enabled ? (
-        <Alert variant="warning">
-          <AlertTitle>RBAC is disabled</AlertTitle>
-          <AlertDescription>
-            Every authenticated user is treated as a super admin. Enable RBAC in Security
-            settings to enforce these roles.
-          </AlertDescription>
-        </Alert>
+    <SettingsPageSection
+      embedded={embedded}
+      title="Roles & permissions"
+      help={ROLES_HELP}
+      width="full"
+      actions={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Button size="sm" onClick={openCreate} disabled={!canManage}>
+            <Plus className="size-4" aria-hidden />
+            New custom role
+          </Button>
+          <RefreshButton refreshing={loading} onClick={() => void load()} />
+        </div>
+      }
+    >
+      {perms && !perms.rbac_enabled ? (
+        // A live condition, worded as it is: there is no switch for it in the Console.
+        <Callout intent="warning" title="Role-based access is off">
+          Every signed-in account counts as Super admin, so these roles are not enforced yet.
+          Turning it on is a change to the stored settings (
+          <code className="font-mono text-sm">rbac.enabled</code>) through the settings API; there
+          is no switch for it on this page.
+        </Callout>
       ) : null}
 
       {error ? (
@@ -407,14 +362,36 @@ export function RolesInner({ embedded = false }: RolesInnerProps) {
           onRetry={() => void load()}
         />
       ) : (
-        <DataTable<RoleRow>
-          columns={columns}
-          rows={rows}
-          getRowId={(r) => r.name}
-          loading={loading}
-          ariaLabel="RBAC roles"
-          empty="No roles yet."
-        />
+        // One group on the tinted panel, the table bleeding to its edge (C9 option A);
+        // the caller's own standing is the group's caption.
+        <SettingsGroup
+          id="roles-list"
+          title="Roles"
+          caption={
+            perms && perms.rbac_enabled ? (
+              <span data-testid="roles-capability">
+                You are signed in as {roleLabel(perms.role)}
+                {perms.custom_roles.length ? ` with ${perms.custom_roles.length} custom role${perms.custom_roles.length === 1 ? '' : 's'}` : ''}
+                , holding {Object.keys(perms.permissions).length} resource grants.
+                {canManage
+                  ? ' You can create, edit and delete custom roles.'
+                  : ' You can view roles but not change them.'}
+              </span>
+            ) : (
+              'Built-in roles are fixed. Clone one to start a custom role.'
+            )
+          }
+        >
+          <DataTable<RoleRow>
+            columns={columns}
+            rows={rows}
+            getRowId={(r) => r.name}
+            loading={loading}
+            surface="panel"
+            ariaLabel="RBAC roles"
+            empty="No roles yet."
+          />
+        </SettingsGroup>
       )}
 
       <SimulatePanel roles={Object.keys(data?.matrix ?? {})} />
@@ -445,7 +422,7 @@ export function RolesInner({ embedded = false }: RolesInnerProps) {
           if (r) void remove(r);
         }}
       />
-    </div>
+    </SettingsPageSection>
   );
 }
 
@@ -526,8 +503,8 @@ function RoleEditorDialog({
         <DialogHeader>
           <DialogTitle>{mode === 'create' ? 'New custom role' : `Edit ${initial.name}`}</DialogTitle>
           <DialogDescription>
-            Toggle each cell: not set → grant → deny. Preview the resolved permissions before
-            applying.
+            Each cell cycles through not set, grant and deny. Preview the resolved permissions
+            before you apply them.
           </DialogDescription>
         </DialogHeader>
 
@@ -542,19 +519,15 @@ function RoleEditorDialog({
         />
 
         {nameTaken ? (
-          <Alert variant="warning">
-            <AlertDescription>
-              A role named <strong>{draft.name.trim()}</strong> already exists. Use the Edit
-              action on that row instead.
-            </AlertDescription>
-          </Alert>
+          <Callout intent="warning" title="That name is taken">
+            A role named <strong>{draft.name.trim()}</strong> already exists. Use the Edit action on
+            that row instead.
+          </Callout>
         ) : null}
         {nameIsBuiltin ? (
-          <Alert variant="warning">
-            <AlertDescription>
-              <strong>{draft.name.trim()}</strong> is a built-in role and cannot be redefined.
-            </AlertDescription>
-          </Alert>
+          <Callout intent="warning" title="Built-in role">
+            <strong>{draft.name.trim()}</strong> is a built-in role and cannot be redefined.
+          </Callout>
         ) : null}
 
         {preview ? <PreviewDiff preview={preview} /> : null}
@@ -564,15 +537,11 @@ function RoleEditorDialog({
             Cancel
           </Button>
           <Button variant="outline" onClick={() => void runPreview()} disabled={previewing || saving}>
-            {previewing ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-            ) : (
-              <ArrowRight className="h-4 w-4" aria-hidden />
-            )}
+            {previewing ? <BusyGlyph /> : <ArrowRight className="size-4" aria-hidden />}
             Preview
           </Button>
           <Button onClick={() => void save()} disabled={!canSubmit || saving}>
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
+            {saving ? <BusyGlyph /> : null}
             {mode === 'create' ? 'Create role' : 'Save changes'}
           </Button>
         </DialogFooter>
@@ -628,9 +597,7 @@ export function PreviewDiff({ preview }: { preview: RolePreviewResponse }) {
       )}
 
       <div className="space-y-1.5">
-        <Label className="text-xs uppercase tracking-wide text-muted-foreground">
-          Effective grants
-        </Label>
+        <p className="text-sm font-medium text-foreground">Effective grants</p>
         <CodeBlock
           value={effectiveSummary || '(no grants)'}
           caption={`${preview.name} · resource: actions`}
@@ -643,7 +610,7 @@ export function PreviewDiff({ preview }: { preview: RolePreviewResponse }) {
 }
 
 // --------------------------------------------------------------------------- //
-// Simulate panel: a single role × resource × action can() spot-check.
+// Permission check: a single role, resource and action can() spot-check.
 // --------------------------------------------------------------------------- //
 function SimulatePanel({
   roles,
@@ -673,90 +640,86 @@ function SimulatePanel({
   };
 
   return (
-    <Card padding="md">
-      <CardContent className="space-y-4 pt-6">
-      <div className="flex items-center gap-2">
-        <FlaskConical className="h-4 w-4 text-primary" aria-hidden />
-        <h2 className="text-sm font-semibold text-foreground">Permission spot-check</h2>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        Resolve whether a role is allowed a single resource × action against the live matrix.
-      </p>
-      <div className="grid gap-3 sm:grid-cols-4">
-        <div className="space-y-1.5">
-          <Label>Role</Label>
-          <Select value={role || undefined} onValueChange={setRole}>
-            <SelectTrigger aria-label="Role to simulate">
-              <SelectValue placeholder="— role —" />
-            </SelectTrigger>
-            <SelectContent>
-              {roles.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {roleLabel(r)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label>Resource</Label>
-          <Select value={resource} onValueChange={(v) => setResource(v)}>
-            <SelectTrigger aria-label="Resource">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {RESOURCE_ORDER.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {humanizeToken(r)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="space-y-1.5">
-          <Label>Action</Label>
-          <Select value={action} onValueChange={setAction}>
-            <SelectTrigger aria-label="Action">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {/* Offer the resource's FULL action vocabulary (not just what the
-                  selected role already grants) so a DENIED action can be simulated
-                  too — super_admin resolves to ['*'] and must not collapse to one. */}
-              {Array.from(new Set([...(RESOURCE_ACTIONS[resource] ?? []), action]))
-                .filter((a) => a !== '*')
-                .map((a) => (
-                  <SelectItem key={a} value={a}>
-                    {a}
+    <SettingsGroup
+      title="Permission check"
+      caption="Whether a role is allowed one resource and action, resolved against the live matrix."
+    >
+      <SettingRow variant="block">
+        {/* Three equal selects and the Check button at its own width on the end. */}
+        <div className="grid gap-3 sm:grid-cols-[repeat(3,minmax(0,1fr))_auto]">
+          <div className="space-y-1.5">
+            <Label htmlFor="simulate-role">Role</Label>
+            <Select value={role || undefined} onValueChange={setRole}>
+              <SelectTrigger id="simulate-role" aria-label="Role to simulate">
+                <SelectValue placeholder="Choose a role" />
+              </SelectTrigger>
+              <SelectContent>
+                {roles.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {roleLabel(r)}
                   </SelectItem>
                 ))}
-            </SelectContent>
-          </Select>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="simulate-resource">Resource</Label>
+            <Select value={resource} onValueChange={(v) => setResource(v)}>
+              <SelectTrigger id="simulate-resource" aria-label="Resource">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RESOURCE_ORDER.map((r) => (
+                  <SelectItem key={r} value={r}>
+                    {humanizeToken(r)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="simulate-action">Action</Label>
+            <Select value={action} onValueChange={setAction}>
+              <SelectTrigger id="simulate-action" aria-label="Action">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {/* Offer the resource's full action vocabulary (not just what the
+                    selected role already grants) so a denied action can be checked
+                    too; super_admin resolves to ['*'] and must not collapse to one. */}
+                {Array.from(new Set([...(RESOURCE_ACTIONS[resource] ?? []), action]))
+                  .filter((a) => a !== '*')
+                  .map((a) => (
+                    <SelectItem key={a} value={a}>
+                      {a}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-end">
+            <Button variant="outline" onClick={() => void run()} disabled={busy} className="w-full sm:w-auto">
+              {busy ? <BusyGlyph /> : null}
+              Check
+            </Button>
+          </div>
         </div>
-        <div className="flex items-end">
-          <Button onClick={() => void run()} disabled={busy} className="w-full">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
-            Simulate
-          </Button>
-        </div>
-      </div>
+      </SettingRow>
 
       {result ? (
-        <div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-surface px-4 py-3">
-          <Badge variant={result.allowed ? 'success' : 'critical'}>
-            {result.allowed ? 'Allowed' : 'Denied'}
-          </Badge>
-          <span className="text-sm text-foreground">
-            {roleLabel(result.role)} → {result.resource}:{result.action}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            Actions on {result.resource}: {result.actions.length ? result.actions.join(', ') : '(none)'}
-            {!result.known_resource ? ' · unknown resource' : ''}
-            {!result.role_exists ? ' · role not found' : ''}
-          </span>
-        </div>
+        <SettingRow
+          variant="status"
+          label={`${roleLabel(result.role)} on ${result.resource}:${result.action}`}
+          help={`Actions on ${result.resource}: ${result.actions.length ? result.actions.join(', ') : 'none'}${
+            !result.known_resource ? '. Unknown resource' : ''
+          }${!result.role_exists ? '. Role not found' : ''}.`}
+          status={
+            <Badge variant={result.allowed ? 'success' : 'critical'}>
+              {result.allowed ? 'Allowed' : 'Denied'}
+            </Badge>
+          }
+        />
       ) : null}
-      </CardContent>
-    </Card>
+    </SettingsGroup>
   );
 }

@@ -1,8 +1,11 @@
 /**
- * Cases page controls (round-6 cases-page findings #0/#6).
+ * Cases page controls.
  *
- *  - #6: the updated-time sort control is a TRUE two-way toggle (the old button only
- *    ever set asc, so once "Oldest first" was on there was no button back to newest).
+ *  - One sort (Round 14, SPEC §4.9.4, C7): the Updated column header orders the list,
+ *    newest first by default, and toggles both ways; the separate "Newest first" button
+ *    is gone.
+ *  - The row Close affordance: named for the case number ("Close TLSOC-001"), absent on
+ *    a closed or resolved case (nothing to close), and focus returns to it.
  *  - #0: the floating bulk-action bar is portaled to <body> so its `position: fixed`
  *    anchors to the viewport instead of being captured by the page's `@container`
  *    (PageContainer) ancestor.
@@ -10,7 +13,7 @@
  * Fully mocked (offline); no #3 / runtime behaviour touched.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const { listCasesMock } = vi.hoisted(() => ({ listCasesMock: vi.fn() }));
 
@@ -78,7 +81,7 @@ function renderCases() {
   );
 }
 
-describe('Cases controls (round-6 #0/#6)', () => {
+describe('Cases controls', () => {
   beforeEach(() => {
     vi.useRealTimers();
     listCasesMock.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
@@ -86,38 +89,53 @@ describe('Cases controls (round-6 #0/#6)', () => {
     window.location.hash = '#/cases';
   });
 
-  it('sort direction is a true two-way toggle with a way back to newest (#6)', async () => {
+  it('sorts by the Updated header, newest first, both ways, with no second sort control', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    const toggle = () => screen.getByRole('button', { name: /sort by updated time/i });
+    const titles = () =>
+      screen
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => (row.textContent?.includes('Alpha') ? 'Alpha' : row.textContent?.includes('Bravo') ? 'Bravo' : '?'));
+    const updated = () => screen.getByRole('columnheader', { name: /updated/i });
 
-    // Default: newest first (updated_at desc) — label reflects the current order.
-    expect(toggle()).toHaveAttribute('aria-pressed', 'false');
-    expect(toggle()).toHaveTextContent(/newest first/i);
+    // Default: newest activity first (Bravo was updated an hour after Alpha).
+    expect(updated()).toHaveAttribute('aria-sort', 'descending');
+    expect(titles()).toEqual(['Bravo', 'Alpha']);
+    expect(screen.queryByRole('button', { name: /sort by updated time/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /newest first|oldest first/i })).toBeNull();
 
-    // Click → oldest first.
-    fireEvent.click(toggle());
-    expect(toggle()).toHaveAttribute('aria-pressed', 'true');
-    expect(toggle()).toHaveTextContent(/oldest first/i);
-
-    // Click again → BACK to newest (the old control could not do this).
-    fireEvent.click(toggle());
-    expect(toggle()).toHaveAttribute('aria-pressed', 'false');
-    expect(toggle()).toHaveTextContent(/newest first/i);
+    // The header flips it, and flips it back.
+    fireEvent.click(within(updated()).getByRole('button'));
+    expect(updated()).toHaveAttribute('aria-sort', 'ascending');
+    expect(titles()).toEqual(['Alpha', 'Bravo']);
+    fireEvent.click(within(updated()).getByRole('button'));
+    expect(updated()).toHaveAttribute('aria-sort', 'descending');
+    expect(titles()).toEqual(['Bravo', 'Alpha']);
   });
 
-  it('renders a per-row Close affordance when permitted (auth off → cases:close) (#4/#5)', async () => {
+  it('offers Close on each open case, named for its number, and none on a closed one', async () => {
+    listCasesMock.mockResolvedValue({
+      cases: [
+        ...CASES,
+        { case_id: 'case-003', case_number: 'TLSOC-003', title: 'Charlie', status: 'closed', updated_at: '2026-06-28T00:00:00Z', tags: [], comments: [] },
+        { case_id: 'case-004', case_number: 'TLSOC-004', title: 'Delta', status: 'resolved', updated_at: '2026-06-27T00:00:00Z', tags: [], comments: [] },
+      ],
+      total: 4,
+    });
     renderCases();
-    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    // One "Close case {id}" control per row (reversible close — not a delete).
-    const closeButtons = screen.getAllByRole('button', { name: /close case/i });
-    expect(closeButtons.length).toBe(CASES.length);
+    await waitFor(() => expect(screen.getByText('Charlie')).toBeInTheDocument());
+    // One "Close <case number>" control per OPEN row (a reversible close, not a delete).
+    const closeButtons = screen.getAllByRole('button', { name: /^close tlsoc-/i });
+    expect(closeButtons.map((b) => b.getAttribute('aria-label'))).toEqual(['Close TLSOC-002', 'Close TLSOC-001']);
+    expect(screen.queryByRole('button', { name: 'Close TLSOC-003' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Close TLSOC-004' })).toBeNull();
   });
 
   it('returns focus to the row Close button when its close dialog is dismissed, not <body>', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    const closeButton = screen.getAllByRole('button', { name: /close case/i })[0];
+    const closeButton = screen.getByRole('button', { name: 'Close TLSOC-001' });
     act(() => closeButton.focus());
     fireEvent.click(closeButton);
     const dialog = await screen.findByTestId('bulk-close-dialog');

@@ -5,8 +5,8 @@
  * carry the value byte for byte, and shows it in a "Filter by rule" control that can go
  * back to "All rules". A rule with spaces and other letters round-trips through the hash.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const { listCasesMock } = vi.hoisted(() => ({ listCasesMock: vi.fn() }));
@@ -39,6 +39,12 @@ vi.mock('@/lib/api', () => {
   };
 });
 
+// Reduced motion for the tiles' numerals (see `preferReducedMotion` below).
+vi.mock('motion/react', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('motion/react')>()),
+  useReducedMotion: () => true,
+}));
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn() },
   Toaster: () => null,
@@ -51,6 +57,7 @@ import { DemoProvider } from '../demo';
 import { RouterProvider } from '../router';
 import { TooltipProvider } from '@/ui/tooltip';
 import Cases from '../pages/Cases';
+import { REDUCED_MOTION_QUERY } from '../hooks/usePrefersReducedMotion';
 
 import { pageHash } from '../router';
 
@@ -79,11 +86,54 @@ function renderCases(props?: { initialRule?: string; initialAssignee?: string })
   );
 }
 
+/**
+ * The Rule filter lives behind "More filters" in the case filter bar (SPEC §4.9.2): open
+ * it when the control is not already on screen. The popover stays open while a choice
+ * is made, so later controls in it are found again.
+ */
+async function filterControl(user: ReturnType<typeof userEvent.setup>, name: string): Promise<HTMLElement> {
+  const shown = screen.queryByRole('combobox', { name });
+  if (shown) return shown;
+  await user.click(screen.getByRole('button', { name: /more filters/i }));
+  return screen.findByRole('combobox', { name });
+}
+
+/**
+ * The tiles' numerals roll when a count changes: the lazy motion spring (AnimatedNumber),
+ * or its CountUp fallback while that chunk loads. Under reduced motion both snap to the
+ * target, so these tests read the count the page settles on, never the animation's
+ * timing (which depends on machine load). CountUp reads the console's own media query
+ * (stubbed below); AnimatedNumber reads motion's `useReducedMotion`, mocked here because
+ * the real hook also prints a development advisory when reduce is on, which the strict
+ * test lane counts as output. Every other media query (the phone breakpoint among them)
+ * stays unmatched: a desktop.
+ */
+function preferReducedMotion(): void {
+  vi.stubGlobal(
+    'matchMedia',
+    vi.fn((query: string) => ({
+      matches: query === REDUCED_MOTION_QUERY,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(() => false),
+    })),
+  );
+}
+
 describe('Cases: the Rule filter (Round 14)', () => {
   beforeEach(() => {
+    preferReducedMotion();
     listCasesMock.mockReset().mockResolvedValue({ cases: CASES, total: CASES.length });
     window.localStorage.clear();
     window.location.hash = '';
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('asks the server for exactly the rule and keeps only its cases', async () => {
@@ -93,7 +143,12 @@ describe('Cases: the Rule filter (Round 14)', () => {
     // Exact: a rule that only starts with the value is another rule.
     expect(screen.queryByText('NearCase')).toBeNull();
     expect(screen.queryByText('WebCase')).toBeNull();
-    const control = screen.getByRole('combobox', { name: 'Filter by rule' });
+    // The chosen rule shows as a removable chip in the filter bar…
+    expect(screen.getByRole('button', { name: `Remove filter: Rule: ${RULE}` })).toBeInTheDocument();
+    // …and on its control, behind More filters, which counts it.
+    const user = userEvent.setup();
+    expect(screen.getByRole('button', { name: /more filters/i })).toHaveTextContent('1 active');
+    const control = await filterControl(user, 'Filter by rule');
     expect(control).toHaveTextContent(RULE);
     expect(control).toHaveAttribute('title', RULE);
   });
@@ -109,7 +164,7 @@ describe('Cases: the Rule filter (Round 14)', () => {
     const user = userEvent.setup();
     renderCases({ initialRule: RULE });
     await screen.findByText('SshCase');
-    await user.click(screen.getByRole('combobox', { name: 'Filter by rule' }));
+    await user.click(await filterControl(user, 'Filter by rule'));
     await user.click(await screen.findByRole('option', { name: 'All rules' }));
     await waitFor(() => expect(listCasesMock).toHaveBeenLastCalledWith({ limit: 200 }));
     expect(await screen.findByText('WebCase')).toBeInTheDocument();
@@ -120,7 +175,7 @@ describe('Cases: the Rule filter (Round 14)', () => {
     const user = userEvent.setup();
     renderCases();
     await screen.findByText('WebCase');
-    await user.click(screen.getByRole('combobox', { name: 'Filter by rule' }));
+    await user.click(await filterControl(user, 'Filter by rule'));
     await user.click(await screen.findByRole('option', { name: 'web_scan' }));
     await waitFor(() => expect(listCasesMock).toHaveBeenLastCalledWith({ limit: 200, rule: 'web_scan' }));
     await waitFor(() => expect(screen.queryByText('SshCase')).toBeNull());
@@ -152,8 +207,8 @@ describe('Cases: the Rule filter (Round 14)', () => {
       for (const d of pending.get(rule) ?? []) d.resolve(total);
       pending.delete(rule);
     };
-    const activeCount = () =>
-      screen.getByTestId('cases-summary-open').querySelector('.text-lg')?.textContent;
+    // The Active tile's numeral (its own text node, apart from the context line).
+    const activeTile = () => within(screen.getByTestId('cases-summary-open'));
 
     const user = userEvent.setup();
     renderCases();
@@ -161,20 +216,22 @@ describe('Cases: the Rule filter (Round 14)', () => {
     await waitFor(() => expect(pending.get('')?.length).toBe(5));
 
     // Choose a rule while every-rule totals are still being counted.
-    await user.click(screen.getByRole('combobox', { name: 'Filter by rule' }));
+    await user.click(await filterControl(user, 'Filter by rule'));
     await user.click(await screen.findByRole('option', { name: 'web_scan' }));
     await waitFor(() => expect(screen.queryByText('SshCase')).toBeNull());
     await waitFor(() => expect(pending.get('web_scan')?.length).toBe(5));
+    // The tile has settled on the rule's loaded count.
+    expect(await activeTile().findByText('1')).toBeInTheDocument();
 
     // The every-rule totals arrive last: they never reach the rule's tiles.
     resolveAll('', 4000);
     await new Promise((r) => setTimeout(r, 0));
-    expect(activeCount()).toBe('1');
+    expect(activeTile().getByText('1')).toBeInTheDocument();
     expect(screen.queryByText('4,000')).toBeNull();
 
     // The rule's own totals do.
     resolveAll('web_scan', 450);
-    await waitFor(() => expect(activeCount()).toBe('450'));
+    expect(await activeTile().findByText('450')).toBeInTheDocument();
   });
 
   it('reads a rule that matches nothing as a filter with no results, not an empty console', async () => {
@@ -187,12 +244,12 @@ describe('Cases: the Rule filter (Round 14)', () => {
     expect(screen.queryByText('No cases yet')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Connect a source' })).toBeNull();
     // The figures say what they cover: this rule's cases, not the console's.
-    expect(screen.getByTestId('cases-count-total')).toHaveTextContent('0 from this rule');
+    expect(screen.getByTestId('cases-count-total')).toHaveTextContent('0 cases from this rule · all time');
     expect(screen.getByTestId('cases-summary-open')).toHaveAttribute('title', 'Among 0 cases from the rule No such rule');
     await user.click(screen.getByRole('button', { name: 'All rules' }));
     await waitFor(() => expect(listCasesMock).toHaveBeenLastCalledWith({ limit: 200 }));
     expect(await screen.findByText('WebCase')).toBeInTheDocument();
-    expect(screen.getByTestId('cases-count-total')).toHaveTextContent('3 total');
+    expect(screen.getByTestId('cases-count-total')).toHaveTextContent('3 cases · all time');
   });
 
   it('labels the badge and tiles with the rule a filtered list was read for', async () => {
@@ -205,7 +262,7 @@ describe('Cases: the Rule filter (Round 14)', () => {
     );
     renderCases({ initialRule: RULE });
     await screen.findByText('SshCase');
-    expect(screen.getByTestId('cases-count-total')).toHaveTextContent('1 from this rule');
+    expect(screen.getByTestId('cases-count-total')).toHaveTextContent('1 case from this rule · all time');
     expect(screen.getByTestId('cases-count-total')).toHaveAttribute('title', `1 case from the rule ${RULE}`);
     expect(screen.getByTestId('cases-summary-critical')).toHaveAttribute('title', `Among 1 case from the rule ${RULE}`);
   });
@@ -221,7 +278,7 @@ describe('Cases: the Rule filter (Round 14)', () => {
       return Promise.resolve({ cases: found, total: found.length });
     };
     const choose = async (user: ReturnType<typeof userEvent.setup>, control: string, option: string | RegExp) => {
-      await user.click(screen.getByRole('combobox', { name: control }));
+      await user.click(await filterControl(user, control));
       await user.click(await screen.findByRole('option', { name: option }));
     };
 
@@ -239,7 +296,7 @@ describe('Cases: the Rule filter (Round 14)', () => {
       expect(await screen.findByText('No cases match your filters')).toBeInTheDocument();
       expect(screen.queryByText('SshCase')).toBeNull();
       expect(screen.getByRole('combobox', { name: 'Filter by assignee' })).toHaveTextContent('alice');
-      expect(screen.getByTestId('cases-count-total')).toHaveTextContent('1 from this rule');
+      expect(screen.getByTestId('cases-count-total')).toHaveTextContent('1 case from this rule · all time');
 
       // Every rule again: alice's case is back, the filter never lost.
       await choose(user, 'Filter by rule', 'All rules');
@@ -269,7 +326,7 @@ describe('Cases: the Rule filter (Round 14)', () => {
       await choose(user, 'Filter by assignee', 'alice');
       await choose(user, 'Filter by rule', 'web_scan');
       expect(await screen.findByText('No cases from this rule')).toBeInTheDocument();
-      expect(screen.getByRole('combobox', { name: 'Filter by disposition' })).toHaveTextContent('False positive');
+      expect(await filterControl(user, 'Filter by disposition')).toHaveTextContent('False positive');
       expect(screen.getByRole('combobox', { name: 'Filter by assignee' })).toHaveTextContent('alice');
       // The controls still offer every value the person could pick before the rule.
       await user.click(screen.getByRole('combobox', { name: 'Filter by assignee' }));

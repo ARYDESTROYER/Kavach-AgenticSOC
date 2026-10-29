@@ -24,7 +24,7 @@ vi.mock('@/lib/api', () => ({
   ApiError: class ApiError extends Error {},
 }));
 
-import { AdvancedSchemaSection } from '../advanced-schema';
+import { AdvancedSchemaSection, schemaLabel, sentenceTitle } from '../advanced-schema';
 import { TooltipProvider } from '@/ui/tooltip';
 import type { Preferences } from '@/lib/types';
 
@@ -153,7 +153,15 @@ describe('AdvancedSchemaSection (schema-driven generic renderer)', () => {
     // The special-cased field renders an explanatory note, NOT an editable control.
     expect(screen.queryByLabelText('Read only settings mode')).not.toBeInTheDocument();
     // Its managed-elsewhere note is present.
-    expect(screen.getByText(/settings read-only lock is managed/i)).toBeInTheDocument();
+    expect(screen.getByText(/settings lock is managed in Organization, Advanced/i)).toBeInTheDocument();
+  });
+
+  it('humanises schema labels with known acronyms in capitals (SPEC §4.9.6)', () => {
+    expect(schemaLabel('source_ip_field')).toBe('Source IP field');
+    expect(schemaLabel('webhook_url')).toBe('Webhook URL');
+    expect(schemaLabel('case_id_template')).toBe('Case ID template');
+    expect(schemaLabel('access_ttl')).toBe('Access TTL');
+    expect(schemaLabel('data_view_pattern')).toBe('Data view pattern');
   });
 
   it('renders the demo block as a whole read-only SECTION (no editable sub-fields)', async () => {
@@ -178,18 +186,18 @@ describe('AdvancedSchemaSection (schema-driven generic renderer)', () => {
 
   it('gates a default-OFF engine feature behind a head-of-section enable toggle', async () => {
     const { update } = renderSection({ baseline: { enabled: false } });
-    await waitFor(() => expect(screen.getByText('Anomaly Baseline')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Anomaly baseline')).toBeInTheDocument());
     // Disabled → its body control (horizon_days) is NOT disclosed.
     expect(screen.queryByLabelText('Horizon days')).not.toBeInTheDocument();
     // The enable toggle is present; flipping it posts the block enable via deep-merge.
-    const toggle = screen.getByLabelText('Enable Anomaly Baseline');
+    const toggle = screen.getByLabelText('Enable anomaly baseline');
     fireEvent.click(toggle);
     expect(update).toHaveBeenCalledWith({ baseline: { enabled: true } });
   });
 
   it('discloses the engine-feature body once enabled', async () => {
     renderSection({ baseline: { enabled: true, horizon_days: 14 } });
-    await waitFor(() => expect(screen.getByText('Anomaly Baseline')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Anomaly baseline')).toBeInTheDocument());
     // Enabled → the body control IS disclosed.
     expect(screen.getByLabelText('Horizon days')).toBeInTheDocument();
   });
@@ -206,14 +214,14 @@ describe('AdvancedSchemaSection (schema-driven generic renderer)', () => {
 
   it('keeps a default-OFF engine feature GATED when only a sub-field is searched (Round-6 #42)', async () => {
     renderSection({ baseline: { enabled: false, horizon_days: 14 } });
-    await waitFor(() => expect(screen.getByText('Anomaly Baseline')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Anomaly baseline')).toBeInTheDocument());
     const filter = screen.getByLabelText('Filter all settings');
     // Search for the baseline sub-field only. The `enabled` toggle does NOT match the query,
     // so the old code filtered it out → isEngineFeature flipped false → the toggle vanished
     // and the sub-field rendered as editable despite the feature being OFF.
     fireEvent.change(filter, { target: { value: 'horizon' } });
     // The head enable toggle is still present (the block stays gated)…
-    await waitFor(() => expect(screen.getByLabelText('Enable Anomaly Baseline')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByLabelText('Enable anomaly baseline')).toBeInTheDocument());
     // …and because the feature is OFF, the matched sub-field stays HIDDEN behind the toggle.
     expect(screen.queryByLabelText('Horizon days')).not.toBeInTheDocument();
   });
@@ -222,5 +230,41 @@ describe('AdvancedSchemaSection (schema-driven generic renderer)', () => {
     schemaMock.mockRejectedValueOnce(new Error('boom'));
     renderSection({});
     await waitFor(() => expect(screen.getByText(/Could not load the settings schema/i)).toBeInTheDocument());
+  });
+});
+
+describe('sentenceTitle (group titles in sentence case, SPEC §3.1 and §4.9.1)', () => {
+  beforeEach(() => {
+    schemaMock.mockReset();
+    schemaMock.mockResolvedValue(SCHEMA);
+  });
+
+  it('lower-cases every word after the first and keeps known acronyms', () => {
+    // The backend sends Title Case (`settings_schema._SECTION_TITLES`) and `str.title()`
+    // for any key it has no name for; every group title reads in sentence case.
+    expect(sentenceTitle('SLA Policy')).toBe('SLA policy');
+    expect(sentenceTitle('Cross-Source Correlation')).toBe('Cross-source correlation');
+    expect(sentenceTitle('Threshold Tuning')).toBe('Threshold tuning');
+    expect(sentenceTitle('Case ID Format')).toBe('Case ID format');
+    expect(sentenceTitle('Caps / Kill Switch')).toBe('Caps / kill switch');
+    expect(sentenceTitle('Auto-Close (legacy)')).toBe('Auto-close (legacy)');
+    expect(sentenceTitle('RAG')).toBe('RAG');
+    expect(sentenceTitle('Single Sign-On')).toBe('Single sign-on');
+    // An unknown key's `str.title()` fallback reads the same way.
+    expect(sentenceTitle('Some New Block')).toBe('Some new block');
+    // Already sentence case is unchanged.
+    expect(sentenceTitle('Chat assistant')).toBe('Chat assistant');
+  });
+
+  it('reads mid-sentence for the engine-feature switch, still keeping acronyms', () => {
+    expect(sentenceTitle('Threshold Tuning', { midSentence: true })).toBe('threshold tuning');
+    expect(sentenceTitle('SLA Policy', { midSentence: true })).toBe('SLA policy');
+  });
+
+  it('renders the group title and the enable switch label in sentence case', async () => {
+    renderSection({ baseline: { enabled: false } });
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Anomaly baseline', level: 3 })).toBeInTheDocument());
+    expect(screen.queryByText('Anomaly Baseline')).not.toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Enable anomaly baseline' })).toBeInTheDocument();
   });
 });

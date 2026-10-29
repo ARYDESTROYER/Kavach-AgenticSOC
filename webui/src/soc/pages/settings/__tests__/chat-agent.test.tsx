@@ -11,9 +11,9 @@
  *   - normalises internal domains exactly like `normalise_domains` and refuses one the
  *     server would silently drop,
  *   - edits through the shared `{prefs, update}` buffer with one `chat_agent` patch, and
- *   - keeps every knob reachable (the long tail sits behind "More limits" and "Show
- *     timeouts and capacity"), because the generic All settings view no longer shows
- *     this block, and
+ *   - keeps every knob reachable (Round 14, C9 option A: every group shows its rows,
+ *     with no "More limits" or "Show timeouts and capacity" disclosure), because the
+ *     generic All settings view no longer shows this block, and
  *   - shows the Round 12 limits mode first (Unlimited by default, the per-question knobs
  *     only in Bounded) and the optional chat daily spending limit (SPEC D1, D5), and
  *   - Round 13 (SPEC-chat T31): one "Typed-out answers" control over
@@ -66,8 +66,9 @@ const BOUNDED: ChatAgentConfig = { ...CHAT_AGENT_DEFAULTS, limits_mode: 'bounded
 const RESET = { name: /^reset$/i };
 
 /** The field group (label, reset, input, hint) of a labelled NumberField. */
+/** The Field around a control: the settings row layout (Round 14 grouped panels). */
 function fieldRoot(label: string): HTMLElement {
-  return screen.getByLabelText(label).closest('.space-y-1\\.5') as HTMLElement;
+  return screen.getByLabelText(label).closest('[data-field-layout]') as HTMLElement;
 }
 
 expect.extend(toHaveNoViolations);
@@ -344,7 +345,6 @@ describe('ChatAgentSection', () => {
         <ChatAgentSection prefs={{ chat_agent: lastPatch() } as Preferences} update={vi.fn()} />
       </TooltipProvider>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     const field = screen.getByLabelText('Lookups at once');
     expect(field).toHaveValue('2');
     // Tabbing through the field never writes the shown value back, and no reset is
@@ -365,7 +365,6 @@ describe('ChatAgentSection', () => {
 
   it('Reset in Bounded mode stores the shipped default, so Unlimited shows it with no reset', () => {
     const { lastPatch, rerender } = renderSection({ ...BOUNDED, max_parallel: 9 });
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     expect(screen.getByLabelText('Lookups at once')).toHaveValue('9');
     fireEvent.click(within(fieldRoot('Lookups at once')).getByRole('button', RESET));
     // Not the effective default the field shows (10): Bounded runs the same either way.
@@ -400,7 +399,6 @@ describe('ChatAgentSection', () => {
     }
     render(<Host />);
     fireEvent.click(screen.getByRole('radio', { name: 'Bounded' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     const field = screen.getByLabelText('Lookups at once');
     expect(field).toHaveValue('10');
     fireEvent.keyDown(field, { key: 'ArrowDown' });
@@ -438,7 +436,6 @@ describe('ChatAgentSection', () => {
       );
     }
     render(<Host />);
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     expect(screen.getByLabelText('Lookups at once')).toHaveValue('4');
     commitNumber('Lookups at once', '8');
     expect(screen.getByTestId('stored-parallel')).toHaveTextContent('8');
@@ -465,7 +462,6 @@ describe('ChatAgentSection', () => {
       );
     }
     render(<Host initial={{ ...CHAT_AGENT_DEFAULTS, limits_mode: 'unlimited', max_tool_calls: 3, max_parallel: 8 }} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     expect(screen.getByLabelText('Lookups at once')).toHaveValue('8');
     fireEvent.click(screen.getByRole('radio', { name: 'Bounded' }));
     // Bounded shows what applies (at most Lookups per question) …
@@ -480,7 +476,6 @@ describe('ChatAgentSection', () => {
   it('never caps Lookups at once by the hidden lookup budget in unlimited mode, and says so in bounded mode', () => {
     // An operator once set Bounded → Lookups 3, then switched to Unlimited.
     const { lastPatch, unmount } = renderSection({ ...CHAT_AGENT_DEFAULTS, max_tool_calls: 3, max_parallel: 3 });
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     const field = screen.getByLabelText('Lookups at once');
     expect(field).toHaveAccessibleDescription('Run side by side in one step.');
     const group = field.closest('div.flex') as HTMLElement;
@@ -491,7 +486,6 @@ describe('ChatAgentSection', () => {
     unmount();
 
     renderSection({ ...BOUNDED, max_tool_calls: 3, max_parallel: 3 });
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     expect(screen.getByLabelText('Lookups at once')).toHaveAccessibleDescription(
       'Run side by side in one step. At most Lookups per question (3) in Bounded mode.',
     );
@@ -499,7 +493,6 @@ describe('ChatAgentSection', () => {
 
   it('shows the Timeouts and capacity defaults, and 10 lookups at once in Bounded mode (SPEC §4.2.3)', () => {
     const { unmount } = renderSection(CHAT_AGENT_DEFAULTS);
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     expect(screen.getByLabelText('Lookups at once')).toHaveValue('12');
     expect(screen.getByLabelText('Lookup timeout')).toHaveValue('45');
     expect(screen.getByLabelText('Model call timeout')).toHaveValue('900');
@@ -510,7 +503,6 @@ describe('ChatAgentSection', () => {
     // Bounded at the shipped defaults: one step runs at most Lookups per question (10)
     // of the 12, the hint says so, and no reset is offered for a value nobody changed.
     const { update } = renderSection(BOUNDED);
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     const field = screen.getByLabelText('Lookups at once');
     expect(field).toHaveValue('10');
     expect(field).toHaveAccessibleDescription(
@@ -525,7 +517,6 @@ describe('ChatAgentSection', () => {
 
   it('accepts the wider ranges and clamps at their new ends', () => {
     const { lastPatch } = renderSection(CHAT_AGENT_DEFAULTS);
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     commitNumber('Lookups at once', '24');
     expect(lastPatch().max_parallel).toBe(24);
     commitNumber('Lookups at once', '99');
@@ -552,10 +543,10 @@ describe('ChatAgentSection', () => {
     expect(screen.getByTestId('typed-answers-help')).toHaveAttribute('aria-live', 'polite');
   });
 
-  it('keeps the bounded long tail behind More limits, reachable and editable', () => {
+  it('shows the bounded long tail with the other limits, reachable and editable', () => {
     const { lastPatch } = renderSection(BOUNDED);
-    expect(screen.queryByLabelText('Answer reserve')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'More limits' }));
+    // Round 14 (C9 option A): no "More limits" disclosure; the rows sit in the group.
+    expect(screen.queryByRole('button', { name: 'More limits' })).not.toBeInTheDocument();
     for (const label of ['Answer reserve', 'Answer length', 'Results per step']) {
       expect(screen.getByLabelText(label)).toBeInTheDocument();
     }
@@ -565,8 +556,8 @@ describe('ChatAgentSection', () => {
 
   it('keeps the knobs that apply in both modes reachable in unlimited mode', () => {
     const { lastPatch } = renderSection(CHAT_AGENT_DEFAULTS);
-    expect(screen.queryByLabelText('Lookup timeout')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
+    // Round 14 (C9 option A): the Timeouts and capacity rows show without a disclosure.
+    expect(screen.queryByRole('button', { name: 'Show timeouts and capacity' })).not.toBeInTheDocument();
     for (const label of [
       'Lookups at once',
       'Lookup timeout',
@@ -583,9 +574,7 @@ describe('ChatAgentSection', () => {
 
   it('every knob of the block is reachable from the editor', () => {
     renderSection(BOUNDED);
-    fireEvent.click(screen.getByRole('button', { name: 'More limits' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
-    // 4 main + 3 more + 5 capacity + 2 indicator lookups = every numeric knob, each one a
+    // Nothing to open first: 4 main + 3 more + 5 capacity + 2 indicator lookups = every numeric knob, each one a
     // labelled NumberField (counted by its numeric input, whatever role it exposes).
     const fields = [...document.querySelectorAll<HTMLInputElement>('input[inputmode="decimal"]')];
     expect(fields).toHaveLength(Object.keys(CHAT_AGENT_BOUNDS).length);
@@ -730,8 +719,6 @@ describe('ChatAgentSection', () => {
 
   it('has no axe violations in either mode', async () => {
     const { container, unmount } = renderSection({ ...BOUNDED, chat_daily_cap_usd: 5 });
-    fireEvent.click(screen.getByRole('button', { name: 'More limits' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Show timeouts and capacity' }));
     expect(await axe(container)).toHaveNoViolations();
     unmount();
     const second = renderSection(CHAT_AGENT_DEFAULTS);

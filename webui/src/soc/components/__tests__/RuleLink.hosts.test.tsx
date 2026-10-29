@@ -44,7 +44,8 @@ vi.mock('@/soc/pages/Tuning.api', async (importOriginal) => {
     },
   };
 });
-vi.mock('@/soc/hooks/useMediaQuery', () => ({ useMediaQuery: () => true }));
+// A desktop viewport: every `min-width` query matches, and the Logs page shows its table.
+vi.mock('@/soc/hooks/useMediaQuery', () => ({ useMediaQuery: () => true, useIsMobile: () => false }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } }));
 vi.mock('@/soc/pages/AgentEffectiveness', () => ({
   AgentEffectivenessSummary: () => <section aria-label="Observed outcomes" />,
@@ -187,9 +188,13 @@ describe('Logs row detail', () => {
       return { ...latestFixture(1), logs: [row] };
     });
     vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     render(<UnifiedLogsBody initialFrom="now-24h" />);
     await screen.findByRole('table');
-    fireEvent.click(screen.getByRole('switch', { name: 'Auto-refresh every 10 seconds' }));
+    // Round 14: Live is the time-range pill's cadence (Off or Live), not a switch.
+    await user.click(screen.getByRole('combobox', { name: 'Auto-refresh interval: Off' }));
+    await user.click(await screen.findByRole('option', { name: 'Live' }));
+    expect(tableReads).toBe(1);
     fireEvent.click(await screen.findByRole('button', { name: 'Show raw event for evt-9' }));
     const link = within(screen.getByTestId('ulog-row-entities')).getByRole('button', { name: 'Open rule auth.failed_login' });
     fireEvent.click(link);

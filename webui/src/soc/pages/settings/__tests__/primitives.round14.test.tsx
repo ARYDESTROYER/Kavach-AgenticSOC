@@ -122,7 +122,9 @@ describe('SettingsSection', () => {
 describe('SettingsGroup', () => {
   it('puts its title and caption above one tinted panel of hairline-divided rows', () => {
     chatAssistant();
-    const group = screen.getByRole('region', { name: 'Spending' });
+    // A labelled group, never a region landmark: the section is the one region (SPEC §3.3).
+    const group = screen.getByRole('group', { name: 'Spending' });
+    expect(screen.queryByRole('region', { name: 'Spending' })).toBeNull();
     expect(within(group).getByRole('heading', { level: 3, name: 'Spending' })).toHaveClass('text-md', 'font-semibold');
     expect(within(group).getByText('Chat is outside the daily AI budget.')).toBeInTheDocument();
     const panel = group.querySelector('[data-settings-panel]')!;

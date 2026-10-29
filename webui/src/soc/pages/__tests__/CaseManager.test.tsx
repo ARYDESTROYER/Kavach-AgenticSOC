@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
   reinvestigateCase: vi.fn(),
   submitJob: vi.fn(),
   navigate: vi.fn(),
-  routeOpts: undefined as { caseId?: string } | undefined,
+  routeOpts: undefined as { caseId?: string; closedBy?: string } | undefined,
   username: 'analyst.one' as string | null,
   demoActive: false,
   permissions: new Set<string>(),
@@ -109,6 +109,7 @@ vi.mock('@/soc/demo', async () => {
 
 vi.mock('@/soc/router', () => ({
   useRoute: () => ({ page: 'case_manager', opts: mocks.routeOpts, navigate: mocks.navigate }),
+  useNavigateOptional: () => mocks.navigate,
 }));
 
 vi.mock('@/soc/components/Can', () => ({
@@ -212,6 +213,14 @@ const CASES = [OPEN_HIGH, RESOLVED_LOW, OPEN_CRITICAL];
 
 const TERMINAL = new Set(['closed', 'resolved']);
 
+/** Who closed a case, as `case_aggregate.closed_by` reads it; null while it is open. */
+function closerOf(c: Case): string | null {
+  if (!TERMINAL.has(String(c.status))) return null;
+  if (c.analyst_policy || c.decision_by === 'analyst_policy') return 'analyst_policy';
+  if (c.decision_by === 'agent' || c.decision_by === 'analyst') return c.decision_by;
+  return 'system';
+}
+
 /**
  * A faithful stand-in for `GET /api/cases` (Round 12): the queue is SERVER-backed, so the
  * mock applies the same status-group / status / assignee / severity / q / sort / paging the
@@ -226,6 +235,9 @@ function serve(dataset: Case[]) {
       rows = rows.filter((c) => String(c.assignee || '').toLowerCase() === String(query.assignee).toLowerCase());
     }
     if (query.severity) rows = rows.filter((c) => c.severity_band === query.severity);
+    // Round 14 (SPEC §4.6.1): `closed_by` matches terminal cases by who closed them, the
+    // engine's vocabulary (`case_aggregate.closed_by`).
+    if (query.closed_by) rows = rows.filter((c) => closerOf(c) === query.closed_by);
     if (typeof query.q === 'string' && query.q.trim()) {
       const terms = query.q.toLowerCase().split(/\s+/).filter(Boolean);
       rows = rows.filter((c) => {
@@ -366,14 +378,24 @@ describe('CaseManager', () => {
     expect(manager.className.split(/\s+/)).not.toContain('lg:-mx-4');
     expect(manager.className.split(/\s+/)).not.toContain('2xl:-mx-8');
 
-    const splitFrame = manager.firstElementChild as HTMLElement;
-    expect(splitFrame).toHaveClass(
-      'xl:grid-cols-[var(--case-manager-columns)]',
-      'border',
-      'border-border',
-    );
+    // Round 14 (ui-audit CM1): the page header sits over the split, and the split is one
+    // borderless tinted panel (`.surface-panel`), not a white bordered box on the canvas.
+    const layout = manager.firstElementChild as HTMLElement;
+    expect(layout).toHaveAttribute('data-testid', 'case-manager-layout');
+    expect(layout.firstElementChild).toHaveAttribute('data-page-header', 'page');
+    const splitFrame = screen.getByTestId('case-manager-split-frame');
+    expect(layout.lastElementChild).toBe(splitFrame);
+    expect(splitFrame).toHaveClass('surface-panel', 'xl:grid-cols-[var(--case-manager-columns)]');
+    expect(splitFrame.className.split(/\s+/)).not.toContain('border');
+    expect(splitFrame.className.split(/\s+/)).not.toContain('border-border');
     expect(splitFrame.style.getPropertyValue('--case-manager-columns')).toContain('400px');
     expect(splitFrame.className).not.toMatch(/rounded|shadow/);
+    // The title and the frame share one column: the board's bleed is taken back by the
+    // header's padding and the frame's margin alike, and the header sits the page rhythm
+    // (24px) above the frame, as on every other page.
+    expect(layout.firstElementChild).toHaveClass('sm:px-2');
+    expect(splitFrame).toHaveClass('sm:mx-2');
+    expect(layout).toHaveClass('gap-6');
 
     const detail = await screen.findByTestId('embedded-case-detail');
     expect(detail).toHaveAttribute('data-case-id', OPEN_CRITICAL.case_id);
@@ -403,13 +425,17 @@ describe('CaseManager', () => {
     expect(screen.getByText('Multiple failed logins')).toBeInTheDocument();
   });
 
-  it('titles the queue in sentence case without a generated eyebrow', async () => {
+  it('titles the page "Case Manager" and the queue in sentence case, without an eyebrow', async () => {
     render(<CaseManager />);
-    const heading = await screen.findByRole('heading', { level: 1, name: 'Active cases' });
-    expect(heading).not.toHaveClass('uppercase');
-    // The old tracked "CASE MANAGER" eyebrow above the h1 is gone; the h1 names the queue.
-    expect(screen.queryByText(/^case manager$/i)).not.toBeInTheDocument();
+    // Round 14 (SPEC §4.9.3): the page header names the page, as the navigation does; the
+    // queue's scope is the module title beneath it (one h1 per page).
+    const page = await screen.findByRole('heading', { level: 1, name: 'Case Manager' });
+    expect(page).not.toHaveClass('uppercase');
+    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    const queueTitle = screen.getByRole('heading', { level: 2, name: 'Active cases' });
+    expect(queueTitle).not.toHaveClass('uppercase');
     const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    expect(queue).toContainElement(queueTitle);
     expect(queue.querySelectorAll('.uppercase')).toHaveLength(0);
   });
 
@@ -1532,6 +1558,187 @@ describe('CaseManager', () => {
     await waitFor(() =>
       expect(screen.getByTestId('embedded-case-detail')).toHaveAttribute('data-case-id', 'case-0001'),
     );
+  });
+
+  // ---- Round 14: the page header and the "Closed by" filter (SPEC §4.9.4, D27) ------ //
+
+  const AGENT_CLOSED: Case = {
+    case_id: 'case-agent-closed',
+    case_number: 'CASE-2026-0080',
+    title: 'Routine scanner noise',
+    status: 'closed',
+    verdict: 'FALSE_POSITIVE',
+    decision_by: 'agent',
+    severity_band: 'low',
+    risk_score: 8,
+    updated_at: '2026-07-20T08:00:00Z',
+  };
+  const ANALYST_CLOSED: Case = {
+    case_id: 'case-analyst-closed',
+    case_number: 'CASE-2026-0079',
+    title: 'Confirmed phishing click',
+    status: 'resolved',
+    decision_by: 'analyst',
+    severity_band: 'high',
+    risk_score: 70,
+    updated_at: '2026-07-20T07:00:00Z',
+  };
+  const CLOSER_CASES = [...CASES, AGENT_CLOSED, ANALYST_CLOSED];
+
+  it('puts the Overview header over the split: title, help tip, and an icon Refresh', async () => {
+    const user = userEvent.setup();
+    render(<CaseManager />);
+    const header = (await screen.findByRole('heading', { level: 1, name: 'Case Manager' })).closest(
+      '[data-page-header]',
+    ) as HTMLElement;
+    expect(header).toHaveAttribute('data-page-header', 'page');
+    // The explanation is the help tip beside the title, never a description line.
+    const help = within(header).getByRole('button', { name: 'About Case Manager' });
+    await user.click(help);
+    expect(await screen.findByText(/Work the case queue and the open case side by side/)).toBeInTheDocument();
+    // Not live in this test: no Live dot; Refresh is the shared icon button.
+    expect(within(header).queryByTestId('case-manager-live')).not.toBeInTheDocument();
+    const refresh = within(header).getByRole('button', { name: 'Refresh case queue' });
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    const before = mocks.listCases.mock.calls.length;
+    await user.click(refresh);
+    await waitFor(() => expect(mocks.listCases.mock.calls.length).toBeGreaterThan(before));
+    // The queue keeps its own tools (density, shortcuts); the Refresh left the queue.
+    const queue = screen.getByRole('complementary', { name: 'Case queue' });
+    expect(within(queue).queryByRole('button', { name: 'Refresh case queue' })).not.toBeInTheDocument();
+    expect(within(queue).getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument();
+  });
+
+  it('opens on the cases the AI agent closed from #/case_manager?closedBy=agent (the #/scans redirect)', async () => {
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+
+    // Only a closed case has a closer, so the queue opens on All, asking the server.
+    expect(await screen.findByRole('heading', { level: 2, name: 'All cases' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.listCases).toHaveBeenCalledWith(expect.objectContaining({ closed_by: 'agent', offset: 0 })),
+    );
+    for (const [query] of mocks.listCases.mock.calls) {
+      expect(query).not.toHaveProperty('status_group');
+    }
+    expect(await screen.findByText('Routine scanner noise')).toBeInTheDocument();
+    expect(screen.getAllByTestId('case-queue-row')).toHaveLength(1);
+    expect(screen.queryByText('Confirmed phishing click')).not.toBeInTheDocument();
+
+    const filters = screen.getByRole('list', { name: 'Active filters' });
+    const chip = within(filters).getByRole('button', { name: 'Remove filter: Closed by the AI agent' });
+    expect(chip).toHaveTextContent('Closed by the AI agent');
+    expect(screen.getByRole('radio', { name: 'All' })).toBeChecked();
+  });
+
+  it.each([
+    ['analyst', 'Closed by an analyst', 'Confirmed phishing click'],
+    ['system', 'Closed by the system', 'Benign health check'],
+  ])('names the closer %s in plain words', async (closedBy, label, title) => {
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy };
+    render(<CaseManager />);
+    expect(await screen.findByText(title)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `Remove filter: ${label}` })).toBeInTheDocument();
+  });
+
+  it('ignores an unknown closer and opens the ordinary Active queue', async () => {
+    mocks.routeOpts = { closedBy: 'human' };
+    render(<CaseManager />);
+    expect(await screen.findByRole('heading', { level: 2, name: 'Active cases' })).toBeInTheDocument();
+    await screen.findByText('Suspicious S3 bucket exfiltration');
+    for (const [query] of mocks.listCases.mock.calls) {
+      expect(query).not.toHaveProperty('closed_by');
+    }
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+  });
+
+  it('carries the closer along when a case opens, and drops it (and its key) when the chip is removed', async () => {
+    const user = userEvent.setup();
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    const row = await screen.findByText('Routine scanner noise');
+
+    await user.click(row);
+    expect(mocks.navigate).toHaveBeenCalledWith('case_manager', { caseId: AGENT_CLOSED.case_id, closedBy: 'agent' });
+
+    mocks.navigate.mockClear();
+    mocks.listCases.mockClear();
+    await user.click(screen.getByRole('button', { name: 'Remove filter: Closed by the AI agent' }));
+    // The open case stays; the address loses the closer.
+    expect(mocks.navigate).toHaveBeenCalledWith('case_manager', { caseId: AGENT_CLOSED.case_id });
+    await waitFor(() => expect(mocks.listCases).toHaveBeenCalled());
+    for (const [query] of mocks.listCases.mock.calls) {
+      expect(query).not.toHaveProperty('closed_by');
+    }
+    expect(await screen.findByText('Confirmed phishing click')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+    // The chip is gone, so focus lands on the queue search instead of <body>.
+    expect(screen.getByRole('textbox', { name: 'Search case queue' })).toHaveFocus();
+  });
+
+  it('drops the closer when the scope moves to Active, where no closed case can appear', async () => {
+    const user = userEvent.setup();
+    mocks.listCases.mockImplementation(serve(CLOSER_CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    await screen.findByText('Routine scanner noise');
+
+    await user.click(screen.getByRole('radio', { name: 'Active' }));
+    expect(await screen.findByText('Suspicious S3 bucket exfiltration')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Remove filter: Closed by/ })).not.toBeInTheDocument();
+    const last = mocks.listCases.mock.calls.at(-1)?.[0];
+    expect(last).toEqual(expect.objectContaining({ status_group: 'active' }));
+    expect(last).not.toHaveProperty('closed_by');
+    // The address loses the closer too (the open case, if any, stays named).
+    const [page, opts] = mocks.navigate.mock.calls.at(-1) ?? [];
+    expect(page).toBe('case_manager');
+    expect(opts ?? {}).not.toHaveProperty('closedBy');
+  });
+
+  it('Clear filters on an empty filtered queue also drops the closer', async () => {
+    const user = userEvent.setup();
+    mocks.listCases.mockImplementation(serve(CASES));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    expect(await screen.findByText('No matching cases')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('Benign health check')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Active filters' })).not.toBeInTheDocument();
+  });
+
+  it('keeps a live change honest under the filter: a case that is still open never joins it', async () => {
+    const dataset = [...CLOSER_CASES];
+    mocks.listCases.mockImplementation(serve(dataset));
+    mocks.getCase.mockImplementation(async (id: string) => dataset.find((c) => c.case_id === id));
+    mocks.routeOpts = { closedBy: 'agent' };
+    render(<CaseManager />);
+    await screen.findByText('Routine scanner noise');
+
+    // An open case changes: it cannot belong to "Closed by the AI agent".
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: OPEN_HIGH.case_id, status: 'open' } });
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    });
+    expect(screen.queryByText('Multiple failed logins')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('case-queue-row')).toHaveLength(1);
+
+    // The agent closes it: now it belongs (the server is asked, never guessed).
+    const index = dataset.findIndex((c) => c.case_id === OPEN_HIGH.case_id);
+    dataset[index] = {
+      ...OPEN_HIGH,
+      status: 'closed',
+      decision_by: 'agent',
+      updated_at: '2026-07-20T11:00:00Z',
+    };
+    act(() => {
+      mocks.streamOnEvent?.({ type: 'case.changed', data: { case_id: OPEN_HIGH.case_id, status: 'closed' } });
+    });
+    expect(await screen.findByText('Multiple failed logins', undefined, { timeout: 3000 })).toBeInTheDocument();
   });
 
   it('has no detectable accessibility violations in the split workspace', async () => {

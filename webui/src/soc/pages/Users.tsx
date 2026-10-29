@@ -1,23 +1,23 @@
 /**
- * Users & roles — admin-only multi-user administration (Wave 1).
+ * Users: admin-only multi-user administration (Wave 1; Round 14 renders it as the
+ * "Users" Settings section).
  *
- * A table of accounts with: add (dialog), change role (inline Select), enable/
- * disable (Switch), reset password (dialog), and delete. Every mutation is gated by
- * `<Can resource="users" action="manage">`; the whole page is wrapped in a
- * ProtectedRoute so a non-admin who deep-links here sees the Unauthorized view.
+ * A table of accounts: add (dialog), enable or disable (switch), and per-row actions in
+ * one row menu (Round 14, SPEC §4.9.4 and ui-audit SE10): edit the profile and MFA
+ * requirement, change roles (the base role and custom roles, in a dialog), open the
+ * user's audit events, reset the password, and delete. The role reads as text in the
+ * row. The whole page is wrapped in a ProtectedRoute so a non-admin who deep-links here
+ * sees the Unauthorized view.
  *
- * The backend enforces the same permission server-side AND refuses to disable /
- * demote / delete the last active super_admin (409) — those errors surface as
- * inline toasts. Usernames are operator-entered → rendered as plain text.
+ * The backend enforces the same permission server-side and refuses to disable, demote
+ * or delete the last active super_admin (409); those errors surface as toasts.
+ * Usernames are operator-entered and render as plain text.
  */
 import * as React from 'react';
 import {
-  Users as UsersIcon,
   UserPlus,
   KeyRound,
   Trash2,
-  RefreshCw,
-  Loader2,
   ShieldCheck,
   Pencil,
   SlidersHorizontal,
@@ -50,13 +50,37 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/select';
-import { PageHeader } from '@/soc/components/PageHeader';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
+import { RefreshButton } from '@/soc/components/RefreshButton';
+import { LoadingGlyph, RowActions, type RowAction } from '@/design-system';
+import { pageHash } from '@/soc/router';
+import { SettingsGroup, SettingsPageSection } from '@/soc/pages/settings/primitives';
+import { SECTION_META_BY_ID } from '@/soc/pages/settings/settings-sections-meta';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { LoadError } from '@/soc/components/LoadError';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { useAuth } from '@/soc/auth';
-import { AuditLogLink } from '@/soc/components/audit/AuditLink';
+
+/**
+ * The Accounts group's one-line caption: how many accounts there are (once loaded) and
+ * what turning one off means (one verb for an inactive account, as in the section help).
+ */
+function accountsCaption(users: readonly User[], loading: boolean): string {
+  const rule = 'A turned-off account cannot sign in.';
+  if (loading && users.length === 0) return rule;
+  return `${users.length.toLocaleString('en-US')} ${users.length === 1 ? 'account' : 'accounts'}. ${rule}`;
+}
+
+/**
+ * The section's help tip: the registry's `admin_users` help, the one source (inside
+ * Settings the registry wins anyway; the standalone page shows the same words).
+ */
+const USERS_HELP = SECTION_META_BY_ID.admin_users?.help;
+
+/** The busy glyph inside a dialog's primary button. */
+function BusyGlyph() {
+  return <LoadingGlyph size="sm" className="size-4" aria-hidden />;
+}
 
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
@@ -76,11 +100,10 @@ export default function Users(_props: UsersPageProps) {
 }
 
 /**
- * The Users-&-roles body, without the page wrapper. Exported so Settings can embed
- * it (under the Administration group) while the standalone /users route keeps using
- * the default export below during cutover. The Administration section in Settings
- * already gates this behind `users:manage`, so embedding does NOT add a second
- * ProtectedRoute (back-compat: auth-off shows everything).
+ * The Users body. Exported so Settings can embed it as a section; the standalone route
+ * uses the default export above. The Settings section already gates this behind
+ * `users:manage`, so embedding does not add a second ProtectedRoute (auth off shows
+ * everything).
  */
 export interface UsersInnerProps {
   /** True when this body is hosted beneath the Settings page header. */
@@ -88,10 +111,12 @@ export interface UsersInnerProps {
 }
 
 export function UsersInner({ embedded = false }: UsersInnerProps) {
-  const { username: me } = useAuth();
+  const { username: me, hasPermission } = useAuth();
+  const canManage = hasPermission('users', 'manage');
+  const canAudit = hasPermission('audit', 'view');
   const [users, setUsers] = React.useState<User[]>([]);
   const [roles, setRoles] = React.useState<string[]>([]);
-  // Custom (non built-in) role names from the resolved matrix — offered when
+  // Custom (non built-in) role names from the resolved matrix, offered when
   // assigning a user a base role + custom_roles[] (Round 3 / Feature 6).
   const [customRoleNames, setCustomRoleNames] = React.useState<string[]>([]);
   // The FULL resolved role → resource → [actions] matrix (Round 11): threaded into
@@ -133,20 +158,6 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
     void load();
   }, [load]);
 
-  const changeRole = async (user: User, role: string) => {
-    if (role === user.role) return;
-    setBusyUser(user.username);
-    try {
-      await api.users.update(user.username, { role });
-      toast.success(`Role updated for ${user.username}.`);
-      await load({ background: true });
-    } catch (e) {
-      toast.error(errMsg(e, 'Could not change role.'));
-    } finally {
-      setBusyUser(null);
-    }
-  };
-
   const toggleActive = async (user: User, active: boolean) => {
     setBusyUser(user.username);
     try {
@@ -171,6 +182,31 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
     } finally {
       setBusyUser(null);
     }
+  };
+
+  // One action in view (Edit), the rest in the row menu; every action is neutral at rest
+  // and Delete is confirmed in a dialog, where the red button lives.
+  const rowActions = (u: User): RowAction[] => {
+    const busy = busyUser === u.username;
+    const actions: RowAction[] = [
+      { id: 'edit', label: `Edit ${u.username}`, icon: Pencil, onSelect: () => setEditFor(u), disabled: busy },
+    ];
+    if (canManage) {
+      actions.push({ id: 'roles', label: 'Change roles', icon: ShieldCheck, onSelect: () => setRolesFor(u), disabled: busy });
+    }
+    if (canAudit) {
+      actions.push({
+        id: 'audit',
+        label: 'Audit events',
+        icon: History,
+        href: pageHash('audit', { scope: 'all', actor: u.username }),
+      });
+    }
+    actions.push(
+      { id: 'reset', label: 'Reset password', icon: KeyRound, onSelect: () => setResetFor(u), disabled: busy },
+      { id: 'delete', label: 'Delete user', icon: Trash2, onSelect: () => setDeleteFor(u), disabled: busy, destructive: true },
+    );
+    return actions;
   };
 
   const columns: DataTableColumn<User>[] = [
@@ -207,37 +243,32 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
     {
       id: 'role',
       header: 'Role',
-      cell: (u) => (
-        <Can resource="users" action="manage" fallback={<span>{roleLabel(u.role)}</span>}>
-          <Select
-            value={u.role}
-            onValueChange={(v) => void changeRole(u, v)}
-            disabled={busyUser === u.username}
-          >
-            <SelectTrigger className="h-8 w-[11rem]" aria-label={`Role for ${u.username}`}>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {roles.map((r) => (
-                <SelectItem key={r} value={r}>
-                  {roleLabel(r)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Can>
-      ),
+      // The role reads as text; it changes in the "Change roles" dialog (row menu). Only
+      // custom roles that still exist count: a deleted role grants nothing.
+      cell: (u) => {
+        const extra = liveCustomRoles(u, customRoleNames).length;
+        return (
+          <span className="text-sm text-foreground">
+            {roleLabel(u.role)}
+            {extra > 0 ? (
+              <span className="text-muted-foreground">{` + ${extra} custom`}</span>
+            ) : null}
+          </span>
+        );
+      },
     },
     {
       id: 'active',
       header: 'Active',
       align: 'center',
       cell: (u) => (
+        // A stable name: the switch role announces on or off, so the name never says the
+        // opposite of the state ("Disable Admin, on") or changes on each press.
         <Switch
           checked={u.active}
           onCheckedChange={(v) => void toggleActive(u, v)}
           disabled={busyUser === u.username}
-          aria-label={`${u.active ? 'Disable' : 'Enable'} ${u.username}`}
+          aria-label={`Account active: ${u.username}`}
         />
       ),
     },
@@ -288,91 +319,28 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
       id: 'actions',
       header: '',
       align: 'right',
-      cell: (u) => (
-        <div className="flex items-center justify-end gap-1">
-          {customRoleNames.length > 0 ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => setRolesFor(u)}
-              disabled={busyUser === u.username}
-              aria-label={`Manage roles for ${u.username}`}
-              title="Assign custom roles"
-            >
-              <ShieldCheck className="h-4 w-4" aria-hidden />
-            </Button>
-          ) : null}
-          <AuditLogLink
-            opts={{ scope: 'all', actor: u.username }}
-            aria-label={`Audit events for ${u.username}`}
-            title="Audit events for this user"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-hover hover:text-foreground hover:no-underline"
-          >
-            <History className="h-4 w-4" aria-hidden />
-          </AuditLogLink>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => setEditFor(u)}
-            disabled={busyUser === u.username}
-            aria-label={`Edit ${u.username}`}
-            title="Edit profile & MFA requirement"
-          >
-            <Pencil className="h-4 w-4" aria-hidden />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8"
-            onClick={() => setResetFor(u)}
-            disabled={busyUser === u.username}
-            aria-label={`Reset password for ${u.username}`}
-            title="Reset password"
-          >
-            <KeyRound className="h-4 w-4" aria-hidden />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 text-critical hover:text-critical"
-            onClick={() => setDeleteFor(u)}
-            disabled={busyUser === u.username}
-            aria-label={`Delete ${u.username}`}
-            title="Delete user"
-          >
-            <Trash2 className="h-4 w-4" aria-hidden />
-          </Button>
-        </div>
-      ),
+      cell: (u) => <RowActions subject={u.username} actions={rowActions(u)} />,
     },
   ];
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        embedded={embedded}
-        icon={UsersIcon}
-        eyebrow="Administration"
-        title={embedded ? 'Users' : 'Users & roles'}
-        description="Manage SOC operator accounts and their role-based access."
-        actions={
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-              <RefreshCw className={loading ? 'h-4 w-4 animate-spin' : 'h-4 w-4'} aria-hidden />
-              Refresh
+    <SettingsPageSection
+      embedded={embedded}
+      title={embedded ? 'Users' : 'Users & roles'}
+      help={USERS_HELP}
+      width="full"
+      actions={
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <Can resource="users" action="manage">
+            <Button size="sm" onClick={() => setAddOpen(true)}>
+              <UserPlus className="size-4" aria-hidden />
+              Add user
             </Button>
-            <Can resource="users" action="manage">
-              <Button size="sm" onClick={() => setAddOpen(true)}>
-                <UserPlus className="h-4 w-4" aria-hidden />
-                Add user
-              </Button>
-            </Can>
-          </div>
-        }
-      />
-
+          </Can>
+          <RefreshButton refreshing={loading} onClick={() => void load()} />
+        </div>
+      }
+    >
       {error ? (
         <LoadError
           error={error}
@@ -380,14 +348,18 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
           onRetry={() => void load()}
         />
       ) : (
-        <DataTable<User>
-          columns={columns}
-          rows={users}
-          getRowId={(u) => u.username}
-          loading={loading}
-          ariaLabel="User accounts"
-          empty="No users yet."
-        />
+        // One group on the tinted panel, the table bleeding to its edge (C9 option A).
+        <SettingsGroup id="users-accounts" title="Accounts" caption={accountsCaption(users, loading)}>
+          <DataTable<User>
+            columns={columns}
+            rows={users}
+            getRowId={(u) => u.username}
+            loading={loading}
+            surface="panel"
+            ariaLabel="User accounts"
+            empty="No users yet."
+          />
+        </SettingsGroup>
       )}
 
       <AddUserDialog
@@ -454,18 +426,34 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
           if (u) void remove(u);
         }}
       />
-    </div>
+    </SettingsPageSection>
   );
 }
 
 // --------------------------------------------------------------------------- //
-// Assign-roles dialog (base role + custom_roles[]) — Round 3 / Feature 6.
+// Change-roles dialog (base role and custom_roles[]), Round 3 Feature 6.
 // --------------------------------------------------------------------------- //
 /** Read a user's currently-assigned custom roles from its typed prefs bag
  * (defensive: the wire value is free-form JSON, so the array check stays). */
 function userCustomRoles(user: User | null): string[] {
   const raw: unknown = user?.prefs?.custom_roles;
   return Array.isArray(raw) ? raw.map((x) => String(x)) : [];
+}
+
+/**
+ * The custom roles a user holds that still exist. A role deleted after it was assigned
+ * stays on the account (deleting a role never rewrites users) but grants nothing, and the
+ * roles route refuses an unknown name, so it is neither counted nor sent back.
+ */
+export function liveCustomRoles(user: User | null, customRoleNames: readonly string[]): string[] {
+  const live = new Set(customRoleNames);
+  return userCustomRoles(user).filter((name) => live.has(name));
+}
+
+/** The custom roles a user holds that were deleted since (shown so saving is not a surprise). */
+export function staleCustomRoles(user: User | null, customRoleNames: readonly string[]): string[] {
+  const live = new Set(customRoleNames);
+  return userCustomRoles(user).filter((name) => !live.has(name));
 }
 
 function AssignRolesDialog({
@@ -485,12 +473,16 @@ function AssignRolesDialog({
   const [assigned, setAssigned] = React.useState<Set<string>>(new Set());
   const [busy, setBusy] = React.useState(false);
 
+  // Only roles that still exist start selected; a deleted one is listed below the chips
+  // and dropped on save (the server refuses an unknown name, which would otherwise block
+  // every role change for this account).
+  const stale = React.useMemo(() => staleCustomRoles(user, customRoleNames), [user, customRoleNames]);
   React.useEffect(() => {
     if (user) {
       setBaseRole(typeof user.role === 'string' ? user.role : String(user.role));
-      setAssigned(new Set(userCustomRoles(user)));
+      setAssigned(new Set(liveCustomRoles(user, customRoleNames)));
     }
-  }, [user]);
+  }, [user, customRoleNames]);
 
   const toggle = (name: string) => {
     setAssigned((prev) => {
@@ -505,14 +497,15 @@ function AssignRolesDialog({
     if (!user) return;
     setBusy(true);
     try {
+      const live = new Set(customRoleNames);
       await rolesApi.assignUserRoles(user.username, {
         role: baseRole,
-        custom_roles: Array.from(assigned),
+        custom_roles: Array.from(assigned).filter((name) => live.has(name)),
       });
       toast.success(`Roles updated for ${user.username}.`);
       onDone();
     } catch (e) {
-      // The server surfaces the last-admin lockout guard (409) — show its message.
+      // The server surfaces the last-admin lockout guard (409); show its message.
       toast.error(errMsg(e, 'Could not update roles.'));
     } finally {
       setBusy(false);
@@ -581,6 +574,14 @@ function AssignRolesDialog({
                 })}
               </div>
             )}
+            {stale.length > 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="assign-roles-stale">
+                {stale.length === 1 ? 'Deleted role' : 'Deleted roles'}{' '}
+                <span className="font-medium text-foreground">{stale.join(', ')}</span>{' '}
+                {stale.length === 1 ? 'grants' : 'grant'} nothing now. Saving removes{' '}
+                {stale.length === 1 ? 'it' : 'them'} from this account.
+              </p>
+            ) : null}
           </div>
         </div>
         <DialogFooter>
@@ -589,7 +590,7 @@ function AssignRolesDialog({
           </Button>
           <Button onClick={() => void submit()} disabled={busy || !baseRole}>
             {busy ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              <BusyGlyph />
             ) : (
               <ShieldCheck className="h-4 w-4" aria-hidden />
             )}
@@ -623,7 +624,7 @@ function AddUserDialog({
   defaultRole: string;
   onOpenChange: (v: boolean) => void;
   onCreated: () => void;
-  /** A custom role was created inline — let the parent refresh its role lists. */
+  /** A custom role was created inline, let the parent refresh its role lists. */
   onRolesChanged?: () => void;
 }) {
   const [username, setUsername] = React.useState('');
@@ -662,7 +663,7 @@ function AddUserDialog({
     return [...customRoleNames, ...extras];
   }, [customRoleNames, inlineRoles]);
 
-  // Inline-created roles are not in the parent-fetched matrix yet — overlay their
+  // Inline-created roles are not in the parent-fetched matrix yet, overlay their
   // RESOLVED preview rows so the summary/editor baseline stays truthful.
   const effectiveMatrix = React.useMemo(() => {
     if (inlineRoles.length === 0) return matrix;
@@ -682,7 +683,7 @@ function AddUserDialog({
 
   const submit = async () => {
     // Client-side we only mirror the cheap password-length gate; email/phone stay
-    // LENIENT here — the server is the validation authority (400s surface as toasts).
+    // LENIENT here, the server is the validation authority (400s surface as toasts).
     if (password.length < 8) {
       toast.error('Password must be at least 8 characters.');
       return;
@@ -794,9 +795,7 @@ function AddUserDialog({
 
           {/* ---- Access: role + LIVE permission visibility + fine-graining --- */}
           <div className="space-y-3 border-t border-border pt-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Access
-            </p>
+            <p className="text-sm font-medium text-foreground">Access</p>
             <div className="space-y-1.5">
               <Label htmlFor="new-user-role">Role</Label>
               <Select value={role} onValueChange={setRole} disabled={busy}>
@@ -825,7 +824,7 @@ function AddUserDialog({
                 </span>
                 {/* Custom roles ARE the per-user override mechanism: this seeds a new
                     role from the selected base role in the full matrix editor.
-                    (POST /api/roles is fresh-auth-gated — the global re-auth dialog
+                    (POST /api/roles is fresh-auth-gated, the global re-auth dialog
                     handles the step-up transparently.) */}
                 <Button
                   type="button"
@@ -874,9 +873,7 @@ function AddUserDialog({
 
           {/* ---- Security: the MFA mandate ---------------------------------- */}
           <div className="space-y-3 border-t border-border pt-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-              Security
-            </p>
+            <p className="text-sm font-medium text-foreground">Security</p>
             <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-surface p-3">
               <div className="space-y-0.5">
                 <Label htmlFor="new-user-mfa">Require multi-factor authentication</Label>
@@ -898,7 +895,7 @@ function AddUserDialog({
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={busy || !username.trim() || !password}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <UserPlus className="h-4 w-4" aria-hidden />}
+            {busy ? <BusyGlyph /> : <UserPlus className="h-4 w-4" aria-hidden />}
             Create
           </Button>
         </DialogFooter>
@@ -977,12 +974,12 @@ function InlineCustomRoleDialog({
         denies: draft.denies,
       });
       // Truthful wording: the role is durably created NOW, but it is only
-      // pre-selected in the not-yet-submitted Add-user form — attachment happens
+      // pre-selected in the not-yet-submitted Add-user form, attachment happens
       // when (and only if) the user is actually created.
       toast.success(`Created custom role ${res.role.name}. It will be attached when the user is created.`);
       onCreated(res.role);
     } catch (e) {
-      // A declined/failed re-auth step-up surfaces here too — keep the dialog open.
+      // A declined/failed re-auth step-up surfaces here too, keep the dialog open.
       toast.error(errMsg(e, 'Could not create the custom role.'));
     } finally {
       setSaving(false);
@@ -1021,7 +1018,7 @@ function InlineCustomRoleDialog({
           </Button>
           <Button onClick={() => void save()} disabled={!canSubmit || saving}>
             {saving ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              <BusyGlyph />
             ) : (
               <ShieldCheck className="h-4 w-4" aria-hidden />
             )}
@@ -1035,7 +1032,7 @@ function InlineCustomRoleDialog({
 
 // --------------------------------------------------------------------------- //
 // Edit-user dialog (Round 11): admin-editable profile/contact fields + the MFA
-// mandate (toggle BOTH ways — distinct from mfa_enabled, which stays self-service).
+// mandate (toggle BOTH ways, distinct from mfa_enabled, which stays self-service).
 // --------------------------------------------------------------------------- //
 function EditUserDialog({
   user,
@@ -1150,7 +1147,7 @@ function EditUserDialog({
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={busy}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Pencil className="h-4 w-4" aria-hidden />}
+            {busy ? <BusyGlyph /> : <Pencil className="h-4 w-4" aria-hidden />}
             Save changes
           </Button>
         </DialogFooter>
@@ -1224,7 +1221,7 @@ function ResetPasswordDialog({
             Cancel
           </Button>
           <Button onClick={() => void submit()} disabled={busy || !password}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <KeyRound className="h-4 w-4" aria-hidden />}
+            {busy ? <BusyGlyph /> : <KeyRound className="h-4 w-4" aria-hidden />}
             Reset
           </Button>
         </DialogFooter>

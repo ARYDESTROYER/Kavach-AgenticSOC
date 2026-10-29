@@ -15,6 +15,13 @@
  * SECURITY (#9): case-derived strings are rendered only as plain React text nodes.
  * #3: every bulk and single mutation is the existing analyst verb or durable job; the
  * outcome shown on a row is presentation (`caseOutcome`), never a decision.
+ *
+ * Round 14 (SPEC §4.9.4, D27, ui-audit CM1): the page has the Overview's header (the
+ * title "Case Manager", a help tip, the live state and an icon Refresh) and the split
+ * workspace sits on one panel instead of a white bordered box. The queue takes a
+ * "Closed by" filter from `#/case_manager?closedBy=` (the retired `#/scans` page lands
+ * here with `agent`), shown as a removable chip and sent to `GET /api/cases` as
+ * `closed_by`.
  */
 import * as React from 'react';
 import {
@@ -77,11 +84,13 @@ import {
   SelectValue,
 } from '@/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
-import { LoadingBar, LoadingState } from '@/design-system';
+import { LoadingBar, LoadingState, StatusDot } from '@/design-system';
 
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { PageContainer } from '@/soc/components/PageContainer';
+import { PageHeader } from '@/soc/components/PageHeader';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { OwnerMonogram } from '@/soc/components/OwnerMonogram';
@@ -122,6 +131,7 @@ import {
   QUEUE_SELECT_ALL_LIMIT,
   QUEUE_SEVERITIES,
   QUEUE_STATUS_OPTIONS,
+  TERMINAL_STATUSES,
   caseInScope,
   matchesSearch,
   mergeQueueRow,
@@ -567,6 +577,43 @@ const SHORTCUTS: ReadonlyArray<{ keys: string; action: string }> = [
   { keys: 'Alt + 1 … 7', action: 'Switch case tabs' },
 ];
 
+/* ---- "Closed by" (Round 14, D27) ------------------------------------------------------ */
+
+/** Who closed a terminal case: the engine's `closed_by` values (`case_aggregate`). */
+export type QueueCloser = 'agent' | 'analyst' | 'analyst_policy' | 'system';
+
+/** The queue's "Closed by" filter chip, one plain phrase per closer. */
+export const CLOSED_BY_LABEL: Readonly<Record<QueueCloser, string>> = {
+  agent: 'Closed by the AI agent',
+  analyst: 'Closed by an analyst',
+  analyst_policy: 'Closed by an analyst policy',
+  system: 'Closed by the system',
+};
+
+function asCloser(value: unknown): QueueCloser | null {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(CLOSED_BY_LABEL, value)
+    ? (value as QueueCloser)
+    : null;
+}
+
+/**
+ * Who closed a case, as far as the client can tell (a mirror of `case_aggregate`'s
+ * `closed_by`); null while the case is open. It only keeps a filtered view honest
+ * between server reads: whenever it disagrees with the filter, the server is asked.
+ */
+function caseCloser(c: Case): QueueCloser | null {
+  if (!TERMINAL_STATUSES.has(String(c.status || '').trim().toLowerCase())) return null;
+  const by = String(c.decision_by || '').trim().toLowerCase();
+  if (c.analyst_policy || by === 'analyst_policy') return 'analyst_policy';
+  if (by === 'agent') return 'agent';
+  if (by === 'analyst') return 'analyst';
+  return 'system';
+}
+
+/** The page help (the header's "About Case Manager" tip). */
+export const CASE_MANAGER_HELP =
+  'Work the case queue and the open case side by side: the queue reads every case on the server and updates live. Open a case to act on it here, and press ? for the keyboard shortcuts.';
+
 interface TrackedJob {
   jobId: string;
   label: string;
@@ -596,9 +643,15 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const { username: currentUser, hasPermission } = useAuth();
   const { active: demoActive } = useDemo();
   const routeCaseId = initialCaseId ?? route.opts?.caseId;
+  // D27: `#/case_manager?closedBy=agent` (and the `#/scans` redirect) opens the queue on
+  // the cases that closer closed; it only matches terminal cases, so the scope is All.
+  const routeClosedBy = route.page === 'case_manager' ? asCloser(route.opts?.closedBy) : null;
 
   // ---- queue query --------------------------------------------------------- //
-  const [scope, setScope] = React.useState<QueueScope>('active');
+  const [closedBy, setClosedBy] = React.useState<QueueCloser | null>(routeClosedBy);
+  const closedByRef = React.useRef(closedBy);
+  closedByRef.current = closedBy;
+  const [scope, setScope] = React.useState<QueueScope>(routeClosedBy ? 'all' : 'active');
   const [searchInput, setSearchInput] = React.useState('');
   const [search, setSearch] = React.useState('');
   const [severity, setSeverity] = React.useState(ANY_SEVERITY);
@@ -622,7 +675,11 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     }),
     [scope, currentUser, search, severity, status, sort],
   );
-  const query = React.useMemo(() => queueQuery(queueInput), [queueInput]);
+  const query = React.useMemo(() => {
+    const next = queueQuery(queueInput);
+    if (closedBy) next.closed_by = closedBy;
+    return next;
+  }, [queueInput, closedBy]);
   const queryKey = JSON.stringify(query);
   const queryKeyRef = React.useRef(queryKey);
   queryKeyRef.current = queryKey;
@@ -836,6 +893,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     setDismissedSelection(false);
   }, [routeCaseId]);
 
+  // A link that names a closer applies it. A later route without one keeps the chip: the
+  // queue's own navigation (opening or closing a case) carries the key along.
+  React.useEffect(() => {
+    if (!routeClosedBy) return;
+    setClosedBy(routeClosedBy);
+    setScope('all');
+  }, [routeClosedBy]);
+
   // The loaded rows, consistent with the scope (a live update may have moved a case out
   // of it) and instantly pre-filtered by the search being typed while the server query
   // is debounced.
@@ -899,7 +964,8 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       setSelectedCaseId(caseId);
       setFocusId(caseId);
       setDismissedSelection(false);
-      route.navigate('case_manager', { caseId });
+      const filter = closedByRef.current;
+      route.navigate('case_manager', filter ? { caseId, closedBy: filter } : { caseId });
       if (opts.focusRow) {
         // The row when the queue is on screen (the xl split); below xl the queue is
         // hidden while a case is open, so the case's title instead of <body>.
@@ -933,7 +999,9 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     const previous = selectedIdRef.current;
     setSelectedCaseId(null);
     setDismissedSelection(true);
-    route.navigate('case_manager');
+    const filter = closedByRef.current;
+    if (filter) route.navigate('case_manager', { closedBy: filter });
+    else route.navigate('case_manager');
     // The pane that held focus is gone: land on the case's queue row (or the roving
     // stop, or the search when the queue is empty) instead of <body>.
     requestAnimationFrame(() => {
@@ -987,6 +1055,19 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
    * severity band under a severity filter, a tie with the window's last row) is asked of
    * the server instead of guessed.
    */
+  /**
+   * {@link queueMembership} plus the "Closed by" filter: an open case is out; a case
+   * whose closer the client reads differently is asked of the server (`unknown`).
+   */
+  const membershipOf = React.useCallback((item: Case, input: QueueQueryInput) => {
+    const membership = queueMembership(item, input);
+    const filter = closedByRef.current;
+    if (!filter || membership === 'out') return membership;
+    const closer = caseCloser(item);
+    if (closer === null) return 'out';
+    return closer === filter ? membership : 'unknown';
+  }, []);
+
   const reconcileCases = React.useCallback(
     (incoming: Case[], opts: { changed: (item: Case) => boolean; created?: ReadonlySet<string> }) => {
       if (!incoming.length) return;
@@ -998,7 +1079,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       let recount = false;
       let createdIn = 0;
       for (const item of incoming) {
-        const membership = queueMembership(item, input);
+        const membership = membershipOf(item, input);
         const previous = loaded.get(item.case_id);
         if (previous) {
           if (membership === 'out') {
@@ -1056,7 +1137,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       if (resync) scheduleResync();
       else if (recount) scheduleRecount();
     },
-    [commitRows, commitTotal, scheduleRecount, scheduleResync],
+    [commitRows, commitTotal, membershipOf, scheduleRecount, scheduleResync],
   );
 
   /**
@@ -1649,12 +1730,23 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     else buttonsRef.current.delete(id);
   }, []);
 
+  /** Drop the "Closed by" filter, and its key from the address, keeping the open case. */
+  const removeClosedBy = React.useCallback(() => {
+    if (!closedByRef.current) return;
+    closedByRef.current = null;
+    setClosedBy(null);
+    const open = selectedIdRef.current;
+    if (open) route.navigate('case_manager', { caseId: open });
+    else route.navigate('case_manager');
+  }, [route]);
+
   const clearFilters = React.useCallback(() => {
     setSearchInput('');
     setSearch('');
     setSeverity(ANY_SEVERITY);
     setStatus(ANY_STATUS);
-  }, []);
+    removeClosedBy();
+  }, [removeClosedBy]);
 
   const changeDensity = React.useCallback((next: Density) => {
     setDensity(next);
@@ -1665,7 +1757,9 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     }
   }, []);
 
-  const hasFilters = Boolean(searchInput.trim() || severity !== ANY_SEVERITY || status !== ANY_STATUS);
+  const hasFilters = Boolean(
+    searchInput.trim() || severity !== ANY_SEVERITY || status !== ANY_STATUS || closedBy,
+  );
   const statusOptions = QUEUE_STATUS_OPTIONS.filter((option) => scope === 'all' || !option.terminal);
   React.useEffect(() => {
     if (status !== ANY_STATUS && !statusOptions.some((option) => option.value === status)) setStatus(ANY_STATUS);
@@ -1753,573 +1847,614 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         data-testid="case-manager"
       >
         <TooltipProvider delayDuration={300}>
-          <div
-            ref={splitFrameRef}
-            data-testid="case-manager-split-frame"
-            className={cn(
-              'grid h-full min-h-0 grid-cols-[minmax(0,1fr)] overflow-hidden border border-border bg-background',
-              'xl:grid-cols-[var(--case-manager-columns)]',
-              resizingSplit && 'select-none xl:cursor-col-resize',
-            )}
-            style={
-              {
-                '--case-manager-columns': `${queueWidth}px ${SPLIT_HANDLE_PX}px minmax(0, 1fr)`,
-              } as React.CSSProperties
-            }
-            data-frame-width={frameWidth || undefined}
-          >
-            {/* Queue becomes the complete mobile/tablet state until a case is selected. */}
-            <aside
-              aria-label="Case queue"
-              className={cn(
-                '@container/queue min-h-0 flex-col border-border bg-card/20 xl:flex',
-                selectedCaseId ? 'hidden xl:flex' : 'flex',
-              )}
-            >
-              <header className="shrink-0 space-y-2 border-b border-border px-3 pb-3 pt-3">
-                <div className="flex items-start gap-2">
-                  <div className="min-w-0 flex-1">
-                    <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
-                      {scopeHeading(scope)}
-                    </h1>
-                    {/* Not a live region: the app's one announcer already speaks the
-                        position when a case opens (focus reads the row itself). */}
-                    <p className="text-xs tabular-nums text-muted-foreground" data-testid="case-queue-scope">
-                      {summary}
-                    </p>
-                  </div>
+          {/* The page header over the split (Round 14): title, help, the live state and an
+              icon Refresh. `sm:px-2` puts the title back on the shell gutter that the
+              board's bleed widens out of, and `sm:mx-2` on the split frame does the same,
+              so the title and the frame share one column with every other page's modules.
+              The header to first module gap is the page rhythm (24px, PageContainer). The
+              split fills the rest of the height. */}
+          <div className="flex h-full min-h-0 flex-col gap-6" data-testid="case-manager-layout">
+            <PageHeader
+              title="Case Manager"
+              help={CASE_MANAGER_HELP}
+              className="sm:px-2"
+              controls={
+                <>
                   {live ? (
-                    <span className="mt-1 inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-                      <span aria-hidden className="size-1.5 rounded-full bg-success" />
+                    <StatusDot tone="success" data-testid="case-manager-live">
                       Live
-                    </span>
+                    </StatusDot>
                   ) : null}
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0"
-                        onClick={() => changeDensity(density === 'compact' ? 'comfortable' : 'compact')}
-                        aria-label="Compact rows"
-                        aria-pressed={density === 'compact'}
-                      >
-                        {density === 'compact' ? <Rows2 className="h-4 w-4" /> : <Rows3 className="h-4 w-4" />}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">
-                      {density === 'compact' ? 'Compact rows: on' : 'Compact rows: off'}
-                    </TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 shrink-0"
-                        onClick={openShortcuts}
-                        aria-label="Keyboard shortcuts"
-                        aria-keyshortcuts="?"
-                      >
-                        <Keyboard className="h-4 w-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom">Keyboard shortcuts (?)</TooltipContent>
-                  </Tooltip>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0"
+                  <RefreshButton
+                    display="icon"
+                    label="Refresh case queue"
                     onClick={refreshLoaded}
-                    disabled={loading}
-                    aria-label="Refresh case queue"
-                  >
-                    <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
-                  </Button>
-                </div>
-
-                <SegmentedControl<QueueScope>
-                  aria-label="Case queue scope"
-                  size="sm"
-                  fitted
-                  value={scope}
-                  onValueChange={(next) => {
-                    setScope(next);
-                    setFocusId(null);
-                  }}
-                  options={[
-                    { value: 'active', label: 'Active' },
-                    ...(currentUser ? [{ value: 'mine' as const, label: 'Mine' }] : []),
-                    { value: 'all', label: 'All' },
-                  ]}
-                />
-
-                <div className="relative">
-                  <Search
-                    className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-                    aria-hidden
+                    refreshing={loading}
                   />
-                  <Input
-                    ref={searchRef}
-                    value={searchInput}
-                    onChange={(event) => setSearchInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Escape' && searchInput) {
-                        event.preventDefault();
-                        setSearchInput('');
-                      } else if (event.key === 'ArrowDown') {
-                        event.preventDefault();
-                        const first = visibleRef.current[0];
-                        if (first) buttonsRef.current.get(effectiveFocusId ?? first.case_id)?.focus();
-                      }
-                    }}
-                    placeholder="Search all cases, entities…"
-                    aria-label="Search case queue"
-                    aria-keyshortcuts="/"
-                    className="h-8 pl-8 pr-8 text-xs"
-                  />
-                  <kbd
-                    aria-hidden
-                    className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-sm border border-border px-1 font-mono text-2xs text-muted-foreground"
-                  >
-                    /
-                  </kbd>
-                </div>
-                <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6.75rem] gap-2">
-                  <Select value={severity} onValueChange={setSeverity}>
-                    <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Severity filter">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ANY_SEVERITY}>Severity</SelectItem>
-                      {QUEUE_SEVERITIES.map((band) => (
-                        <SelectItem key={band} value={band}>
-                          {humanizeToken(band)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  <Select value={status} onValueChange={setStatus}>
-                    <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Status filter">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={ANY_STATUS}>Status</SelectItem>
-                      {statusOptions.map((item) => (
-                        <SelectItem key={item.value} value={item.value}>
-                          {item.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  <Select value={sort} onValueChange={(value) => setSort(value as QueueSort)}>
-                    <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Sort case queue">
-                      <ArrowDownUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="end">
-                      <SelectItem value="updated_desc">Latest</SelectItem>
-                      <SelectItem value="risk_desc">Highest risk</SelectItem>
-                      <SelectItem value="created_desc">Newest</SelectItem>
-                      <SelectItem value="title_asc">Title A–Z</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </header>
-
-              {/* Selection row. With anything selected it becomes the bulk toolbar. */}
-              <div
-                role="region"
-                aria-label="Case selection and bulk actions"
-                aria-busy={bulkBusy || Boolean(trackedJob)}
-                className="shrink-0 border-b border-border px-3 py-1.5"
+                </>
+              }
+            />
+            {/* One panel holds the split (ui-audit CM1): the queue on the panel tint, the open
+                case on its own surface, divided by the resize handle. */}
+            <div
+              ref={splitFrameRef}
+              data-testid="case-manager-split-frame"
+              className={cn(
+                'surface-panel grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)] overflow-clip sm:mx-2',
+                'xl:grid-cols-[var(--case-manager-columns)]',
+                resizingSplit && 'select-none xl:cursor-col-resize',
+              )}
+              style={
+                {
+                  '--case-manager-columns': `${queueWidth}px ${SPLIT_HANDLE_PX}px minmax(0, 1fr)`,
+                } as React.CSSProperties
+              }
+              data-frame-width={frameWidth || undefined}
+            >
+              {/* Queue becomes the complete mobile/tablet state until a case is selected. */}
+              <aside
+                aria-label="Case queue"
+                className={cn(
+                  '@container/queue min-h-0 flex-col border-border xl:flex',
+                  selectedCaseId ? 'hidden xl:flex' : 'flex',
+                )}
               >
-                <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
-                  <Checkbox
-                    id="case-manager-select-visible"
-                    checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
-                    disabled={bulkBusy || visibleCases.length === 0}
-                    onCheckedChange={(next) => toggleVisibleSelection(next === true)}
-                    aria-label="Select all visible cases"
-                    className="bg-background"
-                  />
-                  {selectedCount === 0 ? (
-                    <>
-                      <label
-                        htmlFor="case-manager-select-visible"
-                        className={cn(
-                          'ml-1 cursor-pointer text-xs font-medium text-foreground',
-                          (bulkBusy || visibleCases.length === 0) && 'cursor-not-allowed opacity-50',
-                        )}
-                      >
-                        Select visible
-                      </label>
-                      <span className="text-xs tabular-nums text-muted-foreground">
-                        {visibleCases.length} visible
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <span className="ml-1 text-xs font-medium tabular-nums text-foreground" aria-live="polite">
-                        {selectedCount} selected
-                      </span>
-                      {total > selectedCount && total > visibleCases.length ? (
+                <header className="shrink-0 space-y-2 border-b border-border px-3 pb-3 pt-3">
+                  <div className="flex items-start gap-2">
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate text-base font-semibold text-foreground">
+                        {scopeHeading(scope)}
+                      </h2>
+                      {/* Not a live region: the app's one announcer already speaks the
+                          position when a case opens (focus reads the row itself). */}
+                      <p className="text-xs tabular-nums text-muted-foreground" data-testid="case-queue-scope">
+                        {summary}
+                      </p>
+                    </div>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
                         <Button
-                          variant="link"
-                          size="sm"
-                          className="h-7 px-1 text-xs"
-                          disabled={selectingAll || bulkBusy}
-                          onClick={() => void selectAllMatching()}
-                          title="Selects a snapshot of every case that matches the current filters."
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          onClick={() => changeDensity(density === 'compact' ? 'comfortable' : 'compact')}
+                          aria-label="Compact rows"
+                          aria-pressed={density === 'compact'}
                         >
-                          {selectingAll
-                            ? 'Selecting…'
-                            : `Select all ${Math.min(total, QUEUE_SELECT_ALL_LIMIT).toLocaleString()} matching`}
+                          {density === 'compact' ? <Rows2 className="h-4 w-4" /> : <Rows3 className="h-4 w-4" />}
                         </Button>
-                      ) : null}
-                      <div className="ml-auto flex flex-wrap items-center gap-1.5">
-                        {canAssign ? (
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">
+                        {density === 'compact' ? 'Compact rows: on' : 'Compact rows: off'}
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0"
+                          onClick={openShortcuts}
+                          aria-label="Keyboard shortcuts"
+                          aria-keyshortcuts="?"
+                        >
+                          <Keyboard className="h-4 w-4" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">Keyboard shortcuts (?)</TooltipContent>
+                    </Tooltip>
+                  </div>
+
+                  <SegmentedControl<QueueScope>
+                    aria-label="Case queue scope"
+                    size="sm"
+                    fitted
+                    value={scope}
+                    onValueChange={(next) => {
+                      setScope(next);
+                      setFocusId(null);
+                      // Only a closed case has a closer: Active and Mine would always be empty.
+                      if (next !== 'all') removeClosedBy();
+                    }}
+                    options={[
+                      { value: 'active', label: 'Active' },
+                      ...(currentUser ? [{ value: 'mine' as const, label: 'Mine' }] : []),
+                      { value: 'all', label: 'All' },
+                    ]}
+                  />
+
+                  <div className="relative">
+                    <Search
+                      className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+                      aria-hidden
+                    />
+                    <Input
+                      ref={searchRef}
+                      value={searchInput}
+                      onChange={(event) => setSearchInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Escape' && searchInput) {
+                          event.preventDefault();
+                          setSearchInput('');
+                        } else if (event.key === 'ArrowDown') {
+                          event.preventDefault();
+                          const first = visibleRef.current[0];
+                          if (first) buttonsRef.current.get(effectiveFocusId ?? first.case_id)?.focus();
+                        }
+                      }}
+                      placeholder="Search all cases, entities…"
+                      aria-label="Search case queue"
+                      aria-keyshortcuts="/"
+                      className="h-8 pl-8 pr-8 text-xs"
+                    />
+                    <kbd
+                      aria-hidden
+                      className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 rounded-sm border border-border px-1 font-mono text-2xs text-muted-foreground"
+                    >
+                      /
+                    </kbd>
+                  </div>
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_6.75rem] gap-2">
+                    <Select value={severity} onValueChange={setSeverity}>
+                      <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Severity filter">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ANY_SEVERITY}>Severity</SelectItem>
+                        {QUEUE_SEVERITIES.map((band) => (
+                          <SelectItem key={band} value={band}>
+                            {humanizeToken(band)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    <Select value={status} onValueChange={setStatus}>
+                      <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Status filter">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ANY_STATUS}>Status</SelectItem>
+                        {statusOptions.map((item) => (
+                          <SelectItem key={item.value} value={item.value}>
+                            {item.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    <Select value={sort} onValueChange={(value) => setSort(value as QueueSort)}>
+                      <SelectTrigger className="h-8 min-w-0 px-2 text-xs" aria-label="Sort case queue">
+                        <ArrowDownUp className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent align="end">
+                        <SelectItem value="updated_desc">Latest</SelectItem>
+                        <SelectItem value="risk_desc">Highest risk</SelectItem>
+                        <SelectItem value="created_desc">Newest</SelectItem>
+                        <SelectItem value="title_asc">Title A–Z</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {/* D27: the "Closed by" filter a link opened the queue with (`#/scans`
+                      lands here as "Closed by the AI agent"), removable like any chip. */}
+                  {closedBy ? (
+                    <ul className="flex flex-wrap items-center gap-2" aria-label="Active filters">
+                      <li>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            removeClosedBy();
+                            searchRef.current?.focus();
+                          }}
+                          aria-label={`Remove filter: ${CLOSED_BY_LABEL[closedBy]}`}
+                          data-testid="case-queue-closed-by"
+                          className={cn(
+                            'inline-flex h-7 max-w-full items-center gap-1 rounded-sm border border-border bg-muted px-2 text-xs text-foreground transition-colors',
+                            'hover:border-border-strong hover:bg-hover',
+                            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                          )}
+                        >
+                          <span className="truncate">{CLOSED_BY_LABEL[closedBy]}</span>
+                          <X className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                        </button>
+                      </li>
+                    </ul>
+                  ) : null}
+                </header>
+
+                {/* Selection row. With anything selected it becomes the bulk toolbar. */}
+                <div
+                  role="region"
+                  aria-label="Case selection and bulk actions"
+                  aria-busy={bulkBusy || Boolean(trackedJob)}
+                  className="shrink-0 border-b border-border px-3 py-1.5"
+                >
+                  <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
+                    <Checkbox
+                      id="case-manager-select-visible"
+                      checked={allVisibleSelected ? true : someVisibleSelected ? 'indeterminate' : false}
+                      disabled={bulkBusy || visibleCases.length === 0}
+                      onCheckedChange={(next) => toggleVisibleSelection(next === true)}
+                      aria-label="Select all visible cases"
+                      className="bg-background"
+                    />
+                    {selectedCount === 0 ? (
+                      <>
+                        <label
+                          htmlFor="case-manager-select-visible"
+                          className={cn(
+                            'ml-1 cursor-pointer text-xs font-medium text-foreground',
+                            (bulkBusy || visibleCases.length === 0) && 'cursor-not-allowed opacity-50',
+                          )}
+                        >
+                          Select visible
+                        </label>
+                        <span className="text-xs tabular-nums text-muted-foreground">
+                          {visibleCases.length} visible
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="ml-1 text-xs font-medium tabular-nums text-foreground" aria-live="polite">
+                          {selectedCount} selected
+                        </span>
+                        {total > selectedCount && total > visibleCases.length ? (
                           <Button
-                            variant="outline"
+                            variant="link"
                             size="sm"
-                            className="h-7 px-2 text-xs"
-                            disabled={bulkBusy || bulkUnavailable}
-                            onClick={() => openBulkForm('assign')}
+                            className="h-7 px-1 text-xs"
+                            disabled={selectingAll || bulkBusy}
+                            onClick={() => void selectAllMatching()}
+                            title="Selects a snapshot of every case that matches the current filters."
                           >
-                            <UserCheck className="h-3.5 w-3.5" aria-hidden />
-                            Assign
+                            {selectingAll
+                              ? 'Selecting…'
+                              : `Select all ${Math.min(total, QUEUE_SELECT_ALL_LIMIT).toLocaleString()} matching`}
                           </Button>
                         ) : null}
-                        {canClose ? (
-                          <Button
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            disabled={bulkBusy || bulkUnavailable}
-                            onClick={() => setBulkTerminal('close')}
-                          >
-                            <Check className="h-3.5 w-3.5" aria-hidden />
-                            Close…
-                          </Button>
-                        ) : null}
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
+                        <div className="ml-auto flex flex-wrap items-center gap-1.5">
+                          {canAssign ? (
                             <Button
-                              ref={bulkMenuRef}
                               variant="outline"
                               size="sm"
                               className="h-7 px-2 text-xs"
                               disabled={bulkBusy || bulkUnavailable}
-                              aria-label={`More bulk actions for ${selectedCount} selected case${selectedCount === 1 ? '' : 's'}`}
+                              onClick={() => openBulkForm('assign')}
                             >
-                              {bulkBusy ? (
-                                <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
-                              ) : (
-                                <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
-                              )}
-                              More
-                              <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                              <UserCheck className="h-3.5 w-3.5" aria-hidden />
+                              Assign
                             </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-64">
-                            <DropdownMenuLabel className="space-y-0.5">
-                              <span className="block text-foreground">{selectedCount} selected</span>
-                              <span className="block text-xs font-normal leading-4">
-                                Submitted work continues in the background and stays visible in Inbox.
-                              </span>
-                            </DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            <Can resource="cases" action="write">
-                              <DropdownMenuItem onSelect={() => setPendingBulkAction('acknowledge')}>
-                                <Eye aria-hidden />
-                                Acknowledge
-                              </DropdownMenuItem>
-                            </Can>
-                            <Can resource="cases" action="assign">
-                              <DropdownMenuItem onSelect={() => openBulkForm('assign')}>
-                                <UserCheck aria-hidden />
-                                Assign
-                              </DropdownMenuItem>
-                            </Can>
-                            <Can resource="cases" action="write">
-                              <DropdownMenuItem onSelect={() => openBulkForm('tag')}>
-                                <TagIcon aria-hidden />
-                                Add tag
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onSelect={() => openBulkForm('status')}>
-                                <SlidersHorizontal aria-hidden />
-                                Set status
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onSelect={() => openBulkForm('disposition')}>
-                                <CircleSlash aria-hidden />
-                                Set disposition
-                              </DropdownMenuItem>
-                            </Can>
-                            <DropdownMenuSeparator />
-                            <Can resource="cases" action="reinvestigate">
-                              <DropdownMenuItem onSelect={() => setPendingBulkAction('reinvestigate')}>
-                                <RefreshCw aria-hidden />
-                                Reinvestigate
-                              </DropdownMenuItem>
-                            </Can>
-                            <Can resource="cases" action="close">
-                              <DropdownMenuItem onSelect={() => setBulkTerminal('resolve')}>
-                                <CheckCircle2 aria-hidden />
-                                Resolve…
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onSelect={() => setBulkTerminal('close')}>
-                                <Check aria-hidden />
-                                Close…
-                              </DropdownMenuItem>
-                            </Can>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={clearBulkSelection}
-                          disabled={bulkBusy}
-                          aria-label="Clear case selection"
-                        >
-                          <X className="h-3.5 w-3.5" aria-hidden />
-                        </Button>
+                          ) : null}
+                          {canClose ? (
+                            <Button
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              disabled={bulkBusy || bulkUnavailable}
+                              onClick={() => setBulkTerminal('close')}
+                            >
+                              <Check className="h-3.5 w-3.5" aria-hidden />
+                              Close…
+                            </Button>
+                          ) : null}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                ref={bulkMenuRef}
+                                variant="outline"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                disabled={bulkBusy || bulkUnavailable}
+                                aria-label={`More bulk actions for ${selectedCount} selected case${selectedCount === 1 ? '' : 's'}`}
+                              >
+                                {bulkBusy ? (
+                                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden />
+                                ) : (
+                                  <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden />
+                                )}
+                                More
+                                <ChevronDown className="h-3.5 w-3.5" aria-hidden />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-64">
+                              <DropdownMenuLabel className="space-y-0.5">
+                                <span className="block text-foreground">{selectedCount} selected</span>
+                                <span className="block text-xs font-normal leading-4">
+                                  Submitted work continues in the background and stays visible in Inbox.
+                                </span>
+                              </DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <Can resource="cases" action="write">
+                                <DropdownMenuItem onSelect={() => setPendingBulkAction('acknowledge')}>
+                                  <Eye aria-hidden />
+                                  Acknowledge
+                                </DropdownMenuItem>
+                              </Can>
+                              <Can resource="cases" action="assign">
+                                <DropdownMenuItem onSelect={() => openBulkForm('assign')}>
+                                  <UserCheck aria-hidden />
+                                  Assign
+                                </DropdownMenuItem>
+                              </Can>
+                              <Can resource="cases" action="write">
+                                <DropdownMenuItem onSelect={() => openBulkForm('tag')}>
+                                  <TagIcon aria-hidden />
+                                  Add tag
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => openBulkForm('status')}>
+                                  <SlidersHorizontal aria-hidden />
+                                  Set status
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => openBulkForm('disposition')}>
+                                  <CircleSlash aria-hidden />
+                                  Set disposition
+                                </DropdownMenuItem>
+                              </Can>
+                              <DropdownMenuSeparator />
+                              <Can resource="cases" action="reinvestigate">
+                                <DropdownMenuItem onSelect={() => setPendingBulkAction('reinvestigate')}>
+                                  <RefreshCw aria-hidden />
+                                  Reinvestigate
+                                </DropdownMenuItem>
+                              </Can>
+                              <Can resource="cases" action="close">
+                                <DropdownMenuItem onSelect={() => setBulkTerminal('resolve')}>
+                                  <CheckCircle2 aria-hidden />
+                                  Resolve…
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onSelect={() => setBulkTerminal('close')}>
+                                  <Check aria-hidden />
+                                  Close…
+                                </DropdownMenuItem>
+                              </Can>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7"
+                            onClick={clearBulkSelection}
+                            disabled={bulkBusy}
+                            aria-label="Clear case selection"
+                          >
+                            <X className="h-3.5 w-3.5" aria-hidden />
+                          </Button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {selectedCount > 0 && bulkUnavailable ? (
+                    <p role="note" data-testid="case-bulk-demo-note" className="mt-1.5 text-xs leading-5 text-muted-foreground">
+                      Bulk changes run as background jobs, which are off in Demo Mode. Open a case to
+                      change it on its own.
+                    </p>
+                  ) : null}
+                  {trackedJob ? (
+                    <div className="mt-1.5 space-y-1" role="status">
+                      <p className="text-xs text-foreground">
+                        {trackedJob.label}: {trackedJob.done} of {trackedJob.total} done
+                      </p>
+                      <LoadingBar active size="sm" label={`${trackedJob.label} in progress`} />
+                    </div>
+                  ) : bulkOutcome ? (
+                    <p
+                      role={bulkOutcome.kind === 'warning' ? 'alert' : 'status'}
+                      className={cn(
+                        'mt-1.5 border-l-2 pl-2 text-xs leading-5',
+                        bulkOutcome.kind === 'warning'
+                          ? 'border-warning text-warning-text'
+                          : 'border-success text-success-text',
+                      )}
+                    >
+                      {bulkOutcome.message}
+                    </p>
+                  ) : null}
+                </div>
+
+                {newCount > 0 ? (
+                  <div className="shrink-0 border-b border-border px-3 py-1.5">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      className="h-7 w-full text-xs"
+                      onClick={showNewCases}
+                      data-testid="case-queue-show-new"
+                    >
+                      {newCount} new case{newCount === 1 ? '' : 's'} · Show
+                    </Button>
+                  </div>
+                ) : null}
+
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {loading && rows.length === 0 ? (
+                    <QueueSkeleton />
+                  ) : error ? (
+                    <div className="p-3">
+                      <LoadError
+                        error={error}
+                        title="Could not load cases"
+                        onRetry={refreshLoaded}
+                      />
+                    </div>
+                  ) : visibleCases.length === 0 ? (
+                    <EmptyState
+                      compact
+                      icon={Inbox}
+                      title={hasFilters ? 'No matching cases' : 'No cases in this queue'}
+                      description={
+                        hasFilters
+                          ? 'Adjust or clear the queue filters.'
+                          : scope === 'mine'
+                            ? 'No active case is assigned to you.'
+                            : scope === 'active'
+                              ? 'There are no active cases awaiting work.'
+                              : 'Cases will appear here as alerts are correlated.'
+                      }
+                      action={
+                        hasFilters ? (
+                          <Button variant="outline" size="sm" onClick={clearFilters}>
+                            Clear filters
+                          </Button>
+                        ) : undefined
+                      }
+                    />
+                  ) : (
+                    <>
+                      <LoadingBar active={loading} size="sm" label="Refreshing the queue" className="rounded-none" />
+                      {/* One tab stop: the focused row's open control (roving tabindex). */}
+                      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- arrow-key handling for the roving list; each row's open control is a real button */}
+                      <div
+                        className="divide-y divide-border/70 border-b border-border/70"
+                        role="list"
+                        aria-label="Cases"
+                        onKeyDown={onListKeyDown}
+                      >
+                        <AnimatePresence initial={false}>
+                          {visibleCases.map((item) => (
+                            <motion.div
+                              role="listitem"
+                              key={item.case_id}
+                              exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { height: 0, opacity: 0 }}
+                              transition={SPRING_UI}
+                              style={{ overflow: 'hidden' }}
+                            >
+                              <QueueRow
+                                item={item}
+                                active={selectedCaseId === item.case_id}
+                                checked={selectedIds.has(item.case_id)}
+                                focusTarget={effectiveFocusId === item.case_id}
+                                density={density}
+                                selectionDisabled={bulkBusy}
+                                job={rowJob(item.case_id)}
+                                runbookProgress={runbookProgress[item.case_id] ?? null}
+                                registerButton={registerButton}
+                                onOpen={() => selectCase(item.case_id)}
+                                onFocusRow={() => setFocusId(item.case_id)}
+                                onPrefetch={() => prefetchCase(item.case_id)}
+                                onCheckedChange={(checked, shift) => toggleCaseSelection(item.case_id, checked, shift)}
+                              />
+                            </motion.div>
+                          ))}
+                        </AnimatePresence>
                       </div>
+                      {canLoadMore ? (
+                        <div className="p-3">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full"
+                            disabled={loadingMore}
+                            onClick={() => void fetchPage(rows.length, 'append')}
+                          >
+                            {loadingMore ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : null}
+                            Load more · {rows.length.toLocaleString()} of {total.toLocaleString()} loaded
+                          </Button>
+                        </div>
+                      ) : (
+                        <p className="px-3 py-3 text-center text-xs text-muted-foreground">
+                          All {total.toLocaleString()} loaded
+                        </p>
+                      )}
                     </>
                   )}
                 </div>
+              </aside>
 
-                {selectedCount > 0 && bulkUnavailable ? (
-                  <p role="note" data-testid="case-bulk-demo-note" className="mt-1.5 text-xs leading-5 text-muted-foreground">
-                    Bulk changes run as background jobs, which are off in Demo Mode. Open a case to
-                    change it on its own.
-                  </p>
-                ) : null}
-                {trackedJob ? (
-                  <div className="mt-1.5 space-y-1" role="status">
-                    <p className="text-xs text-foreground">
-                      {trackedJob.label}: {trackedJob.done} of {trackedJob.total} done
-                    </p>
-                    <LoadingBar active size="sm" label={`${trackedJob.label} in progress`} />
-                  </div>
-                ) : bulkOutcome ? (
-                  <p
-                    role={bulkOutcome.kind === 'warning' ? 'alert' : 'status'}
-                    className={cn(
-                      'mt-1.5 border-l-2 pl-2 text-xs leading-5',
-                      bulkOutcome.kind === 'warning'
-                        ? 'border-warning text-warning-text'
-                        : 'border-success text-success-text',
-                    )}
-                  >
-                    {bulkOutcome.message}
-                  </p>
-                ) : null}
-              </div>
-
-              {newCount > 0 ? (
-                <div className="shrink-0 border-b border-border px-3 py-1.5">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    className="h-7 w-full text-xs"
-                    onClick={showNewCases}
-                    data-testid="case-queue-show-new"
-                  >
-                    {newCount} new case{newCount === 1 ? '' : 's'} · Show
-                  </Button>
-                </div>
-              ) : null}
-
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                {loading && rows.length === 0 ? (
-                  <QueueSkeleton />
-                ) : error ? (
-                  <div className="p-3">
-                    <LoadError
-                      error={error}
-                      title="Could not load cases"
-                      onRetry={refreshLoaded}
-                    />
-                  </div>
-                ) : visibleCases.length === 0 ? (
-                  <EmptyState
-                    compact
-                    icon={Inbox}
-                    title={hasFilters ? 'No matching cases' : 'No cases in this queue'}
-                    description={
-                      hasFilters
-                        ? 'Adjust or clear the queue filters.'
-                        : scope === 'mine'
-                          ? 'No active case is assigned to you.'
-                          : scope === 'active'
-                            ? 'There are no active cases awaiting work.'
-                            : 'Cases will appear here as alerts are correlated.'
-                    }
-                    action={
-                      hasFilters ? (
-                        <Button variant="outline" size="sm" onClick={clearFilters}>
-                          Clear filters
-                        </Button>
-                      ) : undefined
-                    }
-                  />
-                ) : (
-                  <>
-                    <LoadingBar active={loading} size="sm" label="Refreshing the queue" className="rounded-none" />
-                    {/* One tab stop: the focused row's open control (roving tabindex). */}
-                    {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- arrow-key handling for the roving list; each row's open control is a real button */}
-                    <div
-                      className="divide-y divide-border/70 border-b border-border/70"
-                      role="list"
-                      aria-label="Cases"
-                      onKeyDown={onListKeyDown}
-                    >
-                      <AnimatePresence initial={false}>
-                        {visibleCases.map((item) => (
-                          <motion.div
-                            role="listitem"
-                            key={item.case_id}
-                            exit={reduceMotion ? { opacity: 0, transition: { duration: 0 } } : { height: 0, opacity: 0 }}
-                            transition={SPRING_UI}
-                            style={{ overflow: 'hidden' }}
-                          >
-                            <QueueRow
-                              item={item}
-                              active={selectedCaseId === item.case_id}
-                              checked={selectedIds.has(item.case_id)}
-                              focusTarget={effectiveFocusId === item.case_id}
-                              density={density}
-                              selectionDisabled={bulkBusy}
-                              job={rowJob(item.case_id)}
-                              runbookProgress={runbookProgress[item.case_id] ?? null}
-                              registerButton={registerButton}
-                              onOpen={() => selectCase(item.case_id)}
-                              onFocusRow={() => setFocusId(item.case_id)}
-                              onPrefetch={() => prefetchCase(item.case_id)}
-                              onCheckedChange={(checked, shift) => toggleCaseSelection(item.case_id, checked, shift)}
-                            />
-                          </motion.div>
-                        ))}
-                      </AnimatePresence>
-                    </div>
-                    {canLoadMore ? (
-                      <div className="p-3">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full"
-                          disabled={loadingMore}
-                          onClick={() => void fetchPage(rows.length, 'append')}
-                        >
-                          {loadingMore ? <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden /> : null}
-                          Load more · {rows.length.toLocaleString()} of {total.toLocaleString()} loaded
-                        </Button>
-                      </div>
-                    ) : (
-                      <p className="px-3 py-3 text-center text-xs text-muted-foreground">
-                        All {total.toLocaleString()} loaded
-                      </p>
-                    )}
-                  </>
-                )}
-              </div>
-            </aside>
-
-            {/* ARIA's focusable separator pattern is a value widget (aria-valuenow +
-                arrow keys). jsx-a11y classifies the role as static despite that spec. */}
-            {/* eslint-disable-next-line jsx-a11y/no-interactive-element-to-noninteractive-role */}
-            <button type="button" role="separator"
-              aria-label="Resize case queue"
-              aria-orientation="vertical"
-              aria-valuemin={SPLIT_MIN_QUEUE_PX}
-              aria-valuemax={Math.round(maxQueueWidth)}
-              aria-valuenow={queueWidth}
-              aria-valuetext={`${queueWidth} pixels`}
-              title="Drag to resize the queue. Use Left and Right arrow keys for precise adjustment."
-              data-testid="case-manager-divider"
-              onPointerDown={startSplitResize}
-              onPointerMove={moveSplitResize}
-              onPointerUp={finishSplitResize}
-              onPointerCancel={finishSplitResize}
-              onKeyDown={resizeSplitWithKeyboard}
-              onDoubleClick={() => {
-                storedWidth.current = null;
-                try {
-                  window.localStorage?.removeItem(SPLIT_STORAGE_KEY);
-                } catch {
-                  /* convenience only */
-                }
-                updateQueueWidth(responsiveQueueWidth(frameWidth));
-              }}
-              className={cn(
-                'group relative hidden h-full cursor-col-resize items-stretch justify-center touch-none outline-none xl:flex',
-                'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
-              )}
-            >
-              <span
+              {/* ARIA's focusable separator pattern is a value widget (aria-valuenow +
+                  arrow keys). jsx-a11y classifies the role as static despite that spec. */}
+              {/* eslint-disable-next-line jsx-a11y/no-interactive-element-to-noninteractive-role */}
+              <button type="button" role="separator"
+                aria-label="Resize case queue"
+                aria-orientation="vertical"
+                aria-valuemin={SPLIT_MIN_QUEUE_PX}
+                aria-valuemax={Math.round(maxQueueWidth)}
+                aria-valuenow={queueWidth}
+                aria-valuetext={`${queueWidth} pixels`}
+                title="Drag to resize the queue. Use Left and Right arrow keys for precise adjustment."
+                data-testid="case-manager-divider"
+                onPointerDown={startSplitResize}
+                onPointerMove={moveSplitResize}
+                onPointerUp={finishSplitResize}
+                onPointerCancel={finishSplitResize}
+                onKeyDown={resizeSplitWithKeyboard}
+                onDoubleClick={() => {
+                  storedWidth.current = null;
+                  try {
+                    window.localStorage?.removeItem(SPLIT_STORAGE_KEY);
+                  } catch {
+                    /* convenience only */
+                  }
+                  updateQueueWidth(responsiveQueueWidth(frameWidth));
+                }}
                 className={cn(
-                  'h-full w-px bg-border transition-colors group-hover:bg-primary/70 group-focus-visible:bg-primary',
-                  resizingSplit && 'w-0.5 bg-primary',
+                  'group relative hidden h-full cursor-col-resize items-stretch justify-center touch-none outline-none xl:flex',
+                  'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                 )}
-                aria-hidden
-              />
-            </button>
+              >
+                <span
+                  className={cn(
+                    'h-full w-px bg-border transition-colors group-hover:bg-primary/70 group-focus-visible:bg-primary',
+                    resizingSplit && 'w-0.5 bg-primary',
+                  )}
+                  aria-hidden
+                />
+              </button>
 
-            {/* Detail replaces the queue below xl; desktop retains the persistent split. */}
-            <section
-              ref={detailRef}
-              aria-label="Selected case workspace"
-              className={cn('min-h-0 min-w-0 flex-col bg-background', selectedCaseId ? 'flex' : 'hidden xl:flex')}
-            >
-              {selectedCaseId ? (
-                <>
-                  <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card/35 px-3 xl:hidden">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 px-2"
-                      onClick={closeDetail}
-                      aria-label="Back to case queue"
-                    >
-                      <ChevronLeft className="h-4 w-4" />
-                      Cases
-                    </Button>
-                    {/* The display id and title, never the raw id (CM-9 below xl). */}
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {selectedCase ? (
-                        <>
-                          <span className="font-mono">{caseDisplayId(selectedCase)}</span>
-                          {' · '}
-                          {caseTitle(selectedCase)}
-                        </>
-                      ) : null}
-                    </span>
-                  </div>
-                  <div className="min-h-0 flex-1">
-                    <CaseDetail
-                      caseId={selectedCaseId}
-                      presentation="embedded"
-                      previewCase={selectedCase}
-                      onClose={closeDetail}
-                      onNavigate={route.navigate}
-                      onCaseChange={syncCase}
-                      onAdvance={advance}
-                      resolveDialogFocus={resolveDialogFocus}
+              {/* Detail replaces the queue below xl; desktop retains the persistent split. */}
+              <section
+                ref={detailRef}
+                aria-label="Selected case workspace"
+                className={cn('min-h-0 min-w-0 flex-col bg-background', selectedCaseId ? 'flex' : 'hidden xl:flex')}
+              >
+                {selectedCaseId ? (
+                  <>
+                    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border bg-card/35 px-3 xl:hidden">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2"
+                        onClick={closeDetail}
+                        aria-label="Back to case queue"
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        Cases
+                      </Button>
+                      {/* The display id and title, never the raw id (CM-9 below xl). */}
+                      <span className="min-w-0 truncate text-xs text-muted-foreground">
+                        {selectedCase ? (
+                          <>
+                            <span className="font-mono">{caseDisplayId(selectedCase)}</span>
+                            {' · '}
+                            {caseTitle(selectedCase)}
+                          </>
+                        ) : null}
+                      </span>
+                    </div>
+                    <div className="min-h-0 flex-1">
+                      <CaseDetail
+                        caseId={selectedCaseId}
+                        presentation="embedded"
+                        previewCase={selectedCase}
+                        onClose={closeDetail}
+                        onNavigate={route.navigate}
+                        onCaseChange={syncCase}
+                        onAdvance={advance}
+                        resolveDialogFocus={resolveDialogFocus}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex h-full items-center justify-center">
+                    <EmptyState
+                      icon={Columns3}
+                      title="Select a case"
+                      description="Choose a case from the queue to open the complete investigation workspace."
                     />
                   </div>
-                </>
-              ) : (
-                <div className="flex h-full items-center justify-center">
-                  <EmptyState
-                    icon={Columns3}
-                    title="Select a case"
-                    description="Choose a case from the queue to open the complete investigation workspace."
-                  />
-                </div>
-              )}
-            </section>
+                )}
+              </section>
+            </div>
           </div>
         </TooltipProvider>
 

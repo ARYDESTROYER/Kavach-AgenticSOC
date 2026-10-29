@@ -16,6 +16,13 @@ built-in ability to manage settings. Other built-in roles can read settings but
 cannot change them. Custom roles can grant narrower management rights for models,
 notifications, branding, enrichment, terminology, automation, and rules.
 
+Every change saved with the **Save changes** bar is a settings write, so it needs the
+settings management permission. Someone who can read settings but not manage them can
+still open the sections the rail shows them; on a section whose changes go through the
+bar, a warning says **You can view these settings but not change them** and Save stays
+off, so an edit never ends in a refused save. Sections that save through their own
+controls (your Profile, Users, Roles & permissions) follow their own permissions.
+
 When authentication is disabled, route-level authorization is intentionally a
 no-op. Enable authentication before exposing a deployment to other users or a
 network you do not fully trust.
@@ -34,24 +41,126 @@ The Settings UI is the preferred editing surface. The API exposes `GET /api/sett
 `Preferences` model. Do not send a stale full settings document from an external
 script: another administrator may have changed a different section in the meantime.
 
-The Console presents one searchable section rail, a single active-section heading,
-and flat divider-led setting groups. Theme selection is a compact **System / Light /
-Dark** control under **Settings → Account → Appearance & customization**. Personal theme changes
-apply immediately and follow the signed-in user; System follows the organization
-default when one is configured, otherwise the device preference.
+## How the Settings page is laid out
 
-On a narrow screen, the full section inventory moves into a searchable Sheet opened
-from one compact section trigger; it is not stacked above the active form. Settings
-URLs retain `#/settings?s=<id>&a=<anchor>`, so an authorized operator can bookmark a
-section or a specific setting group. Modified sections show a dirty indicator, and
-one sticky **Save changes / Discard** bar owns both buffered preference writes and
-write-only secret drafts across the workspace. Saving keeps the narrow API contracts:
+Settings has one header: the title and a help tip. Nothing else sits in the header while
+nothing is unsaved. On the left, a searchable rail lists the sections in five groups
+(**Account**, **General**, **Integrations**, **Security & access** and **Organization**),
+with plain group labels and no counts. **Re-run setup wizard** sits at the foot of the
+rail. On a narrow screen the whole rail moves into a searchable sheet opened from one
+compact section button, so it is never stacked above the active form.
+
+Each section opens with its own title row: the section name, a help tip that explains
+it, and **Ask about this**, which opens chat with the section as the topic. Sections
+that manage a list put their own actions on that row, for example **Add user** and
+**Refresh** on Users.
+
+Settings come in groups. Each group has a short title, an optional one-line caption,
+and one tinted panel that holds its settings as rows divided by hairlines:
+
+- A switch, a choice or a status sits at the end of its row, beside the setting's name
+  and one line of help.
+- Wide fields (lists such as evidence fields, text areas, and the **Typed-out answers**
+  choice) sit under the row text.
+- Numbers use one compact field with the unit inside it (for example `s`, `min` or `h`).
+  A long duration also reads in hours or days in its help line, for example an idle
+  timeout of `720 min` reads "(12 hours)". Clearing a number field and leaving it never
+  saves 0 or the field's minimum: most fields keep the value they had, while the four
+  session policy durations (idle timeout, absolute lifetime, re-authentication window and
+  access token lifetime) and the **Chat assistant** limits, including the daily chat
+  limit, go back to the value their **Reset** offers. Field paths and evidence fields are shown in a
+  monospace font.
+- A control that is turned off by a switch above it (for example the auto-close bars
+  while auto-close is off) is disabled and dimmed; the group's titles and help stay at
+  full contrast.
+- Below 640 px wide, every control moves under its label, so a field never covers its
+  name.
+
+Form sections are at most 44 rem (704 px) wide so a switch stays close to its label.
+Sections built around a table or a wide editor, such as Users, Roles & permissions,
+Sessions & activity, Active sessions and Enrichment, use the full width, and their
+tables reach the edges of their panel.
+
+Explanations live in the help tips. A callout appears only for a condition that is true
+right now, for example **Settings are read-only** while the settings lock is on, **You
+can view these settings but not change them** for someone without the settings
+management permission, or **The kill switch is on**. Such a callout states what is saved:
+flipping the kill switch in an unsaved draft does not show it, and turning it off in a
+draft does not hide it until you save. The same goes for the **Posture** rows on
+**Single sign-on & policy**, which state what the backend enforces now.
+
+Theme selection is a compact **System / Light / Dark** control under
+**Settings → Account → Appearance**. Personal theme changes apply immediately and follow
+the signed-in user; System follows the organization default when one is configured,
+otherwise the device preference.
+
+### Saving
+
+Settings URLs keep the form `#/settings?s=<id>&a=<group>`, so an authorized operator can
+bookmark a section or one group in it. A section with unsaved changes shows a dot in
+the rail. One **Save changes / Discard** bar, as wide as the section, owns both buffered
+preference writes and write-only secret drafts across the page; the section leaves room
+below its last row so the bar never covers it. Saving keeps the narrow API contracts:
 ordinary preferences are sent as a minimal top-level patch, then only non-blank
-replacement secrets are sent to the dedicated secret endpoint. If the preference
-write succeeds but a secret write fails, the saved preferences stay applied and the
-secret draft remains visible and retryable. Immediate self-contained operations still
-report their own result, but a section renderer must not create a second preference or
-credential save path.
+replacement secrets are sent to the dedicated secret endpoint. If the preference write
+succeeds but a secret write fails, the saved preferences stay applied and the secret
+draft remains visible and retryable. A few controls act at once instead of through the
+bar, for example the Enrichment providers, your Profile, and the jobs started from
+Storage & retention and Data export; they report their own result, and none of them is
+a second path for saving preferences or credentials. The note that secret
+values stay write-only appears only under sections that hold preferences or secrets.
+
+### Sections new or moved in this release
+
+- **General → Discounted inference** moved here from the Jobs page. It holds the live
+  Flex preference for compatible alert investigations, its standard fallback, and the
+  optional asynchronous Batch queue. Anyone who can read models can open it. It saves
+  with the rest of Settings, so changing it needs the settings management permission;
+  on the Jobs page it saved on its own and needed model management. The built-in roles
+  hold both permissions together, so only a custom role that holds one without the
+  other notices. Without settings management the section is read-only. The usage ledger
+  records the tier each call actually used, and neither path changes a verdict or a case
+  decision.
+- **Integrations → Runbooks** holds every runbook setting: whether runbooks are on, a
+  link to the runbook library, attaching the matching runbook to a case and the
+  **Generic incident** fallback, guiding the agent with the matching runbook, using
+  Published runbooks in retrieval, the two AI help offers (**Suggest a runbook** and
+  **Draft note** on Check steps, each one model call in the cost ledger), and the
+  publishing rules (the publisher must differ from the author, step approvals, and the
+  review interval for new runbooks, from 30 to 730 days). Only Published runbook text is
+  trusted, and a runbook never closes or escalates a case. **Knowledge & threat
+  context → Retrieval** shows whether Published runbooks are in retrieval and links
+  here. See [Runbooks](../intelligence/runbooks.md).
+- **General → Data scope** starts with **Connected sources**, one row that shows how
+  many sources are enabled ("5 of 5 enabled") and opens the Sources page.
+- **Account → Security & two-factor** shows **Two-factor authentication** with its
+  state (On or Off) and, under it in the same panel, the button that starts or ends
+  enrollment. **Profile** shows the same state with a **Turn on** (or **Manage**) button
+  that opens this section.
+- **General → SLA, priority & suppression** shows one row per priority in one panel,
+  each with its respond and resolve minutes and a plain reading (for example "P1
+  Critical: respond within 15 minutes, resolve within 4 hours"), followed by the clock
+  settings.
+- **Organization → All settings** shows every schema key with readable labels: group
+  titles in sentence case, and known acronyms keep their capitals (IP, URL, ID, TTL,
+  SLA, RAG).
+- **Security & access → Single sign-on & policy** lists each OIDC provider as a group
+  of labelled rows (display name, client ID, the client secret, allowed domains and
+  tenants, the group claim, the default role, the group to role map, account creation
+  and the callback URL to register). Allowed domains and tenants are lists: press Enter,
+  a comma or a space to add each one, and a pasted list becomes one entry per item. A
+  group to role map line that does not read as `group=role` with one of the six roles is
+  reported when you leave the field and is not saved; the text stays as you typed it. The
+  client secret is saved on its own with **Save secret**; only whether one is set ever
+  comes back, and a failed save keeps what you typed so you can try again. The session
+  policy ends with an
+  **Access tokens** group whose one value is not enforced in this version.
+- **Security & access → Roles & permissions** says **Role-based access is off** while
+  it is: every signed-in account then counts as Super admin. It is turned on through
+  the settings API (`rbac.enabled`); there is no switch for it in the Console.
+- **Security & access → Users**: **Change roles** keeps only custom roles that still
+  exist. A custom role deleted after it was assigned grants nothing; the dialog names it
+  and removes it from the account when you save.
 
 ## Safe administration sequence
 
@@ -91,9 +200,9 @@ point-in-time rollback in version 0.1.
   (the same lookup never runs twice, a question that stops making progress is asked to
   answer, a model call that goes silent is retried once, and a very long investigation
   wraps up with what it found). **Bounded** applies the per-question limits shown under
-  it: model calls, lookups, the token ceiling, and the time limit, with the answer
-  reserve, answer length, and results per step under **More limits**. Switching modes
-  keeps the values you set, so switching back is lossless.
+  it: model calls, lookups, the token ceiling, the time limit, the answer reserve,
+  answer length and results per step. Switching modes keeps the values you set, so
+  switching back is lossless.
 - **Spending.** **Daily chat spending limit** is off by default: the AI budget (daily
   and monthly) covers automatic investigations and never pauses chat, so this limit is
   chat's only spending bound, and there is no monthly chat limit. With a limit, chat stops
@@ -255,9 +364,9 @@ OpenAPI-deprecated compatibility primitives with their synchronous/request-bound
 cursor limits; the cursor-cancel cleanup remains available. None is the Console
 workflow.
 
-The Knowledge scope includes exact catalog counts, sanitized authoritative Markdown
-for operator-owned runbooks and playbooks, and metadata-only references/manifests for
-bundled procedures. It excludes environment/source credentials, users and sessions,
+The Knowledge scope includes exact catalog counts, every operator runbook with every
+version and its Markdown source, the built-in runbooks as versioned references, and,
+for one release, the retired procedure documents unchanged. It excludes environment/source credentials, users and sessions,
 password/MFA material, browser tokens, upstream raw logs, and raw knowledge chunks.
 Each internal archive page and compact server segment is capped at 25 MiB; the complete
 disk-backed ZIP is not a 25 MiB lifetime export. This is not an import format,

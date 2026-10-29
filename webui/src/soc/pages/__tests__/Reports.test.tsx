@@ -142,6 +142,11 @@ describe('Reports library', () => {
     show();
     expect(await screen.findByText('Reports need access to cases')).toBeInTheDocument();
     expect(api.listReports).not.toHaveBeenCalled();
+    // Round 14: the shell's header is the Overview grammar, title plus help, no overline.
+    const h1 = screen.getByRole('heading', { level: 1, name: 'Reports' });
+    const header = h1.closest('[data-page-header]') as HTMLElement;
+    expect(within(header).getByRole('button', { name: 'About Reports' })).toBeInTheDocument();
+    expect(within(header).queryByText('Workspace')).toBeNull();
   });
 
   it('shows a first-use state when there are no reports', async () => {

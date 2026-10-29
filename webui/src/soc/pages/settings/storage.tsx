@@ -8,15 +8,7 @@
  * export/restore pipeline is configured. Automatic deletion is never offered.
  */
 import * as React from 'react';
-import {
-  Archive,
-  Database,
-  Flame,
-  LockKeyhole,
-  RefreshCw,
-  ShieldCheck,
-  Snowflake,
-} from 'lucide-react';
+import { Database } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
@@ -26,24 +18,9 @@ import type {
   StorageLifecycleStatus,
   StorageLifecycleTarget,
 } from '@/lib/types';
-import { cn } from '@/lib/cn';
-import { LoadingState } from '@/design-system';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
-import { Badge } from '@/ui/badge';
+import { Callout, LoadingGlyph, LoadingState, StatusDot, type StatusTone } from '@/design-system';
 import { Button } from '@/ui/button';
-import { Label } from '@/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/ui/select';
-import {
-  SettingsCard,
-  SettingsGrid,
-  type SettingsTOCItem,
-} from '@/soc/components/SettingsGrid';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { useNavigateOptional } from '@/soc/router';
 import {
   announceJobAccepted,
@@ -51,7 +28,7 @@ import {
   type JobSubmissionIntent,
 } from '@/soc/jobs/jobs';
 
-import { NumPref, SectionShell, SwitchPref, errMsg } from './primitives';
+import { NumPref, SettingRow, SettingsGroup, SettingsSection, errMsg } from './primitives';
 
 const DEFAULT_STORAGE_LIFECYCLE: StorageLifecycleConfig = {
   enabled: true,
@@ -62,10 +39,9 @@ const DEFAULT_STORAGE_LIFECYCLE: StorageLifecycleConfig = {
   delete_after_archive: false,
 };
 
-const STORAGE_TOC: SettingsTOCItem[] = [
-  { anchor: 'storage-effective', label: 'Effective lifecycle', icon: Database },
-  { anchor: 'storage-policy', label: 'Desired policy', icon: Flame },
-  { anchor: 'storage-preview', label: 'Preview & safe scope', icon: ShieldCheck },
+const GLACIER_CLASSES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: 'GLACIER', label: 'Glacier Flexible Retrieval' },
+  { value: 'DEEP_ARCHIVE', label: 'Glacier Deep Archive' },
 ];
 
 function normalizedConfig(value?: Partial<StorageLifecycleConfig> | null): StorageLifecycleConfig {
@@ -100,8 +76,11 @@ function readableState(value: string): string {
   return value.replace(/_/g, ' ');
 }
 
-function statusVariant(value: string): 'success' | 'warning' | 'info' | 'outline' {
-  if (value === 'active' || value === 'managed') return 'success';
+/**
+ * The dot tone of a lifecycle state: the healthy states stay neutral (status shows only
+ * for exceptions), a state that needs attention is amber.
+ */
+function statusTone(value: string): StatusTone {
   if (
     value === 'blocked' ||
     value === 'not_configured' ||
@@ -109,19 +88,51 @@ function statusVariant(value: string): 'success' | 'warning' | 'info' | 'outline
     value === 'pending_disable' ||
     value === 'unsupported'
   ) return 'warning';
-  if (value === 'external' || value === 'advisory' || value === 'export_only') return 'info';
-  return 'outline';
+  return 'neutral';
 }
 
 function TargetRow({ target }: { target: StorageLifecycleTarget }) {
   return (
-    <li className="grid gap-2 border-b border-border/70 py-3 last:border-b-0 sm:grid-cols-[minmax(0,12rem)_auto_minmax(0,1fr)] sm:items-start">
+    <li className="grid gap-1 px-4 py-3 sm:grid-cols-[minmax(0,12rem)_minmax(0,9rem)_minmax(0,1fr)] sm:items-start sm:gap-4 xl:px-5">
       <span className="text-sm font-medium text-foreground">{target.label}</span>
-      <Badge variant={statusVariant(target.enforcement)} className="w-fit capitalize">
-        {readableState(target.enforcement)}
-      </Badge>
-      <span className="text-xs leading-relaxed text-muted-foreground">{target.reason}</span>
+      <StatusDot tone={statusTone(target.enforcement)}>{readableState(target.enforcement)}</StatusDot>
+      <span className="text-sm text-muted-foreground">{target.reason}</span>
     </li>
+  );
+}
+
+/** The three tiers as one row of terms: Hot, Warm, Archive. */
+function TierLine({
+  hotDays,
+  warmDays,
+  archiveFrom,
+  archiveNote,
+  label,
+}: {
+  hotDays: number;
+  warmDays: number;
+  archiveFrom: number;
+  archiveNote?: string;
+  label: string;
+}) {
+  return (
+    <dl className="grid gap-4 sm:grid-cols-3" aria-label={label}>
+      <div>
+        <dt className="text-sm text-muted-foreground">Hot</dt>
+        <dd className="mt-0.5 text-base font-medium tabular-nums text-foreground">First {hotDays} days</dd>
+      </div>
+      <div>
+        <dt className="text-sm text-muted-foreground">Warm</dt>
+        <dd className="mt-0.5 text-base font-medium tabular-nums text-foreground">
+          Next {warmDays} days, until day {archiveFrom}
+        </dd>
+      </div>
+      <div>
+        <dt className="text-sm text-muted-foreground">Archive</dt>
+        <dd className="mt-0.5 text-base font-medium tabular-nums text-foreground">From day {archiveFrom}</dd>
+        {archiveNote ? <dd className="mt-0.5 text-sm text-muted-foreground">{archiveNote}</dd> : null}
+      </div>
+    </dl>
   );
 }
 
@@ -245,262 +256,204 @@ export function StorageLifecycleSection({
   const projected = preview ?? status;
   const archiveFrom = draft.hot_days + draft.warm_days;
 
+  const applyStatus = readOnly
+    ? 'Settings are read-only in this deployment; native lifecycle changes cannot be applied.'
+    : loading
+      ? 'Checking the backend capability before Apply becomes available.'
+      : error
+        ? 'Reload storage status before applying the saved policy.'
+        : draftDiffers
+          ? 'Save the desired policy first; Apply always uses the saved settings.'
+          : !statusMatchesDraft
+            ? 'Refreshing the saved policy status; Apply stays locked until the backend confirms the same values.'
+            : !backendCanApply
+              ? `${readableBackend(status?.state_backend ?? '')} reports this policy as advisory or unavailable; no native movement will be claimed.`
+              : 'Ready to apply the saved policy to eligible append-only Agentic SOC ledgers.';
+
   return (
-    <SectionShell
-      title="Storage & retention"
-      sub="Set retention intent for Agentic SOC-owned state. The Console never changes retention on connected source logs."
-      toc={STORAGE_TOC}
-    >
-      <SettingsGrid>
-        <SettingsCard
-          anchor="storage-effective"
-          title="Effective lifecycle"
-          icon={Database}
-          description="Provider status for the saved policy. Active means the native policy matches; the timeline remains the saved desired boundary."
-          wide="full"
-          actions={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void loadStatus()}
-              disabled={loading}
-            >
-              <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} aria-hidden />
-              Refresh status
-            </Button>
-          }
-        >
-          {loading ? (
+    <SettingsSection title="Storage & retention">
+      <SettingsGroup
+        id="storage-effective"
+        title="Effective lifecycle"
+        caption="What the state backend does with the saved policy now."
+        action={
+          <RefreshButton
+            label="Refresh status"
+            refreshing={loading}
+            onClick={() => void loadStatus()}
+          />
+        }
+      >
+        {loading ? (
+          <SettingRow variant="block">
             <LoadingState
               label="Loading storage lifecycle"
               description="Checking the state backend and its native tiering capability."
               layout="panel"
               shape="rows"
             />
-          ) : error ? (
-            <Alert variant="destructive">
-              <AlertTitle>Storage status unavailable</AlertTitle>
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : status ? (
-            <div className="space-y-5" data-testid="storage-lifecycle-status">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline">{readableBackend(status.state_backend)} state</Badge>
-                <Badge variant={statusVariant(status.effective_state)} className="capitalize">
-                  {readableState(status.effective_state)}
-                </Badge>
-                {status.policy_name ? (
-                  <span className="font-mono text-xs text-muted-foreground">{status.policy_name}</span>
-                ) : null}
-              </div>
-
-              <div className="grid border-y border-border sm:grid-cols-3" aria-label="Storage lifecycle timeline">
-                <div className="space-y-1 px-1 py-4 sm:pr-5">
-                  <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-high-text">
-                    <Flame className="h-4 w-4" aria-hidden /> Hot
-                  </span>
-                  <p className="text-lg font-semibold tabular-nums text-foreground">
-                    First {status.policy.hot_days} days
-                  </p>
-                  <p className="text-xs text-muted-foreground">Immediate operational access.</p>
-                </div>
-                <div className="space-y-1 border-t border-border px-1 py-4 sm:border-l sm:border-t-0 sm:px-5">
-                  <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-info-text">
-                    <Snowflake className="h-4 w-4" aria-hidden /> Warm
-                  </span>
-                  <p className="text-lg font-semibold tabular-nums text-foreground">
-                    Next {status.policy.warm_days} days · until day {status.policy.archive_from_days}
-                  </p>
-                  <p className="text-xs text-muted-foreground">Native only where the backend supports it.</p>
-                </div>
-                <div className="space-y-1 border-t border-border px-1 py-4 sm:border-l sm:border-t-0 sm:pl-5">
-                  <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    <Archive className="h-4 w-4" aria-hidden /> Archive
-                  </span>
-                  <p className="text-lg font-semibold tabular-nums text-foreground">
-                    From day {status.policy.archive_from_days}
-                  </p>
-                  <p className="text-xs text-muted-foreground">Desired · not configured.</p>
-                </div>
-              </div>
-
-              {!status.capabilities.supported && status.capabilities.reason ? (
-                <Alert variant="warning">
-                  <AlertTitle>Native Hot → Warm movement is not available</AlertTitle>
-                  <AlertDescription>{status.capabilities.reason}</AlertDescription>
-                </Alert>
-              ) : null}
-            </div>
-          ) : null}
-        </SettingsCard>
-
-        <SettingsCard
-          anchor="storage-policy"
-          title="Desired policy"
-          icon={Flame}
-          description="These values use the page-wide Save / Discard controls. Saving records intent; Apply is a separate, explicit infrastructure action."
-          wide="full"
-        >
-          <div className="space-y-5">
-            <SwitchPref
-              label="Lifecycle enabled"
-              help="Enable native Hot → Warm movement for eligible Agentic SOC-owned append-only data."
-              checked={draft.enabled}
-              disabled={readOnly}
-              onChange={(enabled) => changePolicy({ enabled })}
+          </SettingRow>
+        ) : error ? (
+          <SettingRow variant="block">
+            <Callout intent="error" title="Storage status unavailable">
+              {error}
+            </Callout>
+          </SettingRow>
+        ) : status ? (
+          <div className="divide-y divide-border/70" data-testid="storage-lifecycle-status">
+            <SettingRow
+              variant="status"
+              label={`${readableBackend(status.state_backend)} state`}
+              help={status.policy_name ? `Native policy ${status.policy_name}.` : undefined}
+              status={
+                <StatusDot tone={statusTone(status.effective_state)}>{readableState(status.effective_state)}</StatusDot>
+              }
             />
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <NumPref
-                label="Hot retention (days)"
-                help="Append-only ledgers stay Hot for this long. Default: 180 days."
-                value={draft.hot_days}
-                min={1}
-                max={3650}
-                disabled={readOnly || !draft.enabled}
-                onChange={(hot_days) => changePolicy({ hot_days })}
+            <SettingRow variant="block">
+              <TierLine
+                label="Storage lifecycle timeline"
+                hotDays={status.policy.hot_days}
+                warmDays={status.policy.warm_days}
+                archiveFrom={status.policy.archive_from_days}
+                archiveNote="Desired · not configured."
               />
-              <NumPref
-                label="Warm retention (days)"
-                help="Additional time before the desired archive boundary. Default: 90 days."
-                value={draft.warm_days}
-                min={1}
-                max={3650}
-                disabled={readOnly || !draft.enabled}
-                onChange={(warm_days) => changePolicy({ warm_days })}
-              />
-              <div className="space-y-2">
-                <Label htmlFor="storage-glacier-class">Desired Glacier class</Label>
-                <Select
-                  value={draft.glacier_storage_class}
-                  disabled={readOnly || !draft.enabled}
-                  onValueChange={(value) =>
-                    changePolicy({
-                      glacier_storage_class: value as StorageLifecycleConfig['glacier_storage_class'],
-                    })
-                  }
-                >
-                  <SelectTrigger id="storage-glacier-class">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="GLACIER">Glacier Flexible Retrieval</SelectItem>
-                    <SelectItem value="DEEP_ARCHIVE">Glacier Deep Archive</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  Intent only until an independent checksummed export and restore pipeline is configured.
-                </p>
-              </div>
-            </div>
-
-            <div className="grid border-y border-border py-4 sm:grid-cols-3">
-              <div>
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Hot</p>
-                <p className="mt-1 font-mono text-sm tabular-nums text-foreground">First {draft.hot_days} days</p>
-              </div>
-              <div className="mt-3 border-t border-border pt-3 sm:mt-0 sm:border-l sm:border-t-0 sm:px-5 sm:pt-0">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Warm</p>
-                <p className="mt-1 font-mono text-sm tabular-nums text-foreground">
-                  Next {draft.warm_days} days · until day {archiveFrom}
-                </p>
-              </div>
-              <div className="mt-3 border-t border-border pt-3 sm:mt-0 sm:border-l sm:border-t-0 sm:pl-5 sm:pt-0">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Desired archive</p>
-                <p className="mt-1 font-mono text-sm tabular-nums text-foreground">From day {archiveFrom}</p>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
-              <LockKeyhole className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-              <span>Automatic deletion is off and cannot be enabled in this release.</span>
-            </div>
+            </SettingRow>
+            {!status.capabilities.supported && status.capabilities.reason ? (
+              <SettingRow variant="block">
+                <Callout intent="warning" title="Native Hot to Warm movement is not available">
+                  {status.capabilities.reason}
+                </Callout>
+              </SettingRow>
+            ) : null}
           </div>
-        </SettingsCard>
+        ) : null}
+      </SettingsGroup>
 
-        <SettingsCard
-          anchor="storage-preview"
-          title="Preview & safe scope"
-          icon={ShieldCheck}
-          description="Preview the draft without changing infrastructure, then apply only the persisted policy to supported owned-state targets."
-          wide="full"
-          actions={
+      <SettingsGroup
+        id="storage-policy"
+        title="Desired policy"
+        caption="Saved with the page's Save and Discard. Saving records intent; Apply below is a separate step."
+      >
+        <SettingRow
+          variant="switch"
+          label="Lifecycle enabled"
+          help="Move eligible append-only Agentic SOC data from Hot to Warm."
+          checked={draft.enabled}
+          disabled={readOnly}
+          onCheckedChange={(enabled) => changePolicy({ enabled })}
+        />
+        {/* Up to 3650 days with steppers and the unit: the field takes 12rem, and so does its
+            column (a row's column is never narrower than its number field). */}
+        <SettingRow variant="field" controlWidth="12rem">
+          <NumPref
+            label="Hot retention"
+            help="Append-only ledgers stay Hot for this long. Default 180 days."
+            unit="days"
+            value={draft.hot_days}
+            min={1}
+            max={3650}
+            disabled={readOnly || !draft.enabled}
+            onChange={(hot_days) => changePolicy({ hot_days })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth="12rem">
+          <NumPref
+            label="Warm retention"
+            help="More time before the desired archive boundary. Default 90 days."
+            unit="days"
+            value={draft.warm_days}
+            min={1}
+            max={3650}
+            disabled={readOnly || !draft.enabled}
+            onChange={(warm_days) => changePolicy({ warm_days })}
+          />
+        </SettingRow>
+        <SettingRow
+          variant="select"
+          label="Desired Glacier class"
+          help="Intent only, until an independent checksummed export and restore pipeline is configured."
+          value={draft.glacier_storage_class}
+          options={GLACIER_CLASSES}
+          disabled={readOnly || !draft.enabled}
+          onValueChange={(value) =>
+            changePolicy({
+              glacier_storage_class: value as StorageLifecycleConfig['glacier_storage_class'],
+            })
+          }
+        />
+        <SettingRow variant="block">
+          <TierLine
+            label="Desired storage lifecycle"
+            hotDays={draft.hot_days}
+            warmDays={draft.warm_days}
+            archiveFrom={archiveFrom}
+          />
+        </SettingRow>
+        <SettingRow
+          variant="status"
+          label="Automatic deletion"
+          help="Automatic deletion is off and cannot be turned on in this release."
+          status={<StatusDot>Off</StatusDot>}
+        />
+      </SettingsGroup>
+
+      <SettingsGroup
+        id="storage-preview"
+        title="Preview and apply"
+        caption="Audit and usage ledgers are the only targets a native lifecycle can move. Mutable cases stay Hot, and connected source logs stay external and read-only."
+        action={
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void previewDraft()}
+            disabled={previewing}
+            aria-busy={previewing || undefined}
+          >
+            {previewing ? <LoadingGlyph size="sm" className="size-4" /> : null}
+            Preview draft
+          </Button>
+        }
+      >
+        <SettingRow variant="block" bleed>
+          {projected?.targets?.length ? (
+            <ul aria-label="Storage lifecycle scope" className="divide-y divide-border/70">
+              {projected.targets.map((target) => (
+                <TargetRow key={target.id} target={target} />
+              ))}
+            </ul>
+          ) : (
+            <p className="px-4 py-3 text-sm text-muted-foreground xl:px-5">
+              Load the effective status or preview the draft to see exactly what is in scope.
+            </p>
+          )}
+        </SettingRow>
+        <SettingRow
+          variant="action"
+          label="Apply supported lifecycle"
+          help={<span aria-live="polite">{applyStatus}</span>}
+          action={
             <Button
               type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => void previewDraft()}
-              disabled={previewing}
+              onClick={() => void applyPersistedPolicy()}
+              disabled={applyDisabled}
+              aria-busy={applying || undefined}
+              title={draftDiffers ? 'Save the desired policy before applying it' : undefined}
             >
-              <RefreshCw className={cn('h-4 w-4', previewing && 'animate-spin')} aria-hidden />
-              {previewing ? 'Previewing…' : 'Preview draft'}
+              {applying ? <LoadingGlyph size="sm" className="size-4" /> : <Database className="h-4 w-4" aria-hidden />}
+              Apply saved policy
             </Button>
           }
-        >
-          <div className="space-y-5">
-            {projected?.targets?.length ? (
-              <ul aria-label="Storage lifecycle scope">
-                {projected.targets.map((target) => (
-                  <TargetRow key={target.id} target={target} />
-                ))}
-              </ul>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Load the effective status or preview the draft to inspect exact target scope.
-              </p>
-            )}
-
-            <Alert variant="info">
-              <ShieldCheck className="h-4 w-4" aria-hidden />
-              <AlertTitle>Safe lifecycle boundary</AlertTitle>
-              <AlertDescription>
-                Audit and usage ledgers are the only enforceable targets where native lifecycle is supported.
-                Mutable cases remain Hot. Connected source logs stay external and read-only.
-              </AlertDescription>
-            </Alert>
-
-            <div className="flex flex-wrap items-center justify-between gap-4 border-t border-border pt-5">
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-foreground">Apply supported lifecycle</p>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground" aria-live="polite">
-                  {readOnly
-                    ? 'Settings are read-only in this deployment; native lifecycle changes cannot be applied.'
-                    : loading
-                      ? 'Checking the backend capability before Apply becomes available.'
-                      : error
-                        ? 'Reload storage status before applying the saved policy.'
-                        : draftDiffers
-                          ? 'Save the desired policy first; Apply always uses the persisted settings snapshot.'
-                          : !statusMatchesDraft
-                            ? 'Refreshing the saved policy status; Apply stays locked until the backend confirms the same values.'
-                            : !backendCanApply
-                              ? `${readableBackend(status?.state_backend ?? '')} reports this policy as advisory or unavailable; no native movement will be claimed.`
-                              : 'Ready to apply the saved policy to eligible append-only Agentic SOC ledgers.'}
-                </p>
-              </div>
-              <Button
-                type="button"
-                onClick={() => void applyPersistedPolicy()}
-                disabled={applyDisabled}
-                title={draftDiffers ? 'Save the desired policy before applying it' : undefined}
-              >
-                {applying ? (
-                  <RefreshCw className="h-4 w-4 animate-spin" aria-hidden />
-                ) : (
-                  <Database className="h-4 w-4" aria-hidden />
-                )}
-                {applying ? 'Applying…' : 'Apply saved policy'}
-              </Button>
-            </div>
-
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              Glacier is desired but not configured. Never transition an Elasticsearch snapshot-repository
-              prefix to Glacier; archive requires an independent export, checksum, manifest, and restore path.
-            </p>
-          </div>
-        </SettingsCard>
-      </SettingsGrid>
-    </SectionShell>
+        />
+        <SettingRow variant="block">
+          <p className="max-w-[42rem] text-sm text-muted-foreground">
+            Glacier is desired but not configured. Never move an Elasticsearch snapshot repository
+            prefix to Glacier; an archive needs an independent export, checksum, manifest and restore
+            path.
+          </p>
+        </SettingRow>
+      </SettingsGroup>
+    </SettingsSection>
   );
 }
 

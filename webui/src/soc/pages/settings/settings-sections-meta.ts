@@ -1,5 +1,5 @@
 /**
- * settings-sections-meta — the COMPONENT-FREE half of the Settings section registry
+ * settings-sections-meta, the COMPONENT-FREE half of the Settings section registry
  * (Round-5 Coupling-A).
  *
  * `settings-sections.ts` is the single source of truth for the Settings page, but it
@@ -25,6 +25,7 @@ import type { LucideIcon } from 'lucide-react';
 import {
   Archive,
   Bell,
+  BookOpenCheck,
   Brush,
   Database,
   DatabaseBackup,
@@ -39,6 +40,7 @@ import {
   MessageSquare,
   MonitorSmartphone,
   Network,
+  Percent,
   Palette,
   ShieldAlert,
   ShieldCheck,
@@ -76,7 +78,7 @@ const USERS_MANAGE: SectionPerm = Object.freeze({ resource: 'users', action: 'ma
  * `Administration` · `Experimental`) collapse to five, with **Security promoted to its
  * own top-level group** (`security_access`) and `Roles` split out of Users.
  *
- * Only the group ids/labels + each section's `group` + display `title` change here —
+ * Only the group ids/labels + each section's `group` + display `title` change here,
  * every section `id` stays STABLE (deep-linked via `#/settings?s=<id>`). The router
  * (Sett-B redirect map) aliases the old standalone routes onto these sections.
  */
@@ -98,7 +100,7 @@ export const SECTION_GROUP_ORDER: { id: SectionGroupId; label: string }[] = [
 /* -------------------------------------------------------------- meta shape -- */
 
 /**
- * The COMPONENT-FREE metadata for one Settings section — id/group/perm/keys/title/
+ * The COMPONENT-FREE metadata for one Settings section, id/group/perm/keys/title/
  * blurb/icon/keywords/grid. `settings-sections.ts` pairs each of these with a
  * `Component` renderer to build the full {@link SettingsSectionDef}.
  */
@@ -117,16 +119,23 @@ export interface SectionMeta {
   ownedKeys?: readonly string[];
   /** Display name (rail label + section title). */
   title: string;
-  /** Short one-liner shown in search + as a subtitle. */
+  /** Short one-liner shown in search and as the rail item's tooltip. Plain, no dashes. */
   blurb: string;
+  /**
+   * The section's help tip: one or two plain sentences on what it controls, beside its
+   * `h2` (C8 option 1). Defaults to `blurb`.
+   */
+  help?: string;
   icon: LucideIcon;
   /** Extra keywords so search finds a section by the settings it contains. */
   keywords?: string[];
   /**
-   * True when this section renders its OWN full-width `SettingsGrid` of cards (no outer
-   * Card chrome). Everything else sits on the shared single-card surface.
+   * `full` for a section that is a table (Users, Roles, Sessions, Active sessions,
+   * Enrichment, Detection and rules) or a body laid out for the full pane; every other
+   * section is a form capped at 44rem (SPEC §4.9.6). The save bar and the footer note
+   * follow the same width.
    */
-  grid?: boolean;
+  width?: 'full';
 }
 
 /* -------------------------------------------------------------- registry --- */
@@ -142,7 +151,8 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'profile',
     group: 'account',
     title: 'Profile',
-    blurb: 'Your display name, avatar, secondary email, timezone, and language.',
+    blurb: 'Your display name, photo, secondary email, timezone and language.',
+    help: 'How you appear across the Console. Your username and role are managed by an administrator.',
     icon: UserCircle2,
     keywords: ['profile', 'account', 'display name', 'avatar', 'photo', 'email', 'timezone', 'locale', 'language'],
   },
@@ -150,7 +160,8 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'account_security',
     group: 'account',
     title: 'Security & two-factor',
-    blurb: 'Enroll TOTP two-factor authentication for your own account.',
+    blurb: 'Two-factor authentication for your own account.',
+    help: 'Protect your account with a code from an authenticator app each time you sign in.',
     icon: ShieldCheck,
     keywords: ['security', 'mfa', '2fa', 'two factor', 'totp', 'authenticator', 'password'],
   },
@@ -159,15 +170,19 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     group: 'account',
     title: 'Sessions & activity',
     blurb: 'Where you are signed in, and your recent account activity.',
+    help: 'The devices signed in to your account and what your account did recently. Sign out any device you do not recognise.',
     icon: MonitorSmartphone,
+    width: 'full',
     keywords: ['sessions', 'devices', 'activity', 'sign out', 'revoke', 'login history', 'remember me', 'remembered', 'stay signed in', 'expires'],
   },
   {
     id: 'customization',
     group: 'account',
-    title: 'Appearance & customization',
-    blurb: 'Your theme, saved views, and (admin) terminology + org defaults.',
+    title: 'Appearance',
+    blurb: 'Your theme, saved views, and the organization terminology and defaults.',
+    help: 'Your theme and saved views. Administrators can also set the organization terminology and defaults here.',
     icon: Palette,
+    width: 'full',
     keywords: ['theme', 'dark mode', 'light mode', 'appearance', 'saved views', 'views', 'terminology', 'labels', 'rename', 'customize', 'customization', 'columns', 'reduce transparency', 'transparency', 'frosted glass', 'blur'],
   },
 
@@ -176,10 +191,10 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'general',
     group: 'general',
     title: 'Data scope',
-    blurb: 'Index pattern, entity fields, severity threshold, and polling.',
+    blurb: 'Index pattern, entity fields, evidence fields and polling.',
+    help: 'Where the agent reads events from, which fields it maps entities from, and how often it polls.',
     icon: Database,
-    grid: true,
-    keywords: ['data view', 'index', 'fields', 'polling', 'poll', 'lookback', 'timestamp', 'severity'],
+    keywords: ['data view', 'index', 'fields', 'polling', 'poll', 'lookback', 'timestamp', 'severity', 'sources', 'evidence'],
     ownedKeys: [
       'data_view_pattern',
       'time_field',
@@ -204,6 +219,7 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     group: 'general',
     title: 'Models',
     blurb: 'The model used for each agent role.',
+    help: 'Which model each agent role uses. Model prices, providers and self-hosted models are on the Models page.',
     icon: Sparkles,
     keywords: ['llm', 'model', 'router', 'investigator', 'formatter', 'chat', 'embedding', 'anthropic', 'openai'],
     ownedKeys: [
@@ -217,12 +233,27 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     ],
   },
   {
+    // Round 14 (D30): moved from the Jobs page. Visible with models:read, as it was there;
+    // it saves through this page like every other preference, so changing it needs
+    // settings:manage (without it the section is read-only).
+    id: 'discounted-inference',
+    group: 'general',
+    title: 'Discounted inference',
+    blurb: 'Live Flex for alert investigations and the optional async Batch queue.',
+    help: 'Run compatible alert investigations on a cheaper service tier. The usage ledger records the tier each call actually used, and neither path changes a verdict or a case decision.',
+    icon: Percent,
+    perm: Object.freeze({ resource: 'models', action: 'read' }),
+    keywords: ['discounted', 'flex', 'batch', 'cheaper', 'service tier', 'cost', 'severity floor', 'providers', 'async'],
+    ownedKeys: ['batch'],
+  },
+  {
     // Chat revamp SPEC §4.2: the curated `chat_agent` editor. Ungated like Models: the
     // limits are useful to read, and saving still needs settings:manage on the server.
     id: 'chat_agent',
     group: 'general',
     title: 'Chat assistant',
-    blurb: 'Per-question limits (unlimited or bounded), the daily chat spending limit, typed-out answers, suggested questions, and which indicators chat may send to enrichment.',
+    blurb: 'Per-question limits, the daily chat spending limit, typed-out answers, suggested questions, and which indicators chat may send to enrichment.',
+    help: 'How the read-only assistant answers in Workspace and Case Manager chat.',
     icon: MessageSquare,
     keywords: ['chat', 'assistant', 'lookups', 'tokens', 'type out answers', 'typed-out answers', 'internal domains', 'email', 'e-mail', 'chat limits', 'question limits', 'unlimited', 'bounded', 'spending limit', 'daily limit', 'chat budget', 'animated logo', 'timeouts', 'questions at once', 'suggestions', 'suggested questions', 'live data'],
     ownedKeys: ['chat_agent'],
@@ -231,14 +262,14 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'detection',
     group: 'general',
     title: 'Detection',
-    blurb: 'Clustering, risk weights, escalation, auto-close, and cross-source correlation.',
+    blurb: 'Correlation, risk weights, asset criticality, escalation, auto-close and cross-source links.',
+    help: 'How events become cases and how risky a case is. The close or escalate decision is always made by code against the auto-close policy here, and new detections use these settings once you save them.',
     icon: Workflow,
-    grid: true,
     keywords: ['correlation', 'risk', 'weights', 'escalation', 'auto-close', 'autonomy', 'false positive', 'cross-source', 'entity', 'asset criticality', 'asset', 'cidr', 'crown jewel'],
     // Both the legacy `fp_auto_close` scalar AND the live `auto_close` policy block are
     // owned here (Round-5 R1 moves the auto-close editor onto `prefs.auto_close`).
     // `asset_networks`/`asset_criticality` are owned here too (Round-6: the Asset
-    // criticality editor sits beside Risk weights — the deterministic risk model reads
+    // criticality editor sits beside Risk weights; the deterministic risk model reads
     // both, so the modified-dot must track them).
     ownedKeys: [
       'default_correlation',
@@ -256,13 +287,14 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'detection_rules',
     group: 'general',
     title: 'Detection & rules',
-    blurb: 'Author detection rules (match/threshold, anomaly) and case-automation rules in one place.',
+    blurb: 'Detection rules (match, threshold, anomaly) and case automation rules in one place.',
+    help: 'Detection rules (match and threshold, or anomaly) and case automation rules in one place. The close or escalate decision is always made by code; a rule can recommend, tag, notify or propose, never set a case status.',
     icon: ListChecks,
     // Gate on the UNIFIED `rules` resource the router enforces (G6 R9 / M2), NOT the
-    // legacy `automation` resource — so a custom role granted `rules:read` sees this
-    // section (and the editor loads / ledger / rollback all resolve on the same grant).
+    // legacy `automation` resource, so a custom role granted `rules:read` sees this
+    // section (and the editor loads, ledger and rollback all resolve on the same grant).
     perm: { resource: 'rules', action: 'read' },
-    grid: true,
+    width: 'full',
     keywords: [
       'rules',
       'detection rule',
@@ -286,7 +318,8 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'cases',
     group: 'general',
     title: 'Cases',
-    blurb: 'Human-facing case-ID nomenclature and live preview.',
+    blurb: 'The case number format and a live preview.',
+    help: 'The format of the case number people see and say. The internal case id never changes, and changing the format never renumbers existing cases.',
     icon: Hash,
     perm: SETTINGS_MANAGE,
     keywords: ['case id', 'case number', 'nomenclature', 'sequence', 'prefix', 'template'],
@@ -296,10 +329,10 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'case_policy',
     group: 'general',
     title: 'SLA, priority & suppression',
-    blurb: 'Advisory SLA targets and the impact × urgency priority matrix, plus operator suppression rules that drop known-benign events before triage.',
+    blurb: 'SLA targets, the impact and urgency priority matrix, suppression rules and declared-benign rules.',
+    help: 'SLA targets and the priority matrix are advisory: they order the queue and never change a case decision. Suppression drops matching events before triage.',
     icon: Timer,
     perm: SETTINGS_MANAGE,
-    grid: true,
     keywords: [
       'sla',
       'service level',
@@ -324,20 +357,20 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     group: 'general',
     title: 'Automation',
     // Round-6: the per-rule editor moved to the unified "Detection & rules" home; this
-    // section keeps only the master enable switch + the #3 explainer and links there.
-    blurb: 'The master switch for threshold automation — rules that react to a case after the deterministic decision (authored in Detection & rules).',
+    // section keeps only the master enable switch and links there.
+    blurb: 'The master switch for case automation rules, which act after the decision is made.',
+    help: 'Case automation rules react to a case after code has made the close or escalate decision. A rule can tag, recommend, notify, queue a reinvestigation or draft an approval proposal; it never sets a case status. You write the rules in Detection & rules.',
     icon: Zap,
     perm: SETTINGS_MANAGE,
-    keywords: ['automation', 'rules', 'threshold', 'tag', 'notify', 'playbook', 'proposal', 'enable'],
+    keywords: ['automation', 'rules', 'threshold', 'tag', 'notify', 'proposal', 'enable'],
     ownedKeys: ['threshold_automation'],
-    // No longer a grid section: with the embedded rule cards gone, the master toggle +
-    // link card sit on the shared single-card surface (like Cases / Standup).
   },
   {
     id: 'standup',
     group: 'general',
     title: 'Standup',
-    blurb: 'The daily aggregate summary window and cadence.',
+    blurb: 'The daily summary window and cadence.',
+    help: 'The window and cadence of the shift standup summary, built from aggregates only.',
     icon: FileText,
     keywords: ['standup', 'summary', 'digest', 'aggregate', 'report'],
     ownedKeys: ['standup'],
@@ -348,9 +381,11 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'notifications',
     group: 'integrations',
     title: 'Alerting & notifications',
-    blurb: 'Outbound channels, triggers, dedup, and digests.',
+    blurb: 'Outbound channels, triggers, deduplication and digests.',
+    help: 'Send alerts about decided cases to email, chat, paging or webhook channels. Notifications never change a case decision.',
     icon: Bell,
     perm: SETTINGS_MANAGE,
+    width: 'full',
     keywords: ['alerting', 'notifications', 'email', 'slack', 'teams', 'webhook', 'pagerduty', 'telegram', 'channels'],
     ownedKeys: ['notifications'],
   },
@@ -358,24 +393,40 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'enrichment',
     group: 'integrations',
     title: 'Enrichment',
-    blurb: 'Threat-intel lookups (AbuseIPDB / VirusTotal / GeoIP), cached in Redis.',
+    blurb: 'Threat intelligence lookups such as AbuseIPDB, VirusTotal and GeoIP, cached in Redis.',
+    help: 'The providers that look up an indicator. Results are cached, and a provider that needs a key stays off until its key is set. Changes here save at once.',
     icon: Globe,
+    width: 'full',
     keywords: ['enrichment', 'abuseipdb', 'virustotal', 'geoip', 'reputation', 'cache', 'ttl', 'circl', 'hashlookup', 'dshield', 'onionoo', 'tor', 'spamhaus', 'cymru', 'robtex', 'crt.sh', 'crowdsec', 'safe browsing', 'ipqualityscore', 'ipdata', 'apivoid', 'maltiverse', 'securitytrails', 'criminal ip', 'netlas', 'hybrid analysis', 'metadefender', 'emailrep'],
     // Owns NO page-dirty keys: the section's enable/fusion/provider toggles AND the
     // cache TTL all persist via IMMEDIATE settings PUTs (self-contained provider
     // editor), so the buffered page-save can never re-send a stale `enrichment` block
-    // and clobber a provider toggle (matches the documented intent at `ownedKeys`).
+    // and clobber a provider toggle.
   },
   {
     id: 'knowledge',
     group: 'integrations',
     title: 'Knowledge & threat context',
-    blurb: 'RAG retrieval, the threat-context panel, MITRE, and runbooks/playbooks.',
+    blurb: 'Retrieval, the threat context panel, MITRE ATT&CK, and resolved-case precedents.',
+    help: 'What the agent may retrieve while it investigates, and what the threat context panel shows. Imported documents are always treated as untrusted.',
     icon: ShieldAlert,
     perm: SETTINGS_MANAGE,
-    grid: true,
-    keywords: ['rag', 'retrieval', 'knowledge', 'threat context', 'mitre', 'runbook', 'playbook', 'ioc', 'resolved cases', 'precedent', 'promotion', 'futility'],
+    keywords: ['rag', 'retrieval', 'knowledge', 'threat context', 'mitre', 'ioc', 'resolved cases', 'precedent', 'promotion', 'futility'],
     ownedKeys: ['rag', 'threat_context', 'precedent'],
+  },
+  {
+    // Round 14 (SPEC §4.9.6, §4.10.19): every key of `Preferences.runbooks`.
+    id: 'runbooks',
+    group: 'integrations',
+    title: 'Runbooks',
+    blurb: 'Attaching runbooks to cases, guidance for the agent, AI help and publishing rules.',
+    help: 'How runbooks reach cases and the agent. Only Published runbook text is trusted, and a runbook never closes or escalates a case.',
+    icon: BookOpenCheck,
+    perm: SETTINGS_MANAGE,
+    // "step approval", never the plural: a keyword holding "approvals" would make the
+    // typed page name Approvals jump here in the command palette instead of to the page.
+    keywords: ['runbook', 'runbooks', 'procedure', 'checklist', 'auto attach', 'fallback', 'generic incident', 'guidance', 'publish', 'approver', 'review', 'step approval', 'draft note'],
+    ownedKeys: ['runbooks'],
   },
 
   /* ---- Security & access (org, HIGH blast radius) ----------------------- */
@@ -383,25 +434,30 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'admin_users',
     group: 'security_access',
     title: 'Users',
-    blurb: 'Add accounts, assign roles, reset passwords, and enable/disable users.',
+    blurb: 'Add accounts, assign roles, reset passwords, and turn accounts on or off.',
+    help: 'Operator accounts and the role each one has. A turned-off account cannot sign in.',
     icon: UsersIcon,
     perm: USERS_MANAGE,
+    width: 'full',
     keywords: ['users', 'accounts', 'add user', 'reset password', 'enable', 'disable', 'admin', 'identity'],
   },
   {
     id: 'roles',
     group: 'security_access',
     title: 'Roles & permissions',
-    blurb: 'Custom roles, the permission matrix, inheritance, and explicit denies.',
+    blurb: 'Custom roles, the permission matrix, inheritance and explicit denies.',
+    help: 'What each role may see and do. A deny always wins over a grant.',
     icon: KeyRound,
     perm: { resource: 'roles', action: 'manage' },
+    width: 'full',
     keywords: ['roles', 'rbac', 'permissions', 'matrix', 'grants', 'denies', 'custom role', 'inherit'],
   },
   {
     id: 'security',
     group: 'security_access',
     title: 'Single sign-on & policy',
-    blurb: 'Single sign-on (OIDC) providers and the token / session policy.',
+    blurb: 'Single sign-on (OIDC) providers and the session policy.',
+    help: 'Sign-in through your identity provider, and how long sessions last before people sign in again.',
     icon: ShieldCheck,
     perm: SETTINGS_MANAGE,
     keywords: ['security', 'sso', 'oidc', 'single sign-on', 'google', 'microsoft', 'session policy', 'token', 'idle', 'access ttl', 'csrf', 'rate limit', 'remember me', 'stay signed in', 'keep me signed in', 'session length', 'session lifetime', 'remembered device'],
@@ -411,16 +467,19 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'admin_sessions',
     group: 'security_access',
     title: 'Active sessions',
-    blurb: 'Review and force-terminate sessions across all accounts.',
+    blurb: 'Review and sign out sessions across all accounts.',
+    help: 'Every signed-in session across all accounts. Signing one out ends it at its next request.',
     icon: Network,
     perm: USERS_MANAGE,
+    width: 'full',
     keywords: ['sessions', 'active sessions', 'terminate', 'revoke', 'force sign out', 'admin'],
   },
   {
     id: 'keys',
     group: 'security_access',
     title: 'Secret keys',
-    blurb: 'Write-only API keys for Elasticsearch, LLMs, and enrichment.',
+    blurb: 'Write-only API keys for Elasticsearch, models and enrichment.',
+    help: 'Keys are write-only: the Console shows only whether one is set. Enter a value to replace a key and leave a field blank to keep it. A key typed here lasts until the backend restarts; set it in the environment to keep it.',
     icon: KeyRound,
     perm: SETTINGS_MANAGE,
     keywords: ['api key', 'secret', 'credentials', 'token', 'anthropic', 'openai', 'abuseipdb', 'virustotal'],
@@ -431,19 +490,21 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'appearance',
     group: 'organization',
     title: 'Branding',
-    blurb: 'Org wordmark, logo, accent colours, and default theme.',
+    blurb: 'The organization wordmark, logo, accent colors and default theme.',
+    help: 'The organization wordmark, logo, accent colors, default theme and sign-in page.',
     icon: Brush,
     perm: SETTINGS_MANAGE,
+    width: 'full',
     keywords: ['branding', 'appearance', 'theme', 'logo', 'favicon', 'colour', 'color', 'white-label', 'accent'],
   },
   {
     id: 'release_updates',
     group: 'organization',
     title: 'Updates & releases',
-    blurb: 'Public source repository, Stable/Testing refs, and read-only update discovery.',
+    blurb: 'The public source repository, the Stable and Testing channels, and update discovery.',
+    help: 'Where Agentic SOC looks for newer releases. Discovery only links to a release; it never installs one.',
     icon: GitBranch,
     perm: SETTINGS_MANAGE,
-    grid: true,
     keywords: ['updates', 'release', 'repository', 'github', 'stable', 'testing', 'branch', 'version'],
     ownedKeys: ['release_updates'],
   },
@@ -451,14 +512,14 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'advanced',
     group: 'organization',
     title: 'Advanced',
-    blurb: 'Caps, kill switch, suppression rules, rule catalog, and the settings lock.',
+    blurb: 'Per-case caps, the kill switch, background scans, the auto-forward allowlist and the settings lock.',
+    help: 'Limits and switches that affect every investigation. Change them with care.',
     icon: SlidersHorizontal,
     perm: SETTINGS_MANAGE,
-    grid: true,
     keywords: ['advanced', 'caps', 'kill switch', 'suppression', 'rule catalog', 'read-only', 'lock', 'budget', 'allowlist'],
-    // NOTE: `excluded_rules` / `in_scope_rules` are intentionally NOT owned here — no
+    // NOTE: `excluded_rules` / `in_scope_rules` are intentionally NOT owned here: no
     // control in the Settings tree edits them, so listing them lit a dirty dot that
-    // could never trigger. Re-add them only if/when a real editor card is built.
+    // could never trigger. Re-add them only if/when a real editor is built.
     ownedKeys: [
       'caps',
       'auto_forward_allowlist',
@@ -471,29 +532,31 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'advanced_all',
     group: 'organization',
     title: 'All settings',
-    blurb: 'Every engine preference, generated from the backend schema — the long tail of knobs.',
+    blurb: 'Every engine preference, generated from the backend schema.',
+    help: 'Every engine preference, generated from the backend schema. Prefer the curated sections; this list covers the rest. Structured rule lists point to their own sections, and managed knobs (Demo mode, the settings lock) are read-only here.',
     icon: ListTree,
     perm: SETTINGS_MANAGE,
-    grid: true,
     keywords: ['schema', 'all settings', 'advanced', 'generic', 'long tail', 'raw', 'every setting', 'knobs', 'reflector'],
   },
   {
     id: 'demo',
     group: 'organization',
     title: 'Experimental & Demo',
-    blurb: 'Populate the console with isolated, $0, reversible synthetic data (experimental).',
+    blurb: 'Fill the Console with isolated, zero-cost, reversible synthetic data.',
+    help: 'Explore the whole Console with an isolated, zero-cost, reversible synthetic dataset before you connect a live source.',
     icon: FlaskConical,
     perm: { resource: 'demo', action: 'manage' },
+    width: 'full',
     keywords: ['demo', 'experimental', 'sample', 'synthetic', 'sandbox', 'simulated', 'seed', 'try it', 'preview'],
   },
   {
     id: 'storage',
     group: 'organization',
     title: 'Storage & retention',
-    blurb: 'Capability-aware Hot, Warm, and desired archive lifecycle for Agentic SOC-owned state.',
+    blurb: 'Hot, Warm and archive lifecycle for the state Agentic SOC owns.',
+    help: 'How long Agentic SOC keeps its own state on each storage tier. Connected source logs are never touched, and nothing is ever deleted.',
     icon: Archive,
     perm: SETTINGS_MANAGE,
-    grid: true,
     keywords: ['storage', 'retention', 'hot', 'warm', 'archive', 'glacier', 'ilm', 'lifecycle', 'audit', 'usage'],
     ownedKeys: ['storage_lifecycle'],
   },
@@ -501,7 +564,8 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'data_export',
     group: 'organization',
     title: 'Data export',
-    blurb: 'Download a selectable, secret-free Agentic SOC analysis bundle.',
+    blurb: 'Download a secret-free bundle of the state you choose.',
+    help: 'Download a secret-free bundle of the Agentic SOC state you choose, assembled in the background. Credentials, tokens, sessions, users, environment secrets and upstream raw logs are never included.',
     icon: DatabaseBackup,
     perm: { resource: 'data_export', action: 'export' },
     keywords: ['export', 'download', 'backup', 'portable', 'analysis bundle', 'cases', 'audit', 'usage', 'configuration'],
@@ -510,31 +574,34 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     id: 'danger',
     group: 'organization',
     // Gate on `users:manage` to match BOTH the DangerZone body's own <Can> guard and the
-    // backend `users:manage` admission/execution gate for tiered_reset Jobs — otherwise a principal with only
-    // settings:manage saw the rail entry + outer guard pass but a blank (body-gated) panel.
+    // backend `users:manage` admission/execution gate for tiered_reset Jobs; otherwise a
+    // principal with only settings:manage saw the rail entry + outer guard pass but a
+    // blank (body-gated) panel.
     perm: USERS_MANAGE,
     title: 'Danger zone',
-    blurb: 'Tiered reset of cases, sources, or the whole tenant. Never wipes env secrets.',
+    blurb: 'Reset cases, sources or the whole tenant in tiers. Never wipes environment secrets.',
+    help: 'Reset Agentic SOC data in explicit tiers. Each reset asks for an exact phrase and a fresh sign-in; environment secrets and upstream logs are never touched.',
     icon: Trash2,
+    width: 'full',
     keywords: ['danger', 'reset', 'factory reset', 'wipe', 'delete', 'destructive', 'revoke all', 'kill switch'],
   },
 ];
 
 /* --------------------------------------------------- setting-level index --- *
- * Round-5 Sett-C — the SINGLE source for setting-LEVEL search + card-level deep-links.
+ * Round-5 Sett-C, the SINGLE source for setting-LEVEL search + card-level deep-links.
  *
- * Each entry names a specific card WITHIN a grid section by its `anchor` (the `id=` on the
- * `SettingsCard`), so search can deepen from section-level to setting-level and a jump can
- * scroll+highlight the exact card via `#/settings?s=<section>&a=<anchor>`. This is a small
- * hand-kept table (the anchors live in the section renderers), deliberately NOT reflected
- * from the schema — it is the operator-facing label + synonyms, not the wire shape. Keep it
- * in sync when a grid section adds/renames a `SettingsCard anchor=`. */
+ * Each entry names a specific group WITHIN a section by its `anchor` (the `id=` on the
+ * `SettingsGroup`), so search can deepen from section-level to setting-level and a jump can
+ * scroll to and highlight that group via `#/settings?s=<section>&a=<anchor>`. This is a
+ * small hand-kept table (the anchors live in the section renderers), deliberately NOT
+ * reflected from the schema: it is the operator-facing label and synonyms, not the wire
+ * shape. Keep it in sync when a section adds or renames a `SettingsGroup id=`. */
 export interface SettingAnchor {
   /** The owning section id. */
   section: SectionId;
-  /** The `SettingsCard anchor=` (its DOM `id`), the `&a=` deep-link target. */
+  /** The `SettingsGroup id=` (its DOM `id`), the `&a=` deep-link target. */
   anchor: string;
-  /** Human label (the card title). */
+  /** Human label (the group title). */
   label: string;
   /** Extra search synonyms. */
   keywords: string[];
@@ -543,7 +610,7 @@ export interface SettingAnchor {
 export const SETTING_ANCHORS: readonly SettingAnchor[] = [
   // General › Data scope
   { section: 'general', anchor: 'general-sources', label: 'Data sources', keywords: ['sources', 'connectors', 'feeds'] },
-  { section: 'general', anchor: 'general-mapping', label: 'Default log scope & field mapping', keywords: ['index pattern', 'data view', 'field mapping', 'fields', 'entity', 'severity'] },
+  { section: 'general', anchor: 'general-mapping', label: 'Log scope and field mapping', keywords: ['index pattern', 'data view', 'field mapping', 'fields', 'entity', 'severity'] },
   { section: 'general', anchor: 'general-evidence', label: 'Case evidence fields', keywords: ['evidence', 'projection', 'url', 'http', 'user agent', 'process', 'prompt fields', 'free text', 'contains', 'searchable'] },
   { section: 'general', anchor: 'general-polling', label: 'Polling', keywords: ['poll', 'interval', 'batch size', 'lookback', 'cold start'] },
   // General › Detection
@@ -553,33 +620,36 @@ export const SETTING_ANCHORS: readonly SettingAnchor[] = [
   { section: 'detection', anchor: 'detection-escalation', label: 'Escalation', keywords: ['escalation', 'confidence', 'critical severity'] },
   { section: 'detection', anchor: 'detection-autoclose', label: 'Auto-close policy', keywords: ['auto-close', 'autonomy', 'false positive', 'true positive', 'needs human'] },
   { section: 'detection', anchor: 'detection-crosssource', label: 'Cross-source correlation', keywords: ['cross-source', 'link', 'shared entity', 'related cases'] },
-  // Integrations › Knowledge & threat context
   // General › SLA, priority & suppression
   { section: 'case_policy', anchor: 'case-policy-sla', label: 'SLA targets', keywords: ['sla', 'response', 'resolution', 'timer', 'breach', 'mttr'] },
   { section: 'case_policy', anchor: 'case-policy-priority', label: 'Priority matrix', keywords: ['priority', 'impact', 'urgency', 'p1', 'p2', 'matrix'] },
   { section: 'case_policy', anchor: 'case-policy-suppression', label: 'Suppression rules', keywords: ['suppression', 'suppress', 'drop', 'mute', 'benign', 'noise'] },
   // Integrations › Knowledge & threat context
-  { section: 'knowledge', anchor: 'knowledge-rag', label: 'Retrieval (RAG)', keywords: ['rag', 'retrieval', 'top k', 'vector', 'bm25'] },
-  { section: 'knowledge', anchor: 'knowledge-threat', label: 'Threat-context panel', keywords: ['threat context', 'ioc', 'mitre', 'reputation'] },
-  { section: 'knowledge', anchor: 'knowledge-corpus', label: 'Corpus & procedures', keywords: ['runbooks', 'playbooks', 'resolved cases', 'knowledge corpus'] },
+  { section: 'knowledge', anchor: 'knowledge-rag', label: 'Retrieval', keywords: ['rag', 'retrieval', 'top k', 'vector', 'bm25'] },
+  { section: 'knowledge', anchor: 'knowledge-threat', label: 'Threat context panel', keywords: ['threat context', 'ioc', 'mitre', 'reputation'] },
+  { section: 'knowledge', anchor: 'knowledge-corpus', label: 'Knowledge corpus', keywords: ['resolved cases', 'knowledge corpus', 'mitre corpus', 'precedent'] },
+  // Integrations › Runbooks
+  { section: 'runbooks', anchor: 'runbooks-cases', label: 'Runbooks on cases', keywords: ['auto attach', 'attach', 'fallback', 'generic incident'] },
+  { section: 'runbooks', anchor: 'runbooks-publishing', label: 'Publishing and review', keywords: ['publish', 'approver', 'review', 'step approval', 'cadence'] },
   // Organization › Advanced
   { section: 'advanced', anchor: 'advanced-caps', label: 'Per-case caps', keywords: ['caps', 'budget', 'max tokens', 'max cost', 'concurrency'] },
   { section: 'advanced', anchor: 'advanced-killswitch', label: 'Kill switch', keywords: ['kill switch', 'pause', 'stop', 'disable'] },
+  { section: 'advanced', anchor: 'advanced-scans', label: 'Background scans', keywords: ['background scan', 'scans', 'automated scans', 'comprehensive ingestion'] },
   { section: 'advanced', anchor: 'advanced-allowlist', label: 'Auto-forward allowlist', keywords: ['allowlist', 'auto-forward'] },
-  { section: 'advanced', anchor: 'advanced-suppression', label: 'Suppression & rule catalog', keywords: ['suppression', 'rule catalog', 'detection rules'] },
+  { section: 'advanced', anchor: 'advanced-suppression', label: 'Suppression rules in retrieval', keywords: ['suppression', 'retrieval', 'trusted context'] },
   { section: 'advanced', anchor: 'advanced-lock', label: 'Settings lock', keywords: ['read-only', 'lock', 'settings lock'] },
   // Organization › Storage & retention
   { section: 'storage', anchor: 'storage-effective', label: 'Effective lifecycle', keywords: ['effective', 'backend', 'capability', 'ilm', 'status'] },
   { section: 'storage', anchor: 'storage-policy', label: 'Desired policy', keywords: ['hot days', 'warm days', '180 days', '90 days', 'glacier', 'archive'] },
-  { section: 'storage', anchor: 'storage-preview', label: 'Preview & safe scope', keywords: ['preview', 'apply', 'source logs', 'cases', 'audit', 'usage', 'safe scope'] },
+  { section: 'storage', anchor: 'storage-preview', label: 'Preview and apply', keywords: ['preview', 'apply', 'source logs', 'cases', 'audit', 'usage', 'safe scope'] },
   // Organization › Updates & releases
-  { section: 'release_updates', anchor: 'release-source', label: 'Source & channels', keywords: ['repository', 'github', 'stable', 'testing', 'branch', 'interval'] },
+  { section: 'release_updates', anchor: 'release-source', label: 'Source and channels', keywords: ['repository', 'github', 'stable', 'testing', 'branch', 'interval'] },
   { section: 'release_updates', anchor: 'release-observed', label: 'Observed revisions', keywords: ['update', 'version', 'commit', 'check', 'source revision'] },
 ];
 
 /* -------------------------------------------------------------- derived ---- */
 
-/** The stable section id union — DERIVED from the registry (single source). */
+/** The stable section id union, DERIVED from the registry (single source). */
 export type SectionId =
   | 'profile'
   | 'account_security'
@@ -587,6 +657,7 @@ export type SectionId =
   | 'customization'
   | 'general'
   | 'models'
+  | 'discounted-inference'
   | 'chat_agent'
   | 'keys'
   | 'detection'
@@ -601,6 +672,7 @@ export type SectionId =
   | 'roles'
   | 'admin_sessions'
   | 'knowledge'
+  | 'runbooks'
   | 'enrichment'
   | 'appearance'
   | 'release_updates'
@@ -629,9 +701,9 @@ export const SECTION_GROUPS_META: SectionGroupMeta[] = SECTION_GROUP_ORDER.map((
   sections: SETTINGS_SECTIONS_META.filter((s) => s.group === g.id),
 })).filter((g) => g.sections.length > 0);
 
-/** Sections that render their OWN full-width SettingsGrid (no outer Card chrome). */
-export const GRID_SECTIONS: ReadonlySet<string> = new Set(
-  SETTINGS_SECTIONS_META.filter((s) => s.grid).map((s) => s.id),
+/** Sections that take the full content width (tables and full-pane bodies); every other section is a 44rem form. */
+export const FULL_WIDTH_SECTIONS: ReadonlySet<string> = new Set(
+  SETTINGS_SECTIONS_META.filter((s) => s.width === 'full').map((s) => s.id),
 );
 
 /** Type guard: is a string a known section id? */
@@ -653,7 +725,7 @@ export const SECTION_KEYS: Record<string, readonly string[]> = Object.fromEntrie
 );
 
 /* ------------------------------------------------------- search / jump ----- *
- * Round-5 Sett-C — shared search helpers used by BOTH the Settings rail filter and the
+ * Round-5 Sett-C, shared search helpers used by BOTH the Settings rail filter and the
  * Cmd-K palette so their RBAC filter + matching stay identical (single source). */
 
 /** A Cmd-K / rail jump target: a whole section, or a specific card within one. */
@@ -666,7 +738,7 @@ export interface SettingsJumpTarget {
   /** The section's own title (for grouping / "in <section>" context). */
   sectionTitle: string;
   icon: LucideIcon;
-  /** The gating grant (mirrors the section perm) — the caller RBAC-filters on it. */
+  /** The gating grant (mirrors the section perm), the caller RBAC-filters on it. */
   perm?: SectionPerm;
 }
 
@@ -676,7 +748,7 @@ function sectionHaystack(s: SectionMeta): string {
 }
 
 /**
- * All jump targets — every section PLUS every setting-level card anchor — as a flat list,
+ * All jump targets, every section PLUS every setting-level card anchor, as a flat list,
  * in rail order. The caller (rail filter / palette) applies its own RBAC filter via each
  * target's `perm`, then substring-matches `label`/keywords. Section targets come first so a
  * bare section jump ranks above its cards.

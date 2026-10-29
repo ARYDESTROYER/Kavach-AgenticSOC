@@ -133,9 +133,10 @@ describe('Cases bulk actions (W7c)', () => {
     expect(card.className).toMatch(/overflow-x-auto/);
     expect(card.className).not.toMatch(/flex-wrap\b/);
 
-    // The page root (PageContainer, carries `space-y-6`) reserves bottom space while
-    // the bar is visible so the fixed pill never covers the last rows/pager.
-    const pageRoot = card.closest('body')?.querySelector('[class*="space-y-6"]');
+    // The page root (PageContainer, which owns the page rhythm since Round 14) reserves
+    // bottom space while the bar is visible so the fixed pill never covers the last
+    // rows or the pager.
+    const pageRoot = card.closest('body')?.querySelector('.page-rhythm');
     expect(pageRoot?.className).toMatch(/pb-28/);
   });
 

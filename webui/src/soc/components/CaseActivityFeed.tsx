@@ -1,15 +1,15 @@
 /**
- * CaseActivityFeed — the case's who-did-what timeline (#4).
+ * CaseActivityFeed: the case's who-did-what timeline (#4).
  *
  * Consumes `GET /api/cases/{id}/activity`: the authoritative audit rows for the case
  * UNIONed with the friendly `CaseActivityStore` feed, newest-first. The audit trail
  * stays the source of truth (#2); the friendly feed adds human-readable events.
  *
  * SECURITY (#9): every `actor`, `summary`, and `ref` value is operator-/log-derived
- * UNTRUSTED text — rendered EXCLUSIVELY as plain text nodes, never markup.
+ * UNTRUSTED text, rendered EXCLUSIVELY as plain text nodes, never markup.
  *
  * LIVE (Wave 4): optionally subscribes to the per-case SSE room
- * (`cases:{liveCaseId}`) via `useEventStream`. A `case.activity` frame is a NUDGE — it
+ * (`cases:{liveCaseId}`) via `useEventStream`. A `case.activity` frame is a NUDGE: it
  * carries only plain identifiers and never a verdict; the component calls the caller's
  * `onLiveActivity` so the parent refetches the authoritative feed (#3 untouched). This
  * is purely additive: with no `liveCaseId` (the default) the component is exactly the
@@ -17,11 +17,17 @@
  *
  * AGENT STEPS: the same ONE subscription also consumes `agent.step`, the channel the
  * pipeline publishes while an investigation is actually running. They are rendered as
- * TRANSIENT rows above the persisted timeline — a narration of the run in flight, never
+ * TRANSIENT rows above the persisted timeline, a narration of the run in flight, never
  * a record: nothing is decided from them (#3), they are dropped when the case changes,
  * and the authoritative feed still comes from the API. Folding them into the existing
  * stream (rather than opening a second `EventSource` on the same room) keeps one socket
  * per case, which matters because CaseDetail already mounts two components on it.
+ *
+ * PLAIN WORDS (Round 14, SPEC §4.9.4, ui-audit CM4): a row reads as a sentence. The
+ * `key=value` summaries some writers record ("rule=... action=request_approval
+ * proposal=...") are shown as one plain sentence (`caseActivityText.ts`), internal actor
+ * tokens as names ("Case manager"), and the recorded text stays one click away under
+ * Details, exactly as the audit log holds it (#2).
  */
 import * as React from 'react';
 
@@ -52,6 +58,8 @@ import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
 import { Badge } from '@/ui/badge';
 import { LoadingState } from '@/design-system';
 import { EmptyState } from '@/soc/components/EmptyState';
+import { SegmentedControl } from '@/soc/components/SegmentedControl';
+import { activityActorLabel, activityKindLabel, activityText } from '@/soc/components/caseActivityText';
 
 import type { CaseActivityItem } from '@/soc/pages/CaseDetail.api';
 
@@ -139,7 +147,7 @@ export const CaseActivityFeed: React.FC<CaseActivityFeedProps> = ({
   }, [liveCaseId]);
 
   // ONE subscription, two frame types:
-  //  * `case.activity` is a nudge — the payload is never rendered (#9); it only asks
+  //  * `case.activity` is a nudge: the payload is never rendered (#9); it only asks
   //    the parent to refetch the authoritative feed.
   //  * `agent.step` is the narration of a running investigation, rendered below.
   const onEvent = React.useCallback(
@@ -203,7 +211,7 @@ const LiveAgentSteps: React.FC<{ steps: AgentStep[] }> = ({ steps }) => {
             key={`${s.receivedAt}-${i}`}
             className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground"
           >
-            {/* UNTRUSTED, length-capped upstream — plain text nodes only (#9). */}
+            {/* UNTRUSTED, length-capped upstream: plain text nodes only (#9). */}
             <span className="font-medium text-foreground">{humanizeToken(s.step) || s.step}</span>
             <span>{s.status}</span>
             {s.detail ? <span className="truncate">{s.detail}</span> : null}
@@ -216,13 +224,34 @@ const LiveAgentSteps: React.FC<{ steps: AgentStep[] }> = ({ steps }) => {
 
 type ActivityActor = 'all' | 'human' | 'ai' | 'system';
 
-const AI_ACTOR_RE = /\b(agent|assistant|ai|llm|model|investigator|router|copilot)\b/i;
+const AI_ACTOR_RE = /\b(agent|assistant|ai|llm|model|investigator|router|formatter|copilot)\b/i;
 
-/** Who produced an activity row — a person, the AI, or the system (no actor). */
+/**
+ * The actor tokens the pipeline writes, split the way the Audit log splits them
+ * (`audit/events.ts` `AUDIT_ACTOR_TOKENS`, pinned equal by a test): the agent's own
+ * investigation steps (routing, runbook selection, the procedure record, the context it
+ * read) count as AI; the case manager's decision, automation rules, analyst policies and
+ * runbook lookups as System. Never a person.
+ */
+const AGENT_ACTOR_TOKENS: ReadonlySet<string> = new Set([
+  'router', 'investigator', 'formatter', 'standup', 'chat', 'overview', 'embedding', 'pipeline',
+  'playbook_selector', 'runbook_selector', 'procedure_provenance', 'context', 'reinvestigate', 'agent',
+]);
+const SYSTEM_ACTOR_TOKENS: ReadonlySet<string> = new Set([
+  'system', 'case_manager', 'analyst_policy', 'poller', 'ingest', 'tuner', 'automation',
+  'update_supervisor', 'notification', 'run_playbook', 'runbook_migration', 'scheduler', 'agentic_soc',
+]);
+
+/** Who produced an activity row: a person, the AI, or the system (no actor). */
 export function activityActorKind(item: Pick<CaseActivityItem, 'actor' | 'kind'>): Exclude<ActivityActor, 'all'> {
   const actor = String(item.actor || '').trim();
-  if (!actor || /^(system|scheduler|poller|case_manager)$/i.test(actor)) return 'system';
-  if (AI_ACTOR_RE.test(actor.replace(/[_-]+/g, ' ')) || /\b(llm|model)[_ ]call\b/i.test(String(item.kind || ''))) {
+  const token = actor.toLowerCase();
+  if (!actor || SYSTEM_ACTOR_TOKENS.has(token)) return 'system';
+  if (
+    AGENT_ACTOR_TOKENS.has(token) ||
+    AI_ACTOR_RE.test(actor.replace(/[_-]+/g, ' ')) ||
+    /\b(llm|model)[_ ]call\b/i.test(String(item.kind || ''))
+  ) {
     return 'ai';
   }
   return 'human';
@@ -241,26 +270,15 @@ const ActivityTimeline: React.FC<{ items: CaseActivityItem[] }> = ({ items }) =>
   const shown = actor === 'all' ? items : items.filter((it) => activityActorKind(it) === actor);
   return (
     <div className="space-y-3">
-      {/* Who-did-what filter (CM-8): a plain button group, one press per view. */}
-      <div role="group" aria-label="Show activity by" className="flex flex-wrap gap-1">
-        {ACTOR_FILTERS.map((option) => (
-          <button
-            key={option.value}
-            type="button"
-            aria-pressed={actor === option.value}
-            onClick={() => setActor(option.value)}
-            className={cn(
-              'h-7 rounded-md border px-2.5 text-xs transition-colors',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              actor === option.value
-                ? 'border-border-strong bg-secondary font-medium text-foreground'
-                : 'border-transparent text-muted-foreground hover:bg-muted hover:text-foreground',
-            )}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {/* Who-did-what filter (CM-8): the console's one in-module view switch. */}
+      <SegmentedControl<ActivityActor>
+        aria-label="Show activity by"
+        size="sm"
+        value={actor}
+        onValueChange={setActor}
+        options={ACTOR_FILTERS}
+        className="w-fit"
+      />
       {shown.length === 0 ? (
         <p className="text-xs text-muted-foreground">No activity of this kind yet.</p>
       ) : (
@@ -269,6 +287,7 @@ const ActivityTimeline: React.FC<{ items: CaseActivityItem[] }> = ({ items }) =>
         const meta = kindMeta(it.kind);
         const Icon = meta.icon;
         const refStr = summariseRef(it.ref);
+        const { text, recorded } = activityText(it);
         return (
           <li key={it.id || `${it.ts}-${i}`} className="relative">
             <span
@@ -282,32 +301,40 @@ const ActivityTimeline: React.FC<{ items: CaseActivityItem[] }> = ({ items }) =>
             </span>
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
               <Badge variant="outline" className="px-1.5 py-0 text-2xs">
-                {humanizeToken(it.kind) || 'Event'}
+                {activityKindLabel(it.kind)}
               </Badge>
-              {it.actor ? (
-                /* UNTRUSTED actor — plain text. */
-                <span className="text-sm font-medium text-foreground">{it.actor}</span>
-              ) : (
-                <span className="text-sm text-muted-foreground">system</span>
-              )}
-              <span className="ml-auto text-xs text-muted-foreground">
+              {/* UNTRUSTED actor: plain text; only known pipeline tokens get a name. */}
+              <span
+                className={cn(
+                  'text-sm',
+                  it.actor ? 'font-medium text-foreground' : 'text-muted-foreground',
+                )}
+              >
+                {activityActorLabel(it.actor)}
+              </span>
+              <span className="ml-auto whitespace-nowrap text-xs text-muted-foreground">
                 {it.ts ? humanizeAge(it.ts) : DASH}
               </span>
             </div>
-            {it.summary ? (
-              /* UNTRUSTED summary — plain text. */
+            {text ? (
+              /* UNTRUSTED summary (or the sentence made from it): plain text. */
               <p className="mt-0.5 whitespace-pre-wrap break-words text-xs text-muted-foreground">
-                {it.summary}
+                {text}
               </p>
             ) : null}
-            {refStr ? (
-              /* UNTRUSTED ref bits — plain text, mono — kept, but under a disclosure so the
-                 row reads as a sentence first (CM-8). */
-              <details className="mt-0.5 text-2xs text-muted-foreground/80">
-                <summary className="w-fit cursor-pointer rounded text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            {recorded || refStr ? (
+              /* UNTRUSTED recorded text and ref bits: plain text, mono, kept under a
+                 disclosure so the row reads as a sentence first (CM-8, CM4). */
+              <details className="mt-0.5 text-xs text-muted-foreground">
+                <summary className="w-fit cursor-pointer rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   Details
                 </summary>
-                <p className="mt-0.5 break-all font-mono">{refStr}</p>
+                {recorded ? (
+                  <p className="mt-0.5 whitespace-pre-wrap break-all font-mono" data-testid="activity-recorded">
+                    {recorded}
+                  </p>
+                ) : null}
+                {refStr ? <p className="mt-0.5 break-all font-mono">{refStr}</p> : null}
               </details>
             ) : null}
           </li>

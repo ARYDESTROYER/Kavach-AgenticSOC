@@ -47,11 +47,12 @@ function lastCap(update: ReturnType<typeof vi.fn>, key: string): unknown {
 
 describe('Advanced → per-case caps bounds', () => {
   // Round 14: the caps are the shared NumberField (no raw number input, so no `min`
-  // attribute to read); the floor is pinned by what a typed value commits.
+  // attribute to read); the floor is pinned by what a typed value commits. The labels
+  // are plain words with the unit inside the field ("Timeout", "s").
   it.each([
-    ['Max tool calls / case', '8', 'max_tool_calls'],
-    ['Max tokens / case', '20000', 'max_tokens'],
-    ['Timeout (seconds)', '120', 'timeout_seconds'],
+    ['Tool calls per case', '8', 'max_tool_calls'],
+    ['Tokens per case', '20000', 'max_tokens'],
+    ['Timeout', '120', 'timeout_seconds'],
   ])('%s enforces the backend floor and has no ceiling', (label, value, key) => {
     const update = renderSection();
     const input = screen.getByLabelText(label) as HTMLInputElement;
@@ -62,5 +63,30 @@ describe('Advanced → per-case caps bounds', () => {
     // No ceiling: a deployer above any vendor envelope keeps the value they typed.
     commit(input, '987654321');
     expect(lastCap(update, key)).toBe(987654321);
+  });
+});
+
+describe('Advanced → kill switch warning states the saved setting', () => {
+  const withSwitch = (on: boolean) =>
+    ({ ...PREFS, caps: { ...(PREFS.caps as object), kill_switch: on } }) as unknown as Preferences;
+
+  it('warns while the saved switch is on, even when the draft turns it off', () => {
+    render(
+      <TooltipProvider>
+        <AdvancedSection prefs={withSwitch(false)} persistedPrefs={withSwitch(true)} update={vi.fn()} />
+      </TooltipProvider>,
+    );
+    // Automation stays stopped on the server until the change is saved.
+    expect(screen.getByText('The kill switch is on')).toBeInTheDocument();
+  });
+
+  it('does not warn when only the draft turns it on', () => {
+    render(
+      <TooltipProvider>
+        <AdvancedSection prefs={withSwitch(true)} persistedPrefs={withSwitch(false)} update={vi.fn()} />
+      </TooltipProvider>,
+    );
+    expect(screen.queryByText('The kill switch is on')).not.toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Kill switch' })).toBeChecked();
   });
 });

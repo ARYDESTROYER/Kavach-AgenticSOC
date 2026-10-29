@@ -28,12 +28,13 @@
  * `_raw` only in a fenced code block. Read-only: nothing here writes.
  */
 import * as React from 'react';
-import { ArrowLeft, Layers, X } from 'lucide-react';
+import { ArrowLeft, X } from 'lucide-react';
 
 import type { NavOpts } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { answerOrigin, clearAnswerOrigin, type AnswerOrigin } from '@/soc/answer-origin';
+import { PANEL_PADDING } from '@/design-system';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { UnifiedLogsBody } from '@/soc/components/UnifiedLogsSheet';
@@ -378,13 +379,14 @@ export function LinkedQueryHeader({
       ref={sectionRef}
       tabIndex={-1}
       aria-label="Linked query"
-      className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border bg-surface px-4 py-3 focus-visible:outline-none"
+      // On the tinted panel, like every module (Round 14, C7).
+      className={cn('surface-panel flex flex-wrap items-start justify-between gap-3 focus-visible:outline-none', PANEL_PADDING)}
       data-testid="linked-logs"
     >
       {/* A real basis (20rem) so the actions wrap onto their own row on a narrow screen
           instead of squeezing the chips to a letter each. */}
       <div className="min-w-0 flex-[1_1_20rem] space-y-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Opened from a linked query</p>
+        <p className="text-sm font-medium text-muted-foreground">Opened from a linked query</p>
         {filtered ? (
           <ul className="flex flex-wrap items-center gap-2" aria-label="Exact filters" data-testid="logs-filter-chips">
             {chips.map((chip, index) => (
@@ -406,7 +408,7 @@ export function LinkedQueryHeader({
                     'inline-flex h-7 max-w-full items-center gap-1 rounded-sm border border-border bg-muted px-2 text-xs text-foreground transition-colors sm:max-w-[28rem]',
                     'hover:border-border-strong hover:bg-hover',
                     // On the panel the ring's offset is the panel's own colour (no halo).
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-panel',
                   )}
                 >
                   <span className="min-w-0 truncate">{chip.content}</span>
@@ -577,23 +579,20 @@ export default function UnifiedLogsPage({ opts: explicit }: UnifiedLogsPageProps
   );
   const filtered = Boolean(active && (active.rule !== undefined || active.severity || active.severityGte));
 
+  // The page header, with the browser's time range and Refresh in its controls slot
+  // (Round 14, C8 1): the explanation is its help tip, never a line under the title.
+  const help = filtered
+    ? 'Events matching exact filters, read again from each source with the same bounds.'
+    : active?.query
+      ? 'The exact query behind an answer, read again from the source with the same bounds.'
+      : active
+        ? // A link with only a window and a source (its last chip removed, say).
+          'Events over the linked window, read again with the same bounds.'
+        : 'Recent normalised events merged across every browse-capable source, newest first.';
+  const renderHeader = (controls: React.ReactNode) => <PageHeader title="Logs" help={help} controls={controls} />;
+
   return (
-    <PageContainer variant="wide" className="space-y-6">
-      <PageHeader
-        icon={Layers}
-        eyebrow="Triage"
-        title="Logs"
-        description={
-          filtered
-            ? 'Events matching exact filters, read again from each source with the same bounds.'
-            : active?.query
-              ? 'The exact query behind an answer, read again from the source with the same bounds.'
-              : active
-                ? // A link with only a window and a source (its last chip removed, say).
-                  'Events over the linked window, read again with the same bounds.'
-                : 'Recent normalised events merged across every browse-capable source, newest first.'
-        }
-      />
+    <PageContainer variant="wide">
       {active ? (
         <UnifiedLogsBody
           // A new link starts a fresh browser on its own query, window and source; a
@@ -611,6 +610,7 @@ export default function UnifiedLogsPage({ opts: explicit }: UnifiedLogsPageProps
           hideRuleColumn={active.rule !== undefined}
           onSources={onSources}
           onResult={onResult}
+          renderHeader={renderHeader}
           header={
             <LinkedQueryHeader
               link={active}
@@ -628,7 +628,7 @@ export default function UnifiedLogsPage({ opts: explicit }: UnifiedLogsPageProps
           }
         />
       ) : (
-        <UnifiedLogsBody autoFocusSearch={focusBrowser} />
+        <UnifiedLogsBody autoFocusSearch={focusBrowser} renderHeader={renderHeader} />
       )}
     </PageContainer>
   );

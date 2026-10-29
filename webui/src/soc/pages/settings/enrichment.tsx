@@ -1,5 +1,6 @@
 /**
- * Enrichment settings section (Round-5 Sett-A decomposition; Round-6 clobber fix).
+ * Enrichment settings section (Round-5 Sett-A decomposition; Round-6 clobber fix; Round 14
+ * grouped panels).
  *
  * The self-contained provider catalog editor manages the WHOLE `enrichment` config
  * lifecycle via IMMEDIATE settings PUTs (master enable/fusion + per-provider toggles +
@@ -17,11 +18,12 @@
 import * as React from 'react';
 import { toast } from 'sonner';
 
-import { SectionTitle, SubHeader, type SecProps } from './primitives';
+import { SettingRow, SettingsGroup, SettingsSection, type SecProps } from './primitives';
 import { EnrichmentProvidersEditor } from '@/soc/components/EnrichmentProvidersEditor';
 import { enrichmentApi } from '@/soc/components/EnrichmentProviders.api';
 import { NumberField } from '@/soc/components/NumberField';
 import { useCan } from '@/soc/components/Can';
+import { durationReading, withReading } from './duration';
 
 export function EnrichmentSection({ prefs }: SecProps) {
   const canManage = useCan('enrichment', 'manage');
@@ -30,47 +32,47 @@ export function EnrichmentSection({ prefs }: SecProps) {
   );
 
   // Commit-on-blur (NumberField clamps first), then persist via the immediate settings
-  // PUT — never the buffered page save — so it stays independent of the page dirty-map.
+  // PUT, never the buffered page save, so it stays independent of the page dirty-map.
   const saveTtl = React.useCallback(async (v: number) => {
     setCacheTtl(v);
     try {
       await enrichmentApi.setEnrichmentConfig({ cache_ttl_seconds: v });
-      toast.success('Cache TTL saved.');
+      toast.success('Cache lifetime saved.');
     } catch (e) {
-      toast.error(e instanceof Error && e.message ? e.message : 'Could not save the cache TTL.');
+      toast.error(e instanceof Error && e.message ? e.message : 'Could not save the cache lifetime.');
     }
   }, []);
 
   return (
-    <div className="space-y-6">
-      <SectionTitle
-        title="Enrichment"
-        sub="Choose the threat-intelligence providers used for indicators and control how long successful lookups stay cached."
-      />
-      <section className="space-y-4 border-t border-border/70 pt-4">
-        <SubHeader title="Caching" />
-        <NumberField
-          label="Cache TTL (seconds)"
-          description="How long an enriched indicator is cached in Redis before it is re-queried."
-          value={cacheTtl}
-          min={0}
-          step={60}
-          unit="s"
-          disabled={!canManage}
-          onChange={(v) => void saveTtl(v)}
-          className="max-w-xs"
-        />
-      </section>
-      {/* The full provider catalog (manifests + write-only secrets + try-a-lookup).
+    <SettingsSection title="Enrichment">
+      <SettingsGroup title="Caching" caption="Saved as soon as you leave the field.">
+        <SettingRow variant="field" controlWidth="9rem">
+          <NumberField
+            label="Cache lifetime"
+            description={withReading(
+              'How long an enriched indicator is cached before it is looked up again.',
+              durationReading(cacheTtl, 1),
+            )}
+            value={cacheTtl}
+            min={0}
+            step={60}
+            unit="s"
+            // Unbounded, so it would plan for 12rem; six digits and the unit fit 8rem.
+            size="sm"
+            // Saved at once: an emptied field must save nothing, never a lifetime of 0.
+            empty="keep"
+            disabled={!canManage}
+            onChange={(v) => void saveTtl(v)}
+          />
+        </SettingRow>
+      </SettingsGroup>
+      {/* The full provider catalog (manifests, write-only secrets, try-a-lookup).
           Self-contained: it fetches its own provider manifests and persists the master
-          enable/fusion + per-provider use_* toggles + secrets via its own co-located api
-          (immediate settings PUTs / the dedicated secrets route), so it manages its own
-          save lifecycle independent of the section dirty-map. `embedded` suppresses its
-          own heading since the section provides one. */}
-      <section className="space-y-4 border-t border-border/70 pt-4">
-        <SubHeader title="Providers" />
-        <EnrichmentProvidersEditor embedded />
-      </section>
-    </div>
+          enable and fusion, the per-provider use_* toggles and secrets through its own
+          api (immediate settings PUTs and the dedicated secrets route), so it manages its
+          own save lifecycle independent of the section dirty-map. `embedded` suppresses
+          its own heading since the section provides one; it lays out its own groups. */}
+      <EnrichmentProvidersEditor embedded />
+    </SettingsSection>
   );
 }

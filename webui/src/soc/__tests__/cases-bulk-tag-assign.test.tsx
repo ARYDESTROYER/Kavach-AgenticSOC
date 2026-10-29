@@ -74,6 +74,6 @@ describe('Cases durable tag/assign jobs', () => {
     renderCases({ initialTag: 'phishing' });
     expect(await screen.findByText('Bravo')).toBeInTheDocument();
     expect(screen.queryByText('Alpha')).toBeNull();
-    expect(screen.getByRole('textbox', { name: /search cases/i })).toHaveValue('phishing');
+    expect(screen.getByRole('searchbox', { name: /search cases/i })).toHaveValue('phishing');
   });
 });

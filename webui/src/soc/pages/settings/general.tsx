@@ -1,157 +1,186 @@
 /**
- * General & data scope settings section (Round-5 Sett-A decomposition).
+ * Data scope settings section (Round-5 Sett-A decomposition; Round 14 grouped panels).
  *
- * Lifted verbatim from the former `Settings.tsx` `GeneralSection`. The fallback
- * index pattern, entity field mapping, and durable-poller controls. Every value is
- * operator-entered (trusted).
+ * The connected sources (a row that opens the Sources page), the fallback index pattern
+ * and entity field mapping, the case evidence fields, and the durable poller. Every
+ * value is operator-entered (trusted).
  */
-import { Database, RefreshCw, ScanSearch, SlidersHorizontal } from 'lucide-react';
+import * as React from 'react';
 
-import { Button } from '@/ui/button';
-import { SettingsGrid, SettingsCard, type SettingsTOCItem } from '@/soc/components/SettingsGrid';
+import { api } from '@/lib/api';
+import { fmtNumber } from '@/lib/format';
 import { TagInput } from '@/soc/components/TagInput';
 
 import {
-  SectionShell,
   NumPref,
-  SwitchPref,
+  SettingRow,
+  SettingsGroup,
+  SettingsSection,
   TextPref,
   type NavigateFn,
   type SecProps,
 } from './primitives';
 
-const GENERAL_TOC: SettingsTOCItem[] = [
-  { anchor: 'general-sources', label: 'Data sources', icon: Database },
-  { anchor: 'general-mapping', label: 'Log scope & mapping', icon: SlidersHorizontal },
-  { anchor: 'general-evidence', label: 'Case evidence fields', icon: ScanSearch },
-  { anchor: 'general-polling', label: 'Polling', icon: RefreshCw },
-];
+/** The 16rem column a field path takes; numbers use the 8rem NumberField width. */
+const PATH_WIDTH = '16rem';
+const NUMBER_WIDTH = '8rem';
+
+/**
+ * "Connected sources" as one navigation row with its count ("5 of 5 enabled"), read
+ * from the Sources API so it matches the Sources page (Demo Mode included). While the
+ * count loads, or if it cannot be read, the row shows no value rather than a guess.
+ */
+function ConnectedSourcesRow() {
+  const [count, setCount] = React.useState<{ enabled: number; total: number } | null>(null);
+  React.useEffect(() => {
+    let live = true;
+    Promise.resolve()
+      .then(() => api.listSources())
+      .then((res) => {
+        if (!live) return;
+        const rows = Array.isArray(res?.sources) ? res.sources : [];
+        setCount({ enabled: rows.filter((row) => row.enabled !== false).length, total: rows.length });
+      })
+      .catch(() => {
+        if (live) setCount(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return (
+    <SettingRow
+      variant="link"
+      label="Connected sources"
+      help="SIEM, EDR, queue and push receivers. Each source can override the mapping below."
+      href="#/sources"
+      value={count ? `${fmtNumber(count.enabled)} of ${fmtNumber(count.total)} enabled` : undefined}
+    />
+  );
+}
 
 export function GeneralSection({
   prefs,
   update,
-  onNavigate,
 }: SecProps & { onNavigate?: NavigateFn }) {
+  const path = (label: string, value: string | undefined, onChange: (v: string) => void, help?: string) => (
+    <SettingRow variant="field" controlWidth={PATH_WIDTH} mono>
+      <TextPref label={label} value={value} help={help} onChange={onChange} />
+    </SettingRow>
+  );
   return (
-    <SectionShell
-      // Match the Round-5 rail label (SETTINGS_SECTIONS_META title = 'Data scope') so the
-      // nav item and the body heading agree; the longer phrasing lives in `sub` (mirrors
-      // the detection.tsx fix).
-      title="Data scope"
-      sub="The index pattern, the fields the agent maps entities from, and how the durable poller pulls new events."
-      toc={GENERAL_TOC}
-    >
-      <SettingsGrid>
-        <SettingsCard
-          anchor="general-sources"
-          title="Data sources"
-          icon={Database}
-          description="Connect and manage SIEM/EDR/queue sources (Elasticsearch, OpenSearch, Wazuh, push receivers) on the dedicated Sources page."
-          wide="full"
-          actions={
-            onNavigate ? (
-              <Button variant="outline" size="sm" onClick={() => onNavigate('sources')}>
-                <Database className="h-4 w-4" aria-hidden />
-                Open Sources
-              </Button>
-            ) : null
-          }
-        >
-          <p className="text-sm text-muted-foreground">
-            Add, edit, and test-connect log sources, and browse a source&apos;s logs.
-          </p>
-        </SettingsCard>
+    <SettingsSection title="Data scope">
+      <SettingsGroup
+        id="general-sources"
+        title="Data sources"
+        caption="Sources are added, tested and browsed on the Sources page."
+      >
+        <ConnectedSourcesRow />
+      </SettingsGroup>
 
-        <SettingsCard
-          anchor="general-mapping"
-          title="Default log scope & field mapping"
-          icon={SlidersHorizontal}
-          description="The fallback index pattern and field mapping used when a source does not override them."
-          wide="full"
-        >
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <TextPref label="Log index pattern" value={prefs.data_view_pattern} onChange={(v) => update({ data_view_pattern: v })} />
-            <TextPref label="Timestamp field" value={prefs.time_field} onChange={(v) => update({ time_field: v })} />
-            <TextPref label="Source IP field" value={prefs.source_ip_field} onChange={(v) => update({ source_ip_field: v })} />
-            <TextPref label="User field" value={prefs.user_field} onChange={(v) => update({ user_field: v })} />
-            <TextPref label="Host field" value={prefs.host_field} onChange={(v) => update({ host_field: v })} />
-            <TextPref label="Rule / module field" value={prefs.rule_field} onChange={(v) => update({ rule_field: v })} />
-            <TextPref label="Rule name field" value={prefs.rule_name_field} onChange={(v) => update({ rule_name_field: v })} />
-            <TextPref label="Severity field" value={prefs.severity_field} onChange={(v) => update({ severity_field: v })} />
-            <NumPref label="Severity threshold" value={prefs.severity_threshold} step={0.5} onChange={(v) => update({ severity_threshold: v })} />
-            <TextPref
-              label="Investigate lookback"
-              value={prefs.investigate_lookback}
-              help='Starting window for manual entity investigation, e.g. "now-24h".'
-              onChange={(v) => update({ investigate_lookback: v })}
-            />
-          </div>
-        </SettingsCard>
+      <SettingsGroup
+        id="general-mapping"
+        title="Log scope and field mapping"
+        caption="Used when a source does not set its own."
+      >
+        {path('Log index pattern', prefs.data_view_pattern, (v) => update({ data_view_pattern: v }))}
+        {path('Timestamp field', prefs.time_field, (v) => update({ time_field: v }))}
+        {path('Source IP field', prefs.source_ip_field, (v) => update({ source_ip_field: v }))}
+        {path('User field', prefs.user_field, (v) => update({ user_field: v }))}
+        {path('Host field', prefs.host_field, (v) => update({ host_field: v }))}
+        {path('Rule or module field', prefs.rule_field, (v) => update({ rule_field: v }))}
+        {path('Rule name field', prefs.rule_name_field, (v) => update({ rule_name_field: v }))}
+        {path('Severity field', prefs.severity_field, (v) => update({ severity_field: v }))}
+        <SettingRow variant="field" controlWidth={NUMBER_WIDTH}>
+          <NumPref
+            label="Severity threshold"
+            help="Events below this severity are not read."
+            value={prefs.severity_threshold}
+            step={0.5}
+            onChange={(v) => update({ severity_threshold: v })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth={PATH_WIDTH}>
+          <TextPref
+            label="Investigate lookback"
+            help="Starting window for a manual entity investigation, for example now-24h."
+            value={prefs.investigate_lookback}
+            onChange={(v) => update({ investigate_lookback: v })}
+          />
+        </SettingRow>
+      </SettingsGroup>
 
-        <SettingsCard
-          anchor="general-evidence"
-          title="Case evidence fields"
-          icon={ScanSearch}
-          description="The raw-record fields the agent is shown per event, and matched against by free-text search. One list drives both, so a field the agent can see is generally one it can then search for — numeric and IP fields are shown but not text-searched."
-          wide="full"
-        >
-          <div className="space-y-4">
-            <TagInput
-              label="Evidence fields"
-              value={prefs.evidence_fields ?? []}
-              onChange={(v) => update({ evidence_fields: v })}
-              placeholder="url.path"
-              description={
-                'Dotted paths added to each event\u2019s identity fields (id, ip, user, host, rule, severity). ' +
-                'Defaults to the ECS set that most often carries the verdict. Use "*" to send the whole record, ' +
-                'bounded only by the budget below; an empty list pins the narrow identity-only projection. ' +
-                'A source can override this via its own `evidence_fields` config key.'
-              }
-              validate={(tag) =>
-                tag.length > 128 ? 'Field paths are limited to 128 characters.' : null
-              }
-              max={64}
-            />
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              <NumPref
-                label="Evidence budget per event (characters)"
-                value={prefs.evidence_max_chars_per_event}
-                min={0}
-                max={16000}
-                step={100}
-                help={
-                  'Applies per event. When it binds the agent is told which fields were withheld; ' +
-                  'in whole-record ("*") mode, bulky rule metadata is dropped before evidence. ' +
-                  '0 sends identity fields only. Raising it multiplies across the 12 sample events ' +
-                  'an investigation reads.'
-                }
-                onChange={(v) => update({ evidence_max_chars_per_event: v })}
-              />
-            </div>
-          </div>
-        </SettingsCard>
+      <SettingsGroup
+        id="general-evidence"
+        title="Case evidence fields"
+        caption="The raw fields the agent sees for each event and searches with free text."
+      >
+        <SettingRow variant="field" wide mono>
+          <TagInput
+            label="Evidence fields"
+            value={prefs.evidence_fields ?? []}
+            onChange={(v) => update({ evidence_fields: v })}
+            placeholder="Add a field"
+            description="Dotted paths added to each event's identity fields. Use * for the whole record, bounded by the budget below; an empty list sends identity fields only. A source can set its own list."
+            validate={(tag) => (tag.length > 128 ? 'Field paths are limited to 128 characters.' : null)}
+            max={64}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth={NUMBER_WIDTH}>
+          <NumPref
+            label="Evidence budget per event"
+            help="Characters per event. 0 sends identity fields only. An investigation reads 12 sample events, so the budget multiplies."
+            value={prefs.evidence_max_chars_per_event}
+            min={0}
+            max={16000}
+            step={100}
+            onChange={(v) => update({ evidence_max_chars_per_event: v })}
+          />
+        </SettingRow>
+      </SettingsGroup>
 
-        <SettingsCard
-          anchor="general-polling"
-          title="Polling"
-          icon={RefreshCw}
-          description="The background poller pulls new events on a durable cursor (no skip, no dup). Off by default in some deployments."
-          wide="full"
-        >
-          <div className="space-y-4">
-            <SwitchPref
-              label="Polling enabled"
-              checked={Boolean(prefs.polling_enabled)}
-              onChange={(v) => update({ polling_enabled: v })}
-            />
-            <div className="grid gap-4 sm:grid-cols-3">
-              <NumPref label="Poll interval (seconds)" value={prefs.poll_interval_seconds} onChange={(v) => update({ poll_interval_seconds: v })} />
-              <NumPref label="Poll batch size" value={prefs.poll_batch_size} onChange={(v) => update({ poll_batch_size: v })} />
-              <NumPref label="Cold-start lookback (minutes)" value={prefs.cold_start_lookback_minutes} onChange={(v) => update({ cold_start_lookback_minutes: v })} />
-            </div>
-          </div>
-        </SettingsCard>
-      </SettingsGrid>
-    </SectionShell>
+      <SettingsGroup
+        id="general-polling"
+        title="Polling"
+        caption="The background poller reads new events on a durable cursor: nothing skipped, nothing twice."
+      >
+        <SettingRow
+          variant="switch"
+          label="Polling enabled"
+          help="Off in some deployments, where sources push events instead."
+          checked={Boolean(prefs.polling_enabled)}
+          onCheckedChange={(v) => update({ polling_enabled: v })}
+        />
+        <SettingRow variant="field" controlWidth={NUMBER_WIDTH}>
+          <NumPref
+            label="Poll interval"
+            help="Time between reads."
+            unit="s"
+            value={prefs.poll_interval_seconds}
+            min={1}
+            onChange={(v) => update({ poll_interval_seconds: v })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth={NUMBER_WIDTH}>
+          <NumPref
+            label="Poll batch size"
+            help="Events read per poll."
+            value={prefs.poll_batch_size}
+            min={1}
+            onChange={(v) => update({ poll_batch_size: v })}
+          />
+        </SettingRow>
+        <SettingRow variant="field" controlWidth={NUMBER_WIDTH}>
+          <NumPref
+            label="Cold-start lookback"
+            help="How far back the first read starts."
+            unit="min"
+            value={prefs.cold_start_lookback_minutes}
+            min={0}
+            onChange={(v) => update({ cold_start_lookback_minutes: v })}
+          />
+        </SettingRow>
+      </SettingsGroup>
+    </SettingsSection>
   );
 }

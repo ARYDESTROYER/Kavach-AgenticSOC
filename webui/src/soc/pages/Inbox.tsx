@@ -19,19 +19,15 @@
 import * as React from 'react';
 import {
   ArrowRight,
-  Bell,
-  BellOff,
   CheckCheck,
   Download,
   Inbox as InboxIcon,
   LoaderCircle,
-  RefreshCw,
   Settings2,
   Square,
   Trash2,
   X,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { useNavigateOptional, type Navigate } from '@/soc/router';
@@ -40,7 +36,7 @@ import { errorMessage } from '@/lib/errorMessage';
 import { api } from '@/lib/api';
 import { useEventStream } from '@/lib/useEventStream';
 import { cn } from '@/lib/cn';
-import { LoadingState } from '@/design-system';
+import { LoadingState, Panel, PANEL_GAP } from '@/design-system';
 import {
   inboxApi,
   CATEGORY_META,
@@ -50,7 +46,6 @@ import {
 
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
-import { ControlBar } from '@/soc/components/ControlBar';
 import { RefreshButton } from '@/soc/components/RefreshButton';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
@@ -58,8 +53,6 @@ import { SegmentedControl } from '@/soc/components/SegmentedControl';
 
 import { Button } from '@/ui/button';
 import { Badge, type BadgeProps } from '@/ui/badge';
-import { Card, CardContent } from '@/ui/card';
-import { Separator } from '@/ui/separator';
 import { Progress } from '@/ui/progress';
 import {
   Sheet,
@@ -204,11 +197,7 @@ const InboxRow: React.FC<{
               {humanizeToken(item.job_status)}
             </Badge>
           ) : null}
-          {unread ? (
-            <span className="text-2xs font-semibold uppercase tracking-wide text-primary">
-              New
-            </span>
-          ) : null}
+          {unread ? <span className="text-xs font-medium text-primary">New</span> : null}
           <span className="ml-auto shrink-0 text-xs text-muted-foreground">
             {humanizeAge(item.created_at)}
           </span>
@@ -237,7 +226,7 @@ const InboxRow: React.FC<{
           >
             <div className="flex items-center justify-between gap-3 text-xs text-muted-foreground">
               <span className="inline-flex items-center gap-1.5">
-                {activeJob ? <LoaderCircle className="size-3.5 animate-spin" aria-hidden /> : null}
+                {activeJob ? <LoaderCircle className="size-3.5 motion-safe:animate-spin" aria-hidden /> : null}
                 {relatedLlmBatch
                   ? activeJob
                     ? 'Related LLM Batch running'
@@ -328,26 +317,16 @@ const InboxRow: React.FC<{
 
 /* ------------------------------------------------------------- group block -- */
 
+/** One category of the "By category" view: a panel titled by the category. */
 const GroupBlock: React.FC<{
-  icon: LucideIcon;
   label: string;
   count: number;
   unread: number;
   children: React.ReactNode;
-}> = ({ icon: Icon, label, count, unread, children }) => (
-  <div className="space-y-2">
-    <div className="flex items-center gap-2 px-1">
-      <Icon className="size-4 text-muted-foreground" aria-hidden />
-      <h2 className="text-sm font-semibold tracking-tight text-foreground">{label}</h2>
-      <Badge variant="outline">{count}</Badge>
-      {unread > 0 ? <Badge variant="info">{unread} unread</Badge> : null}
-    </div>
-    <Card>
-      <CardContent className="p-0">
-        <ul className="divide-y divide-border">{children}</ul>
-      </CardContent>
-    </Card>
-  </div>
+}> = ({ label, count, unread, children }) => (
+  <Panel title={label} count={count} caption={unread > 0 ? `${unread} unread` : undefined} padding="none">
+    <ul className="divide-y divide-border/70 border-t border-border/70">{children}</ul>
+  </Panel>
 );
 
 /* -------------------------------------------------------------------- page -- */
@@ -616,9 +595,20 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
     return order.map((cat) => ({ cat, items: byCat.get(cat) ?? [] }));
   }, [items]);
 
-  const actions = (
-    <>
-      {/* group toggle */}
+  // The list's own view controls sit in its panel's title row (Round 14, C7); the page
+  // header keeps the count, Refresh and the one page action (Preferences).
+  const viewControls = (
+    <div role="group" aria-label="Inbox controls" className="flex flex-wrap items-center gap-2">
+      <SegmentedControl<'all' | 'unread'>
+        aria-label="Show"
+        size="sm"
+        value={unreadOnly ? 'unread' : 'all'}
+        onValueChange={(value) => setUnreadFilter(value === 'unread')}
+        options={[
+          { value: 'all', label: 'All' },
+          { value: 'unread', label: 'Unread' },
+        ]}
+      />
       <SegmentedControl<GroupMode>
         aria-label="Group inbox"
         size="sm"
@@ -629,45 +619,47 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
           { value: 'category', label: 'By category' },
         ]}
       />
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => setUnreadFilter(!unreadOnly)}
-        aria-pressed={unreadOnly}
-      >
-        {unreadOnly ? (
-          <Bell className="size-4" aria-hidden />
-        ) : (
-          <BellOff className="size-4" aria-hidden />
-        )}
-        {unreadOnly ? 'Unread only' : 'All'}
-      </Button>
       <Button variant="outline" size="sm" onClick={() => void markAllRead()} disabled={total === 0}>
         <CheckCheck className="size-4" aria-hidden />
         Mark all read
       </Button>
-      <Button variant="outline" size="sm" onClick={() => setPrefsOpen(true)}>
-        <Settings2 className="size-4" aria-hidden />
-        Preferences
-      </Button>
-      <RefreshButton onClick={() => void load()} refreshing={loading} />
-    </>
+    </div>
   );
 
-  return (
-    <PageContainer variant="wide" className="space-y-6">
-      <PageHeader
-        icon={InboxIcon}
-        eyebrow="Notifications"
-        title="Inbox"
-        description="Your in-app notification center — case events, mentions, assignments and approvals. Everything is recorded here; configure extra delivery channels under Preferences."
+  const rows = (list: InboxItem[]) =>
+    list.map((item) => (
+      <InboxRow
+        key={item.id}
+        item={item}
+        busy={busyIds.has(item.id)}
+        onMarkRead={markRead}
+        onDismiss={dismiss}
+        onOpenCase={openCase}
+        onOpenResult={openResult}
+        onCancelJob={cancelJob}
+        onDownloadJob={downloadJob}
       />
+    ));
 
-      <ControlBar
-        title="Inbox view"
-        meta={`${unreadCount} unread · ${total} total`}
-        controls={actions}
-        label="Inbox controls"
+  return (
+    <PageContainer variant="wide">
+      <PageHeader
+        title="Inbox"
+        help="Your in-app notifications about case events, mentions, assignments, approvals and background jobs, shown as plain text. Choose other delivery channels in Preferences."
+        controls={
+          <>
+            <span className="text-sm tabular-nums text-muted-foreground" data-testid="inbox-count">
+              {`${unreadCount.toLocaleString()} unread · ${total.toLocaleString()} total`}
+            </span>
+            <RefreshButton display="icon" label="Refresh inbox" onClick={() => void load()} refreshing={loading} />
+          </>
+        }
+        actions={
+          <Button variant="outline" size="sm" onClick={() => setPrefsOpen(true)}>
+            <Settings2 className="size-4" aria-hidden />
+            Preferences
+          </Button>
+        }
       />
 
       {error ? (
@@ -679,9 +671,9 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
         />
       ) : null}
 
-      {/* The blocking loader only appears on the FIRST load (no items yet). Refresh /
-          filter-toggle reloads keep the current list on screen (stale-while-revalidate)
-          with the Refresh button's own spinner signalling the in-flight fetch. */}
+      {/* The blocking loader only appears on the FIRST load (no items yet). Refresh and
+          filter reloads keep the current list on screen (stale-while-revalidate), with the
+          header Refresh's own spinner signalling the in-flight fetch. */}
       {error && items.length === 0 ? null : loading && items.length === 0 ? (
         <LoadingState
           label="Loading inbox"
@@ -690,112 +682,70 @@ export default function Inbox({ onNavigate }: InboxProps = {}) {
           shape="rows"
           shapeRows={5}
         />
-      ) : items.length === 0 && !hasMore ? (
-        <Card>
-          <EmptyState
-            icon={InboxIcon}
-            title={unreadOnly ? 'No unread notifications' : 'Your inbox is empty'}
-            description={
-              unreadOnly
-                ? 'You are all caught up. Switch to All to see read notifications.'
-                : 'Notifications about cases, mentions, assignments and approvals will appear here.'
-            }
-            action={
-              unreadOnly ? (
-                <Button variant="outline" size="sm" onClick={() => setUnreadFilter(false)}>
-                  <X className="size-4" aria-hidden />
-                  Show all
-                </Button>
-              ) : undefined
-            }
-          />
-        </Card>
-      ) : items.length === 0 ? (
-        // Page cleared but more exist server-side — the effect above is fetching them.
-        <Card>
-          <CardContent className="flex items-center justify-center gap-2 p-8 text-sm text-muted-foreground">
-            <RefreshCw className="size-4 animate-spin" aria-hidden />
-            Loading more…
-          </CardContent>
-        </Card>
-      ) : groupMode === 'category' ? (
-        <div className="space-y-6">
+      ) : groupMode === 'category' && items.length > 0 ? (
+        <div className={cn('flex flex-col', PANEL_GAP)}>
+          <div className="flex justify-end">{viewControls}</div>
           {grouped.map(({ cat, items: groupItems }) => (
             <GroupBlock
               key={cat}
-              icon={Bell}
               label={categoryLabel(cat)}
               count={groupItems.length}
               unread={groupItems.filter(isUnread).length}
             >
-              {groupItems.map((item) => (
-                <InboxRow
-                  key={item.id}
-                  item={item}
-                  busy={busyIds.has(item.id)}
-                  onMarkRead={markRead}
-                  onDismiss={dismiss}
-                  onOpenCase={openCase}
-                  onOpenResult={openResult}
-                  onCancelJob={cancelJob}
-                  onDownloadJob={downloadJob}
-                />
-              ))}
+              {rows(groupItems)}
             </GroupBlock>
           ))}
         </div>
       ) : (
-        <Card>
-          <CardContent className="p-0">
-            <ul className="divide-y divide-border">
-              {items.map((item) => (
-                <InboxRow
-                  key={item.id}
-                  item={item}
-                  busy={busyIds.has(item.id)}
-                  onMarkRead={markRead}
-                  onDismiss={dismiss}
-                  onOpenCase={openCase}
-                  onOpenResult={openResult}
-                  onCancelJob={cancelJob}
-                  onDownloadJob={downloadJob}
-                />
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
+        <Panel title="Notifications" padding="none" actions={viewControls} data-testid="inbox-panel">
+          {items.length === 0 && !hasMore ? (
+            <div className="px-4 pb-4 xl:px-5 3xl:px-6">
+              <EmptyState
+                compact
+                icon={InboxIcon}
+                title={unreadOnly ? 'No unread notifications' : 'Your inbox is empty'}
+                description={
+                  unreadOnly
+                    ? 'You are all caught up. Choose All to see read notifications.'
+                    : 'Notifications about cases, mentions, assignments and approvals will appear here.'
+                }
+                action={
+                  unreadOnly ? (
+                    <Button variant="outline" size="sm" onClick={() => setUnreadFilter(false)}>
+                      <X className="size-4" aria-hidden />
+                      Show all
+                    </Button>
+                  ) : undefined
+                }
+              />
+            </div>
+          ) : items.length === 0 ? (
+            // Page cleared but more exist server-side: the effect above is fetching them.
+            <p className="flex items-center justify-center gap-2 px-4 pb-6 pt-2 text-sm text-muted-foreground">
+              <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden />
+              Loading more…
+            </p>
+          ) : (
+            <ul className="divide-y divide-border/70 border-t border-border/70">{rows(items)}</ul>
+          )}
+        </Panel>
       )}
 
       {/* paging + footer counts */}
       {!loading && items.length > 0 ? (
         <div className="flex items-center justify-between gap-3">
           <p className="text-xs text-muted-foreground">
-            Showing {items.length} of {total} · {unreadCount} unread on this page
+            Showing {items.length.toLocaleString()} of {total.toLocaleString()} · {unreadCount.toLocaleString()} unread on
+            this page
           </p>
           {hasMore ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void loadMore()}
-              disabled={loadingMore}
-            >
-              {loadingMore ? (
-                <RefreshCw className="size-4 animate-spin" aria-hidden />
-              ) : null}
+            <Button variant="outline" size="sm" onClick={() => void loadMore()} disabled={loadingMore}>
+              {loadingMore ? <LoaderCircle className="size-4 motion-safe:animate-spin" aria-hidden /> : null}
               Load more
             </Button>
           ) : null}
         </div>
       ) : null}
-
-      <Separator />
-      <div className="flex items-start gap-2 text-xs text-muted-foreground">
-        <Bell className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-        <p>
-          Notification text is recorded as plain, escaped data and is never executed as
-          markup. The inbox is advisory — it never changes a case decision.
-        </p>
-      </div>
 
       {/* preferences slide-over */}
       <Sheet open={prefsOpen} onOpenChange={setPrefsOpen}>

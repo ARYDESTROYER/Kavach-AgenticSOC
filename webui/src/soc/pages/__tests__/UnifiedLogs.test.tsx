@@ -160,35 +160,39 @@ describe('Logs page', () => {
     expect(name.querySelector('.font-mono')).toBeNull();
   });
 
-  it('turns Live tail off for a fixed past window, with the reason, and keeps the aged-out hint', async () => {
+  // Round 14 (SPEC §4.9.3): Live is the time-range pill's Off or Live cadence in the page
+  // header, not a separate switch; a window fixed in the past offers no cadence at all.
+  const liveControl = () => screen.queryByRole('combobox', { name: /^Auto-refresh interval/ });
+
+  it('offers no Live for a fixed past window, says why, and keeps the aged-out hint', async () => {
     fetchUnifiedLogs.mockResolvedValue({ ...RESPONSE, count: 0, logs: [] });
     show('#/logs?logQuery=failed&from=2026-10-01T12%3A00%3A00Z&to=2026-10-02T12%3A00%3A00Z');
-    const live = await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' });
-    expect(live).toBeDisabled();
-    expect(live).toHaveAccessibleDescription(/fixed in the past/);
+    expect(await screen.findByTestId('unified-live-tail-reason')).toHaveTextContent(/fixed in the past/);
+    expect(liveControl()).toBeNull();
     expect(await screen.findByText(/Older events may have aged out of the source since this link was made/)).toBeInTheDocument();
   });
 
-  it('keeps Live tail available for a relative linked window', async () => {
+  it('keeps Live available for a relative linked window', async () => {
     show('#/logs?logQuery=failed&from=now-24h');
-    expect(await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' })).toBeEnabled();
+    await screen.findByRole('button', { name: 'Time range: Last 24 hours' });
+    expect(liveControl()).toHaveAccessibleName('Auto-refresh interval: Off');
+    expect(screen.queryByTestId('unified-live-tail-reason')).toBeNull();
   });
 
-  it('keeps Live tail available for a relative window that is not a preset', async () => {
+  it('keeps Live available for a relative window that is not a preset', async () => {
     // `now-6h` is no time-range preset, so it opens as a one-off linked window; it is
     // relative and open-ended, so it still sees new events.
     show('#/logs?logQuery=failed&from=now-6h');
     await waitFor(() =>
       expect(fetchUnifiedLogs).toHaveBeenCalledWith(expect.objectContaining({ from: 'now-6h', to: 'now' })),
     );
-    const live = await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' });
-    expect(live).toBeEnabled();
-    expect(live).not.toHaveAccessibleDescription(/fixed in the past/);
+    await waitFor(() => expect(liveControl()).toBeInTheDocument());
+    expect(screen.queryByTestId('unified-live-tail-reason')).toBeNull();
   });
 
-  it('keeps Live tail available for an absolute start with an open end', async () => {
+  it('keeps Live available for an absolute start with an open end', async () => {
     show('#/logs?logQuery=failed&from=2026-10-01T12%3A00%3A00Z');
-    expect(await screen.findByRole('switch', { name: 'Auto-refresh every 10 seconds' })).toBeEnabled();
+    await waitFor(() => expect(liveControl()).toBeInTheDocument());
   });
 
   it('drops the link on "Browse all logs"', async () => {
@@ -345,8 +349,8 @@ describe('Logs page: exact filters', () => {
     expect(await screen.findByTestId('logs-matched')).toHaveTextContent(
       /^381 events · 2026-10-05 00:00 → 2026-10-08 00:00 UTC · Sources/,
     );
-    await user.click(screen.getByRole('combobox', { name: 'Time range' }));
-    await user.click(await screen.findByRole('option', { name: 'Last 7 days' }));
+    await user.click(screen.getByRole('button', { name: /^Time range: / }));
+    await user.click(await screen.findByRole('button', { name: /^Last 7 days/ }));
     await waitFor(() => expect(fetchUnifiedLogs).toHaveBeenLastCalledWith(expect.objectContaining({ from: 'now-7d', rule: RULE })));
     await waitFor(() => expect(screen.getByTestId('logs-matched')).toHaveTextContent(/^381 events · last 7 days · Sources/));
   });

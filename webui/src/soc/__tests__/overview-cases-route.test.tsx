@@ -157,7 +157,7 @@ describe('Overview → Cases through the real router', () => {
     renderApp();
     const status = await drillThrough('View resolved cases', '#/cases?status=__terminal__');
     await waitFor(() => expect(screen.getByText('ResolvedCase')).toBeInTheDocument());
-    expect(status.textContent).toBe('Terminal (resolved or closed)');
+    expect(status.textContent).toBe('Resolved or closed');
     expect(screen.getByText('ClosedCase')).toBeInTheDocument();
     expect(screen.queryByText('OpenCase')).toBeNull();
   });
