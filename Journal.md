@@ -11694,3 +11694,10 @@
 - Tests: gates agent full backend 11,788 tests, 11,776 passed, 6 failed (5 sandbox proxy/AWS env, 1 WP-DOC records), 6 skipped; ruff fatal clean; OpenAPI and generated types byte-identical to a fresh dump; tsc 0, eslint 0/0, design gates pass; Vitest 495 related files, 15 failures none from this run (9 load flakes passing alone, 6 from in-flight Wave D packages); entry chunk 328,442 B (B1 took 2,448 B off).
 - Status: done.
 - Next: Wave D (r5w1, r5w2) running; then a leftover fix package (typed lifecycle jobs, stale mocks, audit export destination, legacy resolver order in the editor, Demo case rule ids); WP-DOC; WP-GEN.
+
+### 2026-10-29 15:10Z — orchestrator — Round 14 run r5w1-pages (W8b, W9a)
+- Context: Round 14 ask 8, Wave D page migrations (SPEC §7.6 rows W8b and W9a).
+- Did: W8b migrated Cases, Logs, the Case Manager frame (with the Closed by filter that replaces the Scans page), Case activity in plain sentences, Campaigns, Reports, Inbox, Jobs, Approvals, Entity investigation and Workspace; W9a rebuilt Settings as grouped panels with the shared Settings primitives, added the Runbooks and Discounted inference sections, and migrated the embedded account and security pages. 22 and 26 review findings, all confirmed ones fixed, then re-reviewed. Orchestrator repinned one legacy Cases label assertion. Commit 5f4f5a5.
+- Tests: gates agent: tsc 0, eslint 0/0, design gates pass, docs check pass; Vitest 439 related files under the strict wrapper, remaining failures console-map contract (regeneration at WP-GEN) and the repinned label; entry chunk 331,296 B, no W8b or W9a module in the entry.
+- Status: done.
+- Next: r5w2 (W8a, W9b, FX3b) finishing; FX3 leftover package; WP-DOC; WP-GEN.
