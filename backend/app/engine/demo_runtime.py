@@ -96,6 +96,12 @@ DEMO_EXTRA_RULE_RUNBOOKS: dict[str, str] = {
     "LP QRadar: low-confidence scanner offense": "scanning-reconnaissance",
     "100190": "scanning-reconnaissance",
     "Entra ID Protection: low-confidence unfamiliar sign-in properties": "compromised-account",
+    # Routine telemetry the seeded false-positive cases carry (Round 14: seeded cases
+    # name rules their Demo source really raises), mapped to the runbook a person
+    # would reach for, so they do not fall to the generic incident runbook.
+    "osquery_process_event": "malware-endpoint",
+    "web_access": "compromised-account",
+    "Entra sign-in": "compromised-account",
 }
 
 

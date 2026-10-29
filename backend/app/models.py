@@ -5422,6 +5422,12 @@ class RunbookLibrary(BaseModel):
 
     runbooks: list[RunbookSummary] = Field(default_factory=list)
     migration: RunbookMigrationNotice | None = None
+    #: Retired procedure id to the runbook id the one-shot migration gave it (the
+    #: marker's ``id_map`` for the procedure sources, ``runbook_migration.
+    #: migrated_procedure_ids``): what a "Run a runbook" automation rule saved with a
+    #: retired procedure id attaches at fire time. Empty before the migration, when
+    #: nothing was migrated, or when the marker cannot be read.
+    migrated_procedures: dict[str, str] = Field(default_factory=dict)
 
 
 class RunbookIssue(BaseModel):

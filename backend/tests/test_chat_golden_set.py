@@ -497,9 +497,11 @@ INVESTIGATION_ROUTES = [
       params=(P("search_logs", user="jdoe@corp.example"),),
       forbid=(*_NO_CASE_PICK, P("lookup_indicator", indicator="corp.example"),
               P("search_logs", contains="corp.example"))),
-    G("Investigate rule demo_impossible_travel this week", tools=("case_stats",),
-      params=(P("case_stats", rule="demo_impossible_travel", group_by="verdict", window="this_week"),),
-      forbid=_NO_CASE_PICK, contains=("from rule `demo_impossible_travel` this week",)),
+    # The HITL pair's Splunk case carries Splunk's impossible-travel rule (Round 14
+    # FX3b2: a seeded case carries the rule its Demo source raises), opened this week.
+    G("Investigate rule LP-ES-RISK-1004 this week", tools=("case_stats",),
+      params=(P("case_stats", rule="LP-ES-RISK-1004", group_by="verdict", window="this_week"),),
+      forbid=_NO_CASE_PICK, contains=("from rule `LP-ES-RISK-1004` this week",)),
     G("Investigate source Wazuh", tools=("source_health", "search_logs"),
       params=(P("search_logs", source_id="demo-wazuh"),), forbid=_NO_CASE_PICK,
       contains=("Recent events from `Wazuh Manager (endpoint telemetry)`",)),
@@ -1046,7 +1048,10 @@ OUT_OF_SCOPE = [
     G("Tell me the story of this case", tools=("get_case",), fields={"case_id": "demo-00000539-0004"},
       # A8: the case's display number leads (every seeded Demo case has one), then what
       # it is about.
-      contains=("re:^\\*\\*`CASE-\\d{6}`\\*\\* \\(`identity_signin` on user `dsingh`\\)",),
+      # The seeded case carries the rule its Demo source raises, and Entra ID names the
+      # person by the user principal name its sign-in records carry (Round 14 FX3b2).
+      contains=("re:^\\*\\*`CASE-\\d{6}`\\*\\* \\(`Entra ID Protection: atypical travel sign-in` on user "
+                "`dsingh@lumenpay\\.example`\\)",),
       absent=("I can't write",)),
     G("Tell me the story of what happened today", any_of=("search_cases",), absent=("I can't write",)),
     # A response answer names only what reads as a host or user name, never "of" or "out".
@@ -3075,9 +3080,13 @@ def test_starter_answers_offer_chips_about_what_they_show(starter_client: TestCl
     ("What did the AI spend this week?", r"AI spend, this week"),
     ("Cases by severity in the last 7 days", r"Cases by severity, last 7 days"),
     # H1: the case's rule, never one generic title for every investigation, and
-    # (Round 13 polish) the case's display number first, the rule id as written.
-    ("Investigate case demo-00000539-0004", r"CASE-\d{6} identity_signin case"),
-    ("Give me an investigation brief for demo-00000539-0004", r"CASE-\d{6} brief, identity_signin"),
+    # (Round 13 polish) the case's display number first, the rule id as written. The
+    # seeded case carries the rule its Demo source raises (Round 14 FX3b2): a Splunk
+    # risk rule id rides; an Entra rule name with spaces is never title text, so that
+    # case falls back to its number alone.
+    ("Investigate case demo-00000539-0005", r"CASE-\d{6} LP-ES-RISK-1006 case"),
+    ("Give me an investigation brief for demo-00000539-0005", r"CASE-\d{6} brief, LP-ES-RISK-1006"),
+    ("Investigate case demo-00000539-0004", r"CASE-\d{6} investigation"),
     # Product help names the console page it points to.
     ("How do I connect a new log source?", r"(?!Console help$)[A-Z][\w &-]* help"),
     ("Create a report on case volume and false positives for the last 7 days",

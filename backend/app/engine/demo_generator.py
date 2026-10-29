@@ -743,31 +743,41 @@ def hits_to_raw(
 # --------------------------------------------------------------------------- #
 # Historical case spread (backdated finished cases for "old data" surfaces)
 # --------------------------------------------------------------------------- #
+# Each template names the detection its case carries (``signal``): a storyline's own
+# detection (``story``), a source's low-confidence native alert (``alert``), or an
+# anomaly flagged in a source's routine telemetry (``telemetry``). The case's rule is
+# the one its Demo source raises for that detection (``demo_sources.
+# seeded_detection_rule``), so the rule sheet, Logs and the runbook lookups find the
+# case's own rows (``seed_demo_case_evidence``). A storyline case rotates over every
+# source, as the storyline itself does; the others stay on the sources (``sources``)
+# that raise a fitting signal and take them in turn (``seeded_case_detection``). A
+# person's case on Entra ID names the person by the user principal name Entra's
+# sign-in records carry (``demo_sources.source_user_name``), as a live Entra case does.
 _HIST_TEMPLATES: tuple[dict[str, Any], ...] = (
-    {"rule": "demo_rdp_bruteforce", "rname": "RDP brute-force attempt", "et": EntityType.IP,
+    {"signal": "story", "story": "rdp_bruteforce", "rname": "RDP brute-force attempt", "et": EntityType.IP,
      "verdict": Verdict.TRUE_POSITIVE, "disp": Disposition.TRUE_POSITIVE,
      "status": CaseStatus.RESOLVED, "risk": 78.0, "mitre": ["T1110"],
      "tags": ["brute-force", "rdp"]},
-    {"rule": "demo_sqli_webshell", "rname": "SQL injection (OWASP CRS 942xxx)", "et": EntityType.IP,
-     "verdict": Verdict.TRUE_POSITIVE, "disp": Disposition.TRUE_POSITIVE,
+    {"signal": "story", "story": "sqli_webshell", "rname": "SQL injection (OWASP CRS 942xxx)",
+     "et": EntityType.IP, "verdict": Verdict.TRUE_POSITIVE, "disp": Disposition.TRUE_POSITIVE,
      "status": CaseStatus.CLOSED, "risk": 82.0, "mitre": ["T1190"], "tags": ["web", "sqli"]},
-    {"rule": "edr_heartbeat", "rname": "Endpoint telemetry anomaly", "et": EntityType.HOST,
+    {"signal": "telemetry", "sources": ("wazuh",), "rname": "Endpoint telemetry anomaly", "et": EntityType.HOST,
      "verdict": Verdict.FALSE_POSITIVE, "disp": Disposition.FALSE_POSITIVE,
      "status": CaseStatus.CLOSED, "risk": 18.0, "mitre": [], "tags": ["noise"]},
-    {"rule": "web_apache_access", "rname": "Scanner activity", "et": EntityType.IP,
+    {"signal": "alert", "sources": ("splunk", "qradar", "wazuh"), "rname": "Scanner activity", "et": EntityType.IP,
      "verdict": Verdict.FALSE_POSITIVE, "disp": Disposition.BENIGN,
      "status": CaseStatus.CLOSED, "risk": 22.0, "mitre": ["T1595"], "tags": ["scanner"]},
-    {"rule": "identity_signin", "rname": "Suspicious mailbox sign-in", "et": EntityType.USER,
+    {"signal": "story", "story": "impossible_travel", "rname": "Suspicious mailbox sign-in", "et": EntityType.USER,
      "verdict": Verdict.NEEDS_HUMAN, "disp": Disposition.SUSPICIOUS,
      "status": CaseStatus.ESCALATED, "risk": 64.0, "mitre": ["T1078"], "tags": ["identity"]},
-    {"rule": "loan_api_access", "rname": "Outbound data anomaly", "et": EntityType.USER,
+    {"signal": "story", "story": "insider_staging", "rname": "Outbound data anomaly", "et": EntityType.USER,
      "verdict": Verdict.NEEDS_HUMAN, "disp": Disposition.UNDETERMINED,
      "status": CaseStatus.ON_HOLD, "risk": 55.0, "mitre": ["T1048"], "tags": ["exfil"]},
-    {"rule": "waf_allow", "rname": "WAF blocked exploit", "et": EntityType.IP,
+    {"signal": "story", "story": "sqli_webshell", "rname": "WAF blocked exploit", "et": EntityType.IP,
      "verdict": Verdict.TRUE_POSITIVE, "disp": Disposition.TRUE_POSITIVE,
      "status": CaseStatus.RESOLVED, "risk": 71.0, "mitre": ["T1190"], "tags": ["waf"]},
-    {"rule": "web_portal_auth", "rname": "Borrower-portal anomaly", "et": EntityType.USER,
-     "verdict": Verdict.FALSE_POSITIVE, "disp": Disposition.DUPLICATE,
+    {"signal": "telemetry", "sources": ("splunk", "entra"), "rname": "Borrower-portal anomaly",
+     "et": EntityType.USER, "verdict": Verdict.FALSE_POSITIVE, "disp": Disposition.DUPLICATE,
      "status": CaseStatus.CLOSED, "risk": 12.0, "mitre": [], "tags": ["duplicate"]},
 )
 
@@ -816,19 +826,49 @@ _VERDICT_TEXT: dict[Verdict, str] = {
 }
 
 
+def seeded_case_detection(tmpl: dict[str, Any], idx: int, *, ordinal: int) -> tuple[str, str, str]:
+    """``(source key, source id, rule)`` of a seeded case built from ``tmpl``.
+
+    A storyline case rotates over every Demo source by its place in the spread
+    (``idx``), as the storyline does. Any other takes its template's ``sources`` in
+    turn by its own ordinal (``ordinal``: the how-many-th case of this template), so
+    every listed source is reached whatever the template's position in the cycle (a
+    rotation on ``idx`` would pin a template whose position shares a factor with the
+    length of its ``sources`` to some of them forever). The rule is what that source
+    raises for the template's signal (``demo_sources.seeded_detection_rule``), never a
+    Demo-only name. Pure and deterministic."""
+    from .demo_sources import DEMO_SOURCE_SPECS, seeded_detection_rule
+
+    keys = tuple(tmpl.get("sources") or ())
+    if keys:
+        key = keys[ordinal % len(keys)]
+        source_id = DEMO_SOURCE_SPECS[key].source_id
+    else:
+        source_id = DEMO_SOURCE_IDS[idx % len(DEMO_SOURCE_IDS)]
+        key = next(k for k, spec in DEMO_SOURCE_SPECS.items() if spec.source_id == source_id)
+    rule, _name = seeded_detection_rule(str(tmpl["signal"]), key, tmpl.get("story"))
+    return key, source_id, rule
+
+
 def _hist_case(
     rng: random.Random, org: Org, tmpl: dict[str, Any], *, cid: str, sig_suffix: str,
-    created_ms: int, first_seen_ms: int, idx: int,
+    created_ms: int, first_seen_ms: int, idx: int, ordinal: int,
     status: CaseStatus | None = None,
 ) -> Case:
     """Build ONE finished/near-finished demo Case from a template (shared by the
-    historical spread and the recent pre-seed). ``status`` overrides the template's."""
+    historical spread and the recent pre-seed). ``status`` overrides the template's.
+    The case's rule is the one its Demo source raises (:func:`seeded_case_detection`;
+    ``ordinal`` is the how-many-th case of this template), and a person is named as
+    that source's records name them (``demo_sources.source_user_name``)."""
+    from .demo_sources import source_user_name
+
+    source_key, source_id, rule = seeded_case_detection(tmpl, idx, ordinal=ordinal)
     created = _iso(created_ms)
     et: EntityType = tmpl["et"]
     if et == EntityType.IP:
         entity_val = f"{rng.choice(_BAD_IP_PREFIXES)}.{rng.randint(2, 250)}"
     elif et == EntityType.USER:
-        entity_val = rng.choice(org.employees).user
+        entity_val = source_user_name(source_key, rng.choice(org.employees).user)
     else:
         entity_val = rng.choice([h.name for h in org.hosts])
     sig = f"demo-sig-{et.value}-{entity_val}-{sig_suffix}"
@@ -876,11 +916,14 @@ def _hist_case(
         updated_at=created,
         source_surface=SourceSurface.AUTOMATED_SCAN if idx % 2 == 0 else SourceSurface.INVESTIGATE,
         origin_surface=SourceSurface.AUTOMATED_SCAN if idx % 2 == 0 else SourceSurface.INVESTIGATE,
-        rule_ids=[tmpl["rule"]],
+        rule_ids=[rule],
         entity=Entity(type=et, value=entity_val),
-        source_id=DEMO_SOURCE_IDS[idx % len(DEMO_SOURCE_IDS)],
-        source_name=DEMO_SOURCE_NAMES[DEMO_SOURCE_IDS[idx % len(DEMO_SOURCE_IDS)]],
-        member_event_ids=[f"demo-hist-{idx}-{j}" for j in range(rng.randint(2, 9))],
+        source_id=source_id,
+        source_name=DEMO_SOURCE_NAMES[source_id],
+        # Unique across the whole seed (the historical spread and the recent pre-seed
+        # number their cases from 0 alike): each id is also the id of the case's own row
+        # its Demo source keeps (``demo_sources.NativeDemoSource.record_case_history``).
+        member_event_ids=[f"demo-hist-{sig_suffix}-{j}" for j in range(rng.randint(2, 9))],
         first_seen_millis=first_seen_ms,
         risk_score=risk,
         risk_breakdown=_demo_risk_breakdown(risk),
@@ -901,7 +944,7 @@ def _hist_case(
         tags=list(tmpl["tags"]),
         comments=comments,
         assignee=analyst if st in (CaseStatus.ESCALATED, CaseStatus.ON_HOLD) else "",
-        title=f"{et.value}:{entity_val} · {tmpl['rule']}",
+        title=f"{et.value}:{entity_val} · {rule}",
         summary=f"{tmpl['rname']} ({_VERDICT_TEXT[verdict]}).",
         token_cost=round(rng.random() * 0.04, 6),
         notifications_sent=notifications_sent,
@@ -943,7 +986,7 @@ def generate_historical_cases(
         cid = f"demo-{seed_tag}-{i:04d}"
         cases.append(_hist_case(
             rng, org, tmpl, cid=cid, sig_suffix=str(i),
-            created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i,
+            created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i, ordinal=i // len(_HIST_TEMPLATES),
         ))
     return cases
 
@@ -955,15 +998,15 @@ def generate_historical_cases(
 # one FALSE_POSITIVE — with realistic still-open statuses (not all terminal) so the
 # console visibly has fresh work sitting on top of the auto-closed noise.
 _PRESEED_TEMPLATES: tuple[tuple[dict[str, Any], CaseStatus], ...] = (
-    ({"rule": "demo_phishing_chain", "rname": "Phishing → ATO on borrower portal",
+    ({"signal": "story", "story": "phishing_chain", "rname": "Phishing → ATO on borrower portal",
       "et": EntityType.USER, "verdict": Verdict.TRUE_POSITIVE, "disp": Disposition.TRUE_POSITIVE,
       "status": CaseStatus.ESCALATED, "risk": 88.0, "mitre": ["T1566", "T1078"],
       "tags": ["ato", "phishing", "escalate"]}, CaseStatus.ESCALATED),
-    ({"rule": "demo_impossible_travel", "rname": "Impossible-travel admin sign-in",
+    ({"signal": "story", "story": "impossible_travel", "rname": "Impossible-travel admin sign-in",
       "et": EntityType.USER, "verdict": Verdict.NEEDS_HUMAN, "disp": Disposition.SUSPICIOUS,
       "status": CaseStatus.INVESTIGATING, "risk": 62.0, "mitre": ["T1078"],
       "tags": ["identity", "needs-human"]}, CaseStatus.INVESTIGATING),
-    ({"rule": "web_apache_access", "rname": "KYC-form XSS probe (blocked)",
+    ({"signal": "alert", "sources": ("splunk", "qradar"), "rname": "KYC-form XSS probe (blocked)",
       "et": EntityType.IP, "verdict": Verdict.FALSE_POSITIVE, "disp": Disposition.BENIGN,
       "status": CaseStatus.NEW, "risk": 20.0, "mitre": [],
       "tags": ["waf", "benign"]}, CaseStatus.NEW),
@@ -998,7 +1041,8 @@ def generate_recent_preseed(
         cid = f"demo-recent-{seed_tag}-{i:04d}"
         cases.append(_hist_case(
             rng, org, tmpl, cid=cid, sig_suffix=f"recent-{i}",
-            created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i, status=status,
+            created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i,
+            ordinal=i // len(_PRESEED_TEMPLATES), status=status,
         ))
     hits = generate_recent_events(
         rng, org, from_millis=now_millis - window_ms, to_millis=now_millis,
@@ -1038,7 +1082,9 @@ def generate_capability_seed_cases(
       boundary → the pair is always in one campaign bucket). Firing threshold-automation
       on each opens a demo HITL Proposal (verdict=NEEDS_HUMAN → request_approval); the
       shared entity also folds the pair into >= 1 Campaign in the synchronous capability
-      pass.
+      pass. Each carries the impossible-travel rule its own Demo source raises
+      (``demo_sources.seeded_detection_rule``), so its rule sheet, Logs and runbook
+      lookups read the rows ``seed_demo_case_evidence`` keeps for it.
     * ``tuner_cases`` — ``tuner_fp_count`` CLOSED / FALSE_POSITIVE cases all keyed on the
       SAME unique rule (:data:`DEMO_TUNER_RULE`), each with a DISTINCT benign entity and
       NO MITRE (so they never themselves form a campaign). Comfortably above the tuner's
@@ -1049,6 +1095,8 @@ def generate_capability_seed_cases(
     ~now (inside the campaign's daily window AND the tuner's trailing window). The id
     stem is derived from ``seed`` so resets and separate Python processes reproduce
     identical facts; ``run_id`` remains only an isolation tag on the throwaway store."""
+    from .demo_sources import source_user_name
+
     del run_id
     rng = random.Random(seed ^ 0xCAB1E)
     tag8 = f"{seed & 0xFFFFFFFF:08x}"
@@ -1058,6 +1106,8 @@ def generate_capability_seed_cases(
     hitl_iso = _iso(hitl_ms)
     hitl_cases: list[Case] = []
     for i in range(2):
+        source_key, source_id, hitl_rule = seeded_case_detection(
+            {"signal": "story", "story": "impossible_travel"}, i, ordinal=i)
         hitl_cases.append(Case(
             case_id=f"demo-hitl-{tag8}-{i:04d}",
             cluster_signature=f"demo-cap-hitl-{i}",
@@ -1065,10 +1115,10 @@ def generate_capability_seed_cases(
             created_at=hitl_iso, updated_at=hitl_iso,
             source_surface=SourceSurface.AUTOMATED_SCAN,
             origin_surface=SourceSurface.AUTOMATED_SCAN,
-            rule_ids=["demo_impossible_travel"],
-            entity=Entity(type=EntityType.USER, value="pnair"),
-            source_id=DEMO_SOURCE_IDS[i % len(DEMO_SOURCE_IDS)],
-            source_name=DEMO_SOURCE_NAMES[DEMO_SOURCE_IDS[i % len(DEMO_SOURCE_IDS)]],
+            rule_ids=[hitl_rule],
+            entity=Entity(type=EntityType.USER, value=source_user_name(source_key, "pnair")),
+            source_id=source_id,
+            source_name=DEMO_SOURCE_NAMES[source_id],
             member_event_ids=[f"demo-hitl-{i}-{j}" for j in range(3)],
             first_seen_millis=hitl_ms - 60_000,
             risk_score=62.0,
@@ -1086,7 +1136,7 @@ def generate_capability_seed_cases(
             )],
             severity_band="high",
             tags=["demo", "needs-human", "identity"],
-            title=f"user:pnair · demo_impossible_travel #{i + 1}",
+            title=f"user:{source_user_name(source_key, 'pnair')} · {hitl_rule}",
             summary=f"Impossible-travel sign-in ({_VERDICT_TEXT[Verdict.NEEDS_HUMAN]}).",
             retrieval_history_status="available",
             retrieval_observation_status="not_measured",
@@ -1352,13 +1402,14 @@ def demo_evidence_audit_row(run: Any, case: Any, step_id: str, result: Any) -> d
     engine writes it (``runbook_runs._store_lookup``), dated when the lookup ran: the
     system actor for an automatic lookup, else the person who ran it."""
     from ..models import RUNBOOK_SYSTEM_RUNNER
+    from .runbook_runs import lookup_evidence_summary
 
     case_id = str(getattr(case, "case_id", "") or run.case_id)
     automatic = result.ran_by == RUNBOOK_SYSTEM_RUNNER
     return _demo_audit_row(
         case_id, str(getattr(case, "case_number", "") or ""), str(result.ran_at or run.attached_at),
         "step.evidence_collected", result.ran_by or "analyst", "system" if automatic else "human",
-        f"Lookup {result.tool} collected evidence ({result.status}).",
+        lookup_evidence_summary(result),
         {"run_id": run.run_id, "step_id": step_id, "tool": result.tool, "status": result.status,
          "count": result.count, "count_relation": result.count_relation},
     )
@@ -1671,13 +1722,48 @@ async def collect_demo_runbook_lookups(
     return sum(total for total in totals if isinstance(total, int))
 
 
+def seed_demo_case_evidence(state: Any, cases: Iterable[Case]) -> int:
+    """Keep each seeded case's own detection rows in its Demo source (FX3b2): the rows
+    the case was built from, carrying its rule and entity and dated inside its window
+    (``demo_sources.NativeDemoSource.record_case_history``). Seeded cases are saved
+    straight to the Demo store, so without this their rule would have no rows: the
+    rule sheet would show no alerts, Logs nothing and the seeded runbook lookups
+    nothing for the case. Synchronous and in memory (no I/O, $0), idempotent per case,
+    bounded per source; a case whose rule its source never raises (the tuner's noise,
+    which keeps its Demo-only rule) adds nothing. Does nothing while Demo Mode is off.
+    Never raises; returns the rows recorded."""
+    import logging
+
+    if not getattr(state, "demo_active", False):
+        return 0
+    connector_for = getattr(state, "demo_source_connector", None)
+    if not callable(connector_for):
+        return 0
+    prefs = state.execution_prefs
+    recorded = 0
+    for case in cases:
+        try:
+            source = connector_for(str(getattr(case, "source_id", "") or ""))
+            record = getattr(source, "record_case_history", None)
+            if callable(record):
+                recorded += int(record(case, prefs) or 0)
+        except Exception as exc:  # noqa: BLE001 - one case's rows never stop the others
+            logging.getLogger("tlsoc.engine.demo_generator").warning(
+                "demo evidence for case %s not recorded: %s", str(getattr(case, "case_id", ""))[:80], exc)
+    return recorded
+
+
 def schedule_demo_runbook_lookups(state: Any, cases: Iterable[Case], *, seed: int) -> Any | None:
     """Start :func:`collect_demo_runbook_lookups` in the background, as a live run's
     ``on_attach`` lookups start: the caller (Demo Mode's enable and reset, right after
     the seeded stack becomes the active one) never waits for log reads. The task is
     tracked with the background lookups, so ``runbook_runs.wait_for_background_lookups``
     waits for it. ``None`` when it could not start (Demo Mode is off, or the mutation
-    fence is closed during a reset)."""
+    fence is closed during a reset).
+
+    First, synchronously, the seeded cases' own detection rows are kept in their Demo
+    sources (:func:`seed_demo_case_evidence`): the lookups started here read those
+    sources, and so do the rule sheet and Logs from the moment Demo Mode is on."""
     import asyncio
     import logging
 
@@ -1685,7 +1771,9 @@ def schedule_demo_runbook_lookups(state: Any, cases: Iterable[Case], *, seed: in
 
     if not getattr(state, "demo_active", False):
         return None
-    coro = collect_demo_runbook_lookups(state, list(cases), seed=seed)
+    cases = list(cases)
+    seed_demo_case_evidence(state, cases)
+    coro = collect_demo_runbook_lookups(state, cases, seed=seed)
     try:
         spawn = getattr(state, "spawn_mutation_task", None)
         task = spawn(coro, name="demo-runbook-lookups") if callable(spawn) else asyncio.ensure_future(coro)

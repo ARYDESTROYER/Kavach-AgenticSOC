@@ -75,7 +75,12 @@ from ..agents.chat_events import (
     parse_tool_call_header,
 )
 from ..agents.chat_tools.base import granted_tool_names
-from ..agents.chat_tools.cases import ASSIGNEE_ME_NOBODY, ASSIGNEE_ME_OWN
+from ..agents.chat_tools.cases import (
+    ASSIGNEE_ME_NOBODY,
+    ASSIGNEE_ME_OWN,
+    RUN_STANDING_ALL_DONE,
+    RUN_STANDING_WAITING,
+)
 from ..agents.chat_tools.common import console_num, fmt_pct, round_half_up, visible_text
 from ..agents.chat_tools.taint import REFUSED_TAINT
 from ..constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
@@ -1185,6 +1190,52 @@ _RUNBOOK_CASE_RE = re.compile(
     r"what (?:are|is) the next steps?|next steps? (?:on|for|in) (?:the|this|its|that) (?:case|runbook)|"
     r"checklist|steps? (?:are )?(?:left|remaining|open|still open|to do)|"
     r"(?:the|this|its|case'?s?) runbook|runbook (?:progress|status|steps?))\b")
+#: Words that may sit between a listing verb and "runbooks" ("list the runbooks",
+#: "show me all our published runbooks", "give me the list of playbooks").
+_RUNBOOK_LIST_FILLER = (r"(?:me|us|the|a|all|of|every|our|my|your|available|published|current|existing|"
+                        r"built-in|builtin|live|active|enabled|full|whole|entire|list|catalog|catalogue)")
+#: The determiner or possessive "what are" needs before "runbooks" to ask for the
+#: library ("What are our runbooks?", "What are the runbooks?"). A bare "What are
+#: runbooks?" asks what a runbook is, so it stays a knowledge search.
+_RUNBOOK_LIST_DETERMINER = r"(?:the|our|all|your|my|available|published|current|existing|every)"
+#: A question that asks to see the runbook library itself (Round 14 SPEC §4.10.18), so
+#: the Demo planner calls ``search_knowledge`` with ``kind="list_runbooks"`` rather
+#: than a knowledge search for the words: "List the runbooks", "Show our playbooks",
+#: "Which runbooks do we have?", "What are our runbooks?", "the runbook library" and
+#: the bare word "Runbooks". "How do runbooks work?", "What are runbooks?" and "Which
+#: runbook covers phishing?" stay knowledge searches, and so does a request that names
+#: a topic (:data:`_RUNBOOK_TOPIC_RE`).
+_RUNBOOK_LIST_RE = re.compile(
+    rf"\b(?:(?:list|show|display|give|get|see|view)(?:\s+{_RUNBOOK_LIST_FILLER})*\s+(?:runbooks|playbooks)"
+    rf"|(?:which|what)(?:\s+are\s+{_RUNBOOK_LIST_DETERMINER}(?:\s+{_RUNBOOK_LIST_FILLER})*"
+    rf"|(?:\s+{_RUNBOOK_LIST_FILLER})*)\s+(?:runbooks|playbooks)"
+    r"|(?:runbook|playbook) (?:library|catalog(?:ue)?|list)"
+    r"|(?:list|catalog(?:ue)?) of (?:runbooks|playbooks))\b"
+    r"|^\s*(?:the\s+|our\s+|all\s+)?(?:runbooks|playbooks)\s*[?.!]*\s*$")
+#: A topic after the runbook noun: "runbooks about phishing", "playbooks for brute
+#: force", "the runbooks that handle ransomware", "runbooks on this case", "which
+#: runbooks do we have for credential stuffing", "what are the runbooks used for",
+#: and a filter on the name: "runbooks containing phishing", "runbooks named
+#: ransomware", "runbooks with phishing in the title". The question asks which
+#: runbooks fit the topic (or what they are for), and ``list_runbooks`` takes no
+#: topic, so it is a knowledge search for the words. A relative clause that only says
+#: the runbooks exist ("the runbooks that are published", "which runbooks are
+#: there") is no topic, and neither is a bare "with" ("the runbooks with their
+#: owners"): only "with <words> in the title" or "in the name" filters.
+_RUNBOOK_TOPIC_RE = re.compile(
+    r"\b(?:runbooks|playbooks|library|catalog(?:ue)?)\b(?:\s+[\w'-]+){0,4}?\s+(?:about|for|covering|covers?|"
+    r"against|handl(?:e|es|ing)|deal(?:s|ing)?|appl(?:y|ies)|applicable|mention(?:s|ing)?|related|regarding|"
+    r"involving|concerning|matching|contain(?:s|ing)?|named|titled|called|"
+    r"with\s+(?:[\w'\"-]+\s+){1,4}?in\s+(?:the\s+|their\s+|its\s+)?(?:titles?|names?))\b"
+    r"|\b(?:runbooks|playbooks)\s+(?:on|to|that|which|who|used)\b"
+    r"(?!\s+(?:are|is|were|was|we|you|i|exist|exists|there)\b)")
+
+
+def _asks_for_runbook_library(lowered: str) -> bool:
+    """True when the question asks to see the runbook library as a whole (Round 14
+    SPEC §4.10.18): a listing phrasing (:data:`_RUNBOOK_LIST_RE`) that names no topic
+    (:data:`_RUNBOOK_TOPIC_RE`)."""
+    return bool(_RUNBOOK_LIST_RE.search(lowered)) and not _RUNBOOK_TOPIC_RE.search(lowered)
 # Records a question can ask to see: cases and their kinds (the verdict nouns),
 # incidents, alerts. A console noun after one makes it a qualifier ("the cases page",
 # "the open cases KPI", "the false positives rate"): that question is about the console
@@ -6444,7 +6495,7 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     "automation": lambda v, a: [Call("automation_status", {"kind": a.metric or "approvals"})],
     # Playbooks are runbooks since Round 14: both phrasings list the runbook library.
     "knowledge": lambda v, a: [Call("search_knowledge", (
-        {"kind": "list_runbooks"} if re.search(r"\b(list|which|what) (?:runbooks|playbooks)\b", a.lowered)
+        {"kind": "list_runbooks"} if _asks_for_runbook_library(a.lowered)
         else {"query": a.topic or a.question}))],
     "runbook": lambda v, a: [Call("get_case", {**({"case_id": a.case_id} if a.case_id else {}),
                                                "include": ["summary", "runbook"]})],
@@ -11941,10 +11992,20 @@ def _case_missing(view: PromptView, ask: Ask) -> Final | None:
     return Final(body=body, follow_ups=follow, narrated={r.ordinal for r in view.failed()})
 
 
+#: The two ``standing`` sentences that say where a run with no next step stands
+#: (``chat_tools.cases.run_standing``): finished, or held up by approvals. The others
+#: describe the next step itself, which the "Next step" line already names.
+_RUN_STANDING_WITHOUT_NEXT = frozenset({RUN_STANDING_ALL_DONE, RUN_STANDING_WAITING})
+
+
 def _final_runbook(view: PromptView, ask: Ask) -> Final | None:
     """The case's runbook (Round 14 SPEC §4.10.10): per run, how far it is, the next
-    step and the required steps still open, from ``get_case``'s run summary. A run is
-    advice for people: the answer never implies it changes the verdict or the status."""
+    step, the steps waiting for approval and the required steps still open, from
+    ``get_case``'s run summary. ``get_case`` leaves ``next_step`` empty for a run whose
+    required steps are all done or wait for approval (the Console's Next step rule);
+    such a run is then described by its ``standing`` sentence, never as if it had a
+    step to work on. A run is advice for people: the answer never implies it changes
+    the verdict or the status."""
     missing = _case_missing(view, ask)
     if missing is not None:
         return missing
@@ -11983,10 +12044,22 @@ def _final_runbook(view: PromptView, ask: Ask) -> Final | None:
         if nxt:
             phase = _plain(run.get("next_step_phase"), 40)
             body.append(f"Next step: **{nxt}**" + (f" ({phase})" if phase else "") + ".")
+        else:
+            # No step to act on: the run is finished or held up by approvals. Only
+            # those two code-authored sentences are spoken; any other value is not.
+            standing = run.get("standing")
+            if isinstance(standing, str) and standing in _RUN_STANDING_WITHOUT_NEXT:
+                body.append(standing)
+        waiting = [_plain(t, 120) for t in run.get("waiting_for_approval_steps") or [] if isinstance(t, str)]
+        waiting = list(dict.fromkeys(t for t in waiting if t))
+        if waiting:
+            body.append("Waiting for approval: " + "; ".join(waiting[:4]) + ".")
         open_steps = [_plain(t, 120) for t in run.get("open_required_steps") or [] if isinstance(t, str)]
-        later = [t for t in open_steps if t and t != nxt]
+        held = set(waiting)
+        later = [t for t in dict.fromkeys(open_steps) if t and t != _plain(nxt, 120) and t not in held]
         if later:
-            body.append("Required steps still open after it: " + "; ".join(later[:4]) + ".")
+            lead_in = "Required steps still open after it: " if nxt else "Required steps still open: "
+            body.append(lead_in + "; ".join(later[:4]) + ".")
     if runs:
         body.append("A runbook guides the people working the case; it never changes the verdict or closes the case.")
     return Final(body=body, blocks=_keep(_block(got, "entity", view="entity", title="Case entity")),

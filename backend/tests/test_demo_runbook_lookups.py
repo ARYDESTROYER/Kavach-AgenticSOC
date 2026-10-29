@@ -209,7 +209,8 @@ def test_the_planned_rows_hold_no_lookup_row_and_a_collected_row_is_the_live_one
     assert row["ts"] == collected.ran_at and row["action"] == "step.evidence_collected"
     assert row["actor"] == RUNBOOK_SYSTEM_RUNNER and row["actor_type"] == "system"
     assert row["case_id"] == "case-0001" and row["target"].label == "CASE-0001"
-    assert row["result_summary"] == "Lookup log_stats collected evidence (ok)."
+    # The live engine's own per-status wording (``runbook_runs.lookup_evidence_summary``).
+    assert row["result_summary"] == "Log statistics lookup collected evidence."
     assert row["tool_input"] == {"run_id": run.run_id, "step_id": "accounts-tried", "tool": "log_stats",
                                  "status": "ok", "count": 4, "count_relation": "eq"}
     by_person = demo_evidence_audit_row(run, brute_force_world[0], "accounts-tried",

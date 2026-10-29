@@ -2304,6 +2304,47 @@ def _demo_identity(state: Any) -> tuple[int, str]:
     return int(getattr(state, "demo_generation", 0) or 0), str(getattr(state, "demo_run_id", None) or "")
 
 
+#: How many characters of a lookup's reason the audit summary repeats.
+_LOOKUP_SUMMARY_REASON_CHARS = 300
+#: The reason ``execute_lookup`` gives for an unexpected failure: the summary already
+#: says the lookup could not run, so it is not repeated.
+_GENERIC_LOOKUP_FAILURE = "The lookup could not run."
+
+
+def lookup_evidence_summary(result: LookupResult) -> str:
+    """The plain ``step.evidence_collected`` audit summary of one lookup result, worded
+    per status (the action name stays ``step.evidence_collected`` for every status):
+    ``ok`` "Log statistics lookup collected evidence.", ``partial`` "... collected
+    partial evidence.", ``empty`` "... found no matching records." with the reason when
+    there is one (no provider was set up, the case has no technique yet), so the row
+    never reads as if a search ran and came back empty when none could, ``not_applicable``
+    "... was not applicable." with the reason, ``error`` "... could not run." with the
+    reason when it says more than that. Every reason is a code-authored sentence
+    (``runbook_lookup`` and the lookup runners), never a log or case value; the
+    machine-readable status stays in the row's ``tool_input``. The Demo seed writes
+    the same summary (``demo_generator.demo_evidence_audit_row``)."""
+    rules = lookups.TOOL_RULES.get(result.tool)
+    name = f"{rules.label} lookup" if rules is not None else f"Lookup {result.tool}"
+    reason = re.sub(r"\s+", " ", str(result.reason or "")).strip()
+    if len(reason) > _LOOKUP_SUMMARY_REASON_CHARS:
+        reason = reason[: _LOOKUP_SUMMARY_REASON_CHARS - 3].rstrip() + "..."
+    if reason and not reason.endswith((".", "?", "!")):
+        reason += "."
+    status = result.status
+    if status == "ok":
+        return f"{name} collected evidence."
+    if status == "partial":
+        return f"{name} collected partial evidence."
+    if status == "empty":
+        return f"{name} found no matching records." + (f" {reason}" if reason else "")
+    if status == "not_applicable":
+        return f"{name} was not applicable." + (f" {reason}" if reason else "")
+    if status == "error":
+        said = reason and reason != _GENERIC_LOOKUP_FAILURE
+        return f"{name} could not run." + (f" {reason}" if said else "")
+    return f"{name} finished."  # pragma: no cover - the status is a closed set
+
+
 async def _store_lookup(
     stack: _Stack, case: Any, run_id: str, step_id: str, result: LookupResult, *, actor: str,
     actor_type: str, context: Any,
@@ -2331,7 +2372,7 @@ async def _store_lookup(
             expected_revision=current.revision, changes=None, write=write,
             action_type=ActionType.RUNBOOK, actor=actor, actor_type=actor_type, surface=_AUDIT_SURFACE,
             context=context, case_id=str(case.case_id),
-            result_summary=f"Lookup {result.tool} collected evidence ({result.status}).",
+            result_summary=lookup_evidence_summary(result),
             tool_input={"run_id": run_id, "step_id": step_id, "tool": result.tool, "status": result.status,
                         "count": result.count, "count_relation": result.count_relation},
             after_write=lambda cr: _publish_frames(stack, str(case.case_id),

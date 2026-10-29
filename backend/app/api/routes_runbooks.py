@@ -661,13 +661,43 @@ async def list_runbooks(
     except Exception as exc:  # noqa: BLE001 - the intro degrades alone
         logger.warning("runbook migration notice not read: %s", exc)
         notice = None
-    return catalog.library(
+    library = catalog.library(
         snap,
         can_see_unpublished=viewer.can_see_unpublished,
         runs_30d=await _runs_30d(state, viewer),
         q=q, state=state_filter, origin=origin, show_replaced=show_replaced,
         migration=notice,
     )
+    library.migrated_procedures = await _migrated_procedures(state, snap, viewer)
+    return library
+
+
+async def _migrated_procedures(state: AppState, snap: Any, viewer: _Viewer) -> dict[str, str]:
+    """Retired procedure id to the runbook id the migration gave it, from the
+    migration marker (``runbook_migration.migrated_procedure_ids``, the same map a
+    "Run a runbook" automation rule resolves through at fire time). Fail-soft: an
+    unreadable marker reads as an empty map, so the library still lists.
+
+    The map follows the library's visibility rule (SPEC §4.10.15): a viewer without
+    ``runbooks:manage`` or ``runbooks:publish`` gets only the entries whose runbook it
+    may see (a built-in, or an operator runbook with a Published or retired version).
+    A legacy procedure the migration stored as a Draft (``<id>-imported``, §4.10.17)
+    stays hidden from that viewer, and so does an id that names no runbook in the
+    library any more; neither its id nor its existence is disclosed."""
+    from ..engine.runbook_migration import migrated_procedure_ids
+
+    try:
+        record = await state.runbook_library.read_marker()
+    except Exception as exc:  # noqa: BLE001 - the map degrades alone
+        logger.warning("runbook migration marker not read for the procedure map: %s", exc)
+        return {}
+    mapped = migrated_procedure_ids(record.marker if record is not None else None)
+    if not mapped or viewer.can_see_unpublished:
+        return mapped
+    visible = {item.id for item in snap.builtins}
+    visible.update(row.id for row in snap.rows
+                   if catalog.summary_from_row(row, can_see_unpublished=False) is not None)
+    return {legacy_id: runbook_id for legacy_id, runbook_id in mapped.items() if runbook_id in visible}
 
 
 @router.get("/runbooks/metrics", response_model=RunbookMetrics)

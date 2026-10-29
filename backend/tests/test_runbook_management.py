@@ -241,7 +241,8 @@ def test_the_old_detail_shape_carries_the_markdown(box) -> None:
 def test_without_shape_the_new_shape_answers_and_is_not_deprecated(box) -> None:
     response = box["client"].get("/api/runbooks")
     assert "deprecation" not in response.headers
-    assert set(response.json()) == {"runbooks", "migration"}
+    # Round 14 FX3b2: the list also maps each migrated legacy procedure to its runbook.
+    assert set(response.json()) == {"runbooks", "migration", "migrated_procedures"}
     assert box["client"].get("/api/runbooks", params={"shape": "v2"}).status_code == 422
 
 

@@ -23,6 +23,7 @@ from app.models import (
     DecisionOption,
     LookupTemplate,
     RunbookDefinition,
+    RunbookIssue,
     RunbookStep,
     RunbookVersionDoc,
 )
@@ -1853,12 +1854,30 @@ _AT_THE_TRANSPORT_BOUND = {
 
 
 @pytest.mark.parametrize("shape", sorted(_AT_THE_TRANSPORT_BOUND))
-def test_validation_at_the_transport_bound_stops_at_the_issue_cap(shape: str) -> None:
+def test_validation_at_the_transport_bound_stops_at_the_issue_cap(shape: str, monkeypatch) -> None:
     # Every issue used to be built before the list was cut: 64,000 skips took 0.76 s.
+    # The work is measured by counting the issues the validator builds (in this module
+    # and in the lookup checks), not by a clock, so CPU load cannot fail the test. In
+    # every shape each value the validator reads builds at least one issue, so the
+    # count also bounds how far it reads.
+    from app.engine import runbook_lookup
+
+    built = 0
+
+    def counted(**fields: object) -> RunbookIssue:
+        nonlocal built
+        built += 1
+        return RunbookIssue(**fields)
+
+    monkeypatch.setattr(RM, "RunbookIssue", counted)
+    monkeypatch.setattr(runbook_lookup, "RunbookIssue", counted)
     defn = _within_transport(_AT_THE_TRANSPORT_BOUND[shape]())
-    issues = _fast(lambda: RM.validate_runbook(defn), budget=0.2)
+    issues = RM.validate_runbook(defn)
     assert len(issues) == RM.RUNBOOK_MAX_ISSUES + 1
     assert issues[-1].code == "more_issues" and [i.code for i in issues].count("more_issues") == 1
+    # The cap, at most the two issues of the value read last, and the closing
+    # "more_issues": tens of thousands of values in, a few hundred issues out.
+    assert len(issues) <= built <= RM.RUNBOOK_MAX_ISSUES + 3, built
 
 
 def test_stopping_at_the_cap_reports_the_same_issues() -> None:

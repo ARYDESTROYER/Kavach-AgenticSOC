@@ -721,9 +721,12 @@ async def test_demo_cases_are_guided_by_the_storyline_runbook_and_get_runs(app_s
         assert result["triggered"] is True
         cases, _ = await state.cases.list(limit=300)
         # The cases the incident's source-native alerts produced through the Demo
-        # pipeline (the seeded history also carries the storyline's own rule).
+        # pipeline. A seeded case of the same storyline carries its source's rule too
+        # (Round 14 FX3b2), but it was saved straight to the Demo store, never
+        # investigated, so it is left out.
         native_rules = set(_storyline_rules("rdp_bruteforce")) - {"demo_rdp_bruteforce"}
-        incident = [c for c in cases if native_rules.intersection(c.rule_ids)]
+        incident = [c for c in cases if native_rules.intersection(c.rule_ids)
+                    and not c.cluster_signature.startswith("demo-sig-")]
         assert incident
         attachable = [c for c in incident if c.status.value in runbook_runs.ATTACHABLE_STATUSES]
         assert attachable

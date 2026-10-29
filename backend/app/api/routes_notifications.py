@@ -37,10 +37,15 @@ router = APIRouter(prefix="/api")
 
 
 class NotificationProvidersResponse(BaseModel):
-    """The notification providers catalog envelope (no secrets — names/ids only)."""
+    """The notification providers catalog envelope (no secrets, names and ids only).
+
+    ``channel_types`` holds the registered channel type ids as plain strings, the
+    shape ``notifications.channel.channel_types()`` returns (``["email", "slack",
+    ...]``). Typing it as a list of objects made the response validation fail, so
+    the route answered 500 instead of the catalog."""
 
     email_presets: list[dict[str, Any]] = Field(default_factory=list)
-    channel_types: list[dict[str, Any]] = Field(default_factory=list)
+    channel_types: list[str] = Field(default_factory=list)
     template_ids: list[str] = Field(default_factory=list)
 
 
