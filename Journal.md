@@ -11680,3 +11680,10 @@
 - Tests: gates agent full backend run before the series 11,629 passed / 10 failed (5 sandbox-only proxy/AWS env, 1 date-dependent golden question, 1 WP-DOC records test, 3 fixed by the series); targeted suites after the series green; ruff fatal clean; webui tsc clean; audit contract, audit render and roles tests green. Full backend re-run in progress.
 - Status: done for these packages; remaining items routed in HANDOFF-NOTES (FX2, B1, WP-DOC).
 - Next: commit W7a/W7b when r4w finishes; FX2 + B1 + Wave D; WP-DOC; WP-GEN.
+
+### 2026-10-29 10:35Z — orchestrator — Round 14 run r4w-web (W7a, W7b)
+- Context: Round 14 item 9 (runbooks), web half, per SPEC §7 rows W7a and W7b.
+- Did: W7a rewrote the Runbooks library and built a structured editor (outline, step forms, applies-when matching, governance, history, Markdown source and analyst preview), split Personas out of Catalog, and taught the rule editor to attach a runbook; W7b put the run inside a case (Runbook tab with phases, Next step card, step actions with lookups, approvals and notes, facts rail section, queue chip, close and bulk close reasons for open steps). Each implemented, reviewed by two lenses, fixed, re-reviewed and fixed again. Commit 9451c24.
+- Tests: gates agent: tsc clean, eslint 0/0, MkDocs strict build clean; Vitest 166 primary files 2,354 passed / 1 skipped; 251 dependent files 3,033 passed / 1 failed (Tuning.render authority sentence, owned by W9b).
+- Status: done.
+- Next: r5a-fix (FX2b, FX2w, B1) running; Wave D page migrations next; then WP-DOC and WP-GEN.
