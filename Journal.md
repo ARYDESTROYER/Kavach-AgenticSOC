@@ -11722,3 +11722,10 @@
 - Tests: gates agent full backend 11,900 tests, 11,888 passed, 6 failed (5 sandbox env, 1 WP-DOC records), 6 skipped; ruff fatal clean; orchestrator re-ran every demo and runbook test after the overlay change (pass).
 - Status: done. OpenAPI regeneration (channel_types, migrated_procedures) is WP-GEN's.
 - Next: r6w-fix finishing; WP-DOC; WP-GEN.
+
+### 2026-10-29 19:30Z — orchestrator — Round 14 run r6w-fix (FX3wa, FX3wb, FX3wc)
+- Context: web leftovers routed from the Wave D and FX runs.
+- Did: FX3wa (Metrics deep links and redirects, Analytics group id, tabs and segmented control fixes, Agent effectiveness outcome panels, health labels, chart figures, sign-out range reset); FX3wb (Saved reports library, DataTable row labels and shared overflow hook, two-factor row, rule builders, copy, palette ranking, confirm dialog busy state); FX3wc (B1 hand-off patches, legacy resolver order with migrated_procedures, runbook client cleanups, Scans client removal). Orchestrator applied FX3wc's reviewed F4 to F8 patch series and caller patch, and regenerated openapi.json and api-types.gen.ts.
+- Tests: gates agent tsc (one pin fixed by the regeneration), eslint 0/0, design gates pass; orchestrator after the patches and regeneration: tsc 0, check:types no drift, 55 related Vitest files 722 passed, backend audit export and Round 14 contract tests pass, eslint clean on touched files.
+- Status: done.
+- Next: WP-DOC (two parts in parallel), then WP-GEN.
