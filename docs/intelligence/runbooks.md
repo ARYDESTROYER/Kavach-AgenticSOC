@@ -5,7 +5,7 @@ description: Create compact investigation guidance without changing case policy.
 
 # Runbooks
 
-Open **Intelligence → Reference runbooks** to browse the investigation guidance available to
+Open **Intelligence → Runbooks** to browse the investigation guidance available to
 knowledge retrieval. A Runbook combines a small machine-readable manifest with a
 strict plain-text guidance body. It is a trusted reference for analysts and the
 investigator, not an executable response workflow. A Runbook cannot close, escalate,

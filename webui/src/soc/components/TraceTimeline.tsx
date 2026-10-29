@@ -36,8 +36,44 @@ import { CodeBlock } from '@/soc/components/CodeBlock';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 
+import { AuditLogLink } from '@/soc/components/audit/AuditLink';
 import type { DecisionPayload, TimelineResponse, TraceSpan } from '@/soc/pages/CaseDetail.api';
 import type { CasePanelPresentation } from '@/soc/pages/casedetail/shared';
+
+/**
+ * "View in audit log" (Round 14 SPEC §4.5.8): every audit row of this case, in all
+ * scopes. Shown only to people who hold `audit:view`, and only for a case id the audit
+ * log's `case` link key accepts. The range starts an hour before the earliest step of the
+ * trace (so the default last 7 days never hides an older investigation) and runs to now,
+ * which keeps the case work that followed; with no readable step time it is the last 90
+ * days.
+ */
+function auditTrailFrom(spans: readonly TraceSpan[] | undefined): string {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const span of spans ?? []) {
+    const ms = Date.parse(span.ts);
+    if (Number.isFinite(ms) && ms < earliest) earliest = ms;
+  }
+  if (!Number.isFinite(earliest)) return 'now-90d';
+  return new Date(Math.floor((earliest - 3_600_000) / 1000) * 1000).toISOString().replace('.000Z', 'Z');
+}
+
+function AuditTrailLink({
+  caseId,
+  spans,
+  className,
+}: {
+  caseId: string | undefined;
+  spans: readonly TraceSpan[] | undefined;
+  className?: string;
+}) {
+  if (!caseId || !/^[\w.:-]{1,128}$/.test(caseId)) return null;
+  return (
+    <AuditLogLink opts={{ scope: 'all', case: caseId, from: auditTrailFrom(spans) }} className={className}>
+      View in audit log
+    </AuditLogLink>
+  );
+}
 
 /* ------------------------------------------------------------------ kinds -- */
 
@@ -395,11 +431,12 @@ const TerminalTrace: React.FC<{ data: TimelineResponse; spans: TraceSpan[] }> = 
           );
         })}
       </ol>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-2xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border px-4 py-2 font-mono text-2xs text-muted-foreground">
         <span>cost {fmtMoney(data.totals?.cost)}</span>
         {typeof data.totals?.tokens === 'number' ? (
           <span>{fmtTokens(data.totals.tokens)} tokens</span>
         ) : null}
+        <AuditTrailLink caseId={data.case_id} spans={spans} className="ml-auto font-sans text-xs" />
       </div>
     </div>
   );
@@ -474,6 +511,7 @@ export const TraceTimeline: React.FC<TraceTimelineProps> = ({
               Deterministic decision recorded
             </Badge>
           ) : null}
+          <AuditTrailLink caseId={data?.case_id} spans={spans} className="ml-auto text-sm" />
         </div>
       </div>
 

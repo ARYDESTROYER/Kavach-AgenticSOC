@@ -1,11 +1,5 @@
 {
   "package": "W4b",
   "note": "Round 14 W4b (Dashboards library) owns this file and empties this list.",
-  "entries": [
-    {
-      "rule": "header-removed-prop",
-      "file": "soc/pages/Dashboards.tsx",
-      "max": 2
-    }
-  ]
+  "entries": []
 }

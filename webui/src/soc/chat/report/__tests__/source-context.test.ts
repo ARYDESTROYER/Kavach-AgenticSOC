@@ -103,7 +103,7 @@ describe('reportErrorMessage', () => {
     expect(reportErrorMessage(err(503, 'budget_blocked'))).not.toMatch(/Try again/);
     expect(reportErrorMessage(err(503, 'provider_unavailable'))).toMatch(/unavailable or not configured/);
     expect(reportErrorMessage(err(503, 'breaker_open'))).toMatch(/paused/);
-    expect(reportErrorMessage(err(504, 'report_summary_timeout'))).toMatch(/took too long/);
+    expect(reportErrorMessage(err(504, 'report_summary_timeout'))).toBe('The summary took too long. Try again, or summarise fewer items');
     expect(reportErrorMessage(err(502, 'report_summary_invalid'))).toMatch(/no summary/);
   });
 

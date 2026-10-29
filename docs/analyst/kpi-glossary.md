@@ -5,7 +5,7 @@ description: Exact definitions of the Overview and Analytics KPIs, including the
 
 # KPI glossary
 
-This page is the single reference for the numbers on **Overview → Dashboard** and
+This page is the single reference for the numbers on **Overview → Cyber Defence Center** and
 **Analytics → Metrics**. On the dashboard, most KPIs carry a short help (`?`) popover
 drawn from these definitions, and when you can use chat that popover ends with **Ask
 about this**, which opens a new chat that asks the question for you. MTTD and Respond

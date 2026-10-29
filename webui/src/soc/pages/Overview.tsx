@@ -182,6 +182,7 @@ import {
   severityBandFromNumber,
 } from '@/soc/components/badges';
 import { BarList, type BarListItem } from '@/soc/components/BarList';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { RefreshButton } from '@/soc/components/RefreshButton';
@@ -1805,6 +1806,125 @@ function Instrument({
   );
 }
 
+/** One "Top signatures" row: the signature it groups by and the detection rules behind it. */
+export interface SignatureItem extends BarListItem {
+  /** The rules of the row's cases, most frequent first (each opens the rule sheet). */
+  rules: string[];
+}
+
+/** How many rules a signature row names before "+N more". */
+const SIGNATURE_RULES_SHOWN = 2;
+
+/**
+ * The top signatures of the cases on screen (Round 14, SPEC §4.6.5): the same grouping as
+ * before (a case's title, else its cluster signature, else its first rule), now carrying
+ * the detection rules behind each signature so the row can open the rule's picture. Ties
+ * keep the order the cases arrived in.
+ */
+export function topSignatureItems(cases: readonly Case[], max = 8): SignatureItem[] {
+  const groups = new Map<string, { value: number; rules: Map<string, number> }>();
+  for (const k of cases) {
+    const label =
+      (k.title || k.cluster_signature || k.rule_ids?.[0] || 'Uncategorized').trim() || 'Uncategorized';
+    const group = groups.get(label) ?? { value: 0, rules: new Map<string, number>() };
+    group.value += 1;
+    for (const rule of Array.isArray(k.rule_ids) ? k.rule_ids : []) {
+      if (typeof rule === 'string' && rule.trim()) group.rules.set(rule, (group.rules.get(rule) ?? 0) + 1);
+    }
+    groups.set(label, group);
+  }
+  const total = cases.length || 1;
+  return [...groups.entries()]
+    .sort((a, b) => b[1].value - a[1].value)
+    .slice(0, max)
+    .map(([label, group]) => ({
+      label,
+      value: group.value,
+      sub: `${Math.round((group.value / total) * 100)}% of cases`,
+      rules: [...group.rules.entries()].sort((a, b) => b[1] - a[1]).map(([rule]) => rule),
+    }));
+}
+
+/**
+ * The "Top signatures" list: the shared `BarList` look (rank, label, count, bar, share),
+ * with the rules behind each signature on its footer line as `RuleLink`s, so a click opens
+ * the rule's picture over the dashboard's window. The links share one rule sheet that
+ * lives with the list, so a LIVE refresh that re-ranks or drops the row that opened it
+ * never closes the sheet being read. Labels and rules are untrusted case data rendered as
+ * plain text (#9).
+ */
+export function SignatureList({ items, window: range }: { items: SignatureItem[]; window: TimeRange }) {
+  return (
+    <RuleSheetHost>
+      <SignatureRows items={items} window={range} />
+    </RuleSheetHost>
+  );
+}
+
+function SignatureRows({ items, window: range }: { items: SignatureItem[]; window: TimeRange }) {
+  if (items.length === 0) return <BarList items={[]} emptyLabel="No signatures yet" />;
+  const max = items.reduce((m, it) => Math.max(m, it.value || 0), 0) || 1;
+  const ruleWindow = { from: range.from, to: range.to, label: range.label };
+  return (
+    <ul className="flex flex-col gap-3.5" data-testid="signature-list">
+      {items.map((it, i) => {
+        const pct = Math.max(0, Math.min(100, ((it.value || 0) / max) * 100));
+        const shown = it.rules.slice(0, SIGNATURE_RULES_SHOWN);
+        const more = it.rules.length - shown.length;
+        return (
+          <li key={it.label} className="flex items-start gap-3">
+            <span className="mt-1.5 w-6 shrink-0 text-right font-mono text-xs tabular-nums text-muted-foreground">
+              {String(i + 1).padStart(2, '0')}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="truncate text-sm font-medium text-foreground" title={it.label}>
+                  {it.label}
+                </span>
+                <span className="shrink-0 font-mono text-sm font-semibold tabular-nums text-foreground">
+                  {fmtNumber(it.value)}
+                </span>
+              </div>
+              <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-accent-bar"
+                  style={{ width: `${pct}%` }}
+                  role="progressbar"
+                  aria-valuenow={Math.round(pct)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={it.label}
+                />
+              </div>
+              <div className="mt-1 flex items-baseline justify-between gap-3">
+                <span className="min-w-0 text-xs text-muted-foreground">
+                  {shown.length ? (
+                    <>
+                      {shown.length === 1 && more === 0 ? 'Rule ' : 'Rules '}
+                      {shown.map((rule, index) => (
+                        <React.Fragment key={rule}>
+                          {index > 0 ? ', ' : null}
+                          <RuleLink rule={rule} window={ruleWindow} origin="Cyber Defence Center" className="text-foreground" />
+                        </React.Fragment>
+                      ))}
+                      {more > 0 ? ` +${fmtNumber(more)} more` : null}
+                      {' · '}
+                    </>
+                  ) : null}
+                  {it.sub}
+                </span>
+                <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+                  {Math.round(pct)}%
+                </span>
+              </div>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /**
  * The open/closed state of the Deeper analytics disclosure (Round 12, SYNTHESIS-ux §2.6):
  * collapsed on a first visit, then the viewer's own choice. It is a presentation
@@ -2395,20 +2515,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
   );
 
   // ----- BarList datasets (Deeper analytics) ------------------------------ //
-  const signatureItems: BarListItem[] = React.useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const k of cases) {
-      const label =
-        (k.title || k.cluster_signature || k.rule_ids?.[0] || 'Uncategorized').trim() ||
-        'Uncategorized';
-      counts[label] = (counts[label] ?? 0) + 1;
-    }
-    const total = cases.length || 1;
-    return Object.entries(counts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([label, value]) => ({ label, value, sub: `${Math.round((value / total) * 100)}% of cases` }));
-  }, [cases]);
+  const signatureItems: SignatureItem[] = React.useMemo(() => topSignatureItems(cases), [cases]);
 
   const entityItems: BarListItem[] = React.useMemo(() => {
     const counts: Record<string, { value: number; type: string }> = {};
@@ -4853,7 +4960,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                         caption={`Most frequent detections · ${caseSampleScope}`}
                         data-scope={casePageComplete ? 'window' : 'sample'}
                       >
-                        <BarList items={signatureItems} showRank showPercent emptyLabel="No signatures yet" />
+                        <SignatureList items={signatureItems} window={range} />
                       </Instrument>
 
                       <Instrument

@@ -53,9 +53,10 @@
     {
       "id": "page:overview",
       "kind": "page",
-      "label": "Overview",
+      "label": "Cyber Defence Center",
       "crumb": [
-        "Overview"
+        "Overview",
+        "Cyber Defence Center"
       ],
       "page": "overview",
       "opts": {},
@@ -63,28 +64,9 @@
       "blurb": "",
       "keywords": [
         "home",
-        "dashboard",
+        "landing page",
         "posture",
         "cyber defence center",
-        "kpi"
-      ],
-      "owned_keys": []
-    },
-    {
-      "id": "page:dashboard",
-      "kind": "page",
-      "label": "Dashboard",
-      "crumb": [
-        "Overview",
-        "Dashboard"
-      ],
-      "page": "dashboard",
-      "opts": {},
-      "requires": null,
-      "blurb": "",
-      "keywords": [
-        "home",
-        "posture",
         "kpi",
         "active risk",
         "noise reduction"
@@ -104,6 +86,12 @@
       "requires": "metrics:view",
       "blurb": "",
       "keywords": [
+        "dashboard",
+        "dashboards library",
+        "built-in dashboards",
+        "soc operations",
+        "detection and data health",
+        "executive summary",
         "custom dashboard",
         "widgets",
         "layout"
@@ -310,7 +298,6 @@
       "keywords": [
         "knowledge",
         "runbooks",
-        "playbooks",
         "memory"
       ],
       "owned_keys": []
@@ -338,10 +325,10 @@
     {
       "id": "page:runbooks",
       "kind": "page",
-      "label": "Reference runbooks",
+      "label": "Runbooks",
       "crumb": [
         "Intelligence",
-        "Reference runbooks"
+        "Runbooks"
       ],
       "page": "runbooks",
       "opts": {},
@@ -350,7 +337,10 @@
       "keywords": [
         "runbook",
         "procedure",
-        "guidance"
+        "guidance",
+        "checklist",
+        "response",
+        "playbook"
       ],
       "owned_keys": []
     },
@@ -370,25 +360,6 @@
         "operator memory",
         "facts",
         "remember"
-      ],
-      "owned_keys": []
-    },
-    {
-      "id": "page:playbooks",
-      "kind": "page",
-      "label": "Response playbooks",
-      "crumb": [
-        "Intelligence",
-        "Response playbooks"
-      ],
-      "page": "playbooks",
-      "opts": {},
-      "requires": "playbooks:read",
-      "blurb": "",
-      "keywords": [
-        "playbook",
-        "response",
-        "procedure"
       ],
       "owned_keys": []
     },
@@ -636,10 +607,10 @@
     {
       "id": "page:docs",
       "kind": "page",
-      "label": "Documentation",
+      "label": "Help Center",
       "crumb": [
         "Platform",
-        "Documentation"
+        "Help Center"
       ],
       "page": "docs",
       "opts": {},

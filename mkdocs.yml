@@ -120,6 +120,7 @@ nav:
           - Your first case: getting-started/first-case.md
       - User and analyst guide:
           - Start a shift: analyst/overview.md
+          - Dashboards: analyst/dashboards.md
           - Cases: analyst/cases.md
           - Case Manager: analyst/case-manager.md
           - Investigation: analyst/investigation.md
@@ -143,6 +144,7 @@ nav:
       - Console administration:
           - Settings: administration/settings.md
           - Users and RBAC: administration/users-rbac.md
+          - Audit log: administration/audit-log.md
           - Authentication: administration/authentication.md
           - Models and spend: administration/models-spend.md
           - Notifications: administration/notifications.md

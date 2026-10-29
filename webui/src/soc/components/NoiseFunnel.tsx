@@ -50,6 +50,7 @@ import { token, SEVERITY_COLOR, VERDICT_COLOR } from './palette';
 import { CountUp } from './CountUp';
 import { HelpTip } from './HelpTip';
 import { AskAboutThis } from './AskAboutThis';
+import { alertReduction, type AlertReduction } from './alert-reduction';
 import { KPI_TOPICS } from './ask-topics';
 import { NoiseLineageView } from './NoiseLineage';
 import { SegmentedControl } from './SegmentedControl';
@@ -1395,32 +1396,10 @@ function StageBreakdown({ row }: { row: FunnelRow }) {
  * Deliberately NOT `reduction.overall_pct`: that server figure is "never reached a human
  * of everything ingested", which is what Detailed's "Reduced by" headline states.
  */
-export function alertReductionOf(
-  data: NoiseReduction,
-  mode: DerivedFunnel['mode'],
-  rowByKey: Map<string, FunnelRow>,
-): { value: number | null; text: string; reason: string | null } {
-  const withheld = (reason: string) => ({ value: null, text: '—', reason });
-  if (mode !== 'full' || !data.counters?.available) {
-    return withheld('alert counters are still warming up');
-  }
-  // Short on purpose: the "Partial coverage" notice directly under this line already
-  // explains it, and two sentences saying the same thing read as two problems.
-  if (data.counters?.incomplete) return withheld('partial coverage');
-  if (data.cases_meta?.truncated) return withheld('case counts are partial for this window');
-  const ingested = rowByKey.get('ingested')?.total ?? null;
-  const cases = rowByKey.get('cases')?.total ?? null;
-  if (ingested == null || cases == null || !Number.isFinite(ingested) || !Number.isFinite(cases)) {
-    return withheld('alerts or cases were not reported for this window');
-  }
-  if (ingested <= 0) return withheld('no alerts were ingested in this window');
-  if (cases > ingested) return withheld('this window opened more cases than it counted alerts');
-  const value = (1 - cases / ingested) * 100;
-  const rounded = Math.round(value);
-  // The same "<1%" rule every share on this flow follows: a real but tiny reduction is
-  // never rounded down to a 0% that reads as "none".
-  const text = value > 0 && rounded === 0 ? '<1%' : `${rounded}%`;
-  return { value, text, reason: null };
+export function alertReductionOf(data: NoiseReduction): AlertReduction {
+  // One rule for the flow and the Detection and data health board (Round 14, SPEC
+  // §4.4.3): the shared helper decides both the figure and when it is withheld.
+  return alertReduction(data);
 }
 
 function stageAuthority(row: FunnelRow): string {
@@ -1974,7 +1953,7 @@ export function NoiseFunnel({
     openCases && Number.isFinite(openCases.count) && openCases.count >= 0
       ? { count: Math.floor(openCases.count), partial: openCases.partial === true }
       : null;
-  const alertReduction = alertReductionOf(data, derived.mode, rowByKey);
+  const alertReductionFigure = alertReductionOf(data);
 
   const chips = derived.rows.map((row, index) => {
     // Simple publishes exactly ONE share rule across every surface it can render. The
@@ -2386,14 +2365,14 @@ export function NoiseFunnel({
       <p
         className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm text-muted-foreground"
         data-testid="noise-alert-reduction"
-        data-measured={alertReduction.value == null ? 'false' : 'true'}
+        data-measured={alertReductionFigure.value == null ? 'false' : 'true'}
       >
         <span>Alert reduction</span>
         <span className="text-xl font-semibold leading-none tabular-nums text-foreground">
-          {alertReduction.text}
+          {alertReductionFigure.text}
         </span>
-        {alertReduction.reason ? (
-          <span className="text-xs">Not measured: {alertReduction.reason}.</span>
+        {alertReductionFigure.reason ? (
+          <span className="text-xs">Not measured: {alertReductionFigure.reason}.</span>
         ) : (
           <span className="text-xs tabular-nums">
             {fmtNumber(rowByKey.get('ingested')?.total ?? 0)} alerts became{' '}

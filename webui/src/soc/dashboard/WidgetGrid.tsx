@@ -1,26 +1,43 @@
 /**
- * `WidgetGrid` — renders a dashboard's widgets from its `DashboardLayout` (Round 5 /
- * G7, CD3). It has TWO modes that ship very different amounts of JavaScript:
+ * `WidgetGrid`: renders a dashboard's widgets from its `DashboardLayout` (Round 5 / G7,
+ * CD3; Round 14, SPEC §4.4.5 and F3). It has TWO modes that ship very different amounts
+ * of JavaScript:
  *
- *   • VIEW mode (default, read-only) — a plain CSS Grid. Each widget is positioned by
- *     inline `gridColumn`/`gridRow` from its persisted `{x,y,w,h}` (12-col units). This
- *     path imports NO react-grid-layout at all: view mode + first paint ship ZERO grid
- *     JS (the `bundle-first-paint` guardrail). This is the calm, read-only default (#10).
+ *   - VIEW mode (default, read-only): a plain CSS Grid sized to its content. Widgets are
+ *     flow-packed on the 12 columns from their persisted `{x,y,w,h}`, but the rows are
+ *     NOT a fixed height: each distinct top or bottom edge of a widget becomes a row track
+ *     sized `auto`, so a panel is as tall as its content (no clipped bodies, no fixed 56 px
+ *     rows) and the panels of one band share a height. Below `xl` the grid is one column
+ *     in reading order (top to bottom, then left to right). This path imports NO
+ *     react-grid-layout: view mode and first paint ship zero grid JS (the
+ *     `bundle-first-paint` guardrail).
  *
- *   • EDIT mode — lazily `import()`s {@link EditableGrid} (the sole RGL importer) and
- *     hands it the same widgets. RGL + its CSS load ONLY here, on demand, wrapped in
- *     `<Suspense>`. Drag is scoped to the card header grip; resize is SE-corner only;
- *     `onLayoutChange` bubbles to the builder to debounce-persist.
+ *   - EDIT mode: lazily `import()`s {@link EditableGrid} (the sole RGL importer) and hands
+ *     it the same widgets. RGL and its CSS load ONLY here, on demand. Cells have a fixed
+ *     row height there, so a widget fills its cell and a tall body scrolls inside it.
+ *     Drag is scoped to the card header grip; resize is SE-corner only; `onLayoutChange`
+ *     bubbles to the builder to debounce-persist.
  *
- * Each widget body comes from the widget registry (`registry.ts` — a `React.lazy`
- * component per type, RBAC-gated, reconcile-on-load already applied by the caller) and
- * is wrapped in a small card frame that carries, in edit mode, the drag handle plus a
- * keyboard-operable move/resize toolbar (WCAG 2.5.7 — a NON-drag alternative). All
- * widget titles/labels render as plain text/SVG (#9); a layout is advisory (#3).
+ * Each widget body comes from the widget registry (`registry.ts`, a `React.lazy`
+ * component per type). Every body draws its own panel (no card around it, so no nested
+ * cards). Before a body mounts, the grid checks the gates and shows the panel's state
+ * instead of mounting it, so a gated widget never asks for data: a widget the viewer's
+ * role cannot read ("No access"), a case-derived widget while row-level data scope is on
+ * ("Hidden while row-level scope is on.", D16), and a case-derived widget while the
+ * viewer's scope could not be read ("Your data access could not be confirmed." with
+ * Retry). A gated panel carries the title its body would show (`titleFor`). A title
+ * override is passed only when the operator set one, so a body keeps its own default. Titles and
+ * labels render as plain text (#9); a layout is advisory (#3).
  *
  * The heavy RGL chunk is behind `React.lazy(() => import('./EditableGrid'))` declared
  * at MODULE scope so it is created once, but the dynamic import only FIRES when edit
- * mode first renders it — so importing `WidgetGrid` itself pulls no grid JS.
+ * mode first renders it, so importing `WidgetGrid` itself pulls no grid JS.
+ *
+ * The whole grid is ONE rule-sheet host (`RuleSheetHost`, SPEC §4.6.5): every rule name a
+ * widget shows (Top detection rules, Noisiest rules) opens the one sheet the grid holds,
+ * so a board refresh (the 60 s tick, a window change) that re-ranks or drops the row that
+ * opened it never closes the sheet being read. It closes when the person closes it or the
+ * board goes; focus then returns to the opener, else to the same rule's link on the board.
  */
 import * as React from 'react';
 import type { LucideIcon } from 'lucide-react';
@@ -39,6 +56,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 
+import { PANEL_GAP } from '@/design-system/panel';
 import { cn } from '@/lib/cn';
 import { materialBar } from '@/lib/ui-recipes';
 import { Skeleton } from '@/ui/skeleton';
@@ -51,10 +69,18 @@ import {
   DropdownMenuLabel,
 } from '@/ui/dropdown-menu';
 import { EmptyState } from '@/soc/components/EmptyState';
+import { RuleSheetHost } from '@/soc/components/RuleLink';
 
 import type { DashboardWidget } from '@/lib/types';
-import { getWidgetDef } from './registry';
-import type { WidgetProps } from './widgets/common';
+import { useOptionalDashboardData } from './DashboardDataProvider';
+import { canUseWidget, defaultWidgetTitle, getWidgetDef, isScopeHidden } from './registry';
+import {
+  WidgetFrameContext,
+  WidgetShell,
+  type WidgetFrameMode,
+  type WidgetProps,
+  type WidgetState,
+} from './widgets/common';
 import {
   GRID_COLS,
   packWidgets,
@@ -66,9 +92,13 @@ import {
 } from './layout-utils';
 
 // The ONE lazy boundary for react-grid-layout. Declared at module scope (created once)
-// but the dynamic import only executes when <EditableGrid> is first rendered — i.e.
+// but the dynamic import only executes when <EditableGrid> is first rendered, i.e.
 // when the operator enters edit mode. View mode never touches it.
 const EditableGrid = React.lazy(() => import('./EditableGrid'));
+
+/** What a body is told about its cell: content-sized (view) or fixed (edit). */
+const VIEW_FRAME: WidgetFrameMode = 'view';
+const EDIT_FRAME: WidgetFrameMode = 'edit';
 
 // --------------------------------------------------------------------------- //
 // Per-widget card frame (shared by view + edit)
@@ -92,19 +122,34 @@ interface WidgetCardProps {
   onFocusWidget?: (id: string) => void;
 }
 
-/** Resolve the registry title override safely (plain text, #9). */
-function resolveWidgetTitle(widget: DashboardWidget, fallback: string): string {
-  const opts = widgetOptions(widget);
-  const t = opts.title;
+/** The operator's title override (plain text, #9), or `undefined` when none is set. */
+function titleOverride(widget: DashboardWidget): string | undefined {
+  const t = widgetOptions(widget).title;
   const s = (typeof t === 'string' ? t : '').trim();
-  return s || fallback;
+  return s || undefined;
+}
+
+/** The body's loading fallback while its lazy chunk arrives: a skeleton in a panel. */
+function BodyFallback({ editing }: { editing: boolean }) {
+  return (
+    <div
+      className={cn('surface-panel space-y-2.5 rounded-lg p-4 xl:p-5', editing && 'h-full')}
+      aria-busy="true"
+      data-widget-state="loading"
+    >
+      <Skeleton className="h-4 w-1/3" />
+      <Skeleton className="h-4 w-2/3" />
+      <Skeleton className="h-4 w-1/2" />
+    </div>
+  );
 }
 
 /**
- * A single placed widget: the registry body (lazy, Suspense-fenced) plus, in edit
- * mode, a header with a drag grip and a move/resize/config/remove toolbar. An unknown
- * widget type (should be reconciled away before render) degrades to an EmptyState
- * rather than throwing.
+ * A single placed widget: the registry body (lazy, Suspense-fenced) plus, in edit mode,
+ * a header with a drag grip and a move/resize/config/remove toolbar. The body is not
+ * mounted (so it asks for no data) when the viewer's role cannot read the widget or when
+ * row-level scope hides it; its panel shows that state instead. An unknown widget type
+ * (reconciled away before render, normally) degrades to an empty state, never a throw.
  */
 const WidgetCard = React.memo(function WidgetCard({
   widget,
@@ -115,10 +160,11 @@ const WidgetCard = React.memo(function WidgetCard({
 }: WidgetCardProps) {
   const id = widgetId(widget);
   const def = getWidgetDef(widget.type ?? '');
+  const data = useOptionalDashboardData();
 
   if (!def) {
     return (
-      <div className="h-full">
+      <div className={cn(editing && 'h-full')} data-widget-id={id} data-widget-type={widget.type}>
         <EmptyState
           icon={AlertTriangle}
           title="Unavailable widget"
@@ -129,15 +175,30 @@ const WidgetCard = React.memo(function WidgetCard({
     );
   }
 
-  const Body = def.Component as React.ComponentType<WidgetProps>;
-  const title = resolveWidgetTitle(widget, def.title);
+  const override = titleOverride(widget);
   const options = widgetOptions(widget) as WidgetProps['options'];
+  // A gated panel is named as its body would name it ("Open cases by status", not the
+  // registry's generic "Case breakdown"), so a reader can tell which panel is missing.
+  const title = override ?? defaultWidgetTitle(def, options);
+  const can = data?.can;
+  const gate: 'denied' | 'scoped' | 'unconfirmed' | null =
+    can && !canUseWidget(def, can)
+      ? 'denied'
+      : isScopeHidden(def, data?.objectScoped)
+        ? 'scoped'
+        : def.caseDerived === true && data?.scopeError
+          ? 'unconfirmed'
+          : null;
+  const Body = def.Component as React.ComponentType<WidgetProps>;
+  const gateState: WidgetState | null =
+    gate === 'unconfirmed' ? { kind: 'unconfirmed', onRetry: data?.retryScope } : gate ? { kind: gate } : null;
 
   return (
     <div
       className="relative flex h-full flex-col"
       data-widget-id={id}
       data-widget-type={widget.type}
+      data-widget-gate={gate ?? undefined}
     >
       {editing && actions ? (
         <WidgetEditToolbar
@@ -149,29 +210,24 @@ const WidgetCard = React.memo(function WidgetCard({
           onFocusWidget={() => onFocusWidget?.(id)}
         />
       ) : null}
-      {/* `overflow-hidden` clips a tall body to its cell so it can never spill over the
-          widget below (the WidgetShell ChartCard is `h-full` and scroll-safe). In edit
-          mode `pt-8` reserves room for the absolutely-positioned toolbar so it never
-          occludes the widget's own card header. */}
-      <div className={cn('min-h-0 flex-1 overflow-hidden', editing && 'pt-8')}>
-        <React.Suspense
-          fallback={
-            <div className="space-y-2.5 p-4" aria-busy="true">
-              <Skeleton className="h-4 w-2/3" />
-              <Skeleton className="h-4 w-1/2" />
-            </div>
-          }
-        >
-          {/* The widget body renders its OWN ChartCard chrome + plain-text title (#9). */}
-          <Body id={id} title={title} options={options} />
-        </React.Suspense>
+      {/* VIEW: the body is as tall as its content (F3), never clipped. EDIT: the fixed
+          RGL cell clips it and `pt-8` reserves room for the floating toolbar. */}
+      <div className={cn('flex min-w-0 flex-1 flex-col', editing && 'min-h-0 overflow-hidden pt-8')}>
+        {gateState ? (
+          <WidgetShell title={title} state={gateState} className="flex-1" />
+        ) : (
+          <React.Suspense fallback={<BodyFallback editing={editing} />}>
+            {/* The body draws its OWN panel and plain-text title (#9). */}
+            <Body id={id} title={override} options={options} />
+          </React.Suspense>
+        )}
       </div>
     </div>
   );
 });
 
 // --------------------------------------------------------------------------- //
-// Edit toolbar — drag grip + keyboard-operable move/resize + config/remove.
+// Edit toolbar: drag grip + keyboard-operable move/resize + config/remove.
 // --------------------------------------------------------------------------- //
 
 interface WidgetEditToolbarProps {
@@ -192,7 +248,7 @@ function WidgetEditToolbar({
   onFocusWidget,
 }: WidgetEditToolbarProps) {
   // Roving tabindex: EVERY widget's grip stays in the tab order (tabIndex 0) so a
-  // keyboard-only user can Tab to any widget's grip and operate it — focusing a grip
+  // keyboard-only user can Tab to any widget's grip and operate it; focusing a grip
   // marks that widget active, which brings its move/resize/menu controls into the tab
   // order (those roving on `tabbable`). Without a tabbable grip per widget, arrow keys
   // (captured to MOVE, below) would leave every widget after the first unreachable
@@ -227,7 +283,7 @@ function WidgetEditToolbar({
         materialBar,
       )}
     >
-      {/* The drag grip — the ONLY drag-initiating surface (RGL `handle` selector). Also
+      {/* The drag grip: the ONLY drag-initiating surface (RGL `handle` selector). Also
           a real, focusable button so keyboard users can move/resize with arrow keys. */}
       <button
         type="button"
@@ -350,7 +406,7 @@ function IconBtn({
 }
 
 // --------------------------------------------------------------------------- //
-// WidgetGrid — view (CSS grid, zero RGL) | edit (lazy RGL)
+// WidgetGrid: view (CSS grid, zero RGL) | edit (lazy RGL)
 // --------------------------------------------------------------------------- //
 
 export interface WidgetGridProps {
@@ -360,9 +416,12 @@ export interface WidgetGridProps {
   editing?: boolean;
   /** Grid column count (default 12). */
   cols?: number;
-  /** Row height in pixels for both modes (keeps view ↔ edit visually consistent). */
+  /**
+   * Edit mode's fixed row height in pixels (the RGL cell unit). View mode ignores it:
+   * its rows are sized to their content (F3).
+   */
   rowHeight?: number;
-  /** Edit-mode: called on each RGL layout change (drag/resize) — caller debounces. */
+  /** Edit-mode: called on each RGL layout change (drag/resize); the caller debounces. */
   onLayoutChange?: (layout: GridItemShape[]) => void;
   /** Edit-mode per-widget actions (config/duplicate/remove/move/resize). */
   editActions?: WidgetEditActions;
@@ -370,11 +429,19 @@ export interface WidgetGridProps {
 }
 
 /**
- * Render a dashboard's widgets. In VIEW mode this is a plain CSS grid (no grid lib);
- * in EDIT mode it lazy-loads the RGL editable grid. An empty dashboard renders an
- * `EmptyState` in both modes.
+ * Render a dashboard's widgets. In VIEW mode this is a content-sized CSS grid (no grid
+ * lib); in EDIT mode it lazy-loads the RGL editable grid. An empty dashboard renders an
+ * `EmptyState` in both modes. The grid is one rule-sheet host for every widget on it.
  */
-export function WidgetGrid({
+export function WidgetGrid(props: WidgetGridProps) {
+  return (
+    <RuleSheetHost>
+      <WidgetGridContent {...props} />
+    </RuleSheetHost>
+  );
+}
+
+function WidgetGridContent({
   widgets,
   editing = false,
   cols = GRID_COLS,
@@ -425,81 +492,179 @@ export function WidgetGrid({
             </div>
           }
         >
-          <EditableGrid
-            widgets={widgets}
-            cols={cols}
-            rowHeight={rowHeight}
-            onLayoutChange={onLayoutChange}
-            renderItem={(w) => (
-              <WidgetCard
-                widget={w}
-                editing
-                actions={editActions}
-                tabbable={widgetId(w) === activeId}
-                onFocusWidget={setActiveId}
-              />
-            )}
-          />
+          <WidgetFrameContext.Provider value={EDIT_FRAME}>
+            <EditableGrid
+              widgets={widgets}
+              cols={cols}
+              rowHeight={rowHeight}
+              onLayoutChange={onLayoutChange}
+              renderItem={(w) => (
+                <WidgetCard
+                  widget={w}
+                  editing
+                  actions={editActions}
+                  tabbable={widgetId(w) === activeId}
+                  onFocusWidget={setActiveId}
+                />
+              )}
+            />
+          </WidgetFrameContext.Provider>
         </React.Suspense>
       </div>
     );
   }
 
-  // ------- VIEW: plain CSS grid — ZERO grid JS. -------
-  // Position each widget by its persisted {x,y,w,h} over a `cols`-track grid. Row
-  // height is fixed so the CSS grid visually matches the RGL edit grid. `packWidgets`
-  // is the view-mode analogue of RGL compaction: it flows an UNPLACED default (every
-  // widget at 0,0 — the per-role landing dashboard) into a coherent grid and repairs
-  // any overlap, while returning a valid saved layout unchanged (idempotent).
-  return (
-    <ViewGrid widgets={widgets} cols={cols} rowHeight={rowHeight} className={className} />
-  );
+  // ------- VIEW: a content-sized CSS grid, ZERO grid JS. -------
+  return <ViewGrid widgets={widgets} cols={cols} className={className} />;
 }
 
-/** VIEW-mode CSS grid (extracted so the packing memo has a stable hook position). */
+/** Where one widget sits in the view grid. */
+export interface ViewGridItem {
+  widget: DashboardWidget;
+  /** 1-based column line and span on the `cols` tracks. */
+  colStart: number;
+  colSpan: number;
+  /** 1-based row lines (end exclusive) on the content-sized row tracks. */
+  rowStart: number;
+  rowEnd: number;
+  /**
+   * Columns the widget spans on the two-column laptop grid (1024 to 1279 px): 2 for a
+   * full-width widget, 1 for a half; see {@link laptopSpans}.
+   */
+  lgSpan: 1 | 2;
+}
+
+export interface ViewGridPlacement {
+  /** In reading order: top to bottom, then left to right (the DOM and one-column order). */
+  items: ViewGridItem[];
+  /** How many `auto` row tracks the wide grid has. */
+  rows: number;
+}
+
+/**
+ * Place widgets on the content-sized view grid (F3). `packWidgets` first flow-packs an
+ * unplaced default (every widget at 0,0) and repairs overlaps, exactly as edit mode
+ * compacts it. Then each distinct top or bottom edge becomes a row line, and a row track
+ * no widget covers (a vertical gap in a saved layout) is dropped, so it can never leave
+ * an empty band. Every track is sized `auto`: a panel takes the height of its content,
+ * and the panels that share a track share its height. Pure.
+ */
+export function viewGridPlacement(widgets: readonly DashboardWidget[], cols: number = GRID_COLS): ViewGridPlacement {
+  const placed = packWidgets(widgets, cols).map((w) => {
+    const g = w as Record<string, unknown>;
+    const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : d);
+    const x = Math.max(0, Math.min(cols - 1, num(g.x, 0)));
+    const width = Math.max(1, Math.min(cols - x, num(g.w, 4)));
+    const y = Math.max(0, num(g.y, 0));
+    const height = Math.max(1, num(g.h, 4));
+    return { w, x, width, y, height };
+  });
+  // Row lines: every distinct edge, keeping only the intervals some widget covers.
+  const edges = [...new Set(placed.flatMap((p) => [p.y, p.y + p.height]))].sort((a, b) => a - b);
+  const covered: Array<[number, number]> = [];
+  for (let i = 0; i + 1 < edges.length; i += 1) {
+    const [lo, hi] = [edges[i], edges[i + 1]];
+    if (placed.some((p) => p.y <= lo && p.y + p.height >= hi)) covered.push([lo, hi]);
+  }
+  const ordered = placed.slice().sort((a, b) => a.y - b.y || a.x - b.x);
+  const spans = laptopSpans(ordered.map((p) => p.width >= cols));
+  const items = ordered.map((p, i) => {
+    const first = covered.findIndex(([lo]) => lo >= p.y);
+    let last = first;
+    while (last + 1 < covered.length && covered[last + 1][1] <= p.y + p.height) last += 1;
+    return {
+      widget: p.w,
+      colStart: p.x + 1,
+      colSpan: p.width,
+      rowStart: first + 1,
+      rowEnd: last + 2,
+      lgSpan: spans[i],
+    };
+  });
+  return { items, rows: covered.length };
+}
+
+/**
+ * The spans on the two-column laptop grid, in reading order, so the grid never leaves a
+ * hole and the DOM order stays the visual order (no `dense` packing). A widget as wide as
+ * the board takes a full row; the others pair up two to a row. A half left without a
+ * partner (before a full-width widget, or at the end) widens to the full row. Pure.
+ */
+export function laptopSpans(fullWidth: readonly boolean[]): Array<1 | 2> {
+  const spans: Array<1 | 2> = fullWidth.map((full) => (full ? 2 : 1));
+  let pending: number | null = null;
+  fullWidth.forEach((full, i) => {
+    if (full) {
+      if (pending != null) spans[pending] = 2;
+      pending = null;
+    } else if (pending == null) {
+      pending = i;
+    } else {
+      pending = null;
+    }
+  });
+  if (pending != null) spans[pending] = 2;
+  return spans;
+}
+
+/**
+ * VIEW-mode grid, in reading order at every width: one column on a phone and a tablet,
+ * two from `lg` (1024 px, the laptop widths where one column made every module a full
+ * page wide), and from `xl` the 12 columns with content-sized rows. The wide placement
+ * rides on CSS custom properties so the narrower layouts can ignore it (an inline
+ * `grid-column` could not be undone at a breakpoint); the `xl` rules come later in the
+ * stylesheet, so they override the two-column spans.
+ */
 function ViewGrid({
   widgets,
   cols,
-  rowHeight,
   className,
 }: {
   widgets: DashboardWidget[];
   cols: number;
-  rowHeight: number;
   className?: string;
 }) {
-  const placed = React.useMemo(() => packWidgets(widgets, cols), [widgets, cols]);
+  const placement = React.useMemo(() => viewGridPlacement(widgets, cols), [widgets, cols]);
   return (
-    <div
-      className={cn('w-full', className)}
-      data-testid="widget-grid-view"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-        gridAutoRows: `${rowHeight}px`,
-        gap: '16px',
-      }}
-    >
-      {placed.map((w) => {
-        const anyW = w as Record<string, number | undefined>;
-        const x = Math.max(0, Math.min(cols - 1, anyW.x ?? 0));
-        const width = Math.max(1, Math.min(cols - x, anyW.w ?? 4));
-        const y = Math.max(0, anyW.y ?? 0);
-        const height = Math.max(1, anyW.h ?? 4);
-        return (
+    <WidgetFrameContext.Provider value={VIEW_FRAME}>
+      <div
+        className={cn(
+          // One panel gutter, equal to the panel padding (16, 20 from 1280, 24 from 1920
+          // px), exactly as the Cyber Defence Center spaces its modules (SPEC §4.9.1).
+          'grid w-full grid-cols-1 lg:grid-cols-2',
+          PANEL_GAP,
+          'xl:[grid-template-columns:var(--wg-cols)] xl:[grid-template-rows:var(--wg-rows)]',
+          className,
+        )}
+        data-testid="widget-grid-view"
+        style={
+          {
+            '--wg-cols': `repeat(${cols}, minmax(0, 1fr))`,
+            '--wg-rows': `repeat(${Math.max(1, placement.rows)}, auto)`,
+          } as React.CSSProperties
+        }
+      >
+        {placement.items.map((it) => (
           <div
-            key={widgetId(w)}
-            style={{
-              gridColumn: `${x + 1} / span ${width}`,
-              gridRow: `${y + 1} / span ${height}`,
-              minWidth: 0,
-            }}
+            key={widgetId(it.widget)}
+            className={cn(
+              'flex min-w-0 flex-col',
+              it.lgSpan === 2 ? 'lg:col-span-2' : 'lg:col-span-1',
+              'xl:[grid-column:var(--wg-col)] xl:[grid-row:var(--wg-row)]',
+            )}
+            data-grid-cell=""
+            style={
+              {
+                '--wg-col': `${it.colStart} / span ${it.colSpan}`,
+                '--wg-row': `${it.rowStart} / ${it.rowEnd}`,
+              } as React.CSSProperties
+            }
           >
-            <WidgetCard widget={w} editing={false} />
+            <WidgetCard widget={it.widget} editing={false} />
           </div>
-        );
-      })}
-    </div>
+        ))}
+      </div>
+    </WidgetFrameContext.Provider>
   );
 }
 

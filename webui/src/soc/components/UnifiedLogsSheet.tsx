@@ -79,6 +79,7 @@ import type { AskAiChipProps } from '@/soc/components/AskAiChip';
 import { useAuth } from '@/soc/auth';
 import { useRoute } from '@/soc/router';
 import type { AskEntityKind } from '@/soc/components/ask-ai';
+import { RuleLink, RuleSheetScope, useRuleSheet, type RuleSheetWindow } from '@/soc/components/RuleLink';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { SeverityBadge } from '@/soc/components/badges';
@@ -291,7 +292,23 @@ function startWindow(from?: string, to?: string, label?: string): StartWindow {
   };
 }
 
-export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
+/**
+ * The rule sheet the row details open (Round 14, SPEC §4.6.5) belongs to the whole body,
+ * never to a row a refresh can drop. While it is open the live tail pauses (the modal
+ * covers the rows), so the expanded row and the link it was opened from are still there
+ * when it closes; polling resumes on close.
+ */
+export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = (props) => {
+  const ruleSheet = useRuleSheet();
+  return (
+    <RuleSheetScope host={ruleSheet}>
+      <LogsBody {...props} tailPaused={ruleSheet.isOpen} />
+    </RuleSheetScope>
+  );
+};
+
+const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
+  tailPaused,
   initialQuery = '',
   initialFrom,
   initialTo,
@@ -391,7 +408,7 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
   // Live-tail polling (every 10s). Uses a ref so the interval never captures a stale
   // `load` closure while search/time-range change.
   React.useEffect(() => {
-    if (!liveTail) {
+    if (!liveTail || tailPaused) {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -405,7 +422,17 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
         intervalRef.current = null;
       }
     };
-  }, [liveTail]);
+  }, [liveTail, tailPaused]);
+
+  // The window a rule opened from a row's detail reads (Round 14, SPEC §4.6.5): the
+  // linked window's exact bounds, else the chosen preset up to now.
+  const ruleWindow = React.useMemo<RuleSheetWindow | undefined>(() => {
+    if (linkedWindow) {
+      return linkedWindow.from ? { from: linkedWindow.from, to: linkedWindow.to ?? 'now', label: linkedWindow.label } : undefined;
+    }
+    if (!start) return undefined;
+    return { from: start, to: 'now', label: TIME_RANGES.find((r) => r.value === start)?.label };
+  }, [linkedWindow, start]);
 
   const toggleExpand = React.useCallback((key: string) => {
     setExpanded((prev) => {
@@ -645,7 +672,7 @@ export const UnifiedLogsBody: React.FC<UnifiedLogsBodyProps> = ({
                                   expanded from its far-right Raw button, so a full-width
                                   detail would start off-screen. */}
                               <div className={ROW_DETAIL} data-testid="ulog-row-detail">
-                                <RowEntities row={r} />
+                                <RowEntities row={r} ruleWindow={ruleWindow} sourceId={sourceId} />
                                 {/* _raw is UNTRUSTED source data → fenced, never markup. */}
                                 <CodeBlock
                                   value={r._raw ?? {}}
@@ -696,7 +723,11 @@ const ROW_ENTITIES: ReadonlyArray<{ label: string; kind: AskEntityKind; pick: (r
   { label: 'Rule', kind: 'rule', pick: (r) => r.rule },
 ];
 
-const RowEntities: React.FC<{ row: UnifiedLogRow }> = ({ row }) => {
+const RowEntities: React.FC<{ row: UnifiedLogRow; ruleWindow?: RuleSheetWindow; sourceId?: string }> = ({
+  row,
+  ruleWindow,
+  sourceId,
+}) => {
   const present = ROW_ENTITIES.map((entity) => ({ ...entity, value: entity.pick(row) })).filter(
     (entity): entity is (typeof entity & { value: string }) => typeof entity.value === 'string' && entity.value.trim() !== '',
   );
@@ -707,7 +738,18 @@ const RowEntities: React.FC<{ row: UnifiedLogRow }> = ({ row }) => {
         <div key={entity.label} className="group/ask flex min-w-0 items-center gap-1.5">
           <dt className="text-muted-foreground">{entity.label}</dt>
           <dd className="flex min-w-0 items-center gap-1">
-            <span className="min-w-0 break-all font-mono text-foreground">{entity.value}</span>
+            {entity.kind === 'rule' ? (
+              // Round 14 (SPEC §4.6.5): the rule opens its picture over the Logs window.
+              <RuleLink
+                rule={entity.value}
+                window={ruleWindow}
+                sourceId={sourceId}
+                origin="Logs"
+                className="min-w-0 break-all text-foreground"
+              />
+            ) : (
+              <span className="min-w-0 break-all font-mono text-foreground">{entity.value}</span>
+            )}
             <AskAiChip kind={entity.kind} value={entity.value} />
           </dd>
         </div>

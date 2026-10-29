@@ -36,6 +36,7 @@ import {
 import type { Case, SlaPolicy } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { DASH, fmtMoney, formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
+import { caseLabel } from '@/lib/format-values';
 
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
@@ -54,6 +55,7 @@ import {
   type CaseOutcome,
 } from '@/soc/components/outcome';
 import { InlineCode } from '@/soc/components/CodeBlock';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
 import { scoreBand } from '@/soc/components/palette';
 import type { PickableUser, TriageChips } from '@/soc/pages/CaseDetail.api';
@@ -319,17 +321,17 @@ export const FactsRail: React.FC<FactsRailProps> = ({
           <div className="space-y-1">
             <span className={cn('block', FIELD_LABEL)}>Detection rule{ruleIds.length === 1 ? '' : 's'}</span>
             <div className="flex flex-wrap gap-1">
-              {ruleIds.map((rule, index) => (
-                <span key={`${rule}-${index}`} className="group/ask inline-flex min-w-0 max-w-full items-center gap-1">
-                  <Badge
-                    variant="outline"
-                    className="min-w-0 max-w-full whitespace-normal font-mono [overflow-wrap:anywhere]"
-                  >
-                    {rule}
-                  </Badge>
-                  <AskAi kind="rule" value={rule} />
-                </span>
-              ))}
+              {/* Round 14 (SPEC §4.6.5): each rule opens its picture, the rule sheet. The
+                  rail's rules share one sheet, so a live case update that re-renders them
+                  never closes the sheet being read. */}
+              <RuleSheetHost>
+                {ruleIds.map((rule, index) => (
+                  <span key={`${rule}-${index}`} className="group/ask inline-flex min-w-0 max-w-full items-center gap-1">
+                    <RuleLink rule={rule} origin={caseLabel(c)} className="min-w-0 text-xs text-foreground" />
+                    <AskAi kind="rule" value={rule} />
+                  </span>
+                ))}
+              </RuleSheetHost>
             </div>
           </div>
         ) : null}

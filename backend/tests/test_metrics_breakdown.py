@@ -1562,14 +1562,21 @@ def _since(window_from: str, zone: str = "UTC") -> str:
 @pytest.mark.parametrize(("hours", "name"), [
     (24, "Last 24 hours"), (168, "Last 7 days"), (720, "Last 30 days"), (2160, "Last 90 days"),
 ])
-async def test_a_board_hours_window_reads_like_the_board_preset(app_state, hours, name) -> None:
+async def test_a_board_hours_window_reads_like_the_board_preset(app_state, monkeypatch, hours, name) -> None:
     """A board sends its windows as hours tokens (``now-168h``) so its breakdowns count
     the span its posture figures count; the caption that starts with ``window_label``
-    must still read "Last 7 days", never "Last 168 hours", and say where it starts."""
+    must still read "Last 7 days", never "Last 168 hours", and say where it starts.
+
+    The route's clock is held at one instant for the three requests: the label names the
+    start to the minute, so three live reads could straddle a minute boundary and differ
+    for a reason that has nothing to do with the bucket or the store being read."""
+    frozen = datetime.now(UTC)
+    monkeypatch.setattr(routes_metrics, "now_utc", lambda: frozen)
     await _seed(app_state, corpus())
     body = await _breakdown(app_state, by="severity", window=f"now-{hours}h")
     assert body["window_label"] == f"{name} (since {_since(body['window_from'])})"
     start = datetime.fromisoformat(body["window_from"])
+    assert start == frozen - timedelta(hours=hours)                # rolling: never snapped
     assert abs((datetime.now(UTC) - start) - timedelta(hours=hours)) < timedelta(minutes=5)
     bucketed = await _breakdown(app_state, by="severity", bucket="day", window=f"now-{hours}h")
     assert bucketed["window_label"] == body["window_label"]

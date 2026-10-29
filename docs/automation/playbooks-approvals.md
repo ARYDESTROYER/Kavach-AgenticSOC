@@ -34,7 +34,7 @@ Before running:
 
 ## Browse and manage procedures
 
-Open **Intelligence → Response playbooks**. Every card identifies its ownership:
+Open **Intelligence → Runbooks**. Every card identifies its ownership:
 
 - **Bundled** procedures ship with Agentic SOC. You can open and copy their plain Markdown,
   but they are protected from runtime edits so an upgrade has a stable reference set.

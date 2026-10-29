@@ -154,7 +154,7 @@ export function reportErrorMessage(error: unknown, fallback = 'The report could 
     case 'provider_unavailable':
       return 'The AI provider is unavailable or not configured, so no summary was written';
     case 'report_summary_timeout':
-      return 'The summary took too long and was stopped. Try again';
+      return 'The summary took too long. Try again, or summarise fewer items';
     case 'report_summary_invalid':
       return 'The model returned no summary. Try again';
     default:

@@ -1,8 +1,9 @@
 /**
- * Round-6 dashboard-core WidgetGrid a11y/layout regression tests.
+ * Round-6 dashboard-core WidgetGrid a11y/layout regression tests (Round 14: the view grid
+ * places widgets through CSS custom properties, F3).
  *
  *   1. EVERY widget's edit grip is in the tab order (tabIndex 0), so a keyboard-only
- *      user can reach and operate ANY widget — not just the first. Before the fix the
+ *      user can reach and operate ANY widget: not just the first. Before the fix the
  *      grip roving meant only `widgets[0]` was ever tabbable (WCAG 2.1.1 failure).
  *   2. VIEW mode flow-packs an all-at-origin per-role DEFAULT into distinct grid cells
  *      (no overlapping pile in the top-left cell).
@@ -33,8 +34,16 @@ const apiMocks = vi.hoisted(() => ({
   listCases: vi.fn(),
   standup: vi.fn(),
   get: vi.fn(),
+  usageSummary: vi.fn(),
 }));
-vi.mock('@/lib/api', () => ({ api: apiMocks }));
+// The real module keeps `ApiError` and `request` (a load error renders through them).
+vi.mock('@/lib/api', async (orig) => ({ ...(await orig<typeof import('@/lib/api')>()), api: apiMocks }));
+// "Awaiting a decision" counts open cases by AI verdict through the breakdown endpoint (F4).
+const { breakdownMock } = vi.hoisted(() => ({ breakdownMock: vi.fn() }));
+vi.mock('@/lib/api-dashboards', async (orig) => ({
+  ...(await orig<typeof import('@/lib/api-dashboards')>()),
+  getMetricsBreakdown: breakdownMock,
+}));
 const { fetchPostureMock, fetchMitreMock } = vi.hoisted(() => ({
   fetchPostureMock: vi.fn(),
   fetchMitreMock: vi.fn(),
@@ -49,6 +58,8 @@ vi.mock('../../pages/Metrics.posture.api', async () => {
 import { WidgetGrid, type WidgetEditActions } from '@/soc/dashboard/WidgetGrid';
 import { DashboardDataProvider } from '@/soc/dashboard/DashboardDataProvider';
 import type { DashboardWidget } from '@/lib/types';
+
+import { OPEN_BY_VERDICT, USAGE } from './dashboard-fixtures';
 
 function w(partial: Record<string, unknown>): DashboardWidget {
   return partial as unknown as DashboardWidget;
@@ -82,11 +93,13 @@ beforeEach(() => {
   apiMocks.listCases.mockResolvedValue({ cases: [], total: 0 });
   apiMocks.standup.mockResolvedValue({ enabled: false });
   apiMocks.get.mockResolvedValue({ sources: [] });
+  apiMocks.usageSummary.mockResolvedValue(USAGE);
+  breakdownMock.mockResolvedValue(OPEN_BY_VERDICT);
   fetchPostureMock.mockResolvedValue({ window_hours: 168, lifecycle: {}, quality: {}, aging: {}, sla: {} });
   fetchMitreMock.mockResolvedValue({ by_tactic: {}, top_techniques: [], covered_techniques: 0, total_techniques: 0 });
 });
 
-describe('WidgetGrid — keyboard grip reachability (WCAG 2.1.1)', () => {
+describe('WidgetGrid: keyboard grip reachability (WCAG 2.1.1)', () => {
   it('puts EVERY widget grip in the tab order (not just the first)', async () => {
     renderGrid(
       <WidgetGrid widgets={TWO} editing onLayoutChange={vi.fn()} editActions={noopActions} />,
@@ -95,26 +108,27 @@ describe('WidgetGrid — keyboard grip reachability (WCAG 2.1.1)', () => {
 
     const grips = await screen.findAllByLabelText(/Move or resize/i);
     expect(grips.length).toBe(2);
-    // Both grips are keyboard-focusable — the second widget is reachable.
+    // Both grips are keyboard-focusable: the second widget is reachable.
     for (const grip of grips) {
       expect(grip.getAttribute('tabindex')).toBe('0');
     }
   });
 });
 
-describe('WidgetGrid — VIEW-mode packing', () => {
+describe('WidgetGrid: VIEW-mode packing', () => {
   it('flow-packs an all-at-origin default into distinct grid cells', async () => {
     renderGrid(<WidgetGrid widgets={TWO} editing={false} />);
     const view = screen.getByTestId('widget-grid-view');
 
-    // The two widget cells are direct children of the grid; their inline gridColumn must
-    // differ so they no longer stack in the same top-left cell.
+    // The two widget cells are direct children of the grid; their wide-screen column
+    // placement (a CSS custom property, so one column below xl can ignore it) must differ
+    // so they no longer stack in the same top-left cell.
     const cells = Array.from(view.children) as HTMLElement[];
     expect(cells).toHaveLength(2);
-    const cols = cells.map((c) => c.style.gridColumn);
+    const cols = cells.map((c) => c.style.getPropertyValue('--wg-col'));
     expect(cols[0]).not.toBe(cols[1]);
     // First widget occupies column 1; the second flows to its right (not column 1).
-    expect(cols[0]).toContain('1 /');
-    expect(cols[1]).not.toContain('1 /');
+    expect(cols[0]).toMatch(/^1 \//);
+    expect(cols[1]).not.toMatch(/^1 \//);
   });
 });

@@ -2,8 +2,8 @@
  * Reports + Logs routing (chat revamp SPEC §10.6, §10.7): `reports` is a routable PageId
  * under the Workspace group (Chat · Investigate · Reports) with its own lazy route; the
  * `reportId` deep link round-trips through the hash; the Logs route is the page that reads
- * the logs deep link; the new pages compose the shared page anatomy; and the audit viewer
- * offers the new `report` action type.
+ * the logs deep link; the new pages compose the shared page anatomy; and the audit log's
+ * Event menu offers the chat report events.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -21,6 +21,15 @@ vi.mock('@/lib/api', () => {
       roles: { get: ok({ roles: [], default_role: '', rbac_enabled: false, matrix: {} }) },
       audit: { list: ok({ records: [] }) },
     },
+    // The Round 14 audit log reads through the shared request helper (`lib/api-audit`).
+    request: ok({
+      records: [],
+      total: 0,
+      next_cursor: null,
+      total_relation: 'eq',
+      run_totals: {},
+      retention: { hot_days: null, warm_days: null, volatile: false },
+    }),
   };
 });
 
@@ -89,8 +98,8 @@ describe('reports route', () => {
   });
 });
 
-describe('audit action filter', () => {
-  it('offers the chat report action type', async () => {
+describe('audit event filter', () => {
+  it('offers the chat report events and older event types in the Event menu (Round 14 SPEC §4.5.1)', async () => {
     const user = userEvent.setup();
     render(
       <TooltipProvider>
@@ -101,10 +110,9 @@ describe('audit action filter', () => {
         </AuthProvider>
       </TooltipProvider>,
     );
-    const trigger = await screen.findByRole('combobox', { name: 'Filter by action' });
-    await user.click(trigger);
+    await user.click(await screen.findByRole('button', { name: 'Event' }));
     const listbox = await screen.findByRole('listbox');
-    await waitFor(() => expect(within(listbox).getByRole('option', { name: 'Report' })).toBeInTheDocument());
+    await waitFor(() => expect(within(listbox).getByRole('option', { name: 'Any report event' })).toBeInTheDocument());
     expect(within(listbox).getByRole('option', { name: 'System update' })).toBeInTheDocument();
   });
 });

@@ -4,7 +4,7 @@
  * C1 was a shipping regression: the server allowlist
  * (`backend/app/api/routes_dashboards.py` `WIDGET_TYPES`) and the client widget
  * registry (`webui/src/soc/dashboard/registry.ts` `WIDGET_TYPES`) were authored
- * independently and drifted — sharing only 3 of ~9/14 values — so EVERY Edit→Save 400'd
+ * independently and drifted, sharing only 3 of ~9/14 values, so EVERY Edit→Save 400'd
  * in `_clean_widget`. No test crossed the two allowlists, so it passed CI green (H1).
  *
  * This is that missing cross-check. Both sides now pin to ONE committed source of truth
@@ -12,11 +12,9 @@
  * canonical set; the backend companion
  * (`test_round5_dashboards_widget_type_contract.py`) asserts the SERVER frozenset equals
  * the SAME file. A one-sided widget addition therefore fails CI on whichever side
- * forgot to update — the two allowlists can never silently diverge again.
+ * forgot to update: the two allowlists can never silently diverge again.
  */
-import * as React from 'react';
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
 
 import {
   PENDING_WIDGET_TYPES,
@@ -108,7 +106,7 @@ describe('dashboard widget-type allowlist contract (C1/H1)', () => {
   });
 });
 
-describe('Round 14 stub widgets (SPEC §4.4.1)', () => {
+describe('Round 14 widgets (SPEC §4.4.1, §4.4.3)', () => {
   const ROUND14 = [
     'kpi.strip',
     'kpi.auto_close_health',
@@ -186,23 +184,33 @@ describe('Round 14 stub widgets (SPEC §4.4.1)', () => {
     expect(placeholder('chart.case_breakdown', 'top')).toBe('Default 10');
   });
 
-  it('every Round 14 type is pending until its body lands, and only those', () => {
-    expect([...PENDING_WIDGET_TYPES].sort()).toEqual([...ROUND14].sort());
+  it('every Round 14 type has its body: none is pending and each names what it reads', () => {
+    expect([...PENDING_WIDGET_TYPES]).toEqual([]);
+    for (const t of ROUND14) {
+      expect(getWidgetDef(t)!.sources.length, `${t} sources`).toBeGreaterThan(0);
+    }
   });
 
-  it('a stub reads no data source and renders the shared "Not available yet" state', async () => {
-    for (const t of PENDING_WIDGET_TYPES) {
-      expect(getWidgetDef(t)!.sources, `${t} must not fetch before its body lands`).toEqual([]);
+  it('the reads a body makes are among the sources its definition names', () => {
+    // The registry names every read up front (the provider pre-warms them while the lazy
+    // bodies load); a read outside `sources` would be a fetch the gallery never declared.
+    const env = { can: () => true, objectScoped: false, windowHours: 168 };
+    const optionSets: Array<Record<string, unknown>> = [
+      {},
+      { preset: 'detection' },
+      { preset: 'executive' },
+      { series: 'alerts' },
+      { series: 'outcomes' },
+      { by: 'rule', population: 'open' },
+      { bucket: 'week' },
+    ];
+    for (const t of ROUND14) {
+      const def = getWidgetDef(t)!;
+      for (const options of optionSets) {
+        for (const req of def.requests(options, env)) {
+          expect(def.sources, `${t} reads ${req.key}`).toContain(req.key);
+        }
+      }
     }
-    const Stub = getWidgetDef('table.top_rules')!.Component;
-    render(
-      React.createElement(
-        React.Suspense,
-        { fallback: null },
-        React.createElement(Stub, { id: 'w1', title: 'Top detection rules', options: {} }),
-      ),
-    );
-    expect(await screen.findByText('Not available yet')).toBeInTheDocument();
-    expect(screen.getByText('Top detection rules')).toBeInTheDocument();
   });
 });

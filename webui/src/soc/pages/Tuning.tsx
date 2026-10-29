@@ -78,6 +78,7 @@ import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { HelpTip } from '@/soc/components/HelpTip';
 import { Can, ProtectedRoute, useCan } from '@/soc/components/Can';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { Field } from '@/soc/components/Field';
 import { NumberField } from '@/soc/components/NumberField';
 import { LabeledSlider } from '@/soc/components/LabeledSlider';
@@ -389,7 +390,20 @@ export default function Tuning({ onNavigate }: TuningProps) {
   );
 }
 
-export function TuningInner({ onNavigate }: TuningProps) {
+/**
+ * The page body. Its rule links (the inspector header and the ledger) share one rule sheet
+ * that lives with the page (Round 14, SPEC §4.6.5), so a reload that drops the inspected
+ * rule or re-renders the ledger never closes the sheet being read.
+ */
+export function TuningInner(props: TuningProps) {
+  return (
+    <RuleSheetHost>
+      <TuningBody {...props} />
+    </RuleSheetHost>
+  );
+}
+
+function TuningBody({ onNavigate }: TuningProps) {
   const contextNavigate = useNavigateOptional();
   const navigate = onNavigate ?? contextNavigate;
   const canManage = useCan('automation', 'manage');
@@ -717,9 +731,13 @@ export function TuningInner({ onNavigate }: TuningProps) {
         className: 'min-w-[14rem] max-w-[22rem]',
         cell: (row) => (
           <div className="min-w-0 space-y-0.5">
-            <span className="block truncate font-mono text-xs text-foreground" title={row.rule_id}>
-              {row.rule_id}
-            </span>
+            {/* Round 14 (SPEC §4.6.5): the rule opens its picture, the rule sheet. */}
+            <RuleLink
+              rule={row.rule_id}
+              origin="Auto-tuning"
+              title={row.rule_id}
+              className="block max-w-full truncate text-xs text-foreground"
+            />
             <span className="text-xs text-muted-foreground">
               {KIND_LABELS[row.target] ?? humanizeToken(row.target)}
             </span>
@@ -1554,8 +1572,8 @@ function RuleDetailPanel({
           <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
             Rule review
           </p>
-          <p className="mt-1 break-all font-mono text-sm font-semibold text-foreground">
-            {rule.rule_id}
+          <p className="mt-1 break-all text-sm font-semibold text-foreground">
+            <RuleLink rule={rule.rule_id} origin="Auto-tuning" />
           </p>
           <div className="mt-2">
             <RuleStateBadge state={state} />

@@ -53,6 +53,8 @@ import { cn } from '@/lib/cn';
 
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
+
+import { RuleLink, RuleSheetHost } from './RuleLink';
 import {
   autoCloseStatusView,
   healthDegradations,
@@ -217,12 +219,15 @@ function SignalTile({
   value,
   badge,
   detail,
+  extra,
 }: {
   icon: React.ComponentType<{ className?: string }>;
   label: string;
   value: string;
   badge?: React.ReactNode;
   detail?: string;
+  /** Interactive detail under the text (the rules a "Precedent by rule" finding names). */
+  extra?: React.ReactNode;
 }) {
   return (
     <div className="min-w-0 space-y-1.5 px-3 py-3 first:pl-0">
@@ -237,7 +242,77 @@ function SignalTile({
       {detail ? (
         <p className="text-xs leading-relaxed text-muted-foreground">{detail}</p>
       ) : null}
+      {extra}
     </div>
+  );
+}
+
+/** How many rules the "Precedent by rule" tile names before "and N more". */
+const FUTILE_RULES_SHOWN = 5;
+
+/**
+ * The rules whose precedent is not helping ("Rules that still need a human:", a line that
+ * stands on its own for a screen reader), each opening its picture (Round 14, SPEC
+ * §4.6.5: every rule name opens the rule sheet through `RuleLink`). Rule values are
+ * backend-reported identifiers: plain text inside the link (#9). Renders nothing when the
+ * report did not run or found none. The links share one sheet that outlives the line, so
+ * a reload that changes the list never closes the sheet being read.
+ */
+export function FutileRuleLinks({
+  effectiveness,
+}: {
+  effectiveness: DiagnosticsHealth['precedent_effectiveness'] | undefined | null;
+}) {
+  return (
+    <RuleSheetHost>
+      <FutileRuleLine effectiveness={effectiveness} />
+    </RuleSheetHost>
+  );
+}
+
+function FutileRuleLine({
+  effectiveness,
+}: {
+  effectiveness: DiagnosticsHealth['precedent_effectiveness'] | undefined | null;
+}) {
+  if (!effectiveness || effectiveness.futility_measured === false) return null;
+  const seen = new Set<string>();
+  const rules: string[] = [];
+  for (const futile of effectiveness.futile_rules ?? []) {
+    const ids = Array.isArray(futile.rule_ids) && futile.rule_ids.length ? futile.rule_ids : [futile.rule_identity];
+    for (const id of ids) {
+      if (typeof id === 'string' && id.trim() && !seen.has(id)) {
+        seen.add(id);
+        rules.push(id);
+      }
+    }
+  }
+  if (!rules.length) return null;
+  const shown = rules.slice(0, FUTILE_RULES_SHOWN);
+  const more = rules.length - shown.length;
+  // The server lists at most 20 rule identities while `futile_rule_count` counts them
+  // all; the unlisted ones may share rule ids with the listed ones, so their number of
+  // rules is unknown and the line says "at least" (or just "and more"), never a count it
+  // cannot back.
+  const unlisted = (effectiveness.futile_rule_count ?? 0) > (effectiveness.futile_rules?.length ?? 0);
+  const tail = unlisted
+    ? more > 0
+      ? ` and at least ${fmtNumber(more)} more`
+      : ' and more'
+    : more > 0
+      ? ` and ${fmtNumber(more)} more`
+      : null;
+  return (
+    <p className="text-xs leading-relaxed text-muted-foreground" data-testid="futile-rule-links">
+      Rules that still need a human:{' '}
+      {shown.map((rule, index) => (
+        <React.Fragment key={rule}>
+          {index > 0 ? ', ' : null}
+          <RuleLink rule={rule} origin="Health diagnostics" className="text-foreground" />
+        </React.Fragment>
+      ))}
+      {tail}
+    </p>
   );
 }
 
@@ -383,6 +458,7 @@ export function HealthDiagnostics({ windowHours = 24, className }: HealthDiagnos
               )
             }
             detail={precedentSpreadDetail(effectiveness)}
+            extra={<FutileRuleLinks effectiveness={effectiveness} />}
           />
         ) : null}
 

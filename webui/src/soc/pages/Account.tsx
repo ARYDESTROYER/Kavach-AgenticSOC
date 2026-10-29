@@ -34,6 +34,7 @@ import type { AccountProfile, AccountProfileBody } from '@/lib/types';
 import { resizeAvatar, initialsFrom } from '@/lib/avatar';
 import { humanizeToken, formatTimestamp, DASH } from '@/lib/format';
 import { useAuth } from '@/soc/auth';
+import { AuditLogLink } from '@/soc/components/audit/AuditLink';
 import { useNavigateOptional } from '@/soc/router';
 import { useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
 import { PageHeader } from '@/soc/components/PageHeader';
@@ -469,6 +470,11 @@ export function AccountInner({ onNavigateToSecurity, embedded = false }: Account
                   <p className="mt-0.5 text-sm text-muted-foreground">
                     @{shownUser || DASH}
                   </p>
+                  {authEnabled && shownUser ? (
+                    <AuditLogLink opts={{ scope: 'all', actor: shownUser }} className="mt-1 inline-block text-sm">
+                      Your recent activity in the audit log
+                    </AuditLogLink>
+                  ) : null}
 
                   {editable ? (
                     <div className="mt-3 flex flex-wrap items-center gap-2">

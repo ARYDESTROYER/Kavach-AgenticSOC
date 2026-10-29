@@ -13,7 +13,7 @@ investigation, but they have different trust and lifecycle rules.
 
 The built-in corpus contains runbooks, MITRE ATT&CK reference text, and suppression
 guidance. Authorized operators can also create versioned runbook knowledge under
-**Intelligence → Reference runbooks**. When enabled, resolved-case summaries can be indexed for
+**Intelligence → Runbooks**. When enabled, resolved-case summaries can be indexed for
 similarity. Knowledge search combines lexical and vector retrieval and returns source
 and score metadata.
 

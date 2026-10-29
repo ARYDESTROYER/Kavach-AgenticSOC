@@ -3,13 +3,14 @@
  *
  * VIEW mode flow-packs an all-at-origin per-role default (WidgetGrid → packWidgets) into
  * a coherent grid. Before this fix, the FIRST edit-mode entry handed RGL the raw
- * all-(0,0) widgets and RGL vertical-compacted them into a single column — a visible
+ * all-(0,0) widgets and RGL vertical-compacted them into a single column, a visible
  * "jump". `toDraft` now packs the widgets up front so the draft RGL receives the SAME
  * geometry the view shows, and the freshly-seeded draft reads CLEAN (not dirty).
  *
  * WidgetGrid / provider / gallery / config are mocked so the builder renders
  * synchronously; the mock captures the `widgets` it is handed so we can assert geometry.
  */
+import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 
@@ -29,6 +30,7 @@ vi.mock('@/soc/dashboard/WidgetGrid', () => {
 vi.mock('@/soc/dashboard/DashboardDataProvider', () => ({
   DashboardDataProvider: ({ children }: { children: React.ReactNode }) => children,
   DASHBOARD_AUTO_REFRESH_MS: 60_000,
+  useOptionalDashboardData: () => null,
 }));
 vi.mock('@/soc/dashboard/WidgetGallery', () => ({ WidgetGallery: () => null }));
 vi.mock('@/soc/dashboard/WidgetConfigSheet', () => ({ WidgetConfigSheet: () => null }));
@@ -42,8 +44,22 @@ vi.mock('@/lib/api', () => ({
   ApiError: class ApiError extends Error {},
 }));
 
-import { DashboardBuilder } from '@/soc/dashboard/DashboardBuilder';
+import { DashboardBuilder, compactVertically } from '@/soc/dashboard/DashboardBuilder';
+import { BUILTIN_BOARDS } from '@/soc/dashboard/builtins';
 import type { DashboardLayout, DashboardWidget } from '@/lib/types';
+
+/** The board page's part: Edit mode is controlled by the host and turned on by "Edit". */
+function Harness({ dashboard }: { dashboard: DashboardLayout }) {
+  const [editing, setEditing] = React.useState(false);
+  return (
+    <>
+      <button type="button" data-testid="dashboard-edit-btn" onClick={() => setEditing(true)}>
+        Edit
+      </button>
+      <DashboardBuilder dashboard={dashboard} editing={editing} onEditingChange={setEditing} />
+    </>
+  );
+}
 
 function w(partial: Record<string, unknown>): DashboardWidget {
   return partial as unknown as DashboardWidget;
@@ -80,21 +96,21 @@ beforeEach(() => {
   apiMocks.dashboards.update.mockResolvedValue({ ...ORIGIN_DEFAULT });
 });
 
-describe('DashboardBuilder — first edit entry seeds packed (non-overlapping) geometry', () => {
+describe('DashboardBuilder: first edit entry seeds packed (non-overlapping) geometry', () => {
   it('flow-packs an all-at-origin default so the edit draft never overlaps', () => {
-    render(<DashboardBuilder dashboard={ORIGIN_DEFAULT} />);
+    render(<Harness dashboard={ORIGIN_DEFAULT} />);
     fireEvent.click(screen.getByTestId('dashboard-edit-btn'));
 
     const ws = gridHolder.widgets!;
     expect(ws).toHaveLength(3);
-    // No two widgets share the top-left pile — packed into a coherent grid.
+    // No two widgets share the top-left pile: packed into a coherent grid.
     expect(anyOverlap(ws)).toBe(false);
     // At least one widget moved OFF (0,0): the pile was actually spread out.
     expect(ws.some((g) => g.x !== 0 || g.y !== 0)).toBe(true);
   });
 
   it('entering edit on the packed default is CLEAN, not dirty', () => {
-    render(<DashboardBuilder dashboard={ORIGIN_DEFAULT} />);
+    render(<Harness dashboard={ORIGIN_DEFAULT} />);
     fireEvent.click(screen.getByTestId('dashboard-edit-btn'));
     // The sticky bar shows the calm "Editing …" hint, not an unsaved-changes warning:
     // view-pack and draft-pack are byte-identical, so seeding the draft can't dirty it.
@@ -102,10 +118,47 @@ describe('DashboardBuilder — first edit entry seeds packed (non-overlapping) g
     // aria-live region too, so an unscoped getByText would match twice).
     const bar = screen.getByRole('region', { name: 'Unsaved changes' });
     expect(
-      within(bar).getByText('Editing — drag, resize, add or remove widgets.'),
+      within(bar).getByText('Drag, resize, add or remove widgets, then save.'),
     ).toBeInTheDocument();
     expect(
-      within(bar).queryByText('You have unsaved dashboard changes.'),
+      within(bar).queryByText('You have unsaved changes to this dashboard.'),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('DashboardBuilder: the seeded draft is compacted the way the Edit grid compacts', () => {
+  // The super admin role default: a 4-wide and a 6-wide widget, then a 3-wide one that
+  // wraps, then a full-width one. react-grid-layout pulls the 3-wide widget up under the
+  // shorter neighbour when Edit mode mounts; the draft must already hold that geometry,
+  // or opening Edit reads as an unsaved change and asks "Discard changes?" on the way out.
+  const ADMIN_DEFAULT: DashboardLayout = {
+    id: 'overview',
+    name: 'My dashboard',
+    schema_version: 1,
+    columns: 12,
+    widgets: [
+      w({ i: 'cost', type: 'kpi.cost_budget', x: 0, y: 0, w: 4, h: 4, options: {} }),
+      w({ i: 'conn', type: 'table.connector_health', x: 0, y: 0, w: 6, h: 5, options: {} }),
+      w({ i: 'need', type: 'kpi.needs_human', x: 0, y: 0, w: 3, h: 3, options: {} }),
+      w({ i: 'time', type: 'kpi.lifecycle_timing', x: 0, y: 0, w: 12, h: 3, options: {} }),
+    ],
+  };
+
+  it('pulls a wrapped widget up under its shorter neighbour, as the grid does', () => {
+    render(<Harness dashboard={ADMIN_DEFAULT} />);
+    const byId = Object.fromEntries((gridHolder.widgets ?? []).map((g) => [(g as unknown as { i: string }).i, g]));
+    expect(byId.cost).toMatchObject({ x: 0, y: 0 });
+    expect(byId.conn).toMatchObject({ x: 4, y: 0 });
+    expect(byId.need).toMatchObject({ x: 0, y: 4 });
+    expect(byId.time).toMatchObject({ x: 0, y: 7 });
+    expect(anyOverlap(gridHolder.widgets!)).toBe(false);
+  });
+
+  it('leaves an already compact layout (every built-in board) unchanged', () => {
+    for (const board of BUILTIN_BOARDS) {
+      const once = compactVertically(board.widgets);
+      expect(once.map((g) => [g.x, g.y, g.w, g.h])).toEqual(board.widgets.map((g) => [g.x, g.y, g.w, g.h]));
+      expect(compactVertically(once)).toEqual(once);
+    }
   });
 });

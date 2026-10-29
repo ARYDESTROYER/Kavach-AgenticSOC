@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   Pencil,
   SlidersHorizontal,
+  History,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, ApiError } from '@/lib/api';
@@ -55,6 +56,7 @@ import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { LoadError } from '@/soc/components/LoadError';
 import { Can, ProtectedRoute } from '@/soc/components/Can';
 import { useAuth } from '@/soc/auth';
+import { AuditLogLink } from '@/soc/components/audit/AuditLink';
 
 function errMsg(e: unknown, fallback: string): string {
   return e instanceof ApiError && e.message ? e.message : fallback;
@@ -301,6 +303,14 @@ export function UsersInner({ embedded = false }: UsersInnerProps) {
               <ShieldCheck className="h-4 w-4" aria-hidden />
             </Button>
           ) : null}
+          <AuditLogLink
+            opts={{ scope: 'all', actor: u.username }}
+            aria-label={`Audit events for ${u.username}`}
+            title="Audit events for this user"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-hover hover:text-foreground hover:no-underline"
+          >
+            <History className="h-4 w-4" aria-hidden />
+          </AuditLogLink>
           <Button
             variant="ghost"
             size="icon"
