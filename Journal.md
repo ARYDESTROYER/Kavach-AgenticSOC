@@ -11715,3 +11715,10 @@
 - Tests: none (screenshots); every capture had no page error and no horizontal overflow.
 - Status: done.
 - Next: r6b-fix (FX3b2) and r6w-fix (FX3wa, FX3wb, FX3wc) running; then WP-DOC and WP-GEN.
+
+### 2026-10-29 18:30Z — orchestrator — Round 14 run r6b-fix (FX3b2)
+- Context: backend leftovers from the Wave D and FX2 hand-offs.
+- Did: Demo seeded case rules now match rules the Demo sources raise, with case rows held by the sources; plain per-status lookup summaries; Demo chat run summary and runbook list routing; notification providers 500 fixed; RunbookLibrary.migrated_procedures (visibility-filtered); deterministic validation-bound test. Orchestrator mapped the seeded telemetry rules (osquery_process_event, web_access, Entra sign-in) to matching built-in runbooks in the Demo overlay. 13 review findings, confirmed ones fixed, re-reviewed.
+- Tests: gates agent full backend 11,900 tests, 11,888 passed, 6 failed (5 sandbox env, 1 WP-DOC records), 6 skipped; ruff fatal clean; orchestrator re-ran every demo and runbook test after the overlay change (pass).
+- Status: done. OpenAPI regeneration (channel_types, migrated_procedures) is WP-GEN's.
+- Next: r6w-fix finishing; WP-DOC; WP-GEN.
