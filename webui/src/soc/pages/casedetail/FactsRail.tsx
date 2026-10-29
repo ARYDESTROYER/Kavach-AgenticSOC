@@ -7,7 +7,8 @@
  * agreement between them), the signal profile, the triage bands, ownership and tags,
  * every lifecycle clock and the SLA, where the case came from, the primary entity, the
  * campaign, related cases, and the record (decided by, cost, build, notifications,
- * classification and verdict history). Several of these had no home in the Case
+ * classification and verdict history), and from Round 14 the runbook on the case (its
+ * phases with counts; a phase opens the Runbook tab there). Several of these had no home in the Case
  * Manager before (tags, detection source, origin surface, source id, urgency, the SLA
  * clocks, notifications sent, who classified the case and when, the verdict history).
  *
@@ -21,6 +22,7 @@
 import * as React from 'react';
 import {
   Bell,
+  BookCheck,
   Bot,
   Clock,
   Crosshair,
@@ -34,6 +36,7 @@ import {
 } from 'lucide-react';
 
 import type { Case, SlaPolicy } from '@/lib/types';
+import type { CaseRunbooks, PhaseId } from '@/lib/types-runbooks';
 import { cn } from '@/lib/cn';
 import { DASH, fmtMoney, formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
 import { caseLabel } from '@/lib/format-values';
@@ -58,6 +61,7 @@ import { InlineCode } from '@/soc/components/CodeBlock';
 import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
 import { ProvenanceTag, severityProvenance } from '@/soc/components/ProvenanceTag';
 import { scoreBand } from '@/soc/components/palette';
+import { RunbookRail } from '@/soc/runbooks/run/RunbookRail';
 import type { PickableUser, TriageChips } from '@/soc/pages/CaseDetail.api';
 
 import { AskAi } from './AskAi';
@@ -144,6 +148,16 @@ export interface FactsRailProps {
   onSetDisposition?: () => void;
   /** Jump to the Overview's related-cases list. */
   onShowRelated?: () => void;
+  /**
+   * Round 14 (SPEC §4.10.11): the case's runbook runs for the "Runbook" section. Left out
+   * when the viewer cannot read runbooks or runbooks are off; the section is then hidden.
+   */
+  runbook?: {
+    data: CaseRunbooks | null;
+    loading: boolean;
+    failed: boolean;
+    onOpenPhase: (phase: PhaseId | null) => void;
+  };
   className?: string;
 }
 
@@ -158,6 +172,7 @@ export const FactsRail: React.FC<FactsRailProps> = ({
   onCaseChange,
   onSetDisposition,
   onShowRelated,
+  runbook,
   className,
 }) => {
   const entry = classificationEntry(c);
@@ -296,6 +311,17 @@ export const FactsRail: React.FC<FactsRailProps> = ({
         </div>
       </RailSection>
 
+      {runbook ? (
+        <RailSection title="Runbook" icon={BookCheck} testId="facts-runbook">
+          <RunbookRail
+            data={runbook.data}
+            loading={runbook.loading}
+            failed={runbook.failed}
+            onOpenPhase={runbook.onOpenPhase}
+          />
+        </RailSection>
+      ) : null}
+
       <RailSection title="Times and SLA" icon={Clock} testId="facts-times">
         <dl className="space-y-1.5">
           {clocks.map((clock) => (
@@ -385,7 +411,15 @@ export const FactsRail: React.FC<FactsRailProps> = ({
               : 'Unavailable'}
           </Fact>
           {c.agent_persona ? <Fact label="Profile">{humanizeToken(c.agent_persona)}</Fact> : null}
-          {c.playbook_id ? <Fact label="Playbook" mono>{c.playbook_id}</Fact> : null}
+          {c.runbook_id ? (
+            <Fact label="Investigator runbook" mono>
+              {c.runbook_id}
+              {typeof c.runbook_version === 'number' ? ` v${c.runbook_version}` : ''}
+            </Fact>
+          ) : c.playbook_id ? (
+            /* A case investigated before Round 14 keeps its stored id (shown verbatim). */
+            <Fact label="Runbook (before Round 14)" mono>{c.playbook_id}</Fact>
+          ) : null}
         </dl>
         {classifications.length ? (
           <div className="space-y-1">

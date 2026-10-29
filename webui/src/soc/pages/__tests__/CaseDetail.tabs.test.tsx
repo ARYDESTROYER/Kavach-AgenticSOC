@@ -1,10 +1,11 @@
 /**
- * CaseDetail — 6-tab story shell (task 5: split the merged Timeline tab).
+ * CaseDetail: the 7-tab story shell (task 5 split the merged Timeline tab; Round 14 added
+ * the Runbook tab second, SPEC §4.10.11).
  *
  * Task 5 split the old merged "Timeline" tab (which held BOTH the "what happened"
  * narrative AND the full ReAct trace) into two clean tabs:
  *
- *     overview · timeline · investigation · threat · collab · chat
+ *     overview · runbook · timeline · investigation · threat · collab · chat
  *
  *   - "Timeline"      = ONLY the "what happened" six-stage narrative (<TimelinePanel>).
  *   - "Investigation" = the AI assessment (WhyPanel) + the pinned deterministic
@@ -14,8 +15,9 @@
  * The standalone Feedback tab stays retired (grading folds into the close dialog; the
  * aggregate stays in Metrics). This spec pins:
  *
- *   1. The `tab` union is EXACTLY the 6 story tabs — the removed values are gone.
- *   2. Exactly 6 <TabsTrigger>, each `value` matching its human label.
+ *   1. The `tab` union is EXACTLY the 7 story tabs; the removed values are gone.
+ *   2. Exactly 7 <TabsTrigger>, each `value` matching its human label, in order, with
+ *      Alt+1 to Alt+7 in that order.
  *   3. Each <TabsContent> renders the RIGHT, DISTINCT panel; the merged sub-panels
  *      (StageTimeline / WhyPanel / TraceTimeline) and the retired FeedbackTab are NOT
  *      mounted directly in the shell.
@@ -42,13 +44,14 @@ function slice(text: string, needle: string, end: string): string {
   return text.slice(i, j === -1 ? text.length : j);
 }
 
-const TAB_VALUES = ['overview', 'timeline', 'investigation', 'threat', 'collab', 'chat'] as const;
+const TAB_VALUES = ['overview', 'runbook', 'timeline', 'investigation', 'threat', 'collab', 'chat'] as const;
 // 'investigation' is now a REAL tab (task 5); only the truly-removed panels stay gone.
 const REMOVED_TABS = ['why', 'trace', 'feedback'] as const;
 
 /** value → expected human label + the panel component mounted for it. */
 const TAB_LABEL: Record<(typeof TAB_VALUES)[number], string> = {
   overview: 'Overview',
+  runbook: 'Runbook',
   timeline: 'Timeline',
   investigation: 'Investigation',
   threat: 'Threat context',
@@ -57,6 +60,7 @@ const TAB_LABEL: Record<(typeof TAB_VALUES)[number], string> = {
 };
 const TAB_PANEL: Record<(typeof TAB_VALUES)[number], string> = {
   overview: 'OverviewPanel',
+  runbook: 'RunbookPanel',
   timeline: 'TimelinePanel',
   investigation: 'InvestigationPanel',
   threat: 'ThreatContextPanel',
@@ -64,19 +68,24 @@ const TAB_PANEL: Record<(typeof TAB_VALUES)[number], string> = {
   chat: 'ChatTab',
 };
 
-describe('CaseDetail — 6-tab story shell (task 5)', () => {
-  it('the tab union is exactly the 6 story tabs (the removed panels are gone)', () => {
-    const union = slice(src, 'const [tab, setTab] = React.useState<', ">('overview')");
-    for (const v of TAB_VALUES) expect(union, `union should include '${v}'`).toContain(`'${v}'`);
+describe('CaseDetail: the 7-tab story shell (task 5, Round 14)', () => {
+  it('the tab union is exactly the 7 story tabs (the removed panels are gone)', () => {
+    expect(src).toContain('const [tab, setTab] = React.useState<CaseTab>(\'overview\')');
+    const union = slice(src, 'const CASE_TABS = [', '] as const;');
+    expect(union).toBe(`const CASE_TABS = [${TAB_VALUES.map((v) => `'${v}'`).join(', ')}`);
     for (const v of REMOVED_TABS) {
       expect(union, `union should NOT include the removed '${v}'`).not.toContain(`'${v}'`);
     }
   });
 
-  it('renders exactly 6 TabsTrigger, each value matching its human label', () => {
+  it('renders exactly 7 TabsTrigger, each value matching its human label', () => {
     const tabsList = slice(src, '<TabsList', '</TabsList>');
     const triggers = tabsList.match(/<TabsTrigger\s+value="[^"]+"/g) || [];
-    expect(triggers.length).toBe(6);
+    expect(triggers.length).toBe(7);
+    expect(triggers.map((t) => /value="([^"]+)"/.exec(t)?.[1])).toEqual([...TAB_VALUES]);
+    // Alt+1 to Alt+7 follow the tab order (the keyboard handler indexes CASE_TABS).
+    const keys = tabsList.match(/aria-keyshortcuts="Alt\+(\d)"/g) || [];
+    expect(keys).toEqual(TAB_VALUES.map((_, i) => `aria-keyshortcuts="Alt+${i + 1}"`));
 
     for (const v of TAB_VALUES) {
       const trigger = slice(tabsList, `value="${v}"`, 'TabsTrigger>');
@@ -131,11 +140,14 @@ describe('CaseDetail — 6-tab story shell (task 5)', () => {
     expect(content).not.toContain('stages={stages}');
   });
 
-  it('forwards the embedded Case Manager presentation to all six shared panels', () => {
+  it('forwards the embedded Case Manager presentation to the six shared panels', () => {
     // Round 12: the Cases sheet converged on the same design, so every surface (sheet and
-    // embedded) forwards the ONE Case Manager panel presentation.
+    // embedded) forwards the ONE Case Manager panel presentation. The Runbook panel has a
+    // single presentation and takes the same panel padding instead.
     const presentationProp = 'presentation="case-manager"';
-    for (const value of TAB_VALUES) {
+    const runbook = slice(src, '<TabsContent value="runbook"', '</TabsContent>');
+    expect(runbook).toContain('className={CASE_MANAGER_PANEL_PADDING}');
+    for (const value of TAB_VALUES.filter((v) => v !== 'runbook')) {
       const content = slice(src, `<TabsContent value="${value}"`, '</TabsContent>');
       expect(
         content,
@@ -219,7 +231,7 @@ describe('CaseDetail — 6-tab story shell (task 5)', () => {
     expect(src).toContain('max-w-[min(98vw,1400px)]');
   });
 
-  it('supports an embedded presentation without forking the six-tab workflow', () => {
+  it('supports an embedded presentation without forking the seven-tab workflow', () => {
     expect(src).toContain("type CaseDetailPresentation = 'sheet' | 'embedded'");
     expect(src).toContain("presentation = 'sheet'");
     expect(src).toContain("if (presentation === 'embedded')");
@@ -228,5 +240,65 @@ describe('CaseDetail — 6-tab story shell (task 5)', () => {
     );
     expect(src).toContain('onCaseChange?.(next)');
     expect(src).toContain('commitCase(next)');
+  });
+});
+
+describe('CaseDetail: the Runbook tab (Round 14, SPEC §4.10.11)', () => {
+  it('shows the Runbook tab only to a viewer who can read runbooks, with its progress count', () => {
+    const tabsList = slice(src, '<TabsList', '</TabsList>');
+    const trigger = slice(tabsList, '{showRunbookTab ? (', ') : null}');
+    expect(trigger).toContain('value="runbook"');
+    // "Abandoned", never "None", when the only runs on the case were abandoned.
+    expect(trigger).toContain('<RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />');
+    expect(src).toContain("const canReadRunbooks = hasPermission('runbooks', 'read') && hasPermission('cases', 'read');");
+    expect(src).toContain('const showRunbookTab = canReadRunbooks;');
+    // Alt+2 does nothing for a viewer with no Runbook tab.
+    expect(src).toContain("if (next === 'runbook' && !state.hasRunbookTab) return;");
+  });
+
+  it('loads the Runbook panel lazily and only from the Runbook tab', () => {
+    expect(src).toMatch(/const RunbookPanel = React\.lazy\(\(\) => import\('\.\/casedetail\/RunbookPanel'\)\)/);
+    const content = slice(src, '<TabsContent value="runbook"', '</TabsContent>');
+    expect(content).toContain('<React.Suspense');
+    // Runbooks turned off make the run read only too (the server refuses every run write).
+    expect(content).toContain('canRun={canRunRunbooks && shownIsCurrent}');
+    expect(content).toContain('enabled={runbookPrefs.enabled}');
+    expect(content).toContain('viewer={runbookViewer}');
+    expect(content).toContain('focusRequest={runbookRequest}');
+    // A handled request is forgotten, so coming back to the tab never replays it.
+    expect(content).toContain('onFocusRequestHandled={runbookRequestHandled}');
+    expect(src).toContain('setRunbookRequest((current) => (current?.tick === tick ? null : current));');
+    expect(src).toContain('runbookTickRef.current += 1;');
+  });
+
+  it('removes "Run a playbook" and offers "Start runbook" in Take action instead', () => {
+    expect(src).not.toMatch(/Run a playbook|runPlaybook|playbooks\.length/);
+    const menu = slice(src, '{canReadRunbooks && canRunRunbooks && runbookPrefs.enabled ? (', ') : null}');
+    expect(menu).toContain("requestRunbook({ kind: 'start' })");
+    expect(menu).toContain('Start runbook');
+  });
+
+  it('repeats the Next step card on the Overview of an open case and points Collaboration at Other tasks', () => {
+    const overview = slice(src, '<TabsContent value="overview"', '</TabsContent>');
+    expect(overview).toContain('runbookCard={');
+    expect(overview).toContain('!caseIsTerminal(c.status)');
+    expect(overview).toContain('<OverviewNextStep');
+    const collab = slice(src, '<TabsContent value="collab"', '</TabsContent>');
+    expect(collab).toContain("onOpenTasks={showRunbookTab ? () => requestRunbook({ kind: 'tasks' }) : undefined}");
+    expect(collab).toContain('<OtherTasksLoader');
+  });
+
+  it('asks the close dialog for a reason when required steps are open (D34)', () => {
+    expect(src).toContain('input.require_open_steps_reason = true;');
+    expect(src).toContain('if (reason) input.open_steps_reason = reason;');
+    expect(src).toContain("const refused = stepsOpenRefusal(e);");
+    const dialog = slice(src, '<ConfirmActionDialog', '/>');
+    for (const prop of [
+      'openSteps={dialogOpenSteps}',
+      'openStepsReason={openStepsReason}',
+      'openStepsError={openStepsError}',
+    ]) {
+      expect(dialog).toContain(prop);
+    }
   });
 });

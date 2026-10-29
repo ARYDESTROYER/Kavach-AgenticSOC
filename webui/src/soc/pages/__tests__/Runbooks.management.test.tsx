@@ -1,744 +1,397 @@
-/** Intelligence Runbooks: protected browse + permission-gated CRUD/reindex. */
+/**
+ * The Runbooks library (Round 14, SPEC §4.10.12): one table of the built-ins and the team's
+ * runbooks with search, State and Origin filters; "No runbooks match these filters." with
+ * Clear filters; New runbook and Import only with `runbooks:manage` (and never in Demo
+ * Mode); the key-figure strip, "Rules with no runbook" and "Recent runs" from the
+ * case-derived metrics, which say "You do not have access to cases." without the grant and
+ * "Hidden while row-level scope is on." under row-level scope; the one-time migration
+ * intro; a row opens the editor at `#/runbooks?id=<id>` through a real link. A figure is never
+ * shown before it is known, a capped ledger reads as a floor, and the library is read again on
+ * each return from the editor.
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 const mocks = vi.hoisted(() => ({
-  getRunbooks: vi.fn(),
-  getRunbook: vi.fn(),
-  createRunbook: vi.fn(),
-  updateRunbook: vi.fn(),
-  deleteRunbook: vi.fn(),
-  submitJob: vi.fn(),
-  canManage: true,
-  toastSuccess: vi.fn(),
-  toastWarning: vi.fn(),
-  toastError: vi.fn(),
+  grants: new Set<string>(),
+  demo: false,
+  listRunbookLibrary: vi.fn(),
+  getRunbookMetrics: vi.fn(),
+  importRunbook: vi.fn(),
+  exportRunbookMarkdown: vi.fn(),
 }));
 
-vi.mock('@/lib/api', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api')>();
-  return {
-    ...actual,
-    api: {
-      ...actual.api,
-      getRunbooks: mocks.getRunbooks,
-      getRunbook: mocks.getRunbook,
-      createRunbook: mocks.createRunbook,
-      updateRunbook: mocks.updateRunbook,
-      deleteRunbook: mocks.deleteRunbook,
-      jobs: {
-        ...actual.api.jobs,
-        submit: mocks.submitJob,
-      },
-    },
-  };
+vi.mock('@/lib/api-runbooks', () => ({
+  listRunbookLibrary: mocks.listRunbookLibrary,
+  getRunbookMetrics: mocks.getRunbookMetrics,
+  importRunbook: mocks.importRunbook,
+  exportRunbookMarkdown: mocks.exportRunbookMarkdown,
+}));
+
+vi.mock('@/soc/components/Can', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/soc/components/Can')>();
+  return { ...actual, useCan: (resource: string, action: string) => mocks.grants.has(`${resource}:${action}`) };
 });
 
-vi.mock('@/soc/components/Can', () => ({
-  useCan: () => mocks.canManage,
+vi.mock('@/soc/demo', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/soc/demo')>();
+  return { ...actual, useDemo: () => ({ status: 'off', active: mocks.demo, loading: false, confirmed: true, refresh: async () => 'off' }) };
+});
+
+vi.mock('@/soc/runbooks/editor/RunbookEditor', () => ({
+  default: (props: {
+    runbookId: string;
+    seedRule?: string | null;
+    initialDetail?: { revision: number } | null;
+    initialEdits?: { definition: { summary: string } } | null;
+    onOpenRunbook: (id: string, detail?: unknown, edits?: unknown) => void;
+  }) => (
+    <div
+      data-testid="editor-stub"
+      data-initial={props.initialDetail ? String(props.initialDetail.revision) : ''}
+      data-edits={props.initialEdits ? props.initialEdits.definition.summary : ''}
+    >
+      {`editor ${props.runbookId}${props.seedRule ? ` for ${props.seedRule}` : ''}`}
+      <button type="button" onClick={() => props.onOpenRunbook('created-one', CREATED)}>
+        stub create
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          props.onOpenRunbook('created-one', CREATED, {
+            definition: { summary: 'Typed while creating' },
+            source: null,
+            selected: 'details',
+          })
+        }
+      >
+        stub create with edits
+      </button>
+    </div>
+  ),
 }));
 
-vi.mock('sonner', () => ({
-  toast: {
-    success: mocks.toastSuccess,
-    warning: mocks.toastWarning,
-    error: mocks.toastError,
-  },
-}));
-
-import type {
-  Runbook,
-  RunbookAuthoringStandard,
-  RunbookDetail,
-  RunbookIndexResult,
-} from '@/lib/types';
 import { ApiError } from '@/lib/api';
+import type { RunbookMetrics } from '@/lib/types-runbooks';
+import { RouterProvider } from '@/soc/router';
 import { TooltipProvider } from '@/ui/tooltip';
-import Runbooks from '../Runbooks';
-import {
-  RUNBOOK_BODY_MAX_CHARS,
-  RUNBOOK_DESCRIPTOR_MAX_CHARS,
-  validateRunbookAuthoring,
-} from '../runbookAuthoring';
-import { RUNBOOK_EXAMPLES } from '../runbookExamples';
 
-const INDEX_OK: RunbookIndexResult = {
-  ok: true,
-  indexed: 1,
-  deleted: 0,
-  failed: 0,
-  errors: [],
+import Runbooks, { PAGE_HELP, attachedBy, migrationText, nameLine, recentRunLine, stateText, stepsText } from '../Runbooks';
+import { makeSummary } from '@/soc/runbooks/editor/__tests__/fixtures';
+
+const LIBRARY = [
+  makeSummary({ id: 'brute-force-password-spray', title: 'Brute force and password spray', origin: 'builtin', state: 'published', draft_version: null, live_version: 1 }),
+  makeSummary({ id: 'phishing-triage', title: 'Phishing triage', origin: 'operator', state: 'draft', live_version: null, draft_version: 1, applies_to: { rule_ids: ['mail_reported_phish'], mitre: ['T1566'], more: 2 } }),
+  makeSummary({ id: 'old-proc', title: 'Old procedure', origin: 'imported', state: 'in_review', in_review_version: 1, live_version: null, draft_version: null, review_due_at: '2026-01-01T00:00:00Z' }),
+];
+
+/** The detail a create returns (revision 1), handed to the editor of the new id. */
+const CREATED = { summary: makeSummary({ id: 'created-one', title: 'Created one' }), live: null, draft: null, in_review: null, versions: [], open_runs_by_version: {}, revision: 1 };
+
+const METRICS: RunbookMetrics = {
+  window_label: 'Last 30 days',
+  partial: false,
+  per_runbook: [{ id: 'brute-force-password-spray', title: 'Brute force and password spray', started: 10, completed: 7, abandoned: 1, median_minutes_to_complete: 46 }],
+  per_phase: [],
+  per_step: [],
+  coverage: { cases_with_run: 52, human_handled_cases: 73 },
+  rules_without_runbook: [{ rule: 'vpn_auth_failed', cases: 4 }],
+  cohorts: { with_completed_run: { cases: 7, mttr_p50_minutes: 30 }, without: { cases: 5, mttr_p50_minutes: 60 }, note: 'comparison, not cause' },
+  recent_runs: [
+    {
+      run_id: 'run-1',
+      case_id: 'c-214',
+      case_number: 'CASE-000214',
+      runbook_id: 'brute-force-password-spray',
+      title: 'Brute force and password spray',
+      version: 1,
+      status: 'completed',
+      attached_actor: 'agentic_soc',
+      started_at: '2026-10-28T10:00:00Z',
+      completed_at: '2026-10-28T10:46:00Z',
+      duration_minutes: 46,
+    },
+  ],
 };
 
-function runbook(over: Partial<Runbook> = {}): Runbook {
-  return {
-    id: 'suspicious_powershell',
-    title: 'Suspicious PowerShell',
-    summary: 'Investigation reference for encoded PowerShell execution.',
-    persona: 'malware',
-    applies_to_rules: ['powershell'],
-    applies_to_techniques: ['T1059.001'],
-    applies_to_entities: ['host', 'user'],
-    keywords: ['encodedcommand'],
-    source_type: 'operator',
-    protected: false,
-    editable: true,
-    revision: 3,
-    created_at: '2026-07-29T10:00:00Z',
-    updated_at: '2026-07-30T10:00:00Z',
-    index_status: 'indexed',
-    indexed_revision: 3,
-    last_indexed_at: '2026-07-30T10:01:00Z',
-    index_error: null,
-    ...over,
-  };
-}
-
-function detail(row: Runbook, content?: string): RunbookDetail {
-  const document = content ?? validDocument(row.id, row.title, row.summary);
-  const body = document.replace(/^---\n[\s\S]*?\n---\n*/, '').trim();
-  return { ...row, content: document, body };
-}
-
-function validDocument(
-  id = 'suspicious_powershell',
-  title = 'Suspicious PowerShell',
-  summary = 'Investigate encoded PowerShell execution on a managed host.',
-): string {
-  return `---
-id: ${id}
-title: ${title}
-summary: ${summary}
-persona: malware
-applies_to_rules: [powershell]
-applies_to_techniques: [T1059.001]
-applies_to_entities: [host]
-keywords: [encodedcommand]
----
-
-SIGNAL
-PowerShell starts with encoded content or a policy bypass on a managed host.
-
-EVIDENCE REQUIRED
-Collect process ancestry, script-block telemetry, identity, host, and execution time.
-
-INVESTIGATION STEPS
-1. Confirm the original command and process parent from endpoint telemetry.
-2. Compare the activity with the host and identity baseline.
-3. Record corroborating or conflicting evidence before assigning a verdict.
-
-TRUE POSITIVE SIGNALS
-The decoded command performs an unauthorized payload download or credential action.
-
-FALSE POSITIVE SIGNALS
-An approved automation owner confirms the exact signed script and expected schedule.
-
-NEEDS HUMAN WHEN
-Required process or script-block telemetry is missing, stale, or contradictory.
-
-RECOMMENDED NEXT ACTION
-Escalate confirmed malicious execution and preserve the process tree for containment.
-`;
-}
-
-function response(rows: Runbook[]) {
-  return {
-    enabled: true,
-    retrieval_enabled: true,
-    count: rows.length,
-    runbooks: rows,
-  };
-}
-
-function authoringStandard(
-  override: Partial<RunbookAuthoringStandard> = {},
-): RunbookAuthoringStandard {
-  return {
-    version: 1,
-    body_max_characters: 1_800,
-    retrieval_descriptor_max_characters: 1_200,
-    document_max_bytes: 131_072,
-    section_min_characters: 12,
-    reserved_ids: ['index', 'readme', 'reindex'],
-    character_count: 'Unicode characters after newline normalization and outer trimming',
-    metadata_limits: {
-      title_max_characters: 120,
-      summary_max_characters: 280,
-      persona_max_characters: 48,
-      list_max_items: 12,
-      list_item_max_characters: 64,
-    },
-    required_manifest_fields: [
-      'id',
-      'title',
-      'summary',
-      'applies_to_rules',
-      'applies_to_entities',
-      'keywords',
-    ],
-    optional_manifest_fields: ['persona', 'applies_to_techniques'],
-    required_body_labels: [
-      'SIGNAL',
-      'EVIDENCE REQUIRED',
-      'INVESTIGATION STEPS',
-      'TRUE POSITIVE SIGNALS',
-      'FALSE POSITIVE SIGNALS',
-      'NEEDS HUMAN WHEN',
-      'RECOMMENDED NEXT ACTION',
-    ],
-    optional_body_labels: ['LIMITATIONS'],
-    investigation_steps: 'Sequential one-line numbered steps: 1., 2., 3.',
-    allowed_metadata_format: 'Concise plain text only',
-    allowed_body_format: 'Plain sentences and sequential numbered steps only',
-    prohibited_metadata_format: ['Markdown headings or table pipes'],
-    prohibited_body_format: ['Markdown headings', 'tables'],
-    ...override,
-  };
-}
-
-function renderRunbooks() {
+function renderPage() {
   return render(
     <TooltipProvider>
-      <Runbooks embedded />
+      <RouterProvider>
+        <Runbooks />
+      </RouterProvider>
     </TooltipProvider>,
   );
 }
 
-describe('Intelligence Runbooks management', () => {
-  beforeEach(() => {
-    for (const mock of [
-      mocks.getRunbooks,
-      mocks.getRunbook,
-      mocks.createRunbook,
-      mocks.updateRunbook,
-      mocks.deleteRunbook,
-      mocks.submitJob,
-      mocks.toastSuccess,
-      mocks.toastWarning,
-      mocks.toastError,
-    ]) {
-      mock.mockReset();
-    }
-    mocks.canManage = true;
+beforeEach(() => {
+  window.location.hash = '#/runbooks';
+  mocks.grants = new Set(['runbooks:read', 'runbooks:manage', 'cases:read']);
+  mocks.demo = false;
+  mocks.listRunbookLibrary.mockReset().mockResolvedValue({ runbooks: LIBRARY, migration: null });
+  mocks.getRunbookMetrics.mockReset().mockResolvedValue(METRICS);
+  mocks.importRunbook.mockReset();
+  mocks.exportRunbookMarkdown.mockReset();
+});
+
+afterEach(() => {
+  window.location.hash = '';
+});
+
+describe('Runbooks library', () => {
+  it('lists every runbook with its state, steps and review date under the page title', async () => {
+    renderPage();
+    expect(screen.getByRole('heading', { level: 1, name: 'Runbooks' })).toBeInTheDocument();
+    const table = await screen.findByRole('table', { name: 'Runbooks' });
+    expect(within(table).getByText('Brute force and password spray')).toBeInTheDocument();
+    expect(within(table).getByText('Published v1')).toBeInTheDocument();
+    expect(within(table).getByText('Draft v1')).toBeInTheDocument();
+    expect(within(table).getByText('In review')).toBeInTheDocument();
+    // Phases then steps on one line, as the SPEC words it.
+    expect(within(table).getAllByText('2 phases · 3 steps').length).toBe(3);
+    expect(within(table).getByText('+2')).toBeInTheDocument();
+    // A long rule id is cut to the chip width, so the chip carries the whole id as its title.
+    expect(within(table).getByText('mail_reported_phish')).toHaveAttribute('title', 'mail_reported_phish');
   });
 
-  afterEach(() => {
-    vi.unstubAllGlobals();
+  it('filters by search and state, and clears back to the full list', async () => {
+    renderPage();
+    await screen.findByText('Phishing triage');
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search runbooks' }), { target: { value: 'no such runbook' } });
+    expect(await screen.findByText('No runbooks match these filters.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(await screen.findByText('Phishing triage')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search runbooks' }), { target: { value: 'T1566' } });
+    const table = screen.getByRole('table', { name: 'Runbooks' });
+    await waitFor(() => expect(within(table).queryByText('Brute force and password spray')).toBeNull());
+    expect(within(table).getByText('Phishing triage')).toBeInTheDocument();
   });
 
-  it('opens bundled Markdown while keeping immutable controls hidden', async () => {
-    const bundled = runbook({
-      id: 'credential_access',
-      title: 'Credential access',
-      source_type: 'bundled',
-      protected: true,
-      editable: false,
-      revision: 'bundled:1',
-      indexed_revision: 'bundled:1',
-    });
-    mocks.getRunbooks.mockResolvedValue(response([bundled]));
-    mocks.getRunbook.mockResolvedValue(detail(bundled));
-
-    renderRunbooks();
-    expect(await screen.findByText('Credential access')).toBeInTheDocument();
-    expect(screen.getByText('Bundled')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
-
-    expect(await screen.findByText('Bundled · protected')).toBeInTheDocument();
-    expect(screen.getByText(/id: credential_access/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^edit$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
+  it('shows the key figures and the two case panels', async () => {
+    renderPage();
+    const strip = await screen.findByRole('group', { name: 'Runbook figures' });
+    await waitFor(() => expect(within(strip).getByText('71%')).toBeInTheDocument());
+    expect(within(strip).getByText('52 of 73 human-handled cases')).toBeInTheDocument();
+    expect(within(strip).getByText('1 review due · 1 in review')).toBeInTheDocument();
+    const rules = screen.getByTestId('rules-without-runbook');
+    expect(within(rules).getByText('vpn_auth_failed')).toBeInTheDocument();
+    expect(within(rules).getByText('4 cases')).toBeInTheDocument();
+    const runs = screen.getByTestId('recent-runs');
+    expect(within(runs).getByText('CASE-000214')).toBeInTheDocument();
+    expect(within(runs).getByText('Completed · Agentic SOC · 46m')).toBeInTheDocument();
   });
 
-  it('explains first use and points to the safe create action', async () => {
-    mocks.getRunbooks.mockResolvedValue(response([]));
+  it('says so when the caller cannot read cases, and the rest of the page works', async () => {
+    mocks.grants = new Set(['runbooks:read']);
+    renderPage();
+    expect(await screen.findByText('Phishing triage')).toBeInTheDocument();
+    expect(mocks.getRunbookMetrics).not.toHaveBeenCalled();
+    expect(screen.getAllByText('You do not have access to cases.').length).toBeGreaterThanOrEqual(2);
+    expect(screen.queryByRole('button', { name: 'New runbook' })).toBeNull();
+  });
 
-    renderRunbooks();
-
-    const empty = await screen.findByRole('group', { name: 'No runbooks are available' });
-    expect(empty).toHaveAttribute('data-empty-state', 'first-use');
-    expect(empty).toHaveAccessibleDescription(
-      /no bundled or operator-authored references yet.*use New runbook.*then index/i,
+  it('hides the case figures under row-level scope', async () => {
+    mocks.getRunbookMetrics.mockRejectedValue(
+      new ApiError(409, 'Hidden while row-level scope is on.', { detail: { code: 'runbook_scope_unsupported', message: 'x' } }),
     );
-    expect(screen.getByRole('button', { name: /new runbook/i })).toBeVisible();
+    renderPage();
+    expect((await screen.findAllByText('Hidden while row-level scope is on.')).length).toBeGreaterThanOrEqual(2);
   });
 
-  it('distinguishes filtered no-results and clears back to the loaded library', async () => {
-    const row = runbook();
-    mocks.getRunbooks.mockResolvedValue(response([row]));
-
-    renderRunbooks();
-    expect(await screen.findByText(row.title)).toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText(/search runbooks/i), {
-      target: { value: 'definitely-not-present' },
-    });
-
-    const noResults = screen.getByRole('status', {
-      name: 'No runbooks match these filters',
-    });
-    expect(noResults).toHaveAttribute('data-empty-state', 'no-results');
-    expect(noResults).toHaveAccessibleDescription(/library loaded.*filter.*exclude/i);
-    fireEvent.click(within(noResults).getByRole('button', { name: /clear filters/i }));
-
-    expect(screen.getByText(row.title)).toBeInTheDocument();
-    expect(screen.queryByRole('status', { name: /no runbooks match/i })).not.toBeInTheDocument();
+  it('offers New runbook and Import only with runbooks:manage and never in Demo Mode', async () => {
+    renderPage();
+    expect(await screen.findByRole('button', { name: 'New runbook' })).toBeInTheDocument();
+    mocks.demo = true;
+    const again = renderPage();
+    await within(again.container).findByText('Runbooks cannot be edited in Demo Mode. The cases show Demo runs.');
+    expect(within(again.container).queryByRole('button', { name: 'New runbook' })).toBeNull();
   });
 
-  it('creates a runbook but reports a partial indexing outcome truthfully', async () => {
-    const saved = runbook({
-      id: 'dns_beaconing',
-      title: 'DNS beaconing',
-      revision: 1,
-      indexed_revision: null,
-      index_status: 'error',
-      index_error: 'Embedding provider unavailable.',
-    });
-    const partial: RunbookIndexResult = {
-      ok: false,
-      indexed: 0,
-      deleted: 0,
-      failed: 1,
-      errors: [{ id: saved.id, error: 'Embedding provider unavailable.' }],
-    };
-    mocks.getRunbooks.mockResolvedValue(response([]));
-    mocks.createRunbook.mockResolvedValue({ ok: true, runbook: saved, index: partial });
-    mocks.getRunbook.mockResolvedValue(detail(saved));
+  it('opens a runbook in the editor from its row, and New runbook for a rule from the panel', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByText('Phishing triage'));
+    expect(await screen.findByTestId('editor-stub')).toHaveTextContent('editor phishing-triage');
+    expect(window.location.hash).toBe('#/runbooks?id=phishing-triage');
+  });
 
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: /new runbook/i }));
-    fireEvent.change(screen.getByLabelText(/runbook id/i), {
-      target: { value: 'dns_beaconing' },
-    });
-    const editor = screen.getByLabelText(/runbook document/i) as HTMLTextAreaElement;
-    expect(editor.value).toContain('id: dns_beaconing');
-    fireEvent.change(editor, { target: { value: validDocument('dns_beaconing', 'DNS beaconing') } });
-    fireEvent.click(screen.getByRole('button', { name: /create runbook/i }));
+  it('names each runbook with a real link to its editor (a new tab works), with no separate open button', async () => {
+    renderPage();
+    const table = await screen.findByRole('table', { name: 'Runbooks' });
+    const link = within(table).getByRole('link', { name: 'Phishing triage' });
+    expect(link).toHaveAttribute('href', '#/runbooks?id=phishing-triage');
+    expect(within(table).queryByRole('button', { name: /^Open / })).toBeNull();
+    // The muted line under the name: the origin and the summary, in plain words, no chip.
+    expect(within(table).getByText('Built-in · Many failed sign-ins.')).toBeInTheDocument();
+    fireEvent.click(link);
+    expect(await screen.findByTestId('editor-stub')).toHaveTextContent('editor phishing-triage');
+  });
 
-    await waitFor(() => expect(mocks.createRunbook).toHaveBeenCalledTimes(1));
-    expect(mocks.createRunbook).toHaveBeenCalledWith({
-      id: 'dns_beaconing',
-      content: expect.stringContaining('id: dns_beaconing'),
+  it('reads the library again on the way back from the editor, and never reopens a stale hand-over', async () => {
+    renderPage();
+    await screen.findByText('Phishing triage');
+    expect(mocks.listRunbookLibrary).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'New runbook' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'stub create' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/runbooks?id=created-one'));
+    expect(screen.getByTestId('editor-stub')).toHaveAttribute('data-initial', '1');
+    mocks.listRunbookLibrary.mockResolvedValue({ runbooks: [...LIBRARY, makeSummary({ id: 'created-one', title: 'Created one' })], migration: null });
+    await act(async () => {
+      window.location.hash = '#/runbooks';
     });
-    expect(mocks.toastWarning).toHaveBeenCalledWith(
-      expect.stringContaining('The Markdown is durable; indexing needs attention.'),
+    expect(await screen.findByText('Created one')).toBeInTheDocument();
+    expect(mocks.listRunbookLibrary).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      window.location.hash = '#/runbooks?id=created-one';
+    });
+    const stub = await screen.findByTestId('editor-stub');
+    expect(stub).toHaveTextContent('editor created-one');
+    expect(stub).toHaveAttribute('data-initial', '');
+  });
+
+  it('hands edits typed while a create ran to the new runbook once, and never on a later visit', async () => {
+    renderPage();
+    await screen.findByText('Phishing triage');
+    fireEvent.click(screen.getByRole('button', { name: 'New runbook' }));
+    expect(await screen.findByTestId('editor-stub')).toHaveAttribute('data-edits', '');
+    fireEvent.click(screen.getByRole('button', { name: 'stub create with edits' }));
+    await waitFor(() => expect(window.location.hash).toBe('#/runbooks?id=created-one'));
+    const handed = screen.getByTestId('editor-stub');
+    expect(handed).toHaveAttribute('data-initial', '1');
+    expect(handed).toHaveAttribute('data-edits', 'Typed while creating');
+    await act(async () => {
+      window.location.hash = '#/runbooks';
+    });
+    await screen.findByText('Phishing triage');
+    await act(async () => {
+      window.location.hash = '#/runbooks?id=created-one';
+    });
+    expect(await screen.findByTestId('editor-stub')).toHaveAttribute('data-edits', '');
+  });
+
+  it('shows a loading tile, never a made-up figure, while the reads run', async () => {
+    mocks.listRunbookLibrary.mockReturnValue(new Promise(() => undefined));
+    mocks.getRunbookMetrics.mockReturnValue(new Promise(() => undefined));
+    renderPage();
+    const strip = screen.getByRole('group', { name: 'Runbook figures' });
+    expect(within(strip).getAllByText('Loading')).toHaveLength(5);
+    expect(within(strip).queryByText('0')).toBeNull();
+    expect(within(strip).queryByText('Hidden')).toBeNull();
+  });
+
+  it('says a figure is unavailable when its read fails', async () => {
+    mocks.listRunbookLibrary.mockRejectedValue(new ApiError(500, 'The runbook store is unavailable.'));
+    mocks.getRunbookMetrics.mockRejectedValue(new ApiError(500, 'Could not read the run figures.'));
+    renderPage();
+    const strip = screen.getByRole('group', { name: 'Runbook figures' });
+    await waitFor(() => expect(within(strip).getAllByText('Unavailable')).toHaveLength(5));
+    expect(within(strip).getAllByText('The library could not be read.')).toHaveLength(2);
+    expect(within(strip).queryByText('0')).toBeNull();
+  });
+
+  it('reads capped run counts as floors and says why', async () => {
+    mocks.getRunbookMetrics.mockResolvedValue({ ...METRICS, partial: true });
+    renderPage();
+    const strip = await screen.findByRole('group', { name: 'Runbook figures' });
+    await waitFor(() => expect(within(strip).getAllByText('At least this many: some runs in this window are not counted.').length).toBeGreaterThan(0));
+    expect(within(strip).getByText('at least 71%')).toBeInTheDocument();
+    expect(screen.getByText('Run counts are lower bounds: some runs in this window are not counted.')).toBeInTheDocument();
+  });
+
+  it('never lets the Show replaced built-ins switch change the Published figure', async () => {
+    const replaced = makeSummary({ id: 'old-builtin', title: 'Old built-in', origin: 'builtin', state: 'published', live_version: 1, draft_version: null, replaced_by: 'phishing-triage' });
+    mocks.listRunbookLibrary.mockImplementation(async (query: { show_replaced?: boolean }) => ({
+      runbooks: query?.show_replaced ? [...LIBRARY, replaced] : LIBRARY,
+      migration: null,
+    }));
+    renderPage();
+    const strip = await screen.findByRole('group', { name: 'Runbook figures' });
+    await waitFor(() => expect(within(strip).getByText('1 built-in · 0 yours')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('switch', { name: 'Show replaced built-ins' }));
+    expect(await screen.findByText('Old built-in')).toBeInTheDocument();
+    expect(within(strip).getByText('1 built-in · 0 yours')).toBeInTheDocument();
+    expect(screen.getByText(/Built-in · Replaced by your copy/)).toBeInTheDocument();
+  });
+
+  it('pins the definition as the page help, and lets the shared page rhythm space the page', async () => {
+    expect(PAGE_HELP).toBe(
+      "Runbooks are your team's step-by-step response procedures. The matching runbook is attached to each case that needs a person. Analysts work through it as a checklist; the AI runs the read-only lookups and can draft notes. A runbook never closes a case; your case policy does that.",
     );
-    expect(await screen.findByText('Latest index reconciliation')).toBeInTheDocument();
-    expect(screen.getByText(/dns_beaconing: Embedding provider unavailable/i)).toBeInTheDocument();
+    renderPage();
+    await screen.findByText('Phishing triage');
+    expect(screen.getByTestId('runbooks-library').className).not.toMatch(/space-y-/);
   });
 
-  it('fails closed when the backend publishes a newer authoring policy', async () => {
-    mocks.getRunbooks.mockResolvedValue({
-      ...response([]),
-      authoring_standard: authoringStandard({ version: 2 }),
-    });
+  it('creates a runbook for a rule with no runbook', async () => {
+    renderPage();
+    const rules = await screen.findByTestId('rules-without-runbook');
+    fireEvent.click(await within(rules).findByRole('button', { name: 'Create a runbook' }));
+    expect(await screen.findByTestId('editor-stub')).toHaveTextContent('editor new for vpn_auth_failed');
+  });
 
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: /new runbook/i }));
-    fireEvent.change(screen.getByLabelText(/runbook id/i), {
-      target: { value: 'policy_drift' },
+  it('introduces the converted procedures once, built from the migration counts', async () => {
+    mocks.listRunbookLibrary.mockResolvedValue({
+      runbooks: LIBRARY,
+      migration: { completed_at: '2026-10-28T00:00:00Z', published: 9, draft: 1, skipped: 0 },
     });
-    fireEvent.change(screen.getByLabelText(/runbook document/i), {
-      target: { value: validDocument('policy_drift') },
-    });
-
+    renderPage();
     expect(
-      screen.getByText(/Console does not match the backend Runbook authoring standard/i),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /create runbook/i })).toBeDisabled();
-    expect(mocks.createRunbook).not.toHaveBeenCalled();
-  });
-
-  it('updates operator Markdown with the opened optimistic revision', async () => {
-    const row = runbook();
-    const first = detail(row);
-    const changed = first.content.replace(
-      'Confirm the original command and process parent from endpoint telemetry.',
-      'Validate the original command and complete process tree from endpoint telemetry.',
-    );
-    const saved = runbook({ revision: 4, indexed_revision: 4 });
-    mocks.getRunbooks.mockResolvedValue(response([row]));
-    mocks.getRunbook.mockResolvedValueOnce(first).mockResolvedValueOnce(detail(saved, changed));
-    mocks.updateRunbook.mockResolvedValue({ ok: true, runbook: saved, index: INDEX_OK });
-
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
-    fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
-    expect(
-      screen.queryByRole('heading', { name: /start from an example/i }),
-    ).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(/runbook document/i), {
-      target: { value: changed },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
-
-    await waitFor(() =>
-      expect(mocks.updateRunbook).toHaveBeenCalledWith(row.id, changed, row.revision),
-    );
-    expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      expect.stringContaining('Runbook updated.'),
-    );
-    expect(await screen.findByText(/Validate the original command/)).toBeInTheDocument();
-  });
-
-  it('deletes only after confirmation and supplies the opened revision', async () => {
-    const row = runbook();
-    mocks.getRunbooks.mockResolvedValue(response([row]));
-    mocks.getRunbook.mockResolvedValue(detail(row));
-    mocks.deleteRunbook.mockResolvedValue({ ok: true, id: row.id, index: INDEX_OK });
-
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: 'Open' }));
-    fireEvent.click(await screen.findByRole('button', { name: /^delete$/i }));
-    const dialog = await screen.findByRole('alertdialog');
-    expect(within(dialog).getByText(/and its retrieval projection will be removed/i)).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('button', { name: /delete runbook/i }));
-
-    await waitFor(() =>
-      expect(mocks.deleteRunbook).toHaveBeenCalledWith(row.id, row.revision),
-    );
-    expect(screen.queryByText(row.title)).not.toBeInTheDocument();
-  });
-
-  it('supports search/index filtering and hides every mutation without runbooks:manage', async () => {
-    mocks.canManage = false;
-    const current = runbook();
-    const pending = runbook({
-      id: 'cloud_exfiltration',
-      title: 'Cloud exfiltration',
-      source_type: 'bundled',
-      protected: true,
-      editable: false,
-      revision: 'bundled:2',
-      indexed_revision: 'bundled:1',
-      index_status: 'indexed',
-    });
-    mocks.getRunbooks.mockResolvedValue(response([current, pending]));
-    mocks.getRunbook.mockResolvedValue(detail(pending));
-
-    renderRunbooks();
-    expect(await screen.findByText('Cloud exfiltration')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /new runbook/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /reindex all/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /reindex suspicious powershell/i })).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByLabelText(/search runbooks/i), {
-      target: { value: 'cloud' },
-    });
-    expect(screen.queryByText('Suspicious PowerShell')).not.toBeInTheDocument();
-    expect(screen.getByText('Cloud exfiltration')).toBeInTheDocument();
-  });
-
-  it('submits full and targeted reconciliation as durable server jobs', async () => {
-    const row = runbook();
-    mocks.getRunbooks.mockResolvedValue(response([row]));
-    mocks.submitJob
-      .mockResolvedValueOnce({ job_id: 'job-all', kind: 'runbook_reindex', status: 'queued' })
-      .mockResolvedValueOnce({ job_id: 'job-one', kind: 'runbook_reindex', status: 'queued' });
-
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: /reindex all/i }));
-    await waitFor(() =>
-      expect(mocks.submitJob).toHaveBeenNthCalledWith(1, {
-        kind: 'runbook_reindex',
-        idempotency_key: expect.any(String),
-        params: {},
-      }),
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: /reindex suspicious powershell/i }));
-    await waitFor(() =>
-      expect(mocks.submitJob).toHaveBeenNthCalledWith(2, {
-        kind: 'runbook_reindex',
-        idempotency_key: expect.any(String),
-        params: { runbook_id: row.id },
-      }),
-    );
-    expect(mocks.toastSuccess).toHaveBeenCalledWith(
-      expect.stringMatching(/queued/i),
-      expect.objectContaining({ description: expect.stringMatching(/server/i) }),
-    );
-  });
-
-  it('shows the complete authoring standard and gates submission until every issue is fixed', async () => {
-    mocks.getRunbooks.mockResolvedValue(response([]));
-
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: /new runbook/i }));
-
-    const standard = screen.getByRole('complementary', { name: /authoring standard/i });
-    expect(within(standard).getByText(/1,800-character body budget/i)).toBeInTheDocument();
-    expect(within(standard).getByText(/Required manifest/i)).toBeInTheDocument();
-    expect(within(standard).getByText(/title 120, summary 280/i)).toBeInTheDocument();
-    expect(within(standard).getByText(/at most 12 values of 64 characters each/i)).toBeInTheDocument();
-    expect(within(standard).getByText(/descriptor capped at 1,200 characters/i)).toBeInTheDocument();
-    expect(within(standard).getByText(/Fixed section order/i)).toBeInTheDocument();
-    expect(within(standard).getByText(/Plain text only/i)).toBeInTheDocument();
-    expect(within(standard).getByText(/Evidence and authority/i)).toBeInTheDocument();
-
-    const submit = screen.getByRole('button', { name: /create runbook/i });
-    expect(submit).toBeDisabled();
-    expect(screen.getByText(/Required frontmatter field title is missing/i)).toBeInTheDocument();
-    expect(screen.getAllByText(/^Why$/)).not.toHaveLength(0);
-    expect(screen.getAllByText(/^Fix$/)).not.toHaveLength(0);
-
-    fireEvent.change(screen.getByLabelText(/runbook id/i), {
-      target: { value: 'host_script_execution' },
-    });
-    fireEvent.change(screen.getByLabelText(/runbook document/i), {
-      target: { value: validDocument('host_script_execution') },
-    });
-
-    expect(screen.getByText('Ready')).toBeInTheDocument();
-    expect(submit).toBeEnabled();
-    expect(screen.getAllByText(/approximately 400–500 tokens/i)).not.toHaveLength(0);
-  });
-
-  it('previews and downloads reviewed examples without importing or saving them', async () => {
-    const exampleContent = validDocument(
-      'encoded_powershell_execution',
-      'Encoded PowerShell execution',
-      'Investigate encoded or policy-bypassing PowerShell on a managed endpoint.',
-    );
-    const fetchExample = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: vi.fn().mockResolvedValue(exampleContent),
-    });
-    vi.stubGlobal('fetch', fetchExample);
-    mocks.getRunbooks.mockResolvedValue(response([]));
-
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: /new runbook/i }));
-
-    expect(screen.getByRole('heading', { name: /start from an example/i })).toBeInTheDocument();
-    expect(screen.getByText(/never imports, saves, indexes, or executes/i)).toBeInTheDocument();
-    expect(screen.getByText('Impossible travel sign-in')).toBeInTheDocument();
-    expect(screen.getByText('Repetitive DNS beaconing')).toBeInTheDocument();
-
-    for (const example of RUNBOOK_EXAMPLES) {
-      const link = screen.getByRole('link', {
-        name: new RegExp(`download ${example.title} example`, 'i'),
-      });
-      expect(link).toHaveAttribute('href', example.href);
-      expect(link).toHaveAttribute('download', example.filename);
-    }
-
-    const heading = screen.getByRole('heading', { name: 'Encoded PowerShell execution' });
-    const card = heading.closest('article');
-    expect(card).not.toBeNull();
-    const download = within(card as HTMLElement).getByRole('link', {
-      name: /download encoded powershell execution example/i,
-    });
-
-    const editor = screen.getByLabelText(/runbook document/i) as HTMLTextAreaElement;
-    const untouchedDraft = editor.value;
-    download.addEventListener('click', (event) => event.preventDefault(), { once: true });
-    fireEvent.click(download);
-    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: /^preview$/i }));
-
-    expect(await screen.findByText(/id: encoded_powershell_execution/i)).toBeInTheDocument();
-    expect(fetchExample).toHaveBeenCalledWith('/examples/runbooks/encoded-powershell.md', {
-      cache: 'no-cache',
-      credentials: 'same-origin',
-    });
-    expect(editor.value).toBe(untouchedDraft);
-    expect(mocks.createRunbook).not.toHaveBeenCalled();
-    expect(mocks.updateRunbook).not.toHaveBeenCalled();
-    expect(mocks.submitJob).not.toHaveBeenCalled();
-  });
-
-  it('keeps downloads available when an inline example preview cannot load', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('static asset unavailable')));
-    mocks.getRunbooks.mockResolvedValue(response([]));
-
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: /new runbook/i }));
-
-    const heading = screen.getByRole('heading', { name: 'Impossible travel sign-in' });
-    const card = heading.closest('article');
-    expect(card).not.toBeNull();
-    fireEvent.click(within(card as HTMLElement).getByRole('button', { name: /^preview$/i }));
-
-    expect(
-      await screen.findByText(/preview could not be loaded.*try the direct download/i),
-    ).toBeInTheDocument();
-    expect(
-      within(card as HTMLElement).getByRole('link', {
-        name: /download impossible travel sign-in example/i,
-      }),
-    ).toHaveAttribute('href', '/examples/runbooks/impossible-travel-signin.md');
-    expect(mocks.createRunbook).not.toHaveBeenCalled();
-    expect(mocks.updateRunbook).not.toHaveBeenCalled();
-  });
-
-  it('renders structured backend 422 issues without a duplicate generic error panel', async () => {
-    mocks.getRunbooks.mockResolvedValue(response([]));
-    mocks.createRunbook.mockRejectedValue(
-      new ApiError(
-        422,
-        'Runbook rejected. Fix the issues below and submit again.',
-        {
-          detail: {
-            code: 'runbook_validation_failed',
-            message: 'Runbook rejected. Fix the issues below and submit again.',
-            issues: [
-              {
-                code: 'server.policy',
-                field: 'summary',
-                problem: 'The summary is not specific enough.',
-                reason: 'Broad summaries reduce retrieval precision.',
-                fix: 'Name the exact signal and affected entity.',
-              },
-            ],
-          },
-        },
+      await screen.findByText(
+        'Your 10 procedures from the previous version are now runbooks. 9 are published and due for review; 1 is a draft with problems to fix. The AI now reads each step’s title and focus line, so check each imported runbook.',
       ),
-    );
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show imported' }));
+    await waitFor(() => expect(screen.queryByText('Phishing triage')).toBeNull());
+    expect(screen.getByText('Old procedure')).toBeInTheDocument();
+  });
 
-    renderRunbooks();
-    fireEvent.click(await screen.findByRole('button', { name: /new runbook/i }));
-    fireEvent.change(screen.getByLabelText(/runbook id/i), {
-      target: { value: 'host_script_execution' },
-    });
-    fireEvent.change(screen.getByLabelText(/runbook document/i), {
-      target: { value: validDocument('host_script_execution') },
-    });
-    fireEvent.click(screen.getByRole('button', { name: /create runbook/i }));
+  it('imports Markdown as a draft and opens it', async () => {
+    mocks.importRunbook.mockResolvedValue({ summary: makeSummary({ id: 'imported-one' }), live: null, draft: null, in_review: null, versions: [], open_runs_by_version: {}, revision: 1 });
+    renderPage();
+    fireEvent.keyDown(await screen.findByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Import Markdown' }));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Markdown'), { target: { value: '---\nid: imported-one\n---' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Import as draft' }));
+    await waitFor(() => expect(mocks.importRunbook).toHaveBeenCalledWith('---\nid: imported-one\n---'));
+    expect(await screen.findByTestId('editor-stub')).toHaveTextContent('editor imported-one');
+  });
 
-    expect(await screen.findByText('The summary is not specific enough.')).toBeInTheDocument();
-    expect(screen.getByText('Broad summaries reduce retrieval precision.')).toBeInTheDocument();
-    expect(screen.getByText('Name the exact signal and affected entity.')).toBeInTheDocument();
-    expect(screen.queryByText('Runbook rejected. Fix the issues below and submit again.')).not.toBeInTheDocument();
-    expect(mocks.toastError).toHaveBeenCalledWith('Runbook rejected—fix 1 issue below.');
+  it('shows a load failure with Retry', async () => {
+    mocks.listRunbookLibrary.mockRejectedValueOnce(new ApiError(503, 'The runbook store is unavailable.'));
+    renderPage();
+    expect(await screen.findByText('Could not load the runbooks')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Phishing triage')).toBeInTheDocument();
+  });
+
+  it('uses no em dash and never the retired word', async () => {
+    const { container } = renderPage();
+    await screen.findByText('Phishing triage');
+    expect(container.textContent).not.toMatch(/—/);
+    expect(container.textContent).not.toMatch(/playbook/i);
   });
 });
 
-describe('Runbook authoring validator parity', () => {
-  it('counts only the trimmed Unicode body and accepts ordinary underscores across CRLF and BOM', () => {
-    const document = `\uFEFF${validDocument('field_name_case').replace(
-      'process ancestry',
-      'process_name and process ancestry',
-    )}`.replaceAll('\n', '\r\n');
-    const result = validateRunbookAuthoring(document, 'field_name_case');
-
-    expect(result.issues).toEqual([]);
-    expect(result.bodyCharacters).toBe(Array.from(result.body).length);
-    expect(result.bodyCharacters).toBeLessThan(RUNBOOK_BODY_MAX_CHARS);
-    expect(result.body).toContain('process_name and process ancestry');
+describe('recent runs wording', () => {
+  it('names who attached a run in words, and formats the time it ran', () => {
+    expect(attachedBy('runbook_selector')).toBe('Agentic SOC');
+    expect(attachedBy('agentic_soc')).toBe('Agentic SOC');
+    expect(attachedBy('threshold_automation')).toBe('A case-automation rule');
+    expect(attachedBy('Admin')).toBe('Admin');
+    expect(attachedBy('')).toBeNull();
+    expect(recentRunLine({ status: 'in_progress', attached_actor: 'runbook_selector', duration_minutes: 130 })).toBe('In progress · Agentic SOC · 2h 10m');
+    expect(recentRunLine({ status: 'abandoned', attached_actor: '', duration_minutes: null })).toBe('Closed early');
+    expect(nameLine(makeSummary({ origin: 'imported', summary: 'Converted.' }))).toBe('Imported · Converted.');
   });
+});
 
-  it('returns all actionable formatting, structure, and metadata issues in one pass', () => {
-    const invalid = validDocument('format_case')
-      .replace('title: Suspicious PowerShell', 'title: **Suspicious PowerShell**')
-      .replace('summary: Investigate', 'summary: [Describe] Investigate')
-      .replace(
-        'PowerShell starts with encoded content or a policy bypass on a managed host.',
-        '# Signal detail\n**Bold** and _italic_ text with `code` and [link](https://example.test).\n| A | B |\n| --- | --- |',
-      )
-      .replace('2. Compare', '4. Compare')
-      .concat('\n\nUNSUPPORTED SECTION\nThis content does not belong in the fixed scaffold.');
-
-    const result = validateRunbookAuthoring(invalid, 'format_case');
-    const codes = new Set(result.issues.map((entry) => entry.code));
-
-    for (const code of [
-      'manifest.title.format.bold',
-      'manifest.summary.placeholder',
-      'body.format.heading',
-      'body.format.table',
-      'body.format.bold',
-      'body.format.italic',
-      'body.format.inline_code',
-      'body.format.link',
-      'body.steps.sequence',
-      'body.structure.label_unknown',
-    ]) {
-      expect(codes.has(code), code).toBe(true);
-    }
-    expect(result.issues.every((entry) => entry.problem && entry.reason && entry.fix)).toBe(true);
-  });
-
-  it('mirrors strict pipe, backtick, placeholder, and malformed-list rejection', () => {
-    const invalid = validDocument('parity_case')
-      .replace('persona: malware', 'persona: PLACEHOLDER | two')
-      .replace('applies_to_rules: [powershell]', 'applies_to_rules: [`powershell`]')
-      .replace('applies_to_entities: [host]', 'applies_to_entities: [host')
-      .replace('keywords: [encodedcommand]', 'keywords: [placeholder]');
-
-    const codes = new Set(
-      validateRunbookAuthoring(invalid, 'parity_case').issues.map((entry) => entry.code),
+describe('library wording', () => {
+  it('names states, steps and the migration counts in plain words', () => {
+    expect(stateText(LIBRARY[0])).toBe('Published v1');
+    expect(stepsText(makeSummary({ phases: ['triage'], step_count: 1 }))).toBe('1 phase · 1 step');
+    expect(migrationText({ completed_at: null, published: 1, draft: 0, skipped: 2 })).toBe(
+      'Your 1 procedure from the previous version is now a runbook. 1 is published and due for review. 2 could not be converted. The AI now reads each step’s title and focus line, so check each imported runbook.',
     );
-
-    for (const code of [
-      'manifest.persona.format.table',
-      'manifest.persona.placeholder',
-      'manifest.applies_to_rules.format.code',
-      'manifest.syntax.invalid_list',
-      'manifest.keywords.placeholder',
-    ]) {
-      expect(codes.has(code), code).toBe(true);
-    }
-  });
-
-  it('rejects scalar lists and every supported uppercase-label character', () => {
-    const invalid = validDocument('shape_case')
-      .replace(
-        'summary: Investigate encoded PowerShell execution on a managed host.',
-        'summary: [ambiguous]',
-      )
-      .concat(
-        '\n\nUNSUPPORTED_LABEL / EXTRA-DETAIL\nThis guidance is outside the fixed scaffold.',
-      );
-
-    const codes = new Set(
-      validateRunbookAuthoring(invalid, 'shape_case').issues.map((entry) => entry.code),
-    );
-
-    expect(codes.has('manifest.field.type')).toBe(true);
-    expect(codes.has('body.structure.label_unknown')).toBe(true);
-  });
-
-  it('rejects a body over 1,800 Unicode characters with an exact repair instruction', () => {
-    const document = validDocument('oversized_case').replace(
-      'PowerShell starts with encoded content or a policy bypass on a managed host.',
-      `PowerShell ${'activity '.repeat(230)}`,
-    );
-    const result = validateRunbookAuthoring(document, 'oversized_case');
-    const issue = result.issues.find((entry) => entry.code === 'body.too_long');
-
-    expect(result.bodyCharacters).toBeGreaterThan(RUNBOOK_BODY_MAX_CHARS);
-    expect(issue?.problem).toContain('maximum is 1800');
-    expect(issue?.fix).toContain('1800 Unicode characters or fewer');
-  });
-
-  it('enforces compact metadata fields, lists, and the aggregate retrieval descriptor', () => {
-    const longValue = 'a'.repeat(65);
-    const wideList = Array.from({ length: 13 }, (_, index) => `${'x'.repeat(62)}${index}`);
-    const document = validDocument('metadata_budget_case')
-      .replace('title: Suspicious PowerShell', `title: ${'T'.repeat(121)}`)
-      .replace(
-        'summary: Investigate encoded PowerShell execution on a managed host.',
-        `summary: ${'S'.repeat(281)}`,
-      )
-      .replace('persona: malware', `persona: ${'P'.repeat(49)}`)
-      .replace('applies_to_rules: [powershell]', `applies_to_rules: [${wideList.join(', ')}]`)
-      .replace('applies_to_entities: [host]', `applies_to_entities: [${longValue}]`)
-      .replace('keywords: [encodedcommand]', `keywords: [${wideList.slice(0, 12).join(', ')}]`);
-
-    const result = validateRunbookAuthoring(document, 'metadata_budget_case');
-    const codes = new Set(result.issues.map((entry) => entry.code));
-
-    for (const code of [
-      'manifest.title.too_long',
-      'manifest.summary.too_long',
-      'manifest.persona.too_long',
-      'manifest.applies_to_rules.too_many',
-      'manifest.applies_to_entities.item_too_long',
-      'manifest.descriptor.too_long',
-    ]) {
-      expect(codes.has(code), code).toBe(true);
-    }
-    expect(result.descriptorCharacters).toBeGreaterThan(RUNBOOK_DESCRIPTOR_MAX_CHARS);
+    expect(migrationText({ completed_at: null, published: 0, draft: 0, skipped: 0 })).toBeNull();
   });
 });

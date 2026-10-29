@@ -80,6 +80,8 @@ import {
   severityBand,
 } from '@/soc/components/badges';
 import { ProvenanceTag, severityProvenance, type Provenance } from '@/soc/components/ProvenanceTag';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
+import { caseLabel } from '@/lib/format-values';
 import { AskAi } from './AskAi';
 import { DecisionCard } from './DecisionCard';
 import {
@@ -581,7 +583,8 @@ const AUTOMATION_META: Record<
   tag: { label: 'Tagged', icon: Tag, tone: 'info' },
   recommend: { label: 'Recommendation', icon: Info, tone: 'medium' },
   notify: { label: 'Notified', icon: Bell, tone: 'info' },
-  run_playbook: { label: 'Queued playbook', icon: BookOpen, tone: 'low' },
+  // A stored action from before Round 14 keeps its token; the label is Console-authored.
+  run_playbook: { label: 'Runbook automation (before Round 14)', icon: BookOpen, tone: 'low' },
   request_approval: { label: 'Proposed (needs approval)', icon: Lock, tone: 'high' },
 };
 
@@ -712,6 +715,12 @@ export const OverviewPanel: React.FC<{
    * the case without recording an outcome (D15 row 3) — the honest next step.
    */
   onSetDisposition?: (opener: HTMLElement) => void;
+  /**
+   * Round 14 (SPEC §4.10.11): the runbook's Next step card, repeated at the top of the
+   * Overview when a runbook is attached to an open case. Read only here; its button opens
+   * the Runbook tab. Nothing in it changes the case (#3).
+   */
+  runbookCard?: React.ReactNode;
 }> = ({
   c,
   fpPolicy,
@@ -726,6 +735,7 @@ export const OverviewPanel: React.FC<{
   onNavigate,
   presentation = 'default',
   onSetDisposition,
+  runbookCard = null,
 }) => {
   const isCaseManager = presentation === 'case-manager';
   const trigger = c.trigger_reason as
@@ -953,6 +963,8 @@ export const OverviewPanel: React.FC<{
       data-case-panel={isCaseManager ? 'overview' : undefined}
       data-presentation={isCaseManager ? 'case-manager' : undefined}
     >
+      {runbookCard}
+
       {/* ============================================== 1. DECISION BRIEF */}
       <PanelCard
         data-testid={isCaseManager ? 'case-manager-decision-summary' : undefined}
@@ -1237,31 +1249,20 @@ export const OverviewPanel: React.FC<{
                     <span className={cn('block', FIELD_LABEL)}>
                       Detection rule{ruleIds.length === 1 ? '' : 's'}
                     </span>
-                    <div className="flex min-w-0 flex-wrap gap-1.5">
-                      {/* UNTRUSTED rule ids — plain text nodes, mono. Long rule names
-                          must wrap inside the chip, never force the card wider
-                          (`whitespace-normal` overrides the Badge's default
-                          `whitespace-nowrap` — both are in tailwind-merge's
-                          `whitespace` class group so the override wins). `min-w-0`
-                          must live on the Badge ITSELF — that's the flex item whose
-                          automatic min-width needs zeroing; a space-less/hyphen-less
-                          id (e.g. "demo_rdp_bruteforce" or a long
-                          Trojan_Generic_..._Detected style id) has no soft-wrap
-                          points, so `break-words` (overflow-wrap: break-word) never
-                          reduces min-content and the item keeps overflowing.
-                          `overflow-wrap: anywhere` DOES reduce min-content per spec,
-                          like `break-all`, but it breaks at spaces FIRST and splits a
-                          word only when that word cannot fit on a line of its own —
-                          `break-all` split readable names mid-word ("foll owed"). */}
-                      {ruleIds.map((r, i) => (
-                        <Badge
-                          key={`${r}-${i}`}
-                          variant="outline"
-                          className="min-w-0 max-w-full whitespace-normal font-mono [overflow-wrap:anywhere]"
-                        >
-                          {r}
-                        </Badge>
-                      ))}
+                    <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1.5">
+                      {/* Round 14 (SPEC §4.6.5): each rule opens the rule sheet. The ids are
+                          UNTRUSTED plain text nodes inside the link (#9) and wrap anywhere so
+                          a long id never forces the card wider. One host keeps one sheet. */}
+                      <RuleSheetHost>
+                        {ruleIds.map((r, i) => (
+                          <RuleLink
+                            key={`${r}-${i}`}
+                            rule={r}
+                            origin={caseLabel(c)}
+                            className="min-w-0 max-w-full whitespace-normal text-left text-xs text-foreground [overflow-wrap:anywhere]"
+                          />
+                        ))}
+                      </RuleSheetHost>
                     </div>
                   </div>
                 ) : null}
@@ -1837,8 +1838,16 @@ export const OverviewPanel: React.FC<{
               ? `Creation build ${buildLabel}`
               : 'Creation build provenance unavailable'}
           </span>
-          {/* UNTRUSTED profile (playbook id / persona) — plain text. */}
-          {c.playbook_id ? <span>Playbook {c.playbook_id}</span> : null}
+          {/* UNTRUSTED profile (runbook id / persona): plain text. A case from before
+              Round 14 keeps its stored id under a Console-authored label. */}
+          {c.runbook_id ? (
+            <span>
+              Investigator runbook {c.runbook_id}
+              {typeof c.runbook_version === 'number' ? ` v${c.runbook_version}` : ''}
+            </span>
+          ) : c.playbook_id ? (
+            <span>Runbook (before Round 14) {c.playbook_id}</span>
+          ) : null}
           {c.agent_persona && c.agent_persona !== 'generalist' ? (
             <span>Profile {humanizeToken(c.agent_persona)}</span>
           ) : null}

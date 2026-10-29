@@ -1,10 +1,13 @@
 /**
  * CaseDetail collaboration truth contract.
  *
- * Task/activity reads are independent endpoints. A rejected read must never be
- * normalised into a successful empty collection, and retrying one endpoint must not
- * hide the other endpoint's failure. This mounts the real orchestrator + panel over
- * rejected client calls, then proves each rail recovers independently.
+ * Discussion and activity reads are independent endpoints. A rejected read must never be
+ * normalised into a successful empty collection, and retrying one endpoint must not hide
+ * the other endpoint's state. This mounts the real orchestrator + panel over rejected
+ * client calls, then proves each rail recovers independently.
+ *
+ * Round 14 (D36): the case's tasks moved to the Runbook tab ("Other tasks"); the
+ * Collaboration rail points there and no longer reads the tasks endpoint itself.
  */
 import type * as React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -167,7 +170,7 @@ describe('CaseDetail — collaboration endpoint failures', () => {
       });
   });
 
-  it('shows independent retryable failures, then recovers each endpoint without a false empty state', async () => {
+  it('shows a retryable activity failure, recovers it without a false empty state, and points tasks at the Runbook tab', async () => {
     const user = userEvent.setup();
     renderWithProviders(<CaseDetail caseId="case-collab" onClose={vi.fn()} />);
 
@@ -175,23 +178,14 @@ describe('CaseDetail — collaboration endpoint failures', () => {
     const collaborationTab = screen.getByRole('tab', { name: /Collaboration/i });
     await user.click(collaborationTab);
     await waitFor(() => expect(collaborationTab).toHaveAttribute('data-state', 'active'));
-    await waitFor(() => {
-      expect(getTasksMock).toHaveBeenCalledTimes(1);
-      expect(getActivityMock).toHaveBeenCalledTimes(1);
-    });
+    await waitFor(() => expect(getActivityMock).toHaveBeenCalledTimes(1));
 
-    expect(await screen.findByText('Could not load tasks')).toBeInTheDocument();
-    expect(screen.getByText('tasks endpoint unavailable')).toBeInTheDocument();
     expect(await screen.findByText('Could not load activity')).toBeInTheDocument();
     expect(screen.getByText('activity endpoint unavailable')).toBeInTheDocument();
-    expect(screen.queryByText('No tasks yet')).not.toBeInTheDocument();
     expect(screen.queryByText('No activity yet')).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Retry tasks' }));
-    expect(await screen.findByText('Validate the identity session')).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText('Could not load tasks')).not.toBeInTheDocument());
-    // Recovering tasks cannot erase or mask the still-failed activity endpoint.
-    expect(screen.getByText('Could not load activity')).toBeInTheDocument();
+    // The tasks are not read here any more: the rail points at the Runbook tab.
+    expect(screen.getByText('Case tasks are in the Runbook tab, under Other tasks.')).toBeInTheDocument();
+    expect(getTasksMock).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole('button', { name: 'Retry activity' }));
     expect(
@@ -201,10 +195,14 @@ describe('CaseDetail — collaboration endpoint failures', () => {
       expect(screen.queryByText('Could not load activity')).not.toBeInTheDocument(),
     );
 
-    expect(getTasksMock).toHaveBeenCalledTimes(2);
     expect(getActivityMock).toHaveBeenCalledTimes(2);
-    // Discussion remains independently available throughout the two failures.
+    // Discussion remains independently available throughout the failure.
     expect(screen.getByText('No discussion yet')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Open the Runbook tab' }));
+    await waitFor(() =>
+      expect(screen.getByRole('tab', { name: /^Runbook/ })).toHaveAttribute('data-state', 'active'),
+    );
   });
 
   it('preserves the last good discussion when a post-triggered refresh fails, then recovers', async () => {

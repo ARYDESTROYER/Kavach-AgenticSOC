@@ -3,10 +3,13 @@
  *
  * Opened with a `caseId`, it fetches the full case (`api.getCase`) and presents a
  * WIDE right-side Sheet modeled on the reference "case report" page:
- *   - a header (title, created/updated, action buttons: reinvestigate / run-playbook /
+ *   - a header (title, created/updated, action buttons: reinvestigate / start runbook /
  *     refresh / chat / history / export / notify),
- *   - the tabbed body — one lazy panel per tab (Overview / Timeline / Investigation /
- *     Threat context / Collaboration / Chat). Task 5 split the merged investigation tab:
+ *   - the tabbed body: one lazy panel per tab (Overview / Runbook / Timeline /
+ *     Investigation / Threat context / Collaboration / Chat). Round 14 (SPEC §4.10.11)
+ *     added the Runbook tab, second, with its progress chip; the case's runbook runs are
+ *     read once here and shared by the tab, the Overview's Next step card, the facts rail
+ *     and the close dialog (which asks why when required steps are open). Task 5 split the merged investigation tab:
  *     the "Timeline" tab is now ONLY the "what happened" six-stage narrative
  *     (the TimelinePanel), and the new "Investigation" tab holds the AI assessment +
  *     the pinned deterministic DecisionCard + the collapsible full ReAct trace
@@ -37,12 +40,13 @@
 import * as React from 'react';
 import {
   AlertTriangle,
-  BookOpen,
+  BookCheck,
   Check,
   ChevronDown,
   Download,
   ExternalLink,
   FileText,
+  LoaderCircle,
   MessageSquare,
   PanelRight,
   Play,
@@ -65,7 +69,6 @@ import type {
   CaseActionInput,
   CaseRationale,
   ModelsResponse,
-  Playbook,
   SlaPolicy,
   ThreatContextPanel as ThreatContextPanelData,
 } from '@/lib/types';
@@ -129,20 +132,14 @@ import {
   editThreadMessage,
   deleteThreadMessage,
   reactThreadMessage,
-  getTasks,
-  addTask,
-  patchTask,
-  logTask,
   getActivity,
   listPickableUsers,
   type TriageChips,
   type TimelineResponse,
   type TimelineStagesResponse,
   type CaseMessage as ThreadMessage,
-  type CaseTask as CaseTaskItem,
   type CaseActivityItem,
   type PickableUser,
-  type TaskStatus,
 } from '@/soc/pages/CaseDetail.api';
 
 import type { Navigate } from '@/soc/router';
@@ -155,6 +152,7 @@ import {
   type FpPolicy,
   type NotifyChannelOption,
   ACTION_PERMISSION,
+  CASE_MANAGER_PANEL_PADDING,
   actionPlanForStatus,
 } from './casedetail/shared';
 import { OverviewPanel } from './casedetail/OverviewPanel';
@@ -169,6 +167,24 @@ import { FactsRail } from './casedetail/FactsRail';
 import { shortcutBlocked } from './casedetail/keyboard';
 import { keepAdvisoryBands } from './casedetail/queue';
 import { CaseChatActivityGlyph, useCaseChatRequest } from '@/soc/chat-activity/case-glyph';
+import { useCaseRunbooks } from '@/soc/runbooks/run/useCaseRunbooks';
+import {
+  caseProgress,
+  openRequiredSteps,
+  openStepsFromRefusal,
+  primaryRun,
+  progressOf,
+  type OpenRequiredStep,
+} from '@/soc/runbooks/run/model';
+import { OverviewNextStep } from '@/soc/runbooks/run/NextStepCard';
+import { RunbookTabCount } from '@/soc/runbooks/run/ProgressChip';
+import { OtherTasksLoader } from '@/soc/runbooks/run/OtherTasks';
+import type { RunbookStepsOpen } from '@/lib/types-runbooks';
+import type { RunbookFocusRequest } from './casedetail/RunbookPanel';
+
+/** A Runbook tab request without its tick (the tick is added when it is made). */
+type WithoutTick<T> = T extends unknown ? Omit<T, 'tick'> : never;
+type RunbookRequestKind = WithoutTick<RunbookFocusRequest>;
 import {
   deriveAgreement,
   emptyGradingDraft,
@@ -179,6 +195,57 @@ import {
 
 // Re-export the co-located API types so existing importers keep working.
 export type { ThreadMessage };
+
+// The Runbook tab's body is lazy (SPEC §3.4, §4.10.11): its chunk loads when the tab opens.
+const RunbookPanel = React.lazy(() => import('./casedetail/RunbookPanel'));
+
+/** The case tabs in order; Alt+1 to Alt+7 select them. */
+const CASE_TABS = ['overview', 'runbook', 'timeline', 'investigation', 'threat', 'collab', 'chat'] as const;
+type CaseTab = (typeof CASE_TABS)[number];
+
+/** The runbook settings the case surfaces read (absent keys keep the defaults: on). */
+interface RunbookPrefs {
+  enabled: boolean;
+  aiSuggest: boolean;
+  aiDrafts: boolean;
+}
+const DEFAULT_RUNBOOK_PREFS: RunbookPrefs = { enabled: true, aiSuggest: true, aiDrafts: true };
+
+function readRunbookPrefs(prefs: unknown): RunbookPrefs {
+  const block = prefs && typeof prefs === 'object' ? (prefs as Record<string, unknown>).runbooks : null;
+  if (!block || typeof block !== 'object') return DEFAULT_RUNBOOK_PREFS;
+  const b = block as Record<string, unknown>;
+  return {
+    enabled: b.enabled !== false,
+    aiSuggest: b.ai_suggest !== false,
+    aiDrafts: b.ai_step_drafts !== false,
+  };
+}
+
+/** The steps a `409 runbook_steps_open` named, when the refusal is one. */
+function stepsOpenRefusal(error: unknown): RunbookStepsOpen[] | null {
+  if (!(error instanceof ApiError) || error.status !== 409 || !error.body || typeof error.body !== 'object') return null;
+  const detail = (error.body as { detail?: unknown }).detail;
+  if (!detail || typeof detail !== 'object' || (detail as { code?: unknown }).code !== 'runbook_steps_open') return null;
+  const steps = (detail as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return [];
+  return steps.filter(
+    (s): s is RunbookStepsOpen =>
+      Boolean(s) && typeof s === 'object' && typeof (s as RunbookStepsOpen).step_id === 'string' && typeof (s as RunbookStepsOpen).title === 'string',
+  );
+}
+
+/** A case already resolved or closed (a further close is its final close, never asked about). */
+function caseIsTerminal(status?: string | null): boolean {
+  const s = String(status ?? '').toLowerCase();
+  return s === 'closed' || s === 'resolved';
+}
+
+/** Which wire verbs end a case (the close dialog asks about open runbook steps for them). */
+function isTerminalVerb(verb: string, status?: string | null): boolean {
+  if (verb === 'close' || verb === 'confirm_fp' || verb === 'resolve') return true;
+  return verb === 'set_status' && (status === 'closed' || status === 'resolved');
+}
 
 /**
  * Embedded (Case Manager) tab trigger: a calm, text-only underline tab. The active tab
@@ -368,9 +435,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Advisory only (#3/#4): a campaign is a reporting grouping that never closes /
   // escalates / re-clusters the case. Best-effort — campaigns may be disabled.
   const [campaign, setCampaign] = React.useState<Campaign | null>(null);
-  const [tab, setTab] = React.useState<
-    'overview' | 'timeline' | 'investigation' | 'threat' | 'collab' | 'chat'
-  >('overview');
+  const [tab, setTab] = React.useState<CaseTab>('overview');
   // Round 12 (SPEC D13): "Open" on a case-chat toast lands on this case's Chat tab.
   useCaseChatRequest(open ? id : null, () => setTab('chat'));
   const panelScrollRef = React.useRef<HTMLDivElement>(null);
@@ -402,11 +467,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [threadError, setThreadError] = React.useState<unknown>(null);
   const [threadBusyId, setThreadBusyId] = React.useState<string | null>(null);
 
-  // Round 3 — tasks + activity (#4), lazy on the Thread tab alongside the thread.
-  const [tasks, setTasks] = React.useState<CaseTaskItem[] | null>(null);
-  const [tasksLoading, setTasksLoading] = React.useState(false);
-  const [tasksError, setTasksError] = React.useState<unknown>(null);
-  const [tasksBusyId, setTasksBusyId] = React.useState<string | null>(null);
+  // Round 3: activity (#4), lazy on the Collaboration tab alongside the thread. The
+  // free-form tasks moved to the Runbook tab as "Other tasks" (Round 14, D36).
   const [activity, setActivity] = React.useState<CaseActivityItem[] | null>(null);
   const [activityLoading, setActivityLoading] = React.useState(false);
   const [activityError, setActivityError] = React.useState<unknown>(null);
@@ -414,7 +476,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Users for the assignee picker + @mention autocomplete (best-effort).
   const [pickUsers, setPickUsers] = React.useState<PickableUser[]>([]);
 
-  const { username: currentUser, hasPermission } = useAuth();
+  const { username: currentUser, hasPermission, role: viewerRole, authEnabled, rbacEnabled } = useAuth();
   const canComment = useCan('cases', 'comment');
   const canWriteCase = useCan('cases', 'write');
 
@@ -427,11 +489,35 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const [threatLoading, setThreatLoading] = React.useState(false);
   const [threatError, setThreatError] = React.useState<unknown>(null);
 
-  // Run-a-playbook (F10): the playbook catalog + a pending pick + run state.
-  const [playbooks, setPlaybooks] = React.useState<Playbook[]>([]);
-  const [runPlaybookOpen, setRunPlaybookOpen] = React.useState(false);
-  const [runPlaybookId, setRunPlaybookId] = React.useState('');
-  const [runningPlaybook, setRunningPlaybook] = React.useState(false);
+  // Round 14 (SPEC §4.10.11): the case's runbook runs, read once and shared by the
+  // Runbook tab, the Overview's Next step card, the facts rail and the close dialog.
+  const canReadRunbooks = hasPermission('runbooks', 'read') && hasPermission('cases', 'read');
+  const canRunRunbooks = hasPermission('runbooks', 'run');
+  const runbooks = useCaseRunbooks(open ? id : null, { enabled: canReadRunbooks });
+  const [runbookPrefs, setRunbookPrefs] = React.useState<RunbookPrefs>(DEFAULT_RUNBOOK_PREFS);
+  const [runbookRequest, setRunbookRequest] = React.useState<RunbookFocusRequest | null>(null);
+  // Every request gets a new tick (never reused after one is forgotten), and the Runbook
+  // tab reports each one handled, so returning to the tab never replays it.
+  const runbookTickRef = React.useRef(0);
+  const requestRunbook = React.useCallback((request: RunbookRequestKind | null) => {
+    setTab('runbook');
+    if (request) {
+      runbookTickRef.current += 1;
+      setRunbookRequest({ ...request, tick: runbookTickRef.current } as RunbookFocusRequest);
+    }
+  }, []);
+  const runbookRequestHandled = React.useCallback((tick: number) => {
+    setRunbookRequest((current) => (current?.tick === tick ? null : current));
+  }, []);
+  const runbookViewer = React.useMemo(
+    () => ({ role: viewerRole ?? null, unrestricted: !authEnabled || !rbacEnabled }),
+    [viewerRole, authEnabled, rbacEnabled],
+  );
+  // The open required steps a close dialog asks about: from the loaded runs, or from a
+  // `409 runbook_steps_open` when the runs changed since they were read.
+  const [refusedSteps, setRefusedSteps] = React.useState<RunbookStepsOpen[] | null>(null);
+  const [openStepsReason, setOpenStepsReason] = React.useState('');
+  const [openStepsError, setOpenStepsError] = React.useState<string | null>(null);
 
   // Embedded Case Manager: one reference-faithful top-right action surface. The
   // legacy Sheet keeps its existing toolbar/footer so the old Cases workflow is
@@ -536,10 +622,8 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setThread(null);
     setThreadError(null);
     setThreadBusyId(null);
-    setTasks(null);
-    setTasksLoading(false);
-    setTasksError(null);
-    setTasksBusyId(null);
+    setRunbookRequest(null);
+    setRefusedSteps(null);
     setActivity(null);
     setActivityLoading(false);
     setActivityError(null);
@@ -676,24 +760,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [id]);
 
-  const loadTasks = React.useCallback(async () => {
-    if (!id) return;
-    setTasksLoading(true);
-    setTasksError(null);
-    try {
-      const res = await getTasks(id);
-      if (activeIdRef.current !== id) return;
-      setTasks(res.tasks || []);
-    } catch (e) {
-      // Keep the last authoritative snapshot mounted on a failed refresh. An initial
-      // failure therefore remains `null` (not a dishonest successful empty list), while
-      // a later failure can truthfully show the stale tasks beside a retry affordance.
-      if (activeIdRef.current === id) setTasksError(e);
-    } finally {
-      if (activeIdRef.current === id) setTasksLoading(false);
-    }
-  }, [id]);
-
   const loadActivity = React.useCallback(async () => {
     if (!id) return;
     setActivityLoading(true);
@@ -742,10 +808,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     if (open && tab === 'collab') {
       // `!threadError` stops a failed thread fetch from re-firing forever (Retry still
       // works — each loader clears its own error before refetching). The independent
-      // task/activity guards prevent a failed endpoint from retry-looping or hiding the
-      // other collaboration surfaces.
+      // activity guard prevents a failed endpoint from retry-looping or hiding the
+      // other collaboration surface.
       if (thread === null && !threadLoading && !threadError) void loadThread();
-      if (tasks === null && !tasksLoading && !tasksError) void loadTasks();
       if (activity === null && !activityLoading && !activityError) void loadActivity();
     }
   }, [
@@ -754,14 +819,10 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     thread,
     threadLoading,
     threadError,
-    tasks,
-    tasksLoading,
-    tasksError,
     activity,
     activityLoading,
     activityError,
     loadThread,
-    loadTasks,
     loadActivity,
   ]);
 
@@ -834,57 +895,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     [id, loadThread],
   );
 
-  // Task mutation handlers.
-  const createTask = React.useCallback(
-    async (title: string) => {
-      if (!id) return;
-      setTasksBusyId('__add__');
-      try {
-        await addTask(id, { title });
-        await loadTasks();
-        void loadActivity();
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : 'Could not add the task.');
-      } finally {
-        setTasksBusyId(null);
-      }
-    },
-    [id, loadTasks, loadActivity],
-  );
-
-  const setTaskStatus = React.useCallback(
-    async (taskId: string, status: TaskStatus) => {
-      if (!id) return;
-      setTasksBusyId(taskId);
-      try {
-        await patchTask(id, taskId, { status });
-        await loadTasks();
-        void loadActivity();
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : 'Could not update the task.');
-      } finally {
-        setTasksBusyId(null);
-      }
-    },
-    [id, loadTasks, loadActivity],
-  );
-
-  const addTaskLog = React.useCallback(
-    async (taskId: string, note: string) => {
-      if (!id) return;
-      setTasksBusyId(taskId);
-      try {
-        await logTask(id, taskId, note);
-        await loadTasks();
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : 'Could not log the note.');
-      } finally {
-        setTasksBusyId(null);
-      }
-    },
-    [id, loadTasks],
-  );
-
   const loadRationale = React.useCallback(async () => {
     if (!id) return;
     setRationaleLoading(true);
@@ -928,47 +938,23 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     }
   }, [open, tab, threat, threatLoading, threatError, loadThreat]);
 
-  // Playbook catalog for the run-a-playbook picker (best-effort).
+  // Round 14: a case change can attach a runbook (a status move, a reinvestigation, new
+  // tags re-evaluate the match, §4.10.4), so the runs are read again when the case on
+  // screen changes, and whenever the Runbook tab opens.
+  const { refresh: refreshRunbooks } = runbooks;
+  const caseStamp = c && c.case_id === id ? `${c.updated_at ?? ''}|${c.status ?? ''}|${(c.tags ?? []).length}` : '';
+  const seenStamp = React.useRef('');
   React.useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void api
-      .getPlaybooks()
-      .then((res) => {
-        if (!cancelled) setPlaybooks(res.enabled ? res.playbooks ?? [] : []);
-      })
-      .catch(() => undefined);
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
-  const runPlaybook = React.useCallback(async () => {
-    const pid = runPlaybookId.trim();
-    if (!pid) return;
-    setRunningPlaybook(true);
-    setError(null);
-    try {
-      const next = await api.cases.runPlaybook(id, pid);
-      commitCase(next);
-      setTakeActionOpen(false);
-      setRunPlaybookOpen(false);
-      setRunPlaybookId('');
-      // The run is a re-investigation — invalidate the lazy tab payloads.
-      setRationale(null);
-      setThreat(null);
-      setTimeline(null);
-      setStages(null);
-      void loadTriage();
-      toast.success('Playbook applied. The case was re-investigated with it as context.');
-    } catch (e) {
-      toast.error(
-        e instanceof Error ? e.message : 'Could not run the playbook.',
-      );
-    } finally {
-      setRunningPlaybook(false);
-    }
-  }, [id, runPlaybookId, loadTriage, commitCase]);
+    if (!caseStamp || !canReadRunbooks) return;
+    const first = !seenStamp.current || !seenStamp.current.startsWith(`${id}::`);
+    const key = `${id}::${caseStamp}`;
+    if (seenStamp.current === key) return;
+    seenStamp.current = key;
+    if (!first) void refreshRunbooks();
+  }, [caseStamp, id, canReadRunbooks, refreshRunbooks]);
+  React.useEffect(() => {
+    if (open && tab === 'runbook' && canReadRunbooks) void refreshRunbooks();
+  }, [open, tab, canReadRunbooks, refreshRunbooks]);
 
   // Models for the reinvestigate picker (best-effort).
   React.useEffect(() => {
@@ -995,6 +981,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         if (cancelled) return;
         setFpPolicy((res?.prefs?.fp_auto_close as FpPolicy) || null);
         setSlaPolicy((res?.prefs?.sla as SlaPolicy | undefined) ?? null);
+        setRunbookPrefs(readRunbookPrefs(res?.prefs));
         const notif = res?.prefs?.notifications;
         setNotifyEnabled(Boolean(notif?.enabled));
         const chans = (notif?.channels || []).map((c) => ({
@@ -1045,6 +1032,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     setDispositionDeclared(false);
     setActionReason('');
     setGrading(emptyGradingDraft());
+    setOpenStepsReason('');
+    setOpenStepsError(null);
+    setRefusedSteps(null);
   }, []);
 
   const openAction = React.useCallback(
@@ -1102,6 +1092,22 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       }
       if (pending.fields.includes('reason') && actionReason.trim()) {
         input.reason = actionReason.trim();
+      }
+      // Round 14 (D34): closing by hand never blocks, but the Console asks why when an
+      // active runbook still has required steps open. It sends
+      // `require_open_steps_reason` so the server answers 409 (with the steps) when the
+      // runs changed since they were read; the reason is audited on
+      // `case.closed_with_open_steps`. Marking a duplicate needs no reason.
+      if (isTerminalVerb(pending.wireAction ?? pending.key, input.status) && !caseIsTerminal(c?.status)) {
+        input.require_open_steps_reason = true;
+        const reason = openStepsReason.trim();
+        if (reason) input.open_steps_reason = reason;
+        const asked = refusedSteps ? refusedSteps.length > 0 : openRequiredSteps(runbooks.data).length > 0;
+        if (asked && !reason && actionDisposition !== 'duplicate') {
+          setOpenStepsError('Say why you are closing with required steps open.');
+          setActing(false);
+          return;
+        }
       }
       const next = await api.caseActionExec(id, input);
       commitCase(next);
@@ -1221,6 +1227,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         }
       }
     } catch (e) {
+      // The runs changed since they were read: required steps are open. The dialog stays
+      // open, lists them and asks why (nothing was changed on the case).
+      const refused = stepsOpenRefusal(e);
+      if (refused !== null) {
+        const message = 'Required runbook steps are open. Say why you are closing the case.';
+        // A refusal that names no step falls back to the loaded runs; with none loaded
+        // either, the field is not on screen, so the sentence goes to a toast.
+        setRefusedSteps(refused.length ? refused : null);
+        setOpenStepsError(message);
+        if (!refused.length && !openRequiredSteps(runbooks.data).length) toast.error(message);
+        void runbooks.refresh();
+        return;
+      }
       // A failed lifecycle action is a MUTATION failure, not a case-load failure — use a
       // toast (like postMessage/notify) so we never mislabel it as "Could not load case".
       toast.error(e instanceof Error ? e.message : 'The action could not be completed.');
@@ -1238,6 +1257,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     actionDisposition,
     dispositionDeclared,
     actionReason,
+    openStepsReason,
+    refusedSteps,
+    runbooks,
     id,
     c,
     grading,
@@ -1329,13 +1351,14 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // ---- keyboard shortcuts (CM-4/CM-3) -------------------------------------- //
   // A / C / E / H acknowledge, close, escalate or hold (each OPENS its dialog — every
   // mutation still goes through its dialog), R reinvestigate (always confirmed), M the
-  // owner picker, T the tags editor, Alt+1…6 switch tabs. Active only while focus is NOT
+  // owner picker, T the tags editor, Alt+1…7 switch tabs. Active only while focus is NOT
   // in text entry and no menu, popover or dialog of this case is open.
   const shortcutStateRef = React.useRef({
     blocked: false,
     actions: [] as ActionDef[],
     canAssign: false,
     canTag: false,
+    hasRunbookTab: false,
   });
   const permittedForShortcuts = (() => {
     const plan = actionPlanForStatus(c?.status);
@@ -1355,7 +1378,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
       pending !== null ||
       takeActionOpen ||
       reinvestOpen ||
-      runPlaybookOpen ||
       notifyOpen ||
       ownerOpen ||
       tagsOpen ||
@@ -1363,27 +1385,36 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
     actions: permittedForShortcuts,
     canAssign: hasPermission('cases', 'assign'),
     canTag: hasPermission('cases', 'write'),
+    hasRunbookTab: canReadRunbooks,
   };
   const openActionRef = React.useRef(openAction);
   openActionRef.current = openAction;
 
   React.useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined;
-    const TAB_KEYS: Array<typeof tab> = ['overview', 'timeline', 'investigation', 'threat', 'collab', 'chat'];
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey) return;
       // Text entry, a Select (typeahead), a menu or a radio group consumes letters itself;
       // an open picker owns the keyboard. One key must never do two things.
       if (shortcutBlocked(event)) return;
+      // A key typed inside another dialog (a rule sheet, a runbook's reason dialog, the
+      // Start runbook picker) belongs to that dialog, never to the case behind it. The
+      // case's own sheet is a dialog too, so only a dialog that is not this case counts.
+      const target = event.target instanceof Element ? event.target : null;
+      const dialog = target?.closest('[role="dialog"]');
+      if (dialog && !dialog.contains(titleRef.current)) return;
       // A different modal surface (a palette, another dialog) owns the keyboard.
       if (presentation === 'embedded' && document.querySelector('[role="dialog"][data-state="open"]')) return;
       const state = shortcutStateRef.current;
       if (state.blocked) return;
       if (event.altKey) {
-        const digit = /^Digit([1-6])$/.exec(event.code);
+        const digit = /^Digit([1-7])$/.exec(event.code);
         if (!digit) return;
+        const next = CASE_TABS[Number(digit[1]) - 1];
+        // Alt+2 is the Runbook tab, which a viewer without `runbooks:read` does not have.
+        if (next === 'runbook' && !state.hasRunbookTab) return;
         event.preventDefault();
-        setTab(TAB_KEYS[Number(digit[1]) - 1]);
+        setTab(next);
         return;
       }
       if (event.shiftKey) return;
@@ -1456,7 +1487,19 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const mitreCount = Array.isArray(c?.mitre) ? c!.mitre!.length : 0;
   const traceSteps = timeline?.spans?.length ?? null;
   const messageCount = thread ? visibleMessageCount(thread) : null;
-  const openTasks = tasks ? tasks.filter((t) => t.status !== 'done').length : null;
+  const runbookData = runbooks.data;
+  const runbookProgress = caseProgress(runbookData);
+  const shownRun = primaryRun(runbookData);
+  const showRunbookTab = canReadRunbooks;
+  // The close dialog's open required steps (a terminal action on a case not yet ended).
+  const pendingTerminal =
+    pending !== null && isTerminalVerb(pending.wireAction ?? pending.key) && !caseIsTerminal(c?.status);
+  const dialogOpenSteps: OpenRequiredStep[] = !pendingTerminal
+    ? []
+    : refusedSteps
+      ? openStepsFromRefusal(refusedSteps, runbookData)
+      : openRequiredSteps(runbookData);
+  const openRunbookTab = () => setTab('runbook');
   const rail = c && outcome ? (
     <FactsRail
       c={c}
@@ -1471,6 +1514,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         setDispositionAction ? () => openFromControl(setDispositionAction, takeActionTriggerRef.current) : undefined
       }
       onShowRelated={() => setTab('overview')}
+      runbook={
+        showRunbookTab
+          ? {
+              data: runbookData,
+              loading: runbooks.loading,
+              failed: Boolean(runbooks.error) && !runbookData,
+              onOpenPhase: (phase) => (phase ? requestRunbook({ kind: 'phase', phase }) : openRunbookTab()),
+            }
+          : undefined
+      }
     />
   ) : null;
   const tabTrigger = cn(EMBEDDED_TAB_TRIGGER, 'gap-1.5 text-xs');
@@ -1629,18 +1682,16 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                         <span className="flex-1">Reinvestigate</span>
                         <MenuShortcut>R</MenuShortcut>
                       </DropdownMenuItem>
-                      {hasPermission('playbooks', 'run') ? (
+                      {canReadRunbooks && canRunRunbooks && runbookPrefs.enabled ? (
                         <DropdownMenuItem
-                          disabled={runningPlaybook || busy}
+                          disabled={busy}
                           onSelect={() => {
-                            actionOpenerRef.current = takeActionTriggerRef.current;
                             setTakeActionOpen(false);
-                            setRunPlaybookId('');
-                            setRunPlaybookOpen(true);
+                            requestRunbook({ kind: 'start' });
                           }}
                         >
-                          <BookOpen className="h-4 w-4" />
-                          Run a playbook
+                          <BookCheck className="h-4 w-4" />
+                          Start runbook
                         </DropdownMenuItem>
                       ) : null}
                       <DropdownMenuItem
@@ -1661,7 +1712,7 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                       >
                         <MessageSquare className="h-4 w-4" />
                         <span className="flex-1">Ask about this case</span>
-                        <MenuShortcut>Alt 6</MenuShortcut>
+                        <MenuShortcut>Alt 7</MenuShortcut>
                       </DropdownMenuItem>
                       {hasPermission('cases', 'assign') ? (
                         <DropdownMenuItem
@@ -1828,23 +1879,30 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                     <TabsTrigger value="overview" className={tabTrigger} aria-keyshortcuts="Alt+1">
                       Overview
                     </TabsTrigger>
-                    <TabsTrigger value="timeline" className={tabTrigger} aria-keyshortcuts="Alt+2">
+                    {showRunbookTab ? (
+                      <TabsTrigger value="runbook" className={tabTrigger} aria-keyshortcuts="Alt+2" data-tab="runbook">
+                        Runbook
+                        {runbookData ? (
+                          <RunbookTabCount progress={runbookProgress} abandoned={runbookData.runs.length > 0} />
+                        ) : null}
+                      </TabsTrigger>
+                    ) : null}
+                    <TabsTrigger value="timeline" className={tabTrigger} aria-keyshortcuts="Alt+3">
                       Timeline
                     </TabsTrigger>
-                    <TabsTrigger value="investigation" className={tabTrigger} aria-keyshortcuts="Alt+3">
+                    <TabsTrigger value="investigation" className={tabTrigger} aria-keyshortcuts="Alt+4">
                       Investigation
                       {traceSteps ? <TabCount label="steps">{traceSteps}</TabCount> : null}
                     </TabsTrigger>
-                    <TabsTrigger value="threat" className={tabTrigger} aria-keyshortcuts="Alt+4">
+                    <TabsTrigger value="threat" className={tabTrigger} aria-keyshortcuts="Alt+5">
                       Threat context
                       {mitreCount ? <TabCount label="MITRE techniques">{mitreCount}</TabCount> : null}
                     </TabsTrigger>
-                    <TabsTrigger value="collab" className={tabTrigger} aria-keyshortcuts="Alt+5">
+                    <TabsTrigger value="collab" className={tabTrigger} aria-keyshortcuts="Alt+6">
                       Collaboration
                       {messageCount ? <TabCount label="messages">{messageCount}</TabCount> : null}
-                      {openTasks ? <TabCount label="open tasks">{openTasks} open</TabCount> : null}
                     </TabsTrigger>
-                    <TabsTrigger value="chat" className={tabTrigger} aria-keyshortcuts="Alt+6">
+                    <TabsTrigger value="chat" className={tabTrigger} aria-keyshortcuts="Alt+7">
                       Chat
                       {/* A case chat answer being written, unread, waiting or failed (SPEC D13). */}
                       <CaseChatActivityGlyph caseId={c.case_id} className="ml-1.5" />
@@ -1913,9 +1971,62 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                               ? (opener) => openFromControl(setDispositionAction, opener)
                               : undefined
                           }
+                          runbookCard={
+                            showRunbookTab && shownRun && runbookData && !caseIsTerminal(c.status) ? (
+                              <OverviewNextStep
+                                run={shownRun}
+                                progress={progressOf(runbookData, shownRun)}
+                                nameOf={(u) => pickUsers.find((p) => p.username === u)?.display_name || u}
+                                onOpenRunbook={(stepId) =>
+                                  requestRunbook(stepId ? { kind: 'step', stepId } : { kind: 'card' })
+                                }
+                              />
+                            ) : null
+                          }
                         />
                       </TabPanelMotion>
                     </TabsContent>
+                    {showRunbookTab ? (
+                      <TabsContent value="runbook" className="mt-0">
+                        <TabPanelMotion>
+                          <React.Suspense
+                            fallback={
+                              <LoadingState
+                                label="Loading the runbook"
+                                layout="panel"
+                                shape="rows"
+                                shapeRows={4}
+                                className="px-4 py-4"
+                              />
+                            }
+                          >
+                            <RunbookPanel
+                              c={c}
+                              runbooks={runbooks}
+                              canRun={canRunRunbooks && shownIsCurrent}
+                              enabled={runbookPrefs.enabled}
+                              viewer={runbookViewer}
+                              canWriteTasks={canWriteCase && shownIsCurrent}
+                              hasPermission={hasPermission}
+                              currentUser={currentUser}
+                              users={pickUsers}
+                              aiDrafts={runbookPrefs.aiDrafts}
+                              aiSuggest={runbookPrefs.aiSuggest}
+                              focusRequest={runbookRequest}
+                              onFocusRequestHandled={runbookRequestHandled}
+                              onCloseCase={
+                                actionPlan.close && canCloseSecondary
+                                  ? () => openFromControl(actionPlan.close!, document.activeElement as HTMLElement | null)
+                                  : canClosePrimary && isTerminalVerb(actionPlan.primary.wireAction ?? actionPlan.primary.key)
+                                    ? () => openFromControl(actionPlan.primary, document.activeElement as HTMLElement | null)
+                                    : undefined
+                              }
+                              className={CASE_MANAGER_PANEL_PADDING}
+                            />
+                          </React.Suspense>
+                        </TabPanelMotion>
+                      </TabsContent>
+                    ) : null}
                     <TabsContent value="timeline" className="mt-0">
                       <TabPanelMotion>
                         {/* The "what happened" six-stage narrative, alone (task 5). */}
@@ -1968,10 +2079,6 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           threadLoading={threadLoading}
                           threadError={threadError}
                           threadBusyId={threadBusyId}
-                          tasks={tasks}
-                          tasksLoading={tasksLoading}
-                          tasksError={tasksError}
-                          tasksBusyId={tasksBusyId}
                           activity={activity}
                           activityLoading={activityLoading}
                           activityError={activityError}
@@ -1980,16 +2087,22 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
                           canComment={canComment}
                           canWrite={canWriteCase}
                           onRetryThread={loadThread}
-                          onRetryTasks={loadTasks}
                           onRetryActivity={loadActivity}
                           onPost={(text) => void postMessage(text)}
                           onReply={(parentId, text) => void postMessage(text, parentId)}
                           onEdit={(msgId, text) => void editMessage(msgId, text)}
                           onDelete={(msgId) => void removeMessage(msgId)}
                           onReact={(msgId, emoji, remove) => void reactMessage(msgId, emoji, remove)}
-                          onAddTask={(title) => void createTask(title)}
-                          onTaskStatus={(taskId, status) => void setTaskStatus(taskId, status)}
-                          onTaskLog={(taskId, note) => void addTaskLog(taskId, note)}
+                          onOpenTasks={showRunbookTab ? () => requestRunbook({ kind: 'tasks' }) : undefined}
+                          tasksSection={
+                            showRunbookTab ? undefined : (
+                              <OtherTasksLoader
+                                caseId={c.case_id}
+                                canWrite={canWriteCase}
+                                nameOf={(u) => pickUsers.find((p) => p.username === u)?.display_name || u}
+                              />
+                            )
+                          }
                           onAssigned={(next) => {
                             commitCase(next);
                             if (activity !== null) void loadActivity();
@@ -2113,66 +2226,12 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
               Cancel
             </Button>
             <Button onClick={() => void runReinvestigate()} disabled={reinvesting}>
-              {reinvesting ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {reinvesting ? (
+                <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+              ) : (
+                <Play className="h-4 w-4" aria-hidden />
+              )}
               Reinvestigate
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={runPlaybookOpen} onOpenChange={setRunPlaybookOpen}>
-        <DialogContent className="sm:max-w-md" onCloseAutoFocus={restoreTo(actionOpenerRef)}>
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <BookOpen className="h-4 w-4 text-primary" />
-              Run a playbook
-            </DialogTitle>
-            <DialogDescription>
-              Re-investigate with a trusted operator playbook. It can recommend; deterministic
-              code still owns the close or escalate decision.
-            </DialogDescription>
-          </DialogHeader>
-          <Alert variant="warning">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>Costs tokens</AlertTitle>
-            <AlertDescription>
-              This re-runs the LLM pipeline and may replace the verdict and rationale. It never
-              changes lifecycle status on its own.
-            </AlertDescription>
-          </Alert>
-          <div className="space-y-1.5">
-            <Label className="text-xs">Playbook</Label>
-            {playbooks.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                No playbooks are loaded. Add Markdown runbooks on the backend.
-              </p>
-            ) : (
-              <Select
-                value={runPlaybookId || undefined}
-                onValueChange={setRunPlaybookId}
-                disabled={runningPlaybook}
-              >
-                <SelectTrigger aria-label="Playbook">
-                  <SelectValue placeholder="Select a playbook…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {playbooks.map((playbook) => (
-                    <SelectItem key={playbook.id} value={playbook.id}>
-                      {/* Operator-authored name → plain text. */}
-                      {playbook.name || playbook.id}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setRunPlaybookOpen(false)} disabled={runningPlaybook}>
-              Cancel
-            </Button>
-            <Button onClick={() => void runPlaybook()} disabled={runningPlaybook || !runPlaybookId.trim()}>
-              {runningPlaybook ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Run playbook
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2209,6 +2268,13 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
         confidence={c?.confidence ?? null}
         grading={grading}
         onGradingChange={setGrading}
+        openSteps={dialogOpenSteps}
+        openStepsReason={openStepsReason}
+        onOpenStepsReasonChange={(value) => {
+          setOpenStepsReason(value);
+          if (openStepsError) setOpenStepsError(null);
+        }}
+        openStepsError={openStepsError}
       />
 
       {/* Notify (manual send) dialog — F5/Wave 4. Picks one configured channel or
@@ -2277,7 +2343,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
               onClick={() => void runNotify()}
               disabled={notifying || !notifyEnabled || notifyChannels.length === 0}
             >
-              {notifying ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              {notifying ? (
+                <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden />
+              ) : (
+                <Send className="h-4 w-4" aria-hidden />
+              )}
               Send
             </Button>
           </DialogFooter>

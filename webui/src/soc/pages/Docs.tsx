@@ -146,10 +146,16 @@ export const DOC_CATEGORIES: readonly DocsCategory[] = [
         keywords: ['analytics', 'metrics', 'effectiveness', 'standup', 'mtta', 'mttr', 'cost'],
       },
       {
-        title: 'Playbooks and approvals',
-        description: 'Browse procedures, edit operator playbooks, and understand approval gates.',
+        title: 'Runbooks',
+        description: 'Write, review and publish response runbooks, and work through them on a case.',
+        path: 'intelligence/runbooks/',
+        keywords: ['runbook', 'procedure', 'checklist', 'steps', 'response', 'publish', 'review'],
+      },
+      {
+        title: 'Approvals',
+        description: 'Understand approval gates and review what waits for a person to approve.',
         path: 'automation/playbooks-approvals/',
-        keywords: ['procedure', 'runbook', 'automation', 'review'],
+        keywords: ['approval', 'proposal', 'review', 'automation'],
       },
     ],
   },
@@ -595,7 +601,7 @@ export default function Docs({
                 <CircleHelp className="size-6 text-muted-foreground" aria-hidden />
                 <p className="mt-3 font-medium text-foreground">No matching guidance</p>
                 <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-                  Try a feature name such as cases, playbooks, backup, or permissions.
+                  Try a feature name such as cases, runbooks, backup, or permissions.
                 </p>
                 <Button variant="outline" size="sm" className="mt-4" onClick={() => setSearchQuery('')}>
                   Clear search

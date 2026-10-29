@@ -5,6 +5,11 @@
  * inferred from feature enablement or mutable current settings.  Log/model/operator
  * text is rendered as text only (#9), and the authority note keeps these advisory
  * inputs separate from the deterministic close/escalate decision (#3).
+ *
+ * Round 14 (SPEC §4.10.9): the runbook whose Published guidance the investigator
+ * received is "Runbook" (selected and consulted kept apart); a run from before Round 14
+ * keeps its stored procedure id under "Runbook (before Round 14)". Runbook passages found
+ * through retrieval are "Runbook references".
  */
 import * as React from 'react';
 import {
@@ -19,6 +24,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 
 import type { CaseRationale, RationalePlatformTuning } from '@/lib/types';
+import { guidanceName, rationaleRunbook } from '@/soc/runbooks/run/provenance';
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
 import { Skeleton } from '@/ui/skeleton';
@@ -85,6 +91,7 @@ export const InvestigationInputs: React.FC<{
     selectedPlaybook &&
       (procedure?.playbook?.consulted === true || playbook?.consulted === true),
   );
+  const guidance = rationaleRunbook(rationale);
   const tuning = rationale?.platform_tuning || [];
   const tuningUnavailable = rationale?.platform_tuning_status === 'unavailable';
 
@@ -112,7 +119,7 @@ export const InvestigationInputs: React.FC<{
   if (runbooks.length) {
     items.push({
       key: 'runbook',
-      label: 'Runbook',
+      label: 'Runbook references',
       value: plural(runbooks.length, 'retrieved reference'),
       icon: BookMarked,
       detail: 'Runbook references retrieved through RAG for the latest investigation run.',
@@ -157,19 +164,34 @@ export const InvestigationInputs: React.FC<{
       informed: personaConsulted,
     });
   }
-  if (playbookConsulted || (showSelectionStatus && selectedPlaybook)) {
+  if (guidance && (guidance.consulted || showSelectionStatus)) {
+    const reason = guidance.reason;
+    items.push({
+      key: 'runbook-guidance',
+      label: 'Runbook',
+      value: guidance.consulted
+        ? `${guidanceName(guidance)} · Consulted`
+        : `${guidance.title || guidance.selectedId} · Selected only`,
+      icon: Workflow,
+      detail: guidance.consulted
+        ? `The latest run received this Published runbook as guidance.${reason ? ` Matched because: ${reason}` : ''}`
+        : `The latest run matched this runbook but did not receive its guidance.${reason ? ` Matched because: ${reason}` : ''}`,
+      informed: guidance.consulted,
+    });
+  } else if (!guidance && (playbookConsulted || (showSelectionStatus && selectedPlaybook))) {
+    // An investigation from before Round 14: the stored procedure id, shown verbatim.
     const version = playbookConsulted && playbook?.version ? ` · v${playbook.version}` : '';
     const reason = procedure?.playbook?.selection_reason?.trim() || playbook?.reason?.trim();
     items.push({
       key: 'playbook',
-      label: 'Playbook',
+      label: 'Runbook (before Round 14)',
       value: playbookConsulted
         ? `${selectedPlaybook}${version} · Consulted`
         : `${selectedPlaybook} · Selected only`,
       icon: Workflow,
       detail: playbookConsulted
-        ? `The latest run injected and consulted this playbook.${reason ? ` Selected because: ${reason}` : ''}`
-        : `The latest run selected this playbook but did not inject or consult it.${reason ? ` Selected because: ${reason}` : ''}`,
+        ? `The latest run, from before Round 14, received and consulted this procedure.${reason ? ` Selected because: ${reason}` : ''}`
+        : `The latest run, from before Round 14, selected this procedure but did not receive or consult it.${reason ? ` Selected because: ${reason}` : ''}`,
       informed: playbookConsulted,
     });
   }

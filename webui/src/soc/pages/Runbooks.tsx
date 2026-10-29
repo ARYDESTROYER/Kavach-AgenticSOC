@@ -1,1581 +1,985 @@
 /**
- * Intelligence / Runbooks — trusted RAG reference knowledge.
+ * Runbooks (Round 14, SPEC §4.10.1, §4.10.12): the one place a team keeps its response
+ * procedures. `#/runbooks` is the library: a key-figure strip, one table of every runbook
+ * (the 12 built-ins and the team's own), and two panels, "Rules with no runbook" and
+ * "Recent runs". `#/runbooks?id=<id>` and `#/runbooks?id=new` open the editor, a lazy chunk.
  *
- * Runbooks answer "what should an analyst know while investigating this signal?".
- * They are deliberately separate from Playbooks, which are selected procedures.
- * Saving a runbook and indexing it are also separate outcomes: the UI preserves a
- * successful durable write even when the RAG projection needs attention.
- *
- * All Markdown and metadata are operator/backend-derived and therefore rendered as
- * plain text or inside CodeBlock. Nothing is interpreted as HTML.
+ * The run figures come from case-derived reads (`GET /api/runbooks/metrics` needs
+ * `cases:read`); without that grant, or under row-level scope, they say so and the rest of
+ * the page works. A figure is never shown before it is known: a loading tile says so, a
+ * failed read says "Unavailable", and a run count the ledger capped reads "at least".
+ * The library and the figures are read again each time the person comes back from the
+ * editor, so a runbook just created or published is there. Runbook text, rule names and
+ * case titles are plain text (#9). A runbook never closes a case and never changes a
+ * verdict (#3).
  */
 import * as React from 'react';
-import {
-  AlertCircle,
-  BookMarked,
-  CheckCircle2,
-  Download,
-  Eye,
-  FileText,
-  LoaderCircle,
-  LockKeyhole,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Save,
-  Search,
-  ShieldCheck,
-  Tags,
-  Trash2,
-  X,
-} from 'lucide-react';
+import { Download, FileUp, MoreHorizontal, Plus } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { api } from '@/lib/api';
-import { errorMessage } from '@/lib/errorMessage';
-import { formatTimestamp, humanizeAge, humanizeToken } from '@/lib/format';
+import { Callout } from '@/design-system/callout';
+import { ListRow, ListRows } from '@/design-system/list-row';
+import { Panel } from '@/design-system/panel';
+import { StatusDot } from '@/design-system/status-dot';
+import { exportRunbookMarkdown, getRunbookMetrics, importRunbook, listRunbookLibrary } from '@/lib/api-runbooks';
+import { downloadBlob } from '@/lib/download-blob';
+import { caseLabel, fmtDuration } from '@/lib/format';
 import type {
-  Runbook,
-  RunbookAuthoringStandard as RunbookAuthoringStandardContract,
   RunbookDetail,
-  RunbookIndexResult,
-} from '@/lib/types';
-import { LoadingState } from '@/design-system';
+  RunbookLibrary,
+  RunbookMetrics,
+  RunbookMigrationNotice,
+  RunbookOrigin,
+  RunbookState,
+  RunbookSummary,
+} from '@/lib/types-runbooks';
+import type { NavOpts } from '@/soc/nav-types';
 import { useCan } from '@/soc/components/Can';
-import { CodeBlock } from '@/soc/components/CodeBlock';
-import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
+import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
 import { EmptyState } from '@/soc/components/EmptyState';
+import { FilterBar, type FilterChip } from '@/soc/components/FilterBar';
+import { KpiStrip } from '@/soc/components/KpiStrip';
+import { KpiTile } from '@/soc/components/KpiTile';
 import { LoadError } from '@/soc/components/LoadError';
+import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
-import { useLiveAnnouncer } from '@/soc/hooks/useLiveAnnouncer';
-import { useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
-import { useNavigateOptional } from '@/soc/router';
-import {
-  announceJobAccepted,
-  retainJobSubmissionIntent,
-  type JobSubmissionIntent,
-} from '@/soc/jobs/jobs';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
-import { Badge, type BadgeProps } from '@/ui/badge';
+import { RuleLink, RuleSheetHost } from '@/soc/components/RuleLink';
+import { useDemo } from '@/soc/demo';
+import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
+import { safeRouteHref, useRouteLinkClick } from '@/soc/route-link';
+import { pageHash, useNavigateOptional, useRoute } from '@/soc/router';
 import { Button } from '@/ui/button';
-import { Input } from '@/ui/input';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/ui/dropdown-menu';
 import { Label } from '@/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/ui/select';
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from '@/ui/sheet';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
+import { Switch } from '@/ui/switch';
 import { Textarea } from '@/ui/textarea';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui/tooltip';
 
-import {
-  extractRunbookBackendIssues,
-  RUNBOOK_BODY_MAX_CHARS,
-  RUNBOOK_DESCRIPTOR_MAX_CHARS,
-  RUNBOOK_LIST_ITEM_MAX_CHARS,
-  RUNBOOK_LIST_MAX_ITEMS,
-  RUNBOOK_OPTIONAL_SECTION,
-  RUNBOOK_PERSONA_MAX_CHARS,
-  RUNBOOK_REQUIRED_SECTIONS,
-  RUNBOOK_SUMMARY_MAX_CHARS,
-  RUNBOOK_TITLE_MAX_CHARS,
-  runbookTemplate,
-  type RunbookAuthoringIssue,
-  validateRunbookAuthoring,
-} from './runbookAuthoring';
-import { RUNBOOK_EXAMPLES, type RunbookExample } from './runbookExamples';
+import type { RunbookCarriedEdits } from '@/soc/runbooks/editor/RunbookEditor';
+import { Mono } from '@/soc/runbooks/shared/chips';
+import { formatDay, isReviewDue, reviewDueState, reviewDueWords } from '@/soc/runbooks/shared/dates';
+import { isCaseFiguresHidden, runbookFailure } from '@/soc/runbooks/shared/errors';
+import { ORIGIN_LABEL, RUNBOOK_LIMITS, RUNBOOK_STATE_LABEL, countNoun } from '@/soc/runbooks/shared/labels';
 
-type RunbookFilter = 'all' | 'operator' | 'bundled' | 'attention';
-type WorkspaceMode = 'view' | 'edit' | 'create';
+const RunbookEditor = React.lazy(() => import('@/soc/runbooks/editor/RunbookEditor'));
 
-const RUNBOOK_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const CURRENT_INDEX_STATES = new Set(['indexed', 'ready', 'current', 'in_sync']);
+export const PAGE_TITLE = 'Runbooks';
+/** The definition of SPEC §4.10.1, word for word (the Help Center page opens with it too). */
+export const PAGE_HELP =
+  "Runbooks are your team's step-by-step response procedures. The matching runbook is attached to each case that needs a person. Analysts work through it as a checklist; the AI runs the read-only lookups and can draft notes. A runbook never closes a case; your case policy does that.";
 
-function authoringPolicyMismatch(
-  standard: RunbookAuthoringStandardContract | undefined,
-): RunbookAuthoringIssue | null {
-  if (!standard) return null;
-  const limits = standard.metadata_limits;
-  const labelsMatch =
-    JSON.stringify(standard.required_body_labels) === JSON.stringify(RUNBOOK_REQUIRED_SECTIONS) &&
-    JSON.stringify(standard.optional_body_labels) === JSON.stringify([RUNBOOK_OPTIONAL_SECTION]);
-  const compatible =
-    standard.version === 1 &&
-    standard.body_max_characters === RUNBOOK_BODY_MAX_CHARS &&
-    standard.retrieval_descriptor_max_characters === RUNBOOK_DESCRIPTOR_MAX_CHARS &&
-    standard.document_max_bytes === 128 * 1024 &&
-    standard.section_min_characters === 12 &&
-    JSON.stringify(standard.reserved_ids) === JSON.stringify(['index', 'readme', 'reindex']) &&
-    limits.title_max_characters === RUNBOOK_TITLE_MAX_CHARS &&
-    limits.summary_max_characters === RUNBOOK_SUMMARY_MAX_CHARS &&
-    limits.persona_max_characters === RUNBOOK_PERSONA_MAX_CHARS &&
-    limits.list_max_items === RUNBOOK_LIST_MAX_ITEMS &&
-    limits.list_item_max_characters === RUNBOOK_LIST_ITEM_MAX_CHARS &&
-    labelsMatch;
-  if (compatible) return null;
-  return {
-    code: 'authoring.standard.mismatch',
-    field: 'authoring policy',
-    problem: 'This Console does not match the backend Runbook authoring standard.',
-    reason: 'Saving with a stale validator could hide a server-side rejection or accept outdated guidance.',
-    fix: 'Reload after updating the Console to the same release as the backend. Saving is blocked until they match.',
-  };
-}
+const STATES: ReadonlyArray<{ value: RunbookState | 'any'; label: string }> = [
+  { value: 'any', label: 'Any state' },
+  { value: 'published', label: 'Published' },
+  { value: 'draft', label: 'Draft' },
+  { value: 'in_review', label: 'In review' },
+  { value: 'retired', label: 'Retired' },
+];
+const ORIGINS: ReadonlyArray<{ value: RunbookOrigin | 'any'; label: string }> = [
+  { value: 'any', label: 'Any origin' },
+  { value: 'builtin', label: 'Built-in' },
+  { value: 'operator', label: 'Yours' },
+  { value: 'imported', label: 'Imported' },
+];
 
-function replaceFrontmatterId(content: string, id: string): string {
-  if (/^---\s*\n[\s\S]*?\n---/.test(content)) {
-    if (/^id:\s*.*$/m.test(content)) return content.replace(/^id:\s*.*$/m, `id: ${id}`);
-    return content.replace(/^---\s*\n/, `---\nid: ${id}\n`);
+/** The route's opts, or none outside a router (a test that renders the page alone). */
+function useRouteOpts(): NavOpts | undefined {
+  try {
+    return useRoute().opts;
+  } catch {
+    return undefined;
   }
-  return content;
 }
 
-function revisionEqual(left: Runbook['revision'], right: Runbook['indexed_revision']): boolean {
-  return right != null && String(left) === String(right);
+/** "Published v4", "Draft v5", "In review", "Retired" for a library row. */
+export function stateText(r: RunbookSummary): string {
+  if (r.state === 'published' && r.live_version != null) return `Published v${r.live_version.toLocaleString()}`;
+  if (r.state === 'draft' && r.draft_version != null) return `Draft v${r.draft_version.toLocaleString()}`;
+  return RUNBOOK_STATE_LABEL[r.state];
 }
 
-function isIndexed(runbook: Runbook): boolean {
+/** "4 phases · 11 steps". */
+export function stepsText(r: RunbookSummary): string {
+  return `${countNoun(r.phases.length, 'phase')} · ${countNoun(r.step_count, 'step')}`;
+}
+
+/** The muted line under a runbook's name: its origin, whether a copy replaces it, its summary. */
+export function nameLine(r: RunbookSummary): string {
+  return [ORIGIN_LABEL[r.origin], r.replaced_by ? 'Replaced by your copy' : null, r.summary?.trim() || null]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+/**
+ * Who attached a run, in words: the automatic selector and the system are "Agentic SOC", a
+ * case-automation rule is "A case-automation rule", a person is their name, and an actor the
+ * ledger could not read is left out (null).
+ */
+export function attachedBy(actor: string | null | undefined): string | null {
+  const who = (actor ?? '').trim();
+  if (!who) return null;
+  if (who === 'runbook_selector' || who === 'agentic_soc') return 'Agentic SOC';
+  if (who === 'threshold_automation') return 'A case-automation rule';
+  return who;
+}
+
+/** "In progress · Agentic SOC · 2h 10m": a recent run's status, who attached it and how long it ran. */
+export function recentRunLine(run: { status: string; attached_actor: string; duration_minutes: number | null }): string {
+  const status = run.status === 'completed' ? 'Completed' : run.status === 'abandoned' ? 'Closed early' : 'In progress';
+  const parts = [status, attachedBy(run.attached_actor)];
+  if (run.duration_minutes != null) parts.push(fmtDuration(run.duration_minutes));
+  return parts.filter(Boolean).join(' · ');
+}
+
+/** The migration intro (§4.10.17 step 8), built from the marker's counts. */
+export function migrationText(m: RunbookMigrationNotice): string | null {
+  const total = m.published + m.draft;
+  if (total <= 0) return null;
+  const parts: string[] = [];
+  parts.push(
+    `Your ${total.toLocaleString()} ${total === 1 ? 'procedure' : 'procedures'} from the previous version ${total === 1 ? 'is now a runbook' : 'are now runbooks'}.`,
+  );
+  const details: string[] = [];
+  if (m.published) details.push(`${m.published.toLocaleString()} ${m.published === 1 ? 'is' : 'are'} published and due for review`);
+  if (m.draft) details.push(`${m.draft.toLocaleString()} ${m.draft === 1 ? 'is a draft' : 'are drafts'} with problems to fix`);
+  if (details.length) parts.push(`${details.join('; ')}.`);
+  if (m.skipped) parts.push(`${m.skipped.toLocaleString()} could not be converted.`);
+  parts.push('The AI now reads each step’s title and focus line, so check each imported runbook.');
+  return parts.join(' ');
+}
+
+function matchesQuery(r: RunbookSummary, q: string): boolean {
+  if (!q) return true;
+  const needle = q.toLowerCase();
+  return [r.title, r.summary, r.id, ...r.applies_to.rule_ids, ...r.applies_to.mitre].some((v) =>
+    (v ?? '').toLowerCase().includes(needle),
+  );
+}
+
+function AppliesTo({ r }: { r: RunbookSummary }) {
+  const values = [...r.applies_to.rule_ids, ...r.applies_to.mitre];
+  const shown = values.slice(0, 3);
+  const more = values.length - shown.length + (r.applies_to.more || 0);
+  if (!values.length && !more) return <span className="text-sm text-muted-foreground">Any case</span>;
   return (
-    CURRENT_INDEX_STATES.has(String(runbook.index_status || '').toLowerCase()) &&
-    revisionEqual(runbook.revision, runbook.indexed_revision) &&
-    !runbook.index_error
+    <span className="flex flex-wrap items-center gap-1">
+      {shown.map((v) => (
+        <Mono key={v} title={v} className="max-w-[14rem] truncate">
+          {v}
+        </Mono>
+      ))}
+      {more > 0 ? <span className="text-xs text-muted-foreground">+{more.toLocaleString()}</span> : null}
+    </span>
   );
 }
 
-function needsIndexAttention(runbook: Runbook): boolean {
-  return !isIndexed(runbook);
-}
-
-function indexLabel(runbook: Runbook): string {
-  if (runbook.index_error) return 'Index error';
-  if (
-    CURRENT_INDEX_STATES.has(String(runbook.index_status || '').toLowerCase()) &&
-    !revisionEqual(runbook.revision, runbook.indexed_revision)
-  ) {
-    return 'Update pending';
-  }
-  return humanizeToken(runbook.index_status || 'Not indexed');
-}
-
-function indexVariant(runbook: Runbook): BadgeProps['variant'] {
-  if (isIndexed(runbook)) return 'success';
-  if (runbook.index_error || String(runbook.index_status).toLowerCase() === 'error') {
-    return 'critical';
-  }
-  return 'warning';
-}
-
-function describeIndex(result: RunbookIndexResult): string {
-  const parts = [
-    `${result.indexed} indexed`,
-    `${result.deleted} stale ${result.deleted === 1 ? 'projection' : 'projections'} removed`,
-    `${result.failed} failed`,
-  ];
-  return parts.join(' · ');
-}
-
-function indexErrors(result: RunbookIndexResult): string[] {
-  return (result.errors ?? []).map((entry) =>
-    typeof entry === 'string'
-      ? entry
-      : `${entry.id ? `${entry.id}: ` : ''}${entry.error}`,
-  );
-}
-
-function upsertRunbook(rows: Runbook[], next: Runbook): Runbook[] {
-  return [...rows.filter((row) => row.id !== next.id), next].sort((a, b) =>
-    (a.title || a.id).localeCompare(b.title || b.id),
-  );
-}
-
-const TokenRow: React.FC<{
-  label: string;
-  values: string[];
-  variant?: BadgeProps['variant'];
-}> = ({ label, values, variant = 'outline' }) => (
-  <div className="space-y-2">
-    <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-      {label}
-    </p>
-    {values.length ? (
-      <div className="flex flex-wrap gap-1.5">
-        {values.map((value) => (
-          <Badge key={value} variant={variant} className="max-w-full">
-            <span className="truncate">{value}</span>
-          </Badge>
-        ))}
-      </div>
-    ) : (
-      <p className="text-xs text-muted-foreground">Any</p>
-    )}
-  </div>
-);
-
-const IndexBadge: React.FC<{ runbook: Runbook }> = ({ runbook }) => (
-  <Tooltip>
-    <TooltipTrigger asChild>
-      <Badge variant={indexVariant(runbook)} tabIndex={0} className="cursor-default gap-1">
-        {isIndexed(runbook) ? (
-          <CheckCircle2 className="size-3" aria-hidden="true" />
-        ) : (
-          <AlertCircle className="size-3" aria-hidden="true" />
-        )}
-        {indexLabel(runbook)}
-      </Badge>
-    </TooltipTrigger>
-    <TooltipContent className="max-w-sm">
-      {runbook.index_error
-        ? runbook.index_error
-        : isIndexed(runbook)
-          ? `Retrieval projection matches revision ${String(runbook.revision)}.`
-          : 'The durable Markdown is saved, but its retrieval projection is not current.'}
-    </TooltipContent>
-  </Tooltip>
-);
-
-const RunbookReadiness: React.FC<{
-  issues: RunbookAuthoringIssue[];
-  bodyCharacters: number;
-  descriptorCharacters: number;
-}> = ({ issues, bodyCharacters, descriptorCharacters }) => {
-  const overBy = Math.max(0, bodyCharacters - RUNBOOK_BODY_MAX_CHARS);
-  const descriptorOverBy = Math.max(
-    0,
-    descriptorCharacters - RUNBOOK_DESCRIPTOR_MAX_CHARS,
-  );
+/** The runbook's name, a link to its editor; a plain click goes through the router. */
+function RunbookTitleLink({ r }: { r: RunbookSummary }) {
+  const href = safeRouteHref(pageHash('runbooks', { id: r.id }));
+  const onClick = useRouteLinkClick(href);
   return (
-    <section
-      aria-labelledby="runbook-readiness-title"
-      className="space-y-3 border border-border bg-muted/20 p-4"
+    <a
+      href={href}
+      onClick={onClick}
+      className="rounded-sm font-medium text-foreground underline-offset-2 [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-runbook-link={r.id}
     >
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h3 id="runbook-readiness-title" className="text-sm font-semibold text-foreground">
-            Submission readiness
-          </h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            All issues are checked locally as you type. The backend verifies the same policy.
-          </p>
-        </div>
-        <Badge variant={issues.length ? 'critical' : 'success'}>
-          {issues.length ? `${issues.length} ${issues.length === 1 ? 'fix' : 'fixes'}` : 'Ready'}
-        </Badge>
-      </div>
-
-      <div
-        className="space-y-1"
-        aria-live="polite"
-        aria-atomic="true"
-        data-testid="runbook-body-budget"
-      >
-        <div className="flex items-center justify-between gap-3 font-mono text-xs">
-          <span className="text-muted-foreground">Guidance body</span>
-          <span className={overBy ? 'font-semibold text-critical-text' : 'text-foreground'}>
-            {bodyCharacters.toLocaleString()} / {RUNBOOK_BODY_MAX_CHARS.toLocaleString()}
-          </span>
-        </div>
-        <div className="h-1.5 overflow-hidden bg-muted" aria-hidden="true">
-          <div
-            className={overBy ? 'h-full bg-critical' : 'h-full bg-primary'}
-            style={{
-              width: `${Math.min(100, (bodyCharacters / RUNBOOK_BODY_MAX_CHARS) * 100)}%`,
-            }}
-          />
-        </div>
-        <p className={overBy ? 'text-xs text-critical-text' : 'text-xs text-muted-foreground'}>
-          {overBy
-            ? `Remove ${overBy.toLocaleString()} characters before submitting.`
-            : 'Maximum 1,800 body characters, approximately 400–500 tokens. Front matter does not count.'}
-        </p>
-      </div>
-
-      <div className="space-y-1" data-testid="runbook-descriptor-budget">
-        <div className="flex items-center justify-between gap-3 font-mono text-xs">
-          <span className="text-muted-foreground">Retrieval metadata</span>
-          <span
-            className={
-              descriptorOverBy ? 'font-semibold text-critical-text' : 'text-foreground'
-            }
-          >
-            {descriptorCharacters.toLocaleString()} /{' '}
-            {RUNBOOK_DESCRIPTOR_MAX_CHARS.toLocaleString()}
-          </span>
-        </div>
-        <div className="h-1.5 overflow-hidden bg-muted" aria-hidden="true">
-          <div
-            className={descriptorOverBy ? 'h-full bg-critical' : 'h-full bg-primary'}
-            style={{
-              width: `${Math.min(
-                100,
-                (descriptorCharacters / RUNBOOK_DESCRIPTOR_MAX_CHARS) * 100,
-              )}%`,
-            }}
-          />
-        </div>
-        <p
-          className={
-            descriptorOverBy ? 'text-xs text-critical-text' : 'text-xs text-muted-foreground'
-          }
-        >
-          {descriptorOverBy
-            ? `Remove ${descriptorOverBy.toLocaleString()} descriptor characters before submitting.`
-            : 'Maximum 1,200 characters across the retrieval descriptor; guidance body is counted separately.'}
-        </p>
-      </div>
-
-      {issues.length ? (
-        <ol
-          className="max-h-[22rem] space-y-2 overflow-y-auto border-t border-border pt-3"
-          aria-label="Runbook submission issues"
-        >
-          {issues.map((issue, index) => (
-            <li
-              key={`${issue.code}:${issue.field}:${index}`}
-              className="border-l-2 border-critical/70 pl-3"
-            >
-              <p className="text-xs font-semibold text-foreground">
-                <span className="text-critical-text">{issue.field}:</span> {issue.problem}
-              </p>
-              <dl className="mt-1 grid gap-x-2 gap-y-1 text-xs leading-relaxed text-muted-foreground sm:grid-cols-[2.5rem_minmax(0,1fr)]">
-                <dt className="font-medium text-foreground">Why</dt>
-                <dd>{issue.reason}</dd>
-                <dt className="font-medium text-foreground">Fix</dt>
-                <dd>{issue.fix}</dd>
-              </dl>
-            </li>
-          ))}
-        </ol>
-      ) : (
-        <div className="flex items-start gap-2 border-t border-border pt-3 text-xs leading-relaxed text-success-text">
-          <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <p>The manifest, fixed sections, plain-text format, and token budget are valid.</p>
-        </div>
-      )}
-    </section>
+      {r.title}
+    </a>
   );
-};
-
-const RunbookAuthoringStandard: React.FC<{
-  contract?: RunbookAuthoringStandardContract;
-}> = ({ contract }) => (
-  <aside aria-labelledby="runbook-standard-title" className="space-y-4 lg:sticky lg:top-0">
-    <div className="border border-border bg-muted/10 p-4">
-      <div className="flex items-start gap-2">
-        <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-        <div>
-          <h3 id="runbook-standard-title" className="text-sm font-semibold text-foreground">
-            Authoring standard
-          </h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Compact, reviewed guidance gives smaller models more room for live case evidence.
-            The 1,800-character body budget is approximately 400–500 tokens, preserving
-            evidence and verdict boundaries inside one retrieval unit.
-          </p>
-        </div>
-      </div>
-    </div>
-
-    <details open className="group border-b border-border pb-4">
-      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-foreground marker:text-muted-foreground">
-        Required manifest
-      </summary>
-      <div className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
-        <p>
-          Provide a stable <span className="font-mono text-foreground">id</span>, a precise{' '}
-          <span className="font-mono text-foreground">title</span>, and a one-sentence{' '}
-          <span className="font-mono text-foreground">summary</span>.
-        </p>
-        <p>
-          Include at least one detection rule, entity type, and retrieval keyword. Persona and
-          MITRE techniques are optional. Use applicability metadata instead of repeating it in
-          the body.
-        </p>
-        <p>
-          IDs use 1–64 lowercase letters, numbers, hyphens, or underscores and cannot be{' '}
-          {(contract?.reserved_ids ?? ['index', 'readme', 'reindex']).join(', ')}. Title,
-          summary, and persona are single scalar values;
-          applicability fields are inline or indented lists. Unknown, duplicate, malformed,
-          empty, or placeholder fields are rejected.
-        </p>
-        <p>
-          Limits: title {RUNBOOK_TITLE_MAX_CHARS}, summary {RUNBOOK_SUMMARY_MAX_CHARS}, and
-          persona {RUNBOOK_PERSONA_MAX_CHARS} characters. Each applicability list accepts at
-          most {RUNBOOK_LIST_MAX_ITEMS} values of {RUNBOOK_LIST_ITEM_MAX_CHARS} characters each.
-        </p>
-        <p>
-          The title, summary, keywords, rules, MITRE techniques, and entities form one retrieval
-          descriptor capped at {RUNBOOK_DESCRIPTOR_MAX_CHARS.toLocaleString()} characters.
-          Keep only selectors that materially improve matching.
-        </p>
-        <p>
-          Optional MITRE values use T1234 or T1234.001. The complete UTF-8 document has a{' '}
-          {Math.round((contract?.document_max_bytes ?? 128 * 1024) / 1024)} KiB safety ceiling.
-        </p>
-      </div>
-    </details>
-
-    <details open className="group border-b border-border pb-4">
-      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-foreground marker:text-muted-foreground">
-        Fixed section order
-      </summary>
-      <ol className="mt-3 space-y-1.5 text-xs text-muted-foreground">
-        {RUNBOOK_REQUIRED_SECTIONS.map((label, index) => (
-          <li key={label} className="grid grid-cols-[1.5rem_minmax(0,1fr)] gap-2">
-            <span className="font-mono text-foreground">{index + 1}.</span>
-            <span>{label}</span>
-          </li>
-        ))}
-      </ol>
-      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-        Every required section needs at least {contract?.section_min_characters ?? 12} specific
-        non-whitespace characters. Add{' '}
-        {RUNBOOK_OPTIONAL_SECTION} only as the final, non-empty section. Text before SIGNAL,
-        unknown or duplicate labels, and numbered lines outside INVESTIGATION STEPS are rejected.
-      </p>
-    </details>
-
-    <details open className="group border-b border-border pb-4">
-      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-foreground marker:text-muted-foreground">
-        Plain text only
-      </summary>
-      <div className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
-        <p>
-          Use one concise sentence per line. Only INVESTIGATION STEPS may use sequential,
-          one-line numbering such as 1., 2., 3.
-        </p>
-        <p>
-          Rejected: headings, tables, bullets, task lists, bold, italics, underline,
-          strikethrough, horizontal rules, blockquotes, inline or block code, raw HTML, and
-          Markdown links or images.
-        </p>
-        <p>
-          These rules apply to both the manifest values and body. Ordinary field_name
-          underscores and an unformatted plain URL are accepted. All other content is plain
-          text; {contract?.character_count ?? 'body limits count Unicode characters after trimming'}.
-        </p>
-        {contract ? (
-          <p>
-            Backend policy: {contract.investigation_steps} Prohibited metadata and body forms:{' '}
-            {[...contract.prohibited_metadata_format, ...contract.prohibited_body_format]
-              .filter((value, index, values) => values.indexOf(value) === index)
-              .join('; ')}.
-          </p>
-        ) : null}
-      </div>
-    </details>
-
-    <details open className="group">
-      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-foreground marker:text-muted-foreground">
-        Evidence and authority
-      </summary>
-      <div className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
-        <p>
-          State observations, falsifying evidence, missing-evidence behavior, and advisory next
-          actions explicitly. Remove repetition, decorative prose, raw logs, and oversized
-          examples.
-        </p>
-        <p>
-          Never include secrets, credentials, customer data, or unreviewed instructions copied
-          from alerts. Runbooks inform investigations; they cannot execute actions or override
-          deterministic case policy.
-        </p>
-      </div>
-    </details>
-  </aside>
-);
-
-interface ExamplePreviewState {
-  id: string;
-  status: 'loading' | 'ready' | 'error';
-  content: string;
-  error: string;
 }
 
-const RunbookExamples: React.FC = () => {
-  const [preview, setPreview] = React.useState<ExamplePreviewState | null>(null);
-  const requestVersion = React.useRef(0);
-
-  React.useEffect(
-    () => () => {
-      requestVersion.current += 1;
-    },
-    [],
+function StateCell({ r }: { r: RunbookSummary }) {
+  const text = stateText(r);
+  if (r.state === 'in_review') return <StatusDot tone="warning">{text}</StatusDot>;
+  if (r.state === 'retired') return <StatusDot tone="neutral">{text}</StatusDot>;
+  return (
+    <span className="flex flex-col">
+      <span className="text-sm text-foreground">{text}</span>
+      {r.state === 'published' && r.draft_version != null ? (
+        <span className="text-xs text-muted-foreground">{`Draft v${r.draft_version.toLocaleString()} in progress`}</span>
+      ) : null}
+    </span>
   );
+}
 
-  const togglePreview = React.useCallback(async (example: RunbookExample) => {
-    if (preview?.id === example.id) {
-      requestVersion.current += 1;
-      setPreview(null);
+function ReviewCell({ r }: { r: RunbookSummary }) {
+  if (!r.review_due_at) return <span className="text-sm text-muted-foreground">Not scheduled</span>;
+  const state = reviewDueState(r.review_due_at);
+  const words = reviewDueWords(r.review_due_at);
+  const urgent = state === 'overdue' || state === 'today';
+  return (
+    <span className={urgent ? 'text-sm font-medium text-warning-text' : 'text-sm text-foreground'} title={formatDay(r.review_due_at)}>
+      {words || formatDay(r.review_due_at)}
+    </span>
+  );
+}
+
+type CaseFigures = { kind: 'ready'; metrics: RunbookMetrics } | { kind: 'hidden'; why: 'forbidden' | 'scope' } | { kind: 'loading' } | { kind: 'error'; message: string };
+
+/** A figure that is still being read: a quiet placeholder, never a number. */
+function LoadingNumeral() {
+  return <span className="inline-block h-[0.9em] w-12 animate-pulse rounded bg-muted align-middle motion-reduce:animate-none" aria-hidden />;
+}
+
+/** The lower bound a capped ledger leaves on a run figure. */
+const PARTIAL_BOUND = 'At least this many: some runs in this window are not counted.';
+
+const HIDDEN_TEXT = { forbidden: 'You do not have access to cases.', scope: 'Hidden while row-level scope is on.' } as const;
+
+/** A case number that opens the case; a plain click goes through the router. */
+function CaseLink({ caseId, label }: { caseId: string; label: string }) {
+  const href = safeRouteHref(pageHash('case_manager', { caseId }));
+  const onClick = useRouteLinkClick(href);
+  return (
+    <a
+      href={href}
+      onClick={onClick}
+      className="rounded-sm font-mono text-xs text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {label}
+    </a>
+  );
+}
+
+function ImportDialog({
+  open,
+  onOpenChange,
+  onImported,
+  returnFocusRef,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onImported: (detail: RunbookDetail) => void;
+  /** The control that opened the dialog (a menu item's trigger); focus returns to it on cancel. */
+  returnFocusRef?: React.RefObject<HTMLElement | null>;
+}) {
+  const [text, setText] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const fileRef = React.useRef<HTMLInputElement>(null);
+  React.useEffect(() => {
+    if (!open) {
+      setText('');
+      setError(null);
+    }
+  }, [open]);
+  const readFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > RUNBOOK_LIMITS.sourceBytes) {
+      setError(`That file is ${file.size.toLocaleString()} bytes; the limit is ${RUNBOOK_LIMITS.sourceBytes.toLocaleString()}.`);
       return;
     }
-
-    const request = requestVersion.current + 1;
-    requestVersion.current = request;
-    setPreview({ id: example.id, status: 'loading', content: '', error: '' });
+    setText(await file.text());
+    setError(null);
+  };
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
     try {
-      const response = await fetch(example.href, {
-        cache: 'no-cache',
-        credentials: 'same-origin',
-      });
-      if (!response.ok) throw new Error(`Example returned HTTP ${response.status}.`);
-      const content = await response.text();
-      if (requestVersion.current !== request) return;
-      setPreview({ id: example.id, status: 'ready', content, error: '' });
-    } catch {
-      if (requestVersion.current !== request) return;
-      setPreview({
-        id: example.id,
-        status: 'error',
-        content: '',
-        error: 'The preview could not be loaded. Try the direct download or reload this page.',
-      });
+      const detail = await importRunbook(text);
+      onImported(detail);
+    } catch (err) {
+      const failure = runbookFailure(err, 'Could not import that runbook.');
+      setError(failure.issues.length ? failure.issues.slice(0, 5).map((i) => i.message).join(' ') : failure.message);
+    } finally {
+      setBusy(false);
     }
-  }, [preview?.id]);
-
-  const selected = preview
-    ? RUNBOOK_EXAMPLES.find((example) => example.id === preview.id)
-    : undefined;
-
+  };
   return (
-    <section aria-labelledby="runbook-examples-title" className="border-y border-border py-4">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
-        <div>
-          <h3 id="runbook-examples-title" className="text-sm font-semibold text-foreground">
-            Start from an example
-          </h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            Download a reviewed reference, then adapt it locally. Previewing or downloading never
-            imports, saves, indexes, or executes the Runbook. Examples are starting points, not
-            coverage guarantees or automation.
-          </p>
-        </div>
-        <p className="shrink-0 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
-          {RUNBOOK_EXAMPLES.length} examples · .md
-        </p>
-      </div>
-
-      <div className="mt-4 grid gap-2">
-        {RUNBOOK_EXAMPLES.map((example) => {
-          const expanded = preview?.id === example.id;
-          return (
-            <article
-              key={example.id}
-              className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] gap-x-3 gap-y-2 border border-border p-3"
-            >
-              <span className="inline-flex size-8 items-center justify-center border border-border bg-muted/30 text-primary">
-                <FileText className="size-4" aria-hidden="true" />
-              </span>
-              <div className="min-w-0">
-                <h4 className="text-sm font-semibold text-foreground">{example.title}</h4>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  {example.description}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {example.coverage.map((label) => (
-                    <Badge key={label} variant="outline" className="text-2xs">
-                      {label}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-              <div className="col-start-2 flex flex-wrap gap-2">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  aria-expanded={expanded}
-                  aria-controls="runbook-example-preview"
-                  onClick={() => void togglePreview(example)}
-                >
-                  {expanded && preview?.status === 'loading' ? (
-                    <LoaderCircle
-                      className="size-4 animate-spin motion-reduce:animate-none"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <Eye className="size-4" aria-hidden="true" />
-                  )}
-                  {expanded ? 'Hide preview' : 'Preview'}
-                </Button>
-                <Button asChild variant="outline" size="sm">
-                  <a
-                    href={example.href}
-                    download={example.filename}
-                    type="text/markdown"
-                    aria-label={`Download ${example.title} example`}
-                  >
-                    <Download className="size-4" aria-hidden="true" />
-                    Download
-                  </a>
-                </Button>
-              </div>
-            </article>
-          );
-        })}
-      </div>
-
-      {preview ? (
-        <div
-          id="runbook-example-preview"
-          className="mt-4 border-l-2 border-primary/70 bg-muted/20 p-4"
-          aria-live="polite"
-          aria-busy={preview.status === 'loading'}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-foreground">
-              {selected?.title ?? 'Example'} preview
-            </h4>
-            <span className="font-mono text-2xs text-muted-foreground">
-              {selected?.filename}
-            </span>
-          </div>
-          {preview.status === 'loading' ? (
-            <p className="mt-3 text-xs text-muted-foreground">Loading the reviewed example…</p>
-          ) : preview.status === 'error' ? (
-            <p role="alert" className="mt-3 text-xs text-critical-text">
-              {preview.error}
-            </p>
-          ) : (
-            <div className="mt-3">
-              <CodeBlock
-                value={preview.content}
-                copyable
-                wrap
-                maxHeightClassName="max-h-96"
-              />
-            </div>
-          )}
-        </div>
-      ) : null}
-    </section>
-  );
-};
-
-interface RunbookRowProps {
-  runbook: Runbook;
-  canManage: boolean;
-  reindexing: boolean;
-  onOpen: (runbook: Runbook) => void;
-  onReindex: (runbook: Runbook) => void;
-}
-
-const RunbookRow: React.FC<RunbookRowProps> = ({
-  runbook,
-  canManage,
-  reindexing,
-  onOpen,
-  onReindex,
-}) => (
-  <article className="grid gap-4 border-b border-border px-1 py-5 last:border-b-0 lg:grid-cols-[minmax(0,1fr)_minmax(15rem,0.45fr)_auto] lg:items-center">
-    <div className="min-w-0">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          onClick={() => onOpen(runbook)}
-          className="min-w-0 text-left text-base font-semibold text-foreground underline-offset-4 hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <span className="break-words">{runbook.title || runbook.id}</span>
-        </button>
-        <Badge variant={runbook.protected ? 'secondary' : 'info'} className="gap-1">
-          {runbook.protected ? (
-            <LockKeyhole className="size-3" aria-hidden="true" />
-          ) : (
-            <ShieldCheck className="size-3" aria-hidden="true" />
-          )}
-          {runbook.protected ? 'Bundled' : 'Operator'}
-        </Badge>
-        <IndexBadge runbook={runbook} />
-      </div>
-      <p className="mt-1 font-mono text-xs text-muted-foreground">{runbook.id}</p>
-      <p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">
-        {runbook.summary || 'No summary supplied.'}
-      </p>
-    </div>
-
-    <div className="grid grid-cols-2 gap-x-5 gap-y-2 text-xs text-muted-foreground">
-      <span>Persona</span>
-      <span className="truncate text-right text-foreground">
-        {humanizeToken(runbook.persona || 'generalist')}
-      </span>
-      <span>Applicability</span>
-      <span className="text-right text-foreground">
-        {runbook.applies_to_rules.length +
-          runbook.applies_to_techniques.length +
-          runbook.applies_to_entities.length || 'Any'}
-      </span>
-      <span>Updated</span>
-      <span
-        className="text-right text-foreground"
-        title={formatTimestamp(runbook.updated_at || runbook.created_at)}
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="max-w-2xl"
+        onCloseAutoFocus={(event) => {
+          const target = returnFocusRef?.current;
+          if (!target || !target.isConnected) return;
+          event.preventDefault();
+          target.focus();
+        }}
       >
-        {humanizeAge(runbook.updated_at || runbook.created_at)}
-      </span>
-    </div>
-
-    <div className="flex flex-wrap items-center gap-2 lg:justify-end">
-      {canManage ? (
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => onReindex(runbook)}
-          disabled={reindexing}
-          aria-label={`Reindex ${runbook.title || runbook.id}`}
-        >
-          <RefreshCw
-            className={reindexing ? 'size-4 animate-spin motion-reduce:animate-none' : 'size-4'}
-            aria-hidden="true"
+        <DialogHeader>
+          <DialogTitle>Import Markdown</DialogTitle>
+          <DialogDescription>
+            Paste a runbook in its Markdown form, or choose a .md file. It always lands as a draft you can check before
+            publishing.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
+              <FileUp aria-hidden />
+              Choose a file
+            </Button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".md,text/markdown,text/plain"
+              className="sr-only"
+              tabIndex={-1}
+              aria-hidden
+              onChange={(e) => void readFile(e.target.files?.[0])}
+            />
+          </div>
+          <Label htmlFor="runbook-import-text">Markdown</Label>
+          <Textarea
+            id="runbook-import-text"
+            rows={12}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            className="font-mono text-xs"
+            spellCheck={false}
           />
-          Reindex
-        </Button>
-      ) : null}
-      <Button variant="outline" size="sm" onClick={() => onOpen(runbook)}>
-        <FileText className="size-4" aria-hidden="true" />
-        Open
-      </Button>
-    </div>
-  </article>
-);
-
-interface RunbookWorkspaceProps {
-  open: boolean;
-  mode: WorkspaceMode;
-  detail: RunbookDetail | null;
-  loading: boolean;
-  saving: boolean;
-  reindexing: boolean;
-  draftId: string;
-  draftContent: string;
-  validationIssues: RunbookAuthoringIssue[];
-  bodyCharacters: number;
-  descriptorCharacters: number;
-  error: string;
-  canManage: boolean;
-  authoringStandard?: RunbookAuthoringStandardContract;
-  onOpenChange: (open: boolean) => void;
-  onModeChange: (mode: WorkspaceMode) => void;
-  onDraftIdChange: (id: string) => void;
-  onDraftContentChange: (content: string) => void;
-  onSave: () => void;
-  onReindex: () => void;
-  onDelete: () => void;
+          {error ? (
+            <p role="alert" className="text-sm text-critical-text">
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={() => void submit()} disabled={!text.trim() || busy}>
+            Import as draft
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
-const RunbookWorkspace: React.FC<RunbookWorkspaceProps> = ({
-  open,
-  mode,
-  detail,
-  loading,
-  saving,
-  reindexing,
-  draftId,
-  draftContent,
-  validationIssues,
-  bodyCharacters,
-  descriptorCharacters,
-  error,
-  canManage,
-  authoringStandard,
-  onOpenChange,
-  onModeChange,
-  onDraftIdChange,
-  onDraftContentChange,
-  onSave,
-  onReindex,
-  onDelete,
-}) => {
-  const creating = mode === 'create';
-  const editing = creating || mode === 'edit';
-  const validId = RUNBOOK_ID.test(draftId.trim());
+/** A Blob's bytes, through `arrayBuffer` where the browser has it and a FileReader where not. */
+function blobBytes(blob: Blob): Promise<Uint8Array> {
+  if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer().then((buf) => new Uint8Array(buf));
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the file.'));
+    reader.readAsArrayBuffer(blob);
+  });
+}
 
-  return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent size="xl" className="gap-0">
-        <SheetHeader>
-          <div className="flex flex-wrap items-center gap-2">
-            <SheetTitle>
-              {creating ? 'Create runbook' : detail?.title || detail?.id || 'Runbook'}
-            </SheetTitle>
-            {detail ? (
-              <>
-                <Badge variant={detail.protected ? 'secondary' : 'info'}>
-                  {detail.protected ? 'Bundled · protected' : 'Operator owned'}
-                </Badge>
-                <IndexBadge runbook={detail} />
-              </>
-            ) : null}
-          </div>
-          <SheetDescription>
-            {creating
-              ? 'Add a bounded manifest and plain-text reference for investigation retrieval.'
-              : editing
-                ? 'Edit the operator-owned reference. The id is immutable after creation.'
-                : 'Reference knowledge retrieved through RAG. This is not an executable playbook.'}
-          </SheetDescription>
-        </SheetHeader>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-6">
-          {loading ? (
-            <LoadingState
-              layout="panel"
-              shape="panel"
-              label="Loading runbook"
-              description="Opening the selected reference document."
-            />
-          ) : editing ? (
-            <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem] xl:grid-cols-[minmax(0,1fr)_22rem]">
-              <div className="min-w-0 space-y-5">
-                {creating ? <RunbookExamples /> : null}
-                {creating ? (
-                  <div className="max-w-lg space-y-2">
-                    <Label htmlFor="runbook-id">Runbook ID</Label>
-                    <Input
-                      id="runbook-id"
-                      value={draftId}
-                      onChange={(event) => onDraftIdChange(event.target.value)}
-                      placeholder="suspicious_powershell"
-                      autoComplete="off"
-                      spellCheck={false}
-                      aria-invalid={!validId}
-                      aria-describedby="runbook-id-help"
-                      className="font-mono"
-                    />
-                    <p
-                      id="runbook-id-help"
-                      className={
-                        draftId && !validId
-                          ? 'text-xs text-critical-text'
-                          : 'text-xs text-muted-foreground'
-                      }
-                    >
-                      Lowercase letters, numbers, underscores, or hyphens; up to 64 characters.
-                    </p>
-                  </div>
-                ) : null}
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <Label htmlFor="runbook-markdown">Runbook document</Label>
-                    <span
-                      className={
-                        bodyCharacters > RUNBOOK_BODY_MAX_CHARS
-                          ? 'font-mono text-xs font-semibold text-critical-text'
-                          : 'font-mono text-xs text-muted-foreground'
-                      }
-                    >
-                      {bodyCharacters.toLocaleString()} / {RUNBOOK_BODY_MAX_CHARS.toLocaleString()}{' '}
-                      body characters
-                    </span>
-                  </div>
-                  <Textarea
-                    id="runbook-markdown"
-                    value={draftContent}
-                    onChange={(event) => onDraftContentChange(event.target.value)}
-                    className="min-h-[38rem] resize-y font-mono text-xs leading-relaxed"
-                    spellCheck={false}
-                    aria-invalid={validationIssues.length > 0}
-                    aria-describedby="runbook-document-help runbook-readiness-title"
-                  />
-                  <p
-                    id="runbook-document-help"
-                    className="text-xs leading-relaxed text-muted-foreground"
-                  >
-                    Front matter controls precise applicability. The body accepts only the fixed
-                    plain-text section template and becomes trusted knowledge after indexing.
-                  </p>
-                </div>
-                {error ? (
-                  <p role="alert" className="text-sm text-critical-text">
-                    {error}
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="min-w-0 space-y-5">
-                <RunbookReadiness
-                  issues={validationIssues}
-                  bodyCharacters={bodyCharacters}
-                  descriptorCharacters={descriptorCharacters}
-                />
-                <RunbookAuthoringStandard contract={authoringStandard} />
-              </div>
-            </div>
-          ) : detail ? (
-            <div className="space-y-6">
-              <div className="grid gap-5 border-y border-border py-5 sm:grid-cols-2">
-                <TokenRow
-                  label="Detection rules"
-                  values={detail.applies_to_rules}
-                  variant="info"
-                />
-                <TokenRow
-                  label="MITRE techniques"
-                  values={detail.applies_to_techniques}
-                  variant="critical"
-                />
-                <TokenRow label="Entity types" values={detail.applies_to_entities} />
-                <TokenRow label="Retrieval keywords" values={detail.keywords} />
-              </div>
-
-              <dl className="grid gap-x-8 gap-y-3 text-sm sm:grid-cols-[10rem_minmax(0,1fr)]">
-                <dt className="text-muted-foreground">Persona</dt>
-                <dd className="text-foreground">{humanizeToken(detail.persona)}</dd>
-                <dt className="text-muted-foreground">Revision</dt>
-                <dd className="font-mono text-foreground">{String(detail.revision)}</dd>
-                <dt className="text-muted-foreground">Indexed revision</dt>
-                <dd className="font-mono text-foreground">
-                  {detail.indexed_revision == null ? 'Not indexed' : String(detail.indexed_revision)}
-                </dd>
-                <dt className="text-muted-foreground">Last indexed</dt>
-                <dd className="text-foreground">{formatTimestamp(detail.last_indexed_at)}</dd>
-                {detail.index_error ? (
-                  <>
-                    <dt className="text-critical-text">Index error</dt>
-                    <dd className="break-words text-critical-text">{detail.index_error}</dd>
-                  </>
-                ) : null}
-              </dl>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Document source
-                  </p>
-                  <span className="font-mono text-xs text-muted-foreground">{detail.id}</span>
-                </div>
-                <CodeBlock value={detail.content} copyable wrap maxHeightClassName="max-h-none" />
-              </div>
-              {error ? (
-                <p role="alert" className="text-sm text-critical-text">
-                  {error}
-                </p>
-              ) : null}
-            </div>
-          ) : (
-            <p role="alert" className="text-sm text-critical-text">
-              {error || 'This runbook could not be opened.'}
-            </p>
-          )}
-        </div>
-
-        <SheetFooter className="sm:items-center sm:justify-between">
-          <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
-            Runbooks are retrieval knowledge. They cannot execute actions or replace deterministic
-            case policy.
-          </p>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            {!editing && detail && canManage ? (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={onReindex}
-                  disabled={reindexing}
-                >
-                  <RefreshCw
-                    className={
-                      reindexing
-                        ? 'size-4 animate-spin motion-reduce:animate-none'
-                        : 'size-4'
-                    }
-                    aria-hidden="true"
-                  />
-                  {reindexing ? 'Reindexing…' : 'Reindex'}
-                </Button>
-                {detail.editable ? (
-                  <Button variant="outline" onClick={() => onModeChange('edit')}>
-                    <Pencil className="size-4" aria-hidden="true" />
-                    Edit
-                  </Button>
-                ) : null}
-                {detail.editable ? (
-                  <Button variant="destructive" onClick={onDelete}>
-                    <Trash2 className="size-4" aria-hidden="true" />
-                    Delete
-                  </Button>
-                ) : null}
-              </>
-            ) : null}
-            {editing ? (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={() => (creating ? onOpenChange(false) : onModeChange('view'))}
-                  disabled={saving}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  onClick={onSave}
-                  disabled={saving || validationIssues.length > 0 || (creating && !validId)}
-                >
-                  {saving ? (
-                    <LoaderCircle
-                      className="size-4 animate-spin motion-reduce:animate-none"
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <Save className="size-4" aria-hidden="true" />
-                  )}
-                  {saving ? 'Saving…' : creating ? 'Create runbook' : 'Save changes'}
-                </Button>
-              </>
-            ) : null}
-          </div>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
-  );
-};
+async function exportAll(runbooks: RunbookSummary[]): Promise<void> {
+  const { zipStore } = await import('@/soc/chat/report/export/zip');
+  const entries: Array<{ name: string; data: Uint8Array }> = [];
+  const queue = [...runbooks];
+  const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+    for (let next = queue.shift(); next; next = queue.shift()) {
+      const file = await exportRunbookMarkdown(next.id);
+      entries.push({ name: `${next.id}.md`, data: await blobBytes(file.blob) });
+    }
+  });
+  await Promise.all(workers);
+  entries.sort((a, b) => a.name.localeCompare(b.name));
+  const bytes = zipStore(entries);
+  const day = new Date().toISOString().slice(0, 10);
+  if (!downloadBlob(`runbooks-${day}.zip`, new Blob([bytes], { type: 'application/zip' }))) {
+    throw new Error('This browser could not start the download.');
+  }
+}
 
 export interface RunbooksProps {
+  /** Kept for the Intelligence host's older call; the page always draws its own header. */
   embedded?: boolean;
 }
 
-export default function Runbooks({ embedded = false }: RunbooksProps = {}) {
-  const canManage = useCan('runbooks', 'manage');
+export default function Runbooks(_props: RunbooksProps = {}) {
+  const opts = useRouteOpts();
   const navigate = useNavigateOptional();
-  const { announce, LiveRegion } = useLiveAnnouncer();
-  const [loading, setLoading] = React.useState(true);
-  const [error, setError] = React.useState<unknown>(null);
-  const [enabled, setEnabled] = React.useState(true);
-  const [retrievalEnabled, setRetrievalEnabled] = React.useState(true);
-  const [authoringStandard, setAuthoringStandard] = React.useState<
-    RunbookAuthoringStandardContract | undefined
-  >(undefined);
-  const [runbooks, setRunbooks] = React.useState<Runbook[]>([]);
-  const [query, setQuery] = React.useState('');
-  const [filter, setFilter] = React.useState<RunbookFilter>('all');
-  const [workspaceOpen, setWorkspaceOpen] = React.useState(false);
-  const [workspaceMode, setWorkspaceMode] = React.useState<WorkspaceMode>('view');
-  const [detail, setDetail] = React.useState<RunbookDetail | null>(null);
-  const [detailLoading, setDetailLoading] = React.useState(false);
-  const [draftId, setDraftId] = React.useState('');
-  const [draftContent, setDraftContent] = React.useState('');
-  const [backendIssues, setBackendIssues] = React.useState<RunbookAuthoringIssue[]>([]);
-  const [workspaceError, setWorkspaceError] = React.useState('');
-  const [saving, setSaving] = React.useState(false);
-  const [reindexing, setReindexing] = React.useState<string | null>(null);
-  const [deleteOpen, setDeleteOpen] = React.useState(false);
-  const [discardOpen, setDiscardOpen] = React.useState(false);
-  const [lastIndex, setLastIndex] = React.useState<RunbookIndexResult | null>(null);
-  const jobSubmissionIntentRef = React.useRef<JobSubmissionIntent | null>(null);
-
-  const load = React.useCallback(async (blocking = true) => {
-    if (blocking) setLoading(true);
-    setError(null);
-    try {
-      const result = await api.getRunbooks();
-      setEnabled(result.enabled);
-      setRetrievalEnabled(result.retrieval_enabled);
-      setAuthoringStandard(result.authoring_standard);
-      setRunbooks(
-        [...(result.runbooks ?? [])].sort((a, b) =>
-          (a.title || a.id).localeCompare(b.title || b.id),
-        ),
-      );
-    } catch (caught) {
-      setError(caught);
-    } finally {
-      if (blocking) setLoading(false);
-    }
-  }, []);
-
+  const openId = typeof opts?.id === 'string' && opts.id ? opts.id : null;
+  const inLibrary = openId === null;
+  const seedRule = typeof opts?.rule === 'string' ? opts.rule : null;
+  /**
+   * A detail a create, copy or import already returned, handed to the editor of that one id
+   * so it skips a read, with any edits typed while that create ran (the editor opens with
+   * them unsaved). It is dropped as soon as the page shows anything else (another id, the
+   * library), so a later visit to the same address, by Back or Forward, reads it again
+   * rather than reopening a stale revision.
+   */
+  const handoff = React.useRef<{ id: string; detail: RunbookDetail; edits: RunbookCarriedEdits | null } | null>(null);
   React.useEffect(() => {
-    void load();
-  }, [load]);
+    if (handoff.current && handoff.current.id !== openId) handoff.current = null;
+  }, [openId]);
 
-  const filtered = React.useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return runbooks.filter((runbook) => {
-      if (filter === 'operator' && runbook.source_type !== 'operator') return false;
-      if (filter === 'bundled' && runbook.source_type !== 'bundled') return false;
-      if (filter === 'attention' && !needsIndexAttention(runbook)) return false;
-      if (!needle) return true;
-      const haystack = [
-        runbook.id,
-        runbook.title,
-        runbook.summary,
-        runbook.persona,
-        ...runbook.applies_to_rules,
-        ...runbook.applies_to_techniques,
-        ...runbook.applies_to_entities,
-        ...runbook.keywords,
-      ]
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(needle);
-    });
-  }, [filter, query, runbooks]);
-  const hasActiveFilters = query.trim() !== '' || filter !== 'all';
-
-  const dirty = React.useMemo(() => {
-    if (workspaceMode === 'create') return Boolean(draftId || draftContent);
-    if (workspaceMode === 'edit' && detail) return draftContent !== detail.content;
-    return false;
-  }, [detail, draftContent, draftId, workspaceMode]);
-  useUnsavedChanges(dirty && workspaceOpen);
-
-  const authoringValidation = React.useMemo(
-    () => validateRunbookAuthoring(draftContent, workspaceMode === 'edit' ? detail?.id : draftId),
-    [detail?.id, draftContent, draftId, workspaceMode],
+  const [library, setLibrary] = React.useState<RunbookLibrary | null>(null);
+  const [libraryState, setLibraryState] = React.useState<'loading' | 'ready' | 'error'>('loading');
+  const [libraryError, setLibraryError] = React.useState<unknown>(null);
+  const [showReplaced, setShowReplaced] = React.useState(false);
+  const [tick, setTick] = React.useState(0);
+  const canCases = useCan('cases', 'read');
+  const [figures, setFigures] = React.useState<CaseFigures>(
+    canCases ? { kind: 'loading' } : { kind: 'hidden', why: 'forbidden' },
   );
-  const validationIssues = React.useMemo(() => {
-    const seen = new Set<string>();
-    const mismatch = authoringPolicyMismatch(authoringStandard);
-    return [
-      ...(mismatch ? [mismatch] : []),
-      ...backendIssues,
-      ...authoringValidation.issues,
-    ].filter((issue) => {
-      const key = `${issue.code}:${issue.field}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [authoringStandard, authoringValidation.issues, backendIssues]);
 
-  const openRunbook = React.useCallback(async (runbook: Runbook) => {
-    setWorkspaceOpen(true);
-    setWorkspaceMode('view');
-    setDetail(null);
-    setWorkspaceError('');
-    setBackendIssues([]);
-    setDetailLoading(true);
-    try {
-      const opened = await api.getRunbook(runbook.id);
-      setDetail(opened);
-      setDraftId(opened.id);
-      setDraftContent(opened.content);
-    } catch (caught) {
-      setWorkspaceError(errorMessage(caught, 'Could not open the runbook.'));
-    } finally {
-      setDetailLoading(false);
+  // The library is read when the page opens and again on each return from the editor (the
+  // page stays mounted between the two, so a runbook created or published there is listed).
+  // While the editor is open it is read only if it never was, for the editor's id checks.
+  React.useEffect(() => {
+    if (!inLibrary && library) return;
+    const ctrl = new AbortController();
+    setLibraryState((s) => (library ? s : 'loading'));
+    listRunbookLibrary({ show_replaced: showReplaced || undefined }, ctrl.signal)
+      .then((lib) => {
+        setLibrary(lib);
+        setLibraryState('ready');
+      })
+      .catch((err) => {
+        if (ctrl.signal.aborted) return;
+        setLibraryError(err);
+        setLibraryState('error');
+      });
+    return () => ctrl.abort();
+    // `library` is read only to keep rows on screen while a reload runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showReplaced, tick, inLibrary]);
+
+  const figuresRead = React.useRef(false);
+  React.useEffect(() => {
+    if (!canCases) {
+      setFigures({ kind: 'hidden', why: 'forbidden' });
+      return;
     }
-  }, []);
+    if (!inLibrary && figuresRead.current) return;
+    figuresRead.current = true;
+    const ctrl = new AbortController();
+    getRunbookMetrics(undefined, ctrl.signal)
+      .then((metrics) => setFigures({ kind: 'ready', metrics }))
+      .catch((err) => {
+        if (ctrl.signal.aborted) return;
+        const failure = runbookFailure(err, 'Could not read the run figures.');
+        const hidden = isCaseFiguresHidden(failure);
+        setFigures(hidden ? { kind: 'hidden', why: hidden } : { kind: 'error', message: failure.message });
+      });
+    return () => ctrl.abort();
+  }, [canCases, tick, inLibrary]);
 
-  const startCreate = React.useCallback(() => {
-    setWorkspaceOpen(true);
-    setWorkspaceMode('create');
-    setDetail(null);
-    setDraftId('');
-    setDraftContent(runbookTemplate());
-    setWorkspaceError('');
-    setBackendIssues([]);
-    setDetailLoading(false);
-  }, []);
-
-  const changeMode = React.useCallback(
-    (mode: WorkspaceMode) => {
-      if (mode === 'edit' && detail) setDraftContent(detail.content);
-      if (mode === 'view' && detail) setDraftContent(detail.content);
-      setWorkspaceError('');
-      setBackendIssues([]);
-      setWorkspaceMode(mode);
+  const openRunbook = React.useCallback(
+    (id: string, detail?: RunbookDetail, edits?: RunbookCarriedEdits) => {
+      handoff.current = detail ? { id, detail, edits: edits ?? null } : null;
+      navigate('runbooks', { id });
     },
-    [detail],
+    [navigate],
   );
+  const backToLibrary = React.useCallback(() => navigate('runbooks'), [navigate]);
 
-  const changeDraftId = React.useCallback((id: string) => {
-    setDraftId(id);
-    setDraftContent((current) => replaceFrontmatterId(current, id));
-    setBackendIssues([]);
-    setWorkspaceError('');
-  }, []);
-
-  const changeDraftContent = React.useCallback((content: string) => {
-    setDraftContent(content);
-    setBackendIssues([]);
-    setWorkspaceError('');
-  }, []);
-
-  const recordIndexResult = React.useCallback(
-    (result: RunbookIndexResult, successLabel: string) => {
-      setLastIndex(result);
-      const summary = describeIndex(result);
-      if (result.ok && result.failed === 0) {
-        toast.success(`${successLabel} ${summary}.`);
-      } else {
-        toast.warning(`${successLabel} The Markdown is durable; indexing needs attention. ${summary}.`);
-      }
-      announce(`${successLabel} ${summary}`);
-    },
-    [announce],
-  );
-
-  const saveRunbook = React.useCallback(async () => {
-    if (workspaceMode !== 'create' && !detail) return;
-    const id = workspaceMode === 'create' ? draftId.trim() : detail?.id ?? '';
-    if (!id || !draftContent.trim() || validationIssues.length) return;
-    setSaving(true);
-    setWorkspaceError('');
-    setBackendIssues([]);
-    try {
-      const result =
-        workspaceMode === 'create'
-          ? await api.createRunbook({ id, content: draftContent })
-          : await api.updateRunbook(id, draftContent, detail?.revision ?? '');
-      setRunbooks((current) => upsertRunbook(current, result.runbook));
-      recordIndexResult(
-        result.index,
-        workspaceMode === 'create' ? 'Runbook created.' : 'Runbook updated.',
-      );
-      try {
-        const opened = await api.getRunbook(result.runbook.id);
-        setDetail(opened);
-        setDraftId(opened.id);
-        setDraftContent(opened.content);
-        setWorkspaceMode('view');
-        setBackendIssues([]);
-      } catch (caught) {
-        const message = `Runbook saved, but could not be reopened. ${errorMessage(
-          caught,
-          'Try opening it again from the list.',
-        )}`;
-        setDetail(null);
-        setWorkspaceMode('view');
-        setWorkspaceError(message);
-      }
-    } catch (caught) {
-      const structured = extractRunbookBackendIssues(caught);
-      if (structured.length) {
-        const message = `Runbook rejected—fix ${structured.length} ${structured.length === 1 ? 'issue' : 'issues'} below.`;
-        setBackendIssues(structured);
-        setWorkspaceError('');
-        toast.error(message);
-        announce(message);
-      } else {
-        const message = errorMessage(caught, 'Could not save the runbook.');
-        setBackendIssues([]);
-        setWorkspaceError(message);
-        toast.error(message);
-      }
-    } finally {
-      setSaving(false);
-    }
-  }, [
-    announce,
-    validationIssues.length,
-    detail,
-    draftContent,
-    draftId,
-    recordIndexResult,
-    workspaceMode,
-  ]);
-
-  const submitReindex = React.useCallback(
-    async (runbookId: string | undefined, label: string) => {
-      setReindexing(runbookId ?? '*');
-      const params = runbookId ? { runbook_id: runbookId } : {};
-      const intent = retainJobSubmissionIntent(
-        jobSubmissionIntentRef.current,
-        'runbook_reindex',
-        params,
-      );
-      jobSubmissionIntentRef.current = intent;
-      try {
-        const job = await api.jobs.submit({
-          kind: 'runbook_reindex',
-          idempotency_key: intent.idempotencyKey,
-          params,
-        });
-        jobSubmissionIntentRef.current = null;
-        announceJobAccepted(job);
-        toast.success(`${label} queued.`, {
-          description: 'Reconciliation continues on the server after navigation or reload.',
-          action: { label: 'Open Inbox', onClick: () => navigate('inbox') },
-        });
-        announce(`${label} queued as background job`);
-      } catch (caught) {
-        const message = errorMessage(caught, 'Could not start the reindex job.');
-        toast.error(message);
-        announce(message);
-      } finally {
-        setReindexing(null);
-      }
-    },
-    [announce, navigate],
-  );
-
-  const reindexOne = React.useCallback(
-    (runbook: Runbook) => submitReindex(runbook.id, runbook.title || runbook.id),
-    [submitReindex],
-  );
-
-  const reindexAll = React.useCallback(
-    () => submitReindex(undefined, 'Runbook reconciliation'),
-    [submitReindex],
-  );
-
-  const deleteRunbook = React.useCallback(async () => {
-    if (!detail?.editable) return;
-    setDeleteOpen(false);
-    setSaving(true);
-    try {
-      const result = await api.deleteRunbook(detail.id, detail.revision);
-      setRunbooks((current) => current.filter((runbook) => runbook.id !== detail.id));
-      recordIndexResult(result.index, 'Runbook deleted.');
-      setWorkspaceOpen(false);
-      setDetail(null);
-      setDraftContent('');
-      setDraftId('');
-    } catch (caught) {
-      const message = errorMessage(caught, 'Could not delete the runbook.');
-      setWorkspaceError(message);
-      toast.error(message);
-    } finally {
-      setSaving(false);
-    }
-  }, [detail, recordIndexResult]);
-
-  const requestWorkspaceOpen = React.useCallback(
-    (open: boolean) => {
-      if (!open && dirty && !saving) {
-        setDiscardOpen(true);
-        return;
-      }
-      if (!saving) setWorkspaceOpen(open);
-    },
-    [dirty, saving],
-  );
-
-  if (loading) {
+  if (openId) {
+    const handed = handoff.current && handoff.current.id === openId ? handoff.current : null;
+    const recentRules = figures.kind === 'ready' ? figures.metrics.rules_without_runbook.map((r) => r.rule) : [];
     return (
-      <LoadingState
-        layout="panel"
-        shape="panel"
-        label="Loading runbooks"
-        description="Preparing trusted investigation references and their retrieval state."
-      />
+      <PageContainer variant="wide" data-testid="runbook-editor-page">
+        <React.Suspense
+          fallback={
+            <div className="space-y-4" aria-busy="true">
+              <PageHeader title="Runbook" back={{ label: 'All runbooks', href: '#/runbooks' }} />
+              <div className="surface-panel h-64 animate-pulse" />
+            </div>
+          }
+        >
+          <RunbookEditor
+            key={openId}
+            runbookId={openId}
+            initialDetail={handed?.detail ?? null}
+            initialEdits={handed?.edits ?? null}
+            seedRule={openId === 'new' ? seedRule : null}
+            library={library?.runbooks ?? []}
+            recentRules={recentRules}
+            onOpenRunbook={openRunbook}
+            onBackToLibrary={backToLibrary}
+          />
+        </React.Suspense>
+      </PageContainer>
     );
-  }
-  if (error) {
-    return <LoadError error={error} title="Could not load runbooks" onRetry={() => void load()} />;
   }
 
   return (
-    <div className="space-y-6">
-      <LiveRegion />
-      {embedded ? null : (
-        <PageHeader
-          icon={BookMarked}
-          eyebrow="Intelligence"
-          title="Runbooks"
-          description="Author trusted reference knowledge the agent can retrieve during investigations."
-        />
+    <RunbookLibraryView
+      library={library}
+      libraryState={libraryState}
+      libraryError={libraryError}
+      figures={figures}
+      showReplaced={showReplaced}
+      onShowReplaced={setShowReplaced}
+      onRetry={() => setTick((t) => t + 1)}
+      onOpen={openRunbook}
+      onCreate={(rule) => navigate('runbooks', rule ? { id: 'new', rule } : { id: 'new' })}
+    />
+  );
+}
+
+interface LibraryViewProps {
+  library: RunbookLibrary | null;
+  libraryState: 'loading' | 'ready' | 'error';
+  libraryError: unknown;
+  figures: CaseFigures;
+  showReplaced: boolean;
+  onShowReplaced: (on: boolean) => void;
+  onRetry: () => void;
+  onOpen: (id: string, detail?: RunbookDetail) => void;
+  onCreate: (rule?: string) => void;
+}
+
+function RunbookLibraryView({
+  library,
+  libraryState,
+  libraryError,
+  figures,
+  showReplaced,
+  onShowReplaced,
+  onRetry,
+  onOpen,
+  onCreate,
+}: LibraryViewProps) {
+  const canManage = useCan('runbooks', 'manage');
+  const demo = useDemo().active;
+  const isPhone = useMediaQuery('(max-width: 767px)');
+  const [q, setQ] = React.useState('');
+  const [state, setState] = React.useState<RunbookState | 'any'>('any');
+  const [origin, setOrigin] = React.useState<RunbookOrigin | 'any'>('any');
+  const [importOpen, setImportOpen] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
+  const moreTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const canWrite = canManage && !demo;
+
+  const runbooks = React.useMemo(() => library?.runbooks ?? [], [library]);
+  const rows = React.useMemo(
+    () =>
+      runbooks
+        .filter((r) => (state === 'any' ? true : r.state === state))
+        .filter((r) => (origin === 'any' ? true : r.origin === origin))
+        .filter((r) => matchesQuery(r, q.trim()))
+        .sort((a, b) => a.title.localeCompare(b.title)),
+    [runbooks, state, origin, q],
+  );
+  const metrics = figures.kind === 'ready' ? figures.metrics : null;
+  const runsBy = React.useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of metrics?.per_runbook ?? []) map.set(row.id, row.started);
+    return map;
+  }, [metrics]);
+
+  // The strip counts the library as it is, never as the table is filtered: a built-in that a
+  // published copy replaces is listed only with "Show replaced built-ins" on and is never counted.
+  const counted = runbooks.filter((r) => !r.replaced_by);
+  const published = counted.filter((r) => r.live_version != null && !r.retired);
+  const builtins = published.filter((r) => r.origin === 'builtin').length;
+  const reviewDue = counted.filter((r) => !r.retired && isReviewDue(r.review_due_at)).length;
+  const inReview = counted.filter((r) => r.state === 'in_review').length;
+  const libraryReady = !!library;
+  const partial = !!metrics?.partial;
+  const started = metrics?.per_runbook.reduce((n, r) => n + r.started, 0) ?? 0;
+  const completed = metrics?.per_runbook.reduce((n, r) => n + r.completed, 0) ?? 0;
+  const coverage = metrics?.coverage ?? null;
+  const coveragePct =
+    coverage && coverage.human_handled_cases > 0
+      ? Math.round((coverage.cases_with_run / coverage.human_handled_cases) * 100)
+      : null;
+  const hiddenText = figures.kind === 'hidden' ? HIDDEN_TEXT[figures.why] : figures.kind === 'error' ? figures.message : null;
+  /** A run figure that is not known yet: loading, hidden (no access) or unavailable (failed). */
+  const unknownFigure =
+    figures.kind === 'loading'
+      ? { value: <LoadingNumeral />, sub: 'Loading' }
+      : figures.kind === 'hidden'
+        ? { value: 'Hidden', sub: HIDDEN_TEXT[figures.why] }
+        : figures.kind === 'error'
+          ? { value: 'Unavailable', sub: figures.message }
+          : null;
+  /** A run count: exact, or a floor (the ≥ mark and its sentence) when the ledger was capped. */
+  const runCount = (count: number, context: string) =>
+    unknownFigure ??
+    (partial
+      ? { value: count.toLocaleString(), countTo: count, format: (n: number) => n.toLocaleString(), roll: false, bound: PARTIAL_BOUND }
+      : { value: count.toLocaleString(), context });
+  const windowLabel = metrics?.window_label ?? 'Last 30 days';
+
+  const filtersActive = state !== 'any' || origin !== 'any' || q.trim() !== '' || showReplaced;
+  const clearFilters = () => {
+    setQ('');
+    setState('any');
+    setOrigin('any');
+    onShowReplaced(false);
+  };
+  const chips: FilterChip[] = [];
+  if (state !== 'any') chips.push({ id: 'state', label: `State: ${STATES.find((s) => s.value === state)?.label}`, onRemove: () => setState('any') });
+  if (origin !== 'any') chips.push({ id: 'origin', label: `Origin: ${ORIGIN_LABEL[origin]}`, onRemove: () => setOrigin('any') });
+  if (showReplaced) chips.push({ id: 'replaced', label: 'Showing replaced built-ins', onRemove: () => onShowReplaced(false) });
+
+  const runExportAll = async () => {
+    setExporting(true);
+    try {
+      await exportAll(runbooks);
+      toast.success(`Exported ${countNoun(runbooks.length, 'runbook')}.`);
+    } catch (err) {
+      toast.error(runbookFailure(err, 'Could not export the runbooks.').message);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const showRuns = !!metrics || runbooks.some((r) => r.runs_30d != null);
+  // The name and its line wrap (two lines at most for the line); the rule chips wrap; the short
+  // columns take a fixed width each, so the two text columns share what is left.
+  const columns: DataTableColumn<RunbookSummary>[] = [
+    {
+      id: 'name',
+      header: 'Name',
+      wrap: true,
+      minWidth: '14rem',
+      cell: (r) => (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <RunbookTitleLink r={r} />
+          <span className="line-clamp-2 text-sm text-muted-foreground [overflow-wrap:anywhere]" data-runbook-line="">
+            {nameLine(r)}
+          </span>
+        </span>
+      ),
+      text: (r) => r.title,
+    },
+    { id: 'applies', header: 'Applies to', width: '24%', wrap: true, cell: (r) => <AppliesTo r={r} /> },
+    { id: 'state', header: 'State', width: '8rem', wrap: true, cell: (r) => <StateCell r={r} />, text: stateText },
+    {
+      id: 'steps',
+      header: 'Steps',
+      width: '9.5rem',
+      cell: (r) => <span className="whitespace-nowrap tabular-nums">{stepsText(r)}</span>,
+      text: stepsText,
+    },
+    ...(showRuns
+      ? [
+          {
+            id: 'runs',
+            header: 'Runs (30 days)',
+            width: '7.5rem',
+            align: 'right' as const,
+            kind: 'number' as const,
+            cell: (r: RunbookSummary) => {
+              const n = (r.runs_30d ?? runsBy.get(r.id) ?? 0).toLocaleString();
+              return <span className="tabular-nums">{partial ? `at least ${n}` : n}</span>;
+            },
+          },
+        ]
+      : []),
+    { id: 'review', header: 'Review due', width: '9rem', wrap: true, cell: (r) => <ReviewCell r={r} /> },
+  ];
+
+  const headerActions = (
+    <div className="flex items-center gap-2">
+      {canWrite ? (
+        <>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button ref={moreTriggerRef} type="button" variant="outline" size="icon" aria-label="More actions">
+                <MoreHorizontal aria-hidden />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              <DropdownMenuItem onSelect={() => setImportOpen(true)}>
+                <FileUp aria-hidden />
+                Import Markdown
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={exporting || !runbooks.length} onSelect={() => void runExportAll()}>
+                <Download aria-hidden />
+                Export all as Markdown
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button type="button" onClick={() => onCreate()}>
+            <Plus aria-hidden />
+            New runbook
+          </Button>
+        </>
+      ) : (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button type="button" variant="outline" size="icon" aria-label="More actions">
+              <MoreHorizontal aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <DropdownMenuItem disabled={exporting || !runbooks.length} onSelect={() => void runExportAll()}>
+              <Download aria-hidden />
+              Export all as Markdown
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
+    </div>
+  );
 
-      <div className="flex flex-col gap-4 border-b border-border pb-5 lg:flex-row lg:items-start lg:justify-between">
-        <div className="max-w-3xl space-y-1.5">
-          <p className="text-sm leading-relaxed text-muted-foreground">
-            Runbooks are retrieval references for investigation context. Playbooks remain the
-            separate procedure layer, and deterministic case policy remains final authority.
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {runbooks.length} loaded · {runbooks.filter((item) => item.source_type === 'operator').length}{' '}
-            operator · {runbooks.filter(needsIndexAttention).length} need indexing attention
-          </p>
-        </div>
-        {canManage ? (
-          <div className="flex shrink-0 flex-wrap gap-2">
-            <Button
-              variant="outline"
-              onClick={() => void reindexAll()}
-              disabled={Boolean(reindexing)}
-            >
-              <RefreshCw
-                className={
-                  reindexing === '*'
-                    ? 'size-4 animate-spin motion-reduce:animate-none'
-                    : 'size-4'
-                }
-                aria-hidden="true"
-              />
-              {reindexing === '*' ? 'Submitting…' : 'Reindex all'}
-            </Button>
-            <Button onClick={startCreate}>
-              <Plus className="size-4" aria-hidden="true" />
-              New runbook
-            </Button>
-          </div>
-        ) : null}
-      </div>
+  const migration = library?.migration ? migrationText(library.migration) : null;
 
-      {!enabled || !retrievalEnabled ? (
-        <Alert variant="warning">
-          <AlertCircle aria-hidden="true" />
-          <AlertTitle>Runbook retrieval is not active</AlertTitle>
-          <AlertDescription>
-            {!enabled
-              ? 'Runbooks are disabled. Changes remain durable, but investigations will not use them until Runbooks is enabled in Settings.'
-              : 'RAG retrieval is disabled. Changes remain durable, but investigations cannot retrieve runbook knowledge until retrieval is enabled.'}
-          </AlertDescription>
-        </Alert>
+  return (
+    <PageContainer variant="wide" data-testid="runbooks-library">
+      <PageHeader title={PAGE_TITLE} help={PAGE_HELP} actions={headerActions} />
+
+      {demo ? (
+        <p className="text-sm text-muted-foreground">Runbooks cannot be edited in Demo Mode. The cases show Demo runs.</p>
       ) : null}
 
-      {lastIndex ? (
-        <Alert variant={lastIndex.ok && lastIndex.failed === 0 ? 'success' : 'warning'}>
-          {lastIndex.ok && lastIndex.failed === 0 ? (
-            <CheckCircle2 aria-hidden="true" />
-          ) : (
-            <AlertCircle aria-hidden="true" />
+      {migration ? (
+        <Callout
+          intent="intro"
+          introId="runbook-migration"
+          title="Your procedures are now runbooks"
+          action={
+            <Button type="button" variant="outline" size="sm" onClick={() => setOrigin('imported')}>
+              Show imported
+            </Button>
+          }
+        >
+          {migration}
+        </Callout>
+      ) : null}
+
+      <KpiStrip label="Runbook figures" density="comfortable">
+        <KpiTile
+          label="Published runbooks"
+          {...(libraryReady
+            ? {
+                value: published.length.toLocaleString(),
+                context: `${builtins.toLocaleString()} built-in · ${(published.length - builtins).toLocaleString()} yours`,
+              }
+            : libraryState === 'error'
+              ? { value: 'Unavailable', sub: 'The library could not be read.' }
+              : { value: <LoadingNumeral />, sub: 'Loading' })}
+        />
+        <KpiTile label="Runs (30 days)" {...runCount(started, windowLabel)} />
+        <KpiTile
+          label="Completed"
+          {...runCount(
+            completed,
+            started > 0 ? `${Math.round((completed / started) * 100)}% of ${countNoun(started, 'run')}` : 'No runs yet',
           )}
-          <AlertTitle>Latest index reconciliation</AlertTitle>
-          <AlertDescription className="space-y-1">
-            <p>{describeIndex(lastIndex)}.</p>
-            {indexErrors(lastIndex).slice(0, 3).map((message, index) => (
-              <p key={`${message}-${index}`} className="break-words">
-                {message}
-              </p>
-            ))}
-          </AlertDescription>
-        </Alert>
-      ) : null}
+        />
+        <KpiTile
+          label="Cases with a runbook"
+          {...(unknownFigure ??
+            (coveragePct == null
+              ? { value: 'None yet', context: coverage ? `0 of ${countNoun(coverage.human_handled_cases, 'human-handled case')}` : '' }
+              : {
+                  value: partial ? `at least ${coveragePct}%` : `${coveragePct}%`,
+                  context: coverage
+                    ? `${coverage.cases_with_run.toLocaleString()} of ${countNoun(coverage.human_handled_cases, 'human-handled case')}`
+                    : '',
+                }))}
+        />
+        <KpiTile
+          label="Needs attention"
+          {...(libraryReady
+            ? {
+                value: (reviewDue + inReview).toLocaleString(),
+                context: `${reviewDue.toLocaleString()} review due · ${inReview.toLocaleString()} in review`,
+              }
+            : libraryState === 'error'
+              ? { value: 'Unavailable', sub: 'The library could not be read.' }
+              : { value: <LoadingNumeral />, sub: 'Loading' })}
+        />
+      </KpiStrip>
 
-      <section aria-label="Runbook library">
-        <div className="grid gap-3 border-y border-border py-4 md:grid-cols-[minmax(0,1fr)_14rem]">
-          <div className="relative">
-            <Label htmlFor="runbook-search" className="sr-only">
-              Search runbooks
-            </Label>
-            <Search
-              className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden="true"
-            />
-            <Input
-              id="runbook-search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search titles, rules, techniques, entities, or keywords…"
-              className="pl-9"
-            />
-          </div>
-          <Select value={filter} onValueChange={(value) => setFilter(value as RunbookFilter)}>
-            <SelectTrigger aria-label="Filter runbooks">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All runbooks</SelectItem>
-              <SelectItem value="operator">Operator owned</SelectItem>
-              <SelectItem value="bundled">Bundled references</SelectItem>
-              <SelectItem value="attention">Needs indexing attention</SelectItem>
-            </SelectContent>
-          </Select>
+      <Panel
+        title="Library"
+        count={libraryState === 'ready' ? rows.length : undefined}
+        caption={partial ? 'Run counts are lower bounds: some runs in this window are not counted.' : undefined}
+        padding="none"
+        data-testid="runbooks-table-panel"
+      >
+        <div className="px-4 pb-3 xl:px-5">
+          <FilterBar
+            aria-label="Runbook filters"
+            search={{ value: q, onChange: setQ, label: 'Search runbooks', placeholder: 'Search by name, rule or technique' }}
+            filters={[
+              {
+                id: 'state',
+                label: 'State',
+                active: state !== 'any',
+                control: ({ placement }) => (
+                  <Select value={state} onValueChange={(v) => setState(v as RunbookState | 'any')}>
+                    <SelectTrigger aria-label="State" className={placement === 'bar' ? 'h-9 w-36' : 'h-9 w-full'}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {STATES.map((s) => (
+                        <SelectItem key={s.value} value={s.value}>
+                          {s.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ),
+              },
+              {
+                id: 'origin',
+                label: 'Origin',
+                active: origin !== 'any',
+                control: ({ placement }) => (
+                  <Select value={origin} onValueChange={(v) => setOrigin(v as RunbookOrigin | 'any')}>
+                    <SelectTrigger aria-label="Origin" className={placement === 'bar' ? 'h-9 w-36' : 'h-9 w-full'}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ORIGINS.map((o) => (
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ),
+              },
+              {
+                id: 'replaced',
+                label: 'Show replaced built-ins',
+                active: showReplaced,
+                control: (
+                  <label className="inline-flex h-9 items-center gap-2 text-sm text-foreground">
+                    <Switch checked={showReplaced} onCheckedChange={onShowReplaced} aria-label="Show replaced built-ins" />
+                    Show replaced built-ins
+                  </label>
+                ),
+              },
+            ]}
+            chips={chips}
+            onClearAll={filtersActive ? clearFilters : undefined}
+          />
         </div>
-
-        {filtered.length ? (
-          <div>
-            {filtered.map((runbook) => (
-              <RunbookRow
-                key={runbook.id}
-                runbook={runbook}
-                canManage={canManage}
-                reindexing={reindexing === runbook.id}
-                onOpen={(item) => void openRunbook(item)}
-                onReindex={(item) => void reindexOne(item)}
-              />
-            ))}
+        {libraryState === 'error' && !library ? (
+          <div className="px-4 pb-4 xl:px-5">
+            <LoadError title="Could not load the runbooks" error={libraryError} onRetry={onRetry} fallback="The library could not be read right now." />
           </div>
+        ) : isPhone ? (
+          libraryState === 'loading' && !library ? (
+            <div className="space-y-2 px-4 pb-4" aria-busy="true">
+              {[0, 1, 2, 3].map((i) => (
+                <div key={i} className="h-14 animate-pulse rounded-md bg-muted/60" />
+              ))}
+            </div>
+          ) : rows.length ? (
+            <ListRows aria-label="Runbooks" className="px-2 pb-2">
+              {rows.map((r) => (
+                <ListRow
+                  key={r.id}
+                  title={r.title}
+                  description={`${ORIGIN_LABEL[r.origin]} · ${stateText(r)} · ${stepsText(r)}`}
+                  href={pageHash('runbooks', { id: r.id })}
+                />
+              ))}
+            </ListRows>
+          ) : (
+            <div className="px-4 pb-4">
+              <EmptyState
+                state="no-results"
+                title="No runbooks match these filters."
+                action={
+                  <Button type="button" variant="outline" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                }
+              />
+            </div>
+          )
         ) : (
-          <EmptyState
-            state={hasActiveFilters ? 'no-results' : 'first-use'}
-            title={hasActiveFilters ? 'No runbooks match these filters' : 'No runbooks are available'}
-            description={
-              hasActiveFilters
-                ? 'The library loaded, but the current search and ownership or indexing filter exclude every runbook. Clear the filters to return to the full library.'
-                : canManage
-                  ? 'This library has no bundled or operator-authored references yet. Use New runbook to create operator guidance, then index it to make the guidance retrievable.'
-                  : 'This library has no bundled or operator-authored references yet. Ask a runbook manager to add and index trusted guidance.'
-            }
-            action={
-              hasActiveFilters ? (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => {
-                    setQuery('');
-                    setFilter('all');
-                  }}
-                >
-                  <X className="size-4" aria-hidden="true" />
-                  Clear filters
-                </Button>
-              ) : undefined
+          <DataTable<RunbookSummary>
+            columns={columns}
+            rows={rows}
+            getRowId={(r) => r.id}
+            surface="panel"
+            loading={libraryState === 'loading' && !library}
+            loadingRows={6}
+            onRowClick={(r) => onOpen(r.id)}
+            showRowAction={false}
+            ariaLabel="Runbooks"
+            emptyState={
+              <EmptyState
+                state="no-results"
+                title="No runbooks match these filters."
+                action={
+                  <Button type="button" variant="outline" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                }
+              />
             }
           />
         )}
-      </section>
+      </Panel>
 
-      <div className="flex items-start gap-3 border-t border-border pt-5 text-xs leading-relaxed text-muted-foreground">
-        <Tags className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-        <p>
-          Applicability metadata improves retrieval precision; it does not execute a runbook or
-          make a verdict. Open a runbook to inspect the exact Markdown and projection revision.
-        </p>
-      </div>
+      <RuleSheetHost>
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Panel title="Rules with no runbook" caption={hiddenText ? undefined : windowLabel} data-testid="rules-without-runbook">
+            {hiddenText ? (
+              <p className="text-sm text-muted-foreground">{hiddenText}</p>
+            ) : figures.kind === 'loading' ? (
+              <p className="text-sm text-muted-foreground" aria-busy="true">
+                Reading the rules seen recently.
+              </p>
+            ) : metrics && metrics.rules_without_runbook.length ? (
+              <ul className="divide-y divide-border/70">
+                {metrics.rules_without_runbook.map((row) => (
+                  <li key={row.rule} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2">
+                    <span className="min-w-0 text-sm">
+                      <RuleLink rule={row.rule} origin="Runbooks" className="text-sm text-foreground" />
+                      <span className="ml-2 text-muted-foreground">{countNoun(row.cases, 'case')}</span>
+                    </span>
+                    {canWrite ? (
+                      <Button type="button" variant="ghost" size="sm" className="h-8" onClick={() => onCreate(row.rule)}>
+                        <Plus aria-hidden />
+                        Create a runbook
+                      </Button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">Every rule seen recently has a published runbook.</p>
+            )}
+          </Panel>
+          <Panel title="Recent runs" caption={hiddenText ? undefined : windowLabel} data-testid="recent-runs">
+            {hiddenText ? (
+              <p className="text-sm text-muted-foreground">{hiddenText}</p>
+            ) : figures.kind === 'loading' ? (
+              <p className="text-sm text-muted-foreground" aria-busy="true">
+                Reading recent runs.
+              </p>
+            ) : metrics && metrics.recent_runs.length ? (
+              <ul className="divide-y divide-border/70">
+                {metrics.recent_runs.slice(0, 10).map((run) => (
+                  <li key={run.run_id} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 py-2 text-sm">
+                    <span className="min-w-0">
+                      <CaseLink caseId={run.case_id} label={caseLabel({ case_number: run.case_number, case_id: run.case_id })} />
+                      <span className="ml-2 text-foreground [overflow-wrap:anywhere]">{run.title}</span>
+                      {run.version != null ? <span className="ml-1 text-muted-foreground">v{run.version.toLocaleString()}</span> : null}
+                    </span>
+                    <span className="text-muted-foreground" data-recent-run-line="">
+                      {recentRunLine(run)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">No runs in this window yet.</p>
+            )}
+          </Panel>
+        </div>
+      </RuleSheetHost>
 
-      <RunbookWorkspace
-        open={workspaceOpen}
-        mode={workspaceMode}
-        detail={detail}
-        loading={detailLoading}
-        saving={saving}
-        reindexing={reindexing === detail?.id}
-        draftId={draftId}
-        draftContent={draftContent}
-        validationIssues={validationIssues}
-        bodyCharacters={authoringValidation.bodyCharacters}
-        descriptorCharacters={authoringValidation.descriptorCharacters}
-        error={workspaceError}
-        canManage={canManage}
-        authoringStandard={authoringStandard}
-        onOpenChange={requestWorkspaceOpen}
-        onModeChange={changeMode}
-        onDraftIdChange={changeDraftId}
-        onDraftContentChange={changeDraftContent}
-        onSave={() => void saveRunbook()}
-        onReindex={() => {
-          if (detail) void reindexOne(detail);
+      <ImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        returnFocusRef={moreTriggerRef}
+        onImported={(detail) => {
+          setImportOpen(false);
+          toast.success('Imported as a draft.');
+          onOpen(detail.summary.id, detail);
         }}
-        onDelete={() => setDeleteOpen(true)}
       />
-
-      <ConfirmDialog
-        open={deleteOpen}
-        onOpenChange={setDeleteOpen}
-        title="Delete this runbook?"
-        description={
-          detail
-            ? `${detail.title || detail.id} and its retrieval projection will be removed. Bundled runbooks cannot be deleted.`
-            : 'The operator runbook and its retrieval projection will be removed.'
-        }
-        confirmLabel="Delete runbook"
-        destructive
-        onConfirm={() => void deleteRunbook()}
-      />
-
-      <ConfirmDialog
-        open={discardOpen}
-        onOpenChange={setDiscardOpen}
-        title="Discard unsaved changes?"
-        description="Your Markdown changes have not been saved."
-        confirmLabel="Discard changes"
-        destructive
-        onConfirm={() => {
-          setDiscardOpen(false);
-          setWorkspaceOpen(false);
-          setWorkspaceMode('view');
-          setWorkspaceError('');
-          if (detail) setDraftContent(detail.content);
-        }}
-      />
-    </div>
+    </PageContainer>
   );
 }
+

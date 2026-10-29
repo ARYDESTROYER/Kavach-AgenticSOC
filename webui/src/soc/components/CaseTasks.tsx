@@ -6,6 +6,11 @@
  * (open / in_progress / done / blocked) is NOT a case status and never touches the
  * deterministic decision (#3 — enforced backend-side).
  *
+ * Round 14 (SPEC §4.10.7, D36): the same checklist is shown inside a case's Runbook tab
+ * as "Other tasks" (`variant="other"`), with "Added by Asha Rao at 14:29 UTC · not from
+ * the runbook" provenance under each title. Free-form tasks keep their own store; they
+ * are never runbook steps and never count toward runbook progress.
+ *
  * SECURITY (#9): every task `title`, `assignee`, and log `note` is operator-authored
  * UNTRUSTED text — rendered EXCLUSIVELY as plain text nodes, never markup. Writes are
  * gated by the caller (the add/edit controls are only shown when `canWrite`).
@@ -89,9 +94,12 @@ interface TaskRowProps {
   busy: boolean;
   onStatus: (status: TaskStatus) => void;
   onLog: (note: string) => void;
+  /** "Added by Asha Rao at 14:29 UTC · not from the runbook" (plain text). */
+  provenance?: string | null;
+  variant?: 'default' | 'other';
 }
 
-const TaskRow: React.FC<TaskRowProps> = ({ task, canWrite, busy, onStatus, onLog }) => {
+const TaskRow: React.FC<TaskRowProps> = ({ task, canWrite, busy, onStatus, onLog, provenance = null, variant = 'default' }) => {
   const meta = statusMeta(task.status);
   const [logOpen, setLogOpen] = React.useState(false);
   const [note, setNote] = React.useState('');
@@ -102,7 +110,7 @@ const TaskRow: React.FC<TaskRowProps> = ({ task, canWrite, busy, onStatus, onLog
   const toggleDone = () => onStatus(meta.done ? 'open' : 'done');
 
   return (
-    <li className="rounded-lg border border-border bg-card p-3">
+    <li className={variant === 'other' ? 'px-3 py-2.5' : 'rounded-lg border border-border bg-card p-3'} data-task-id={task.id}>
       <div className="flex items-start gap-3">
         <IconButton
           label={meta.done ? 'Mark task not done' : 'Mark task done'}
@@ -132,6 +140,7 @@ const TaskRow: React.FC<TaskRowProps> = ({ task, canWrite, busy, onStatus, onLog
           >
             {task.title || DASH}
           </p>
+          {provenance ? <p className="mt-0.5 text-xs text-muted-foreground">{provenance}</p> : null}
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <Badge variant={meta.badge} className="gap-1 px-1.5 py-0">
               <meta.icon className="h-3 w-3" />
@@ -261,6 +270,10 @@ export interface CaseTasksProps {
   onStatus: (taskId: string, status: TaskStatus) => void;
   onLog: (taskId: string, note: string) => void;
   className?: string;
+  /** `other`: the Runbook tab's "Other tasks" (one bordered list, provenance lines). */
+  variant?: 'default' | 'other';
+  /** The provenance line of one task, when known. */
+  provenanceOf?: (task: CaseTask) => string | null;
 }
 
 /**
@@ -275,8 +288,12 @@ export const CaseTasks: React.FC<CaseTasksProps> = ({
   onStatus,
   onLog,
   className,
+  variant = 'default',
+  provenanceOf,
 }) => {
   const [draft, setDraft] = React.useState('');
+  const other = variant === 'other';
+  const inputId = React.useId();
 
   const ordered = React.useMemo(
     () =>
@@ -298,20 +315,37 @@ export const CaseTasks: React.FC<CaseTasksProps> = ({
 
   return (
     <div className={cn('space-y-3', className)}>
-      <SectionHeading
-        icon={ListChecks}
-        actions={
-          ordered.length ? (
-            <Badge variant="outline" className="tabular-nums">
-              {doneCount}/{ordered.length} done
-            </Badge>
-          ) : undefined
-        }
-      >
-        Tasks
-      </SectionHeading>
+      {other ? (
+        <div className="flex flex-wrap items-baseline gap-x-2 px-1">
+          {/* Focus lands here from "Open the Runbook tab" in Collaboration. */}
+          <h3
+            tabIndex={-1}
+            data-other-tasks-heading=""
+            className="rounded-sm text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Other tasks
+          </h3>
+          <span className="text-xs tabular-nums text-muted-foreground">
+            {ordered.length ? `${doneCount.toLocaleString()} of ${ordered.length.toLocaleString()} done` : 'None yet'}
+          </span>
+          <span className="ml-auto text-xs text-muted-foreground">Free-form work that is not a runbook step</span>
+        </div>
+      ) : (
+        <SectionHeading
+          icon={ListChecks}
+          actions={
+            ordered.length ? (
+              <Badge variant="outline" className="tabular-nums">
+                {doneCount}/{ordered.length} done
+              </Badge>
+            ) : undefined
+          }
+        >
+          Tasks
+        </SectionHeading>
+      )}
 
-      {ordered.length === 0 ? (
+      {other && ordered.length === 0 ? null : ordered.length === 0 ? (
         <EmptyState
           icon={ListChecks}
           compact
@@ -323,7 +357,7 @@ export const CaseTasks: React.FC<CaseTasksProps> = ({
           }
         />
       ) : (
-        <ul className="space-y-2">
+        <ul className={other ? 'divide-y divide-border/70 rounded-lg border border-border bg-card' : 'space-y-2'}>
           {ordered.map((t) => (
             <TaskRow
               key={t.id}
@@ -332,6 +366,8 @@ export const CaseTasks: React.FC<CaseTasksProps> = ({
               busy={busyId === t.id}
               onStatus={(status) => onStatus(t.id, status)}
               onLog={(note) => onLog(t.id, note)}
+              variant={variant}
+              provenance={provenanceOf ? provenanceOf(t) : null}
             />
           ))}
         </ul>
@@ -339,8 +375,14 @@ export const CaseTasks: React.FC<CaseTasksProps> = ({
 
       {canWrite ? (
         <div className="flex items-center gap-2">
+          {other ? (
+            <label htmlFor={inputId} className="sr-only">
+              Add task
+            </label>
+          ) : null}
           <Input
-            placeholder="Add a task…"
+            id={other ? inputId : undefined}
+            placeholder={other ? 'Add a task that is not in the runbook…' : 'Add a task…'}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
@@ -355,7 +397,7 @@ export const CaseTasks: React.FC<CaseTasksProps> = ({
             onClick={submit}
             disabled={!draft.trim() || busyId === '__add__'}
           >
-            <Plus className="h-4 w-4" /> Add
+            <Plus className="h-4 w-4" /> {other ? 'Add task' : 'Add'}
           </Button>
         </div>
       ) : null}

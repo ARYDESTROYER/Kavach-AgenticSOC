@@ -33,7 +33,14 @@ const mocks = vi.hoisted(() => ({
   // What the mocked detail's "Mock reopen" reports (an Undo/Reopen right after a close).
   detailNext: null as Case | null,
   resolveDialogFocus: null as null | ((opener: HTMLElement | null, andNext: boolean) => HTMLElement | null),
+  // Round 14: the runbook progress endpoint behind the queue chip and the bulk close note.
+  getRunbookProgress: vi.fn(),
 }));
+
+vi.mock('@/lib/api-runbooks', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api-runbooks')>('@/lib/api-runbooks');
+  return { ...actual, getRunbookProgress: mocks.getRunbookProgress };
+});
 
 vi.mock('@/lib/useEventStream', async () => {
   const actual = await vi.importActual<typeof import('@/lib/useEventStream')>('@/lib/useEventStream');
@@ -317,6 +324,7 @@ describe('CaseManager', () => {
     mocks.streamOnEvent = null;
     mocks.detailNext = null;
     mocks.resolveDialogFocus = null;
+    mocks.getRunbookProgress.mockReset().mockResolvedValue({});
   });
 
   it('centers the shared loading state while the initial case queue is unavailable', async () => {
@@ -1038,6 +1046,62 @@ describe('CaseManager', () => {
         resolution: 'Bulk-closed by analyst',
       },
     });
+  });
+
+  it('shows a runbook progress chip on a row with a runbook, with the fact in the row name (Round 14)', async () => {
+    const rowButton = (title: string) =>
+      within(
+        screen.getAllByTestId('case-queue-row').find((row) => within(row).queryByText(title)) as HTMLElement,
+      ).getAllByRole('button')[0];
+    mocks.permissions.add('cases:read');
+    mocks.getRunbookProgress.mockImplementation(async (ids: string[]) =>
+      Object.fromEntries(
+        ids.map((id) => [
+          id,
+          id === OPEN_HIGH.case_id
+            ? { done: 2, not_applicable: 0, total: 6, required_open: 3, blocked: 0, waiting: 1 }
+            : { done: 0, not_applicable: 0, total: 0, required_open: 0, blocked: 0, waiting: 0 },
+        ]),
+      ),
+    );
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    const row = await waitFor(() => {
+      const button = rowButton('Multiple failed logins');
+      expect(button.getAttribute('aria-label')).toMatch(/Runbook: 2 of 6 steps done, 1 waiting for approval/);
+      return button;
+    });
+    const chip = row.querySelector('[data-runbook-progress]') as HTMLElement;
+    expect(chip).toHaveTextContent('2/6 · 1 waiting');
+    expect(chip).toHaveAttribute('aria-hidden', 'true');
+    // One tab stop per row: the chip is not a control.
+    expect(chip.querySelector('button, a, [tabindex]')).toBeNull();
+    // A case with no runbook has no chip.
+    expect(rowButton('Suspicious S3 bucket exfiltration').querySelector('[data-runbook-progress]')).toBeNull();
+  });
+
+  it('bulk Close says how many selected cases have required runbook steps open and sends one reason', async () => {
+    mocks.getRunbookProgress.mockResolvedValue({
+      [OPEN_HIGH.case_id]: { done: 2, not_applicable: 0, total: 6, required_open: 3, blocked: 0, waiting: 0 },
+      [OPEN_CRITICAL.case_id]: { done: 0, not_applicable: 0, total: 0, required_open: 0, blocked: 0, waiting: 0 },
+    });
+    render(<CaseManager />);
+    await screen.findByText('Multiple failed logins');
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select all visible cases' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close…' }));
+    const dialog = await screen.findByTestId('bulk-close-dialog');
+    expect(await within(dialog).findByText('1 of the 2 selected cases have required runbook steps open.')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('radio', { name: /false positive/i }));
+    fireEvent.change(within(dialog).getByLabelText(/Why are you closing with required steps open\?/), {
+      target: { value: 'Handled by the identity team.' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close 2 cases' }));
+    await waitFor(() => expect(mocks.submitJob).toHaveBeenCalledTimes(1));
+    expect(mocks.submitJob.mock.calls[0][0].params).toMatchObject({
+      action: 'close',
+      open_steps_reason: 'Handled by the identity team.',
+    });
+    expect(mocks.submitJob.mock.calls[0][0].params).not.toHaveProperty('require_open_steps_reason');
   });
 
   it('keeps failed rows selected with their reason when a tracked bulk job finishes', async () => {

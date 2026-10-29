@@ -1,63 +1,54 @@
 /**
- * Intelligence — explicit leaf labels and direct Persona discovery.
- *
- * Every Intelligence job has one direct destination and one derived label. Agent
- * personas no longer hide behind a second Playbooks/Catalog tab, while the legacy
- * `catalog` alias resolves to Response playbooks.
- *
- * The sub-pages are stubbed so the host renders without their network surface.
+ * Intelligence: each job has one direct destination and one label (Round 14, SPEC §4.10.1).
+ * Runbooks and Agent personas are pages of their own that draw their own header; the
+ * retired `playbooks` and `catalog` ids open Runbooks. Knowledge and memory keep the host
+ * header. The sub-pages are stubbed so the host renders without their network surface.
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 vi.mock('../Knowledge', () => ({ default: () => <div>knowledge body</div> }));
-vi.mock('../Runbooks', () => ({ default: () => <div>runbooks body</div> }));
+vi.mock('../Runbooks', () => ({ default: () => <div>runbooks page</div> }));
 vi.mock('../Memory', () => ({ default: () => <div>memory body</div> }));
-vi.mock('../Catalog', () => ({
-  default: ({ defaultTab }: { defaultTab?: string }) => (
-    <div>catalog body · {defaultTab}</div>
-  ),
-}));
+vi.mock('../Personas', () => ({ default: () => <div>personas page</div> }));
 
 import { TooltipProvider } from '@/ui/tooltip';
-import Intelligence from '../Intelligence';
+import Intelligence, { intelligenceView } from '../Intelligence';
 import { navLabel } from '@/soc/nav';
 
-describe('Intelligence host — direct leaf labels', () => {
-  it('maps the legacy Catalog alias to Response playbooks', () => {
-    render(
-      <TooltipProvider>
-        <Intelligence tab="catalog" />
-      </TooltipProvider>,
-    );
-    // Round 14 (D44): the registry's `playbooks` alias opens the one Runbooks feature (the
-    // router redirects it); this host still renders its legacy view until WP-W7a.
-    expect(navLabel('playbooks')).toBe('Runbooks');
-    expect(screen.getByRole('heading', { name: 'Response playbooks' })).toBeInTheDocument();
-    expect(screen.getByText('catalog body · playbooks')).toBeInTheDocument();
-  });
+function renderHost(tab: string) {
+  return render(
+    <TooltipProvider>
+      <Intelligence tab={tab} />
+    </TooltipProvider>,
+  );
+}
 
-  it('renders the dedicated Runbooks Intelligence child at its registry label', () => {
-    render(
-      <TooltipProvider>
-        <Intelligence tab="runbooks" />
-      </TooltipProvider>,
-    );
-    // Round 14 (SPEC §4.8.2): one "Runbooks" destination; the host's own heading is
-    // rewritten with the page (WP-W7a).
+describe('Intelligence host: direct destinations', () => {
+  it.each(['runbooks', 'playbooks', 'catalog'])('opens the Runbooks page for %s', (tab) => {
+    renderHost(tab);
     expect(navLabel('runbooks')).toBe('Runbooks');
-    expect(screen.getByRole('heading', { name: 'Reference runbooks' })).toBeInTheDocument();
-    expect(screen.getByText('runbooks body')).toBeInTheDocument();
+    expect(screen.getByText('runbooks page')).toBeInTheDocument();
+    // The page draws its own header; the host adds none.
+    expect(screen.queryByRole('heading', { level: 1 })).toBeNull();
   });
 
-  it('renders Agent personas as its own Intelligence destination', () => {
-    render(
-      <TooltipProvider>
-        <Intelligence tab="personas" />
-      </TooltipProvider>,
-    );
+  it('renders Agent personas as its own page', () => {
+    renderHost('personas');
     expect(navLabel('personas')).toBe('Agent personas');
-    expect(screen.getByRole('heading', { name: 'Agent personas' })).toBeInTheDocument();
-    expect(screen.getByText('catalog body · personas')).toBeInTheDocument();
+    expect(screen.getByText('personas page')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { level: 1 })).toBeNull();
+  });
+
+  it('keeps one host header for Knowledge and Operator memory', () => {
+    renderHost('knowledge');
+    expect(screen.getByRole('heading', { level: 1, name: 'Knowledge corpus' })).toBeInTheDocument();
+    expect(screen.getByText('knowledge body')).toBeInTheDocument();
+  });
+
+  it('maps every tab to one view', () => {
+    expect(intelligenceView('memory')).toBe('memory');
+    expect(intelligenceView(undefined)).toBe('knowledge');
+    expect(intelligenceView('catalog')).toBe('runbooks');
   });
 });

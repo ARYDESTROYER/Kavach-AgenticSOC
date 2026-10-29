@@ -125,14 +125,16 @@ describe('FactsRail', () => {
     // Related cases jump.
     expect(within(rail).getByTestId('facts-related')).toHaveTextContent('2 related cases');
 
-    // The record: decider, cost, build, profile, playbook, classification + AI history,
-    // notifications.
+    // The record: decider, cost, build, profile, the procedure of a case investigated
+    // before Round 14 (its stored id under a Console-authored label), classification + AI
+    // history, notifications.
     const record = within(rail).getByTestId('facts-record');
     for (const text of [
       'Decided by',
       'Investigation cost',
       'v0.1.13 · abcdef012345',
       'Network specialist',
+      'Runbook (before Round 14)',
       'pb-ssh',
       'Classification history',
       'AI verdict history',

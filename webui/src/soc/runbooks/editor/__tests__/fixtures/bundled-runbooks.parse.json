@@ -1,0 +1,3271 @@
+{
+ "$comment": "Generated from backend/app/engine/runbook_model.py over backend/app/runbooks/library/*.md (parse_runbook_markdown, normalise_definition, export_runbook_markdown). Regenerate with the snippet in markdown.parity.test.ts when a bundled runbook changes.",
+ "runbooks": [
+  {
+   "file": "brute-force-password-spray.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "brute-force-password-spray",
+    "title": "Brute force and password spray",
+    "summary": "Many failed sign-ins against one or more accounts, from one or many sources. The question that matters is whether any attempt succeeded.",
+    "use_when": "A detection reports repeated failed authentication against our accounts or services.",
+    "prerequisites": "Authentication logs from the targeted systems with the outcome of each attempt.",
+    "applies_when": {
+     "rule_ids": [
+      "mail_auth",
+      "waf_auth",
+      "web_auth",
+      "roundcube_login",
+      "postfix",
+      "sshd",
+      "linux_auth",
+      "winlogon"
+     ],
+     "mitre": [],
+     "entity_types": [
+      "ip",
+      "user",
+      "host"
+     ],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 50,
+    "mitre": [
+     "T1110"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "source-scope",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Is the source internal or external?",
+      "instructions": "",
+      "focus": "the source IP, its network zone and the asset inventory.",
+      "escalate_if": "an internal host that is not an approved scanner, or an external address with a hostile reputation.",
+      "benign_if": "an approved vulnerability scanner or a known test.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "accounts-tried",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "How many accounts were tried?",
+      "instructions": "",
+      "focus": "many accounts from one source is a spray; one account is targeted guessing.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "ip": "{{entity.ip}}"
+       },
+       "group_by": [
+        "user"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "source-reputation",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Reputation of the source IP",
+      "instructions": "",
+      "focus": "known hostile, anonymising or unexpected geography for this account.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "enrich",
+       "filter": {},
+       "group_by": [],
+       "indicator": "{{entity.ip}}",
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "success-after-failures",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Did any attempt succeed after the failures?",
+      "instructions": "If the source changed address, repeat the check for each targeted account.\n\nThe outcome comes from the ECS field `event.outcome`. A source that names it differently shows the attempts without their outcome, so check the outcome in the logs before you conclude that nothing succeeded.",
+      "focus": "a success for the same source or account during or right after the failures is the decisive signal.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "ip": "{{entity.ip}}"
+       },
+       "group_by": [
+        "event.outcome",
+        "user"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "privileged-accounts",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "Are the targeted accounts privileged or service accounts?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "an administrator, service or shared account was targeted, or any attempt succeeded.",
+      "benign_if": "a few failures followed by a normal sign-in from the user's usual device and place.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "related-cases",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Other cases from this source in 30 days",
+      "instructions": "",
+      "focus": "repeat activity from the same source, and the accounts it went after before.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "related_cases",
+       "filter": {
+        "entity": "{{entity.ip}}"
+       },
+       "group_by": [],
+       "indicator": null,
+       "window": "case_last_seen-30d..case_last_seen",
+       "limit": 10,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Is this a confirmed compromise?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "any attempt succeeded and the session then did something unusual, or a hostile source is still active.",
+      "benign_if": "no attempt succeeded and the failures match a user error or an approved test.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "confirmed",
+        "label": "Confirmed compromise",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "block-source",
+         "reset-accounts"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "block-source",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Block the source at the edge",
+      "instructions": "Block the source at the firewall or WAF. Record where you blocked it and the change reference.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": false,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA3101",
+      "d3fend": null
+     },
+     {
+      "id": "reset-accounts",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Reset or lock the affected accounts",
+      "instructions": "Reset the password and end the sessions of every account that signed in from the source; lock any that you cannot reset now.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-AL"
+     },
+     {
+      "id": "tell-owners",
+      "phase": "close",
+      "kind": "record",
+      "title": "Tell the account owners",
+      "instructions": "Tell each account owner what happened and what changed for them.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what happened and whether lockout, MFA or detection thresholds should change.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "brute force lockout policy runbook",
+     "MITRE T1110 password spray",
+     "credential stuffing detection thresholds"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1110/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: brute-force-password-spray\ntitle: Brute force and password spray\nsummary: Many failed sign-ins against one or more accounts, from one or many sources. The question that matters is whether any attempt succeeded.\nuse_when: A detection reports repeated failed authentication against our accounts or services.\nprerequisites: Authentication logs from the targeted systems with the outcome of each attempt.\nversion: 1\npriority: 50\nreview_every_days: 180\nmitre: [T1110]\napplies_when:\n  rule_ids: [mail_auth, waf_auth, web_auth, roundcube_login, postfix, sshd, linux_auth, winlogon]\n  entity_types: [ip, user, host]\nretrieval_queries:\n  - brute force lockout policy runbook\n  - MITRE T1110 password spray\n  - credential stuffing detection thresholds\nreferences:\n  - https://attack.mitre.org/techniques/T1110/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Is the source internal or external? {#source-scope kind=check evidence=note}\nFocus: the source IP, its network zone and the asset inventory.\nEscalate if: an internal host that is not an approved scanner, or an external address with a hostile reputation.\nBenign if: an approved vulnerability scanner or a known test.\n\n### How many accounts were tried? {#accounts-tried kind=lookup}\nFocus: many accounts from one source is a spray; one account is targeted guessing.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [user]\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### Reputation of the source IP {#source-reputation kind=lookup}\nFocus: known hostile, anonymising or unexpected geography for this account.\n\n```lookup\ntool: enrich\nindicator: \"{{entity.ip}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n## Investigate\n\n### Did any attempt succeed after the failures? {#success-after-failures kind=lookup}\nFocus: a success for the same source or account during or right after the failures is the decisive signal.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [event.outcome, user]\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nIf the source changed address, repeat the check for each targeted account.\n\nThe outcome comes from the ECS field `event.outcome`. A source that names it differently shows the attempts without their outcome, so check the outcome in the logs before you conclude that nothing succeeded.\n\n### Are the targeted accounts privileged or service accounts? {#privileged-accounts kind=check evidence=note}\nEscalate if: an administrator, service or shared account was targeted, or any attempt succeeded.\nBenign if: a few failures followed by a normal sign-in from the user's usual device and place.\n\n### Other cases from this source in 30 days {#related-cases kind=lookup}\nFocus: repeat activity from the same source, and the accounts it went after before.\n\n```lookup\ntool: related_cases\nfilter:\n  entity: \"{{entity.ip}}\"\nwindow: case_last_seen-30d..case_last_seen\nlimit: 10\nrun: on_attach\n```\n\n### Is this a confirmed compromise? {#decide kind=decision}\nEscalate if: any attempt succeeded and the session then did something unusual, or a hostile source is still active.\nBenign if: no attempt succeeded and the failures match a user error or an approved test.\nOptions:\n- confirmed: Confirmed compromise\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: block-source, reset-accounts\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Block the source at the edge {#block-source kind=action optional react=RA3101}\n\nBlock the source at the firewall or WAF. Record where you blocked it and the change reference.\n\n### Reset or lock the affected accounts {#reset-accounts kind=action d3fend=D3-AL}\n\nReset the password and end the sessions of every account that signed in from the source; lock any that you cannot reset now.\n\n## Close and learn\n\n### Tell the account owners {#tell-owners kind=record}\n\nTell each account owner what happened and what changed for them.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what happened and whether lockout, MFA or detection thresholds should change.\n"
+  },
+  {
+   "file": "cloud-identity-keys.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "cloud-identity-keys",
+    "title": "Cloud identity and access key compromise",
+    "summary": "A cloud identity, role, token or access key is used in a way its owner did not intend. Scope what it can reach, then rotate it.",
+    "use_when": "A detection reports anomalous role assumptions, OAuth token replay, unusual access key use or risky service principal sign-ins.",
+    "prerequisites": "Cloud audit logs (for example CloudTrail or Entra ID sign-in and audit logs); access to disable keys and revoke sessions.",
+    "applies_when": {
+     "rule_ids": [
+      "cloud_iam_anomaly",
+      "iam_role_assumption",
+      "oauth_token_replay",
+      "risky_service_principal_signin",
+      "impossible_travel",
+      "identity_signin"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 82,
+    "mitre": [
+     "T1078.004",
+     "T1552"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "eradicate",
+     "recover"
+    ],
+    "steps": [
+     {
+      "id": "identity-scope",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Which identity or key is involved and what can it reach?",
+      "instructions": "",
+      "focus": "the user, role, service principal or access key, and the permissions attached to it.",
+      "escalate_if": "the identity can change permissions, read sensitive data or create credentials.",
+      "benign_if": "a low-privilege test identity with no access to production.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "api-activity",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Recent API activity by this identity",
+      "instructions": "Actions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.",
+      "focus": "which actions it called, how often, and whether any failed.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "user": "{{entity.user}}"
+       },
+       "group_by": [
+        "action"
+       ],
+       "indicator": null,
+       "window": "case_last_seen-1d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "new-locations",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Calls from new locations or unusual services",
+      "instructions": "Actions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.",
+      "focus": "source addresses, regions and services the identity has not used before.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "user": "{{entity.user}}"
+       },
+       "group_by": [
+        "ip",
+        "action"
+       ],
+       "indicator": null,
+       "window": "case_last_seen-7d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "new-credentials",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "Were new keys, roles or policies created?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "new access keys, roles, policies, consents or federation settings appeared.",
+      "benign_if": "a recorded change by an approved automation or administrator.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Compromised, suspicious or benign?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "an unexpected session changed privileges or credentials, granted consent, or reached sensitive resources.",
+      "benign_if": "an unusual location or reputation alone, with no change and an expected owner.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "compromised",
+        "label": "Compromised",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "rotate-key",
+         "remove-attacker-resources",
+         "workloads-updated"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "rotate-key",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Disable or rotate the key and revoke sessions",
+      "instructions": "Disable or rotate the key, revoke the identity's sessions and tokens, and record the change reference.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-CR"
+     },
+     {
+      "id": "remove-attacker-resources",
+      "phase": "eradicate",
+      "kind": "action",
+      "title": "Remove attacker-created keys, roles and resources",
+      "instructions": "Remove every key, role, policy, consent and resource the attacker created, after you have recorded them.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "workloads-updated",
+      "phase": "recover",
+      "kind": "check",
+      "title": "Are workloads using the new credentials?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "the old key is still in use, or new unexpected activity appears.",
+      "benign_if": "every workload runs on the new credentials and the old ones are gone.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "recover",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write how the identity was exposed and what would have limited it, such as shorter-lived keys or tighter permissions.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "cloud IAM compromise",
+     "OAuth token replay",
+     "suspicious role assumption"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1078/004/",
+     "https://attack.mitre.org/techniques/T1552/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: cloud-identity-keys\ntitle: Cloud identity and access key compromise\nsummary: A cloud identity, role, token or access key is used in a way its owner did not intend. Scope what it can reach, then rotate it.\nuse_when: A detection reports anomalous role assumptions, OAuth token replay, unusual access key use or risky service principal sign-ins.\nprerequisites: Cloud audit logs (for example CloudTrail or Entra ID sign-in and audit logs); access to disable keys and revoke sessions.\nversion: 1\npriority: 82\nreview_every_days: 180\nmitre: [T1078.004, T1552]\napplies_when:\n  rule_ids: [cloud_iam_anomaly, iam_role_assumption, oauth_token_replay, risky_service_principal_signin, impossible_travel, identity_signin]\nretrieval_queries:\n  - cloud IAM compromise\n  - OAuth token replay\n  - suspicious role assumption\nreferences:\n  - https://attack.mitre.org/techniques/T1078/004/\n  - https://attack.mitre.org/techniques/T1552/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Which identity or key is involved and what can it reach? {#identity-scope kind=check evidence=note}\nFocus: the user, role, service principal or access key, and the permissions attached to it.\nEscalate if: the identity can change permissions, read sensitive data or create credentials.\nBenign if: a low-privilege test identity with no access to production.\n\n### Recent API activity by this identity {#api-activity kind=lookup}\nFocus: which actions it called, how often, and whether any failed.\n\n```lookup\ntool: log_stats\nfilter:\n  user: \"{{entity.user}}\"\ngroup_by: [action]\nwindow: case_last_seen-1d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nActions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.\n\n## Investigate\n\n### Calls from new locations or unusual services {#new-locations kind=lookup}\nFocus: source addresses, regions and services the identity has not used before.\n\n```lookup\ntool: log_stats\nfilter:\n  user: \"{{entity.user}}\"\ngroup_by: [ip, action]\nwindow: case_last_seen-7d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nActions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.\n\n### Were new keys, roles or policies created? {#new-credentials kind=check evidence=note}\nEscalate if: new access keys, roles, policies, consents or federation settings appeared.\nBenign if: a recorded change by an approved automation or administrator.\n\n### Compromised, suspicious or benign? {#decide kind=decision}\nEscalate if: an unexpected session changed privileges or credentials, granted consent, or reached sensitive resources.\nBenign if: an unusual location or reputation alone, with no change and an expected owner.\nOptions:\n- compromised: Compromised\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: rotate-key, remove-attacker-resources, workloads-updated\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Disable or rotate the key and revoke sessions {#rotate-key kind=action d3fend=D3-CR}\n\nDisable or rotate the key, revoke the identity's sessions and tokens, and record the change reference.\n\n## Eradicate\n\n### Remove attacker-created keys, roles and resources {#remove-attacker-resources kind=action}\n\nRemove every key, role, policy, consent and resource the attacker created, after you have recorded them.\n\n## Recover\n\n### Are workloads using the new credentials? {#workloads-updated kind=check evidence=note}\nEscalate if: the old key is still in use, or new unexpected activity appears.\nBenign if: every workload runs on the new credentials and the old ones are gone.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite how the identity was exposed and what would have limited it, such as shorter-lived keys or tighter permissions.\n"
+  },
+  {
+   "file": "compromised-account.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "compromised-account",
+    "title": "Compromised account or suspicious sign-in",
+    "summary": "A sign-in that does not fit the account, such as impossible travel or a new device. Confirm with the user, then take the account back if needed.",
+    "use_when": "A detection reports impossible travel, a risky or unfamiliar sign-in, or other signs that someone else is using an account.",
+    "prerequisites": "Identity provider sign-in logs; a trusted way to reach the user; access to revoke sessions and reset passwords.",
+    "applies_when": {
+     "rule_ids": [
+      "impossible_travel",
+      "identity_signin"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 84,
+    "mitre": [
+     "T1078"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "recover"
+    ],
+    "steps": [
+     {
+      "id": "recent-signins",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Sign-ins for this account in the last 7 days",
+      "instructions": "The outcome comes from the ECS field `event.outcome`. A source that names it differently shows the sign-ins without their outcome.",
+      "focus": "new source addresses, countries or devices compared with the user's usual ones.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "user": "{{entity.user}}"
+       },
+       "group_by": [
+        "ip",
+        "event.outcome"
+       ],
+       "indicator": null,
+       "window": "case_last_seen-7d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "user-confirms",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Does the user confirm the sign-in?",
+      "instructions": "",
+      "focus": "ask the user through a channel you trust, not by replying to the alert.",
+      "escalate_if": "the user did not sign in, or cannot be reached and the sign-in is unusual.",
+      "benign_if": "the user confirms travel, a VPN or a new device that explains it.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "signin-ip-reputation",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Reputation of the sign-in IP",
+      "instructions": "",
+      "focus": "hosting providers, anonymising services and known hostile addresses.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "enrich",
+       "filter": {},
+       "group_by": [],
+       "indicator": "{{entity.ip}}",
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "account-changes",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "Were MFA settings, mail rules or app consents changed?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "new MFA methods, mail forwarding rules or app consents appeared after the sign-in.",
+      "benign_if": "nothing changed after the sign-in, or the user made the changes on purpose.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Compromised, suspicious or benign?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "the user denies the sign-in, or the account was changed after it.",
+      "benign_if": "the user confirms the sign-in and nothing changed.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "compromised",
+        "label": "Compromised",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "revoke-sessions",
+         "remove-attacker-changes",
+         "owner-control"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "revoke-sessions",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Revoke sessions and reset the password",
+      "instructions": "End every session and refresh token, then reset the password with the user.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA4601",
+      "d3fend": "D3-CR"
+     },
+     {
+      "id": "remove-attacker-changes",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Remove attacker-added MFA methods, rules or consents",
+      "instructions": "Remove every MFA method, mail rule and app consent the user did not add.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "owner-control",
+      "phase": "recover",
+      "kind": "check",
+      "title": "Is the account back under the owner's control?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "new sign-ins from the attacker's addresses appear after the reset.",
+      "benign_if": "only the owner signs in, from usual places, with their own MFA.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "recover",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write how the account was taken over, if it was, and what would have stopped it.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "suspicious sign-in triage",
+     "impossible travel investigation",
+     "MITRE T1078 valid accounts"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1078/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: compromised-account\ntitle: Compromised account or suspicious sign-in\nsummary: A sign-in that does not fit the account, such as impossible travel or a new device. Confirm with the user, then take the account back if needed.\nuse_when: A detection reports impossible travel, a risky or unfamiliar sign-in, or other signs that someone else is using an account.\nprerequisites: Identity provider sign-in logs; a trusted way to reach the user; access to revoke sessions and reset passwords.\nversion: 1\npriority: 84\nreview_every_days: 180\nmitre: [T1078]\napplies_when:\n  rule_ids: [impossible_travel, identity_signin]\nretrieval_queries:\n  - suspicious sign-in triage\n  - impossible travel investigation\n  - MITRE T1078 valid accounts\nreferences:\n  - https://attack.mitre.org/techniques/T1078/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Sign-ins for this account in the last 7 days {#recent-signins kind=lookup}\nFocus: new source addresses, countries or devices compared with the user's usual ones.\n\n```lookup\ntool: log_stats\nfilter:\n  user: \"{{entity.user}}\"\ngroup_by: [ip, event.outcome]\nwindow: case_last_seen-7d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nThe outcome comes from the ECS field `event.outcome`. A source that names it differently shows the sign-ins without their outcome.\n\n### Does the user confirm the sign-in? {#user-confirms kind=check evidence=note}\nFocus: ask the user through a channel you trust, not by replying to the alert.\nEscalate if: the user did not sign in, or cannot be reached and the sign-in is unusual.\nBenign if: the user confirms travel, a VPN or a new device that explains it.\n\n## Investigate\n\n### Reputation of the sign-in IP {#signin-ip-reputation kind=lookup}\nFocus: hosting providers, anonymising services and known hostile addresses.\n\n```lookup\ntool: enrich\nindicator: \"{{entity.ip}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### Were MFA settings, mail rules or app consents changed? {#account-changes kind=check evidence=note}\nEscalate if: new MFA methods, mail forwarding rules or app consents appeared after the sign-in.\nBenign if: nothing changed after the sign-in, or the user made the changes on purpose.\n\n### Compromised, suspicious or benign? {#decide kind=decision}\nEscalate if: the user denies the sign-in, or the account was changed after it.\nBenign if: the user confirms the sign-in and nothing changed.\nOptions:\n- compromised: Compromised\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: revoke-sessions, remove-attacker-changes, owner-control\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Revoke sessions and reset the password {#revoke-sessions kind=action react=RA4601 d3fend=D3-CR}\n\nEnd every session and refresh token, then reset the password with the user.\n\n### Remove attacker-added MFA methods, rules or consents {#remove-attacker-changes kind=action}\n\nRemove every MFA method, mail rule and app consent the user did not add.\n\n## Recover\n\n### Is the account back under the owner's control? {#owner-control kind=check evidence=note}\nEscalate if: new sign-ins from the attacker's addresses appear after the reset.\nBenign if: only the owner signs in, from usual places, with their own MFA.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite how the account was taken over, if it was, and what would have stopped it.\n"
+  },
+  {
+   "file": "data-exfiltration.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "data-exfiltration",
+    "title": "Data exfiltration",
+    "summary": "Data may be leaving the network without permission. Measure what moved and where, decide whether it was allowed, and stop it if not.",
+    "use_when": "A detection reports unusual data collection, staging, bulk downloads, DNS tunnelling or transfers to an external destination.",
+    "prerequisites": "Proxy, firewall, DNS or cloud storage logs; someone who knows the data and its owner.",
+    "applies_when": {
+     "rule_ids": [
+      "data_exfiltration",
+      "bulk_data_download",
+      "cloud_storage_exfiltration",
+      "dns_tunneling",
+      "loan_api_access"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 88,
+    "mitre": [
+     "T1041",
+     "T1567"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "transfer-volume",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Volume and destinations of the transfer",
+      "instructions": "Destinations come from the ECS field `destination.ip` and actions from the ECS field `event.action`. If the source does not record one of them, it is not listed; that means the field is missing, not that nothing moved.",
+      "focus": "destinations, volume and timing compared with the account's normal use.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "user": "{{entity.user}}"
+       },
+       "group_by": [
+        "destination.ip",
+        "action"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "sanctioned-destination",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Is the destination a sanctioned service?",
+      "instructions": "",
+      "focus": "the destination against the list of approved services, partners and company cloud accounts.",
+      "escalate_if": "a personal mailbox, an unknown host, a new cloud account or a DNS tunnel.",
+      "benign_if": "an approved backup, sync or partner service that the data owner uses.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "destination-reputation",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Reputation of the destination",
+      "instructions": "",
+      "focus": "newly registered, hosting or file-sharing destinations and known hostile ones.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "enrich",
+       "filter": {},
+       "group_by": [],
+       "indicator": "{{entity.domain}}",
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "data-owner",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "What data was involved and who owns it?",
+      "instructions": "",
+      "focus": "the repository, file names and classification of the data that moved.",
+      "escalate_if": "customer, financial, health or credential data, or data under a legal hold.",
+      "benign_if": "public or test data, or data the account is allowed to move there.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Exfiltration, suspicious or benign?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "sensitive data reached an unapproved external destination, or access and transfer records show an unauthorised loss.",
+      "benign_if": "volume alone, with an approved destination and an authorised user.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "exfiltration",
+        "label": "Exfiltration",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "block-destination",
+         "notify-owner",
+         "notification-duties"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "block-destination",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Block the destination and stop the transfer",
+      "instructions": "Block the destination at the proxy or firewall and stop the session or job that moves the data.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-NI"
+     },
+     {
+      "id": "notify-owner",
+      "phase": "contain",
+      "kind": "record",
+      "title": "Notify the data owner",
+      "instructions": "Tell the data owner what moved, when and where, and agree the next steps.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "notification-duties",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record whether notification duties apply",
+      "instructions": "Record whether contracts or regulations require you to notify anyone, who decided, and when.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what left, how, and what would have stopped it, such as a data loss rule or tighter access.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "data exfiltration response",
+     "sensitive data staging",
+     "unusual outbound transfer"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1041/",
+     "https://attack.mitre.org/techniques/T1567/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: data-exfiltration\ntitle: Data exfiltration\nsummary: Data may be leaving the network without permission. Measure what moved and where, decide whether it was allowed, and stop it if not.\nuse_when: A detection reports unusual data collection, staging, bulk downloads, DNS tunnelling or transfers to an external destination.\nprerequisites: Proxy, firewall, DNS or cloud storage logs; someone who knows the data and its owner.\nversion: 1\npriority: 88\nreview_every_days: 180\nmitre: [T1041, T1567]\napplies_when:\n  rule_ids: [data_exfiltration, bulk_data_download, cloud_storage_exfiltration, dns_tunneling, loan_api_access]\nretrieval_queries:\n  - data exfiltration response\n  - sensitive data staging\n  - unusual outbound transfer\nreferences:\n  - https://attack.mitre.org/techniques/T1041/\n  - https://attack.mitre.org/techniques/T1567/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Volume and destinations of the transfer {#transfer-volume kind=lookup}\nFocus: destinations, volume and timing compared with the account's normal use.\n\n```lookup\ntool: log_stats\nfilter:\n  user: \"{{entity.user}}\"\ngroup_by: [destination.ip, action]\nwindow: case_first_seen-1d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nDestinations come from the ECS field `destination.ip` and actions from the ECS field `event.action`. If the source does not record one of them, it is not listed; that means the field is missing, not that nothing moved.\n\n### Is the destination a sanctioned service? {#sanctioned-destination kind=check evidence=note}\nFocus: the destination against the list of approved services, partners and company cloud accounts.\nEscalate if: a personal mailbox, an unknown host, a new cloud account or a DNS tunnel.\nBenign if: an approved backup, sync or partner service that the data owner uses.\n\n## Investigate\n\n### Reputation of the destination {#destination-reputation kind=lookup}\nFocus: newly registered, hosting or file-sharing destinations and known hostile ones.\n\n```lookup\ntool: enrich\nindicator: \"{{entity.domain}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### What data was involved and who owns it? {#data-owner kind=check evidence=note}\nFocus: the repository, file names and classification of the data that moved.\nEscalate if: customer, financial, health or credential data, or data under a legal hold.\nBenign if: public or test data, or data the account is allowed to move there.\n\n### Exfiltration, suspicious or benign? {#decide kind=decision}\nEscalate if: sensitive data reached an unapproved external destination, or access and transfer records show an unauthorised loss.\nBenign if: volume alone, with an approved destination and an authorised user.\nOptions:\n- exfiltration: Exfiltration\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: block-destination, notify-owner, notification-duties\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Block the destination and stop the transfer {#block-destination kind=action d3fend=D3-NI}\n\nBlock the destination at the proxy or firewall and stop the session or job that moves the data.\n\n### Notify the data owner {#notify-owner kind=record}\n\nTell the data owner what moved, when and where, and agree the next steps.\n\n## Close and learn\n\n### Record whether notification duties apply {#notification-duties kind=record}\n\nRecord whether contracts or regulations require you to notify anyone, who decided, and when.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what left, how, and what would have stopped it, such as a data loss rule or tighter access.\n"
+  },
+  {
+   "file": "generic-incident.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "generic-incident",
+    "title": "Generic incident (NIST 800-61)",
+    "summary": "A general response procedure for a case no other runbook covers, following the NIST incident response life cycle.",
+    "use_when": "No other runbook matches the case. Replace it with a specific runbook when you see the same kind of case again.",
+    "prerequisites": "",
+    "applies_when": {
+     "rule_ids": [],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": true
+    },
+    "priority": 0,
+    "mitre": [],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "eradicate",
+     "recover",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "what-happened",
+      "phase": "triage",
+      "kind": "check",
+      "title": "What happened, where, and how bad is it?",
+      "instructions": "",
+      "focus": "the detection, the affected hosts, accounts and data, and the business impact.",
+      "escalate_if": "production systems, sensitive data or a privileged account is involved, or the activity continues.",
+      "benign_if": "a known test, a misconfiguration or expected behaviour explains it.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "incident-lead",
+      "phase": "triage",
+      "kind": "record",
+      "title": "Name an incident lead",
+      "instructions": "Name the person who leads the response until the case is closed.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "entity-alerts",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Other alerts for the case's entities in 24 hours",
+      "instructions": "",
+      "focus": "other rules that fired for the same address around the case.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "ip": "{{entity.ip}}"
+       },
+       "group_by": [
+        "rule"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "scope",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "What is the scope: which hosts, accounts and data?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "more than one host or account, or data leaving the network.",
+      "benign_if": "one host or account, contained, with no data at risk.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Incident, suspicious or benign?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "confirmed malicious activity, or impact on production systems or data.",
+      "benign_if": "a test, a misconfiguration or expected behaviour.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "incident",
+        "label": "Incident",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "contain-systems",
+         "remove-cause",
+         "restore-service"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "contain-systems",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Contain the affected systems or accounts",
+      "instructions": "Isolate hosts, disable accounts or block addresses as the scope needs. Record each change.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "remove-cause",
+      "phase": "eradicate",
+      "kind": "action",
+      "title": "Remove the cause",
+      "instructions": "Remove the malware, access or misconfiguration that caused the incident.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "restore-service",
+      "phase": "recover",
+      "kind": "action",
+      "title": "Restore normal service",
+      "instructions": "Bring systems back into service and watch them closely for a while.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what happened and what you would change. If this kind of case comes back, write a specific runbook for it.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "incident response procedure",
+     "incident scoping and containment"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: generic-incident\ntitle: Generic incident (NIST 800-61)\nsummary: A general response procedure for a case no other runbook covers, following the NIST incident response life cycle.\nuse_when: No other runbook matches the case. Replace it with a specific runbook when you see the same kind of case again.\nversion: 1\npriority: 0\nreview_every_days: 180\napplies_when:\n  always: true\nretrieval_queries:\n  - incident response procedure\n  - incident scoping and containment\nreferences:\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### What happened, where, and how bad is it? {#what-happened kind=check evidence=note}\nFocus: the detection, the affected hosts, accounts and data, and the business impact.\nEscalate if: production systems, sensitive data or a privileged account is involved, or the activity continues.\nBenign if: a known test, a misconfiguration or expected behaviour explains it.\n\n### Name an incident lead {#incident-lead kind=record}\n\nName the person who leads the response until the case is closed.\n\n## Investigate\n\n### Other alerts for the case's entities in 24 hours {#entity-alerts kind=lookup}\nFocus: other rules that fired for the same address around the case.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [rule]\nwindow: case_first_seen-1d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### What is the scope: which hosts, accounts and data? {#scope kind=check evidence=note}\nEscalate if: more than one host or account, or data leaving the network.\nBenign if: one host or account, contained, with no data at risk.\n\n### Incident, suspicious or benign? {#decide kind=decision}\nEscalate if: confirmed malicious activity, or impact on production systems or data.\nBenign if: a test, a misconfiguration or expected behaviour.\nOptions:\n- incident: Incident\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: contain-systems, remove-cause, restore-service\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Contain the affected systems or accounts {#contain-systems kind=action}\n\nIsolate hosts, disable accounts or block addresses as the scope needs. Record each change.\n\n## Eradicate\n\n### Remove the cause {#remove-cause kind=action}\n\nRemove the malware, access or misconfiguration that caused the incident.\n\n## Recover\n\n### Restore normal service {#restore-service kind=action}\n\nBring systems back into service and watch them closely for a while.\n\n## Close and learn\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what happened and what you would change. If this kind of case comes back, write a specific runbook for it.\n"
+  },
+  {
+   "file": "malware-endpoint.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "malware-endpoint",
+    "title": "Malware on an endpoint",
+    "summary": "An antivirus or EDR detection of malicious code on a host. Decide whether it ran, contain the host and remove it.",
+    "use_when": "An endpoint, antivirus or EDR product reports malware, a malicious file or a malicious process on a host.",
+    "prerequisites": "EDR or antivirus telemetry for the host; access to isolate hosts and to stop processes.",
+    "applies_when": {
+     "rule_ids": [
+      "clamav",
+      "defender",
+      "crowdstrike",
+      "edr"
+     ],
+     "mitre": [],
+     "entity_types": [
+      "host",
+      "ip"
+     ],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 70,
+    "mitre": [
+     "T1204",
+     "T1059"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "eradicate",
+     "recover"
+    ],
+    "steps": [
+     {
+      "id": "host-role",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Is the host a server, a user device or a test machine?",
+      "instructions": "",
+      "focus": "the host's owner, role and criticality in the asset inventory.",
+      "escalate_if": "a server, a domain controller or the device of a privileged user.",
+      "benign_if": "a malware analysis or test machine where the file was expected.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "host-alerts",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Other alerts on this host in the last 24 hours",
+      "instructions": "",
+      "focus": "other rules that fired on this host before and after the detection.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "host": "{{entity.host}}"
+       },
+       "group_by": [
+        "rule"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "hash-reputation",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Reputation of the file hash",
+      "instructions": "",
+      "focus": "whether threat intelligence knows the file, and under which family name.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "enrich",
+       "filter": {},
+       "group_by": [],
+       "indicator": "{{entity.hash}}",
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "process-activity",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Processes and network connections around the alert",
+      "instructions": "",
+      "focus": "the parent process, command line and outbound connections near the alert time.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_search",
+       "filter": {
+        "host": "{{entity.host}}"
+       },
+       "group_by": [],
+       "indicator": null,
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_demand"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "same-hash-hosts",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Other hosts with the same hash",
+      "instructions": "The hash comes from the ECS field `file.hash.sha256`. An empty result can mean the source records hashes under another name or that this case's hash is not a SHA-256 value, so search the logs for the hash before you conclude that no other host has it.",
+      "focus": "every host whose logs show the same file hash; more hosts than this one means the file spread.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "file.hash.sha256": "{{entity.hash}}"
+       },
+       "group_by": [
+        "host"
+       ],
+       "indicator": null,
+       "window": "case_last_seen-7d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "verdict",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Malicious, suspicious or benign?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "the file is known malware, it ran, or the host reached out to an unknown address after it.",
+      "benign_if": "a known tool or a false detection, with a clean hash and no sign that it ran.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "malicious",
+        "label": "Malicious",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "isolate-host",
+         "stop-process",
+         "remove-malware",
+         "clean-scan",
+         "restore-host"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "isolate-host",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Isolate the host from the network",
+      "instructions": "Isolate the host through the EDR console, keeping the management connection. Record the change reference.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-NI"
+     },
+     {
+      "id": "stop-process",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Stop the process and quarantine the file",
+      "instructions": "Stop the malicious process and quarantine the file. Keep a copy for analysis if your policy allows.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-PT"
+     },
+     {
+      "id": "remove-malware",
+      "phase": "eradicate",
+      "kind": "action",
+      "title": "Remove persistence and the malware",
+      "instructions": "Remove scheduled tasks, services, run keys and dropped files that came with the malware.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "clean-scan",
+      "phase": "eradicate",
+      "kind": "check",
+      "title": "Is the host clean after a fresh scan?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "the scan still finds the malware, or new persistence appears.",
+      "benign_if": "a full scan with current signatures is clean.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "restore-host",
+      "phase": "recover",
+      "kind": "action",
+      "title": "Return the host to service or rebuild it",
+      "instructions": "Release the host from isolation when it is clean, or rebuild it from a known good image when you cannot be sure.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "recover",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what happened, how the file arrived and what would have stopped it earlier.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "malware detection triage",
+     "endpoint isolation and remediation",
+     "malicious file hash reputation"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1204/",
+     "https://attack.mitre.org/techniques/T1059/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: malware-endpoint\ntitle: Malware on an endpoint\nsummary: An antivirus or EDR detection of malicious code on a host. Decide whether it ran, contain the host and remove it.\nuse_when: An endpoint, antivirus or EDR product reports malware, a malicious file or a malicious process on a host.\nprerequisites: EDR or antivirus telemetry for the host; access to isolate hosts and to stop processes.\nversion: 1\npriority: 70\nreview_every_days: 180\nmitre: [T1204, T1059]\napplies_when:\n  rule_ids: [clamav, defender, crowdstrike, edr]\n  entity_types: [host, ip]\nretrieval_queries:\n  - malware detection triage\n  - endpoint isolation and remediation\n  - malicious file hash reputation\nreferences:\n  - https://attack.mitre.org/techniques/T1204/\n  - https://attack.mitre.org/techniques/T1059/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Is the host a server, a user device or a test machine? {#host-role kind=check evidence=note}\nFocus: the host's owner, role and criticality in the asset inventory.\nEscalate if: a server, a domain controller or the device of a privileged user.\nBenign if: a malware analysis or test machine where the file was expected.\n\n### Other alerts on this host in the last 24 hours {#host-alerts kind=lookup}\nFocus: other rules that fired on this host before and after the detection.\n\n```lookup\ntool: log_stats\nfilter:\n  host: \"{{entity.host}}\"\ngroup_by: [rule]\nwindow: case_first_seen-1d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n## Investigate\n\n### Reputation of the file hash {#hash-reputation kind=lookup}\nFocus: whether threat intelligence knows the file, and under which family name.\n\n```lookup\ntool: enrich\nindicator: \"{{entity.hash}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### Processes and network connections around the alert {#process-activity kind=lookup}\nFocus: the parent process, command line and outbound connections near the alert time.\n\n```lookup\ntool: log_search\nfilter:\n  host: \"{{entity.host}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_demand\n```\n\n### Other hosts with the same hash {#same-hash-hosts kind=lookup}\nFocus: every host whose logs show the same file hash; more hosts than this one means the file spread.\n\n```lookup\ntool: log_stats\nfilter:\n  file.hash.sha256: \"{{entity.hash}}\"\ngroup_by: [host]\nwindow: case_last_seen-7d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nThe hash comes from the ECS field `file.hash.sha256`. An empty result can mean the source records hashes under another name or that this case's hash is not a SHA-256 value, so search the logs for the hash before you conclude that no other host has it.\n\n### Malicious, suspicious or benign? {#verdict kind=decision}\nEscalate if: the file is known malware, it ran, or the host reached out to an unknown address after it.\nBenign if: a known tool or a false detection, with a clean hash and no sign that it ran.\nOptions:\n- malicious: Malicious\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: isolate-host, stop-process, remove-malware, clean-scan, restore-host\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Isolate the host from the network {#isolate-host kind=action d3fend=D3-NI}\n\nIsolate the host through the EDR console, keeping the management connection. Record the change reference.\n\n### Stop the process and quarantine the file {#stop-process kind=action d3fend=D3-PT}\n\nStop the malicious process and quarantine the file. Keep a copy for analysis if your policy allows.\n\n## Eradicate\n\n### Remove persistence and the malware {#remove-malware kind=action}\n\nRemove scheduled tasks, services, run keys and dropped files that came with the malware.\n\n### Is the host clean after a fresh scan? {#clean-scan kind=check evidence=note}\nEscalate if: the scan still finds the malware, or new persistence appears.\nBenign if: a full scan with current signatures is clean.\n\n## Recover\n\n### Return the host to service or rebuild it {#restore-host kind=action}\n\nRelease the host from isolation when it is clean, or rebuild it from a known good image when you cannot be sure.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what happened, how the file arrived and what would have stopped it earlier.\n"
+  },
+  {
+   "file": "phishing-suspicious-email.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "phishing-suspicious-email",
+    "title": "Phishing or reported suspicious email",
+    "summary": "A suspicious message reached our mailboxes, or a user reported one. Find every copy, judge the lure and act on anyone who clicked.",
+    "use_when": "A mail detection fires, or a user reports a message as phishing, spam or a scam.",
+    "prerequisites": "Mail gateway and mail server logs; proxy or endpoint logs to see clicks; access to remove messages from mailboxes.",
+    "applies_when": {
+     "rule_ids": [
+      "postfix",
+      "roundcube_login",
+      "mail_auth",
+      "mail_apache_access",
+      "suricata_mail"
+     ],
+     "mitre": [],
+     "entity_types": [
+      "ip",
+      "user"
+     ],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 45,
+    "mitre": [
+     "T1566"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "recover",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "find-copies",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Find the message and every copy in the mail logs",
+      "instructions": "Use the recipients and actions to see how far the message reached and whether the gateway delivered, rejected or quarantined it.\n\nActions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.",
+      "focus": "recipients and delivery actions for the sending address around the case window.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "ip": "{{entity.ip}}"
+       },
+       "group_by": [
+        "user",
+        "action"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 50,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "impersonation",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Is the sender or domain impersonating us or a partner?",
+      "instructions": "Compare the sender domain with our own domains and those of our partners, letter by letter.",
+      "focus": "sender address, display name, reply-to address and look-alike domains.",
+      "escalate_if": "the sender imitates our domain, an executive or a partner, or the reply-to differs from the sender.",
+      "benign_if": "a known newsletter or marketing sender that a user reported by mistake.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "sender-reputation",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Reputation of the sender domain, links and attachments",
+      "instructions": "",
+      "focus": "the sender domain's reputation; check each link and attachment hash the same way.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "enrich",
+       "filter": {},
+       "group_by": [],
+       "indicator": "{{entity.domain}}",
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "clicks",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Did anyone click a link or open the attachment?",
+      "instructions": "Look in proxy and endpoint logs for each recipient, not only the one named on the case.\n\nActions come from the ECS field `event.action` and domains from the ECS field `url.domain`. If the source does not record one of them, it is not listed; that means the field is missing, not that nobody clicked.",
+      "focus": "web requests and file opens by the recipients after the message arrived.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "user": "{{entity.user}}"
+       },
+       "group_by": [
+        "action",
+        "url.domain"
+       ],
+       "indicator": null,
+       "window": "case_first_seen..case_last_seen+1d",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "credentials-entered",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "Did anyone enter credentials?",
+      "instructions": "",
+      "focus": "sign-ins for the recipients from new places or devices after the message arrived.",
+      "escalate_if": "a recipient opened the link and then signed in from a new address or device.",
+      "benign_if": "nobody opened the link, or the page did not ask for credentials.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "verdict",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Malicious, suspicious or benign?",
+      "instructions": "Record what you based the decision on. Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "the message carried a lure that reached real mailboxes, or anyone clicked or entered credentials.",
+      "benign_if": "a legitimate message that a user reported by mistake.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "malicious",
+        "label": "Malicious",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "remove-message",
+         "block-sender",
+         "reset-credentials",
+         "tell-users"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "remove-message",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Remove the message from every mailbox",
+      "instructions": "Quarantine or delete every copy, including those in junk folders. Record how many messages you removed.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA3203",
+      "d3fend": null
+     },
+     {
+      "id": "block-sender",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Block the sender and links at the mail and web gateways",
+      "instructions": "Block the sending address or domain and every malicious link. Record the change reference.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA3101",
+      "d3fend": null
+     },
+     {
+      "id": "reset-credentials",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Reset credentials of anyone who entered them",
+      "instructions": "Reset the password, end the user's sessions and check that MFA is still the user's own.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": false,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA4601",
+      "d3fend": null
+     },
+     {
+      "id": "tell-users",
+      "phase": "recover",
+      "kind": "record",
+      "title": "Tell affected users what happened and what to watch for",
+      "instructions": "Tell the recipients what the message was, what to do if they clicked, and how to report the next one.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "tell-reporter",
+      "phase": "close",
+      "kind": "record",
+      "title": "Tell the reporter what you found",
+      "instructions": "Thank the person who reported it and tell them the outcome in plain words.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what happened, what you did, and what would have caught it sooner, such as a gateway rule or user training.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "phishing triage runbook",
+     "MITRE T1566 phishing",
+     "malicious URL and attachment reputation triage"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1566/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: phishing-suspicious-email\ntitle: Phishing or reported suspicious email\nsummary: A suspicious message reached our mailboxes, or a user reported one. Find every copy, judge the lure and act on anyone who clicked.\nuse_when: A mail detection fires, or a user reports a message as phishing, spam or a scam.\nprerequisites: Mail gateway and mail server logs; proxy or endpoint logs to see clicks; access to remove messages from mailboxes.\nversion: 1\npriority: 45\nreview_every_days: 180\nmitre: [T1566]\napplies_when:\n  rule_ids: [postfix, roundcube_login, mail_auth, mail_apache_access, suricata_mail]\n  entity_types: [ip, user]\nretrieval_queries:\n  - phishing triage runbook\n  - MITRE T1566 phishing\n  - malicious URL and attachment reputation triage\nreferences:\n  - https://attack.mitre.org/techniques/T1566/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Find the message and every copy in the mail logs {#find-copies kind=lookup}\nFocus: recipients and delivery actions for the sending address around the case window.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [user, action]\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 50\nrun: on_attach\n```\n\nUse the recipients and actions to see how far the message reached and whether the gateway delivered, rejected or quarantined it.\n\nActions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.\n\n### Is the sender or domain impersonating us or a partner? {#impersonation kind=check evidence=note}\nFocus: sender address, display name, reply-to address and look-alike domains.\nEscalate if: the sender imitates our domain, an executive or a partner, or the reply-to differs from the sender.\nBenign if: a known newsletter or marketing sender that a user reported by mistake.\n\nCompare the sender domain with our own domains and those of our partners, letter by letter.\n\n## Investigate\n\n### Reputation of the sender domain, links and attachments {#sender-reputation kind=lookup}\nFocus: the sender domain's reputation; check each link and attachment hash the same way.\n\n```lookup\ntool: enrich\nindicator: \"{{entity.domain}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### Did anyone click a link or open the attachment? {#clicks kind=lookup}\nFocus: web requests and file opens by the recipients after the message arrived.\n\n```lookup\ntool: log_stats\nfilter:\n  user: \"{{entity.user}}\"\ngroup_by: [action, url.domain]\nwindow: case_first_seen..case_last_seen+1d\nlimit: 20\nrun: on_attach\n```\n\nLook in proxy and endpoint logs for each recipient, not only the one named on the case.\n\nActions come from the ECS field `event.action` and domains from the ECS field `url.domain`. If the source does not record one of them, it is not listed; that means the field is missing, not that nobody clicked.\n\n### Did anyone enter credentials? {#credentials-entered kind=check evidence=note}\nFocus: sign-ins for the recipients from new places or devices after the message arrived.\nEscalate if: a recipient opened the link and then signed in from a new address or device.\nBenign if: nobody opened the link, or the page did not ask for credentials.\n\n### Malicious, suspicious or benign? {#verdict kind=decision}\nEscalate if: the message carried a lure that reached real mailboxes, or anyone clicked or entered credentials.\nBenign if: a legitimate message that a user reported by mistake.\nOptions:\n- malicious: Malicious\n- suspicious: Suspicious, not confirmed\n- benign: Benign | skips: remove-message, block-sender, reset-credentials, tell-users\n\nRecord what you based the decision on. Recording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Remove the message from every mailbox {#remove-message kind=action react=RA3203}\n\nQuarantine or delete every copy, including those in junk folders. Record how many messages you removed.\n\n### Block the sender and links at the mail and web gateways {#block-sender kind=action react=RA3101}\n\nBlock the sending address or domain and every malicious link. Record the change reference.\n\n### Reset credentials of anyone who entered them {#reset-credentials kind=action optional react=RA4601}\n\nReset the password, end the user's sessions and check that MFA is still the user's own.\n\n## Recover\n\n### Tell affected users what happened and what to watch for {#tell-users kind=record}\n\nTell the recipients what the message was, what to do if they clicked, and how to report the next one.\n\n## Close and learn\n\n### Tell the reporter what you found {#tell-reporter kind=record}\n\nThank the person who reported it and tell them the outcome in plain words.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what happened, what you did, and what would have caught it sooner, such as a gateway rule or user training.\n"
+  },
+  {
+   "file": "privileged-misuse-insider.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "privileged-misuse-insider",
+    "title": "Privileged access misuse and insider activity",
+    "summary": "A privileged account did something outside its approved work. Check whether a change covers it and whether it fits the person's role.",
+    "use_when": "A detection reports privileged or administrative access that no change explains, or unusual activity by an insider.",
+    "prerequisites": "Administrative and application audit logs; the change calendar; a contact in HR or legal for insider cases.",
+    "applies_when": {
+     "rule_ids": [
+      "external_admin_panel_access"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 85,
+    "mitre": [
+     "T1078.003"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "approved-change",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Is the activity covered by an approved change or ticket?",
+      "instructions": "",
+      "focus": "the change calendar, open tickets and on-call duty for this account and time.",
+      "escalate_if": "no change, ticket or on-call duty covers the activity.",
+      "benign_if": "an approved change or an on-call task covers it.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "privileged-actions",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Privileged actions by this account in 7 days",
+      "instructions": "Actions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.",
+      "focus": "administrative actions, their targets and their times.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "user": "{{entity.user}}"
+       },
+       "group_by": [
+        "action"
+       ],
+       "indicator": null,
+       "window": "case_last_seen-7d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "role-match",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "Does the activity match the person's role?",
+      "instructions": "Keep what you learn about the person to the people who need it.",
+      "focus": "what the person's role needs, compared with what the account did.",
+      "escalate_if": "access to data or systems outside the role, at unusual hours or in unusual volume.",
+      "benign_if": "normal duties for the role at expected times.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "involve-hr-legal",
+      "phase": "investigate",
+      "kind": "record",
+      "title": "Involve HR or legal as your policy requires",
+      "instructions": "Record who you involved, when, and what they asked you to do.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": "soc_manager",
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Misuse, suspicious or authorised?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "the access is unauthorised, comes from hostile infrastructure, or is followed by privileged changes.",
+      "benign_if": "authorised access from an expected place by the account owner.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "misuse",
+        "label": "Misuse",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "authorised",
+        "label": "Authorised",
+        "marks_not_applicable": [
+         "reduce-privileges"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "reduce-privileges",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Remove or reduce the account's privileges",
+      "instructions": "Remove the privileges the account does not need, or lock it while the review continues.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-AL"
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what happened and whether access reviews or approvals should change.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "privileged web access response",
+     "administrative login verification",
+     "insider threat investigation"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1078/003/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: privileged-misuse-insider\ntitle: Privileged access misuse and insider activity\nsummary: A privileged account did something outside its approved work. Check whether a change covers it and whether it fits the person's role.\nuse_when: A detection reports privileged or administrative access that no change explains, or unusual activity by an insider.\nprerequisites: Administrative and application audit logs; the change calendar; a contact in HR or legal for insider cases.\nversion: 1\npriority: 85\nreview_every_days: 180\nmitre: [T1078.003]\napplies_when:\n  rule_ids: [external_admin_panel_access]\nretrieval_queries:\n  - privileged web access response\n  - administrative login verification\n  - insider threat investigation\nreferences:\n  - https://attack.mitre.org/techniques/T1078/003/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Is the activity covered by an approved change or ticket? {#approved-change kind=check evidence=note}\nFocus: the change calendar, open tickets and on-call duty for this account and time.\nEscalate if: no change, ticket or on-call duty covers the activity.\nBenign if: an approved change or an on-call task covers it.\n\n### Privileged actions by this account in 7 days {#privileged-actions kind=lookup}\nFocus: administrative actions, their targets and their times.\n\n```lookup\ntool: log_stats\nfilter:\n  user: \"{{entity.user}}\"\ngroup_by: [action]\nwindow: case_last_seen-7d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nActions come from the ECS field `event.action`. If the source does not record that field, no actions are listed; that means the field is missing, not that nothing happened.\n\n## Investigate\n\n### Does the activity match the person's role? {#role-match kind=check evidence=note}\nFocus: what the person's role needs, compared with what the account did.\nEscalate if: access to data or systems outside the role, at unusual hours or in unusual volume.\nBenign if: normal duties for the role at expected times.\n\nKeep what you learn about the person to the people who need it.\n\n### Involve HR or legal as your policy requires {#involve-hr-legal kind=record approval=soc_manager}\n\nRecord who you involved, when, and what they asked you to do.\n\n### Misuse, suspicious or authorised? {#decide kind=decision}\nEscalate if: the access is unauthorised, comes from hostile infrastructure, or is followed by privileged changes.\nBenign if: authorised access from an expected place by the account owner.\nOptions:\n- misuse: Misuse\n- suspicious: Suspicious, not confirmed\n- authorised: Authorised | skips: reduce-privileges\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Remove or reduce the account's privileges {#reduce-privileges kind=action d3fend=D3-AL}\n\nRemove the privileges the account does not need, or lock it while the review continues.\n\n## Close and learn\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what happened and whether access reviews or approvals should change.\n"
+  },
+  {
+   "file": "ransomware-destructive.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "ransomware-destructive",
+    "title": "Ransomware or destructive activity",
+    "summary": "Files are being encrypted or destroyed. Stop the spread first, then remove the attacker and restore from backup.",
+    "use_when": "A detection reports mass file encryption, ransom notes, deleted shadow copies or other destructive changes.",
+    "prerequisites": "Endpoint and file server telemetry; access to isolate hosts and disable accounts; a tested backup.",
+    "applies_when": {
+     "rule_ids": [
+      "ransomware_behavior",
+      "mass_file_encryption",
+      "ransomware_encryption",
+      "endpoint_ransomware",
+      "file_encryption_burst"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 92,
+    "mitre": [
+     "T1486",
+     "T1490"
+    ],
+    "phases": [
+     "triage",
+     "contain",
+     "eradicate",
+     "recover",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "active-impact",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Are files being encrypted or deleted right now?",
+      "instructions": "Treat this as urgent until you know the answer. Do not reboot affected hosts; it can destroy evidence.",
+      "focus": "the file change rate, ransom notes, deleted shadow copies and the process making the changes.",
+      "escalate_if": "encryption or deletion is still running, or more than one host or share is affected.",
+      "benign_if": "a known backup, archive or compression job explains the file changes.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "declare-incident",
+      "phase": "triage",
+      "kind": "record",
+      "title": "Declare an incident and name an incident lead",
+      "instructions": "Declare an incident under your response plan and name the person who leads it.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": "soc_manager",
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "isolate-hosts",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Isolate affected hosts and shares",
+      "instructions": "Isolate every affected host and take affected shares offline. Record what you isolated.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-NI"
+     },
+     {
+      "id": "disable-accounts",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Disable accounts used by the attacker",
+      "instructions": "Disable or lock the accounts that started the encryption, including service accounts.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-AL"
+     },
+     {
+      "id": "same-activity",
+      "phase": "contain",
+      "kind": "lookup",
+      "title": "Which hosts show the same activity?",
+      "instructions": "",
+      "focus": "other cases from the same detection rule, and the hosts they name.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "related_cases",
+       "filter": {
+        "rule": "{{case.rule}}"
+       },
+       "group_by": [],
+       "indicator": null,
+       "window": "case_first_seen-1d..now",
+       "limit": 10,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "remove-tools",
+      "phase": "eradicate",
+      "kind": "action",
+      "title": "Remove the attacker's tools and access",
+      "instructions": "Remove the attacker's tools, persistence and remote access, and reset credentials they may have.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "backups-intact",
+      "phase": "eradicate",
+      "kind": "check",
+      "title": "Are backups intact and unaffected?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "backups were deleted, encrypted or are reachable with the attacker's credentials.",
+      "benign_if": "offline or immutable backups are intact and a test restore works.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "restore-data",
+      "phase": "recover",
+      "kind": "action",
+      "title": "Restore data from backup",
+      "instructions": "Restore systems and data from clean backups, oldest affected systems last.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA5002",
+      "d3fend": null
+     },
+     {
+      "id": "restored-monitored",
+      "phase": "recover",
+      "kind": "check",
+      "title": "Are restored systems working and monitored?",
+      "instructions": "",
+      "focus": null,
+      "escalate_if": "encryption starts again, or the attacker's tools reappear.",
+      "benign_if": "restored systems work normally under close monitoring.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "notify-stakeholders",
+      "phase": "close",
+      "kind": "record",
+      "title": "Notify legal, leadership and any regulator as required",
+      "instructions": "Record who you notified, when, and under which duty.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write the timeline, the way in, what stopped the spread and what you would change.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "ransomware containment",
+     "mass file encryption",
+     "inhibit system recovery"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1486/",
+     "https://attack.mitre.org/techniques/T1490/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: ransomware-destructive\ntitle: Ransomware or destructive activity\nsummary: Files are being encrypted or destroyed. Stop the spread first, then remove the attacker and restore from backup.\nuse_when: A detection reports mass file encryption, ransom notes, deleted shadow copies or other destructive changes.\nprerequisites: Endpoint and file server telemetry; access to isolate hosts and disable accounts; a tested backup.\nversion: 1\npriority: 92\nreview_every_days: 180\nmitre: [T1486, T1490]\napplies_when:\n  rule_ids: [ransomware_behavior, mass_file_encryption, ransomware_encryption, endpoint_ransomware, file_encryption_burst]\nretrieval_queries:\n  - ransomware containment\n  - mass file encryption\n  - inhibit system recovery\nreferences:\n  - https://attack.mitre.org/techniques/T1486/\n  - https://attack.mitre.org/techniques/T1490/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Are files being encrypted or deleted right now? {#active-impact kind=check evidence=note}\nFocus: the file change rate, ransom notes, deleted shadow copies and the process making the changes.\nEscalate if: encryption or deletion is still running, or more than one host or share is affected.\nBenign if: a known backup, archive or compression job explains the file changes.\n\nTreat this as urgent until you know the answer. Do not reboot affected hosts; it can destroy evidence.\n\n### Declare an incident and name an incident lead {#declare-incident kind=record approval=soc_manager}\n\nDeclare an incident under your response plan and name the person who leads it.\n\n## Contain\n\n### Isolate affected hosts and shares {#isolate-hosts kind=action d3fend=D3-NI}\n\nIsolate every affected host and take affected shares offline. Record what you isolated.\n\n### Disable accounts used by the attacker {#disable-accounts kind=action d3fend=D3-AL}\n\nDisable or lock the accounts that started the encryption, including service accounts.\n\n### Which hosts show the same activity? {#same-activity kind=lookup}\nFocus: other cases from the same detection rule, and the hosts they name.\n\n```lookup\ntool: related_cases\nfilter:\n  rule: \"{{case.rule}}\"\nwindow: case_first_seen-1d..now\nlimit: 10\nrun: on_attach\n```\n\n## Eradicate\n\n### Remove the attacker's tools and access {#remove-tools kind=action}\n\nRemove the attacker's tools, persistence and remote access, and reset credentials they may have.\n\n### Are backups intact and unaffected? {#backups-intact kind=check evidence=note}\nEscalate if: backups were deleted, encrypted or are reachable with the attacker's credentials.\nBenign if: offline or immutable backups are intact and a test restore works.\n\n## Recover\n\n### Restore data from backup {#restore-data kind=action react=RA5002}\n\nRestore systems and data from clean backups, oldest affected systems last.\n\n### Are restored systems working and monitored? {#restored-monitored kind=check evidence=note}\nEscalate if: encryption starts again, or the attacker's tools reappear.\nBenign if: restored systems work normally under close monitoring.\n\n## Close and learn\n\n### Notify legal, leadership and any regulator as required {#notify-stakeholders kind=record}\n\nRecord who you notified, when, and under which duty.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite the timeline, the way in, what stopped the spread and what you would change.\n"
+  },
+  {
+   "file": "scanning-reconnaissance.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "scanning-reconnaissance",
+    "title": "Scanning and reconnaissance",
+    "summary": "A source is probing our hosts, ports or web paths. Most scanning is approved or harmless noise; find the exceptions.",
+    "use_when": "A detection reports port scans, vulnerability scanners or automated probing of web paths.",
+    "prerequisites": "Firewall, IDS or web server logs; the list of approved scanners and assessments.",
+    "applies_when": {
+     "rule_ids": [
+      "suricata",
+      "et_scan",
+      "nessus-openvas",
+      "nessus",
+      "openvas",
+      "nikto",
+      "automated_vulnerability_scanning",
+      "suspicious_web_shell_execution"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 75,
+    "mitre": [
+     "T1595",
+     "T1046"
+    ],
+    "phases": [
+     "triage",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "approved-scanner",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Is the scanner one of ours or an approved third party?",
+      "instructions": "",
+      "focus": "the source against the scanner inventory, the change calendar and assessment windows.",
+      "escalate_if": "the source is on no allow list and no assessment covers it.",
+      "benign_if": "an approved scanner or assessment covers this source and this time.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "hosts-ports",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "How many hosts and ports were touched?",
+      "instructions": "Targets come from the ECS fields `destination.ip` and `destination.port`. A source that names them differently shows the count without the targets.",
+      "focus": "breadth across many hosts versus depth on one service.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "ip": "{{entity.ip}}"
+       },
+       "group_by": [
+        "destination.ip",
+        "destination.port"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "previous-scans",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Has this source scanned us before?",
+      "instructions": "",
+      "focus": "earlier cases from the same source and how they ended.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "related_cases",
+       "filter": {
+        "entity": "{{entity.ip}}"
+       },
+       "group_by": [],
+       "indicator": null,
+       "window": "case_last_seen-30d..case_last_seen",
+       "limit": 10,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "triage",
+      "kind": "decision",
+      "title": "Approved, repeated hostile scanning, or one-off noise?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "the scanner achieved execution, created a file or process, or no approved assessment covers it.",
+      "benign_if": "an approved assessment, or one-off internet noise with no successful request.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "approved",
+        "label": "Approved scanning",
+        "marks_not_applicable": [
+         "block-source"
+        ]
+       },
+       {
+        "id": "hostile",
+        "label": "Repeated hostile scanning",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "noise",
+        "label": "One-off noise",
+        "marks_not_applicable": [
+         "block-source"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "block-source",
+      "phase": "close",
+      "kind": "action",
+      "title": "Block the source if scanning repeats",
+      "instructions": "Block the source at the edge if it keeps scanning. Record where you blocked it.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": false,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA3101",
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what was scanned and whether the scanner list or a detection threshold should change.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "web scanner triage",
+     "approved vulnerability assessment",
+     "network reconnaissance detection"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1595/",
+     "https://attack.mitre.org/techniques/T1046/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: scanning-reconnaissance\ntitle: Scanning and reconnaissance\nsummary: A source is probing our hosts, ports or web paths. Most scanning is approved or harmless noise; find the exceptions.\nuse_when: A detection reports port scans, vulnerability scanners or automated probing of web paths.\nprerequisites: Firewall, IDS or web server logs; the list of approved scanners and assessments.\nversion: 1\npriority: 75\nreview_every_days: 180\nmitre: [T1595, T1046]\napplies_when:\n  rule_ids: [suricata, et_scan, nessus-openvas, nessus, openvas, nikto, automated_vulnerability_scanning, suspicious_web_shell_execution]\nretrieval_queries:\n  - web scanner triage\n  - approved vulnerability assessment\n  - network reconnaissance detection\nreferences:\n  - https://attack.mitre.org/techniques/T1595/\n  - https://attack.mitre.org/techniques/T1046/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Is the scanner one of ours or an approved third party? {#approved-scanner kind=check evidence=note}\nFocus: the source against the scanner inventory, the change calendar and assessment windows.\nEscalate if: the source is on no allow list and no assessment covers it.\nBenign if: an approved scanner or assessment covers this source and this time.\n\n### How many hosts and ports were touched? {#hosts-ports kind=lookup}\nFocus: breadth across many hosts versus depth on one service.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [destination.ip, destination.port]\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nTargets come from the ECS fields `destination.ip` and `destination.port`. A source that names them differently shows the count without the targets.\n\n### Has this source scanned us before? {#previous-scans kind=lookup}\nFocus: earlier cases from the same source and how they ended.\n\n```lookup\ntool: related_cases\nfilter:\n  entity: \"{{entity.ip}}\"\nwindow: case_last_seen-30d..case_last_seen\nlimit: 10\nrun: on_attach\n```\n\n### Approved, repeated hostile scanning, or one-off noise? {#decide kind=decision}\nEscalate if: the scanner achieved execution, created a file or process, or no approved assessment covers it.\nBenign if: an approved assessment, or one-off internet noise with no successful request.\nOptions:\n- approved: Approved scanning | skips: block-source\n- hostile: Repeated hostile scanning\n- noise: One-off noise | skips: block-source\n\nRecording a decision does not change the verdict or close the case.\n\n## Close and learn\n\n### Block the source if scanning repeats {#block-source kind=action optional react=RA3101}\n\nBlock the source at the edge if it keeps scanning. Record where you blocked it.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what was scanned and whether the scanner list or a detection threshold should change.\n"
+  },
+  {
+   "file": "suspicious-outbound.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "suspicious-outbound",
+    "title": "Suspicious outbound or known-bad destination",
+    "summary": "A host talks to a destination with a bad reputation, or in a regular beacon-like pattern. Decide whether it is command and control.",
+    "use_when": "Threat intelligence flags an address our hosts talk to, or a detection reports beacon-like outbound traffic.",
+    "prerequisites": "Firewall, proxy or DNS logs; endpoint telemetry to find the process behind a connection.",
+    "applies_when": {
+     "rule_ids": [
+      "enrichment",
+      "suricata_mail",
+      "ml_stats"
+     ],
+     "mitre": [],
+     "entity_types": [
+      "ip",
+      "host"
+     ],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 40,
+    "mitre": [
+     "T1071",
+     "T1571"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain"
+    ],
+    "steps": [
+     {
+      "id": "destinations",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Where did this address connect, and how often?",
+      "instructions": "Destinations come from the ECS fields `destination.ip` and `destination.port`. A source that names them differently shows the count without the destinations.",
+      "focus": "steady counts to one destination suggest a beacon; compare each destination with threat intelligence.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "ip": "{{entity.ip}}"
+       },
+       "group_by": [
+        "destination.ip",
+        "destination.port"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1d..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "destination-reputation",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Reputation of the destination domain",
+      "instructions": "",
+      "focus": "which sources flag the domain, for what, and how recently.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "enrich",
+       "filter": {},
+       "group_by": [],
+       "indicator": "{{entity.domain}}",
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "process",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "Which process made the connection?",
+      "instructions": "",
+      "focus": "the process, its parent and its user on each host that made the connection.",
+      "escalate_if": "an unknown or unsigned process, a script interpreter, or a process running from a temporary folder.",
+      "benign_if": "a known updater, browser or security agent talking to its vendor.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Command and control, suspicious or benign?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "a destination listed by the first lookup is known-bad, or one internal host contacts it at regular intervals.",
+      "benign_if": "a known SaaS, update or CDN endpoint with naturally periodic traffic.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "c2",
+        "label": "Command and control",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "suspicious",
+        "label": "Suspicious, not confirmed",
+        "marks_not_applicable": [
+         "isolate-host"
+        ]
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "block-destination",
+         "isolate-host"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "block-destination",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Block the destination",
+      "instructions": "Block the destination at the firewall, or ask for a DNS sinkhole. Record the change reference.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA3101",
+      "d3fend": null
+     },
+     {
+      "id": "isolate-host",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Isolate the host when it is command and control",
+      "instructions": "Isolate each host that beaconed, keeping the management connection, until it is clean.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": false,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": "D3-NI"
+     },
+     {
+      "id": "record-outcome",
+      "phase": "contain",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write which hosts were involved, what you blocked, and what would have caught it sooner.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "C2 beacon detection",
+     "MITRE T1071 application layer protocol C2",
+     "outbound traffic reputation triage"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1071/",
+     "https://attack.mitre.org/techniques/T1571/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: suspicious-outbound\ntitle: Suspicious outbound or known-bad destination\nsummary: A host talks to a destination with a bad reputation, or in a regular beacon-like pattern. Decide whether it is command and control.\nuse_when: Threat intelligence flags an address our hosts talk to, or a detection reports beacon-like outbound traffic.\nprerequisites: Firewall, proxy or DNS logs; endpoint telemetry to find the process behind a connection.\nversion: 1\npriority: 40\nreview_every_days: 180\nmitre: [T1071, T1571]\napplies_when:\n  rule_ids: [enrichment, suricata_mail, ml_stats]\n  entity_types: [ip, host]\nretrieval_queries:\n  - C2 beacon detection\n  - MITRE T1071 application layer protocol C2\n  - outbound traffic reputation triage\nreferences:\n  - https://attack.mitre.org/techniques/T1071/\n  - https://attack.mitre.org/techniques/T1571/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Where did this address connect, and how often? {#destinations kind=lookup}\nFocus: steady counts to one destination suggest a beacon; compare each destination with threat intelligence.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [destination.ip, destination.port]\nwindow: case_first_seen-1d..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nDestinations come from the ECS fields `destination.ip` and `destination.port`. A source that names them differently shows the count without the destinations.\n\n### Reputation of the destination domain {#destination-reputation kind=lookup}\nFocus: which sources flag the domain, for what, and how recently.\n\n```lookup\ntool: enrich\nindicator: \"{{entity.domain}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n## Investigate\n\n### Which process made the connection? {#process kind=check evidence=note}\nFocus: the process, its parent and its user on each host that made the connection.\nEscalate if: an unknown or unsigned process, a script interpreter, or a process running from a temporary folder.\nBenign if: a known updater, browser or security agent talking to its vendor.\n\n### Command and control, suspicious or benign? {#decide kind=decision}\nEscalate if: a destination listed by the first lookup is known-bad, or one internal host contacts it at regular intervals.\nBenign if: a known SaaS, update or CDN endpoint with naturally periodic traffic.\nOptions:\n- c2: Command and control\n- suspicious: Suspicious, not confirmed | skips: isolate-host\n- benign: Benign | skips: block-destination, isolate-host\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Block the destination {#block-destination kind=action react=RA3101}\n\nBlock the destination at the firewall, or ask for a DNS sinkhole. Record the change reference.\n\n### Isolate the host when it is command and control {#isolate-host kind=action optional d3fend=D3-NI}\n\nIsolate each host that beaconed, keeping the management connection, until it is clean.\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite which hosts were involved, what you blocked, and what would have caught it sooner.\n"
+  },
+  {
+   "file": "web-application-attack.md",
+   "version": 1,
+   "issues": [],
+   "definition": {
+    "id": "web-application-attack",
+    "title": "Web application attack",
+    "summary": "A request against one of our web applications looks like an attack. Find out whether any request succeeded and whether the component is exposed.",
+    "use_when": "A WAF, web server or application detection reports injection, path traversal, session abuse, a dangerous upload or a web shell.",
+    "prerequisites": "WAF and web server logs with status codes and response sizes; the owner of the application.",
+    "applies_when": {
+     "rule_ids": [
+      "modsecurity",
+      "modsec_audit_log",
+      "nginx",
+      "apache",
+      "web_app_endpoint_abuse",
+      "web_app_session_token_reuse",
+      "web_app_dangerous_file_upload",
+      "web_app_path_enumeration",
+      "web_app_privileged_admin_action",
+      "web_app_sensitive_data_access",
+      "suspicious_web_shell_execution"
+     ],
+     "mitre": [],
+     "entity_types": [],
+     "severity_at_least": null,
+     "sources": [],
+     "verdicts": [],
+     "statuses": [],
+     "any_tags": [],
+     "min_event_count": null,
+     "always": false
+    },
+    "priority": 80,
+    "mitre": [
+     "T1190"
+    ],
+    "phases": [
+     "triage",
+     "investigate",
+     "contain",
+     "close"
+    ],
+    "steps": [
+     {
+      "id": "source-requests",
+      "phase": "triage",
+      "kind": "lookup",
+      "title": "Requests from this source to the application",
+      "instructions": "Paths and status codes come from the ECS fields `url.path` and `http.response.status_code`. A source that names them differently shows the count without them.",
+      "focus": "which paths the source requested and which status codes it got back.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "log_stats",
+       "filter": {
+        "ip": "{{entity.ip}}"
+       },
+       "group_by": [
+        "url.path",
+        "http.response.status_code"
+       ],
+       "indicator": null,
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "request-succeeded",
+      "phase": "triage",
+      "kind": "check",
+      "title": "Did any request succeed (2xx or unusual size)?",
+      "instructions": "",
+      "focus": "status codes, response sizes and paths that differ from the blocked requests.",
+      "escalate_if": "an attack request returned 2xx with an unusual size, or a file was written or run on the server.",
+      "benign_if": "every request was blocked or returned an error, with normal response sizes.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "source-reputation",
+      "phase": "investigate",
+      "kind": "lookup",
+      "title": "Reputation of the source",
+      "instructions": "",
+      "focus": "known scanners, hosting providers and hostile addresses.",
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": {
+       "tool": "enrich",
+       "filter": {},
+       "group_by": [],
+       "indicator": "{{entity.ip}}",
+       "window": "case_first_seen-1h..case_last_seen+1h",
+       "limit": 20,
+       "run": "on_attach"
+      },
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "component-vulnerable",
+      "phase": "investigate",
+      "kind": "check",
+      "title": "Is the targeted component vulnerable to this attack?",
+      "instructions": "",
+      "focus": "the application, version and patch level behind the targeted path.",
+      "escalate_if": "the component is unpatched for the technique, or the request reached an admin or upload endpoint.",
+      "benign_if": "the component is not affected, or a WAF rule blocks the technique.",
+      "required": true,
+      "evidence": "note",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "decide",
+      "phase": "investigate",
+      "kind": "decision",
+      "title": "Exploited, attempted or benign?",
+      "instructions": "Recording a decision does not change the verdict or close the case.",
+      "focus": null,
+      "escalate_if": "confirmed account misuse, destructive administration, an executable upload or lasting impact on the service.",
+      "benign_if": "automation or scanning with no successful request and no impact.",
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [
+       {
+        "id": "exploited",
+        "label": "Exploited",
+        "marks_not_applicable": []
+       },
+       {
+        "id": "attempted",
+        "label": "Attempted, not successful",
+        "marks_not_applicable": [
+         "patch-component"
+        ]
+       },
+       {
+        "id": "benign",
+        "label": "Benign",
+        "marks_not_applicable": [
+         "block-source",
+         "patch-component"
+        ]
+       }
+      ],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "block-source",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Block the source or request a WAF rule",
+      "instructions": "Block the source, or ask for a WAF rule against the technique. Record the change reference.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": false,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": "RA3101",
+      "d3fend": null
+     },
+     {
+      "id": "patch-component",
+      "phase": "contain",
+      "kind": "action",
+      "title": "Patch or take the component offline when exploited",
+      "instructions": "Patch the component, or take it offline with the application owner until it is fixed.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     },
+     {
+      "id": "record-outcome",
+      "phase": "close",
+      "kind": "record",
+      "title": "Record the outcome and what you would change",
+      "instructions": "Write what was attempted, what worked, and what would have stopped it earlier.",
+      "focus": null,
+      "escalate_if": null,
+      "benign_if": null,
+      "required": true,
+      "evidence": "none",
+      "owner_role": null,
+      "approval_role": null,
+      "target_minutes": null,
+      "lookup": null,
+      "options": [],
+      "react": null,
+      "d3fend": null
+     }
+    ],
+    "retrieval_queries": [
+     "web application incident response",
+     "application session abuse",
+     "application administrative activity"
+    ],
+    "owner": null,
+    "review_every_days": 180,
+    "references": [
+     "https://attack.mitre.org/techniques/T1190/",
+     "https://csrc.nist.gov/pubs/sp/800/61/r3/final"
+    ]
+   },
+   "export": "---\nid: web-application-attack\ntitle: Web application attack\nsummary: A request against one of our web applications looks like an attack. Find out whether any request succeeded and whether the component is exposed.\nuse_when: A WAF, web server or application detection reports injection, path traversal, session abuse, a dangerous upload or a web shell.\nprerequisites: WAF and web server logs with status codes and response sizes; the owner of the application.\nversion: 1\npriority: 80\nreview_every_days: 180\nmitre: [T1190]\napplies_when:\n  rule_ids: [modsecurity, modsec_audit_log, nginx, apache, web_app_endpoint_abuse, web_app_session_token_reuse, web_app_dangerous_file_upload, web_app_path_enumeration, web_app_privileged_admin_action, web_app_sensitive_data_access, suspicious_web_shell_execution]\nretrieval_queries:\n  - web application incident response\n  - application session abuse\n  - application administrative activity\nreferences:\n  - https://attack.mitre.org/techniques/T1190/\n  - https://csrc.nist.gov/pubs/sp/800/61/r3/final\n---\n\n## Triage\n\n### Requests from this source to the application {#source-requests kind=lookup}\nFocus: which paths the source requested and which status codes it got back.\n\n```lookup\ntool: log_stats\nfilter:\n  ip: \"{{entity.ip}}\"\ngroup_by: [url.path, http.response.status_code]\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\nPaths and status codes come from the ECS fields `url.path` and `http.response.status_code`. A source that names them differently shows the count without them.\n\n### Did any request succeed (2xx or unusual size)? {#request-succeeded kind=check evidence=note}\nFocus: status codes, response sizes and paths that differ from the blocked requests.\nEscalate if: an attack request returned 2xx with an unusual size, or a file was written or run on the server.\nBenign if: every request was blocked or returned an error, with normal response sizes.\n\n## Investigate\n\n### Reputation of the source {#source-reputation kind=lookup}\nFocus: known scanners, hosting providers and hostile addresses.\n\n```lookup\ntool: enrich\nindicator: \"{{entity.ip}}\"\nwindow: case_first_seen-1h..case_last_seen+1h\nlimit: 20\nrun: on_attach\n```\n\n### Is the targeted component vulnerable to this attack? {#component-vulnerable kind=check evidence=note}\nFocus: the application, version and patch level behind the targeted path.\nEscalate if: the component is unpatched for the technique, or the request reached an admin or upload endpoint.\nBenign if: the component is not affected, or a WAF rule blocks the technique.\n\n### Exploited, attempted or benign? {#decide kind=decision}\nEscalate if: confirmed account misuse, destructive administration, an executable upload or lasting impact on the service.\nBenign if: automation or scanning with no successful request and no impact.\nOptions:\n- exploited: Exploited\n- attempted: Attempted, not successful | skips: patch-component\n- benign: Benign | skips: block-source, patch-component\n\nRecording a decision does not change the verdict or close the case.\n\n## Contain\n\n### Block the source or request a WAF rule {#block-source kind=action optional react=RA3101}\n\nBlock the source, or ask for a WAF rule against the technique. Record the change reference.\n\n### Patch or take the component offline when exploited {#patch-component kind=action}\n\nPatch the component, or take it offline with the application owner until it is fixed.\n\n## Close and learn\n\n### Record the outcome and what you would change {#record-outcome kind=record}\n\nWrite what was attempted, what worked, and what would have stopped it earlier.\n"
+  }
+ ]
+}

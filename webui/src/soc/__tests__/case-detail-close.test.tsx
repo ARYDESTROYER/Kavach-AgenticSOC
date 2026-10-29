@@ -120,9 +120,11 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
 
     expect(screen.getByRole('region', { name: 'Case detail' })).toBeInTheDocument();
     expect(screen.queryByRole('dialog', { name: 'Case detail' })).not.toBeInTheDocument();
-    expect(screen.getAllByRole('tab')).toHaveLength(6);
+    // Round 14: the Runbook tab is second (SPEC §4.10.11).
+    expect(screen.getAllByRole('tab')).toHaveLength(7);
     for (const label of [
       'Overview',
+      'Runbook',
       'Timeline',
       'Investigation',
       'Threat context',
@@ -159,7 +161,8 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
       'Mark resolved',
       'Put on hold',
       'Reinvestigate',
-      'Run a playbook',
+      // Round 14: "Run a playbook" is gone; a runbook is started on the case instead.
+      'Start runbook',
       'Refresh case',
       'Ask about this case',
       'Open in new tab',
@@ -169,6 +172,7 @@ describe('CaseDetail — single panel-dismiss control (BUG-3)', () => {
     ]) {
       expect(within(menu).getByRole('menuitem', { name: label })).toBeInTheDocument();
     }
+    expect(within(menu).queryByRole('menuitem', { name: /playbook/i })).not.toBeInTheDocument();
     expect(within(menu).queryByRole('menuitem', { name: 'Timeline' })).not.toBeInTheDocument();
     expect(within(menu).queryByRole('menuitem', { name: 'Investigation' })).not.toBeInTheDocument();
 

@@ -1,5 +1,5 @@
 /**
- * RuleEditor (Round-5 G6 · R2/R3) — the four-section rule editor shell:
+ * RuleEditor (Round-5 G6 · R2/R3): the four-section rule editor shell:
  * Define → About → Schedule → Actions (Radix `Tabs`), with the **Define** tab
  * POLYMORPHIC on the `RuleForm` discriminated union over three tiers.
  *
@@ -20,9 +20,10 @@
  * selection, never a key.
  */
 import * as React from 'react';
-import { Info, Lock, Wrench } from 'lucide-react';
+import { Lock, Wrench } from 'lucide-react';
 
-import { humanizeToken } from '@/lib/format';
+import { listRunbookLibrary } from '@/lib/api-runbooks';
+import type { RunbookSummary } from '@/lib/types-runbooks';
 import { CASE_TAG_MAX_CHARS } from '@/lib/tags';
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/ui/tabs';
@@ -45,6 +46,8 @@ import { NumberField } from '@/soc/components/NumberField';
 import { LabeledSlider } from '@/soc/components/LabeledSlider';
 import { TagInput } from '@/soc/components/TagInput';
 import { HelpTip } from '@/soc/components/HelpTip';
+import { StatusDot } from '@/design-system/status-dot';
+import { isAttachable, resolveAutomationRunbook } from '@/soc/runbooks/shared/legacy';
 
 import { ConditionBuilder } from './ConditionBuilder';
 import type { RuleForm, RuleTier } from './types';
@@ -68,7 +71,7 @@ export interface RuleEditorProps {
   /** The rule form being edited (controlled). */
   value: RuleForm;
   onChange: (next: RuleForm) => void;
-  /** Read-only preview (RBAC without `automation:manage`) — disables every control. */
+  /** Read-only preview (RBAC without `automation:manage`); disables every control. */
   readOnly?: boolean;
   /** Allow switching the rule TIER (only for a brand-new rule; editing keeps the tier). */
   allowTierChange?: boolean;
@@ -120,8 +123,8 @@ function AboutTab({ value, onChange, readOnly, allowTierChange }: RuleEditorProp
         </Field>
       )}
 
-      {/* Description persists for detection tiers only — the case-automation wire has no
-          description field — so it is hidden for case-automation to avoid a dead input (#25). */}
+      {/* Description persists for detection tiers only. The case-automation wire has no
+          description field, so it is hidden for case-automation to avoid a dead input (#25). */}
       {isCaseAutomation ? null : (
         <Field label="Description" description="What this rule detects and why it matters.">
           <Textarea
@@ -162,7 +165,7 @@ function DefineMatch({ value, onChange, readOnly }: RuleEditorProps & { value: E
     <div className="space-y-5">
       {/* conditions */}
       <section className="space-y-2">
-        <div className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
           Condition
           <HelpTip text="Match one raw-event field. Detection rules currently persist and evaluate exactly one predicate." />
         </div>
@@ -175,7 +178,7 @@ function DefineMatch({ value, onChange, readOnly }: RuleEditorProps & { value: E
 
       {/* active correlation threshold */}
       <section className="space-y-3 rounded-md border border-border bg-surface p-3">
-        <div className="flex items-center gap-1.5 text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className="flex items-center gap-1.5 text-sm font-medium text-foreground">
           Threshold
           <HelpTip text="Group-by + count. n=1 is a simple match rule; n>1 fires only when ≥ N matching events share the group-by within the window." />
           <Badge variant={isThreshold ? 'high' : 'secondary'} className="ml-1">
@@ -245,14 +248,11 @@ function DefineAnomaly({ value, onChange, readOnly }: RuleEditorProps & { value:
 
   return (
     <div className="space-y-5">
-      <Alert variant="info">
-        <Info className="h-4 w-4" aria-hidden />
-        <AlertTitle>Anomaly rules are advisory</AlertTitle>
-        <AlertDescription>
-          A deviation raises a CANDIDATE that re-enters the normal correlate/decide pipeline. It
-          never auto-closes and never overrides the deterministic decision (#3).
-        </AlertDescription>
-      </Alert>
+      <p className="text-sm text-muted-foreground">
+        <span className="font-medium text-foreground">Anomaly rules are advisory.</span> A deviation raises a candidate
+        that goes through the usual correlation and decision. It never closes a case and never overrides the
+        deterministic decision.
+      </p>
 
       <Field label="Group by" description="The signature whose hour-of-week baseline is learned.">
         {({ id, labelledBy, describedBy }) => (
@@ -348,17 +348,15 @@ function DefineCaseAutomation({
     <div className="space-y-5">
       <Alert variant="warning">
         <Lock className="h-4 w-4" aria-hidden />
-        <AlertTitle>Runs after the deterministic decision — never sets status</AlertTitle>
+        <AlertTitle>Runs after the deterministic decision and never sets status</AlertTitle>
         <AlertDescription>
-          A matched rule can only tag, recommend, notify, queue a re-investigation, or draft an
-          approval proposal. It NEVER closes or changes a case&apos;s status (#3, code-enforced).
+          A matched rule can only tag, recommend, notify, attach a runbook, or draft an approval
+          proposal. It never closes a case or changes its status.
         </AlertDescription>
       </Alert>
 
       <section className="space-y-3">
-        <div className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-          When a case matches (all ANDed)
-        </div>
+        <div className="text-sm font-medium text-foreground">When a case matches all of these</div>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field
             label="Verdict"
@@ -492,42 +490,125 @@ function ScheduleTab({ value }: RuleEditorProps) {
   // Case-automation reacts post-decision (no schedule of its own).
   if (value.tier === 'case_automation') {
     return (
-      <Alert variant="info">
-        <Info className="h-4 w-4" aria-hidden />
-        <AlertTitle>No schedule</AlertTitle>
-        <AlertDescription>
-          Case-automation rules evaluate immediately after each case is decided — there is no
-          separate run schedule.
-        </AlertDescription>
-      </Alert>
+      <p className="text-sm text-muted-foreground">
+        <span className="font-medium text-foreground">No schedule.</span> Case-automation rules run right after each
+        case is decided; they have no run schedule of their own.
+      </p>
     );
   }
   return (
-    <Alert variant="info">
-      <Info className="h-4 w-4" aria-hidden />
-      <AlertTitle>Cadence comes from the source feed</AlertTitle>
-      <AlertDescription>
-        Detection rules run whenever their source feed polls, using that feed&apos;s durable cursor.
-        Change polling cadence on the source feed; this rule has no independent schedule override.
-      </AlertDescription>
-    </Alert>
+    <p className="text-sm text-muted-foreground">
+      <span className="font-medium text-foreground">Cadence comes from the source feed.</span> Detection rules run
+      whenever their source feed polls, from that feed&apos;s durable cursor. Change the polling cadence on the source
+      feed; this rule has no schedule of its own.
+    </p>
   );
 }
 
 /* ----------------------------------------------------------- Actions tab -- */
 
+/**
+ * "Attach a runbook" (Round 14, SPEC §4.10.16): a published runbook picked by name. The rule
+ * keeps the stored `run_playbook` action (the naming contract) and writes the id as
+ * `payload.runbook_id` and, for compatibility, `payload.playbook_id`. A rule whose stored
+ * target is unknown, a draft only or retired shows "Needs a runbook": the server skips it at
+ * fire time. A rule with nothing chosen yet shows only the field and its placeholder.
+ *
+ * The library is read with the built-ins a published copy replaces, because the server still
+ * attaches a replaced built-in a rule names (only automatic matching skips it); the picker
+ * lists those only when the rule already names one.
+ */
+function AttachRunbookField({
+  payload,
+  readOnly,
+  onChange,
+}: {
+  payload: Record<string, unknown>;
+  readOnly?: boolean;
+  onChange: (runbookId: string) => void;
+}) {
+  const [library, setLibrary] = React.useState<RunbookSummary[] | null>(null);
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    listRunbookLibrary({ show_replaced: true })
+      .then((lib) => {
+        if (alive) setLibrary(lib.runbooks);
+      })
+      .catch(() => {
+        if (alive) setFailed(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const target = resolveAutomationRunbook(payload, failed ? null : library);
+  const stored =
+    (typeof payload.runbook_id === 'string' && payload.runbook_id) ||
+    (typeof payload.playbook_id === 'string' && payload.playbook_id) ||
+    '';
+
+  if (failed) {
+    return (
+      <Field label="Runbook id" description="The runbooks could not be listed, so type the id of a published runbook.">
+        <Input value={stored} disabled={readOnly} onChange={(e) => onChange(e.target.value.trim())} />
+      </Field>
+    );
+  }
+  const value = target.status === 'attaches' && target.id ? target.id : '';
+  const options = (library ?? [])
+    .filter((r) => isAttachable(r) && (!r.replaced_by || r.id === value))
+    .sort((a, b) => a.title.localeCompare(b.title));
+  const replacedBy = target.status === 'attaches' && target.runbook?.replaced_by
+    ? (library ?? []).find((r) => r.id === target.runbook?.replaced_by) ?? null
+    : null;
+  return (
+    <div className="space-y-2" data-attach-runbook={stored ? target.status : 'empty'}>
+      <Field label="Runbook" description="Only published runbooks are listed.">
+        {({ id, labelledBy, describedBy }) => (
+          <Select value={value} disabled={readOnly || library === null} onValueChange={onChange}>
+            <SelectTrigger id={id} aria-labelledby={labelledBy} aria-describedby={describedBy}>
+              <SelectValue placeholder={library === null ? 'Loading runbooks' : 'Choose a published runbook'} />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {r.title}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </Field>
+      {library !== null && stored && target.status === 'needs_runbook' ? (
+        <div className="space-y-0.5" role="status">
+          <StatusDot tone="warning">Needs a runbook</StatusDot>
+          <p className="text-sm text-muted-foreground">
+            {`The runbook this rule names (${stored}) is not published, so the rule is skipped until you choose one.`}
+          </p>
+        </div>
+      ) : null}
+      {target.runbook?.replaced_by ? (
+        <p className="text-sm text-muted-foreground" data-attach-replaced="">
+          {`Your team's copy${replacedBy ? `, ${replacedBy.title},` : ''} replaces this built-in for matching. This rule still attaches the built-in; choose your copy to attach it instead.`}
+        </p>
+      ) : null}
+      {target.status === 'attaches' && target.via !== 'runbook_id' && stored ? (
+        <p className="text-sm text-muted-foreground">{`Found from the earlier id ${stored}. It keeps working; pick the runbook again to record its id.`}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function ActionsTab({ value, onChange, readOnly }: RuleEditorProps) {
   // Only case-automation carries a bound action; detection tiers create candidate cases.
   if (value.tier !== 'case_automation') {
     return (
-      <Alert variant="info">
-        <Info className="h-4 w-4" aria-hidden />
-        <AlertTitle>Detection rules create candidate cases</AlertTitle>
-        <AlertDescription>
-          A detection rule&apos;s survivors re-enter the normal correlate/decide pipeline. To react
-          to the RESULTING case (tag/notify/propose), add a Case-automation rule.
-        </AlertDescription>
-      </Alert>
+      <p className="text-sm text-muted-foreground">
+        <span className="font-medium text-foreground">Detection rules create candidate cases.</span> What a detection
+        rule finds goes through the usual correlation and decision. To react to the case that results (tag, notify,
+        attach a runbook, propose), add a case-automation rule.
+      </p>
     );
   }
   const auto = value.automation;
@@ -560,7 +641,7 @@ function ActionsTab({ value, onChange, readOnly }: RuleEditorProps) {
 
       <Badge variant="warning" className="gap-1">
         <Lock className="h-3 w-3" aria-hidden />
-        Proposal / recommend only — never auto-closes
+        Never closes a case
       </Badge>
 
       {auto.action === 'tag' ? (
@@ -594,14 +675,11 @@ function ActionsTab({ value, onChange, readOnly }: RuleEditorProps) {
         </Field>
       ) : null}
       {auto.action === 'run_playbook' ? (
-        <Field label="Playbook id">
-          <Input
-            value={typeof auto.payload.playbook_id === 'string' ? auto.payload.playbook_id : ''}
-            disabled={readOnly}
-            placeholder="playbook id"
-            onChange={(e) => setPayload({ playbook_id: e.target.value })}
-          />
-        </Field>
+        <AttachRunbookField
+          payload={auto.payload}
+          readOnly={readOnly}
+          onChange={(id) => setPayload({ runbook_id: id, playbook_id: id })}
+        />
       ) : null}
       {auto.action === 'request_approval' ? (
         <Field label="Proposal kind">
@@ -685,7 +763,7 @@ export function RuleEditor(props: RuleEditorProps) {
 
       {readOnly ? (
         <p className="text-xs text-muted-foreground">
-          {humanizeToken('read_only')} — you can view this rule but not change it.
+          Read only: you can view this rule but not change it.
         </p>
       ) : null}
     </div>

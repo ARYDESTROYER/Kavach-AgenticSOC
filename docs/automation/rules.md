@@ -33,11 +33,35 @@ normalized events in [Logs](../analyst/logs-search.md) before enabling a rule br
 ## Case-automation rules
 
 Case automation evaluates all configured conditions after the deterministic decision
-and initial save. Supported actions are tag, recommend, notify, run a playbook, or
+and initial save. Supported actions are tag, recommend, notify, attach a runbook, or
 request human approval. A rule cannot set status or disposition.
 
 Conditions can constrain verdict, minimum risk or severity, status, source, rule,
 and entity type. Rules run in priority order; lower numbers run first.
+
+### Attach a runbook
+
+**Attach a runbook** attaches a published [runbook](../intelligence/runbooks.md) to the
+matching case, at no cost and without a model call. Pick the runbook by name; only published
+runbooks are offered. The runbook guides the people who work the case. It never changes the
+verdict, the status or the disposition, and it never starts a new investigation.
+
+A runbook attaches to a case at most once, so a rule that fires again on the same case does
+nothing more. When the rule's runbook is not published (it is only a draft, retired or
+unknown), the rule is skipped and the audit log records why; the rule editor shows
+**Needs a runbook** on that rule until you pick a published one. A built-in runbook that your
+team's published copy replaces for matching is still attached by a rule that names it; the
+rule editor says so and offers your copy.
+
+The stored action keeps its earlier value, `run_playbook`, so older builds can still read
+your rules; the rule records the runbook as `payload.runbook_id` and, for compatibility,
+`payload.playbook_id` with the same id. A rule saved before this release, which names only
+`payload.playbook_id`, still works: an id a bundled procedure held resolves to the built-in
+runbook that replaced it (as before the upgrade, when that rule ran the bundled procedure),
+any other procedure id to the runbook that procedure became on upgrade, and a retired
+reference runbook id to the built-in that merged it. Open the rule and
+pick the runbook again to record the runbook id. Earlier releases started a new investigation for this
+action instead of attaching a runbook.
 
 ## Preview before saving
 
@@ -57,7 +81,7 @@ After rollback, preview again and monitor case and noise metrics.
 
 Some detections cannot be resolved by review. If a rule's alerts carry no request,
 payload, or execution context, an investigation has nothing to verify a given instance
-against, so it routes to a human every time — no matter how many prior cases of that
+against, so it routes to a human every time, no matter how many prior cases of that
 rule an analyst has confirmed benign. Confirming more of them cannot change that.
 
 An analyst rule policy is an explicit statement that a detection is benign in your
@@ -69,7 +93,7 @@ model call.
 **Understand the trade before you enable one.** A declaration closes matching alerts
 **with no model call and no human**. If a genuine attack fires a declared rule, that case
 closes silently. Use a declaration only where the alerts genuinely cannot carry the
-evidence an investigation needs — where they can, enrich the source instead.
+evidence an investigation needs; where they can, enrich the source instead.
 
 Three bounds keep that decision reversible:
 
@@ -78,28 +102,28 @@ Three bounds keep that decision reversible:
 - **Scope and expiry.** Limit a declaration to one source, and give it an expiry, so it
   cannot outlive the situation that justified it.
 - **Per-case override.** Reinvestigating a case always overrides the declaration for that
-  case, and it needs only `cases:reinvestigate` — an analyst who suspects a declared-benign
+  case, and it needs only `cases:reinvestigate`: an analyst who suspects a declared-benign
   case is real never needs `rules:manage` to act on it.
 
 What it does and does not do:
 
-- the case is still created, still audited, and still reopenable — it is closed, not
+- the case is still created, still audited, and still reopenable; it is closed, not
   discarded before it exists (that is what a suppression rule does instead);
 - every detection on a cluster must be declared before it closes, so a cluster that also
   fired an undeclared detection is investigated normally;
-- it never overrides a person. A case an analyst has acted on — reopened, escalated, held,
-  acknowledged — or one the agent has already investigated is left alone;
+- it never overrides a person. A case an analyst has acted on (reopened, escalated, held,
+  acknowledged) or one the agent has already investigated is left alone;
 - it applies to new clusters only; close cases that are already open from the case queue;
 - policy closes are excluded from false-positive rate, automation rate, auto-close
   health, the noise-reduction funnel, and improvement evidence, and are never counted as
   analyst-confirmed outcomes; and
-- revoke by disabling, letting it expire, or deleting it — the next match stops
+- revoke by disabling, letting it expire, or deleting it; the next match stops
   immediately, and cases already closed stay closed.
 
 Prefer a policy over repeated confirmation when the alerts genuinely cannot carry the
 evidence an investigation needs. Prefer enriching the source when they could. The
-diagnostics panel names the rules where confirmation is not helping — see
+diagnostics panel names the rules where confirmation is not helping; see
 [Analytics](../analyst/analytics.md).
 
 See [Tuning and baselines](tuning-baselines.md) for generated recommendations and
-[Playbooks and approvals](playbooks-approvals.md) for actions requiring review.
+[Approvals](playbooks-approvals.md) for actions requiring review.

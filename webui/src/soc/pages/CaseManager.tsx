@@ -136,6 +136,10 @@ import {
   type QueueSort,
 } from './casedetail/queue';
 import { shortcutBlocked } from './casedetail/keyboard';
+import type { RunbookProgress } from '@/lib/types-runbooks';
+import { useRunbookProgressMap } from '@/soc/runbooks/run/live';
+import { RunbookProgressChip } from '@/soc/runbooks/run/ProgressChip';
+import { progressChipLabel } from '@/soc/runbooks/shared/progress';
 
 const ANY_SEVERITY = '__any_severity__';
 const ANY_STATUS = '__any_status__';
@@ -307,6 +311,8 @@ const QueueRow: React.FC<{
   density: Density;
   selectionDisabled: boolean;
   job: RowJobState | null;
+  /** Round 14: the case's runbook progress (live), or null when no runbook is attached. */
+  runbookProgress?: RunbookProgress | null;
   registerButton: (id: string, el: HTMLButtonElement | null) => void;
   onOpen: () => void;
   onFocusRow: () => void;
@@ -320,12 +326,15 @@ const QueueRow: React.FC<{
   density,
   selectionDisabled,
   job,
+  runbookProgress = null,
   registerButton,
   onOpen,
   onFocusRow,
   onPrefetch,
   onCheckedChange,
 }) => {
+  // The runbook chip shows only when a runbook is attached; its fact is in the row's name.
+  const runbook = runbookProgress && runbookProgress.total > 0 ? runbookProgress : null;
   const severity = caseSeverity(item);
   const displayId = caseDisplayId(item);
   const title = caseTitle(item);
@@ -352,6 +361,7 @@ const QueueRow: React.FC<{
     settled ? `outcome ${outcome.shortLabel}` : outcome.shortLabel,
     owner ? `assigned to ${owner}` : 'unassigned',
     `updated ${age}`,
+    runbook ? progressChipLabel(runbook) : null,
     job?.failure ? `last bulk action failed: ${job.failure}` : null,
     chat.text || null,
   ]
@@ -445,6 +455,7 @@ const QueueRow: React.FC<{
               <span className="max-w-[9rem] truncate">{settled && outcome.terminal ? outcome.shortLabel : statusText}</span>
             </span>
             <ActivityGlyph status={chat.status} />
+            {runbook ? <RunbookProgressChip progress={runbook} decorative /> : null}
             <span className="shrink-0 tabular-nums text-muted-foreground">{age}</span>
           </span>
         ) : (
@@ -518,6 +529,7 @@ const QueueRow: React.FC<{
                   <span className="min-w-0 truncate">{fact}</span>
                 </span>
               ) : null}
+              {runbook ? <RunbookProgressChip progress={runbook} decorative className="ml-auto" /> : null}
             </span>
             {job?.failure ? (
               <span className="mt-0.5 block truncate text-xs text-warning-text">{job.failure}</span>
@@ -552,7 +564,7 @@ const SHORTCUTS: ReadonlyArray<{ keys: string; action: string }> = [
   { keys: 'A  C  E  H', action: 'Acknowledge, close, escalate or hold the open case' },
   { keys: 'R', action: 'Reinvestigate the open case' },
   { keys: 'M  T', action: 'Change the owner or edit tags' },
-  { keys: 'Alt + 1 … 6', action: 'Switch case tabs' },
+  { keys: 'Alt + 1 … 7', action: 'Switch case tabs' },
 ];
 
 interface TrackedJob {
@@ -838,6 +850,14 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   );
   const visibleRef = React.useRef(visibleCases);
   visibleRef.current = visibleCases;
+  // Round 14 (SPEC §4.10.11): each visible row's runbook progress chip, read from the
+  // progress endpoint and kept current by `case.runbook` frames.
+  const visibleCaseIds = React.useMemo(() => visibleCases.map((item) => item.case_id), [visibleCases]);
+  // The chips read on cases:read; their live frames need runbooks:read too (the topic's grant).
+  const runbookProgress = useRunbookProgressMap(visibleCaseIds, {
+    enabled: hasPermission('cases', 'read'),
+    live: hasPermission('runbooks', 'read'),
+  });
   const rowsById = React.useMemo(() => new Map(rows.map((row) => [row.case_id, row])), [rows]);
 
   const position = React.useMemo(() => {
@@ -1305,6 +1325,11 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   const [bulkFormAction, setBulkFormAction] = React.useState<BulkFormAction | null>(null);
   const [bulkFormValue, setBulkFormValue] = React.useState('');
   const [bulkTerminal, setBulkTerminal] = React.useState<BulkTerminalAction | null>(null);
+  // The selection the bulk close dialog covers (it reads their runbook progress).
+  const bulkTerminalIds = React.useMemo(
+    () => (bulkTerminal ? Array.from(selectedIds).sort() : undefined),
+    [bulkTerminal, selectedIds],
+  );
   const [bulkBusy, setBulkBusy] = React.useState(false);
   const [selectingAll, setSelectingAll] = React.useState(false);
   const [bulkOutcome, setBulkOutcome] = React.useState<{ kind: 'success' | 'warning'; message: string } | null>(null);
@@ -2168,6 +2193,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                               density={density}
                               selectionDisabled={bulkBusy}
                               job={rowJob(item.case_id)}
+                              runbookProgress={runbookProgress[item.case_id] ?? null}
                               registerButton={registerButton}
                               onOpen={() => selectCase(item.case_id)}
                               onFocusRow={() => setFocusId(item.case_id)}
@@ -2392,6 +2418,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         <BulkCloseDialog
           action={bulkTerminal}
           count={selectedCount}
+          caseIds={bulkTerminalIds}
           busy={bulkBusy}
           onCancel={() => setBulkTerminal(null)}
           onSubmit={submitBulkTerminal}

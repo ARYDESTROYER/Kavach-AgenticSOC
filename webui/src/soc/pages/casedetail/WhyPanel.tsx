@@ -2,11 +2,16 @@
  * CaseDetail — "Why" panel (Coupling-D split).
  *
  * The explainability tab: the deterministic decision summary, the agent's reasoning
- * excerpt, the knowledge it retrieved (RAG/runbook/playbook), the tools/queries it
- * ran, operator memory applied, enrichment + playbook, and MITRE techniques.
+ * excerpt, the knowledge it retrieved (RAG and runbook passages), the tools/queries it
+ * ran, operator memory applied, enrichment, the runbook that guided the run, and MITRE
+ * techniques.
+ *
+ * Round 14 (SPEC §4.10.9): the Published runbook the investigator received is shown as
+ * "Runbook" with its version, consulted or selected only; a run from before Round 14
+ * keeps its stored procedure id under "Runbook (before Round 14)".
  *
  * SECURITY (#9): every model/agent/log-derived string (reasoning, snippets, tool
- * output, enrichment values, playbook reason) is UNTRUSTED — rendered plain text or
+ * output, enrichment values, selection reasons) is UNTRUSTED: rendered plain text or
  * inside <CodeBlock>. #3: read-only projection; it never decides or mutates the case.
  */
 import * as React from 'react';
@@ -26,6 +31,7 @@ import {
 } from 'lucide-react';
 
 import type { Case, CaseRationale } from '@/lib/types';
+import { guidanceName, rationaleRunbook } from '@/soc/runbooks/run/provenance';
 import { formatTimestamp, humanizeToken } from '@/lib/format';
 import { cn } from '@/lib/cn';
 
@@ -113,9 +119,11 @@ export const WhyPanel: React.FC<{
   const retrievalReason = procedure?.retrieval_reason ?? 'historical_provenance_missing';
   const procedurePersona = procedure?.persona;
   const procedurePlaybook = procedure?.playbook;
+  const guidance = rationaleRunbook(r);
   const hasProcedureTrace = Boolean(
     procedurePersona?.selected_id ||
       procedurePlaybook?.selected_id ||
+      guidance ||
       procedure?.consultation_path ||
       procedure?.retrieval_query_groups?.length,
   );
@@ -233,10 +241,41 @@ export const WhyPanel: React.FC<{
               </div>
             ) : null}
 
-            {procedurePlaybook?.selected_id ? (
+            {guidance ? (
+              <div
+                data-procedure="runbook"
+                className="grid gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start"
+              >
+                <div className="text-xs font-medium text-muted-foreground">
+                  Runbook
+                </div>
+                <div className="min-w-0">
+                  {/* Published runbook title or id: plain text (#9). */}
+                  <div className="break-words text-sm font-semibold text-foreground">
+                    {guidance.consulted ? guidanceName(guidance) : guidance.title || guidance.selectedId}
+                  </div>
+                  {guidance.reason ? (
+                    <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                      {guidance.reason}
+                    </p>
+                  ) : null}
+                </div>
+                <Badge
+                  variant={guidance.consulted ? 'success' : 'outline'}
+                  className="w-fit gap-1"
+                >
+                  {guidance.consulted ? (
+                    <CheckCircle2 className="h-3 w-3" aria-hidden />
+                  ) : (
+                    <CircleDashed className="h-3 w-3" aria-hidden />
+                  )}
+                  {guidance.consulted ? 'Consulted' : 'Selected only'}
+                </Badge>
+              </div>
+            ) : procedurePlaybook?.selected_id ? (
               <div className="grid gap-2 py-3 sm:grid-cols-[8rem_minmax(0,1fr)_auto] sm:items-start">
                 <div className="text-xs font-medium text-muted-foreground">
-                  Playbook
+                  Runbook (before Round 14)
                 </div>
                 <div className="min-w-0">
                   <div className="break-all font-mono text-sm font-semibold text-foreground">
@@ -307,8 +346,8 @@ export const WhyPanel: React.FC<{
           Knowledge references
         </SectionHeading>
         <p className="mb-3 text-xs text-muted-foreground">
-          Reference excerpts retrieved through RAG. Runbooks are identified separately;
-          playbooks are operator procedures shown below.
+          Reference excerpts retrieved through RAG. Runbook passages are identified
+          separately; the runbook whose guidance the run received is shown above.
         </p>
         {knowledge.length === 0 ? (
           <EmptyState
@@ -521,8 +560,8 @@ export const WhyPanel: React.FC<{
         </PanelCard>
       ) : null}
 
-      {/* ------------------------------- enrichment + playbook */}
-      {hasEnr || (playbook && playbook.id && playbook.consulted === true) ? (
+      {/* ------------------------------- enrichment + a run from before Round 14 */}
+      {hasEnr || (!guidance && playbook && playbook.id && playbook.consulted === true) ? (
         <div className="grid gap-6 lg:grid-cols-2">
           {hasEnr && enr ? (
             <PanelCard>
@@ -561,10 +600,10 @@ export const WhyPanel: React.FC<{
               </div>
             </PanelCard>
           ) : null}
-          {playbook && playbook.id && playbook.consulted === true ? (
+          {!guidance && playbook && playbook.id && playbook.consulted === true ? (
             <PanelCard>
               <SectionHeading icon={BookOpen}>
-                Playbook consulted
+                Runbook consulted (before Round 14)
               </SectionHeading>
               <Badge variant="info" className="font-mono">
                 {playbook.id}{playbook.version ? ` · v${playbook.version}` : ''}
