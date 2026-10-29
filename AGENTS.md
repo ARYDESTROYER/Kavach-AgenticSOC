@@ -236,10 +236,16 @@ backend/app/
                      {source.id}:{feed.id} cursor + legacy-"primary"-collision guard +
                      per-signature in-flight lock so concurrent sources never dup a
                      case #4; single/zero-source path byte-identical) ·
-                     ingest (push/queue → OCSF) · runbooks
-                     (strict Markdown parser/chunker) · runbook_service
-                     (protected bundled + CAS-backed operator catalog; RAG projection
-                     only, never executable/decision authority) · chunking · case_id (customizable
+                     ingest (push/queue → OCSF) · Round 14 runbooks (one feature;
+                     the retired playbook engine and reference runbooks are gone):
+                     runbook_model (pure: phases/steps, validation, native
+                     Markdown, investigator rendering) · runbook_match (pure,
+                     deterministic Applies when selection) · runbook_lookup (pure
+                     lookup validation + structured binding) · runbook_catalog
+                     (library views + governance transitions) · runbook_runs
+                     (per-case runs, steps, read-only lookups, AI help; never
+                     changes the case, #3) · runbook_migration (one-shot startup
+                     conversion of stored legacy procedures) · chunking · case_id (customizable
                      case-XXXX nomenclature; KV sequence + template) ·
                      time_windows (Round 12: the ONE window grammar — all time,
                      now-N[d|w|M|y], calendar tokens, ISO ranges — resolved in
@@ -351,10 +357,8 @@ backend/app/
                      (app_docs/aliases/console_map/manifest .json — regenerate with
                      `npm run gen:console-map` then scripts/build_app_knowledge.py) +
                      manifest-verified fail-closed loader, BM25F index, $0 answer
-  runbooks/          protected bundled Markdown runbooks (RAG knowledge corpus;
-                     operator-authored documents are durable StateStore records)
-  playbooks/         Markdown PLAYBOOK engine: manifest · loader · registry
-                     (deterministic per-cluster selection + atomic hot-reload)
+  runbooks/library/  the 12 built-in runbooks (package data, read-only, versioned by
+                     the release; operator runbooks live in the runbook_library store)
   auth/              passwords (PBKDF2) · tokens (stdlib HS256 JWT) · service
                      (multi-user + 6-role RBAC + permission matrix + require_permission) ·
                      mfa (stdlib RFC-6238 TOTP + recovery codes) · oidc (Google/
@@ -424,10 +428,11 @@ backend/app/
                      scoped chat reports: one strict-CAS KV doc per report + a per-user
                      index, opaque report_-prefixed fields; no new index/table) ·
                      proposals ·
-                     runbooks (strict-CAS operator Markdown catalog layered over
-                     protected bundled runbooks; no new index/table) · playbooks
-                     (strict-CAS durable operator procedure catalog layered over
-                     immutable bundled playbooks; no new index/table) ·
+                     runbook_library (Round 14: every operator runbook version +
+                     the migration marker; KV only, no new index/table) ·
+                     runbook_runs (per-case runs + the monthly run ledger; KV only)
+                     · legacy_procedures (read-only decoder of the two retired
+                     procedure namespaces for the migration and legacy export) ·
                      8 Round-3 KV stores (same zero-migration pattern, no new index/
                      table): case_thread · case_activity · case_tasks (per-case
                      collaboration #4) · inbox (per-user fan-out, ~200/user ring) ·
@@ -555,8 +560,6 @@ backend/app/
                      mounted in main.py · deps (require_auth + require_permission +
                      require_fresh_auth + custom-role union enforcement + session check) ·
                      state.py (DI hub; exposes enrichment_registry + event_bus) · main.py
-backend/playbooks/   immutable bundled *.md PLAYBOOKS (+ README) — data, not code;
-                     durable operator-authored procedures live in the StateStore catalog
 backend/tests/       offline tests (fake ES + mock LLM; SQL store on SQLite) — green
 webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/Radix SPA
   package.json       Node 22; Tailwind + Radix primitives; `npm run build` bundles the

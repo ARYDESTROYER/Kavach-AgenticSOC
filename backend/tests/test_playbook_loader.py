@@ -1,15 +1,29 @@
-"""Offline tests for the Markdown playbook LOADER (parse + directory load).
+"""Offline tests for the runbook LOADERS that replaced the playbook loader.
 
-No network, no ES, no LLM — pure parsing of in-memory / tmp-dir Markdown text.
+Round 14 (SPEC §4.10.14, §4.10.16) retired the Markdown playbook loader. Two loaders
+remain, and this file pins both:
+
+* the bundled library loader (``runbook_model.load_builtin_library``), which reads the
+  built-in runbooks from package data, keeps the valid ones and refuses (never loads)
+  a broken one, and
+* the legacy front-matter reader (``runbook_model.parse_frontmatter``), which the
+  one-shot migration uses to read a stored playbook document in the old format.
+
+No network, no ES, no LLM: pure parsing of in-memory and tmp-dir Markdown text.
 """
 
 from __future__ import annotations
 
-from app.playbooks import Playbook, load_playbooks, parse_playbook
-from app.playbooks.manifest import PlaybookManifest
+from pathlib import Path
+
+from app.engine.runbook_model import (
+    RUNBOOK_LIBRARY_DIR,
+    load_builtin_library,
+    parse_frontmatter,
+)
 
 
-def _valid_text(id_: str = "mail_bruteforce") -> str:
+def _legacy_playbook_text(id_: str = "mail_bruteforce") -> str:
     return (
         "---\n"
         f"id: {id_}\n"
@@ -32,79 +46,66 @@ def _valid_text(id_: str = "mail_bruteforce") -> str:
     )
 
 
-def test_valid_frontmatter_parses() -> None:
-    pb = parse_playbook(_valid_text(), fallback_id="x")
-    assert pb is not None
-    assert pb.id == "mail_bruteforce"
-    assert pb.name == "Mail credential brute force"
-    assert pb.version == 2
-    assert pb.manifest.priority == 50
-    assert pb.manifest.match.rule_ids == ["mail_auth", "waf_auth"]
-    assert pb.manifest.match.entity_types == ["ip", "user"]
-    assert pb.manifest.match.min_event_count == 3
-    assert pb.manifest.suggested_tools == ["es_query", "enrich"]
-    assert pb.manifest.rag_queries == ["mail brute force playbook"]
-    assert pb.manifest.escalate_if == "a single attempt succeeded"
-    assert pb.manifest.suggested_verdict_bias == "lean TRUE_POSITIVE on success"
-    assert pb.body.startswith("## Procedure")
-
-
-def test_unknown_keys_ignored_and_loaded() -> None:
-    text = (
+def _builtin_text(id_: str) -> str:
+    return (
         "---\n"
-        "id: with_extras\n"
-        "name: Has extras\n"
-        "wat: this key is unknown\n"
-        "another_unknown: 42\n"
-        "match:\n"
-        "  rule_ids: [postfix]\n"
+        f"id: {id_}\n"
+        "title: Test runbook\n"
+        "summary: A short test runbook.\n"
+        "version: 3\n"
+        "applies_when:\n"
+        "  rule_ids: [mail_auth]\n"
         "---\n"
-        "Body.\n"
+        "\n"
+        "## Triage\n"
+        "\n"
+        "### Is the source internal? {#source-scope kind=check}\n"
+        "Focus: the source address and the account.\n"
     )
-    pb = parse_playbook(text, fallback_id="x")
-    assert pb is not None
-    assert pb.id == "with_extras"
-    assert pb.manifest.match.rule_ids == ["postfix"]
-    # The unknown keys did not leak onto the manifest.
-    assert not hasattr(pb.manifest, "wat")
 
 
-def test_missing_id_is_skipped() -> None:
-    text = "---\nname: No id here\n---\nBody.\n"
-    assert parse_playbook(text, fallback_id="x") is None
+def test_legacy_playbook_front_matter_is_still_read() -> None:
+    meta, body = parse_frontmatter(_legacy_playbook_text())
+    assert meta["id"] == "mail_bruteforce"
+    assert meta["name"] == "Mail credential brute force"
+    assert meta["priority"] == "50"
+    assert meta["match"]["rule_ids"] == ("mail_auth", "waf_auth")
+    assert meta["match"]["entity_types"] == ("ip", "user")
+    assert meta["rag_queries"] == ("mail brute force playbook",)
+    assert meta["escalate_if"] == "a single attempt succeeded"
+    assert body.startswith("## Procedure")
 
 
-def test_bad_id_slug_is_skipped() -> None:
-    # Uppercase + spaces violate the slug rule.
-    text = "---\nid: Not A Slug!\nname: bad\n---\nBody.\n"
-    assert parse_playbook(text, fallback_id="x") is None
+def test_text_without_front_matter_reads_as_body_only() -> None:
+    meta, body = parse_frontmatter("Just a plain body, no front matter.\n")
+    assert meta == {}
+    assert body.startswith("Just a plain body")
+    assert parse_frontmatter("") == ({}, "")
 
 
-def test_not_a_dict_frontmatter_is_skipped() -> None:
-    # No front-matter fences at all → parser returns an empty meta dict → no id.
-    assert parse_playbook("Just a plain body, no front matter.\n", fallback_id="x") is None
+def test_library_loader_keeps_good_and_refuses_broken(tmp_path: Path) -> None:
+    (tmp_path / "good-one.md").write_text(_builtin_text("good-one"), encoding="utf-8")
+    # Broken: no version, which a built-in must carry.
+    (tmp_path / "no-version.md").write_text(
+        _builtin_text("no-version").replace("version: 3\n", ""), encoding="utf-8"
+    )
+    # Broken: the id does not match the file name.
+    (tmp_path / "wrong-name.md").write_text(_builtin_text("other-name"), encoding="utf-8")
+    # Not a runbook: skipped, never refused.
+    (tmp_path / "README.md").write_text("# Library\n", encoding="utf-8")
+
+    loaded, refused = load_builtin_library(tmp_path)
+    assert [b.id for b in loaded] == ["good-one"]
+    assert loaded[0].version == 3 and loaded[0].file_name == "good-one.md"
+    assert set(refused) == {"no-version.md", "wrong-name.md"}
+    assert all(issues for issues in refused.values())
 
 
-def test_empty_text_does_not_raise() -> None:
-    assert parse_playbook("", fallback_id="x") is None
+def test_library_loader_missing_dir_returns_empty(tmp_path: Path) -> None:
+    assert load_builtin_library(tmp_path / "does_not_exist") == ((), {})
 
 
-def test_load_playbooks_skips_broken_keeps_good(tmp_path) -> None:
-    (tmp_path / "good.md").write_text(_valid_text("good_one"), encoding="utf-8")
-    # Broken: missing id.
-    (tmp_path / "broken.md").write_text("---\nname: broken\n---\nBody.\n", encoding="utf-8")
-
-    pbs = load_playbooks(tmp_path)
-    assert [pb.id for pb in pbs] == ["good_one"]
-    assert all(isinstance(pb, Playbook) for pb in pbs)
-    assert pbs[0].source_path.endswith("good.md")
-
-
-def test_load_playbooks_missing_dir_returns_empty(tmp_path) -> None:
-    assert load_playbooks(tmp_path / "does_not_exist") == []
-
-
-def test_construct_playbook_directly() -> None:
-    # Tests/orchestrator may build Playbook objects without files.
-    pb = Playbook(manifest=PlaybookManifest(id="direct", name="Direct"), body="b")
-    assert pb.id == "direct" and pb.version == 1 and pb.name == "Direct"
+def test_the_shipped_library_loads_whole() -> None:
+    loaded, refused = load_builtin_library(RUNBOOK_LIBRARY_DIR)
+    assert refused == {}
+    assert len(loaded) == 12

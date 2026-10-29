@@ -132,9 +132,16 @@ async def test_list_kinds_need_their_grant() -> None:
     assert_artifacts_render(out)
 
 
-async def test_list_playbooks_from_bundled_catalogue() -> None:
+async def test_list_playbooks_is_an_alias_of_the_runbook_library() -> None:
+    """Round 14 (SPEC §4.10.18): the retired procedures are runbooks now, so asking
+    for playbooks lists the runbook library and says so."""
     out = await SearchKnowledgeTool().run(make_ctx(), kind="list_playbooks")
     assert out.ok and out.observation["total"] >= 1
+    assert "playbooks" not in out.observation
+    assert out.observation["runbooks"][0]["state"] == "Published"
+    assert out.observation["alias"] == "Playbooks are runbooks now; this is the runbook library."
+    runbooks = await SearchKnowledgeTool().run(make_ctx(), kind="list_runbooks")
+    assert runbooks.observation["runbooks"] == out.observation["runbooks"]
     assert_artifacts_render(out)
 
 

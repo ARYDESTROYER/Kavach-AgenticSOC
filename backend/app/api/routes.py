@@ -7563,6 +7563,28 @@ async def case_export(
     raise HTTPException(status_code=400, detail=f"unsupported format: {format}")
 
 
+def _case_runbook_label(case) -> str:
+    """The runbook line of the case Markdown report (Round 14 SPEC §4.10.18): the
+    Published runbook whose guidance the investigator received and its version
+    (``Case.runbook_id``), else the procedure id an earlier investigation recorded
+    (``Case.playbook_id``, kept readable and never rewritten), shown with the built-in
+    runbook that replaced it when it was a retired bundled procedure
+    (``LEGACY_BUNDLED_RUNBOOK_MAP``, §4.10.16), else "none"."""
+    from ..engine.runbook_model import resolve_legacy_runbook_id
+
+    runbook_id = str(getattr(case, "runbook_id", None) or "").strip()
+    if runbook_id:
+        version = getattr(case, "runbook_version", None)
+        return f"{runbook_id} v{version}" if isinstance(version, int) and version > 0 else runbook_id
+    legacy = str(getattr(case, "playbook_id", "") or "").strip()
+    if not legacy:
+        return "none"
+    successor = resolve_legacy_runbook_id(legacy)
+    if successor:
+        return f"{successor} (recorded as {legacy}, an earlier procedure)"
+    return f"{legacy} (an earlier procedure)"
+
+
 def _case_markdown(case) -> str:
     """A human-readable Markdown incident report from a case (pure serialisation)."""
     lines = [
@@ -7574,7 +7596,7 @@ def _case_markdown(case) -> str:
         f"(confidence {round(case.confidence, 2)})",
         f"- **Status:** {case.status.value} · decided by {case.decision_by.value if case.decision_by else '—'}",
         f"- **Risk score:** {round(case.risk_score, 1)}",
-        f"- **Persona:** {case.agent_persona or 'generalist'} · **Playbook:** {case.playbook_id or '—'}",
+        f"- **Persona:** {case.agent_persona or 'generalist'} · **Runbook:** {_case_runbook_label(case)}",
         f"- **Rules:** {', '.join(case.rule_ids) or '—'}",
         f"- **MITRE:** {', '.join(case.mitre) or '—'}",
         f"- **Assignee:** {case.assignee or '—'} · **Tags:** {', '.join(case.tags) or '—'}",

@@ -364,3 +364,67 @@ class _RaisingProvider(BaseProvider):
         from app.llm.providers import EmbeddingResult
 
         return EmbeddingResult(vectors=[[0.0] for _ in texts], tokens=0)
+
+
+# --------------------------------------------------------------------------- #
+# Round 14 (SPEC §4.10.4, §4.10.9): runbooks in the agent path
+# --------------------------------------------------------------------------- #
+def _message_text(call: dict) -> str:
+    return "\n".join(str(m.get("content") or "") for m in call["messages"])
+
+
+async def test_router_never_sees_the_runbook_and_the_investigator_does(
+    app_state: AppState, mock_provider
+):
+    from app.agents.prompts import RUNBOOK_CLOSE, RUNBOOK_OPEN
+
+    mock_provider.calls.clear()
+    mock_provider.push("router", json.dumps({"bucket": "needs_strong_model", "confidence": 0.9, "reason": "serious"}))
+    mock_provider.push("investigator", _final_verdict("NEEDS_HUMAN", 0.3))
+
+    case = await app_state.pipeline.investigate_cluster(_cluster(), SourceSurface.INVESTIGATE, app_state.prefs)
+
+    router = [c for c in mock_provider.calls if c["role"] == "router"]
+    investigator = [c for c in mock_provider.calls if c["role"] == "investigator"]
+    assert router and investigator
+    # The cheap router routes; it is never handed the operator's procedure.
+    assert all(RUNBOOK_OPEN not in _message_text(c) for c in router)
+    # The investigator's case message carries exactly one runbook block, the winning
+    # built-in (its system prompt names the marker only to rank it).
+    user = "\n".join(
+        str(m.get("content") or "") for m in investigator[0]["messages"] if m.get("role") == "user"
+    )
+    assert user.count(RUNBOOK_OPEN) == 1 and user.count(RUNBOOK_CLOSE) == 1
+    assert case.runbook_id == "brute-force-password-spray" and case.runbook_version == 1
+
+
+async def test_the_retired_playbook_registry_is_ignored(app_state: AppState, mock_provider):
+    from app.agents.pipeline import InvestigationPipeline
+
+    class _RetiredRegistry:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"the retired playbook registry was read: {name}")
+
+    real = app_state._real_pipeline
+    pipeline = InvestigationPipeline(
+        real._es, real._secrets, real._cache, real._gateway, real._rag, real._cases,
+        real._audit.inner, playbooks=_RetiredRegistry(),
+    )
+    mock_provider.push("router", json.dumps({"bucket": "needs_strong_model", "confidence": 0.9, "reason": "serious"}))
+    mock_provider.push("investigator", _final_verdict("NEEDS_HUMAN", 0.3))
+
+    case = await pipeline.investigate_cluster(_cluster(ip="5.6.7.8"), SourceSurface.INVESTIGATE, app_state.prefs)
+
+    # No catalog provider: the bundled library alone guides the investigator.
+    assert case.runbook_id == "brute-force-password-spray"
+    assert not case.playbook_id
+
+
+def test_a_caller_can_no_longer_force_a_procedure() -> None:
+    import inspect
+
+    from app.agents.pipeline import InvestigationPipeline
+
+    # The guidance is the matcher's winner only; no caller can substitute another.
+    params = inspect.signature(InvestigationPipeline.investigate_cluster).parameters
+    assert "force_playbook_id" not in params and "force_runbook_id" not in params

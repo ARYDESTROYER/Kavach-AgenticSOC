@@ -44,10 +44,13 @@ def test_catalogue_has_every_data_tool_in_spec_order() -> None:
 def test_catalogue_grant_pairs_cover_tools_kinds_and_optional_grants() -> None:
     pairs = catalogue_grant_pairs()
     for pair in [("sources", "read"), ("cases", "read"), ("metrics", "view"), ("enrichment", "read"),
-                 ("rag", "read"), ("runbooks", "read"), ("playbooks", "read"), ("cost", "view"),
+                 ("rag", "read"), ("runbooks", "read"), ("cost", "view"),
                  ("audit", "view"), ("automation", "read"), ("settings", "read"), ("proposals", "read"),
                  ("rules", "read"), ("models", "read"), ("memory", "read")]:
         assert pair in pairs
+    # Round 14: the playbook listing is an alias of the runbook library, gated by
+    # runbooks:read; no chat tool needs the retired playbooks grant any more.
+    assert ("playbooks", "read") not in pairs
 
 
 def test_build_toolbox_lists_only_granted_tools_and_signatures() -> None:

@@ -1453,12 +1453,20 @@ class JobRunner:
         )
 
     async def _runbook_reindex(self, job: Job, token: str) -> None:
+        """Reproject Published runbooks into the retrieval index (Round 14 SPEC
+        §4.10.18). Without ``runbook_id`` it is the full projection: every Published
+        version written, every other runbook document (the legacy ``runbook:<id>`` and
+        ``seed:runbook`` ones included) removed. A full projection that finishes also
+        completes the runbook migration's pending step 7, so the next start does not
+        embed the library again."""
         await self.checkpoint(job.job_id, token)
         await self.store.begin_item(job.job_id, token, "reindex")
         runbook_id = job.params.get("runbook_id")
         result = await self.state.rag.reindex_runbooks(
             {str(runbook_id)} if runbook_id else None
         )
+        if not runbook_id and result.get("ok") and not result.get("disabled"):
+            await self._complete_runbook_projection()
         current = await self.store.complete_item(job.job_id, token, "reindex")
         counts = {
             "indexed": int(result.get("indexed", 0) or 0),
@@ -1475,6 +1483,24 @@ class JobRunner:
             status,
             result=JobResult(kind="runbook_reindex", counts=counts),
         )
+
+    async def _complete_runbook_projection(self) -> None:
+        """Record ``projection_completed_at`` on a migration marker whose projection is
+        still pending, after a full runbook projection has just finished. Best effort:
+        a marker that cannot be read or written leaves the projection pending, and the
+        next start runs it again."""
+        library = getattr(self.state, "runbook_library", None)
+        if library is None:
+            return
+        from .runbook_migration import resume_runbook_projection
+
+        async def _just_projected(_generation: str) -> bool:
+            return True
+
+        try:
+            await resume_runbook_projection(library=library, projector=_just_projected)
+        except Exception as exc:  # noqa: BLE001 - the next start resumes it
+            logger.info("Runbook projection marker not updated: %s", exc)
 
     async def _rag_rebuild(self, job: Job, token: str) -> None:
         """Rebuild the whole knowledge projection — the documented recovery action.

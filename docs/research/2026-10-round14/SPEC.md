@@ -3505,6 +3505,38 @@ timings), known limitations and the verification record.
   remains of the 1,024 B; going over is a finding for the orchestrator, never a second
   rebase. The Round 12 SPEC §7.3 "Entry bundle" item points
   here, and `backend/tests/test_docs_round12_records.py` reads this item.
+- **Retired procedure stores (A8c, §4.10.6, §4.10.16).** `backend/app/stores/runbooks.py`,
+  the write-capable store of the retired reference runbooks, is deleted together with
+  `stores/playbooks.py`: after the removals its only users were the deleted
+  `engine/runbook_service.py` and one legacy test. Both retired namespaces are read only
+  through `stores/legacy_procedures.py`, which has no write method, so nothing in Round 14
+  can change a legacy document and a rollback finds them as they were.
+- **A stored `playbooks` grant key (A8c, §3.7 step 3).** `playbooks` left `RESOURCES` and
+  the default matrix. A `playbooks` key that a pre-Round 14 load stored beside `runbooks` in
+  an RBAC override, a custom role or a deny layer is kept verbatim, not dropped: it grants
+  nothing (no resolver reads a resource the server does not list, and a present `runbooks`
+  entry is authoritative), and a rollback to the previous release reads the grant it stored.
+  Dropping it on write (the A7a hand-off) was weighed and declined for rollback fidelity. A
+  request that still names the alias (`playbooks:read`, `run` or `manage`) is resolved by
+  `policy.resolve_runbook_alias`; `GET /api/roles/simulate` answers it for its `runbooks`
+  meaning and says so in `alias_of: "runbooks"` (`null` for a current resource).
+- **Run id on run engine rows (A8c, §4.5.3).** `run_id` stays the investigation
+  pipeline's: only rows the pipeline writes through its run-stamped audit carry it. The run
+  engine's `run.attached` row after an investigation (actor `runbook_selector`, actor type
+  `system`, action type `runbook`) and its lookup rows carry none, so an investigation's
+  Agent activity group holds exactly the pipeline's steps (`runbook.selected` is a pipeline
+  row and groups with its run), and the attachment row reads in People and settings like
+  every other run engine row. Stamping it with the investigation's run id was weighed and
+  declined: the run engine writes that row through the active stack's audit for every
+  trigger (an investigation, a status move, a tag change, a reopen, an escalation, Demo
+  seeding), and only the first of them has an investigation run. Pinned by
+  `test_audit_record_fields.py::test_each_investigation_stamps_one_run_id_and_the_actor_kind`.
+- **Distribution build (A8c, §8).** `backend/tests/test_distribution_contract.py` builds
+  the wheel and the sdist from a pristine copy of the backend sources, never in place: an
+  in-tree build packages whatever a stale `backend/build/lib` holds (one put 17 retired files
+  back into the wheel). The wheel (this test) and the image (the CI image lane) carry the 12
+  files of `backend/app/runbooks/library/` and none of the removed playbook and runbook
+  modules.
 
 ### 11.2 Per package
 

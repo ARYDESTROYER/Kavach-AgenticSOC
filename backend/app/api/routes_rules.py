@@ -18,6 +18,9 @@ engine):
     case ``status``/``disposition``/``verdict``, or recomputes a ``cluster_signature``.
     A case-automation rule is HITL-safe by construction (it can only tag/recommend/
     notify/run_playbook/request_approval — the engine enforces it never sets status).
+    Since Round 14 ``run_playbook`` keeps its stored name and ATTACHES a runbook to the
+    case (the Rule editor shows it as "Attach a runbook"); the target is resolved at
+    fire time and a run never changes the verdict, the status or ``decide()``.
   * **#6 — the PREVIEW never bills the LLM.** It reads recent events through the scoped
     read-only key (hard-capped, exactly the ``GET /api/logs`` scatter-gather path),
     evaluates the pure ``RuleMatch.matches()`` predicate in-process, and returns match
@@ -464,7 +467,9 @@ async def upsert_case_automation_rule(
 
     HITL-SAFE by construction (#3): a case-automation rule can only
     ``tag``/``recommend``/``notify``/``run_playbook``/``request_approval`` — the engine
-    enforces it NEVER sets a case ``status``/``disposition``. Bug #6: a
+    enforces it NEVER sets a case ``status``/``disposition``. ``run_playbook`` attaches
+    the runbook named by ``payload.runbook_id`` (or a legacy ``payload.playbook_id``,
+    resolved at fire time; Round 14). Bug #6: a
     ``conditions.verdict`` that is not a real :class:`Verdict` is REJECTED here (400).
     Config-writer only. Audited + versioned (#2)."""
     rid = (rule_id or "").strip()

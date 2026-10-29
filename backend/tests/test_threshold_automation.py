@@ -1,8 +1,8 @@
 """Wave 6 / F10 — threshold automation (post-decision, #3-safe).
 
 Offline tests (fake ES + mock LLM). They assert the central #3 boundary: automation
-runs AFTER decide()+apply()+save and may ONLY tag / recommend / notify / queue a
-re-investigation (which itself re-runs decide()) / open a HITL Proposal. It can
+runs AFTER decide()+apply()+save and may ONLY tag / recommend / notify / attach a
+runbook (Round 14; a run is human workflow, never a decision) / open a HITL Proposal. It can
 NEVER set case.status/disposition, never auto-close, and decide() stays the ONLY
 producer of CLOSED.
 """
@@ -637,29 +637,375 @@ class _ApproveRequest:
 
 
 # --------------------------------------------------------------------------- #
-# run_playbook → QUEUES a re-investigation that re-runs decide() (not bypassed)
+# run_playbook → ATTACHES a runbook (Round 14 SPEC §4.10.16, §4.10.18). Before
+# Round 14 it queued a forced re-investigation; the stored action keeps its name.
 # --------------------------------------------------------------------------- #
+class _Attacher:
+    """Records every ``attach(case, runbook_id, rule_id)`` call."""
+
+    def __init__(self, result: object = "run") -> None:
+        self.calls: list[tuple[str, str | None, str]] = []
+        self.result = result
+
+    async def __call__(self, case, runbook_id, rule_id):
+        self.calls.append((case.case_id, runbook_id, rule_id))
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
 @pytest.mark.asyncio
-async def test_run_playbook_queues_reinvestigation_calling_decide_again(app_state: AppState) -> None:
+@pytest.mark.parametrize(("payload", "migrated", "expected"), [
+    # What the Rule editor's "Attach a runbook" writes.
+    ({"runbook_id": "phishing-suspicious-email"}, {}, "phishing-suspicious-email"),
+    # runbook_id wins over a legacy playbook_id.
+    ({"runbook_id": "malware-endpoint", "playbook_id": "brute_force_login"}, {}, "malware-endpoint"),
+    # A retired bundled procedure id the map does not hold (the migration map leaves
+    # out a stored copy the bundled procedure shadowed): the merged built-in.
+    ({"playbook_id": "brute_force_login"}, {"acme-login": "acme-login-2"}, "brute-force-password-spray"),
+    # The map holds a retired bundled id only when a configured folder's file held it,
+    # and that file is what the rule ran: its migrated runbook.
+    ({"playbook_id": "brute_force_login"}, {"brute_force_login": "brute_force_login-imported"},
+     "brute_force_login-imported"),
+    # An operator procedure through the migration's id map.
+    ({"playbook_id": "acme-login"}, {"acme-login": "acme-login-2"}, "acme-login-2"),
+    # A retired reference runbook id before (or without) the migration.
+    ({"playbook_id": "malware"}, {}, "malware-endpoint"),
+    # An id that resolves to nothing still reaches the attacher, so its skip row (and
+    # the case's record) names the id that failed.
+    ({"playbook_id": "custom_pb"}, {}, "custom_pb"),
+    # Names nothing: the attacher still runs so it records the skip.
+    ({}, {}, None),
+])
+async def test_run_playbook_attaches_the_runbook_resolved_at_fire_time(
+    app_state: AppState, payload: dict, migrated: dict, expected: str | None,
+) -> None:
     case = _case(case_id="cp")
     await app_state.cases.save(case)
-    queued: list[tuple[str, str]] = []
+    attach = _Attacher()
 
-    async def _queue(c, playbook_id):
-        # Simulate the re-investigation path: it calls decide() AGAIN with the case's
-        # (possibly new) verdict/risk and the operator policy — automation never sets
-        # status itself; only a fresh decide() can.
-        queued.append((c.case_id, playbook_id))
-        d = decide(c.verdict, c.confidence, c.risk_score, app_state.prefs.auto_close)
-        assert d is not None  # decide() is the producer of any status change
+    async def _migrated():
+        return migrated
 
     automation = ThresholdAutomation(
-        app_state.proposals, app_state.audit, queue_playbook_run=_queue
+        app_state.proposals, app_state.audit, attach_runbook=attach, migrated_procedures=_migrated,
     )
-    rules = [_rule("pb", "run_playbook", payload={"playbook_id": "mail_bruteforce"})]
+    rules = [_rule("pb", "run_playbook", payload=payload)]
     await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
-    assert queued == [("cp", "mail_bruteforce")]
-    assert case.status == CaseStatus.NEEDS_HUMAN  # automation never moved status
+    assert attach.calls == [("cp", expected, "pb")]
+    # The stored rule is never rewritten (load order against the migration).
+    assert rules[0].payload == payload
+    assert case.status == CaseStatus.NEEDS_HUMAN  # an attach never moves status (#3)
+    assert case.disposition is None
+    detail = case.automation_actions[-1]["detail"]
+    assert detail == f"attach_runbook={expected or '(none)'} attached=True"
+
+
+@pytest.mark.asyncio
+async def test_run_playbook_without_an_attacher_attaches_nothing(app_state: AppState) -> None:
+    case = _case(case_id="cpn")
+    await app_state.cases.save(case)
+    automation = ThresholdAutomation(app_state.proposals, app_state.audit)
+    rules = [_rule("pb", "run_playbook", payload={"playbook_id": "brute_force_login"})]
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+    assert case.automation_actions[-1]["detail"] == (
+        "attach_runbook=brute-force-password-spray attached=False"
+    )
+    assert case.status == CaseStatus.NEEDS_HUMAN
+
+
+@pytest.mark.asyncio
+async def test_run_playbook_failures_never_break_the_case_path(app_state: AppState) -> None:
+    """A failing attacher and an unreadable id map: the rule still records its action,
+    resolves through the retired bundled ids, and the case path carries on."""
+    case = _case(case_id="cpf")
+    await app_state.cases.save(case)
+    attach = _Attacher(result=RuntimeError("store down"))
+
+    async def _broken_map():
+        raise RuntimeError("marker unreadable")
+
+    automation = ThresholdAutomation(
+        app_state.proposals, app_state.audit, attach_runbook=attach, migrated_procedures=_broken_map,
+    )
+    rules = [
+        _rule("pb", "run_playbook", payload={"playbook_id": "ransomware_response"}, priority=1),
+        _rule("t", "tag", payload={"tag": "after"}, priority=2),
+    ]
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+    assert attach.calls == [("cpf", "ransomware-destructive", "pb")]
+    assert case.automation_actions[0]["detail"] == "attach_runbook=ransomware-destructive attached=False"
+    assert "after" in case.tags  # the next rule still ran
+    assert case.status == CaseStatus.NEEDS_HUMAN
+
+
+@pytest.mark.asyncio
+async def test_run_playbook_reports_not_attached_when_the_attacher_skips(app_state: AppState) -> None:
+    case = _case(case_id="cps")
+    await app_state.cases.save(case)
+    attach = _Attacher(result=None)  # skipped (with its own audit row) or already there
+    automation = ThresholdAutomation(app_state.proposals, app_state.audit, attach_runbook=attach)
+    rules = [_rule("pb", "run_playbook", payload={"runbook_id": "data-exfiltration"})]
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+    assert case.automation_actions[-1]["detail"] == "attach_runbook=data-exfiltration attached=False"
+
+
+async def _runs(state: AppState, case_id: str) -> list:
+    return list((await state.runbook_runs.get(case_id)).runs)
+
+
+@pytest.mark.asyncio
+async def test_a_run_playbook_rule_attaches_a_runbook_on_the_real_stack(app_state: AppState) -> None:
+    """The bound automation attaches through ``runbook_runs.attach_by_automation``:
+    a ``run.attached`` row with actor ``threshold_automation``, the run marked as
+    attached by a rule, and the case status untouched (#3)."""
+    from app.engine.threshold_automation import bind_runbook_automation
+
+    case = _case(case_id="real-attach")
+    await app_state.cases.save(case)
+    attach, migrated = bind_runbook_automation(app_state)
+    automation = ThresholdAutomation(
+        app_state.proposals, app_state.audit, attach_runbook=attach, migrated_procedures=migrated,
+    )
+    rules = [_rule("pb", "run_playbook", payload={"playbook_id": "brute_force_login"})]
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+
+    runs = await _runs(app_state, "real-attach")
+    assert [r.runbook_id for r in runs] == ["brute-force-password-spray"]
+    assert runs[0].attached_by == "rule"
+    assert runs[0].attached_reason.get("automation_rule") == "pb"
+    assert case.automation_actions[-1]["detail"] == (
+        "attach_runbook=brute-force-password-spray attached=True"
+    )
+    assert case.status == CaseStatus.NEEDS_HUMAN
+    rows = await app_state.audit.records_for_actor("threshold_automation", limit=20)
+    assert "run.attached" in {r.get("action") for r in rows}
+
+    # Idempotent per case and runbook (#4): a second firing attaches nothing new.
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+    assert len(await _runs(app_state, "real-attach")) == 1
+    assert case.automation_actions[-1]["detail"].endswith("attached=False")
+
+
+@pytest.mark.asyncio
+async def test_a_rule_naming_an_unknown_runbook_is_skipped_with_a_reason(app_state: AppState) -> None:
+    from app.engine.threshold_automation import bind_runbook_automation
+
+    case = _case(case_id="real-skip")
+    await app_state.cases.save(case)
+    attach, migrated = bind_runbook_automation(app_state)
+    automation = ThresholdAutomation(
+        app_state.proposals, app_state.audit, attach_runbook=attach, migrated_procedures=migrated,
+    )
+    rules = [_rule("pb", "run_playbook", payload={"runbook_id": "no-such-runbook"})]
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+    assert await _runs(app_state, "real-skip") == []
+    rows = await app_state.audit.records_for_actor("threshold_automation", limit=20)
+    skipped = [r for r in rows if r.get("action") == "run.attach_skipped"]
+    assert skipped and "does not exist" in skipped[0].get("result_summary", "")
+    assert case.status == CaseStatus.NEEDS_HUMAN
+
+
+@pytest.mark.asyncio
+async def test_a_rule_naming_an_unmigrated_procedure_records_the_id_it_skipped(app_state: AppState) -> None:
+    """SPEC §4.10.16 "Needs a runbook": a stored ``playbook_id`` that resolves to
+    nothing is skipped as a runbook that does not exist, and the skip row and the
+    case's record name that id, so the audit says which legacy id failed (#2)."""
+    from app.engine.threshold_automation import bind_runbook_automation
+
+    case = _case(case_id="real-unmigrated")
+    await app_state.cases.save(case)
+    attach, migrated = bind_runbook_automation(app_state)
+    automation = ThresholdAutomation(
+        app_state.proposals, app_state.audit, attach_runbook=attach, migrated_procedures=migrated,
+    )
+    rules = [_rule("pb", "run_playbook", payload={"playbook_id": "custom_pb"})]
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+    assert await _runs(app_state, "real-unmigrated") == []
+    rows = await app_state.audit.records_for_actor("threshold_automation", limit=20)
+    skipped = [r for r in rows if r.get("action") == "run.attach_skipped"]
+    assert len(skipped) == 1
+    assert skipped[0]["tool_input"]["runbook_id"] == "custom_pb"
+    assert "does not exist" in skipped[0]["result_summary"]
+    assert case.automation_actions[-1]["detail"] == "attach_runbook=custom_pb attached=False"
+
+
+@pytest.mark.asyncio
+async def test_a_folder_procedure_with_a_bundled_id_attaches_its_migrated_runbook(app_state: AppState) -> None:
+    """SPEC §4.10.16: ``payload.playbook_id`` resolves through the migration's id map.
+    A configured folder's file that held a retired bundled id was the live procedure a
+    rule naming that id ran, so the rule attaches its migrated runbook; a stored copy
+    the bundled procedure shadowed never does (the built-in wins)."""
+    from app.engine.threshold_automation import ThresholdAutomation as _Automation
+
+    attach = _Attacher()
+    for id_map, expected in (
+        ({"playbook_dir:brute_force_login": "brute_force_login-imported",
+          "playbooks:brute_force_login": "brute_force_login-imported-2"}, "brute_force_login-imported"),
+        ({"playbooks:brute_force_login": "brute_force_login-imported"}, "brute-force-password-spray"),
+    ):
+        from app.engine.runbook_migration import migrated_procedure_ids
+
+        async def _migrated(id_map=id_map):
+            return migrated_procedure_ids({"id_map": id_map})
+
+        case = _case(case_id=f"folder-{len(attach.calls)}")
+        await app_state.cases.save(case)
+        automation = _Automation(
+            app_state.proposals, app_state.audit, attach_runbook=attach, migrated_procedures=_migrated,
+        )
+        rules = [_rule("pb", "run_playbook", payload={"playbook_id": "brute_force_login"})]
+        await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+        assert attach.calls[-1] == (case.case_id, expected, "pb")
+
+
+@pytest.mark.asyncio
+async def test_the_bound_attacher_records_a_skip_in_the_real_audit_while_demo_mode_is_on(
+    app_state: AppState,
+) -> None:
+    """While Demo Mode is on the active run store and audit are the Demo ones, so a
+    real case's rule attaches nothing; its ``run.attach_skipped`` row (with the reason)
+    lands in the REAL control audit, never the Demo one (#2)."""
+    from app.engine.threshold_automation import DEMO_MODE_SKIP_REASON, bind_runbook_automation
+
+    case = _case(case_id="demo-on")
+    real_audit = app_state.control_audit
+
+    class _DemoState:
+        demo_active = True
+        runbook_library = None
+        control_audit = real_audit
+
+    attach, migrated = bind_runbook_automation(_DemoState())
+    assert await attach(case, "brute-force-password-spray", "pb") is None
+    assert await migrated() == {}
+    rows = await real_audit.records_for_actor("threshold_automation", limit=20)
+    skipped = [r for r in rows if r.get("action") == "run.attach_skipped"]
+    assert len(skipped) == 1
+    row = skipped[0]
+    assert row["case_id"] == "demo-on"
+    assert row["tool_input"] == {"runbook_id": "brute-force-password-spray", "rule_id": "pb",
+                                 "reason": DEMO_MODE_SKIP_REASON}
+    assert row["result_summary"] == f"No runbook attached: {DEMO_MODE_SKIP_REASON}"
+    assert "\u2014" not in DEMO_MODE_SKIP_REASON
+
+    class _NoAudit:
+        demo_active = True
+        runbook_library = None
+
+    no_audit_attach, _ = bind_runbook_automation(_NoAudit())
+    assert await no_audit_attach(case, None, "pb") is None  # never raises
+
+
+@pytest.mark.asyncio
+async def test_the_demo_bound_attacher_attaches_into_the_demo_stack_only(app_state: AppState) -> None:
+    """D45 parity (SPEC §4.10.16): a Demo stack's automation attaches a ``run_playbook``
+    rule's runbook into the DEMO run store and writes its ``run.attached`` row to the
+    DEMO audit, never the real ones. Once that stack is no longer active (Demo Mode off)
+    the same callable attaches nothing and writes nothing anywhere."""
+    from app.engine.threshold_automation import bind_demo_runbook_automation
+
+    await app_state.enable_demo(mode="seeded", seed=1337, history_days=1)
+    stack = app_state._demo  # noqa: SLF001 - the stack this automation belongs to
+    real_audit = app_state.control_audit
+    attach, migrated = bind_demo_runbook_automation(app_state, lambda: app_state._demo is stack)  # noqa: SLF001
+    assert await migrated() == {}  # the real marker, read only (none on a fresh store)
+    automation = ThresholdAutomation(
+        app_state.proposals, app_state.audit, attach_runbook=attach, migrated_procedures=migrated,
+    )
+    case = _case(case_id="demo-rule")
+    await app_state.cases.save(case)
+    rules = [_rule("pb", "run_playbook", payload={"playbook_id": "brute_force_login"})]
+    await automation.run(case, _prefs_with(rules), save=app_state.cases.save)
+
+    demo_runs = list((await app_state.runbook_runs.get("demo-rule")).runs)
+    assert [r.runbook_id for r in demo_runs] == ["brute-force-password-spray"]
+    assert demo_runs[0].attached_by == "rule"
+    assert list((await app_state.real_runbook_runs.get("demo-rule")).runs) == []
+    demo_rows = await stack.audit.records_for_actor("threshold_automation", limit=20)
+    assert "run.attached" in {r.get("action") for r in demo_rows}
+    real_rows = await real_audit.records_for_actor("threshold_automation", limit=20)
+    assert not [r for r in real_rows if str(r.get("action", "")).startswith("run.")]
+    assert case.automation_actions[-1]["detail"] == (
+        "attach_runbook=brute-force-password-spray attached=True"
+    )
+    assert case.status == CaseStatus.NEEDS_HUMAN  # an attach never moves status (#3)
+
+    await app_state.disable_demo()
+    assert await attach(_case(case_id="after-demo"), "brute-force-password-spray", "pb") is None
+    assert list((await app_state.runbook_runs.get("after-demo")).runs) == []
+    real_rows = await real_audit.records_for_actor("threshold_automation", limit=20)
+    assert not [r for r in real_rows if str(r.get("action", "")).startswith("run.")]
+
+    def _broken() -> bool:
+        raise RuntimeError("stack unknown")
+
+    broken_attach, _ = bind_demo_runbook_automation(app_state, _broken)
+    assert await broken_attach(_case(case_id="broken"), "malware-endpoint", "pb") is None
+
+
+@pytest.mark.asyncio
+async def test_a_migrated_shadowed_copy_never_hijacks_a_rule_naming_the_bundled_id(
+    secrets, mock_provider,
+) -> None:
+    """HANDOFF (A3, A7a): a rule naming ``brute_force_login``, with a stored operator
+    document of that id that the bundled procedure shadowed (migrated as the Draft
+    ``brute_force_login-imported``), attaches ``brute-force-password-spray`` and is
+    not skipped. A rule naming a migrated operator procedure attaches its runbook."""
+    from app.constants import PLAYBOOKS_KEY, PLAYBOOKS_NS
+    from app.engine.threshold_automation import bind_runbook_automation
+    from app.es.fake import InMemoryESClient
+    from app.stores.memory import EsKVStore
+
+    def _procedure(doc_id: str, title: str) -> str:
+        # The legacy procedure shape (as in test_runbook_migration.py).
+        return (
+            f"---\nid: {doc_id}\nname: {title}\n"
+            "description: Work a suspicious sign-in from an unexpected place.\n"
+            "match:\n  rule_ids: [vpn_auth]\n  entity_types: [ip, user]\n  mitre: [T1078]\n"
+            "  min_event_count: 3\npriority: 60\nrag_queries: [vpn sign-in policy]\n"
+            "escalate_if: A sign-in succeeds from the flagged address.\n---\n"
+            "## Look at part 1\nCheck the sign-in records for part 1. Note anything unusual.\n\n"
+            "## Look at part 2\nCheck the sign-in records for part 2. Note anything unusual.\n"
+        )
+
+    es = InMemoryESClient()
+    await EsKVStore(es).put(PLAYBOOKS_NS, PLAYBOOKS_KEY, {"documents": {
+        doc_id: {"content": _procedure(doc_id, title), "revision": 2, "created_by": "alice",
+                 "updated_by": "alice", "created_at": "2026-01-01T00:00:00+00:00",
+                 "updated_at": "2026-01-02T00:00:00+00:00"}
+        for doc_id, title in (("brute_force_login", "Our brute force copy"), ("acme-login", "Acme sign-in"))
+    }})
+    overrides = {"anthropic": mock_provider, "openai": mock_provider, "mock": mock_provider}
+    state = AppState.create(secrets=secrets, es=es, provider_overrides=overrides)
+    await state.startup(start_poller=False)
+    try:
+        marker = (await state.runbook_library.read_marker()).marker
+        assert marker.id_map["playbooks:brute_force_login"] == "brute_force_login-imported"
+        attach, migrated = bind_runbook_automation(state)
+        assert "brute_force_login" not in await migrated()
+        automation = ThresholdAutomation(
+            state.proposals, state.audit, attach_runbook=attach, migrated_procedures=migrated,
+        )
+        bundled = _case(case_id="shadow-1")
+        await state.cases.save(bundled)
+        await automation.run(bundled, _prefs_with([
+            _rule("pb", "run_playbook", payload={"playbook_id": "brute_force_login"}),
+        ]), save=state.cases.save)
+        assert [r.runbook_id for r in await _runs(state, "shadow-1")] == ["brute-force-password-spray"]
+        rows = await state.audit.records_for_actor("threshold_automation", limit=20)
+        assert not [r for r in rows if r.get("action") == "run.attach_skipped"]
+
+        operator = _case(case_id="shadow-2")
+        await state.cases.save(operator)
+        await automation.run(operator, _prefs_with([
+            _rule("pb2", "run_playbook", payload={"playbook_id": "acme-login"}),
+        ]), save=state.cases.save)
+        assert [r.runbook_id for r in await _runs(state, "shadow-2")] == [
+            marker.id_map["playbooks:acme-login"],
+        ]
+    finally:
+        await state.shutdown()
 
 
 # --------------------------------------------------------------------------- #

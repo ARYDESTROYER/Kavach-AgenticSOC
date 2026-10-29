@@ -65,6 +65,7 @@ import {
 import {
   rolesApi,
   roleLabel,
+  foldRetiredRunbookAlias,
   BUILTIN_ROLES,
   RESOURCE_ORDER,
   RESOURCE_ACTIONS,
@@ -130,8 +131,10 @@ export function draftFromRow(row: RoleRow, matrix: Record<string, GrantMap>): Ro
       name: row.name,
       description: c.description ?? '',
       inherits: [...(c.inherits ?? [])],
-      grants: cloneMap(c.grants),
-      denies: cloneMap(c.denies),
+      // A stored `playbooks` key reads as its `runbooks` meaning (SPEC §3.7), so the
+      // draft never carries a key the editor cannot show.
+      grants: foldRetiredRunbookAlias(cloneMap(c.grants)),
+      denies: foldRetiredRunbookAlias(cloneMap(c.denies)),
     };
   }
   return {

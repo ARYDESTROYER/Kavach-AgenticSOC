@@ -395,31 +395,47 @@ def _export_playbook_document() -> str:
     )
 
 
+async def _seed_legacy_procedures(state_or_kv) -> None:
+    """The two retired procedure catalogs as a pre-Round-14 deployment left them
+    (stored straight into their KV namespaces; nothing writes them any more)."""
+    from app.constants import PLAYBOOKS_KEY, PLAYBOOKS_NS, RUNBOOKS_KEY, RUNBOOKS_NS
+
+    def _row(content: str) -> dict:
+        return {"content": content, "revision": 2, "created_by": "alice", "updated_by": "alice",
+                "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-02T00:00:00+00:00"}
+
+    await state_or_kv.put(RUNBOOKS_NS, RUNBOOKS_KEY, {"documents": {
+        "export_triage": _row(_export_runbook_document()),
+        "legacy_large": _row(
+            "x" * 260_100 + " Bearer oversized-export-secret-12345678 END-OF-DOCUMENT"
+        ),
+    }})
+    await state_or_kv.put(PLAYBOOKS_NS, PLAYBOOKS_KEY, {"documents": {
+        "export_playbook": _row(_export_playbook_document()),
+    }})
+
+
 def test_intelligence_export_is_complete_sanitized_and_segmentable():
-    """Owning operator catalogs are exported; bundled assets stay references."""
+    """Round 14 (SPEC §4.10.18): the runbook library exports every operator runbook
+    with every version and its sanitized Markdown source, built-ins as references; the
+    two retired catalogs keep exporting their untouched stored documents for one
+    release (read through ``stores.legacy_procedures``); the removed bundled groups
+    export empty with the manifest note; the manifest schema moves to 2."""
+    from app.engine.runbook_model import load_builtin_runbooks
+    from app.stores.memory import EsKVStore
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        state = AppState.create(secrets=Secrets(_env_file=None), es=InMemoryESClient())
+        es = InMemoryESClient()
+        # Seeded before startup, as an upgrade finds them: the migration converts them.
+        await _seed_legacy_procedures(EsKVStore(es))
+        state = AppState.create(secrets=Secrets(_env_file=None), es=es)
         await state.startup(start_poller=False)
-        await state.runbooks.store.create(
-            "export_triage", _export_runbook_document(), actor="alice",
-        )
-        await state.runbooks.store.create(
-            "legacy_large",
-            "x" * 260_100
-            + " Bearer oversized-export-secret-12345678 END-OF-DOCUMENT",
-            actor="alice",
-        )
-        playbook_store = getattr(state.playbooks, "store", None)
-        assert playbook_store is not None
-        await playbook_store.create(
-            "export_playbook", _export_playbook_document(), actor="alice",
-        )
         app.state.tlsoc = state
         yield
         await state.shutdown()
 
+    builtins = load_builtin_runbooks()
     api = FastAPI(lifespan=lifespan)
     api.include_router(export_router)
     with TestClient(api) as client:
@@ -431,11 +447,17 @@ def test_intelligence_export_is_complete_sanitized_and_segmentable():
         legacy_body = legacy.json()
         knowledge = legacy_body["data"]["knowledge"]
         manifest = knowledge["catalog_manifests"][0]
-        assert manifest["runbooks"]["operator"] == 2
-        assert manifest["runbooks"]["bundled"] >= 1
-        assert manifest["playbooks"]["operator"] == 1
-        assert manifest["playbooks"]["bundled"] >= 1
+        assert manifest["schema_version"] == 2
+        assert manifest["legacy"]["operator_runbooks"] == 2
+        assert manifest["legacy"]["operator_playbooks"] == 1
+        assert manifest["runbook_library"]["bundled"] == len(builtins) >= 1
+        assert manifest["runbook_library"]["bundled_content_included"] == 0
+        assert manifest["removed"] == {
+            "bundled_runbooks": "Removed in Round 14; see bundled_runbook_library",
+            "bundled_playbooks": "Removed in Round 14; see bundled_runbook_library",
+        }
 
+        # The retired catalogs: untouched stored documents, sanitized, read-only.
         runbook = next(
             row for row in knowledge["operator_runbooks"]
             if row["id"] == "export_triage"
@@ -445,23 +467,44 @@ def test_intelligence_export_is_complete_sanitized_and_segmentable():
             if row["id"] == "legacy_large"
         )
         playbook = knowledge["operator_playbooks"][0]
-        assert runbook["id"] == "export_triage" and runbook["valid"] is True
-        assert playbook["id"] == "export_playbook" and playbook["valid"] is True
+        assert playbook["id"] == "export_playbook"
+        assert runbook["namespace"] == "runbooks" and playbook["namespace"] == "playbooks"
+        assert runbook["read_only"] is True and runbook["revision"] == 2
         assert "export-secret-12345678" not in runbook["content"]
         assert "sk-exportsecret123456789" not in playbook["content"]
         assert "[REDACTED]" in runbook["content"]
         assert "[REDACTED]" in playbook["content"]
-        assert legacy_large["valid"] is False
         assert len(legacy_large["content"]) > 250_000
         assert legacy_large["content"].endswith("[REDACTED] END-OF-DOCUMENT")
-        assert all(
-            item["content_included"] is False and "content" not in item
-            for item in knowledge["bundled_runbooks"]
+        assert knowledge["bundled_runbooks"] == []
+        assert knowledge["bundled_playbooks"] == []
+
+        # The library: the migrated operator runbooks with every version and source.
+        library = {row["id"]: row for row in knowledge["operator_runbook_library"]}
+        assert manifest["runbook_library"]["operator"] == len(library) >= 2
+        assert manifest["runbook_library"]["operator_versions"] == sum(
+            len(row["versions"]) for row in library.values()
         )
+        migrated_ids = {
+            row["migrated_from"]["id"]: row_id
+            for row_id, row in library.items() if row.get("migrated_from")
+        }
+        assert {"export_triage", "export_playbook"} <= set(migrated_ids)
+        triage = library[migrated_ids["export_triage"]]
+        assert triage["origin"] == "imported" and triage["content_included"] is True
+        assert triage["versions"] and all("source" in v and v["title"] for v in triage["versions"])
+        assert "definition" not in triage["versions"][0]
+        # Built-ins are versioned references, never their content.
+        bundled = {row["id"]: row for row in knowledge["bundled_runbook_library"]}
+        assert set(bundled) == {b.id for b in builtins}
         assert all(
-            item["content_included"] is False and "content" not in item
-            for item in knowledge["bundled_playbooks"]
+            item["content_included"] is False and "content" not in item and "source" not in item
+            for item in bundled.values()
         )
+        assert all(item["version"] >= 1 and item["content_hash"] for item in bundled.values())
+        dumped = json.dumps(legacy_body)
+        assert "export-secret-12345678" not in dumped
+        assert "sk-exportsecret123456789" not in dumped
 
         parts: list[dict] = []
         cursor = None
@@ -495,6 +538,9 @@ def test_intelligence_export_is_complete_sanitized_and_segmentable():
     assert ("operator_runbooks", "export_triage") in segmented
     assert ("operator_runbooks", "legacy_large") in segmented
     assert ("operator_playbooks", "export_playbook") in segmented
+    assert ("operator_runbook_library", migrated_ids["export_triage"]) in segmented
+    assert ("bundled_runbook_library", builtins[0].id) in segmented
+    assert not any(group in ("bundled_runbooks", "bundled_playbooks") for group, _ in segmented)
     assert "export-secret-12345678" not in json.dumps(parts)
     assert "oversized-export-secret-12345678" not in json.dumps(parts)
     assert "sk-exportsecret123456789" not in json.dumps(parts)
@@ -504,6 +550,15 @@ def test_intelligence_export_is_complete_sanitized_and_segmentable():
     assert parts[-1]["segment"]["cumulative_count"] == sum(
         len(part["records"]) for part in parts
     )
+
+
+def _startup_audit_rows(records: list[dict]) -> list[dict]:
+    """The rows startup wrote before the test seeded its own: since Round 14 the
+    runbook migration always appends its summary row (decision E16)."""
+    startup = [r for r in records if not str(r.get("result_summary", "")).startswith("seed-")]
+    assert startup, "the runbook migration summary row is always written at startup"
+    assert all(r.get("actor") == "runbook_migration" for r in startup)
+    return startup
 
 
 def test_segmented_export_walks_one_fixed_snapshot_past_the_page_limit():
@@ -546,20 +601,26 @@ def test_segmented_export_walks_one_fixed_snapshot_past_the_page_limit():
                 "exact": True,
                 "detail": "All segments read the same fixed Elasticsearch point-in-time snapshot.",
             }
-            assert part["segment"]["snapshot_total"] == 7
             if part["segment"]["complete"]:
                 break
             cursor = part["segment"]["next_cursor"]
             assert cursor
 
-    assert [part["segment"]["count"] for part in parts] == [3, 3, 1]
-    assert parts[-1]["segment"]["cumulative_count"] == 7
+    records = [row["record"] for part in parts for row in part["records"]]
+    total = 7 + len(_startup_audit_rows(records))
+    assert {part["segment"]["snapshot_total"] for part in parts} == {total}
+    assert [part["segment"]["count"] for part in parts] == [
+        min(3, total - 3 * index) for index in range(len(parts))
+    ]
+    assert len(parts) == -(-total // 3)
+    assert parts[-1]["segment"]["cumulative_count"] == total
     assert parts[-1]["segment"]["status"] == "complete"
     assert parts[-1]["segment"]["next_cursor"] is None
     assert [
         row["record"]["result_summary"]
         for part in parts
         for row in part["records"]
+        if str(row["record"].get("result_summary", "")).startswith("seed-")
     ] == [f"seed-{index}" for index in range(7)]
 
 
@@ -606,13 +667,17 @@ def test_segmented_export_crosses_the_legacy_5000_record_ceiling():
 
     assert second.status_code == 200
     second_body = second.json()
+    records = [row["record"] for body in (first_body, second_body) for row in body["records"]]
+    startup = len(_startup_audit_rows(records))
     assert first_body["segment"]["count"] == 5000
     assert first_body["segment"]["complete"] is False
-    assert second_body["segment"]["count"] == 1
-    assert second_body["segment"]["cumulative_count"] == 5001
+    assert second_body["segment"]["count"] == 1 + startup
+    assert second_body["segment"]["cumulative_count"] == 5001 + startup
     assert second_body["segment"]["complete"] is True
     assert second_body["segment"]["next_cursor"] is None
-    assert second_body["records"][0]["record"]["result_summary"] == "seed-05000"
+    # Record 5,001 of the seeded rows is still exported (the bound is per file).
+    seeds = [r["result_summary"] for r in records if str(r.get("result_summary", "")).startswith("seed-")]
+    assert seeds == [f"seed-{index:05d}" for index in range(5001)]
 
 
 def test_segment_cancel_releases_snapshot_and_resume_fails_honestly():
@@ -700,16 +765,26 @@ def test_segmented_export_never_calls_a_failed_safe_scope_complete(
     )
 
 
-def test_segmented_knowledge_export_never_drops_a_corrupt_procedure_catalog():
+@pytest.mark.parametrize("seam", ["library", "legacy_runbooks", "legacy_playbooks"])
+def test_segmented_knowledge_export_never_drops_a_corrupt_procedure_catalog(seam, monkeypatch):
+    """An unreadable runbook library or retired procedure catalog fails the scope
+    (503), never an export that silently leaves it out (Round 14 seams)."""
+    from app.stores.legacy_procedures import LegacyProcedureReader
+    from app.stores.runbook_library import RunbookLibraryStore
+
+    async def fail_catalog_read(*_args, **_kwargs):
+        raise ValueError("injected damaged operator catalog")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         state = AppState.create(secrets=Secrets(_env_file=None), es=InMemoryESClient())
         await state.startup(start_poller=False)
-
-        async def fail_catalog_read():
-            raise ValueError("injected damaged operator catalog")
-
-        state.runbooks.store.list_strict = fail_catalog_read  # type: ignore[method-assign]
+        target = {
+            "library": (RunbookLibraryStore, "verified_rows"),
+            "legacy_runbooks": (LegacyProcedureReader, "list_runbooks_strict"),
+            "legacy_playbooks": (LegacyProcedureReader, "list_playbooks_strict"),
+        }[seam]
+        monkeypatch.setattr(*target, fail_catalog_read)
         app.state.tlsoc = state
         yield
         await state.shutdown()

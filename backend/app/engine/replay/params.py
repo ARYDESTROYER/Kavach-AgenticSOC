@@ -59,6 +59,8 @@ class ReplayArmSpec(_Strict):
     models: dict[ArmRole, ReplayModelOverride] = Field(default_factory=dict)
     rag_top_k: int | None = Field(default=None, ge=1, le=50)
     caps_max_tool_calls: int | None = Field(default=None, ge=0, le=20)
+    # Kept under its stored name (Round 14 SPEC §4.10.16): it switches the runbook
+    # guidance the investigator receives (``runbooks.investigator_guidance``).
     playbooks_enabled: bool | None = None
     personas_enabled: bool | None = None
     memory_enabled: bool | None = None

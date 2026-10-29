@@ -1632,7 +1632,7 @@ _TITLE_WORD_RE = re.compile(r"[^\W\d_]+")
 #: ``CONVERSATION_SUMMARY``, ``---ANSWER---``. The plain word "untrusted" ("Logins from
 #: untrusted networks") is an ordinary topic; brackets are refused by ``_TITLE_RE``.
 _TITLE_MARKER_RE = re.compile(
-    r"untrusted_|_untrusted|conversation_summary|(?<![a-z0-9])end_(?:memory|name|playbook|precedent|app_docs)"
+    r"untrusted_|_untrusted|conversation_summary|(?<![a-z0-9])end_(?:memory|name|playbook|runbook|precedent|app_docs)"
     r"|app_docs|user_turn|answer---|---answer|<<<|>>>",
     re.IGNORECASE,
 )

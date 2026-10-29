@@ -1177,6 +1177,14 @@ _DEFINITIONAL_RE = re.compile(
     r")")
 # "Can we see brute force attempts?" asks for data, not for how to use the console.
 _DATA_ASK_RE = re.compile(r"^\s*(?:can|could) (?:i|we|you) (?:see|show|get|find|list|pull|look at)\b")
+#: A question about one case's runbook (Round 14 SPEC §4.10.10): what is next, how far
+#: it is, which steps are left. Asked in the Case Manager chat or about a named case;
+#: "which runbooks cover brute force" (plural, a library question) stays a knowledge one.
+_RUNBOOK_CASE_RE = re.compile(
+    r"\b(?:what(?:'s|\u2019s| is)? (?:left|next)|what should (?:i|we) do next|"
+    r"what (?:are|is) the next steps?|next steps? (?:on|for|in) (?:the|this|its|that) (?:case|runbook)|"
+    r"checklist|steps? (?:are )?(?:left|remaining|open|still open|to do)|"
+    r"(?:the|this|its|case'?s?) runbook|runbook (?:progress|status|steps?))\b")
 # Records a question can ask to see: cases and their kinds (the verdict nouns),
 # incidents, alerts. A console noun after one makes it a qualifier ("the cases page",
 # "the open cases KPI", "the false positives rate"): that question is about the console
@@ -3706,6 +3714,11 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("clarify", clarify=clarify, save=False)
 
     case_id = _case_id(q)
+    if ((view.case_scoped or case_id) and not template and _RUNBOOK_CASE_RE.search(low)
+            and not _HELP_RE.search(low)):
+        # "What is next on this case?", "Summarise the runbook progress": the case's
+        # runbook run, read through get_case (Round 14 SPEC §4.10.10).
+        return ask("runbook", case_id=case_id)
     if case_id:
         if template == "investigation_brief" or re.search(r"\bbrief\b|\bhandoff note\b", low):
             return ask("brief", case_id=case_id, report="investigation_brief",
@@ -6377,10 +6390,12 @@ _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     "audit": lambda v, a: [Call("audit_search", {**_windowed(a, v), **(
         {"action_type": a.slot("action_type")} if a.slot("action_type") else {})})],
     "automation": lambda v, a: [Call("automation_status", {"kind": a.metric or "approvals"})],
+    # Playbooks are runbooks since Round 14: both phrasings list the runbook library.
     "knowledge": lambda v, a: [Call("search_knowledge", (
-        {"kind": "list_runbooks"} if re.search(r"\b(list|which|what) runbooks\b", a.lowered)
-        else {"kind": "list_playbooks"} if re.search(r"\b(list|which|what) playbooks\b", a.lowered)
+        {"kind": "list_runbooks"} if re.search(r"\b(list|which|what) (?:runbooks|playbooks)\b", a.lowered)
         else {"query": a.topic or a.question}))],
+    "runbook": lambda v, a: [Call("get_case", {**({"case_id": a.case_id} if a.case_id else {}),
+                                               "include": ["summary", "runbook"]})],
     "help": lambda v, a: [
         Call("app_help", {"query": _help_query(a)}),
         *([Call("app_status", {"kind": "access"})] if a.wants_access else []),
@@ -6462,6 +6477,7 @@ _INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     "case": ("get_case", "explain_decision"), "mitre": ("mitre_lookup",), "sources": ("source_health",),
     "campaigns": ("list_campaigns",), "audit": ("audit_search",), "automation": ("automation_status",),
     "knowledge": ("search_knowledge",), "explain_metric": ("soc_metrics",), "cases": ("search_cases",),
+    "runbook": ("get_case",),
     "regroup": ("log_stats",), "rerun": (), "logs": ("search_logs",), "log_count": ("log_stats",),
     "breakdown": ("case_stats",), "trend": ("case_stats", "soc_metrics"), "compare": ("case_stats", "soc_metrics"),
     "perf_report": ("case_stats", "soc_metrics", "cost_usage", "search_cases"),
@@ -7866,8 +7882,27 @@ def _say_knowledge(r: Result) -> tuple[list[str], list[str]]:
         if ref:
             cites.append(ref)
     if not chunks:
-        items = [x for x in (o.get("runbooks") or o.get("playbooks") or o.get("items") or [])
-                 if isinstance(x, Mapping)]
+        runbooks = [x for x in (o.get("runbooks") or []) if isinstance(x, Mapping)]
+        if runbooks:
+            # The runbook library (Round 14 SPEC §4.10.18): how many are published,
+            # then a few of them (the generic final keeps four lines per lookup).
+            total = _num(o.get("total"))
+            total = int(total) if total is not None else len(runbooks)
+            verb = "is" if total == 1 else "are"
+            lead = f"There {verb} {_plural(total, 'published runbook')}"
+            if str(o.get("catalogue") or "") == "built-in only":
+                lead += " in the built-in library"
+            lead += ", for example:" if total > 3 else ":"
+            lines.append(lead)
+            for item in runbooks[:3]:
+                title = _plain(item.get("title") or item.get("id"), 80) or "Untitled runbook"
+                # Rule ids keep their underscores (escaped, never deleted).
+                applies = _escaped(item.get("applies_to"), 80)
+                origin = "" if item.get("origin") in (None, "", "Built-in") else f", {_plain(item.get('origin'), 20)}"
+                lines.append(f"- **{title}**" + (f" (applies to {applies}{origin})" if applies
+                                                  else (f" ({origin[2:]})" if origin else "")))
+            return lines, cites
+        items = [x for x in (o.get("playbooks") or o.get("items") or []) if isinstance(x, Mapping)]
         for item in items[:5]:
             lines.append(f"- {_plain(item.get('title') or item.get('name') or item.get('id'), 80)}")
     return lines, cites
@@ -8112,6 +8147,7 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "audit": ("cost", "posture", "access"),
     "automation": ("posture", "shift", "access"),
     "knowledge": ("case", "mitre", "help"),
+    "runbook": ("case", "pivot", "mitre"),
     "help": ("access", "posture", "explain_metric"),
     "explain_metric": ("posture", "shift", "help"),
     "reshape": ("posture", "shift", "case"),
@@ -11826,6 +11862,58 @@ def _case_missing(view: PromptView, ask: Ask) -> Final | None:
     return Final(body=body, follow_ups=follow, narrated={r.ordinal for r in view.failed()})
 
 
+def _final_runbook(view: PromptView, ask: Ask) -> Final | None:
+    """The case's runbook (Round 14 SPEC §4.10.10): per run, how far it is, the next
+    step and the required steps still open, from ``get_case``'s run summary. A run is
+    advice for people: the answer never implies it changes the verdict or the status."""
+    missing = _case_missing(view, ask)
+    if missing is not None:
+        return missing
+    got = view.ok("get_case")
+    if got is None:
+        return None
+    case = _dig(got.obs, "case")
+    case = case if isinstance(case, Mapping) else {}
+    runbook = got.obs.get("runbook") if isinstance(got.obs.get("runbook"), Mapping) else {}
+    lead = _case_head_as_asked(case, ask, start=True) if case else "This case"
+    body: list[str] = []
+    runs = [r for r in runbook.get("runs") or [] if isinstance(r, Mapping)] if runbook.get("available") else []
+    if not runbook.get("available"):
+        body.append(f"{lead}: its runbook could not be read here. Open the case's Runbook tab to see it.")
+    elif not runs:
+        body.append(f"{lead} has no runbook yet. Start one from the case's Runbook tab; the matching runbook "
+                    "is attached automatically when a case needs a person.")
+    for index, run in enumerate(runs[:2]):
+        title = _plain(run.get("title"), 80) or "Untitled runbook"
+        version = _num(run.get("version"))
+        name = f"**{title}**" + (f" v{int(version)}" if version is not None else "")
+        done, total = _num(run.get("done")), _num(run.get("total"))
+        where = (f"{int(done):,} of {_plural(total, 'step')} done" if done is not None and total is not None
+                 else "progress not recorded")
+        opening = f"{lead} follows {name}: " if index == 0 else f"It also follows {name}: "
+        if str(run.get("status") or "") == "completed":
+            body.append(opening + f"{where}, and the run is complete.")
+            continue
+        extra = []
+        if _num(run.get("blocked")):
+            extra.append(f"{_plural(run.get('blocked'), 'step')} blocked")
+        if _num(run.get("waiting_for_approval")):
+            extra.append(f"{_plural(run.get('waiting_for_approval'), 'step')} waiting for approval")
+        body.append(opening + where + (f" ({_join(extra)})" if extra else "") + ".")
+        nxt = _plain(run.get("next_step"), 160)
+        if nxt:
+            phase = _plain(run.get("next_step_phase"), 40)
+            body.append(f"Next step: **{nxt}**" + (f" ({phase})" if phase else "") + ".")
+        open_steps = [_plain(t, 120) for t in run.get("open_required_steps") or [] if isinstance(t, str)]
+        later = [t for t in open_steps if t and t != nxt]
+        if later:
+            body.append("Required steps still open after it: " + "; ".join(later[:4]) + ".")
+    if runs:
+        body.append("A runbook guides the people working the case; it never changes the verdict or closes the case.")
+    return Final(body=body, blocks=_keep(_block(got, "entity", view="entity", title="Case entity")),
+                 follow_ups=_follow_ups(view, "runbook"), lead=body[:1])
+
+
 def _final_brief(view: PromptView, ask: Ask) -> Final | None:
     missing = _case_missing(view, ask)
     if missing is not None:
@@ -13399,6 +13487,7 @@ _INTENT_TITLES: dict[str, str] = {
     "deep": "Entity deep dive", "clarify": "Choosing a trend", "summary": "Period summary",
     "rate": "True-positive rate", "entity_cases": "Cases by entity", "audit": "Audit trail",
     "automation": "Automation status", "knowledge": "Runbooks and guidance", "fallback": "Getting started",
+    "runbook": "Case runbook",
     "top": "Top log activity", "metric": "SOC metrics",
     # Round 13 (T6): every intent a first question can reach has a title, the starter
     # intents typed in words too ("Which cases are past their SLA?").
@@ -14107,7 +14196,7 @@ _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "respond": _final_respond, "out_of_scope": _final_out_of_scope,
     "remember": _final_remember, "reshape": _final_reshape, "rerun": _final_rerun,
     "explain_step": _final_explain_step, "rerun_step": _final_rerun_step,
-    "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty,
+    "regroup": lambda v, a: _final_regroup(v, a), "empty": _final_empty, "runbook": _final_runbook,
     "breakdown": _final_breakdown, "trend": _final_trend, "compare": _final_compare,
     "perf_report": _final_perf_report, "brief": _final_brief, "deep": _final_deep, "clarify": _final_clarify,
     "summary": _final_summary, "rate": _final_rate, "entity_cases": _final_entity_cases,

@@ -1,8 +1,9 @@
 """Round 14 WP-0 contracts (docs/research/2026-10-round14/SPEC.md §3.7, §7.2).
 
 Pins the shared contracts every later Round 14 package builds on, before any of them
-exists: the constants, the new permission actions and their default holders (with the
-legacy ``playbooks`` resource still present, §3.7 step 1), and every new wire model of
+exists: the constants, the new permission actions and their default holders (the
+legacy ``playbooks`` resource was present at §3.7 step 1 and left the vocabulary at
+step 3, WP-A8c; its stored grants map onto ``runbooks``), and every new wire model of
 ``app.models`` (§4.4.1, §4.4.2, §4.5.3, §4.5.10, §4.6.2, §4.10.2, §4.10.7, §4.10.15,
 §4.10.15a). Each model is built from the spec's own field tables and round-tripped
 through JSON, so a later package that drifts a field breaks here first.
@@ -74,31 +75,32 @@ def test_new_action_type_job_kind_and_actor_names() -> None:
 # --------------------------------------------------------------------------- #
 # Permissions (§3.7 step 1)
 # --------------------------------------------------------------------------- #
-def test_resources_gain_the_new_actions_and_keep_playbooks() -> None:
+def test_resources_gain_the_new_actions_and_retire_playbooks() -> None:
     assert RESOURCES["runbooks"] == ["read", "run", "manage", "publish"]
     assert RESOURCES["audit"] == ["view", "export"]
-    # ``playbooks`` stays until A8c proves nothing gates on it.
-    assert RESOURCES["playbooks"] == ["read", "run", "manage"]
+    # §3.7 step 3 (WP-A8c): nothing gates on ``playbooks`` any more, so it left the
+    # vocabulary; a stored ``playbooks`` grant is read as its ``runbooks`` meaning.
+    assert "playbooks" not in RESOURCES
 
 
 _EXPECTED_ROUND14 = {
-    # role: (runbooks actions, audit actions, playbooks actions)
-    UserRole.SUPER_ADMIN.value: ([ALL], [ALL], [ALL]),
-    UserRole.SOC_MANAGER.value: ([ALL], ["view", "export"], [ALL]),
-    UserRole.ANALYST_TIER2.value: (["read", "run"], None, ["read", "run"]),
-    UserRole.ANALYST_TIER1.value: (["read", "run"], None, ["read"]),
-    UserRole.RESPONDER.value: (["read", "run"], None, ["read", "run"]),
-    UserRole.AUDITOR.value: (["read"], ["view", "export"], ["read"]),
+    # role: (runbooks actions, audit actions)
+    UserRole.SUPER_ADMIN.value: ([ALL], [ALL]),
+    UserRole.SOC_MANAGER.value: ([ALL], ["view", "export"]),
+    UserRole.ANALYST_TIER2.value: (["read", "run"], None),
+    UserRole.ANALYST_TIER1.value: (["read", "run"], None),
+    UserRole.RESPONDER.value: (["read", "run"], None),
+    UserRole.AUDITOR.value: (["read"], ["view", "export"]),
 }
 
 
 @pytest.mark.parametrize("role", sorted(_EXPECTED_ROUND14))
 def test_default_matrix_pins_the_round14_holders(role: str) -> None:
-    runbooks, audit, playbooks = _EXPECTED_ROUND14[role]
+    runbooks, audit = _EXPECTED_ROUND14[role]
     row = DEFAULT_MATRIX[role]
     assert row.get("runbooks") == runbooks
     assert row.get("audit") == audit
-    assert row.get("playbooks") == playbooks
+    assert "playbooks" not in row
 
 
 @pytest.mark.parametrize(
@@ -127,11 +129,11 @@ def test_default_matrix_pins_the_round14_holders(role: str) -> None:
         # runbooks:read: every role.
         ("auditor", "runbooks", "read", True),
         ("analyst_tier1", "runbooks", "read", True),
-        # The legacy gates keep answering exactly as before this round.
-        ("analyst_tier1", "playbooks", "run", False),
-        ("analyst_tier2", "playbooks", "run", True),
-        ("responder", "playbooks", "run", True),
-        ("soc_manager", "playbooks", "manage", True),
+        # The retired resource grants nothing once it left the vocabulary (§3.7 step
+        # 3); its meaning lives on as the ``runbooks`` actions above.
+        ("analyst_tier2", "playbooks", "run", False),
+        ("responder", "playbooks", "run", False),
+        ("soc_manager", "playbooks", "manage", False),
         ("analyst_tier2", "runbooks", "manage", False),
     ],
 )
@@ -1134,11 +1136,15 @@ def test_typescript_audit_client_ip_and_target_revision_are_nullable() -> None:
 
 
 #: Actions ``policy.RESOURCES`` has that the Roles matrix editor's hand mirror
-#: (``webui/src/soc/pages/Roles.api.ts``, owned by WP-W9a) does not list yet. W9a adds
-#: them; until then this set may only shrink, and any OTHER drift fails here.
-_ROLES_MIRROR_PENDING: frozenset[tuple[str, str]] = frozenset({
-    ("runbooks", "run"), ("runbooks", "publish"), ("audit", "export"),
-})
+#: (``webui/src/soc/pages/Roles.api.ts``) does not list. Empty since the mirror gained
+#: ``runbooks:run``, ``runbooks:publish`` and ``audit:export``; an exact ratchet, so a
+#: new server action must reach the mirror in the same change.
+_ROLES_MIRROR_PENDING: frozenset[tuple[str, str]] = frozenset()
+#: Resources the mirror lists that ``policy.RESOURCES`` no longer has. Empty since the
+#: retired ``playbooks`` row left the editor (SPEC §3.7: "no longer listed in the
+#: matrix UI"); the Console folds a stored ``playbooks`` key into ``runbooks`` when it
+#: seeds a draft (``foldRetiredRunbookAlias``), so no hidden key survives an edit.
+_ROLES_MIRROR_RETIRED: frozenset[str] = frozenset()
 
 
 def test_roles_matrix_mirror_never_drifts_beyond_the_pending_round14_actions() -> None:
@@ -1149,11 +1155,21 @@ def test_roles_matrix_mirror_never_drifts_beyond_the_pending_round14_actions() -
         res: re.findall(r"'([a-z_]+)'", actions)
         for res, actions in re.findall(r"^\s+(\w+): \[([^\]]*)\],", block.group(1), re.M)
     }
-    assert set(web) == set(RESOURCES), "the Console lists a different set of resources"
-    unknown = {(res, act) for res, acts in web.items() for act in acts if act not in RESOURCES[res]}
+    assert set(RESOURCES) <= set(web), "the Console misses a resource"
+    retired = set(web) - set(RESOURCES)
+    assert retired <= _ROLES_MIRROR_RETIRED, "the Console lists a resource the server lacks"
+    assert retired == _ROLES_MIRROR_RETIRED, (
+        f"the mirror dropped {sorted(_ROLES_MIRROR_RETIRED - retired)}: remove it from _ROLES_MIRROR_RETIRED"
+    )
+    unknown = {
+        (res, act) for res, acts in web.items() if res in RESOURCES for act in acts if act not in RESOURCES[res]
+    }
     assert not unknown, f"the Console lists actions the server does not have: {sorted(unknown)}"
     missing = {(res, act) for res, acts in RESOURCES.items() for act in acts if act not in web.get(res, [])}
     assert missing <= _ROLES_MIRROR_PENDING, f"new drift: {sorted(missing - _ROLES_MIRROR_PENDING)}"
+    assert missing == _ROLES_MIRROR_PENDING, (
+        f"the mirror now lists {sorted(_ROLES_MIRROR_PENDING - missing)}: remove them from _ROLES_MIRROR_PENDING"
+    )
 
 
 def test_existing_typescript_types_gained_the_optional_round14_fields() -> None:

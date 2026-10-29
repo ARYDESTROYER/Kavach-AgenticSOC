@@ -139,7 +139,8 @@ def _corpus() -> list[dict[str, Any]]:
         # 26: a summary in a non-ASCII script.
         {"action_type": "status", "surface": "case", "actor": "zoë", "case_id": "case-5",
          "result_summary": "École fermée: dossier clos"},
-        # 27: an action the table names only by its prefix ("Runbook publish failed").
+        # 27: the failure row of an audit-first write, named by its exact entry
+        # ("Runbook publication failed"; row 21 is the action named only by its prefix).
         {"action_type": "runbook", "surface": "runbooks", "actor": "fay",
          "action": "runbook.publish_failed", "actor_type": "human", "outcome": "failure"},
         # 28: an audit-first write whose request was cancelled (outcome recorded unknown).
@@ -349,6 +350,10 @@ FILTER_CASES: list[AuditFilters] = [
     AuditFilters(q="fermée"),
     AuditFilters(q="publish failed"),
     AuditFilters(q="Runbook publish"),
+    AuditFilters(q="publication failed"),
+    AuditFilters(q="Runbook publi"),
+    AuditFilters(q="something new"),
+    AuditFilters(q="Runbook something"),
     AuditFilters(scope="people", outcome="unknown"),
     AuditFilters(scope="agent", outcome="unknown"),
 ]
@@ -507,11 +512,19 @@ def test_filters_pin_their_meaning():
     assert set(_reference(AuditFilters(event="config"))) >= {3, 13, 21, 23, 25, 27, 28}
     assert 23 not in set(_reference(AuditFilters(event="access")))
     # A name derived from a prefix entry is searchable as the page shows it: by the
-    # verb ("publish failed", the action token with spaces) and across the prefix
-    # label and the verb ("Runbook publish": the derived name and the exact entry).
+    # verb ("something new", the action token with spaces) and across the prefix
+    # label and the verb ("Runbook something": the derived name).
+    assert events.classify(CORPUS[21]).label == "Runbook something new"
+    assert _reference(AuditFilters(q="something new")) == [21]
+    assert _reference(AuditFilters(q="Runbook something")) == [21]
+    # An exact entry is searchable by its friendly name and by its action token, and a
+    # query across two exact names finds both ("Runbook publi": "Runbook publication
+    # failed" and "Runbook published").
+    assert events.classify(CORPUS[27]).label == "Runbook publication failed"
+    assert _reference(AuditFilters(q="publication failed")) == [27]
     assert _reference(AuditFilters(q="publish failed")) == [27]
-    assert set(_reference(AuditFilters(q="Runbook publish"))) == {27, 28}
-    assert events.classify(CORPUS[27]).label == "Runbook publish failed"
+    assert set(_reference(AuditFilters(q="Runbook publi"))) == {27, 28}
+    assert _reference(AuditFilters(q="Runbook publish")) == [28]
 
 
 def test_outcome_filters_select_the_rows_the_page_labels():
@@ -924,8 +937,18 @@ def _rows(n: int, **fields: Any) -> list[dict[str, Any]]:
 
 
 def _strip(record: dict[str, Any]) -> dict[str, Any]:
+    """The stored row inside a read API record: the read-time projections removed.
+
+    ``outcome`` and ``actor_type`` are projections only when the API derived them
+    (``*_derived`` true, for a legacy row that recorded none). A recorded value is
+    part of the stored row and stays, so it is compared with what the store holds
+    (the startup runbook conversion row, for one, records both)."""
     added = {"record_id", "category", "event_label", "demo", "truncated_fields",
-             "outcome_derived", "actor_type_derived", "outcome", "actor_type"}
+             "outcome_derived", "actor_type_derived"}
+    if record.get("outcome_derived"):
+        added.add("outcome")
+    if record.get("actor_type_derived"):
+        added.add("actor_type")
     return {k: v for k, v in record.items() if k not in added and v is not None}
 
 

@@ -123,15 +123,19 @@ def test_the_old_shape_keeps_the_old_field_types(box) -> None:
     client = box["client"]
     create(client, "typed")
     publish(client, "typed")
+    # A publish reprojects the runbook into the knowledge index (SPEC §4.10.18) in the
+    # background; wait for that projection deterministically before reading.
+    state = box["state"]
+    projected = client.portal.call(state.rag.reindex_runbooks, {"typed"})
+    assert projected["ok"] is True
     listed = {i["id"]: i for i in client.get("/api/runbooks", params={"shape": "v1"}).json()["runbooks"]}
     for item in listed.values():
         _old_types(item)
-    # Not projected (the projection status is unknown here): "pending" with revision 0,
-    # the old unindexed value, never null.
-    assert (listed["typed"]["index_status"], listed["typed"]["indexed_revision"]) == ("pending", 0)
+    # Projected: "ready" at the Published revision, the old integer type, never null.
+    assert (listed["typed"]["index_status"], listed["typed"]["indexed_revision"]) == ("ready", 1)
     detail = client.get("/api/runbooks/typed", params={"shape": "v1"}).json()
     _old_types(detail)
-    assert detail["indexed_revision"] == 0 and detail["file_name"] == "typed.md"
+    assert detail["indexed_revision"] == 1 and detail["file_name"] == "typed.md"
 
 
 @pytest.fixture

@@ -15,18 +15,17 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*", "playbooks"]
+include = ["app*"]
 namespaces = false
 
 [tool.setuptools.package-data]
 app = [
     "knowledge/*.json",
     "llm/model_registry.json",
-    "runbooks/*.md",
+    "runbooks/library/*.md",
     "threat/*.json",
     "threat/*.md",
 ]
-playbooks = ["*.md"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

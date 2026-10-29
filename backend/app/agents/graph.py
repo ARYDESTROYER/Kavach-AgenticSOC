@@ -85,7 +85,7 @@ async def run_investigation(
     surface: str,
     case_id: str | None,
     persona=None,
-    playbook=None,
+    runbook=None,
     memory=None,
     cost_sink: list[float] | None = None,
     provenance_sink: dict[str, Any] | None = None,
@@ -93,9 +93,11 @@ async def run_investigation(
     """Run triage → verdict, preferring the LangGraph state graph.
 
     The (deterministically pre-selected) ``persona`` specialises the investigator
-    and the matched ``playbook`` is injected as TRUSTED procedure (and contributes
-    its canned ``rag_queries``); the operator ``memory`` (durable trusted facts) is
-    injected as a distinct block — all three no-ops on the cheap benign/triage path.
+    and the matched ``runbook`` (an ``agents.investigator.RunbookGuidance``) is
+    injected as the TRUSTED active-runbook block and contributes its
+    ``retrieval_queries`` as the ``runbook:1..n`` retrieval groups; the operator
+    ``memory`` (durable trusted facts) is injected as a distinct block. All three are
+    no-ops on the cheap benign/triage path.
 
     ``cost_sink`` — an OPTIONAL mutable accumulator (a list of per-stage costs). Each
     realised stage cost (triage, benign/investigate) is appended AS SOON AS it
@@ -128,7 +130,7 @@ async def run_investigation(
         if provenance_sink is not None:
             provenance_sink.update({
                 "persona_consulted": False,
-                "playbook_consulted": False,
+                "runbook_consulted": False,
                 "knowledge": [],
                 "retrieval_query_groups": [],
                 "retrieval_status": "not_attempted",
@@ -148,27 +150,32 @@ async def run_investigation(
 
     async def do_investigate() -> tuple[VerdictResult, float]:
         rag_chunks = []
+        # The runbook's guidance reaches the prompt only when it was selected within
+        # the budget (``RunbookGuidance.selected``); a matched but unused runbook
+        # contributes neither guidance nor retrieval queries.
+        guided = runbook is not None and bool(getattr(runbook, "selected", False))
         if provenance_sink is not None:
             provenance_sink.update({
                 "persona_consulted": persona is not None,
-                "playbook_consulted": playbook is not None and prefs.playbooks.enabled,
+                "runbook_consulted": guided,
                 "consultation_path": "strong_investigator",
                 "retrieval_status": "not_attempted",
                 "retrieval_reason": "pending",
             })
         if prefs.rag.enabled:
-            # Base retrieval query + the selected playbook's canned rag_queries.
-            # Each retrieve is bounded by top_k; we merge, de-dupe by text and cap
-            # the union so prompt size stays bounded (and the cost gate still binds).
+            # Base retrieval query + the selected runbook's ``retrieval_queries``
+            # (Round 14 SPEC §4.10.9). Each retrieve is bounded by top_k; we merge,
+            # de-dupe by text and cap the union so prompt size stays bounded (and the
+            # cost gate still binds).
             grouped_queries: list[tuple[str, str]] = [("cluster", rag_query(cluster))]
-            if playbook is not None and prefs.playbooks.enabled:
+            if guided:
                 grouped_queries += [
-                    (f"playbook:{idx + 1}", query)
-                    for idx, query in enumerate(playbook.manifest.rag_queries)
+                    (f"runbook:{idx + 1}", query)
+                    for idx, query in enumerate(getattr(runbook, "retrieval_queries", ()) or ())
                     if str(query).strip()
                 ]
             # Retrieve per explicit query group, then interleave groups so a base
-            # query cannot starve every playbook query from the bounded prompt.
+            # query cannot starve every runbook query from the bounded prompt.
             buckets: list[tuple[str, str, list[Any]]] = []
             unavailable_reasons: list[str] = []
             for group, query in grouped_queries:
@@ -255,7 +262,7 @@ async def run_investigation(
             provenance_sink["precedent"] = precedent.as_dict()
         return await investigator.investigate(
             cluster, enrichment, rag_chunks, prefs, budget, surface=surface, case_id=case_id,
-            persona=persona, playbook=playbook, memory=memory, precedent=precedent,
+            persona=persona, runbook=runbook, memory=memory, precedent=precedent,
             cost_sink=cost_sink,
         )
 

@@ -42,10 +42,7 @@ from pydantic import BaseModel, Field
 from ..audit.context import audit_context
 from ..build_identity import current_record_provenance
 from ..constants import ActionType
-from ..engine.runbooks import parse_runbook_document
 from ..models import AuditTarget
-from ..playbooks.loader import parse_playbook
-from ..playbooks.manifest import MAX_PLAYBOOK_PROMPT_CHARS, render_playbook_prompt
 from ..state import AppState
 from .deps import current_username, get_state, require_fresh_auth, require_permission
 
@@ -340,8 +337,8 @@ def _plain(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, _AuthoritativeCatalogText):
-        # Operator runbooks/playbooks are individually and aggregately bounded by
-        # their owning stores. Preserve the complete source document; the 25 MiB
+        # Operator runbooks (and the retired procedure documents) are individually and
+        # aggregately bounded by their owning stores. Preserve the complete source document; the 25 MiB
         # response cap and adaptive segmented paging remain the outer safety bound.
         return _redact_text(value, max_characters=len(value))
     if isinstance(value, str):
@@ -549,212 +546,195 @@ def _limit_grouped_rows(
     return bounded
 
 
-def _playbook_catalog_record(
-    playbook: Any,
-    metadata: dict[str, Any],
-    *,
-    content: str | None = None,
-) -> dict[str, Any]:
-    """Return a filesystem-path-free playbook manifest for portable export."""
-    manifest = playbook.manifest
+#: The knowledge catalog manifest's schema (Round 14 SPEC §4.10.18 moved it from 1 to
+#: 2: the runbook library groups, the legacy groups read from the retired namespaces,
+#: and the two removed bundled groups that now export empty).
+KNOWLEDGE_CATALOG_SCHEMA_VERSION = 2
+_REMOVED_BUNDLED_NOTE = "Removed in Round 14; see bundled_runbook_library"
+
+
+def _legacy_catalog_record(namespace: str, legacy_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    """One document of a retired procedure namespace, exported exactly as stored (its
+    Markdown is authoritative and stays untouched for one release, §4.10.16)."""
+    content = str(row.get("content") or "")
     record: dict[str, Any] = {
-        "id": playbook.id,
-        "name": playbook.name,
-        "version": playbook.version,
-        "description": manifest.description,
-        "priority": manifest.priority,
-        "match": {
-            "rule_ids": list(manifest.match.rule_ids),
-            "entity_types": list(manifest.match.entity_types),
-            "mitre": list(manifest.match.mitre),
-            "min_event_count": manifest.match.min_event_count,
-            "any_tags": list(manifest.match.any_tags),
-        },
-        "suggested_tools": list(manifest.suggested_tools),
-        "rag_queries": list(manifest.rag_queries),
-        "escalate_if": manifest.escalate_if,
-        "suggested_verdict_bias": manifest.suggested_verdict_bias,
-        "valid": True,
-        **metadata,
+        "id": legacy_id,
+        "namespace": namespace,
+        "source_type": "operator",
+        "file_name": f"{legacy_id}.md",
+        "revision": int(row.get("revision", 1) or 1),
+        "created_at": str(row.get("created_at") or ""),
+        "updated_at": str(row.get("updated_at") or ""),
+        "created_by": str(row.get("created_by") or ""),
+        "updated_by": str(row.get("updated_by") or ""),
+        "content": _AuthoritativeCatalogText(content),
+        "content_included": True,
+        "read_only": True,
     }
-    if content is not None:
-        # The complete operator-authored Markdown is authoritative. It is emitted
-        # once (rather than duplicating the parsed body), then recursively secret-
-        # redacted together with the rest of the export envelope.
-        record["content"] = _AuthoritativeCatalogText(content)
-        record["content_included"] = True
-    else:
-        record["content_included"] = False
+    for key in ("index_status", "indexed_revision", "last_indexed_at", "index_error"):
+        if key in row:
+            record[key] = row[key]
     return record
+
+
+def _operator_runbook_record(doc: Any, revision: int) -> dict[str, Any]:
+    """One operator runbook with EVERY version (Round 14 SPEC §4.10.18): the library
+    metadata, and per version its state, governance stamps and authoritative Markdown
+    source (the definition is that source parsed, so it is not repeated)."""
+    versions: list[dict[str, Any]] = []
+    for version in sorted(doc.versions, key=lambda v: v.version):
+        entry = version.model_dump(mode="json", exclude={"definition", "source"})
+        entry["title"] = version.definition.title
+        entry["source"] = _AuthoritativeCatalogText(str(version.source or ""))
+        versions.append(entry)
+    live = doc.live
+    return {
+        "id": doc.id,
+        "origin": doc.origin,
+        "revision": int(revision),
+        "live_version": live.version if live is not None else None,
+        "retired": bool(doc.retired),
+        "replaces": doc.replaces,
+        "derived_from": doc.derived_from.model_dump(mode="json") if doc.derived_from else None,
+        "review_due_at": doc.review_due_at,
+        "last_reviewed_at": doc.last_reviewed_at,
+        "last_reviewed_by": doc.last_reviewed_by,
+        "migrated_from": doc.migrated_from.model_dump(mode="json") if doc.migrated_from else None,
+        "created_at": doc.created_at,
+        "created_by": doc.created_by,
+        "updated_at": doc.updated_at,
+        "updated_by": doc.updated_by,
+        "versions": versions,
+        "content_included": True,
+        "valid": True,
+    }
+
+
+async def _damaged_runbook_record(library: Any, runbook_id: str) -> dict[str, Any]:
+    """A library document that cannot be decoded, exported with its stored text (a
+    strict read: a storage failure fails the scope)."""
+    from ..constants import RUNBOOK_LIBRARY_NS
+    from ..stores.runbook_library import DOC_FIELD, doc_key
+
+    kv = library.kv
+    getter = getattr(kv, "get_strict", None)
+    raw = await (getter(RUNBOOK_LIBRARY_NS, doc_key(runbook_id)) if callable(getter)
+                 else kv.get(RUNBOOK_LIBRARY_NS, doc_key(runbook_id)))
+    stored = raw.get(DOC_FIELD) if isinstance(raw, dict) else None
+    return {
+        "id": runbook_id,
+        "content": _AuthoritativeCatalogText(stored if isinstance(stored, str) else json.dumps(stored)),
+        "content_included": True,
+        "valid": False,
+        "validation_status": "stored_unparseable",
+    }
+
+
+def _bundled_runbook_record(builtin: Any) -> dict[str, Any]:
+    """A built-in runbook as a safe, versioned reference (package data, never its
+    content: the release that ships it is the source)."""
+    defn = builtin.definition
+    return {
+        "id": builtin.id,
+        "title": defn.title,
+        "version": int(builtin.version),
+        "content_hash": builtin.content_hash,
+        "file_name": builtin.file_name,
+        "phases": list(defn.phases),
+        "steps": len(defn.steps),
+        "rule_ids": list(defn.applies_when.rule_ids),
+        "mitre": list(dict.fromkeys([*defn.applies_when.mitre, *defn.mitre])),
+        "prompt_chars": int(builtin.prompt_chars),
+        "source_type": "bundled",
+        "content_included": False,
+    }
 
 
 async def _knowledge_catalog_groups(state: AppState) -> dict[str, list[Any]]:
     """Collect the complete safe Intelligence catalog from owning stores.
 
-    Operator runbooks/playbooks are application state and therefore include their
-    sanitized source document. Packaged procedures are versioned application
-    assets; references and manifests are sufficient and avoid duplicating package
-    content in every support export. Invalid but durably stored operator documents
-    are retained with an explicit validation status so backup completeness never
-    depends on whether the live parser can currently load them.
+    Round 14 (SPEC §4.10.18): ``operator_runbook_library`` holds every operator
+    runbook with every version and its Markdown source, and ``bundled_runbook_library``
+    the built-ins as versioned references. The retired ``operator_runbooks`` and
+    ``operator_playbooks`` groups keep exporting the untouched legacy documents for one
+    release, read only through ``stores.legacy_procedures`` (strict: a damaged legacy
+    catalog fails the scope rather than export part of it). ``bundled_runbooks`` and
+    ``bundled_playbooks`` export empty; the manifest says why. Every read is strict:
+    an unreadable store fails the scope (503), never an empty complete export.
     """
-    runbook_rows = await state.runbooks.store.list_strict()
-    runbook_catalog = await state.runbooks.list()
-    bundled_runbooks = [
-        {
-            **record.payload(include_content=False),
-            "valid": True,
-            "content_included": False,
-        }
-        for record in runbook_catalog
-        if record.source_type == "bundled"
-    ]
+    from ..engine.runbook_model import load_builtin_runbooks
 
-    operator_runbooks: list[dict[str, Any]] = []
-    for runbook_id, row in sorted(runbook_rows.items()):
-        content = str(row.get("content") or "")
-        record: dict[str, Any] = {
-            "id": runbook_id,
-            "source_type": "operator",
-            "protected": False,
-            "editable": True,
-            "file_name": f"{runbook_id}.md",
-            "revision": int(row.get("revision", 1) or 1),
-            "created_at": str(row.get("created_at") or ""),
-            "updated_at": str(row.get("updated_at") or ""),
-            "created_by": str(row.get("created_by") or ""),
-            "updated_by": str(row.get("updated_by") or ""),
-            "index_status": str(row.get("index_status") or "pending"),
-            "indexed_revision": int(row.get("indexed_revision", 0) or 0),
-            "last_indexed_at": str(row.get("last_indexed_at") or ""),
-            "index_error": str(row.get("index_error") or ""),
-            "content": _AuthoritativeCatalogText(content),
-            "content_included": True,
-        }
+    from ..stores.runbook_library import RunbookDocumentDamaged
+
+    library = state.runbook_library
+    operator_runbook_library: list[dict[str, Any]] = []
+    versions_total = 0
+    for row in await library.verified_rows():
         try:
-            parsed = parse_runbook_document(
-                content,
-                expected_id=runbook_id,
-                enforce_authoring_standard=False,
-            )
-            record.update({
-                "title": parsed.title,
-                "summary": parsed.summary,
-                "persona": parsed.persona,
-                "applies_to_rules": list(parsed.applies_to_rules),
-                "applies_to_techniques": list(parsed.applies_to_techniques),
-                "applies_to_entities": list(parsed.applies_to_entities),
-                "keywords": list(parsed.keywords),
-                "body_characters": len(parsed.body),
-                "valid": True,
-                "validation_status": "valid",
-            })
-        except Exception:  # noqa: BLE001 — retain malformed authoritative state
-            record.update({
-                "valid": False,
-                "validation_status": "stored_unparseable",
-            })
-        operator_runbooks.append(record)
+            record = await library.get(row.id)
+        except RunbookDocumentDamaged:
+            # A stored runbook that can no longer be decoded is still application
+            # state: it is exported as stored, marked, never dropped from a backup.
+            operator_runbook_library.append(await _damaged_runbook_record(library, row.id))
+            continue
+        if record is None:
+            continue
+        exported = _operator_runbook_record(record.runbook, record.revision)
+        versions_total += len(exported["versions"])
+        operator_runbook_library.append(exported)
+    operator_runbook_library.sort(key=lambda item: item["id"])
+    bundled_runbook_library = [_bundled_runbook_record(b) for b in load_builtin_runbooks()]
 
-    playbook_store = getattr(state.playbooks, "store", None)
-    operator_playbooks: list[dict[str, Any]] = []
-    bundled_playbooks: list[dict[str, Any]] = []
-    if playbook_store is not None:
-        # Read the durable operator layer once. The packaged registry is immutable;
-        # its currently loaded bundled manifests are sufficient safe references.
-        playbook_rows = await playbook_store.list_strict()
-        for playbook in state.playbooks.all():
-            metadata = dict(state.playbooks.metadata(playbook))
-            if metadata.get("source_type") == "bundled":
-                bundled_playbooks.append(
-                    _playbook_catalog_record(playbook, metadata)
-                )
-        for playbook_id, row in sorted(playbook_rows.items()):
-            content = str(row.get("content") or "")
-            metadata = {
-                "source_type": "operator",
-                "protected": False,
-                "editable": True,
-                "file_name": f"{playbook_id}.md",
-                "revision": int(row.get("revision", 1) or 1),
-                "created_at": str(row.get("created_at") or ""),
-                "updated_at": str(row.get("updated_at") or ""),
-                "created_by": str(row.get("created_by") or ""),
-                "updated_by": str(row.get("updated_by") or ""),
-                "storage": "state",
-            }
-            parsed = parse_playbook(
-                content,
-                fallback_id=playbook_id,
-                source_path=f"state:{playbook_id}",
-            )
-            if (
-                parsed is not None
-                and parsed.id == playbook_id
-                and len(render_playbook_prompt(parsed)) <= MAX_PLAYBOOK_PROMPT_CHARS
-            ):
-                operator_playbooks.append(
-                    _playbook_catalog_record(parsed, metadata, content=content)
-                )
-            else:
-                operator_playbooks.append({
-                    "id": playbook_id,
-                    **metadata,
-                    "content": _AuthoritativeCatalogText(content),
-                    "content_included": True,
-                    "valid": False,
-                    "validation_status": "stored_unparseable",
-                })
-    else:
-        # A deliberate directory override is operator-managed application state.
-        # Refresh once, then export each validated document from the same registry.
-        refresh = await state.refresh_playbooks()
-        if refresh.get("skipped"):
-            raise ValueError("operator playbook directory contains invalid documents")
-        for playbook in state.playbooks.all():
-            metadata = dict(state.playbooks.metadata(playbook))
-            if metadata.get("source_type") == "operator":
-                _loaded, content = state.playbooks.read_document(playbook.id)
-                operator_playbooks.append(
-                    _playbook_catalog_record(playbook, metadata, content=content)
-                )
-            else:
-                bundled_playbooks.append(
-                    _playbook_catalog_record(playbook, metadata)
-                )
+    legacy = state.legacy_procedures
+    operator_playbooks = [
+        _legacy_catalog_record("playbooks", legacy_id, row)
+        for legacy_id, row in sorted((await legacy.list_playbooks_strict()).items())
+    ]
+    operator_runbooks = [
+        _legacy_catalog_record("runbooks", legacy_id, row)
+        for legacy_id, row in sorted((await legacy.list_runbooks_strict()).items())
+    ]
 
     memories = list(await state.memory.list_strict(active_only=False))
     documents = list(await state.rag_service.snapshot_documents_strict())
     custom_models = list(await state.custom_models.list_models_strict())
     catalog_manifest = {
-        "schema_version": 1,
-        "runbooks": {
-            "total": len(operator_runbooks) + len(bundled_runbooks),
-            "operator": len(operator_runbooks),
-            "bundled": len(bundled_runbooks),
-            "operator_content_included": len(operator_runbooks),
+        "schema_version": KNOWLEDGE_CATALOG_SCHEMA_VERSION,
+        "runbook_library": {
+            "total": len(operator_runbook_library) + len(bundled_runbook_library),
+            "operator": len(operator_runbook_library),
+            "operator_versions": versions_total,
+            "bundled": len(bundled_runbook_library),
+            "operator_content_included": len(operator_runbook_library),
             "bundled_content_included": 0,
         },
-        "playbooks": {
-            "total": len(operator_playbooks) + len(bundled_playbooks),
-            "operator": len(operator_playbooks),
-            "bundled": len(bundled_playbooks),
-            "operator_content_included": len(operator_playbooks),
-            "bundled_content_included": 0,
+        "legacy": {
+            "operator_runbooks": len(operator_runbooks),
+            "operator_playbooks": len(operator_playbooks),
+            "note": (
+                "The stored documents of the retired procedure catalogs, read-only for "
+                "one release and exported exactly as stored."
+            ),
+        },
+        "removed": {
+            "bundled_runbooks": _REMOVED_BUNDLED_NOTE,
+            "bundled_playbooks": _REMOVED_BUNDLED_NOTE,
         },
         "policy": (
-            "operator documents include sanitized authoritative Markdown; "
-            "bundled procedures include safe versioned references/manifests only"
+            "operator runbooks include every version with its sanitized authoritative "
+            "Markdown; built-in runbooks are safe versioned references only"
         ),
     }
     return {
         # Keep the exact count manifest first so even a very small legacy bounded
         # export explicitly discloses what exists and whether catalog rows truncated.
         "catalog_manifests": [catalog_manifest],
+        "operator_runbook_library": operator_runbook_library,
+        "bundled_runbook_library": bundled_runbook_library,
         "operator_runbooks": operator_runbooks,
         "operator_playbooks": operator_playbooks,
-        "bundled_runbooks": bundled_runbooks,
-        "bundled_playbooks": bundled_playbooks,
+        "bundled_runbooks": [],
+        "bundled_playbooks": [],
         "memory": memories,
         # Metadata only: corpus chunks can contain upstream/log or operator-pasted
         # secrets and remain deliberately excluded from portable export.
@@ -763,12 +743,104 @@ async def _knowledge_catalog_groups(state: AppState) -> dict[str, list[Any]]:
     }
 
 
+#: How ``case_runbook_runs`` is read and shaped, stated beside it in a cases export
+#: (the legacy manifest and every segment that carries runs).
+CASE_RUNBOOK_RUNS_STEPS_SHAPE = "list"
+CASE_RUNBOOK_RUNS_CONSISTENCY: dict[str, Any] = {
+    "mode": "live_values_at_read",
+    "exact": False,
+    "detail": (
+        "Runbook runs are read live for each page and may reflect updates made "
+        "during the export."
+    ),
+}
+
+
+def export_runbook_run(run: Any) -> dict[str, Any]:
+    """One runbook run as an export carries it (Round 14 SPEC §4.10.18): everything
+    the run holds, except the rows of a ``table_kind="rows"`` lookup table (raw
+    ``log_search`` rows), which are dropped. The lookup's count, relation, facts,
+    parameters and window stay, as do aggregate tables, so the manifest's exclusion of
+    upstream raw log payloads stays true. The table keeps its column names and says
+    how many rows were dropped.
+
+    ``steps`` is a list of step states, each with its ``step_id``, in the runbook's
+    step order (:data:`CASE_RUNBOOK_RUNS_STEPS_SHAPE`), never a mapping keyed by step
+    id: step ids are operator slugs, and the export's secret filter drops any mapping
+    key that reads like a credential (``reset-password``, ``rotate-api-key``), which
+    would silently drop that step's state."""
+    data = run.model_dump(mode="json") if hasattr(run, "model_dump") else dict(run)
+    steps = data.get("steps") if isinstance(data.get("steps"), dict) else {}
+    snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+    order = {
+        str(step.get("id")): index
+        for index, step in enumerate(snapshot.get("steps") or [])
+        if isinstance(step, dict)
+    }
+    data["steps"] = [
+        {**(state if isinstance(state, dict) else {}), "step_id": str(step_id)}
+        for step_id, state in sorted(
+            steps.items(), key=lambda item: (order.get(str(item[0]), len(order)), str(item[0])),
+        )
+    ]
+    for state in data["steps"]:
+        for evidence in state.get("evidence") or []:
+            lookup = evidence.get("lookup") if isinstance(evidence, dict) else None
+            if not isinstance(lookup, dict) or lookup.get("table_kind") != "rows":
+                continue
+            table = lookup.get("table") if isinstance(lookup.get("table"), dict) else {}
+            rows = table.get("rows") if isinstance(table.get("rows"), list) else []
+            lookup["table"] = {"columns": list(table.get("columns") or []), "rows": []}
+            lookup["rows_dropped"] = len(rows)
+    return data
+
+
+async def _case_runbook_runs(state: AppState, case_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """``case_id -> exported runs`` for the cases of one page, from the active run
+    store (at most 8 reads at once). A case without runs is absent. A store failure
+    raises: the cases scope then fails rather than export cases without their runs."""
+    store = getattr(state, "runbook_runs", None)
+    ids = [cid for cid in dict.fromkeys(case_ids) if cid]
+    if store is None or not ids:
+        return {}
+    found = await store.get_many(ids, concurrency=8)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for case_id, case_runs in found.items():
+        runs = [export_runbook_run(run) for run in getattr(case_runs, "runs", ())]
+        if runs:
+            out[str(case_id)] = runs
+    return out
+
+
+def _case_id_of(row: Any) -> str:
+    value = getattr(row, "case_id", None)
+    if value is None and isinstance(row, dict):
+        value = row.get("case_id")
+    return str(value or "")
+
+
 async def _collect_scope(
     scope: str, state: AppState, limit: int,
 ) -> tuple[Any, dict[str, Any]]:
     if scope == "cases":
         rows, total = await state.cases.list(limit=limit, offset=0)
-        return rows, _manifest(len(rows), total)
+        runs = await _case_runbook_runs(state, [_case_id_of(row) for row in rows])
+        if not runs:
+            return rows, _manifest(len(rows), total)
+        # Round 14 (SPEC §4.10.18): each case carries its runbook runs as
+        # ``case_runbook_runs`` (raw log rows dropped, ``export_runbook_run``).
+        out = []
+        for row in rows:
+            plain = _plain(row)
+            case_runs = runs.get(_case_id_of(row))
+            if case_runs and isinstance(plain, dict):
+                plain["case_runbook_runs"] = case_runs
+            out.append(plain)
+        meta = _manifest(len(rows), total)
+        meta["case_runbook_runs"] = sum(len(r) for r in runs.values())
+        meta["case_runbook_runs_steps"] = CASE_RUNBOOK_RUNS_STEPS_SHAPE
+        meta["case_runbook_runs_consistency"] = dict(CASE_RUNBOOK_RUNS_CONSISTENCY)
+        return out, meta
 
     if scope == "audit":
         rows = await state.audit.records(limit=limit)
@@ -835,7 +907,13 @@ async def _collect_segment_page(
         rows, next_position, total, consistency = await state.cases.export_page(
             limit=limit, cursor=position,
         )
-        return [{"record": row} for row in rows], next_position, total, consistency
+        # Round 14 (SPEC §4.10.18): a case with runbook runs carries them beside its
+        # record as ``case_runbook_runs`` (raw log rows dropped).
+        runs = await _case_runbook_runs(state, [_case_id_of(row) for row in rows])
+        return [
+            {"record": row, **({"case_runbook_runs": runs[_case_id_of(row)]} if _case_id_of(row) in runs else {})}
+            for row in rows
+        ], next_position, total, consistency
 
     if scope == "audit":
         rows, next_position, total, consistency = await state.audit.export_page(
@@ -1028,6 +1106,11 @@ async def _segment_envelope(
             "excluded": _EXCLUDED,
             "records": await _run_blocking(_plain, records),
         }
+        if any(isinstance(r, dict) and "case_runbook_runs" in r for r in records):
+            # The case records follow the scope's consistency above; the runs beside
+            # them are read live for this page (SPEC §4.10.18).
+            envelope["case_runbook_runs_steps"] = CASE_RUNBOOK_RUNS_STEPS_SHAPE
+            envelope["case_runbook_runs_consistency"] = dict(CASE_RUNBOOK_RUNS_CONSISTENCY)
         payload = await _run_blocking(_canonical_json_bytes, envelope)
         if len(payload) <= _MAX_EXPORT_BYTES:
             if complete or not continuation_available:

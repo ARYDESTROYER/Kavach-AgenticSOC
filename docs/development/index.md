@@ -41,7 +41,7 @@ See [Release channels](../releases/channels.md) for the promotion contract.
 |---|---|
 | `backend/app/` | FastAPI application, agents, deterministic engine, connectors, OCSF, auth, stores, notifications, and provider integrations |
 | `backend/tests/` | Offline backend regression and contract tests |
-| `backend/playbooks/` | Operator-authored deterministic-selection playbooks |
+| `backend/app/runbooks/library/` | The 12 built-in runbooks (package data) |
 | `webui/src/` | React/TypeScript Agentic SOC Console |
 | `webui/src/design-system/` | Cross-cutting loading feedback, source assets, and machine-readable Console catalog |
 | `webui/scripts/` | Design gates and OpenAPI/type-generation tooling |

@@ -23,11 +23,17 @@ def _gateway() -> LLMGateway:
     return LLMGateway(secrets, usage, provider_overrides={"openai": mock, "mock": mock})
 
 
+# Round 14: the seeded runbook corpus is the Published built-in library (one chunk per
+# phase, SPEC §4.10.18), not the short pre-Round-14 seed paragraphs, so the queries
+# below use the built-ins' own words (the offline embeddings are bag-of-words hashes).
+BRUTE_FORCE_QUERY = "brute force password spray against our accounts"
+
+
 async def test_seed_and_retrieve_brute_force() -> None:
     rag = RagService(_gateway(), Preferences())
     await rag.ensure_seeded()
 
-    chunks = await rag.retrieve("ssh brute force failed login", top_k=3)
+    chunks = await rag.retrieve(BRUTE_FORCE_QUERY, top_k=3)
     assert chunks, "expected non-empty retrieval"
     assert all(isinstance(c, RagChunk) for c in chunks)
     assert len(chunks) <= 3
@@ -35,14 +41,20 @@ async def test_seed_and_retrieve_brute_force() -> None:
     top = chunks[0]
     blob = (top.text + " " + top.source + " " + str(top.metadata)).lower()
     assert any(kw in blob for kw in ("brute", "auth", "login", "ssh"))
+    assert top.source == "runbook"
+    assert top.metadata["runbook_id"] == "brute-force-password-spray"
+    assert top.metadata["trust_class"] == "bundled_runbook"
 
 
 async def test_ensure_seeded_is_idempotent() -> None:
     rag = RagService(_gateway(), Preferences())
     await rag.ensure_seeded()
     await rag.ensure_seeded()  # second call must not duplicate or raise
-    chunks = await rag.retrieve("port scan reconnaissance", top_k=2)
+    chunks = await rag.retrieve("scanning and reconnaissance port scan", top_k=2)
     assert chunks
+    # One runbook per result: a second call never duplicated the seeded phases.
+    ids = [c.metadata.get("document_id") for c in chunks if c.source == "runbook"]
+    assert len(ids) == len(set(ids))
 
 
 async def test_retrieve_disabled_returns_empty() -> None:
@@ -89,7 +101,7 @@ async def test_observed_retrieval_keeps_last_good_context_unmeasured(
         rag._seed_signature = None
 
     monkeypatch.setattr(rag, "ensure_seeded", _failed_seed)
-    observation = await rag.retrieve_observed("ssh brute force failed login", top_k=3)
+    observation = await rag.retrieve_observed(BRUTE_FORCE_QUERY, top_k=3)
     assert observation.measured is False
     assert observation.reason == "seeding_failed"
     assert observation.chunks, "the last known-good corpus should still ground the prompt"

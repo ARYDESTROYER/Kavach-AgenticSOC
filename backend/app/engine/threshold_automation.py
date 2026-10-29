@@ -7,17 +7,25 @@ fires ONE action:
 * ``tag``            — add the rule's tags to the case (SAFE, applied directly + audited).
 * ``recommend``      — attach a NON-BINDING recommendation comment (SAFE).
 * ``notify``         — schedule a fire-and-forget notification (SAFE; existing path).
-* ``run_playbook``   — QUEUE a re-investigation with a playbook forced as context
-                       (SAFE; the re-investigation itself calls ``decide()`` AGAIN
-                       with the new context — it never bypasses the decision).
+* ``run_playbook``   : ATTACH a runbook to the case ($0, Round 14 SPEC §4.10.16). The
+                       stored action keeps its name (the naming contract); the target
+                       is resolved at fire time from ``payload.runbook_id``, else
+                       ``payload.playbook_id`` through the migration's id map and the
+                       retired bundled ids (``runbook_model.
+                       resolve_automation_runbook_id``). A run is human workflow: it
+                       never changes the verdict, the status or ``decide()``; a target
+                       that is missing, a Draft or retired is skipped with
+                       ``run.attach_skipped``. Before Round 14 this queued a forced
+                       re-investigation instead.
 * ``request_approval`` — create a HITL :class:`app.models.Proposal` (the EXISTING
                        proposer/approve path is the only live-write route). NO live
                        write happens here.
+  (The Rule editor shows ``run_playbook`` as "Attach a runbook".)
 
 THE #3 BOUNDARY (enforced + tested here): automation runs AFTER apply()+save and may
 NEVER set ``case.status`` / ``case.disposition``, never auto-close, and never act on
 a NEEDS_HUMAN / escalated case for status. Every action only TAGS / RECOMMENDS /
-NOTIFIES / QUEUES a fresh ``decide()`` run / opens a Proposal. Each matched action is
+NOTIFIES / ATTACHES a runbook / opens a Proposal. Each matched action is
 appended to ``Case.automation_actions`` (an additive audit list) and audited under
 ``ActionType.AUTOMATION``.
 
@@ -30,10 +38,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from ..config import AutomationRule, Preferences
-from ..constants import ActionType, CaseStatus, Verdict
+from ..constants import ActionType, Verdict
 from ..models import Case, Proposal
 from ..utils import iso_now, now_utc
 from .case_tags import CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT, automation_tags, tag_too_long
@@ -52,6 +60,15 @@ _VALID_VERDICTS = {v.value for v in Verdict}
 
 # How long an automation-drafted approval proposal self-retires after.
 _PROPOSAL_EXPIRY_DAYS = 30
+
+#: ``await attach(case, runbook_id, rule_id)``: attach the resolved runbook to the
+#: case for a ``run_playbook`` rule and return the new run, or ``None`` when nothing
+#: was attached (skipped, with its ``run.attach_skipped`` row, or already there). The
+#: application binds it with :func:`bind_runbook_automation`.
+RunbookAttach = Callable[[Case, "str | None", str], Awaitable[Any]]
+#: ``await migrated()``: legacy procedure id to runbook id, from the runbook
+#: migration's marker (empty before the migration has run).
+MigratedProcedures = Callable[[], Awaitable[Mapping[str, str]]]
 
 
 @dataclass(frozen=True)
@@ -183,7 +200,7 @@ class ThresholdAutomation:
     """Executes matched automation actions for a saved case — #3-safe.
 
     Wired with the deterministic stores it needs (proposals, audit) + optional
-    callbacks for notification dispatch and a queued playbook re-investigation. It
+    callbacks for notification dispatch and runbook attachment (Round 14). It
     NEVER sets ``case.status``/``disposition`` and NEVER writes a live rule (writes
     route through the Proposal/approve path)."""
 
@@ -193,15 +210,19 @@ class ThresholdAutomation:
         audit: "AuditLogger",
         *,
         notify: Callable[[Case, str], Any] | None = None,
-        queue_playbook_run: Callable[[Case, str], Any] | None = None,
+        attach_runbook: RunbookAttach | None = None,
+        migrated_procedures: MigratedProcedures | None = None,
     ) -> None:
         self._proposals = proposals
         self._audit = audit
         # notify(case, channel_or_trigger) — fire-and-forget; may be sync or async.
         self._notify = notify
-        # queue_playbook_run(case, playbook_id) — re-investigate with the playbook
-        # forced as context. The re-investigation itself calls decide() AGAIN.
-        self._queue_playbook_run = queue_playbook_run
+        # Round 14: a ``run_playbook`` rule attaches a runbook (see the module docs).
+        # Without ``attach_runbook`` (a stack that wires none) the rule records that
+        # nothing was attached; without ``migrated_procedures`` a legacy operator id
+        # resolves through the retired bundled ids only.
+        self._attach_runbook = attach_runbook
+        self._migrated_procedures = migrated_procedures
 
     async def run(self, case: Case, prefs: Preferences, *, save: Callable[[Case], Any]) -> Case:
         """Evaluate + execute automation for ``case`` AFTER apply()+save. Records each
@@ -293,9 +314,14 @@ class ThresholdAutomation:
             detail = f"notify={trigger}"
 
         elif action.action == "run_playbook":
-            playbook_id = str(payload.get("playbook_id") or "").strip()
-            queued = await self._maybe_queue_playbook(case, playbook_id)
-            detail = f"run_playbook={playbook_id or '(none)'} queued={queued}"
+            # "Attach a runbook" (Round 14 SPEC §4.10.16): resolved at fire time, never
+            # by rewriting the stored rule; an attach never touches status (#3). A
+            # stored id that resolves to nothing still reaches the attacher, so its
+            # ``run.attach_skipped`` row and this record name the id that failed.
+            requested = _requested_runbook_id(payload)
+            runbook_id = await self._resolve_runbook(payload) or requested or None
+            attached = await self._maybe_attach_runbook(case, runbook_id, action.rule_id)
+            detail = f"attach_runbook={runbook_id or '(none)'} attached={attached}"
 
         elif action.action == "request_approval":
             proposal = await self._create_proposal(case, action)
@@ -399,14 +425,168 @@ class ThresholdAutomation:
         except Exception as exc:  # noqa: BLE001 — notifications never affect the case
             logger.debug("automation notify failed for %s: %s", case.case_id, exc)
 
-    async def _maybe_queue_playbook(self, case: Case, playbook_id: str) -> bool:
-        if self._queue_playbook_run is None or not playbook_id:
+    async def _resolve_runbook(self, payload: Mapping[str, Any]) -> str | None:
+        """The runbook a ``run_playbook`` rule names, resolved now (SPEC §4.10.16):
+        ``payload.runbook_id``, else ``payload.playbook_id`` through the migration's
+        id map, else through the retired bundled ids. ``None`` when it names nothing
+        that resolves (the attach step then records the skip). Never raises.
+
+        The migration's map comes first for a ``playbook_id``: it holds a retired
+        bundled id only when a configured procedure folder's file held it
+        (``runbook_migration.migrated_procedure_ids``), and that file, not the bundled
+        procedure, is what a rule naming the id ran before Round 14."""
+        from .runbook_model import resolve_automation_runbook_id
+
+        migrated: Mapping[str, str] = {}
+        if self._migrated_procedures is not None:
+            try:
+                migrated = await self._migrated_procedures() or {}
+            except Exception as exc:  # noqa: BLE001 - the bundled ids still resolve
+                logger.info("automation: the runbook migration map could not be read: %s", exc)
+                migrated = {}
+        try:
+            if not _payload_text(payload, "runbook_id"):
+                playbook_id = _payload_text(payload, "playbook_id")
+                target = migrated.get(playbook_id) if playbook_id and hasattr(migrated, "get") else None
+                if isinstance(target, str) and target.strip():
+                    return target.strip()
+            return resolve_automation_runbook_id(payload, migrated)
+        except Exception as exc:  # noqa: BLE001 - a malformed payload attaches nothing
+            logger.debug("automation runbook resolution failed: %s", exc)
+            return None
+
+    async def _maybe_attach_runbook(self, case: Case, runbook_id: str | None, rule_id: str) -> bool:
+        """Attach ``runbook_id`` through the bound attacher; True only when a new run
+        was attached. The attacher records every skip (``run.attach_skipped``) and is
+        idempotent per case and runbook (#4). Never raises into the case path."""
+        if self._attach_runbook is None:
             return False
         try:
-            result = self._queue_playbook_run(case, playbook_id)
-            if hasattr(result, "__await__"):
-                await result
-            return True
-        except Exception as exc:  # noqa: BLE001 — a queued re-investigation never breaks the case path
-            logger.debug("automation queue_playbook_run failed for %s: %s", case.case_id, exc)
+            run = await self._attach_runbook(case, runbook_id, rule_id)
+        except Exception as exc:  # noqa: BLE001 - an attachment never breaks the case path
+            logger.debug("automation runbook attach failed for %s: %s", case.case_id, exc)
             return False
+        return run is not None
+
+
+def _payload_text(payload: Any, key: str) -> str:
+    """``payload[key]`` as stripped text, ``""`` when absent or not text."""
+    value = payload.get(key) if hasattr(payload, "get") else None
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _requested_runbook_id(payload: Any) -> str:
+    """The id a ``run_playbook`` rule stores (``runbook_id``, else ``playbook_id``),
+    unresolved, bounded to the id length the audit row keeps."""
+    return (_payload_text(payload, "runbook_id") or _payload_text(payload, "playbook_id"))[:64]
+
+
+#: Why a real case got no runbook from its rule while Demo Mode was on.
+DEMO_MODE_SKIP_REASON = "Demo Mode was on, so the rule attached nothing to this real case."
+
+
+def bind_runbook_automation(state: Any) -> tuple[RunbookAttach, MigratedProcedures]:
+    """The ``attach_runbook`` and ``migrated_procedures`` callables of the REAL
+    automation, bound to the application ``state`` (Round 14 SPEC §4.10.16).
+
+    ``attach_runbook`` attaches through ``runbook_runs.attach_by_automation`` (actor
+    ``threshold_automation``: ``run.attached`` or ``run.attach_skipped`` with the
+    reason). It acts on the real stack only: while Demo Mode is on the active run store
+    and audit are the Demo ones, so the run of a REAL case would vanish with them. The
+    rule then attaches nothing and its ``run.attach_skipped`` row (reason
+    :data:`DEMO_MODE_SKIP_REASON`) goes to the real control audit (#2). The case's
+    post-investigation attachment (the matching runbook) is still kept until Demo Mode
+    ends (``AppState._attach_runbook_to_real_case``). ``migrated_procedures`` reads
+    the migration marker's id map of the procedure namespaces
+    (``runbook_migration.migrated_procedure_ids``); an unreadable or absent marker
+    reads as an empty map, so a rule that fires before the migration falls back to the
+    retired bundled ids."""
+    async def attach(case: Case, runbook_id: str | None, rule_id: str) -> Any:
+        if getattr(state, "demo_active", False):
+            await _record_demo_mode_skip(state, case, runbook_id, rule_id)
+            return None
+        from .runbook_runs import attach_by_automation
+
+        return await attach_by_automation(state, case, runbook_id, rule_id=rule_id)
+
+    async def migrated() -> Mapping[str, str]:
+        from .runbook_migration import migrated_procedure_ids
+
+        library = getattr(state, "runbook_library", None)
+        if library is None:
+            return {}
+        try:
+            record = await library.read_marker()
+        except Exception as exc:  # noqa: BLE001 - resolve through the bundled ids
+            logger.info("automation: the runbook migration marker could not be read: %s", exc)
+            return {}
+        return migrated_procedure_ids(record.marker if record is not None else None)
+
+    return attach, migrated
+
+
+def bind_demo_runbook_automation(
+    state: Any, is_active: Callable[[], bool],
+) -> tuple[RunbookAttach, MigratedProcedures]:
+    """The ``attach_runbook`` and ``migrated_procedures`` callables of a DEMO stack's
+    automation (Round 14 SPEC §4.10.16, D45), so a ``run_playbook`` rule on a Demo case
+    attaches as it does on a real one.
+
+    ``attach_runbook`` attaches only while that Demo stack is the active one
+    (``is_active``, for example ``lambda: state._demo is demo_stack``). The run engine
+    binds the ACTIVE run store, audit and settings, which are then the Demo ones, so the
+    run and its ``run.attached`` or ``run.attach_skipped`` row land in the Demo stack
+    and are purged with it; the catalog is the active one too (the real library with
+    the Demo overlay). A rule that fires after that stack ended (Demo Mode turned off or
+    reset) attaches nothing and writes nothing anywhere. ``migrated_procedures`` reads
+    the REAL library's migration marker (read only), as the real automation does."""
+    _real_attach, migrated = bind_runbook_automation(state)
+
+    async def attach(case: Case, runbook_id: str | None, rule_id: str) -> Any:
+        try:
+            active = bool(is_active())
+        except Exception as exc:  # noqa: BLE001 - an unknown stack attaches nothing
+            logger.debug("automation: the Demo stack check failed: %s", exc)
+            active = False
+        if not active:
+            logger.info(
+                "automation: rule %s attached no runbook to Demo case %s: that Demo stack "
+                "is no longer active",
+                str(rule_id)[:128], str(getattr(case, "case_id", "") or "")[:80],
+            )
+            return None
+        from .runbook_runs import attach_by_automation
+
+        return await attach_by_automation(state, case, runbook_id, rule_id=rule_id)
+
+    return attach, migrated
+
+
+async def _record_demo_mode_skip(state: Any, case: Case, runbook_id: str | None, rule_id: str) -> None:
+    """The ``run.attach_skipped`` row of a real case's rule while Demo Mode is on, in
+    the REAL control audit (the active audit is the Demo one), shaped as
+    ``runbook_runs.attach_by_automation`` shapes its skips. Never raises."""
+    from ..models import AuditTarget
+
+    audit = getattr(state, "control_audit", None)
+    case_id = str(getattr(case, "case_id", "") or "")
+    logger.info(
+        "automation: rule %s attached no runbook to real case %s while Demo Mode is on",
+        str(rule_id)[:128], case_id[:80],
+    )
+    if audit is None:
+        return
+    try:
+        await audit.record_strict(
+            action_type=ActionType.RUNBOOK, surface="runbook", actor="threshold_automation",
+            actor_type="system", action="run.attach_skipped", outcome="success",
+            case_id=case_id,
+            target=AuditTarget(type="case", id=case_id,
+                               label=str(getattr(case, "case_number", "") or "") or case_id),
+            result_summary=f"No runbook attached: {DEMO_MODE_SKIP_REASON}",
+            tool_input={"runbook_id": (runbook_id or "")[:64], "rule_id": str(rule_id)[:128],
+                        "reason": DEMO_MODE_SKIP_REASON},
+        )
+    except Exception as exc:  # noqa: BLE001 - automation never fails on a runbook
+        logger.warning("automation: the Demo Mode skip row for case %s was not written: %s",
+                       case_id[:80], exc)

@@ -4676,10 +4676,11 @@ class Preferences(BaseModel):
 # Rules).  ``maybe_seed_rule_catalog`` only writes them into an EMPTY catalog, so
 # this list affects FRESH INSTALLS ONLY and can never overwrite operator content.
 #
-# Nothing downstream may hardcode a value from this list: bundled playbooks match
-# on portable Layer-3 ids and the operator's own catalog maps their rule titles
-# onto those ids (see ``backend/playbooks/README.md`` and
-# ``backend/tests/test_portability_contract.py``).
+# Nothing downstream may depend on a value from this list. The built-in runbooks
+# (``backend/app/runbooks/library/``) name some of these rules among their
+# ``applies_when.rule_ids``, as any-of match candidates held to the portable
+# identifier shape (``backend/tests/test_portability_contract.py``); a deployment
+# whose rules differ publishes its own copy of a built-in, which replaces it.
 _SAMPLE_EVENT_MODULES: tuple[str, ...] = (
     "mail_apache_access",
     "mail_auth",

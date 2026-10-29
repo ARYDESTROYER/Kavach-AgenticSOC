@@ -4,7 +4,10 @@ Two pieces, both completely SEPARATE from the real state:
 
 * :class:`DemoStack` — a throwaway store stack built on a FRESH ``InMemoryESClient``:
   its own CaseStore / AuditLogger / UsageStore + a $0 deterministic mock gateway +
-  an InvestigationPipeline + IngestService bound to it, PLUS demo-scoped
+  an InvestigationPipeline + IngestService bound to it (runbooks included: the
+  pipeline reads the SAME bundled library and Published operator runbooks as the real
+  one, D45, with a Demo-only overlay that maps the synthetic rule names to the
+  built-in that covers them, :func:`overlay_demo_runbooks`), PLUS demo-scoped
   Proposal/Campaign/Baseline/Tuning stores and ONE shared vector store so the
   overhaul's "all capabilities ON" showcase runs in a fully ISOLATED sandbox. NOTHING
   here can reach the real ES/SQL stores or the real HITL/tuning/campaign/baseline
@@ -29,6 +32,7 @@ import asyncio
 import logging
 import random
 import time
+from collections.abc import Awaitable, Iterable
 from typing import Any, Callable
 
 from ..audit.audit_log import AuditLogger
@@ -55,6 +59,95 @@ DEMO_TAG = "demo"
 _FIRST_INCIDENT_MIN_SECONDS = 20.0
 _MANUAL_INCIDENT_COOLDOWN_SECONDS = 5.0
 _MAX_EVENTS_PER_TICK = 2_000
+
+
+# --------------------------------------------------------------------------- #
+# Runbooks in Demo Mode (Round 14 SPEC §3.5, §4.10.18, D45)
+#
+# The Demo pipeline matches against the real library: every built-in and every
+# Published operator runbook (read only while Demo Mode is on). The synthetic Demo
+# sources raise rule names no production runbook lists (``demo_rdp_bruteforce``,
+# ``LP-ES-RISK-1002``, Wazuh ``100122``...), and the production built-ins deliberately
+# carry none of them, so without help every Demo case would fall to the Generic
+# incident runbook. This overlay adds, in the Demo stack only, each synthetic rule
+# value to the ``applies_when.rule_ids`` of the built-in that covers it. The runbook
+# text (and so the investigator rendering, its budget and its content hash) is
+# unchanged, and nothing here is stored or reaches a real case.
+# --------------------------------------------------------------------------- #
+#: Each Demo storyline (``demo_generator.STORYLINES``) to the built-in that covers it.
+DEMO_STORY_RUNBOOKS: dict[str, str] = {
+    "phishing_chain": "phishing-suspicious-email",
+    "rdp_bruteforce": "brute-force-password-spray",
+    "sqli_webshell": "web-application-attack",
+    "impossible_travel": "compromised-account",
+    "ransomware_beacon": "ransomware-destructive",
+    "insider_staging": "privileged-misuse-insider",
+}
+#: Demo rule values outside the storylines: the capability-seed rules, the noisy
+#: scanner the tuner observes, and the low-confidence native alerts each Demo source
+#: raises (``demo_sources``), to the built-in that covers each.
+DEMO_EXTRA_RULE_RUNBOOKS: dict[str, str] = {
+    "waf_allow": "web-application-attack",
+    "web_apache_access": "scanning-reconnaissance",
+    "demo_noisy_scanner": "scanning-reconnaissance",
+    "edr_heartbeat": "malware-endpoint",
+    "web_portal_auth": "compromised-account",
+    "LP-ES-RISK-0099": "scanning-reconnaissance",
+    "LP QRadar: low-confidence scanner offense": "scanning-reconnaissance",
+    "100190": "scanning-reconnaissance",
+    "Entra ID Protection: low-confidence unfamiliar sign-in properties": "compromised-account",
+}
+
+
+def demo_rule_runbooks() -> dict[str, str]:
+    """Every Demo rule value to the built-in runbook that covers it: each storyline's
+    own rule (``demo_<story>``) and the rule each Demo source raises for it
+    (``demo_generator.NATIVE_STORY_RULE_IDS``), plus :data:`DEMO_EXTRA_RULE_RUNBOOKS`."""
+    out: dict[str, str] = {}
+    for story_id, runbook_id in DEMO_STORY_RUNBOOKS.items():
+        out[f"demo_{story_id}"] = runbook_id
+        for source_rules in gen.NATIVE_STORY_RULE_IDS.values():
+            native = source_rules.get(story_id)
+            if native:
+                out[native] = runbook_id
+    out.update(DEMO_EXTRA_RULE_RUNBOOKS)
+    return out
+
+
+def overlay_demo_runbooks(entries: Iterable[Any]) -> tuple[Any, ...]:
+    """``entries`` (``runbook_match.MatchableRunbook``) with the Demo rule values added
+    to the built-ins that cover them. Pure and idempotent (a value already listed is
+    not added twice). Only built-ins change: an operator runbook is matched exactly as
+    the operator wrote it, and a built-in an operator copy replaces is not in the
+    catalog at all, so Demo Mode never brings it back."""
+    by_runbook: dict[str, list[str]] = {}
+    for rule, runbook_id in demo_rule_runbooks().items():
+        by_runbook.setdefault(runbook_id, []).append(rule)
+    out: list[Any] = []
+    for entry in entries:
+        extra = by_runbook.get(getattr(entry, "id", ""))
+        if not extra or getattr(entry, "origin", "builtin") != "builtin":
+            out.append(entry)
+            continue
+        definition = entry.definition
+        applies = definition.applies_when
+        rule_ids = list(dict.fromkeys([*applies.rule_ids, *extra]))
+        overlaid = definition.model_copy(update={
+            "applies_when": applies.model_copy(update={"rule_ids": rule_ids}),
+        })
+        out.append(type(entry)(
+            id=entry.id, version=entry.version, definition=overlaid,
+            origin=entry.origin, published_at=entry.published_at,
+        ))
+    return tuple(out)
+
+
+def demo_builtin_catalog() -> tuple[Any, ...]:
+    """The bundled library with the Demo overlay: the Demo pipeline's catalog when it
+    is built without a provider (direct constructions and tests)."""
+    from ..agents.pipeline import builtin_runbook_catalog
+
+    return overlay_demo_runbooks(builtin_runbook_catalog())
 
 
 class _DemoCaseStore(CaseStore):
@@ -93,7 +186,11 @@ class DemoStack:
     """The isolated demo store stack (built once per enable; GC'd on disable)."""
 
     def __init__(self, secrets: Secrets, get_prefs: Callable[[], Preferences],
-                 *, run_id: str = "") -> None:
+                 *, run_id: str = "",
+                 runbook_catalog: Callable[[], Awaitable[Any]] | None = None,
+                 runbook_attacher: Callable[[Any], Awaitable[Any]] | None = None,
+                 runbook_library: Callable[[], Any] | None = None,
+                 runbook_automation: tuple[Any, Any] | None = None) -> None:
         # A FRESH in-memory ES client — physically separate from the real store.
         self.es = InMemoryESClient()
         self.run_id = run_id
@@ -140,6 +237,11 @@ class DemoStack:
         self.chat_conversations = ChatConversationStore(self.kv)
         self.case_activity = CaseActivityStore(self.kv)
         self.case_tasks = CaseTaskStore(self.kv)
+        # Round 14 (SPEC §3.5): Demo cases have Demo runbook runs, on the Demo KV, gone
+        # when Demo Mode ends. ``AppState.runbook_runs`` serves this store while the
+        # stack is active.
+        from ..stores.runbook_runs import RunbookRunStore
+        self.runbook_runs = RunbookRunStore(self.kv)
         self.inbox = InboxStore(self.kv)
         self.shift_handoff = ShiftHandoffStore(self.kv)
         # Durable raw-alert-by-severity ingest counters backing the demo's
@@ -187,6 +289,19 @@ class DemoStack:
         # demo=True → every usage row is pricing_source='zero' with a synthetic $.
         self.gateway = LLMGateway(secrets, self.usage_store, overrides, demo=True)
         self._get_prefs = get_prefs
+        # Runbooks (Round 14, D45): the real library's matchable catalog provider
+        # (AppState passes it; the overlay is applied here) and the attachment trigger
+        # bound to this stack. Without a provider the bundled library is used.
+        self._runbook_catalog_source = runbook_catalog
+        self._runbook_attacher = runbook_attacher
+        # The REAL runbook library (a provider, read only, D45): both Demo knowledge
+        # indexes project its Published runbooks, as the real index does (SPEC
+        # §4.10.18). Without it they index the built-ins only.
+        self._runbook_library = runbook_library
+        # The ``(attach_runbook, migrated_procedures)`` pair of this stack's automation
+        # (``threshold_automation.bind_demo_runbook_automation``): a ``run_playbook``
+        # rule on a Demo case attaches into the Demo run store and audit.
+        self._runbook_automation = runbook_automation
         # An offline cache (no Redis) for the demo enrich tool.
         self._cache = Cache(None)
         # FIVE standards-faithful source adapters built once + reused by the
@@ -232,21 +347,43 @@ class DemoStack:
         source = self.sources["splunk"]  # the SIEM an analyst queries most
         from ..tools.rag import RagService
 
-        rag = RagService(self.gateway, prefs, store=self.vectorstore, cases=self.cases)
+        rag = RagService(
+            self.gateway, prefs, store=self.vectorstore, cases=self.cases,
+            library=self._runbook_library,
+        )
         # Wire the demo-scoped HITL automation so a matching case opens a demo Proposal
         # (never the real HITL queue). Leave notifier=None — demo never sends real
         # emails/Slack/webhooks (mirrors the intentional memory=None below).
-        automation = ThresholdAutomation(self.proposals, self.audit)
+        attach_runbook, migrated_procedures = self._runbook_automation or (None, None)
+        automation = ThresholdAutomation(
+            self.proposals, self.audit,
+            attach_runbook=attach_runbook, migrated_procedures=migrated_procedures,
+        )
         pipeline = InvestigationPipeline(
             self.es, secrets, self._cache, self.gateway, rag, self.cases, self.audit,
             source=source, automation=automation, memory=self.memory,
             tuning_store=self.tuning_store, seq_store=self.case_seq,
+            runbook_catalog=self.runbook_catalog,
+            runbook_attacher=self._runbook_attacher,
         )
         # Bind the demo's ISOLATED bus so live ``agent.step`` frames never touch the
         # global singleton (isolation boundary). Without this the pipeline's
         # ``_emit_step`` would fall back to ``get_event_bus()`` and leak demo frames.
         pipeline.event_bus = self.event_bus
         return pipeline
+
+    async def runbook_catalog(self) -> tuple[Any, ...]:
+        """The Demo pipeline's matchable runbook catalog: the real library's (built-ins
+        and Published operator runbooks, D45), or the bundled library alone without a
+        provider, with the Demo overlay (:func:`overlay_demo_runbooks`). A library read
+        failure raises, so the investigation runs with no runbook rather than with an
+        incomplete catalog."""
+        source = self._runbook_catalog_source
+        if source is None:
+            return demo_builtin_catalog()
+        catalog = await source()
+        entries = getattr(catalog, "matchable", catalog)
+        return overlay_demo_runbooks(entries)
 
     def _build_chat_engine(self):
         """A ChatEngine wired to the DEMO gateway/audit/cases + a demo log source +
@@ -258,7 +395,10 @@ class DemoStack:
 
         prefs = self._get_prefs()
         source = self.sources["splunk"]
-        rag = RagService(self.gateway, prefs, store=self.vectorstore, cases=self.cases)
+        rag = RagService(
+            self.gateway, prefs, store=self.vectorstore, cases=self.cases,
+            library=self._runbook_library,
+        )
         return ChatEngine(
             self.es, self.gateway, self.audit, self.cases, rag,
             source=source, memory=self.memory, threads=self.case_threads,

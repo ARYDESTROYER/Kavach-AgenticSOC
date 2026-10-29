@@ -69,6 +69,9 @@ async def test_replay_writes_no_production_case_or_pipeline_audit_row(app_state,
         for row in _rows(app_state.es, AUDIT_INDEX)
     )
 
+    from app.engine import runbook_runs
+
+    await runbook_runs.wait_for_background_lookups()
     baseline_cases = _ids(app_state.es, CASES_INDEX)
     baseline_audit = _ids(app_state.es, AUDIT_INDEX)
 

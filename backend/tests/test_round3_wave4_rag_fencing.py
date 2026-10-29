@@ -208,14 +208,15 @@ def test_fence_neutralises_every_forged_trusted_marker():
 
 
 # --------------------------------------------------------------------------- #
-# Precedence (policy > base > playbook > memory > UNTRUSTED) — documented in the
-# investigator system prompt; unchanged by this hardening.
+# Precedence (policy > base > runbook > memory > UNTRUSTED), documented in the
+# investigator system prompt (Round 14 SPEC §4.10.9: the active runbook takes the
+# retired procedure's place); unchanged by this hardening.
 # --------------------------------------------------------------------------- #
 def test_investigator_precedence_order_holds():
     sys = INVESTIGATOR_SYSTEM
     i_policy = sys.index("deterministic close/escalate policy")
     i_base = sys.index("base role rules")
-    i_playbook = sys.index("playbook")
+    i_runbook = sys.index("the active runbook")
     i_memory = sys.index("MEMORY")
     i_untrusted = sys.index("untrusted evidence")
-    assert i_policy < i_base < i_playbook < i_memory < i_untrusted
+    assert i_policy < i_base < i_runbook < i_memory < i_untrusted

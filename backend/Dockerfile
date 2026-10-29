@@ -41,10 +41,9 @@ RUN python -m pip install --no-cache-dir wheel==0.45.1 -r requirements.txt \
     && install -d -o tlsoc -g tlsoc -m 0700 /var/lib/agentic-soc/jobs \
     && chown tlsoc:tlsoc /app
 
-# ``playbooks/`` is a sibling of ``app/`` by runtime contract
-# (AppState._playbooks_dir); omitting it silently disables built-in procedures.
+# The built-in runbook library ships inside the package
+# (``app/runbooks/library/*.md``), so copying ``app/`` carries it.
 COPY --chown=tlsoc:tlsoc app ./app
-COPY --chown=tlsoc:tlsoc playbooks ./playbooks
 
 EXPOSE 8088
 

@@ -172,8 +172,11 @@ def test_a_collaboration_edit_returns_the_get_bands(client, path: str, payload: 
 
 
 def test_a_reinvestigation_returns_bands_for_the_updated_case(client, monkeypatch) -> None:
-    """Investigate, reinvestigate and run-playbook return the case the pipeline produced,
-    banded like GET (bands recomputed from the new case, not copied from the old one)."""
+    """Investigate and reinvestigate return the case the pipeline produced, banded like
+    GET (bands recomputed from the new case, not copied from the old one).
+
+    The retired ``run-playbook`` route (Round 14 SPEC §4.10.16) answers ``410
+    runbooks_moved`` and leaves the case exactly as it was: no pipeline run, no band."""
     import app.api.routes as routes_mod
 
     state = client.app.state.tlsoc
@@ -186,25 +189,21 @@ def test_a_reinvestigation_returns_bands_for_the_updated_case(client, monkeypatc
     monkeypatch.setattr(routes_mod, "_cluster_for_case", _cluster)
 
     current: dict[str, str] = {}
+    pipeline_runs: list[str] = []
 
     async def _pipeline(_cluster_arg, _surface, _prefs, **_kw):  # noqa: ANN001, ANN202
+        pipeline_runs.append(current["id"])
         case = await state.cases.get(current["id"])
         # The re-run changed the evidence: the source now asserts 3/10 (medium).
         case.trigger_reason = TriggerReason(rule_value="r", severity_max=3.0)
         await state.cases.save(case)
         return case
 
-    async def _playbook_run(_pipeline_arg, _cluster_arg, _surface, _prefs, _pb, **_kw):  # noqa: ANN001, ANN202
-        return await _pipeline(None, None, None)
-
     monkeypatch.setattr(state.pipeline, "investigate_cluster", _pipeline)
-    monkeypatch.setattr(state.playbooks, "get", lambda _pid: object())
-    monkeypatch.setattr(state.playbooks, "run", _playbook_run)
 
     for cid, path, payload in (
         ("case-inv", "investigate", None),
         ("case-reinv", "reinvestigate", {}),
-        ("case-pb", "run-playbook", {"playbook_id": "any"}),
     ):
         current["id"] = cid
         res = client.post(f"/api/cases/{cid}/{path}", json=payload)
@@ -212,6 +211,17 @@ def test_a_reinvestigation_returns_bands_for_the_updated_case(client, monkeypatc
         body = res.json()
         assert body["severity_band"] == "medium", (path, body.get("severity_band"))
         assert _bands(body) == _get_bands(client, cid), path
+    assert pipeline_runs == ["case-inv", "case-reinv"]
+
+    current["id"] = "case-pb"
+    before = client.portal.call(state.cases.get, "case-pb").model_dump(mode="json")
+    res = client.post("/api/cases/case-pb/run-playbook", json={"playbook_id": "any"})
+    assert res.status_code == 410, res.text
+    assert res.json()["code"] == "runbooks_moved"
+    assert pipeline_runs == ["case-inv", "case-reinv"]
+    after = client.portal.call(state.cases.get, "case-pb").model_dump(mode="json")
+    assert after == before
+    assert _get_bands(client, "case-pb")["severity_band"] == "critical"
 
 
 def test_the_bands_are_never_stored(client) -> None:

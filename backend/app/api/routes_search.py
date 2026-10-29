@@ -58,14 +58,18 @@ _NAV_TARGETS: list[dict[str, str]] = [
     {"type": "page", "id": "investigate", "label": "Investigate", "keywords": "entity hunt"},
     {"type": "page", "id": "scans", "label": "Automated scans", "keywords": "auto scan queue"},
     {"type": "page", "id": "approvals", "label": "Approvals", "keywords": "proposals hitl pending"},
-    {"type": "page", "id": "intelligence", "label": "Intelligence", "keywords": "knowledge memory rag playbooks agents"},
-    {"type": "page", "id": "knowledge", "label": "Knowledge", "keywords": "rag corpus documents runbooks"},
+    {"type": "page", "id": "intelligence", "label": "Intelligence", "keywords": "knowledge memory rag agents personas"},
+    {"type": "page", "id": "knowledge", "label": "Knowledge", "keywords": "rag corpus documents imports"},
+    # Round 14 (SPEC §4.10.1): one Runbooks page replaces the playbook and runbook
+    # destinations, so both old words find it.
+    {"type": "page", "id": "runbooks", "label": "Runbooks", "keywords": "runbooks playbooks procedures checklists steps"},
     {"type": "page", "id": "memory", "label": "Memory", "keywords": "agent memory facts"},
     {"type": "page", "id": "metrics", "label": "Analytics", "keywords": "metrics dashboard charts"},
     {"type": "page", "id": "cost", "label": "Cost & usage", "keywords": "cost ledger tokens spend budget"},
     {"type": "page", "id": "standup", "label": "Standup", "keywords": "daily summary digest"},
-    {"type": "page", "id": "sources", "label": "Sources", "keywords": "connectors siem edr ingest data"},
-    {"type": "page", "id": "catalog", "label": "Integrations", "keywords": "catalog connectors marketplace"},
+    # ``#/catalog`` now redirects to Runbooks (Round 14, D44), so the integrations
+    # words find Sources instead of a page id that no longer opens integrations.
+    {"type": "page", "id": "sources", "label": "Sources", "keywords": "connectors siem edr ingest data integrations marketplace"},
     {"type": "page", "id": "settings", "label": "Settings", "keywords": "preferences configuration"},
     {"type": "settings", "id": "account", "label": "Account", "keywords": "settings profile me"},
     {"type": "settings", "id": "security", "label": "Security", "keywords": "settings auth mfa password"},

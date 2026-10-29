@@ -1144,3 +1144,279 @@ def generate_capability_seed_cases(
             retrieval_observation_status="not_measured",
         ))
     return hitl_cases, tuner_cases
+
+
+# --------------------------------------------------------------------------- #
+# Runbook runs for the seeded cases (Round 14 SPEC §4.10.18, D45)
+# --------------------------------------------------------------------------- #
+# The seeded cases are saved directly (they never pass through the pipeline that
+# attaches a runbook), so Demo Mode would open with an empty Runbook tab and empty
+# library metrics. This seed attaches the matching runbook to every seeded case a
+# person works (an open case that needs a person, and a case an analyst closed),
+# exactly as the matcher would (same catalog, same tier rule, the Demo overlay), and
+# works a deterministic part of each run: an analyst-closed case's run is complete,
+# with believable step times; an open case's run is part way through. Pure planning
+# (:func:`plan_demo_runbook_runs`) plus one bounded writer; every write lands in the
+# Demo run store and vanishes with Demo Mode. Never a model call, never a log read.
+
+#: At most this many seeded runs (the newest human-facing cases first).
+DEMO_RUNBOOK_RUNS_MAX = 80
+_DEMO_RUN_NAMESPACE = "agentic-soc-demo-runbook-run"
+_DEMO_STEP_NOTES: dict[str, str] = {
+    "check": "Checked during the demo shift.",
+    "lookup": "Reviewed the lookup results.",
+    "decision": "Decided from the evidence on the case.",
+    "action": "Recorded for the demo.",
+    "record": "Recorded for the demo.",
+}
+
+
+def _demo_moment(value: Any, fallback_ms: int) -> datetime:
+    """A case timestamp as an aware datetime (``fallback_ms`` when it cannot be read)."""
+    if isinstance(value, str) and value.strip():
+        try:
+            moment = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
+    return datetime.fromtimestamp(fallback_ms / 1000, tz=timezone.utc)
+
+
+def _demo_iso(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _demo_decision_option(step: Any, verdict: Any) -> Any:
+    """The option a seeded decision takes: the first (the hostile reading) for a true
+    positive, the last (the benign one) for a false positive, the middle otherwise."""
+    options = list(getattr(step, "options", []) or [])
+    if not options:
+        return None
+    value = getattr(verdict, "value", verdict)
+    if value == Verdict.TRUE_POSITIVE.value:
+        return options[0]
+    if value == Verdict.FALSE_POSITIVE.value:
+        return options[-1]
+    return options[len(options) // 2]
+
+
+def plan_demo_runbook_runs(
+    cases: list[Case], catalog: Any, *, prefs: Preferences, seed: int, now_millis: int,
+    limit: int = DEMO_RUNBOOK_RUNS_MAX,
+) -> list[Any]:
+    """The runs to seed for ``cases`` (``engine.runbook_runs`` models; pure and
+    deterministic for a seed). ``catalog`` is the Demo pipeline's matchable catalog (an
+    iterable of ``MatchableRunbook`` or an object with ``matchable``). A case gets the
+    runbook :func:`runbook_runs.plan_attachment` picks, when it is open and needs a
+    person or an analyst closed it; an automatic close never gets one (§4.10.4).
+
+    The operator's switches apply as they do to a live attachment
+    (``runbook_runs.reevaluate_case``): nothing is seeded while runbooks or automatic
+    attachment are off, and Generic incident is attached only while the fallback is
+    on."""
+    import uuid
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from ..models import StepState
+    from .runbook_runs import (
+        _FINISHED_STEP, attachment_blocked, case_facts, ordered_steps, plan_attachment,
+    )
+    from ..models import RunbookRun
+
+    cfg = getattr(prefs, "runbooks", None)
+    if cfg is None or not (cfg.enabled and cfg.auto_attach):
+        return []
+    fallback = bool(cfg.fallback)
+    matchable = tuple(getattr(catalog, "matchable", catalog) or ())
+    view = SimpleNamespace(matchable=matchable)
+    now = datetime.fromtimestamp(now_millis / 1000, tz=timezone.utc)
+    analyst_closed = {CaseStatus.RESOLVED.value, CaseStatus.CLOSED.value}
+    picked: list[tuple[Case, bool]] = []
+    for case in sorted(cases, key=lambda c: str(c.created_at or ""), reverse=True):
+        status = getattr(case.status, "value", case.status)
+        closed_by_person = (status in analyst_closed
+                            and getattr(case.decision_by, "value", case.decision_by) == DecisionBy.ANALYST.value)
+        if attachment_blocked(case, now=now) is None or closed_by_person:
+            picked.append((case, closed_by_person))
+        if len(picked) >= limit:
+            break
+    runs: list[Any] = []
+    for case, closed_by_person in picked:
+        plan = plan_attachment(case_facts(case, prefs), view, (), fallback=fallback)
+        if plan is None:
+            continue
+        entry = plan.entry
+        rng = random.Random(f"{seed}:{case.case_id}:{entry.id}")
+        created = _demo_moment(case.created_at, now_millis)
+        # The work happens between the attachment and the close (an analyst-closed
+        # case) or now (an open one), never in the future.
+        end = min(_demo_moment(case.updated_at, now_millis), now) if closed_by_person else now
+        attached = min(created + timedelta(minutes=rng.randint(1, 4)), end)
+        # A runbook is worked by a person: the case's analyst, or one of the Demo
+        # analysts when the case belongs to the triage automation or to nobody.
+        people = tuple(a for a in _ANALYSTS if a != "auto-triage")
+        person = case.assignee if case.assignee in people else people[rng.randrange(len(people))]
+        steps = ordered_steps(entry.definition)
+        states: dict[str, StepState] = {step.id: StepState() for step in entry.definition.steps}
+        # An analyst-closed case: every step worked; an open one: the first few.
+        worked = len(steps) if closed_by_person else min(len(steps), rng.randint(1, 3))
+        # Each worked step waits then takes a few minutes; the whole is scaled down to
+        # fit the time the case had, so a case opened minutes ago still shows progress.
+        gaps = [(rng.randint(1, 6), rng.randint(2, 25)) for _ in steps[:worked]]
+        span = max((end - attached).total_seconds(), 0.0)
+        needed = float(sum(wait + took for wait, took in gaps) * 60) or 1.0
+        scale = min(1.0, span / needed)
+        clock = attached
+        for step, (wait, took) in zip(steps[:worked], gaps):
+            st = states[step.id]
+            if st.status in _FINISHED_STEP:
+                continue  # a decision already ruled it out
+            started = clock + timedelta(seconds=wait * 60 * scale)
+            finished = min(started + timedelta(seconds=took * 60 * scale), end)
+            clock = finished
+            st.status = "done"
+            st.started_at, st.completed_at, st.completed_by = _demo_iso(started), _demo_iso(finished), person
+            st.note = _DEMO_STEP_NOTES.get(step.kind, "")
+            st.revision = 1
+            if step.kind == "decision":
+                option = _demo_decision_option(step, case.verdict)
+                if option is not None:
+                    st.decision = {"option_id": option.id, "label": option.label, "by": person,
+                                   "at": _demo_iso(finished)}
+                    for skipped in option.marks_not_applicable:
+                        later = states.get(skipped)
+                        if later is not None and later.status == "todo":
+                            later.status = "not_applicable"
+                            later.reason = "The decision ruled this step out."
+                            later.completed_by, later.completed_at = person, _demo_iso(finished)
+                            later.revision = 1
+            elif step.kind in ("action", "record"):
+                st.action_record = {"performed_by": person, "performed_at": _demo_iso(finished),
+                                    "where": f"DEMO-{rng.randint(1000, 9999)}", "outcome": "Done."}
+        if closed_by_person:
+            # Optional steps nobody needed are recorded as not applicable, so the run
+            # reads as finished (a run completes on its required steps).
+            for step in steps:
+                st = states[step.id]
+                if st.status not in _FINISHED_STEP and not step.required:
+                    st.status, st.reason, st.revision = "not_applicable", "Not needed for this case.", 1
+        run = RunbookRun(
+            run_id="run-" + uuid.uuid5(uuid.NAMESPACE_URL, f"{_DEMO_RUN_NAMESPACE}:{seed}:{case.case_id}:{entry.id}").hex,
+            case_id=case.case_id, runbook_id=entry.id, version=entry.version, title=entry.definition.title,
+            snapshot=entry.definition, attached_by="fallback" if plan.tier == 0 else "rule",
+            # The match explanation, as a live attachment stores it (the Why attached
+            # popover reads it).
+            attached_reason=plan.explanation.model_dump(mode="json"),
+            attached_at=_demo_iso(attached), attached_actor="runbook_selector", steps=states, revision=1,
+        )
+        required_open = any(step.required and states[step.id].status not in _FINISHED_STEP for step in steps)
+        if not required_open:
+            run.status = "completed"
+            run.completed_at = _demo_iso(clock)
+        runs.append(run)
+    return runs
+
+
+def demo_runbook_audit_rows(run: Any, case: Any) -> list[dict[str, Any]]:
+    """The Demo audit rows of one seeded run, oldest first, as keyword arguments of
+    ``record_strict``: the rows the live engine writes for the same work
+    (``runbook_runs``), dated when the seeded work happened, so a seeded case's
+    activity feed and the audit log tell the story its Runbook tab shows (§3.5, §3.6).
+
+    ``run.attached`` (the runbook selector), ``run.started`` and one row per worked
+    step (``step.decision_recorded``, ``step.action_recorded`` or ``step.updated``,
+    by the person who worked it), then ``run.completed`` for a finished run. Pure."""
+    from ..constants import ActionType
+    from ..models import AuditTarget
+
+    case_id = str(getattr(case, "case_id", "") or run.case_id)
+    target = AuditTarget(type="case", id=case_id,
+                         label=str(getattr(case, "case_number", "") or "") or case_id)
+
+    def row(ts: str, action: str, actor: str, actor_type: str, summary: str,
+            tool_input: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "ts": ts, "action_type": ActionType.RUNBOOK, "surface": "runbook", "actor": actor,
+            "actor_type": actor_type, "action": action, "outcome": "success", "case_id": case_id,
+            "target": target, "result_summary": summary, "tool_input": tool_input,
+        }
+
+    title, version = run.title, run.version
+    rows = [row(run.attached_at, "run.attached", "runbook_selector", "system",
+                f"Runbook {title} v{version} attached.",
+                {"run_id": run.run_id, "runbook_id": run.runbook_id, "version": version,
+                 "attached_by": run.attached_by, "trigger": "demo_seed"})]
+    # Steps a recorded decision ruled out are part of that decision's row, as live.
+    ruled_out: set[str] = set()
+    for step in getattr(run.snapshot, "steps", None) or []:
+        state = run.steps.get(step.id)
+        decision = state.decision if state is not None else None
+        if not decision:
+            continue
+        for option in getattr(step, "options", None) or []:
+            if option.id == decision.get("option_id"):
+                ruled_out.update(option.marks_not_applicable)
+    worked = sorted(
+        ((step_id, st) for step_id, st in run.steps.items()
+         if st.status != "todo" and step_id not in ruled_out),
+        key=lambda item: (str(item[1].completed_at or run.completed_at or run.attached_at), item[0]),
+    )
+    people = [st.completed_by for _sid, st in worked if st.completed_by]
+    if worked:
+        first = worked[0][1]
+        rows.append(row(str(first.started_at or first.completed_at or run.attached_at), "run.started",
+                        people[0] if people else "analyst", "human",
+                        f"Work started on runbook {title}.", {"run_id": run.run_id}))
+    for step_id, st in worked:
+        action = ("step.decision_recorded" if st.decision else
+                  "step.action_recorded" if st.action_record else "step.updated")
+        rows.append(row(str(st.completed_at or run.completed_at or run.attached_at), action,
+                        st.completed_by or (people[0] if people else "analyst"), "human",
+                        f"Runbook step {step_id[:64]} updated.",
+                        {"run_id": run.run_id, "step_id": step_id}))
+    if run.status == "completed" and run.completed_at:
+        rows.append(row(run.completed_at, "run.completed", people[-1] if people else "analyst", "human",
+                        f"Runbook {title} completed: every required step is done or not applicable.",
+                        {"run_id": run.run_id}))
+    return rows
+
+
+async def seed_demo_runbook_runs(
+    store: Any, cases: list[Case], catalog: Any, *, prefs: Preferences, seed: int, now_millis: int,
+    audit: Any = None,
+) -> int:
+    """Write :func:`plan_demo_runbook_runs` into the Demo run store: each case's run
+    document (never over a case that already has runs) and its month ledger row, so the
+    Runbook tab, the progress chips and the library metrics show Demo data from the
+    first paint. ``audit`` is the Demo audit: each written run's rows
+    (:func:`demo_runbook_audit_rows`) are appended once its document is stored, so the
+    activity feed and the audit log show the seeded work too. Returns the runs written.
+    A failed write is logged and skipped; it never stops Demo Mode."""
+    import logging
+
+    from .runbook_runs import _ledger_row  # the engine's own projection: seeded rows match live ones
+
+    log = logging.getLogger("tlsoc.engine.demo_generator")
+    by_id = {str(c.case_id): c for c in cases}
+    written = 0
+    for run in plan_demo_runbook_runs(cases, catalog, prefs=prefs, seed=seed, now_millis=now_millis):
+        def _change(existing: list[Any], _run: Any = run) -> tuple[list[Any] | None, bool]:
+            return (None, False) if existing else ([_run], True)
+        try:
+            added, _case_runs = await store.mutate(run.case_id, _change)
+            if not added:
+                continue
+            await store.upsert_ledger_row(_ledger_row(run))
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - a seeded run never blocks Demo Mode
+            log.warning("demo runbook run for case %s not seeded: %s", str(run.case_id)[:80], exc)
+            continue
+        if audit is None:
+            continue
+        try:
+            for fields in demo_runbook_audit_rows(run, by_id.get(str(run.case_id))):
+                await audit.record_strict(**fields)
+        except Exception as exc:  # noqa: BLE001 - the seeded run stands; its rows are best effort
+            log.warning("demo runbook audit rows for case %s not written: %s", str(run.case_id)[:80], exc)
+    return written

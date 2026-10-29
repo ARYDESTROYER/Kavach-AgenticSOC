@@ -31,7 +31,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import Field, field_validator
 
 from ...constants import IndicatorKind
-from ...models import Citation, StepUsage
+from ...models import PHASE_LABELS, Citation, StepUsage
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
     MAX_CITATIONS_PER_CALL,
@@ -424,6 +424,16 @@ class MitreLookupTool(ChatTool):
 # --------------------------------------------------------------------------- #
 # search_knowledge
 # --------------------------------------------------------------------------- #
+#: Kind spellings folded onto a canonical kind. ``list_playbooks`` and the playbook
+#: words are aliases of ``list_runbooks`` since Round 14 (SPEC §4.10.16): the retired
+#: procedures are runbooks, so the alias reads the runbook library and needs the
+#: runbook grant (a stored ``playbooks`` grant maps onto it, §3.7).
+_KNOWLEDGE_KIND_ALIASES: dict[str, str] = {
+    "runbooks": "list_runbooks", "runbook": "list_runbooks",
+    "list_playbooks": "list_runbooks", "playbooks": "list_runbooks", "playbook": "list_runbooks",
+}
+
+
 def canonical_knowledge_kind(value: Any) -> Any:
     """The canonical ``search_knowledge`` kind (aliases folded; blank = search),
     shared by the input model and the toolbox grant check."""
@@ -432,13 +442,20 @@ def canonical_knowledge_kind(value: Any) -> Any:
         return "search"
     if isinstance(value, str):
         key = value.strip().lower().replace("-", "_").replace(" ", "_")
-        return {"runbooks": "list_runbooks", "playbooks": "list_playbooks",
-                "runbook": "list_runbooks", "playbook": "list_playbooks"}.get(key, key)
+        return _KNOWLEDGE_KIND_ALIASES.get(key, key)
     return value
 
 
+def _asked_as(value: Any) -> str:
+    """``list_playbooks`` when the call named the retired word, else the canonical kind
+    (the observation then says playbooks are runbooks now)."""
+    if isinstance(value, str) and "playbook" in value.strip().lower():
+        return "list_playbooks"
+    return str(canonical_knowledge_kind(value))
+
+
 class SearchKnowledgeInput(ToolInput):
-    kind: Literal["search", "list_runbooks", "list_playbooks"] = "search"
+    kind: Literal["search", "list_runbooks"] = "search"
     query: str | None = Field(default=None, max_length=300)
     top_k: int = Field(default=4, ge=1, le=8)
 
@@ -474,7 +491,7 @@ def _memory_matches(entries: list[Any], query: str, limit: int = 3) -> list[Any]
 
 def knowledge_signature(kinds: Any) -> str:
     """The one-line signature listing only ``kinds``."""
-    listed = [k for k in ("search", "list_runbooks", "list_playbooks") if k in set(kinds)]
+    listed = [k for k in ("search", "list_runbooks") if k in set(kinds)]
     kind = f"kind?={'|'.join(listed)}, " if len(listed) > 1 else ""
     return (
         f"search_knowledge({kind}query? (for search), top_k?=4) -- runbooks, ATT&CK and suppression "
@@ -490,12 +507,11 @@ class SearchKnowledgeTool(ChatTool):
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("rag", "read"),)
     kind_permissions: ClassVar[dict[str, tuple[str, str]]] = {
         "list_runbooks": ("runbooks", "read"),
-        "list_playbooks": ("playbooks", "read"),
     }
     optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("memory", "read"),)
     data_source: ClassVar[str] = "Knowledge base (runbooks, ATT&CK guidance, approved memory, imported intel)"
     # The full catalogue signature; a caller's prompt gets :meth:`signature_for`.
-    signature: ClassVar[str] = knowledge_signature(("search", "list_runbooks", "list_playbooks"))
+    signature: ClassVar[str] = knowledge_signature(("search", "list_runbooks"))
     display_keys: ClassVar[tuple[str, ...]] = ("kind", "query", "top_k")
 
     @staticmethod
@@ -515,9 +531,7 @@ class SearchKnowledgeTool(ChatTool):
         if missing:  # defence in depth: the toolbox already refused (and audited) this
             return ToolOutcome.failure("Not permitted: requires " + ", ".join(missing), status="denied")
         if args.kind == "list_runbooks":
-            return await self._list_runbooks(ctx)
-        if args.kind == "list_playbooks":
-            return await self._list_playbooks(ctx)
+            return await self._list_runbooks(ctx, asked_as=_asked_as(inp.get("kind")))
         if not args.query or len(args.query) < 2:
             return ToolOutcome.failure("Invalid input: check query")
         return await self._search(ctx, args)
@@ -616,88 +630,78 @@ class SearchKnowledgeTool(ChatTool):
             embedding=embedding,
         )
 
-    async def _list_runbooks(self, ctx: ChatToolContext) -> ToolOutcome:
-        service = getattr(ctx, "runbooks", None)
-        rows: list[dict[str, Any]] = []
-        bundled_only = service is None
-        try:
-            if service is not None:
-                for record in await service.list():
-                    rb = record.runbook
-                    rows.append({"id": rb.id, "title": rb.title, "persona": rb.persona,
-                                 "rules": list(rb.applies_to_rules)[:3],
-                                 "techniques": list(rb.applies_to_techniques)[:3],
-                                 "origin": record.source_type})
-            else:
-                from ...engine.runbooks import load_runbooks
+    async def _list_runbooks(self, ctx: ChatToolContext, *, asked_as: str = "list_runbooks") -> ToolOutcome:
+        """The runbook library a reader may use (Round 14 SPEC §4.10.18): every
+        built-in no Published copy replaces and the live version of every Published
+        operator runbook, with what each applies to and its state. Drafts, versions in
+        review and retired runbooks are not listed (the Runbooks page shows them to
+        the people who may see them). ``list_playbooks`` is an alias: the retired
+        procedures are runbooks now. Without a readable library (Demo Mode, a build
+        that wires none) the built-ins are listed and the observation says so."""
+        from ...engine.runbook_model import applies_to, load_builtin_runbooks
 
-                for rb in load_runbooks():
-                    rows.append({"id": rb.id, "title": rb.title, "persona": rb.persona,
-                                 "rules": list(rb.applies_to_rules)[:3],
-                                 "techniques": list(rb.applies_to_techniques)[:3], "origin": "bundled"})
+        library = getattr(ctx, "runbooks", None)
+        if not callable(getattr(library, "published_catalog", None)):
+            library = None
+        try:
+            published = tuple(await library.published_catalog()) if library is not None else ()
         except Exception as exc:  # noqa: BLE001
-            logger.info("runbook catalogue unavailable: %s", exc)
-            return ToolOutcome.failure("The runbook catalogue is not available")
+            logger.info("runbook library unavailable: %s", exc)
+            return ToolOutcome.failure("The runbook library could not be read")
+        replaced = {str(item.runbook.replaces) for item in published if getattr(item.runbook, "replaces", None)}
+        builtins = load_builtin_runbooks()
+        builtin_ids = {b.id for b in builtins}
+        entries: list[tuple[str, Any, int, str]] = [
+            (b.id, b.definition, int(b.version), "Built-in") for b in builtins if b.id not in replaced
+        ]
+        for item in published:
+            if item.runbook.id in builtin_ids:
+                continue
+            origin = "Imported" if getattr(item.runbook, "origin", "operator") == "imported" else "Yours"
+            entries.append((str(item.runbook.id), item.live.definition, int(item.live.version), origin))
+        rows: list[dict[str, Any]] = []
+        for runbook_id, defn, version, origin in entries:
+            chips = applies_to(defn)
+            applies = [*chips.rule_ids, *chips.mitre]
+            if defn.applies_when.always:
+                applies = ["Any case nothing else matches"]
+            rows.append({
+                "id": runbook_id,
+                "title": defn.title,
+                "summary": defn.summary,
+                "applies_to": ", ".join(applies) + (f" and {chips.more:,} more" if chips.more else ""),
+                "phases": ", ".join(PHASE_LABELS.get(p, p) for p in defn.phases),
+                "steps": len(defn.steps),
+                "origin": origin,
+                "version": version,
+                "state": "Published",
+            })
         observation = {
-            "runbooks": [{k: (text(v, 120) if isinstance(v, str) else [text(x, 60) for x in v])
-                          for k, v in r.items()} for r in rows[:40]],
+            "runbooks": [{
+                "id": text(r["id"], 64), "title": text(r["title"], 120), "summary": text(r["summary"], 280),
+                "applies_to": text(r["applies_to"], 200), "phases": r["phases"], "steps": r["steps"],
+                "origin": r["origin"], "version": r["version"], "state": r["state"],
+            } for r in rows[:40]],
             "total": len(rows),
-            "catalogue": "bundled only" if bundled_only else "bundled and operator",
+            "catalogue": "built-in only" if library is None else "built-in and published",
+            "replaced_built_ins": len(replaced & builtin_ids),
+            "note": "Only published runbooks are listed; drafts, runbooks in review and retired ones are not.",
         }
+        if asked_as == "list_playbooks":
+            observation["alias"] = "Playbooks are runbooks now; this is the runbook library."
         artifacts = [
             Artifact(id="a1", kind="table", title="Runbooks", title_trusted=True, data={
-                "columns": [column("id", "Id", "code"), column("title", "Title", untrusted=True),
-                            column("persona", "Persona"), column("techniques", "Techniques", "code"),
-                            column("origin", "Origin")],
-                "rows": [[r["id"], r["title"], r["persona"], ", ".join(r["techniques"]), r["origin"]]
+                "columns": [column("title", "Runbook", untrusted=True), column("applies_to", "Applies to", untrusted=True),
+                            column("phases", "Phases"), column("steps", "Steps", "number", align="right"),
+                            column("origin", "Origin"), column("version", "Version", "number", align="right")],
+                "rows": [[r["title"], r["applies_to"], r["phases"], r["steps"], r["origin"], r["version"]]
                          for r in rows[:200]],
             }, provenance="code", untrusted_labels=True, total=len(rows), truncated=len(rows) > 200),
             Artifact(id="a2", kind="guide", title="Runbook pages", title_trusted=True,
                      data={"links": [{"label": "Open Runbooks", "ref": {"page": "runbooks"}}]}, provenance="code"),
         ]
-        summary = f"{fmt_int(len(rows))} runbooks" + (" (bundled catalogue)" if bundled_only else "")
-        return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
-                           rows=len(rows), basis="exact")
-
-    async def _list_playbooks(self, ctx: ChatToolContext) -> ToolOutcome:
-        registry = getattr(ctx, "playbooks", None)
-        bundled_only = registry is None
-        try:
-            if registry is not None:
-                playbooks = list(registry.all())
-            else:
-                from pathlib import Path
-
-                from ...playbooks.loader import load_playbooks
-
-                directory = Path(__file__).resolve().parents[3] / "playbooks"
-                playbooks = load_playbooks(directory)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("playbook catalogue unavailable: %s", exc)
-            return ToolOutcome.failure("The playbook catalogue is not available")
-        rows = []
-        for pb in playbooks:
-            manifest = pb.manifest
-            rows.append({"id": manifest.id, "name": manifest.name, "version": manifest.version,
-                         "description": manifest.description, "priority": manifest.priority})
-        rows.sort(key=lambda r: (-int(r["priority"] or 0), r["id"]))
-        observation = {
-            "playbooks": [{"id": text(r["id"], 80), "name": text(r["name"], 120), "version": r["version"],
-                           "description": text(r["description"], 200)} for r in rows[:40]],
-            "total": len(rows),
-            "catalogue": "bundled only" if bundled_only else "loaded catalogue",
-        }
-        artifacts = [
-            Artifact(id="a1", kind="table", title="Playbooks", title_trusted=True, data={
-                "columns": [column("id", "Id", "code"), column("name", "Name", untrusted=True),
-                            column("version", "Version", "number", align="right"),
-                            column("description", "Description", untrusted=True)],
-                "rows": [[r["id"], r["name"], r["version"], r["description"]] for r in rows[:200]],
-            }, provenance="code", untrusted_labels=True, total=len(rows), truncated=len(rows) > 200),
-            Artifact(id="a2", kind="guide", title="Playbook pages", title_trusted=True,
-                     data={"links": [{"label": "Open Playbooks", "ref": {"page": "playbooks"}}]}, provenance="code"),
-        ]
-        summary = f"{fmt_int(len(rows))} playbooks" + (" (bundled catalogue)" if bundled_only else "")
+        noun = "runbook" if len(rows) == 1 else "runbooks"
+        summary = f"{fmt_int(len(rows))} published {noun}" + (" (built-in library only)" if library is None else "")
         return ToolOutcome(ok=True, summary=summary, observation=observation, artifacts=artifacts,
                            rows=len(rows), basis="exact")
 

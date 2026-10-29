@@ -15,7 +15,7 @@ import {
   type RoleDraft,
 } from '../components/RoleMatrixEditor';
 import { PreviewDiff } from '../pages/Roles';
-import { RESOURCE_ACTIONS, type RolePreviewResponse } from '../pages/Roles.api';
+import { RESOURCE_ACTIONS, RESOURCE_ORDER, type RolePreviewResponse } from '../pages/Roles.api';
 
 function draft(): RoleDraft {
   return { name: 'tier1_plus', description: '', inherits: [], grants: {}, denies: {} };
@@ -57,8 +57,13 @@ describe('RoleMatrixEditor cell logic', () => {
 });
 
 describe('RoleMatrixEditor resource vocabulary', () => {
-  it('exposes playbook management so custom roles can use the editor workflow', () => {
-    expect(RESOURCE_ACTIONS.playbooks).toEqual(['read', 'run', 'manage']);
+  it('lists the Round 14 runbook and audit actions and no retired playbooks row', () => {
+    // SPEC §3.7: `playbooks` left the server vocabulary; the server still reads a
+    // stored grant of it as its `runbooks` meaning, but the editor never offers it.
+    expect(RESOURCE_ACTIONS.playbooks).toBeUndefined();
+    expect(RESOURCE_ORDER).not.toContain('playbooks');
+    expect(RESOURCE_ACTIONS.runbooks).toEqual(['read', 'run', 'manage', 'publish']);
+    expect(RESOURCE_ACTIONS.audit).toEqual(['view', 'export']);
   });
 
   it('exposes portable data export for custom-role grant and deny workflows', () => {
@@ -89,7 +94,7 @@ describe('RoleMatrixEditor resource vocabulary', () => {
   it('carries the Round-11 drift-fixed resources (runbooks / system_updates / rules)', () => {
     // These existed in backend rbac/policy.RESOURCES but were missing from the
     // client mirror, so the editor grid + permission summary never showed them.
-    expect(RESOURCE_ACTIONS.runbooks).toEqual(['read', 'manage']);
+    expect(RESOURCE_ACTIONS.runbooks).toEqual(['read', 'run', 'manage', 'publish']);
     expect(RESOURCE_ACTIONS.system_updates).toEqual(['read', 'apply', 'rollback']);
     expect(RESOURCE_ACTIONS.rules).toEqual(['read', 'manage']);
   });

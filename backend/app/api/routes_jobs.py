@@ -36,6 +36,7 @@ from ..engine.jobs import account_generation, data_export_audit_target, reset_au
 from ..engine.replay.params import ReplayExperimentParams
 from ..models import (
     AUDIT_SEARCH_MAX_CHARS,
+    OPEN_STEPS_REASON_MAX_CHARS,
     AuditTarget,
     Job,
     JobArtifact,
@@ -131,6 +132,22 @@ class CaseLifecycleParams(_CaseIds):
     # is forwarded verbatim to ``_perform_case_action``, which applies-vs-classifies.
     disposition_declared: bool = False
     status: CaseStatus | None = None
+    # Round 14 (SPEC §4.10.15, D34): the bulk dialog's ONE shared reason for closing
+    # cases whose active runbook still has required steps open. Forwarded through
+    # ``CaseAction`` to every item, it is the ``reason`` of each
+    # ``case.closed_with_open_steps`` row (``via: "bulk"``). Optional: a bulk close
+    # never fails an item for open steps, so there is no ``require_open_steps_reason``
+    # here. Cleaned like ``CaseAction`` (runs of whitespace collapse, blank is absent)
+    # so a retry that differs only in spacing binds the same request fingerprint (a
+    # different reason is a different request, 409).
+    open_steps_reason: str | None = Field(default=None, max_length=OPEN_STEPS_REASON_MAX_CHARS)
+
+    @field_validator("open_steps_reason")
+    @classmethod
+    def _clean_open_steps_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return " ".join(value.split()) or None
 
     @model_validator(mode="after")
     def _targets(self) -> "CaseLifecycleParams":

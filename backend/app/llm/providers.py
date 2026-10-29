@@ -1144,6 +1144,15 @@ _DEMO_AGENT_PLACEHOLDER_FINAL = (
     + "\n---ANSWER---\nDemo chat response (synthetic)."
 )
 _DEMO_REPORT_SUMMARY_PLACEHOLDER = "Demo report summary (synthetic)."
+# The Demo answers to a runbook prompt whose deterministic builder failed (Round 14
+# SPEC §4.10.10). Each keeps the shape its marker asks for, so a regression in the
+# builder never stores the generic Demo chat text as a step's AI draft: a suggestion
+# names no runbook (the person is told there is no candidate), and a draft is a
+# neutral, recognisable Demo note that claims nothing about the lookups.
+_DEMO_RUNBOOK_SUGGEST_FALLBACK = json.dumps({"runbook_id": "", "reason": ""})
+_DEMO_RUNBOOK_DRAFT_FALLBACK = (
+    "Demo draft: review this step's lookup results against its focus before you confirm."
+)
 
 
 def _word_groups(text: str, words: int) -> list[str]:
@@ -1245,9 +1254,10 @@ class DemoMockProvider(MockProvider):
         return result
 
     # ------------------------------------------------------------------ #
-    # Chat-agent delegation (SPEC §5.5). The engine's agent-mode system prompt and the
-    # report-summary system prompt each start with a marker line; only the system
-    # prompt — which no user or log value can author — is inspected for it.
+    # Chat-agent delegation (SPEC §5.5). The engine's agent-mode system prompt, the
+    # report-summary system prompt and the two runbook system prompts (Round 14 SPEC
+    # §4.10.10: step draft, runbook suggestion) each start with a marker line; only the
+    # system prompt, which no user or log value can author, is inspected for it.
     # ------------------------------------------------------------------ #
     @staticmethod
     def _system_text(messages: list[dict[str, str]]) -> str:
@@ -1256,8 +1266,9 @@ class DemoMockProvider(MockProvider):
         )
 
     def _demo_chat_route(self, role: str, messages: list[dict[str, str]]) -> str | None:
-        """The delegated answer for a marked chat-agent / report-summary prompt, or
-        None so every other prompt (incl. the LEGACY chat prompt) keeps its path."""
+        """The delegated answer for a marked chat-agent / report-summary / runbook
+        prompt, or None so every other prompt (incl. the LEGACY chat prompt) keeps its
+        path."""
         system = self._system_text(messages)
         if not system:
             return None
@@ -1270,9 +1281,55 @@ class DemoMockProvider(MockProvider):
 
         if REPORT_SUMMARY_SYSTEM_MARKER in system:
             return self._demo_report_summary(messages)
+        runbook = self._demo_runbook_answer(system, messages)
+        if runbook is not None:
+            return runbook
         if role == "chat" and CHAT_AGENT_SYSTEM_MARKER in system:
             return self._demo_chat_agent_turn(messages)
         return None
+
+    def _demo_runbook_answer(self, system: str, messages: list[dict[str, str]]) -> str | None:
+        """The deterministic Demo answer to a runbook step draft or runbook suggestion
+        (Round 14 SPEC §4.10.10), or None for any other prompt.
+
+        Only a system prompt that carries one of the two runbook markers is routed, so
+        every other Demo call (investigations, chat turns) skips the run engine.
+        ``engine.runbook_runs.demo_runbook_ai_answer`` builds the answer from the prompt
+        alone, so the call still goes through the one gateway and is ledgered at $0
+        like every Demo call (#6). Imported lazily: the prompt and run modules pull in
+        the model, store and tool layers, which this low-level module must not load at
+        import time.
+
+        Once a marker is found the answer always fits it, never the generic Demo
+        answer: when the run engine cannot be imported, its builder raises, or it
+        returns nothing, a warning is logged and the marker's fixed fallback is
+        returned (a suggestion with no runbook, or a neutral Demo draft). Only when the
+        markers themselves cannot be imported is the prompt treated as unrouted."""
+        try:
+            from ..agents.prompts import (
+                RUNBOOK_DRAFT_SYSTEM_MARKER,
+                RUNBOOK_SUGGEST_SYSTEM_MARKER,
+            )
+        except Exception:  # noqa: BLE001 -- without the markers no prompt can be told apart
+            return None
+        # The builder reads the suggestion marker first; the fallback follows the same order.
+        if RUNBOOK_SUGGEST_SYSTEM_MARKER in system:
+            fallback = _DEMO_RUNBOOK_SUGGEST_FALLBACK
+        elif RUNBOOK_DRAFT_SYSTEM_MARKER in system:
+            fallback = _DEMO_RUNBOOK_DRAFT_FALLBACK
+        else:
+            return None
+        try:
+            from ..engine.runbook_runs import demo_runbook_ai_answer
+
+            answer = demo_runbook_ai_answer(messages)
+        except Exception:  # noqa: BLE001 -- a regression degrades one answer, never the call
+            logger.warning("Demo runbook answer failed; using the fixed Demo fallback", exc_info=True)
+            return fallback
+        if not answer:
+            logger.warning("Demo runbook answer was empty; using the fixed Demo fallback")
+            return fallback
+        return answer
 
     def _demo_chat_agent_turn(self, messages: list[dict[str, str]]) -> str:
         """The deterministic Demo chat planner (SPEC §5.5, ``engine/demo_chat.py``).

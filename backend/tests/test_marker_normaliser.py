@@ -5,9 +5,10 @@
 matches ANY ``<<<NAME>>>``/``<<<END_NAME>>>`` token on a folded view of the text
 (invisible, format and combining characters dropped, each character NFKC-folded),
 rewrites the whole matched span to an inert tag, and renders every remaining
-invisible character as a visible ``\\uXXXX`` escape. UNTRUSTED, PLAYBOOK, MEMORY,
-PRECEDENT, the chat APP_DOCS product reference and the chat USER_TURN marker are all
-covered, including fence types added after this test was written.
+invisible character as a visible ``\\uXXXX`` escape. UNTRUSTED, RUNBOOK (Round 14)
+and the retired PLAYBOOK, MEMORY, PRECEDENT, the chat APP_DOCS product reference and
+the chat USER_TURN marker are all covered, including fence types added after this
+test was written.
 
 "No marker survived" is judged by an ORACLE that shares nothing with the
 implementation: whole-string NFKC, then every Cc/Cf/Mn/Me character and every
@@ -45,6 +46,8 @@ from app.agents.prompts import (
     MEMORY_OPEN,
     PRECEDENT_CLOSE,
     PRECEDENT_OPEN,
+    RUNBOOK_CLOSE,
+    RUNBOOK_OPEN,
     _neutralise_markers,
     fence,
     fence_block,
@@ -121,6 +124,8 @@ FORGED = [
     UNTRUSTED_OPEN,
     "<<<PLAYBOOK>>>",
     "<<<END_PLAYBOOK>>>",
+    RUNBOOK_OPEN,
+    RUNBOOK_CLOSE,
     MEMORY_OPEN,
     MEMORY_CLOSE,
     PRECEDENT_OPEN,
@@ -193,6 +198,7 @@ def test_fence_block_ordinary_payload_is_unchanged() -> None:
 @pytest.mark.parametrize("marker,neutral", [
     (UNTRUSTED_OPEN, "<fence>"), (UNTRUSTED_CLOSE, "</fence>"),
     ("<<<PLAYBOOK>>>", "<pb>"), ("<<<END_PLAYBOOK>>>", "</pb>"),
+    (RUNBOOK_OPEN, "<rb>"), (RUNBOOK_CLOSE, "</rb>"), ("<<< end runbook >>>", "</rb>"),
     (MEMORY_OPEN, "<mem>"), (MEMORY_CLOSE, "</mem>"),
     (PRECEDENT_OPEN, "<prec>"), (PRECEDENT_CLOSE, "</prec>"),
     (APP_DOCS_OPEN, "<app_docs>"), (APP_DOCS_CLOSE, "</app_docs>"),

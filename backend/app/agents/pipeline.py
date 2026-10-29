@@ -14,7 +14,8 @@ import asyncio
 import contextvars
 import logging
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from ..audit.audit_log import AuditLogger
@@ -29,6 +30,7 @@ from ..constants import (
     DecisionBy,
     Disposition,
     EntityType,
+    RUNBOOK_SELECTOR_ACTOR,
     SourceSurface,
     Verdict,
 )
@@ -39,6 +41,7 @@ from ..engine.cost_gate import CaseBudget
 # It never decides anything and is never an input to decide() (#3).
 from ..engine.metrics import classify_auto_close_gate
 from ..engine.precedent import match_analyst_rule_policy
+from ..engine.priority import band_of_case
 from ..engine.risk import compute_risk
 from ..engine.signatures import find_open_case_for_cluster
 from ..es.base import BaseESClient
@@ -53,13 +56,18 @@ from ..utils import iso_now, new_id, truncate
 from .common import entity_kql, normalize_kql
 from .formatter import Formatter
 from .graph import run_investigation
-from .investigator import Investigator
+from .investigator import (
+    GUIDANCE_LIBRARY_UNAVAILABLE,
+    GUIDANCE_SELECTION_FAILED,
+    Investigator,
+    RunbookGuidance,
+    select_investigator_runbook,
+)
 from .personas import select_persona_with_reason
 from .router import Router
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..engine.case_id import SequenceStore
-    from ..playbooks.registry import PlaybookRegistry
     from ..stores.memory import MemoryStore
     from ..stores.tuning import TuningStore
 
@@ -168,6 +176,68 @@ def machine_case_title(cluster: Cluster) -> str:
     return f"{cluster.entity.type.value}:{cluster.entity.value}{CASE_TITLE_SEPARATOR}{rules}"
 
 
+# --------------------------------------------------------------------------- #
+# Runbooks in the agent path (Round 14 SPEC §4.10.4, §4.10.9)
+# --------------------------------------------------------------------------- #
+#: Provides the matchable runbook catalog at investigation time: an awaitable that
+#: returns ``engine.runbook_runs.RunbookCatalog`` (its ``matchable`` is used) or an
+#: iterable of ``engine.runbook_match.MatchableRunbook``. A read failure raises; the
+#: investigation then runs with no runbook (fail closed, never an incomplete catalog).
+RunbookCatalogProvider = Callable[[], Awaitable[Any]]
+#: Attaches the matching runbook to a case the pipeline left needing a person (the
+#: post-investigation trigger of §4.10.4). Never awaited for its result.
+RunbookAttacher = Callable[[Case], Awaitable[Any]]
+
+
+def builtin_runbook_catalog() -> tuple[Any, ...]:
+    """The matchable catalog of the bundled library alone (package data, cached).
+    The default when the pipeline is built without a catalog provider (direct
+    constructions and tests): no operator runbook, nothing to read, nothing to fail."""
+    from ..engine.runbook_match import MatchableRunbook, matchable_catalog
+    from ..engine.runbook_model import load_builtin_runbooks
+
+    builtins = [
+        MatchableRunbook(id=b.id, version=b.version, definition=b.definition, origin="builtin")
+        for b in load_builtin_runbooks()
+    ]
+    return matchable_catalog(builtins, ())
+
+
+def _matchable(catalog: Any) -> tuple[Any, ...]:
+    """The matchable entries of a provider's answer (a ``RunbookCatalog`` or an
+    iterable of ``MatchableRunbook``)."""
+    entries = getattr(catalog, "matchable", catalog)
+    if not isinstance(entries, Iterable):
+        raise TypeError("a runbook catalog provider returned no matchable entries")
+    return tuple(entries)
+
+
+def source_type_map(prefs: Preferences) -> dict[str, str]:
+    """Each configured source id to its ``SourceType`` value, so a runbook's
+    ``type:<SourceType>`` criterion can match (it fails without the map)."""
+    out: dict[str, str] = {}
+    for source in getattr(prefs, "sources", None) or []:
+        raw = getattr(source, "source_type", None)
+        value = getattr(raw, "value", raw)
+        if getattr(source, "id", None) and value:
+            out[str(source.id)] = str(value)
+    return out
+
+
+def cluster_severity_band(cluster: Cluster, existing: Case | None, prefs: Preferences) -> str:
+    """The severity band the case built from ``cluster`` will show (the one shared
+    helper ``engine.priority.band_of_case``, on the source's declared ladder), read
+    from the same trigger, source and risk the case is assembled with. Advisory only;
+    never read by ``decide()`` (#3)."""
+    view = SimpleNamespace(
+        severity_band=None,
+        trigger_reason=_trigger(existing, cluster),
+        source_id=_source_id(existing, cluster),
+        risk_score=cluster.risk_score,
+    )
+    return band_of_case(view, prefs)
+
+
 # Distinguishes the legacy/default primary query surface from an explicit ``None``.
 # ``None`` means the originating source is push-only and MUST NOT inherit another
 # source's read tool.
@@ -185,7 +255,7 @@ class InvestigationPipeline:
         cases: CaseStore,
         audit: AuditLogger,
         source: PullConnector | None = None,
-        playbooks: "PlaybookRegistry | None" = None,
+        playbooks: Any = None,
         memory: "MemoryStore | None" = None,
         tuning_store: "TuningStore | None" = None,
         seq_store: "SequenceStore | None" = None,
@@ -195,6 +265,8 @@ class InvestigationPipeline:
         investigation_gate: Any = None,
         mutation_task_spawner: Any = None,
         fixture_sink: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+        runbook_catalog: RunbookCatalogProvider | None = None,
+        runbook_attacher: RunbookAttacher | None = None,
     ) -> None:
         self._es = es
         # The agent's read-only log surface. Defaults to wrapping ``es`` in an
@@ -210,9 +282,19 @@ class InvestigationPipeline:
         # carries the run id and actor kind (see ``RunStampedAudit``).
         self._audit = audit if isinstance(audit, RunStampedAudit) else RunStampedAudit(audit)
         self._router = Router(gateway, self._audit)
-        # Markdown playbook registry (deterministic per-cluster selection). None →
-        # no playbooks (generic investigator), preserving today's behaviour.
-        self._playbooks = playbooks
+        # ``playbooks`` (the retired Markdown procedure registry) is accepted and
+        # IGNORED: Round 14 replaced it with the runbook catalog below. It stays a
+        # keyword only so a caller that still passes it keeps constructing.
+        del playbooks
+        # The matchable runbook catalog (Round 14 SPEC §4.10.9): built-ins plus every
+        # live operator version, read once per investigation. None → the bundled
+        # library alone (``builtin_runbook_catalog``).
+        self.runbook_catalog = runbook_catalog
+        # The post-investigation attachment trigger (§4.10.4): called after the
+        # deterministic decision is saved; the attacher itself decides whether the
+        # case needs a person. Post-settable, like ``notifier`` and ``automation``.
+        # None → no attachment (direct constructions and tests).
+        self.runbook_attacher = runbook_attacher
         # Operator MEMORY store (durable trusted facts auto-injected into every
         # investigation). None → no memory injected (today's behaviour).
         self._memory = memory
@@ -304,7 +386,7 @@ class InvestigationPipeline:
         writes nothing onto the case. The decision is produced solely by
         ``case_manager.apply()``; these frames only NARRATE the steps. The whole thing
         is wrapped so a bus error (or a missing bus) can never break the pipeline
-        (#3/#11). ``detail`` is a SHORT, already-render-safe label (a persona/playbook
+        (#3/#11). ``detail`` is a SHORT, already-render-safe label (a persona/runbook
         id, a verdict enum, a status word) — never raw log/AI text (#9; the UI escapes
         it regardless)."""
         try:
@@ -437,6 +519,62 @@ class InvestigationPipeline:
             await automation.run(case, prefs, save=self._cases.save)
         except Exception as exc:  # noqa: BLE001 — automation must never affect the case flow
             logger.warning("threshold automation skipped for %s: %s", case.case_id, exc)
+
+    async def _select_runbook(
+        self, cluster: Cluster, existing: Case | None, prefs: Preferences
+    ) -> RunbookGuidance:
+        """The runbook that guides this investigation (Round 14 SPEC §4.10.9).
+
+        Reads the matchable catalog once (the provider, else the bundled library) and
+        runs the pure matcher over the cluster's facts, with the stored case's tags on
+        a re-investigation (a new cluster has no case, so its tags stay pending).
+        Never raises: a catalog that cannot be read gives no runbook
+        (``library_unavailable``), never a partial catalog in which a built-in an
+        operator copy replaces could stand in for that copy; a failure while choosing
+        from a catalog that was read gives no runbook either (``selection_failed``),
+        so the audit trail says which of the two happened (#2). Advisory only (#3)."""
+        try:
+            if self.runbook_catalog is None:
+                catalog = builtin_runbook_catalog()
+            else:
+                catalog = _matchable(await self.runbook_catalog())
+        except Exception as exc:  # noqa: BLE001 - guidance is advisory; never break the flow
+            logger.warning(
+                "Runbook catalog unavailable for %s (%s); investigating without a runbook",
+                cluster.signature, exc,
+            )
+            return RunbookGuidance.none(GUIDANCE_LIBRARY_UNAVAILABLE)
+        try:
+            return select_investigator_runbook(
+                cluster, prefs, catalog,
+                severity=cluster_severity_band(cluster, existing, prefs),
+                source_types=source_type_map(prefs),
+                tags=(list(existing.tags or []) if existing is not None else None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Runbook selection failed for %s (%s); investigating without a runbook",
+                cluster.signature, exc,
+            )
+            return RunbookGuidance.none(GUIDANCE_SELECTION_FAILED)
+
+    async def _maybe_attach_runbook(self, case: Case) -> None:
+        """The post-investigation attachment trigger (Round 14 SPEC §4.10.4).
+
+        Runs AFTER the deterministic decision is applied and saved, so it only ever
+        reads a decided case and can never feed ``decide()`` (#3). The attacher
+        (``engine.runbook_runs.reevaluate_case`` in production) attaches the matching
+        runbook when the decision left the case needing a person, and never to an
+        automatic close (including one waiting out its objection window); it is
+        idempotent per case and runbook (#4), so a re-investigation never makes a
+        second run. A no-op when no attacher is wired. Never raises."""
+        attacher = self.runbook_attacher
+        if attacher is None:
+            return
+        try:
+            await attacher(case)
+        except Exception as exc:  # noqa: BLE001 - attachment never affects the case path
+            logger.warning("runbook attachment skipped for %s: %s", case.case_id, exc)
 
     async def _maybe_index_resolved(self, case: Case) -> None:
         """Best-effort: index a terminal (closed/resolved) case into the RAG corpus
@@ -582,7 +720,6 @@ class InvestigationPipeline:
         prefs: Preferences,
         *,
         force: bool = False,
-        force_playbook_id: str | None = None,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
         investigation_priority: str = "ingest",
     ) -> Case:
@@ -593,7 +730,7 @@ class InvestigationPipeline:
         async with self.signature_lock(cluster.signature):
             return await self._investigate_cluster_locked(
                 cluster, source_surface, prefs,
-                force=force, force_playbook_id=force_playbook_id,
+                force=force,
                 query_source=query_source,
                 investigation_priority=investigation_priority,
             )
@@ -605,7 +742,6 @@ class InvestigationPipeline:
         prefs: Preferences,
         *,
         force: bool = False,
-        force_playbook_id: str | None = None,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
         investigation_priority: str = "ingest",
     ) -> Case:
@@ -616,7 +752,6 @@ class InvestigationPipeline:
                 source_surface,
                 prefs,
                 force=force,
-                force_playbook_id=force_playbook_id,
                 query_source=query_source,
             )
         async with gate.permit(
@@ -628,7 +763,6 @@ class InvestigationPipeline:
                 source_surface,
                 prefs,
                 force=force,
-                force_playbook_id=force_playbook_id,
                 query_source=query_source,
             )
 
@@ -639,7 +773,6 @@ class InvestigationPipeline:
         prefs: Preferences,
         *,
         force: bool = False,
-        force_playbook_id: str | None = None,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
     ) -> Case:
         # One investigation run: every audit row until it returns carries its id.
@@ -647,7 +780,7 @@ class InvestigationPipeline:
         try:
             return await self._investigate_cluster_run(
                 cluster, source_surface, prefs,
-                force=force, force_playbook_id=force_playbook_id, query_source=query_source,
+                force=force, query_source=query_source,
             )
         finally:
             _INVESTIGATION_RUN_ID.reset(run_token)
@@ -659,7 +792,6 @@ class InvestigationPipeline:
         prefs: Preferences,
         *,
         force: bool = False,
-        force_playbook_id: str | None = None,
         query_source: PullConnector | None | object = _DEFAULT_QUERY_SOURCE,
     ) -> Case:
         case_id = new_id("case-")
@@ -740,45 +872,28 @@ class InvestigationPipeline:
             budget = CaseBudget(prefs.caps)
             cost = 0.0
 
-            # Multi-agent roster + Markdown playbooks (Vigil-inspired): both are
-            # selected deterministically from the cluster. The persona specialises
-            # the investigator; the matched playbook is injected as TRUSTED operator
-            # procedure (it can only RECOMMEND — code/settings decide close/escalate).
+            # Multi-agent roster + runbooks: both are selected deterministically from
+            # the cluster ($0, no model call, #6). The persona specialises the
+            # investigator; the matching Published runbook is injected as TRUSTED
+            # guidance (it can only RECOMMEND; code decides close/escalate, #3).
             persona, persona_reason = select_persona_with_reason(cluster, prefs)
-            playbook = None
-            playbook_reason = "playbooks_disabled"
-            if force_playbook_id and self._playbooks is not None:
-                # Manual "run a playbook" (F10): the operator FORCES a specific
-                # playbook as the injected TRUSTED procedure. This is CONTEXT-ONLY —
-                # the playbook can still only RECOMMEND; the deterministic policy
-                # decides close/escalate exactly as for an auto-selected playbook (#3).
-                forced = self._playbooks.get(force_playbook_id)
-                if forced is not None:
-                    playbook = forced
-                    playbook_reason = f"forced:{force_playbook_id}"
-                else:
-                    playbook_reason = f"forced_missing:{force_playbook_id}"
-            elif prefs.playbooks.enabled and self._playbooks is not None:
-                playbook, playbook_reason = self._playbooks.select(cluster)
+            guidance = await self._select_runbook(cluster, existing, prefs)
             platform_tuning = await self._platform_tuning_snapshot(cluster, prefs)
+            # The selection row (Round 14 SPEC §4.10.9): actor ``runbook_selector``,
+            # action ``runbook.selected``, with the match explanation. It is also the
+            # durable run boundary the case rationale reads. ``result_summary`` keeps
+            # the ``key=value`` tokens the older ``playbook_selector`` rows carried.
             await self._audit.record(
                 action_type=ActionType.DECISION, surface=source_surface.value,
-                actor="playbook_selector", case_id=case_id,
+                actor=RUNBOOK_SELECTOR_ACTOR, action="runbook.selected", case_id=case_id,
                 result_summary=(
-                    f"playbook={f'{playbook.id} v{playbook.version}' if playbook else 'none'} "
-                    f"persona={persona.id} reason={playbook_reason}"
+                    f"runbook={guidance.label} persona={persona.id} "
+                    f"reason={guidance.status}: {guidance.reason}"
                 ),
                 tool_input={
-                    "playbook_selection": (
-                        {
-                            "id": playbook.id,
-                            "version": playbook.version,
-                            "reason": playbook_reason,
-                            "forced": bool(force_playbook_id),
-                        }
-                        if playbook is not None
-                        else None
-                    ),
+                    "runbook_selection": guidance.selection_payload(),
+                    "runbook_status": guidance.status,
+                    "runbook_reason": guidance.reason,
                     "persona_selection": {
                         "id": persona.id,
                         "reason": persona_reason,
@@ -786,10 +901,10 @@ class InvestigationPipeline:
                     "platform_tuning": platform_tuning,
                 },
             )
-            # Live progress: the specialist persona + playbook are selected.
+            # Live progress: the specialist persona + runbook are selected.
             self._emit_step(
                 case_id, "persona", status="running", detail=persona.id,
-                extra={"playbook_id": (playbook.id if playbook else "")},
+                extra={"runbook_id": (guidance.runbook_id if guidance.selected else "") or ""},
             )
 
             # Operator MEMORY (durable trusted facts): auto-injected into the strong
@@ -811,7 +926,7 @@ class InvestigationPipeline:
                 procedure_provenance = {
                     "consultation_path": "kill_switch",
                     "persona_consulted": False,
-                    "playbook_consulted": False,
+                    "runbook_consulted": False,
                     "knowledge": [],
                     "retrieval_query_groups": [],
                     "retrieval_status": "not_attempted",
@@ -825,7 +940,7 @@ class InvestigationPipeline:
             else:
                 procedure_provenance = {
                     "persona_consulted": False,
-                    "playbook_consulted": False,
+                    "runbook_consulted": False,
                     "knowledge": [],
                     "retrieval_query_groups": [],
                     "retrieval_status": "not_attempted",
@@ -845,7 +960,7 @@ class InvestigationPipeline:
                 cost_accum: list[float] = []
                 # Stamp the case TIME budget HERE — at the ``wait_for`` site — and not at
                 # ``CaseBudget`` construction: construction happens before enrichment,
-                # persona/playbook selection and the platform-tuning snapshot, so a
+                # persona/runbook selection and the platform-tuning snapshot, so a
                 # deadline stamped there would already be partly spent when this clock
                 # starts and the two clocks would disagree. With it stamped, the ReAct
                 # loop bounds each model request by ``min(caps.request_timeout_seconds,
@@ -870,7 +985,7 @@ class InvestigationPipeline:
                         run_investigation(
                             self._router, investigator, self._rag, cluster, enrichment,
                             prefs, budget, source_surface.value, case_id,
-                            persona=persona, playbook=playbook, memory=memory_entries,
+                            persona=persona, runbook=guidance, memory=memory_entries,
                             cost_sink=cost_accum,
                             provenance_sink=procedure_provenance,
                         ),
@@ -943,8 +1058,8 @@ class InvestigationPipeline:
                 result_summary=(
                     f"persona selected={persona.id} consulted="
                     f"{bool(procedure_provenance.get('persona_consulted'))}; "
-                    f"playbook selected={playbook.id if playbook else 'none'} consulted="
-                    f"{bool(procedure_provenance.get('playbook_consulted'))}"
+                    f"runbook selected={guidance.label} consulted="
+                    f"{bool(procedure_provenance.get('runbook_consulted'))}"
                 ),
                 tool_input={
                     "persona": {
@@ -952,10 +1067,12 @@ class InvestigationPipeline:
                         "selection_reason": persona_reason,
                         "consulted": bool(procedure_provenance.get("persona_consulted")),
                     },
-                    "playbook": {
-                        "selected_id": playbook.id if playbook else None,
-                        "selection_reason": playbook_reason,
-                        "consulted": bool(procedure_provenance.get("playbook_consulted")),
+                    "runbook": {
+                        "selected_id": guidance.runbook_id if guidance.selected else None,
+                        "version": guidance.version if guidance.selected else None,
+                        "title": guidance.title if guidance.selected else "",
+                        "selection_reason": guidance.reason,
+                        "consulted": bool(procedure_provenance.get("runbook_consulted")),
                     },
                     "consultation_path": procedure_provenance.get("consultation_path", ""),
                     "retrieval_status": procedure_provenance.get(
@@ -979,7 +1096,12 @@ class InvestigationPipeline:
             retrieval_measured = procedure_provenance.get("retrieval_status") == "measured"
             case = self._assemble_case(
                 case_id, cluster, verdict, source_surface, existing, cost, prefs,
-                persona_id=persona.id, playbook_id=(playbook.id if playbook else ""),
+                persona_id=persona.id,
+                runbook=(
+                    guidance
+                    if guidance.selected and procedure_provenance.get("runbook_consulted")
+                    else None
+                ),
                 case_number=case_number,
                 knowledge_used=(
                     list(procedure_provenance.get("knowledge", []) or [])
@@ -1046,6 +1168,10 @@ class InvestigationPipeline:
                     "decision_by": (case.decision_by.value if case.decision_by else None),
                 },
             )
+            # Runbook attachment (Round 14 SPEC §4.10.4): AFTER the deterministic
+            # decision + save, so a case that needs a person gets the matching runbook
+            # as a checklist. It reads the decided case and never changes it (#3).
+            await self._maybe_attach_runbook(case)
             # Threshold automation (F10) runs AFTER the deterministic decision + save
             # (#3). It may ONLY tag/recommend/notify/queue a re-investigation (which
             # itself re-runs decide()) / open a HITL Proposal — never set status or
@@ -1096,6 +1222,9 @@ class InvestigationPipeline:
                     raise RuntimeError(
                         f"could not persist fail-to-human case {case_id}"
                     ) from persist_error
+            # A failed investigation still leaves a case that needs a person, so it
+            # gets the matching runbook like any other (§4.10.4).
+            await self._maybe_attach_runbook(case)
             return case
 
     async def _close_by_analyst_policy(
@@ -1282,6 +1411,7 @@ class InvestigationPipeline:
                 existing.retrieval_observation_status if existing else "not_measured"
             ),
             precedent_signal=(existing.precedent_signal if existing else None),
+            **_procedure_history(existing),
             analyst_policy=match.as_dict(),
         )
         await self._cases.save(case)
@@ -1377,6 +1507,8 @@ class InvestigationPipeline:
                 existing.retrieval_observation_status if existing else "not_measured"
             ),
             precedent_signal=(existing.precedent_signal if existing else None),
+            **_procedure_history(existing),
+            tags=_carried_tags(existing),
             # Reaching the candidate path means no live declaration covered this
             # cluster, so any stale marker from an earlier close is no longer true.
             analyst_policy=None,
@@ -1399,7 +1531,7 @@ class InvestigationPipeline:
         cost: float,
         prefs: Preferences,
         persona_id: str = "",
-        playbook_id: str = "",
+        runbook: RunbookGuidance | None = None,
         case_number: str = "",
         knowledge_used: list[dict[str, Any]] | None = None,
         retrieval_measured: bool = False,
@@ -1474,7 +1606,23 @@ class InvestigationPipeline:
             verdict_history=verdict_history,
             trigger_reason=_trigger(existing, cluster),
             agent_persona=persona_id or (existing.agent_persona if existing else ""),
-            playbook_id=playbook_id or (existing.playbook_id if existing else ""),
+            # Round 14 (SPEC §4.10.9): ``playbook_id`` stays readable and is never
+            # written by new code; ``runbook_id``/``runbook_version`` name the Published
+            # runbook whose guidance the investigator received in the latest run that
+            # received one (a run that did not consult one keeps the earlier values).
+            playbook_id=(existing.playbook_id if existing else ""),
+            runbook_id=(
+                runbook.runbook_id if runbook is not None
+                else (existing.runbook_id if existing else None)
+            ),
+            runbook_version=(
+                runbook.version if runbook is not None
+                else (existing.runbook_version if existing else None)
+            ),
+            # The case's tags (people's and automation rules' labels) survive a
+            # re-investigation: a runbook can be conditioned on them (§4.10.4), and
+            # the investigator's guidance already read them for this run.
+            tags=_carried_tags(existing),
             knowledge_used=merged_knowledge,
             retrieval_history_status=(
                 existing.retrieval_history_status if existing else "available"
@@ -1621,10 +1769,34 @@ def _fail_to_human_case(
             existing, retrieval_measured
         ),
         precedent_signal=(existing.precedent_signal if existing else None),
+        **_procedure_history(existing),
+        tags=_carried_tags(existing),
         # A failed investigation is still an investigation: the case is NEEDS_HUMAN, not
         # closed by declaration, so the durable marker does not survive.
         analyst_policy=None,
     )
+
+
+def _carried_tags(existing: Case | None) -> list[str]:
+    """The stored case's tags, kept by every rebuild of the case (a re-investigation, a
+    failed run, a re-registered candidate). They are labels people and automation
+    rules put on the record, and a runbook may be conditioned on them (Round 14 SPEC
+    §4.10.4), so the pipeline never drops them."""
+    return list(existing.tags) if existing is not None else []
+
+
+def _procedure_history(existing: Case | None) -> dict[str, Any]:
+    """The procedure provenance a rebuilt case keeps from the stored one: the runbook
+    whose guidance an earlier investigation received and the pre-Round 14
+    ``playbook_id`` (history is never rewritten, SPEC §4.10.9). A path that consults no
+    runbook (a candidate, a declared-benign close, a failed run) never erases them."""
+    if existing is None:
+        return {}
+    return {
+        "playbook_id": existing.playbook_id,
+        "runbook_id": existing.runbook_id,
+        "runbook_version": existing.runbook_version,
+    }
 
 
 def _retrieval_observation_status(

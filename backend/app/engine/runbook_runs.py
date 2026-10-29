@@ -335,6 +335,13 @@ async def load_catalog(state: Any) -> RunbookCatalog:
         MatchableRunbook(id=b.id, version=b.version, definition=b.definition, origin="builtin")
         for b in load_builtin_runbooks()
     )
+    # Demo Mode (D45): the active stack may map the synthetic Demo rule names onto the
+    # built-ins that cover them (``AppState.runbook_catalog_overlay``), so a Demo case
+    # gets the run its storyline calls for, the same runbook the Demo investigator was
+    # guided by. The real stack returns the built-ins unchanged.
+    overlay = getattr(state, "runbook_catalog_overlay", None)
+    if callable(overlay):
+        builtins = tuple(overlay(builtins))
     library = getattr(state, "runbook_library", None)
     published = await library.published_catalog() if library is not None else ()
     operator: list[MatchableRunbook] = []

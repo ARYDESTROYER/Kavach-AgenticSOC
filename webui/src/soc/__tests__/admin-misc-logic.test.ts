@@ -55,6 +55,43 @@ describe('Roles draftFromRow — RBAC data-loss guard', () => {
     expect(d.name).toBe('tier1_plus');
   });
 
+  it('folds a stored retired `playbooks` key into `runbooks` so no hidden key survives', () => {
+    // SPEC §3.7: the editor has no `playbooks` row. A key left in the draft would be
+    // invisible, and the server would read it as a `runbooks` grant again once an
+    // administrator cleared every `runbooks` cell.
+    const legacyOnly = {
+      name: 'legacy_runner', builtin: false, description: '', resourceCount: 1,
+      custom: {
+        name: 'legacy_runner', description: '', inherits: [],
+        grants: { playbooks: ['read', 'manage'], cases: ['read'] },
+        denies: { playbooks: ['run'] },
+      },
+    };
+    const folded = draftFromRow(legacyOnly, {});
+    expect(folded.grants).toEqual({ cases: ['read'], runbooks: ['read', 'manage', 'publish'] });
+    expect(folded.denies).toEqual({ runbooks: ['run'] });
+
+    // A `runbooks` entry that is present wins, as on the server: the stale key adds
+    // nothing, so clearing `runbooks` later cannot resurrect it.
+    const both = {
+      name: 'echo_role', builtin: false, description: '', resourceCount: 1,
+      custom: {
+        name: 'echo_role', description: '', inherits: [],
+        grants: { playbooks: ['read', 'run', 'manage'], runbooks: ['read'] },
+        denies: {},
+      },
+    };
+    const kept = draftFromRow(both, {});
+    expect(kept.grants).toEqual({ runbooks: ['read'] });
+    expect(kept.grants.playbooks).toBeUndefined();
+
+    const wildcard = draftFromRow(
+      { ...legacyOnly, custom: { ...legacyOnly.custom, grants: { playbooks: ['*'] }, denies: {} } },
+      {},
+    );
+    expect(wildcard.grants).toEqual({ runbooks: ['*'] });
+  });
+
   it('returns a deep copy so editing the draft never mutates the source matrix', () => {
     const row = {
       name: 'tier1_plus',

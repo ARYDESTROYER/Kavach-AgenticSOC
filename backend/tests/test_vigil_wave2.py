@@ -1,5 +1,11 @@
-"""Wave-2 integration tests: Markdown playbook selection/injection (with the
-safety guarantees) and the optional auth gate. All offline (fake ES + mock LLM)."""
+"""Wave-2 integration tests: runbook selection/injection into the investigator (with
+the safety guarantees) and the optional auth gate. All offline (fake ES + mock LLM).
+
+Round 14 (SPEC §4.10.9) replaced the Markdown playbook block with the TRUSTED active
+runbook: the deterministic matcher picks one Published runbook (a built-in here) per
+cluster and its investigator rendering enters the ``<<<RUNBOOK>>>`` block. These
+tests pin that contract through the real pipeline; the pure selection rules are in
+``test_playbook_selection.py`` and ``test_runbook_prompt.py``."""
 
 from __future__ import annotations
 
@@ -10,11 +16,14 @@ import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
+from app.agents.pipeline import builtin_runbook_catalog
+from app.agents.prompts import RUNBOOK_CLOSE, RUNBOOK_HEADING, RUNBOOK_OPEN
 from app.api.deps import require_auth
 from app.api.routes import router
 from app.config import Secrets
 from app.constants import UNTRUSTED_OPEN, EntityType, SourceSurface
 from app.engine.correlation import cluster_from_events
+from app.engine.runbook_model import BUILTIN_RUNBOOK_IDS
 from app.es.fake import InMemoryESClient
 from app.llm.providers import MockProvider
 from app.state import AppState
@@ -35,83 +44,125 @@ def _final(verdict: str = "NEEDS_HUMAN", confidence: float = 0.2) -> str:
     })
 
 
-# --------------------------------------------------------------------------- #
-# Playbook selection + injection through the real pipeline
-# --------------------------------------------------------------------------- #
-async def test_matching_playbook_selected_and_injected(app_state: AppState, mock_provider) -> None:
+def _script(mock_provider) -> None:
     mock_provider.push("router", json.dumps({"bucket": "needs_strong_model", "confidence": 0.9, "reason": "x"}))
     mock_provider.push("investigator", _final())
-    # 'mail_auth' (>=5 events) matches the brute_force_login seed playbook.
+
+
+def _investigator_messages(mock_provider) -> tuple[str, str]:
+    inv_calls = [c for c in mock_provider.calls if c["role"] == "investigator"]
+    return inv_calls[0]["messages"][0]["content"], inv_calls[0]["messages"][1]["content"]
+
+
+async def _set_runbooks(app_state: AppState, **changes) -> None:
+    p = app_state.prefs.model_copy(deep=True)
+    p.runbooks = p.runbooks.model_copy(update=changes)
+    await app_state.update_prefs(p)
+
+
+# --------------------------------------------------------------------------- #
+# Runbook selection + injection through the real pipeline
+# --------------------------------------------------------------------------- #
+async def test_matching_runbook_selected_and_injected(app_state: AppState, mock_provider) -> None:
+    _script(mock_provider)
+    # 'mail_auth' is one of the brute force built-in's rules (it merged the retired
+    # brute_force_login playbook), so that built-in is chosen on its rules (tier 3).
     case = await app_state.pipeline.investigate_cluster(
         _cluster("mail_auth", n=6), SourceSurface.INVESTIGATE, app_state.prefs
     )
-    assert case.playbook_id == "brute_force_login"
+    assert case.runbook_id == "brute-force-password-spray"
+    assert case.runbook_version == 1
+    assert case.playbook_id == ""  # never written by new code
 
-    inv_calls = [c for c in mock_provider.calls if c["role"] == "investigator"]
-    system = inv_calls[0]["messages"][0]["content"]
-    user_msg = inv_calls[0]["messages"][1]["content"]
-    # The delimited TRUSTED playbook block is present and the precedence line is set.
-    assert "<<<PLAYBOOK>>>" in user_msg and "<<<END_PLAYBOOK>>>" in user_msg
-    assert "PRECEDENCE" in system
+    system, user_msg = _investigator_messages(mock_provider)
+    # The delimited TRUSTED runbook block is present and the precedence line is set.
+    assert RUNBOOK_HEADING in user_msg
+    assert RUNBOOK_OPEN in user_msg and RUNBOOK_CLOSE in user_msg
+    assert "<<<PLAYBOOK>>>" not in user_msg
+    assert "PRECEDENCE" in system and RUNBOOK_OPEN in system
 
-    # Fence integrity: the playbook block must NOT contain the UNTRUSTED markers;
-    # the cluster's sample events ARE fenced (so the markers appear elsewhere).
-    block = user_msg.split("<<<PLAYBOOK>>>")[1].split("<<<END_PLAYBOOK>>>")[0]
+    # Fence integrity: the runbook block must NOT contain the UNTRUSTED markers; the
+    # cluster's sample events ARE fenced (so the markers appear elsewhere).
+    block = user_msg.split(RUNBOOK_OPEN)[1].split(RUNBOOK_CLOSE)[0]
+    assert block.strip().startswith("Brute force and password spray (v1)")
     assert UNTRUSTED_OPEN not in block
     assert UNTRUSTED_OPEN in user_msg  # sample events still fenced
 
 
-async def test_playbook_selection_audited(app_state: AppState, mock_provider) -> None:
-    mock_provider.push("router", json.dumps({"bucket": "needs_strong_model", "confidence": 0.9, "reason": "x"}))
-    mock_provider.push("investigator", _final())
+async def test_runbook_selection_audited(app_state: AppState, mock_provider) -> None:
+    _script(mock_provider)
     case = await app_state.pipeline.investigate_cluster(
         _cluster("mail_auth", n=6), SourceSurface.INVESTIGATE, app_state.prefs
     )
     records = await app_state.audit.records_for_case(case.case_id)
     selectors = [
         r for r in records
-        if (r.get("actor") if isinstance(r, dict) else getattr(r, "actor", "")) == "playbook_selector"
+        if r.get("actor") == "runbook_selector" and r.get("action_type") == "decision"
     ]
-    assert selectors, "playbook selection must be audited"
-    summary = selectors[0].get("result_summary") if isinstance(selectors[0], dict) else selectors[0].result_summary
-    assert "brute_force_login" in summary
+    assert len(selectors) == 1, "runbook selection must be audited once per investigation"
+    row = selectors[0]
+    assert row.get("action") == "runbook.selected"
+    assert "brute-force-password-spray" in row.get("result_summary", "")
+    selection = row["tool_input"]["runbook_selection"]
+    assert selection["id"] == "brute-force-password-spray" and selection["version"] == 1
+    assert selection["used"] is True and selection["tier"] == 3
+    assert selection["explanation"]["matched"][0] == {"criterion": "rule_ids", "value": ["mail_auth"]}
+    assert selection["reason"].startswith("Matched rule mail_auth")
+    # No retired actor is written by new code.
+    assert not [r for r in records if r.get("actor") == "playbook_selector"]
 
 
-async def test_unmatched_cluster_uses_generic(app_state: AppState, mock_provider) -> None:
-    mock_provider.push("router", json.dumps({"bucket": "needs_strong_model", "confidence": 0.9, "reason": "x"}))
-    mock_provider.push("investigator", _final())
-    # 'mail_fim' is in the rule catalog but matches no seed playbook.
+async def test_unmatched_cluster_gets_the_fallback(app_state: AppState, mock_provider) -> None:
+    _script(mock_provider)
+    # 'mail_fim' is in the rule catalog but no built-in lists it, so the Generic
+    # incident runbook is the guidance (D33, fallback on by default).
     case = await app_state.pipeline.investigate_cluster(
         _cluster("mail_fim", n=6), SourceSurface.INVESTIGATE, app_state.prefs
     )
-    assert case.playbook_id == ""
-    inv_calls = [c for c in mock_provider.calls if c["role"] == "investigator"]
-    assert "<<<PLAYBOOK>>>" not in inv_calls[0]["messages"][1]["content"]
+    assert case.runbook_id == "generic-incident"
+    _system, user_msg = _investigator_messages(mock_provider)
+    assert RUNBOOK_OPEN in user_msg
+    block = user_msg.split(RUNBOOK_OPEN)[1].split(RUNBOOK_CLOSE)[0]
+    assert "Generic incident" in block
 
 
-async def test_playbooks_disabled_uses_generic(app_state: AppState, mock_provider) -> None:
-    p = app_state.prefs.model_copy(deep=True)
-    p.playbooks.enabled = False
-    await app_state.update_prefs(p)
-    mock_provider.push("router", json.dumps({"bucket": "needs_strong_model", "confidence": 0.9, "reason": "x"}))
-    mock_provider.push("investigator", _final())
+async def test_unmatched_cluster_without_fallback_gets_no_runbook(app_state: AppState, mock_provider) -> None:
+    await _set_runbooks(app_state, fallback=False)
+    _script(mock_provider)
+    case = await app_state.pipeline.investigate_cluster(
+        _cluster("mail_fim", n=6), SourceSurface.INVESTIGATE, app_state.prefs
+    )
+    assert case.runbook_id is None and case.runbook_version is None
+    _system, user_msg = _investigator_messages(mock_provider)
+    assert RUNBOOK_OPEN not in user_msg
+
+
+@pytest.mark.parametrize("setting", ["investigator_guidance", "enabled"])
+async def test_guidance_off_uses_no_runbook(app_state: AppState, mock_provider, setting) -> None:
+    await _set_runbooks(app_state, **{setting: False})
+    _script(mock_provider)
     case = await app_state.pipeline.investigate_cluster(
         _cluster("mail_auth", n=6), SourceSurface.INVESTIGATE, app_state.prefs
     )
-    assert case.playbook_id == ""  # flag off → generic, even for a matching cluster
+    # Switched off: no runbook, even for a matching cluster.
+    assert case.runbook_id is None
+    _system, user_msg = _investigator_messages(mock_provider)
+    assert RUNBOOK_OPEN not in user_msg
 
 
-def test_playbook_cannot_grant_tools_outside_registry(app_state: AppState) -> None:
-    # The pipeline's tool registry is fixed regardless of any playbook's
-    # suggested_tools (advisory only) — a playbook can never add a tool.
+def test_runbook_cannot_grant_tools_outside_registry(app_state: AppState) -> None:
+    # The pipeline's tool registry is fixed regardless of any runbook: a runbook's
+    # lookups run in the run engine, never as investigator tools, so a runbook can
+    # never add a tool.
     investigator, _enrich = app_state.pipeline._build_investigator(app_state.prefs)
     assert set(investigator._tools.names()) == {"es_query", "enrich", "rag_retrieve"}
 
 
-def test_hot_reload_loads_seed_playbooks(app_state: AppState) -> None:
-    summary = app_state.reload_playbooks()
-    assert summary["loaded"] >= 3
-    assert "brute_force_login" in summary["ids"]
+def test_default_catalog_is_the_bundled_library() -> None:
+    # A pipeline built without a catalog provider guides from the 12 built-ins.
+    catalog = builtin_runbook_catalog()
+    assert {entry.id for entry in catalog} == set(BUILTIN_RUNBOOK_IDS)
+    assert all(entry.origin == "builtin" for entry in catalog)
 
 
 # --------------------------------------------------------------------------- #

@@ -60,6 +60,7 @@ from ..rbac.policy import (
     normalise_denies,
     normalise_grants,
     resolve_matrix,
+    resolve_runbook_alias,
 )
 from ..state import AppState
 from ..stores.custom_roles import CustomRoleExists, CustomRoleMissing
@@ -449,12 +450,18 @@ async def simulate_permission(
     """The ``can()`` outcome for a ``role`` × ``resource`` × ``action`` against the
     current effective matrix (built-ins + operator overrides + stored custom roles).
     Returns ``allowed`` plus the role's resolved actions on that resource so the UI can
-    explain WHY."""
+    explain WHY.
+
+    Round 14 (SPEC §3.7): the retired ``playbooks`` resource is still an accepted
+    alias of ``runbooks`` in every grant layer, so a question about it is answered for
+    its ``runbooks`` meaning (``alias_of`` names the resource that was evaluated), never
+    a silent "denied" for a resource the server no longer lists."""
     rbac = await _rbac_config_with_custom_roles(state)
     matrix = resolve_matrix(rbac)
-    allowed = can(role, resource, action, matrix=matrix)
-    actions = (matrix.get(str(role), {}) or {}).get(resource, [])
-    known_resource = resource in RESOURCES
+    evaluated_resource, evaluated_action = resolve_runbook_alias(resource, action)
+    allowed = can(role, evaluated_resource, evaluated_action, matrix=matrix)
+    actions = (matrix.get(str(role), {}) or {}).get(evaluated_resource, [])
+    known_resource = evaluated_resource in RESOURCES
     return {
         "role": role,
         "resource": resource,
@@ -462,6 +469,7 @@ async def simulate_permission(
         "allowed": bool(allowed),
         "actions": list(actions),
         "known_resource": known_resource,
+        "alias_of": evaluated_resource if evaluated_resource != resource else None,
         "role_exists": str(role) in matrix or str(role) == UserRole.SUPER_ADMIN.value,
     }
 

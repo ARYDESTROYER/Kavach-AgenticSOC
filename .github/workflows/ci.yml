@@ -105,8 +105,17 @@ jobs:
           }
           missing = sorted(required - names)
           assert not missing, f"wheel is missing runtime data: {missing}"
-          assert any(name.startswith("app/runbooks/") and name.endswith(".md") for name in names)
-          assert any(name.startswith("playbooks/") and name.endswith(".md") for name in names)
+          library = {
+              name for name in names
+              if name.startswith("app/runbooks/library/") and name.endswith(".md")
+          }
+          assert len(library) == 12, f"wheel must ship the 12 built-in runbooks, found {sorted(library)}"
+          retired = sorted(
+              name for name in names
+              if name.startswith(("playbooks/", "app/playbooks/"))
+              or (name.startswith("app/runbooks/") and name.count("/") == 2 and name.endswith(".md"))
+          )
+          assert not retired, f"wheel still ships retired procedure files: {retired}"
           PY
           python -m pip install --no-deps --target "${RUNNER_TEMP}/wheel-site" dist/*.whl
           cd "${RUNNER_TEMP}"
@@ -759,6 +768,8 @@ jobs:
               docker run --rm --entrypoint python "${IMAGE}" -m pip check
               docker run --rm --entrypoint python "${IMAGE}" -c \
                 'from importlib.metadata import version; assert version("wheel") == "0.45.1"'
+              docker run --rm --entrypoint python "${IMAGE}" -c \
+                'from app.engine.runbook_model import BUILTIN_RUNBOOK_IDS, load_builtin_runbooks; assert sorted(r.id for r in load_builtin_runbooks()) == sorted(BUILTIN_RUNBOOK_IDS) and len(BUILTIN_RUNBOOK_IDS) == 12'
               ;;
             webui)
               jq -e '.[0].Config.ExposedPorts["80/tcp"] != null' \

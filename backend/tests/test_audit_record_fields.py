@@ -1176,7 +1176,12 @@ async def test_each_investigation_stamps_one_run_id_and_the_actor_kind(app_state
         by_case.setdefault(row.get("case_id") or "", []).append(row)
     run_ids = []
     for case in (first, second):
-        case_rows = by_case[case.case_id]
+        # The run engine's attachment and lookup rows (action_type runbook) are not
+        # pipeline rows and carry no run id (SPEC §4.5.3).
+        attached = [r for r in by_case[case.case_id] if r.get("action") == "run.attached"]
+        assert len(attached) == 1 and attached[0].get("run_id") is None
+        assert attached[0]["actor"] == "runbook_selector" and attached[0].get("actor_type") == "system"
+        case_rows = [r for r in by_case[case.case_id] if r.get("action_type") != "runbook"]
         ids = {r.get("run_id") for r in case_rows}
         assert len(ids) == 1, ids
         run_id = ids.pop()

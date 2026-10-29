@@ -23,7 +23,7 @@ from collections import Counter
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timedelta, timezone
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable
 
 from ..config import Preferences
 from ..constants import INVISIBLE_TEXT_CLASS, CaseStatus, DecisionBy, Verdict
@@ -40,11 +40,14 @@ from ..engine.precedent import (
     stratified_selection,
     unavailable_distribution,
 )
-from ..engine.runbooks import corpus_items as runbook_corpus_items
+from ..engine.runbook_model import KIND_LABELS as RUNBOOK_KIND_LABELS
+from ..engine.runbook_model import content_hash as runbook_content_hash
+from ..engine.runbook_model import load_builtin_runbooks
 # Light by design: the package defines only the reserved labels at import time (its
 # public names load lazily), so this import cannot form a cycle through app.knowledge.
 from ..knowledge import RESERVED_SOURCE_LABELS
 from ..llm.gateway import FAILURE_NOT_CONFIGURED, LLMGateway
+from ..models import PHASE_LABELS as RUNBOOK_PHASE_LABELS
 from ..models import RagChunk
 from ..stores.precedent_exclusions import normalise_reason as normalise_exclusion_reason
 from ..utils import iso_now
@@ -62,11 +65,11 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
         PrecedentWindowConfig,
         UnconfirmedPrecedentConfig,
     )
-    from ..engine.runbook_service import RunbookService
     from ..models import Case
     from ..stores.cases import CaseStore
     from ..stores.precedent_exclusions import PrecedentExclusionStore
     from ..stores.rag_health import RagHealthStore
+    from ..stores.runbook_library import RunbookLibraryStore
 
 logger = logging.getLogger("tlsoc.tools.rag")
 
@@ -783,71 +786,296 @@ def precedent_ratification_entry(
 
 
 # --------------------------------------------------------------------------- #
-# Seed corpus — each item is {text, source, metadata}.
+# The runbook corpus (Round 14 SPEC §4.10.18): Published versions only.
 # --------------------------------------------------------------------------- #
-SEED_RUNBOOKS: list[dict[str, Any]] = [
-    {
-        "text": (
-            "SSH brute force / failed login runbook: A burst of failed authentication "
-            "attempts (sshd 'Failed password', many auth failures) from one source IP "
-            "against a host indicates brute force. Confirm whether any attempt succeeded, "
-            "check the breadth of targeted usernames, and block the source IP if hostile."
-        ),
-        "source": "runbook",
-        "metadata": {"topic": "brute_force", "rule": "sshd", "mitre": "T1110"},
-    },
-    {
-        "text": (
-            "Web application / ModSecurity WAF alert runbook: ModSec or WAF rule triggers "
-            "(SQLi, XSS, path traversal, LFI) against a public web app. Inspect the request "
-            "payload and response code — a 200 on a flagged request suggests the exploit may "
-            "have reached the app. Correlate by client IP across endpoints."
-        ),
-        "source": "runbook",
-        "metadata": {"topic": "web_attack", "rule": "modsecurity", "mitre": "T1190"},
-    },
-    {
-        "text": (
-            "Port scan / Suricata reconnaissance runbook: Suricata 'ET SCAN' or many "
-            "connection attempts to distinct ports from a single source IP indicate port "
-            "scanning. Treat as reconnaissance; assess how many ports/hosts were probed and "
-            "whether any service responded before deciding to block."
-        ),
-        "source": "runbook",
-        "metadata": {"topic": "port_scan", "rule": "suricata", "mitre": "T1046"},
-    },
-    {
-        "text": (
-            "Suspicious mail / Postfix runbook: Postfix logs showing high-volume relay "
-            "attempts, repeated rejected recipients, or auth failures on submission can mean "
-            "spam relay abuse or credential stuffing against mail. Check sender reputation, "
-            "rejection reasons and whether any authentication succeeded."
-        ),
-        "source": "runbook",
-        "metadata": {"topic": "mail_abuse", "rule": "postfix", "mitre": "T1566"},
-    },
-    {
-        "text": (
-            "Vulnerability scan / Nessus-OpenVAS runbook: Bursts of varied requests probing "
-            "known CVEs and default paths from one IP indicate an automated vulnerability "
-            "scanner (Nessus, OpenVAS, nikto). Distinguish authorised internal scans from "
-            "hostile external scanning before escalating."
-        ),
-        "source": "runbook",
-        "metadata": {"topic": "vuln_scan", "rule": "nessus-openvas", "mitre": "T1595"},
-    },
-    {
-        "text": (
-            "Malicious IP reputation runbook: When threat-intel enrichment flags a source IP "
-            "with a high reputation score (AbuseIPDB/VirusTotal), prioritise the case. "
-            "Correlate the IP's activity across rules and hosts, capture all touched assets "
-            "and recommend blocking at the perimeter."
-        ),
-        "source": "runbook",
-        "metadata": {"topic": "ip_reputation", "rule": "enrichment", "mitre": "T1071"},
-    },
-]
+# The ``runbook`` source is projected from the runbook library: every built-in (each at
+# its release version) that no Published operator copy replaces, and the live version of
+# every Published operator runbook. Drafts, versions in review and retired runbooks are
+# never indexed, so only Published text can ever reach a prompt as TRUSTED (#9, D39).
+#
+# Document identity: ``runbook-library:<runbook id>:v<version>-<content hash prefix>``,
+# one chunk per phase (``...:<phase>``; a phase whose text outgrows one chunk is split
+# into ``...:<phase>:<part>``). Any change to the Published text is a new document, so
+# a reprojection writes the new document, reads it back, and only then removes the old
+# one: the corpus never holds no copy of a runbook while it is being updated, and a
+# phase a newer version dropped never lingers.
+#
+# Chunks written before Round 14 (``runbook:<id>``, the in-code ``seed:runbook``
+# snippets) are LEGACY. Their text may be a procedure the conversion turned into a
+# Draft, a shadowed document, or a removed snippet, so the retriever never serves a
+# ``runbook`` chunk outside this projection (:func:`is_legacy_runbook_chunk`). That is
+# a superset of the migration's rule (SPEC §4.10.17 step 7: "until the projection
+# completes"): the new projection never writes those ids, so excluding them for good
+# also covers a corpus an older build wrote after a downgrade and a second upgrade.
+RUNBOOK_SOURCE = "runbook"
+RUNBOOK_DOCUMENT_PREFIX = "runbook-library:"
+LEGACY_RUNBOOK_DOCUMENT_PREFIXES: tuple[str, ...] = ("runbook:", "seed:runbook")
+TRUST_BUNDLED_RUNBOOK = "bundled_runbook"
+TRUST_OPERATOR_RUNBOOK = "operator_runbook"
+RUNBOOK_TRUST_CLASSES: frozenset[str] = frozenset({TRUST_BUNDLED_RUNBOOK, TRUST_OPERATOR_RUNBOOK})
+# One phase chunk's target size: the old per-runbook chunk size, so a runbook phase
+# reads in one piece and a retrieval still fits several sources beside it.
+_RUNBOOK_CHUNK_TARGET_CHARS = 2200
+_RUNBOOK_CHUNK_OVERLAP = 160
+# The descriptor lists at most this many rule values (a runbook may name 50, each up
+# to 256 characters); the rest are counted, so the descriptor stays a descriptor.
+_RUNBOOK_DESCRIPTOR_RULES = 12
+_RUNBOOK_DESCRIPTOR_RULE_CHARS = 80
+_RUNBOOK_EMBED_USE_WHEN_CHARS = 300
+# A runbook is several phase chunks, so one well-matching runbook could fill every
+# result slot (and push ATT&CK, suppression guidance and precedent out). A retrieval
+# returns at most this many chunks of one runbook version, its best phase first, which
+# keeps the balance the one-chunk-per-runbook corpus had before Round 14; the
+# candidate pool grows by a few slots per result so the phases this folds away do not
+# starve the other sources of candidates.
+RUNBOOK_CHUNKS_PER_RESULT = 1
+_RUNBOOK_POOL_EXTRA_PER_SLOT = 5
+_RUNBOOK_DOCUMENT_ID_RE = re.compile(
+    r"^runbook-library:(?P<id>[a-z0-9][a-z0-9_-]{0,63}):v(?P<version>\d{1,6})-(?P<hash>[0-9a-f]{1,64})$"
+)
 
+
+@dataclass(frozen=True)
+class PublishedRunbookVersion:
+    """One runbook version the retrieval corpus indexes: a built-in at its release
+    version, or the live version of a Published operator runbook."""
+
+    runbook_id: str
+    version: int
+    definition: Any  # models.RunbookDefinition
+    origin: str  # "builtin" | "operator" | "imported"
+    content_hash: str
+
+    @property
+    def trust_class(self) -> str:
+        return TRUST_BUNDLED_RUNBOOK if self.origin == "builtin" else TRUST_OPERATOR_RUNBOOK
+
+    @property
+    def document_id(self) -> str:
+        return runbook_document_id(self.runbook_id, self.version, self.content_hash)
+
+
+def runbook_document_id(runbook_id: str, version: int, content_hash: str) -> str:
+    """The retrieval document id of one Published runbook version (see above)."""
+    digest = re.sub(r"[^0-9a-f]", "", str(content_hash or "").lower())[:12] or "0"
+    return f"{RUNBOOK_DOCUMENT_PREFIX}{runbook_id}:v{int(version)}-{digest}"
+
+
+def parse_runbook_document_id(document_id: Any) -> tuple[str, int] | None:
+    """``(runbook id, version)`` of a projected runbook document id, or ``None`` for
+    any other id (a legacy runbook document included)."""
+    match = _RUNBOOK_DOCUMENT_ID_RE.match(str(document_id or ""))
+    if match is None:
+        return None
+    return match.group("id"), int(match.group("version"))
+
+
+def is_projected_runbook_chunk(chunk: Any) -> bool:
+    """Whether a stored ``runbook`` chunk belongs to the Published-only projection: its
+    document id has the projection's shape and it carries a runbook trust class."""
+    if getattr(chunk, "source", None) != RUNBOOK_SOURCE:
+        return False
+    metadata = getattr(chunk, "metadata", None) or {}
+    return (
+        parse_runbook_document_id(metadata.get("document_id")) is not None
+        and str(metadata.get("trust_class") or "") in RUNBOOK_TRUST_CLASSES
+    )
+
+
+def is_legacy_runbook_chunk(chunk: Any) -> bool:
+    """A ``runbook`` chunk the Published-only projection did not write (a
+    ``runbook:<id>`` or ``seed:runbook`` chunk from before Round 14, or any other
+    runbook-labelled chunk). Never served (#9); swept by the next projection."""
+    return getattr(chunk, "source", None) == RUNBOOK_SOURCE and not is_projected_runbook_chunk(chunk)
+
+
+def limit_runbook_chunks(
+    ranked: list[tuple[Any, float]], per_document: int = RUNBOOK_CHUNKS_PER_RESULT
+) -> list[tuple[Any, float]]:
+    """``ranked`` with at most ``per_document`` chunks of each runbook document, in
+    rank order (see :data:`RUNBOOK_CHUNKS_PER_RESULT`). Other sources pass through."""
+    seen: Counter[str] = Counter()
+    out: list[tuple[Any, float]] = []
+    for chunk, score in ranked:
+        if getattr(chunk, "source", None) == RUNBOOK_SOURCE:
+            document_id = str((getattr(chunk, "metadata", None) or {}).get("document_id") or "")
+            if seen[document_id] >= per_document:
+                continue
+            seen[document_id] += 1
+        out.append((chunk, score))
+    return out
+
+
+def is_legacy_runbook_document(document: Any) -> bool:
+    """Whether a ``list_documents`` row is a runbook document outside the projection."""
+    if not isinstance(document, dict) or document.get("source") != RUNBOOK_SOURCE:
+        return False
+    return parse_runbook_document_id(document.get("document_id")) is None
+
+
+async def published_runbook_versions(library: Any) -> list[PublishedRunbookVersion]:
+    """Every runbook version the retrieval corpus indexes, by id: the built-ins no
+    Published operator copy replaces (``replaces``, SPEC §4.10.5), and the live
+    version of every Published operator runbook (a built-in wins an id collision, as
+    in the matcher). ``library`` ``None`` means the built-ins alone. A library read
+    failure raises (the caller keeps the corpus it has rather than drop operator
+    runbooks it could not read)."""
+    builtins = load_builtin_runbooks()
+    published = tuple(await library.published_catalog()) if library is not None else ()
+    replaced = {
+        str(item.runbook.replaces)
+        for item in published
+        if getattr(item.runbook, "replaces", None)
+    }
+    builtin_ids = {b.id for b in builtins}
+    out = [
+        PublishedRunbookVersion(
+            runbook_id=b.id, version=int(b.version), definition=b.definition,
+            origin="builtin", content_hash=b.content_hash,
+        )
+        for b in builtins
+        if b.id not in replaced
+    ]
+    for item in published:
+        runbook_id = str(item.runbook.id)
+        if runbook_id in builtin_ids:
+            continue
+        live = item.live
+        out.append(PublishedRunbookVersion(
+            runbook_id=runbook_id,
+            version=int(live.version),
+            definition=live.definition,
+            origin="imported" if getattr(item.runbook, "origin", "operator") == "imported" else "operator",
+            content_hash=str(live.content_hash or "") or runbook_content_hash(live.definition),
+        ))
+    out.sort(key=lambda p: p.runbook_id)
+    return out
+
+
+def _bounded(values: Iterable[Any], limit: int, chars: int) -> tuple[list[str], int]:
+    items = [" ".join(str(v).split())[:chars] for v in values if str(v or "").strip()]
+    return items[:limit], max(0, len(items) - limit)
+
+
+def _runbook_descriptor(entry: PublishedRunbookVersion, *, compact: bool = False) -> str:
+    """What the runbook is and what it applies to (summary, use when, techniques,
+    rules, entity types): the closing lines of every phase chunk, and with the title
+    the compact text its vector embeds (``compact``)."""
+    defn = entry.definition
+    applies = defn.applies_when
+    lines = [f"Runbook: {defn.title} (v{entry.version})"] if compact else ["About this runbook:"]
+    if defn.summary:
+        lines.append(f"Summary: {defn.summary}")
+    if defn.use_when:
+        use_when = defn.use_when
+        if compact and len(use_when) > _RUNBOOK_EMBED_USE_WHEN_CHARS:
+            use_when = use_when[: _RUNBOOK_EMBED_USE_WHEN_CHARS].rsplit(" ", 1)[0]
+        lines.append(f"Use when: {use_when}")
+    techniques = list(dict.fromkeys([*applies.mitre, *defn.mitre]))
+    if techniques:
+        lines.append("Techniques: " + ", ".join(techniques))
+    rules, more_rules = _bounded(applies.rule_ids, _RUNBOOK_DESCRIPTOR_RULES, _RUNBOOK_DESCRIPTOR_RULE_CHARS)
+    if rules:
+        lines.append("Rules: " + ", ".join(rules) + (f" and {more_rules:,} more" if more_rules else ""))
+    if applies.entity_types:
+        lines.append("Entity types: " + ", ".join(applies.entity_types))
+    if applies.always:
+        lines.append("Applies when nothing else matches.")
+    return "\n".join(lines)
+
+
+def _step_block(step: Any) -> str:
+    """One step as reference text: kind and title, then focus, escalate-if and
+    benign-if (Published text; plain, never truncated).
+
+    A step's ``instructions`` are written for people and never reach the investigator
+    (``RunbookStep``, SPEC §4.10.9). Retrieved runbook chunks are trusted reference in
+    the investigator prompt, so they carry what the investigator reads (the focus and
+    the decision lines) and never the instructions body; people read the instructions
+    on the runbook itself."""
+    lines = [f"- {RUNBOOK_KIND_LABELS.get(step.kind, step.kind)}: {step.title}"]
+    if step.focus:
+        lines.append(f"  Focus: {step.focus}")
+    if step.escalate_if:
+        lines.append(f"  Escalate if: {step.escalate_if}")
+    if step.benign_if:
+        lines.append(f"  Benign if: {step.benign_if}")
+    if not step.required:
+        lines.append("  Optional.")
+    return "\n".join(lines)
+
+
+def runbook_corpus_items(
+    entries: Iterable[PublishedRunbookVersion], *, generation: str = ""
+) -> list[dict[str, Any]]:
+    """The retrieval items of Published runbook versions: one per phase (split at
+    paragraph boundaries when a phase outgrows a chunk), tagged
+    ``projection_generation`` (SPEC §4.10.17 step 7).
+
+    The stored text leads with "Runbook: <title> (v<n>). Phase: <label>." and the
+    phase's steps, then the descriptor (summary, use when, techniques, rules, entity
+    types): a prompt shows the start of a trusted chunk only (``prompts`` cuts it at
+    400 characters), so the steps come first. The vector embeds the descriptor, the
+    phase and its step titles, so a match on a rule, a technique or a step retrieves
+    the phase. Pure."""
+    items: list[dict[str, Any]] = []
+    for entry in entries:
+        defn = entry.definition
+        descriptor = _runbook_descriptor(entry)
+        compact = _runbook_descriptor(entry, compact=True)
+        document_id = entry.document_id
+        rules, _more = _bounded(defn.applies_when.rule_ids, 50, 256)
+        techniques = list(dict.fromkeys([*defn.applies_when.mitre, *defn.mitre]))
+        phases = list(dict.fromkeys([*defn.phases, *(s.phase for s in defn.steps)]))
+        planned: list[tuple[str, str, str]] = []
+        for phase in phases:
+            steps = [s for s in defn.steps if s.phase == phase]
+            if not steps:
+                continue
+            label = RUNBOOK_PHASE_LABELS.get(phase, phase)
+            header = f"Runbook: {defn.title} (v{entry.version}). Phase: {label}."
+            body = "\n\n".join(_step_block(s) for s in steps)
+            embed = "\n".join([compact, f"Phase: {label}", *(f"- {s.title}" for s in steps)])
+            parts = chunk_text(body, target_chars=_RUNBOOK_CHUNK_TARGET_CHARS, overlap=_RUNBOOK_CHUNK_OVERLAP) or [body]
+            for index, part in enumerate(parts):
+                suffix = phase if len(parts) == 1 else f"{phase}:{index + 1}"
+                planned.append((suffix, f"{header}\n{part}\n\n{descriptor}".strip(), embed))
+        total = len(planned)
+        for index, (suffix, text, embed) in enumerate(planned):
+            phase = suffix.split(":", 1)[0]
+            items.append({
+                "text": text,
+                "embedding_text": embed,
+                "source": RUNBOOK_SOURCE,
+                "doc_id": f"{document_id}:{suffix}",
+                "metadata": {
+                    "document_id": document_id,
+                    "runbook_id": entry.runbook_id,
+                    "title": defn.title,
+                    "version": entry.version,
+                    # The old projection's key for the indexed revision, kept so a
+                    # reader of either shape finds the version (``?shape=v1``).
+                    "revision": entry.version,
+                    "origin": entry.origin,
+                    "source_type": "bundled" if entry.origin == "builtin" else "operator",
+                    "trust_class": entry.trust_class,
+                    "phase": phase,
+                    "phase_label": RUNBOOK_PHASE_LABELS.get(phase, phase),
+                    "rules": rules[:_RUNBOOK_DESCRIPTOR_RULES],
+                    "mitre": techniques,
+                    "entities": list(defn.applies_when.entity_types),
+                    "content_hash": entry.content_hash,
+                    "projection_generation": str(generation or ""),
+                    "chunk_index": index,
+                    "n_chunks": total,
+                },
+            })
+    return items
+
+
+# --------------------------------------------------------------------------- #
+# Seed corpus: each item is {text, source, metadata}.
+# --------------------------------------------------------------------------- #
 SEED_MITRE: list[dict[str, Any]] = [
     {
         "text": "T1110 Brute Force: Adversaries guess passwords via repeated authentication attempts.",
@@ -938,15 +1166,32 @@ class RagService:
         prefs: Preferences,
         store: VectorStore | None = None,
         cases: "CaseStore | None" = None,
-        runbooks: "RunbookService | None" = None,
+        runbooks: Any = None,
         health: "RagHealthStore | None" = None,
         exclusions: "PrecedentExclusionStore | None" = None,
+        library: "RunbookLibraryStore | Callable[[], Any] | None" = None,
     ) -> None:
         self._gateway = gateway
         self._prefs = prefs
         self._store: VectorStore = store or InMemoryVectorStore()
         self._cases = cases
-        self._runbooks = runbooks
+        # The runbook library the ``runbook`` source is projected from (Round 14 SPEC
+        # §4.10.18): a ``stores.runbook_library.RunbookLibraryStore``, or a zero-argument
+        # callable returning the current one (the application rebinds the store when
+        # its KV is swapped). ``runbooks`` is the retired keyword: a library passed
+        # there is used; anything else (the retired reference-runbook service) is
+        # ignored, because its text was never reviewed and must not be served as
+        # trusted (#9).
+        #
+        # Without a connected library the service cannot know which operator versions
+        # are live or which built-ins a Published copy replaces, so it never removes or
+        # rewrites operator runbook content (see ``_held_runbook_documents``): seeding
+        # indexes the built-ins only into a store that holds no operator runbook
+        # document, and an explicit reprojection is refused rather than reported done.
+        if library is None and callable(getattr(runbooks, "published_catalog", None)):
+            library = runbooks
+        self._library = library
+        self._warned_unconnected: set[int] = set()
         # Optional durable projection-health record (see stores/rag_health.py).
         # Defaulted None so every historical/test construction is unchanged; when
         # absent, the in-process ``last_projection`` below is the only record.
@@ -1152,7 +1397,9 @@ class RagService:
         runbooks = getattr(self._prefs, "runbooks", None)
         return (
             bool(cfg.enabled),
-            bool(cfg.use_runbooks),
+            # Round 14: the runbook corpus switch is ``runbooks.rag_corpus``
+            # (``rag.use_runbooks`` is only its read-only mirror).
+            self._runbook_corpus_enabled(),
             bool(runbooks is None or runbooks.enabled),
             bool(cfg.use_mitre),
             bool(cfg.use_resolved_cases),
@@ -1219,11 +1466,90 @@ class RagService:
             and getattr(cfg, "use_unconfirmed_resolved_cases", False)
         )
 
+    def _runbook_corpus_enabled(self) -> bool:
+        """Whether Published runbooks are indexed and retrieved: the Runbooks feature
+        and its ``rag_corpus`` switch (SPEC §4.10.19). ``rag.use_runbooks`` is that
+        switch's read-only mirror; a copy of the preferences that changed only one of
+        the two (``model_copy`` skips the validator that keeps them equal) is read as
+        off when either is off, so neither can turn the corpus back on."""
+        legacy = bool(getattr(self._prefs.rag, "use_runbooks", True))
+        runbooks = getattr(self._prefs, "runbooks", None)
+        if runbooks is None:
+            return legacy
+        return bool(runbooks.enabled and getattr(runbooks, "rag_corpus", True) and legacy)
+
+    def _library_store(self) -> Any:
+        """The runbook library the corpus is projected from, or ``None`` when no
+        library is connected (none was given, or the provider cannot answer). What a
+        service without one may do is :meth:`_held_runbook_documents`."""
+        library = self._library
+        if library is not None and not callable(getattr(library, "published_catalog", None)) and callable(library):
+            try:
+                library = library()
+            except Exception as exc:  # noqa: BLE001 - read as not connected
+                logger.warning("Runbook library provider failed: %s", exc)
+                return None
+        return library
+
+    def _warn_unconnected(self, detail: str, *, level: int = logging.WARNING) -> None:
+        """Log once per service that the runbook library is not connected: a wiring
+        fault in a deployment, expected for a test or a stack built without one."""
+        if level in self._warned_unconnected:
+            return
+        self._warned_unconnected.add(level)
+        logger.log(level, "The knowledge index has no runbook library connected: %s", detail)
+
+    async def _held_runbook_documents(self) -> set[str] | None:
+        """Without a connected runbook library: the ids of the ``runbook`` documents a
+        projection must leave exactly as they are. ``None`` when the projection may
+        write the runbook source itself (a library is connected, or the store holds
+        no operator runbook document, so the built-ins are the whole corpus).
+
+        A store that holds an operator runbook document was written by a projection
+        that could read the library. Without it this service cannot tell which
+        operator versions are live or which built-ins a Published copy replaces, so
+        rebuilding the source from the built-ins would delete every operator runbook
+        (``runbook`` is fully reconciled) and bring replaced built-ins back. It keeps
+        the source instead; the next projection with the library reconciles it.
+        Raises when the store cannot be read (the caller keeps the corpus it has)."""
+        if self._library_store() is not None:
+            return None
+        documents = [
+            d for d in await self._store.list_documents()
+            if isinstance(d, dict) and d.get("source") == RUNBOOK_SOURCE
+        ]
+        builtin_ids = {b.id for b in load_builtin_runbooks()}
+        operator = [
+            d for d in documents
+            if (parsed := parse_runbook_document_id(d.get("document_id"))) is not None
+            and parsed[0] not in builtin_ids
+        ]
+        if not operator:
+            self._warn_unconnected("indexing the built-in runbooks only", level=logging.INFO)
+            return None
+        self._warn_unconnected(
+            f"keeping the {len(documents):,} runbook documents in the index as they are"
+        )
+        return {str(d.get("document_id") or "") for d in documents} - {""}
+
+    async def _projection_generation(self, library: Any) -> str:
+        """The migration marker's projection generation, ``""`` when there is none or
+        it cannot be read (the tag is provenance; the retriever never needs it)."""
+        reader = getattr(library, "read_marker", None)
+        if not callable(reader):
+            return ""
+        try:
+            record = await reader()
+        except Exception as exc:  # noqa: BLE001 - provenance only
+            logger.info("Runbook migration marker unreadable for the projection tag: %s", exc)
+            return ""
+        marker = getattr(record, "marker", None)
+        return str(getattr(marker, "projection_generation", "") or "")
+
     def _source_enabled(self, source: str) -> bool:
         cfg = self._prefs.rag
-        runbooks = getattr(self._prefs, "runbooks", None)
-        if source == "runbook":
-            return bool(cfg.use_runbooks and (runbooks is None or runbooks.enabled))
+        if source == RUNBOOK_SOURCE:
+            return self._runbook_corpus_enabled()
         if source == "mitre":
             return bool(cfg.use_mitre)
         if source == "suppression":
@@ -1270,25 +1596,29 @@ class RagService:
         # dim is settled at first embed; the model id is the stable space tag.
         return (cfg.model, 0)
 
-    async def _runbook_seed_items(self) -> list[dict[str, Any]]:
-        if self._runbooks is not None:
-            return await self._runbooks.corpus_items()
-        return runbook_corpus_items()
+    async def _runbook_seed_items(
+        self, *, library: Any = None, generation: str | None = None
+    ) -> list[dict[str, Any]]:
+        """The Published-only runbook corpus (SPEC §4.10.18): one item per phase of
+        every built-in no Published copy replaces and every live operator version.
+        A library read failure RAISES: a projection that cannot read the library must
+        keep the runbook documents it has, never drop the operator ones it could not
+        see (the caller's staged projection then leaves the corpus untouched)."""
+        library = library if library is not None else self._library_store()
+        entries = await published_runbook_versions(library)
+        if generation is None:
+            generation = await self._projection_generation(library)
+        return runbook_corpus_items(entries, generation=generation)
 
     async def _enabled_seeds(self) -> list[dict[str, Any]]:
         cfg = self._prefs.rag
         seeds: list[dict[str, Any]] = []
-        runbooks = getattr(self._prefs, "runbooks", None)
-        if cfg.use_runbooks and (runbooks is None or runbooks.enabled):
-            # Prefer the plain-text runbook FILES (Vigil's "playbooks are files")
-            # when runbooks are enabled and present; fall back to the in-code seed
-            # snippets so RAG always has runbook coverage.
-            file_items: list[dict[str, Any]] = []
-            try:
-                file_items = await self._runbook_seed_items()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Runbook corpus load failed; using seed runbooks: %s", exc)
-            seeds.extend(file_items or SEED_RUNBOOKS)
+        if self._runbook_corpus_enabled() and await self._held_runbook_documents() is None:
+            # Published runbooks only (Round 14). There is no in-code fallback: the
+            # built-ins are package data, and a library that cannot be read fails the
+            # projection, which keeps the corpus it has. Without a connected library
+            # the runbook source may be held as it is (see ``ensure_seeded``).
+            seeds.extend(await self._runbook_seed_items())
         if cfg.use_mitre:
             seeds.extend(SEED_MITRE)
         if cfg.use_suppression_rules:
@@ -1455,8 +1785,17 @@ class RagService:
         return chunks
 
     @staticmethod
-    def _operator_items_from_snapshot(chunks: list[StoredChunk]) -> list[dict[str, Any]]:
-        """Project non-managed documents for re-embedding in a new vector space."""
+    def _operator_items_from_snapshot(
+        chunks: list[StoredChunk], *, documents: set[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Project documents for re-embedding in a new vector space: the non-managed
+        ones by default, or exactly the managed ``documents`` named (a held runbook
+        source, see ``_held_runbook_documents``)."""
+        def _wanted(chunk: StoredChunk) -> bool:
+            if documents is None:
+                return chunk.source not in SEED_SOURCES
+            return str((chunk.metadata or {}).get("document_id") or "") in documents
+
         return [
             {
                 "text": chunk.text,
@@ -1466,7 +1805,7 @@ class RagService:
                 "doc_id": chunk.doc_id,
             }
             for chunk in chunks
-            if chunk.source not in SEED_SOURCES
+            if _wanted(chunk)
         ]
 
     async def _preserved_resolved_case_items(
@@ -1940,6 +2279,12 @@ class RagService:
                 # so an EXISTING corpus becomes rule-matchable without a re-embed.
                 if self._prefs.rag.use_resolved_cases:
                     await self._reconcile_precedent_rule_identity()
+                # Without a connected runbook library, an index that holds operator
+                # runbooks keeps its runbook source as it is (read before any write).
+                held = (
+                    await self._held_runbook_documents()
+                    if self._runbook_corpus_enabled() else None
+                )
                 # Stage and validate the complete managed projection before ANY
                 # old document is removed. This preserves the last known-good
                 # corpus when loading, embedding, or persistence fails.
@@ -1957,17 +2302,17 @@ class RagService:
                 # projection actually rebuilds, and (for the fully reconciled ones) the
                 # only sources ``_drop_stale_managed_projection`` can delete. Operator
                 # imports and threat-context documents are neither rebuilt nor swept
-                # here, so counting them would compare two different populations.
-                self._guard_projection_collapse(
-                    outgoing, chunks, scope=MANAGED_PROJECTION_SOURCES
+                # here, so counting them would compare two different populations. A
+                # held runbook source is neither rebuilt nor swept either.
+                scope = (
+                    MANAGED_PROJECTION_SOURCES if held is None
+                    else frozenset(MANAGED_PROJECTION_SOURCES - {RUNBOOK_SOURCE})
                 )
+                self._guard_projection_collapse(outgoing, chunks, scope=scope)
                 if chunks:
                     await self._store.add(chunks)
                 expected = await self._verify_projection(chunks)
-                await self._drop_stale_managed_projection(expected)
-                if self._runbooks is not None:
-                    for record in await self._runbooks.list():
-                        await self._runbooks.mark_indexed(record.runbook.id, record.revision)
+                await self._drop_stale_managed_projection(expected | (held or set()))
                 self._seeded = True
                 self._seed_signature = signature
                 self.invalidate_precedent_distribution()
@@ -2034,8 +2379,8 @@ class RagService:
         if self.corpus_degraded:
             logger.error(
                 "RAG corpus is EMPTY at startup although it was previously projected: "
-                "every investigation will run with no runbook, ATT&CK or precedent "
-                "context until it is rebuilt"
+                "every investigation will run with no retrieved runbook passages, "
+                "ATT&CK or precedent context until it is rebuilt"
             )
         return self.corpus_known_empty
 
@@ -2048,10 +2393,9 @@ class RagService:
         cfg = self._prefs.rag
         if not bool(getattr(cfg, "enabled", False)):
             return False
-        return any(
+        return self._runbook_corpus_enabled() or any(
             bool(getattr(cfg, name, False))
             for name in (
-                "use_runbooks",
                 "use_mitre",
                 "use_suppression_rules",
                 "use_resolved_cases",
@@ -2136,117 +2480,150 @@ class RagService:
         }
 
     async def reindex_runbooks(self, ids: set[str] | None = None) -> dict[str, Any]:
-        """Reconcile only the runbook projection, preserving every other source.
+        """Reproject the runbook source only, preserving every other source (SPEC
+        §4.10.18). ``ids`` ``None`` is the full projection (the ``runbook_reindex`` job):
+        every Published version is written and every other ``runbook`` document,
+        including the legacy ``runbook:<id>`` and ``seed:runbook`` documents, is
+        removed. With ``ids`` (publish, retire, restore, the per-runbook route) each
+        named runbook is brought to its Published state: its live version written, or
+        its documents removed when it has none (retired, a draft, unknown) or when a
+        Published copy replaces it (a built-in id may be named for that).
 
-        The authoritative Markdown remains in the bundled catalog/KV store even if
-        embedding fails. Stable per-runbook document/chunk ids make retries safe.
-        """
-        if self._runbooks is None:
-            return {
-                "ok": False,
-                "indexed": 0,
-                "deleted": 0,
-                "failed": 1,
-                "errors": ["runbook catalog is unavailable"],
-            }
-        cfg = self._prefs.rag
-        runbook_cfg = getattr(self._prefs, "runbooks", None)
-        if not (cfg.enabled and cfg.use_runbooks and (runbook_cfg is None or runbook_cfg.enabled)):
-            return {
-                "ok": True,
-                "indexed": 0,
-                "deleted": 0,
-                "failed": 0,
-                "errors": [],
-                "disabled": True,
-            }
+        The replacement is written and read back BEFORE anything is removed, so a
+        failure (an unreadable library, an embedding outage) leaves the corpus as it
+        was, and so does a service with no runbook library connected (refused with
+        ``ok: False``: it cannot know what is Published). Returns ``{ok, indexed,
+        deleted, failed, errors}`` (``indexed`` counts chunks), plus ``disabled: True``
+        when the runbook corpus is off."""
+        return await self._reproject_runbooks(ids, library=None, generation=None)
+
+    async def project_runbook_corpus(
+        self, *, generation: str, library: Any = None
+    ) -> bool:
+        """The runbook migration's step 7 (SPEC §4.10.17): the full Published-only
+        projection with every chunk tagged ``generation``, removing the legacy runbook
+        documents. Returns True when it finished (the migration then records
+        ``projection_completed_at``), False when it must be resumed (nothing removed).
+        ``library`` is used for this call only; the service keeps the library it was
+        built with.
+
+        The step exists to replace legacy runbook text, so a store that holds none (a
+        fresh install, or a projection that already swept it) is done at once, with no
+        embedding: the next seeding projects the Published corpus, tagged with this
+        generation, exactly as this call would have."""
         async with self._seed_lock:
-            records = await self._runbooks.list()
-            active = {record.runbook.id: record for record in records}
-            requested = set(ids) if ids is not None else set(active)
-            pending = set(await self._runbooks.pending_deletes())
-            missing = sorted(
-                runbook_id
-                for runbook_id in requested
-                if runbook_id not in active and runbook_id not in pending
-            )
-            target_ids = requested | (pending if ids is None else pending & requested)
-            deleted = 0
-            errors: list[str] = []
             try:
                 documents = await self._store.list_documents()
-                selected = set(active) if ids is None else requested & set(active)
-                items = self._managed_items(await self._runbooks.corpus_items(selected))
+            except Exception as exc:  # noqa: BLE001 - resumed at the next start
+                logger.warning("Runbook projection could not read the corpus: %s", exc)
+                return False
+        if not any(is_legacy_runbook_document(d) for d in documents):
+            return True
+        result = await self._reproject_runbooks(None, library=library, generation=generation)
+        return bool(result.get("ok"))
+
+    async def _reproject_runbooks(
+        self, ids: set[str] | None, *, library: Any, generation: str | None
+    ) -> dict[str, Any]:
+        targets = None if ids is None else {str(i) for i in ids if str(i or "").strip()}
+        library = library if library is not None else self._library_store()
+        enabled = bool(self._prefs.rag.enabled) and self._runbook_corpus_enabled()
+        async with self._seed_lock:
+            deleted = 0
+            try:
+                documents = await self._store.list_documents()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Runbook projection could not read the corpus: %s", exc)
+                return {"ok": False, "indexed": 0, "deleted": 0, "failed": 1,
+                        "errors": ["The knowledge index could not be read."]}
+            if not enabled:
+                # Nothing is indexed while the corpus is off, but text an earlier build
+                # wrote is removed: it is never served, and a later enable reprojects.
+                try:
+                    for document in documents:
+                        if is_legacy_runbook_document(document):
+                            deleted += await self._store.delete_document(str(document["document_id"]))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Removing legacy runbook documents failed: %s", exc)
+                    return {"ok": False, "indexed": 0, "deleted": deleted, "failed": 1,
+                            "errors": ["Older runbook documents could not be removed."],
+                            "disabled": True}
+                return {"ok": True, "indexed": 0, "deleted": deleted, "failed": 0,
+                        "errors": [], "disabled": True}
+            if library is None:
+                # Without the library this call cannot know what is Published: it
+                # would index the built-ins as the whole corpus and remove every
+                # operator runbook. Refused, and the index left as it was.
+                logger.warning("Runbook reindex refused: no runbook library is connected")
+                return {"ok": False, "indexed": 0, "deleted": 0,
+                        "failed": max(1, len(targets or ())),
+                        "errors": ["The runbook library is not connected, so the index was left as it was."]}
+            try:
+                entries = await published_runbook_versions(library)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Runbook projection could not read the library: %s", exc)
+                return {"ok": False, "indexed": 0, "deleted": 0,
+                        "failed": max(1, len(targets or ())),
+                        "errors": ["The runbook library could not be read."]}
+            selected = [e for e in entries if targets is None or e.runbook_id in targets]
+            if targets is None and not selected:
+                # The built-ins always project; an empty full set means the package
+                # data could not be loaded. Never answer that by emptying the corpus.
+                return {"ok": False, "indexed": 0, "deleted": 0, "failed": 1,
+                        "errors": ["No runbook could be loaded, so the index was left as it was."]}
+            if generation is None:
+                generation = await self._projection_generation(library)
+            try:
+                items = self._managed_items(runbook_corpus_items(selected, generation=generation))
                 chunks = await self._embed_items(items)
                 if chunks:
                     await self._store.add(chunks)
-                expected_selected = await self._verify_projection(chunks)
-
-                # Only remove stale/withdrawn runbook documents after every selected
-                # replacement has been written and read back successfully.
+                expected = await self._verify_projection(chunks)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Runbook retrieval indexing failed: %s", exc)
+                return {"ok": False, "indexed": 0, "deleted": 0,
+                        "failed": max(1, len(selected)),
+                        "errors": ["Runbook retrieval indexing failed."]}
+            # Only now, with every replacement written and read back, remove what the
+            # Published state no longer holds.
+            try:
                 for document in documents:
-                    if document.get("source") != "runbook":
+                    if document.get("source") != RUNBOOK_SOURCE:
                         continue
                     document_id = str(document.get("document_id") or "")
-                    should_remove = (
-                        document_id == "seed:runbook"
-                        or document_id in {f"runbook:{rid}" for rid in pending & target_ids}
-                        or (ids is None and document_id not in expected_selected)
+                    if not document_id or document_id in expected:
+                        continue
+                    parsed = parse_runbook_document_id(document_id)
+                    remove = (
+                        parsed is None  # legacy text: never served, always swept
+                        or targets is None
+                        or parsed[0] in targets
                     )
-                    if should_remove and document_id:
+                    if remove:
                         deleted += await self._store.delete_document(document_id)
-
-                indexed = len(chunks)
-                for runbook_id in sorted(selected):
-                    record = active[runbook_id]
-                    await self._runbooks.mark_indexed(runbook_id, record.revision)
-                for runbook_id in sorted(pending & target_ids):
-                    await self._runbooks.mark_delete_projected(runbook_id)
-                if missing:
-                    errors.extend(f"runbook {runbook_id} not found" for runbook_id in missing)
-                return {
-                    "ok": not errors,
-                    "indexed": indexed,
-                    "deleted": deleted,
-                    "failed": len(errors),
-                    "errors": errors,
-                }
             except Exception as exc:  # noqa: BLE001
-                message = "runbook retrieval indexing failed"
-                logger.warning("%s: %s", message, exc)
-                selected = set(active) if ids is None else requested & set(active)
-                for runbook_id in sorted(selected):
-                    record = active[runbook_id]
-                    try:
-                        await self._runbooks.mark_indexed(
-                            runbook_id, record.revision, error=message
-                        )
-                    except Exception:  # noqa: BLE001 — preserve the original error
-                        pass
-                return {
-                    "ok": False,
-                    "indexed": 0,
-                    "deleted": deleted,
-                    "failed": max(1, len(selected)),
-                    "errors": [message],
-                }
+                logger.warning("Removing stale runbook documents failed: %s", exc)
+                return {"ok": False, "indexed": len(chunks), "deleted": deleted, "failed": 1,
+                        "errors": ["Stale runbook documents could not be removed."]}
+            if chunks:
+                self.invalidate_precedent_distribution()
+            return {"ok": True, "indexed": len(chunks), "deleted": deleted, "failed": 0,
+                    "errors": [], "runbooks": len(selected)}
 
     async def runbook_projection_revisions(self) -> dict[str, int]:
-        """Active ``runbook id -> indexed revision`` projection, without seeding."""
+        """``runbook id -> indexed version`` of the Published-only projection, read
+        from the document ids without seeding (the ``?shape=v1`` index status). Legacy
+        runbook documents are never counted."""
         out: dict[str, int] = {}
         try:
             for document in await self._store.list_documents():
-                document_id = str(document.get("document_id") or "")
-                if document.get("source") != "runbook" or not document_id.startswith("runbook:"):
+                if document.get("source") != RUNBOOK_SOURCE:
                     continue
-                runbook_id = document_id.removeprefix("runbook:")
-                chunks = await self._store.list_chunks(document_id)
-                revision = max(
-                    (int((chunk.metadata or {}).get("revision", 0) or 0) for chunk in chunks),
-                    default=0,
-                )
-                if runbook_id and revision:
-                    out[runbook_id] = revision
+                parsed = parse_runbook_document_id(document.get("document_id"))
+                if parsed is None:
+                    continue
+                runbook_id, version = parsed
+                out[runbook_id] = max(version, out.get(runbook_id, 0))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Reading runbook projection status failed: %s", exc)
         return out
@@ -4713,7 +5090,11 @@ class RagService:
             # so a disabled imported source cannot crowd every useful result, without
             # ever turning one retrieval into an unbounded full-corpus scan.
             pool_k = max(k * cfg.hybrid_overfetch, k) if cfg.hybrid else k
-            pool_k = min(store_count, max(pool_k, k * 4))
+            pool_k = max(pool_k, k * 4)
+            if self._runbook_corpus_enabled():
+                # Room for the runbook phases ``limit_runbook_chunks`` folds away.
+                pool_k += k * _RUNBOOK_POOL_EXTRA_PER_SLOT
+            pool_k = min(store_count, pool_k)
             embed_kwargs: dict[str, Any] = {"surface": surface}
             if usage_receipt is not None:
                 embed_kwargs["usage_receipt"] = usage_receipt
@@ -4742,10 +5123,16 @@ class RagService:
                 results = await self._store.search(vectors[0], pool_k)
             # min_score gates on the RAW vector score (so disabling hybrid, or a
             # too-strict threshold, behaves exactly as before).
+            # A ``runbook`` chunk outside the Published-only projection (a chunk an
+            # earlier build wrote, whatever became of its procedure) is never served
+            # (#9, SPEC §4.10.17 step 7): it may be text the conversion turned into a
+            # Draft. Filtered before ranking, so it cannot take a slot either.
             survivors = [
                 (c, float(s))
                 for c, s in results
-                if self._source_enabled(c.source) and float(s) >= cfg.min_score
+                if self._source_enabled(c.source)
+                and not is_legacy_runbook_chunk(c)
+                and float(s) >= cfg.min_score
             ]
             if not survivors:
                 return RagRetrievalObservation(
@@ -4772,6 +5159,7 @@ class RagService:
             else:
                 ranked = survivors
             ranked = self._apply_precedent_policy(ranked, k)
+            ranked = limit_runbook_chunks(ranked)
             chunks = [
                 RagChunk(
                     text=chunk.text,
@@ -4902,11 +5290,19 @@ class RagService:
             outgoing = await self._chunk_counts_by_source()
             cleared = False
             try:
+                held = (
+                    await self._held_runbook_documents()
+                    if self._runbook_corpus_enabled() else None
+                )
                 seeds = await self._enabled_seeds()
                 if self._prefs.rag.use_resolved_cases:
                     seeds.extend(await self._resolved_case_items())
                     seeds.extend(await self._unconfirmed_precedent_addition(seeds))
                 seeds.extend(self._operator_items_from_snapshot(backup))
+                # A held runbook source (no connected library) moves to the new space
+                # as it stands, re-embedded from its stored text, like an import; the
+                # next projection with the library rewrites it.
+                seeds.extend(self._operator_items_from_snapshot(backup, documents=held or set()))
                 managed = self._managed_items(seeds)
                 # Precedent outside the bounded window would otherwise be silently
                 # dropped by the space migration. Carry it over, skipping anything
@@ -4941,9 +5337,6 @@ class RagService:
                 if await self._store.count() != len(replacement):
                     raise RuntimeError("RAG vector-space replacement was only partially persisted")
                 await self._verify_projection(replacement)
-                if self._runbooks is not None:
-                    for record in await self._runbooks.list():
-                        await self._runbooks.mark_indexed(record.runbook.id, record.revision)
                 self._seeded = True
                 self._seed_signature = self._source_signature()
                 # A vector-space migration rewrites every precedent chunk.

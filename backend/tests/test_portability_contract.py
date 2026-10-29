@@ -6,10 +6,11 @@ vendor, a threshold tuned to one data set — must be CONFIG or DERIVED, never b
 into shipped source or shipped content.
 
 SCOPE, stated honestly: this is a source lint over the **backend source tree** and
-the **bundled Markdown playbooks in ``backend/playbooks/``**. It does not inspect
-the Web Console, the deploy manifests, `docs/`, or anything an operator authors at
-runtime — operator-authored playbooks in a ``Preferences.playbooks.dir`` override
-are *expected* to name that site's own detections and are deliberately out of scope.
+the **built-in runbook library in ``backend/app/runbooks/library/``** (the 12
+built-in runbooks that replaced the retired bundled procedures in Round 14). It does
+not inspect the Web Console, the deploy manifests, `docs/`, or anything an operator
+authors at runtime: operator runbooks in the runbook library are *expected* to name
+that site's own detections and are deliberately out of scope.
 
 It asserts **SHAPE, never vocabulary.** There is no blocklist of one operator's
 proper nouns here, on purpose: such a list goes stale the moment that operator
@@ -29,10 +30,9 @@ import re
 from pathlib import Path
 
 from app.config import default_rule_catalog
-from app.playbooks.loader import load_playbooks
+from app.engine.runbook_model import RUNBOOK_LIBRARY_DIR, load_builtin_library
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-BUNDLED_PLAYBOOK_DIR = BACKEND_ROOT / "playbooks"
 METRICS_MODULE = BACKEND_ROOT / "app" / "engine" / "metrics.py"
 
 # ONE portable-identifier grammar, and it really is one: lowercase ASCII words joined
@@ -45,19 +45,19 @@ METRICS_MODULE = BACKEND_ROOT / "app" / "engine" / "metrics.py"
 # hyphen is a perfectly portable slug character, and forcing a rename there would
 # desynchronise the sample rule from the ``event.module`` literal it demonstrates.
 #
-# ONE grammar is not a convenience, it is a correctness requirement. A playbook's
-# ``match.rule_ids`` and a ``RuleDefinition.name`` are the SAME namespace —
+# ONE grammar is not a convenience, it is a correctness requirement. A runbook's
+# ``applies_when.rule_ids`` and a ``RuleDefinition.name`` are the SAME namespace:
 # ``models.RawEvent.from_hit`` sets ``rule = matched.name`` and
-# ``playbooks.registry.select_playbook`` intersects ``rule_ids`` against exactly that
-# value. Applying a stricter pattern to one end than the other would make this file
+# ``engine.runbook_match.evaluate`` compares ``rule_ids`` against exactly that value.
+# Applying a stricter pattern to one end than the other would make this file
 # contradict itself: it would certify ``waf-nginx-access`` as a portable seeded rule
-# name while rejecting the bundled playbook that binds to it, and the failure message
+# name while rejecting the built-in runbook that binds to it, and the failure message
 # would then demand a rename the shipped catalog has already fixed.
 PORTABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*$")
 
 # An ATT&CK technique id: ``T1110``, or a sub-technique ``T1550.001``. Techniques are a
-# PUBLIC vocabulary, so a bundled playbook may name them verbatim — but only in that
-# shape. Anything else in ``match.mitre`` is some deployment's local vocabulary
+# PUBLIC vocabulary, so a built-in runbook may name them verbatim, but only in that
+# shape. Anything else in a ``mitre`` field is some deployment's local vocabulary
 # wearing a MITRE field's name.
 MITRE_TECHNIQUE_ID = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 
@@ -74,83 +74,78 @@ ABSOLUTE_DATE = re.compile(
 )
 
 _TEACH_RULE_IDS = (
-    "A bundled playbook's rule-name criteria are PORTABLE LAYER-3 IDENTIFIERS, not a "
-    "deployer's SIEM rule titles. `select_playbook` compares them against the "
-    "cluster's rule set, so a title pasted from one SIEM ('Some Product: Thing "
+    "A built-in runbook's rule-name criteria are PORTABLE LAYER-3 IDENTIFIERS, not a "
+    "deployer's SIEM rule titles. `runbook_match.evaluate` compares them against the "
+    "case's rule values, so a title pasted from one SIEM ('Some Product: Thing "
     "(Detail) ES|QL') can only ever match in the single deployment it came from; "
-    "every other installation of this open-source suite gets a playbook that never "
-    "fires. Declare a portable lowercase slug id here (e.g. `external_admin_panel_"
+    "every other installation of this open-source suite gets a runbook that never "
+    "attaches. Declare a portable lowercase slug id here (e.g. `external_admin_panel_"
     "access`) and let the OPERATOR's rule catalog map their own title onto it with "
     "a RuleDefinition (name=<portable id>, match: field=rule.name op=equals "
-    "value=<their exact title>). See backend/playbooks/README.md.\n\n"
-    "This covers `match.rule_ids` AND the two soft criteria `match.any_tags` and "
-    "`match.mitre`: registry.select_playbook matches all three against the SAME "
-    "cluster rule set, and a playbook whose ONLY criteria are the soft ones is "
-    "selectable *only* when a rule name hits them — so a SIEM title parked in "
-    "`any_tags` is deployment-locked in exactly the way this lint exists to stop."
+    "value=<their exact title>).\n\n"
+    "This covers `applies_when.rule_ids` AND `applies_when.any_tags`: tags are "
+    "compared against the case's tags, which rules and automation set from the same "
+    "vocabulary, so a SIEM title parked in `any_tags` is deployment-locked in exactly "
+    "the way this lint exists to stop. Both `mitre` fields take the technique grammar."
 )
 
 
-def _bundled_playbooks():
-    """Load the bundled set through the PRODUCTION parser.
+def _builtin_runbooks():
+    """Load the built-in library through the PRODUCTION loader.
 
-    Using ``load_playbooks`` is deliberate: it is the same code the registry runs,
-    so the lint reads exactly what the app reads. It also means BOTH supported
-    front-matter shapes are covered — ``rule_ids`` nested under ``match:`` and
-    ``rule_ids`` declared flat at column 0 (flat wins on collision) — because the
-    loader merges them before we see them. This test lints the VALUES; it does not
-    care which nesting a playbook chose.
+    Using ``load_builtin_library`` is deliberate: it is the same code the application
+    runs, so the lint reads exactly what the matcher reads. The loader REFUSES a file
+    that does not validate; without the guard below a refused file would silently drop
+    out of the lint.
     """
-    playbooks = load_playbooks(BUNDLED_PLAYBOOK_DIR)
-    # The loader SKIPS an unparseable file with a warning. Without this guard a
-    # playbook that stopped parsing would silently drop out of the lint.
+    loaded, refused = load_builtin_library(RUNBOOK_LIBRARY_DIR)
     on_disk = sorted(
         p.name
-        for p in BUNDLED_PLAYBOOK_DIR.glob("*.md")
+        for p in RUNBOOK_LIBRARY_DIR.glob("*.md")
         if p.stem.lower() not in {"readme", "index"}
     )
-    assert len(playbooks) == len(on_disk), (
-        f"{len(on_disk)} bundled playbook file(s) on disk but only {len(playbooks)} "
-        f"parsed: {on_disk}. A skipped file is invisible to this lint — fix the "
-        f"front matter before relying on the assertions below."
+    assert not refused, (
+        f"built-in runbook file(s) refused by the loader: {sorted(refused)}. A refused "
+        "file is invisible to this lint; fix it before relying on the assertions below."
     )
-    assert playbooks, "no bundled playbooks found; the lint would be vacuous"
-    return playbooks
+    assert len(loaded) == len(on_disk), (on_disk, [b.file_name for b in loaded])
+    assert loaded, "no built-in runbooks found; the lint would be vacuous"
+    return loaded
 
 
-def test_bundled_playbook_rule_name_criteria_are_portable_identifiers() -> None:
-    """Every bundled criterion matched against the cluster RULE SET is portable.
+def test_builtin_runbook_rule_name_criteria_are_portable_identifiers() -> None:
+    """Every built-in criterion compared against a case's rules or tags is portable.
 
-    Scoped by what ``registry.select_playbook`` actually compares, not by field name.
-    It intersects ``match.rule_ids`` with the cluster rule set and ALSO tests
-    ``match.mitre`` and ``match.any_tags`` against the same (lowercased) set — and a
-    playbook declaring only those soft criteria is selectable *solely* on such a hit.
-    Linting one field of the three would let a copied SIEM title in ``any_tags``
-    deployment-lock a playbook while this file reported clean, which is the class of
-    defect the lint exists to prevent rather than one instance of it.
+    Scoped by what ``runbook_match.evaluate`` actually compares: ``applies_when.rule_ids``
+    against the case's rule values and ``applies_when.any_tags`` against its tags (one
+    vocabulary, the operator's rule catalog). Linting one of the two would let a copied
+    SIEM title in ``any_tags`` deployment-lock a runbook while this file reported
+    clean, which is the class of defect the lint exists to prevent.
 
-    ``mitre`` gets the technique grammar instead: ATT&CK ids are a public vocabulary
-    and are portable BECAUSE they are standard, so ``T1550.001`` must pass while a
-    local rule title in the same field must not.
+    ``mitre`` (the criterion and the runbook's own technique list) gets the technique
+    grammar instead: ATT&CK ids are a public vocabulary and are portable BECAUSE they
+    are standard, so ``T1550.001`` must pass while a local rule title in the same field
+    must not.
     """
     offenders: list[str] = []
     seen = 0
-    for playbook in _bundled_playbooks():
-        name = Path(playbook.source_path).name
-        match = playbook.manifest.match
+    for builtin in _builtin_runbooks():
+        definition = builtin.definition
+        applies = definition.applies_when
         for field, values, pattern in (
-            ("rule_ids", match.rule_ids, PORTABLE_ID),
-            ("any_tags", match.any_tags, PORTABLE_ID),
-            ("mitre", match.mitre, MITRE_TECHNIQUE_ID),
+            ("applies_when.rule_ids", applies.rule_ids, PORTABLE_ID),
+            ("applies_when.any_tags", applies.any_tags, PORTABLE_ID),
+            ("applies_when.mitre", applies.mitre, MITRE_TECHNIQUE_ID),
+            ("mitre", definition.mitre, MITRE_TECHNIQUE_ID),
         ):
             for value in values or []:
                 seen += 1
                 if pattern.fullmatch(str(value)) is None:
-                    offenders.append(f"{name}: match.{field} {value!r} (want {pattern.pattern})")
+                    offenders.append(f"{builtin.file_name}: {field} {value!r} (want {pattern.pattern})")
 
-    assert seen, "no bundled playbook declares any rule-name criteria; the lint would be vacuous"
+    assert seen, "no built-in runbook declares any rule-name criteria; the lint would be vacuous"
     assert not offenders, (
-        "Non-portable rule-name criterion/criteria in bundled playbook front matter:\n  "
+        "Non-portable rule-name criterion/criteria in built-in runbook front matter:\n  "
         + "\n  ".join(offenders)
         + "\n\n"
         + _TEACH_RULE_IDS
@@ -171,7 +166,7 @@ def test_seeded_default_rule_catalog_is_shape_portable() -> None:
     assert not bad_names, (
         f"Seeded rule name(s) are not portable identifiers: {bad_names}\n"
         f"Required shape: {PORTABLE_ID.pattern}\n"
-        "A rule NAME is the Layer-3 identifier that playbooks, precedent and the "
+        "A rule NAME is the Layer-3 identifier that runbooks, precedent and the "
         "threshold tuner key on. Keep it a lowercase slug and put the "
         "environment-specific literal in `match.value` instead."
     )

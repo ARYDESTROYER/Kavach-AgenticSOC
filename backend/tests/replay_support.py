@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
+import weakref
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -15,9 +17,29 @@ from app.engine.replay.fixtures import build_fixture
 from app.llm.providers import _hash_embed
 from app.models import Job, JobProgress, JobTransition
 from app.stores.jobs import idempotency_hash
+from app.tools.rag import TRUST_BUNDLED_RUNBOOK, runbook_document_id
 from app.tools.vectorstore import StoredChunk
 
 from tests.conftest import make_raw_event
+
+
+#: The states whose store a test already settled: only the first seed of a test clears
+#: the store; a later seed (the mid-run corpus change) adds to it.
+_SETTLED: "weakref.WeakSet[Any]" = weakref.WeakSet()
+
+
+async def settle_corpus(state) -> None:
+    """Let the startup runbook projection finish, then empty the live RAG store.
+
+    Since Round 14 the startup runbook migration projects the Published runbook
+    corpus in the background (SPEC §4.10.17 step 7). A replay test controls its
+    corpus exactly, so it waits for that projection (which could otherwise land
+    mid-test) and starts from an empty store."""
+    task = getattr(state, "_runbook_projection_task", None)
+    if task is not None and not task.done():
+        await asyncio.wait_for(asyncio.shield(task), timeout=30)
+    await state.rag.store.clear()
+    _SETTLED.add(state)
 
 
 async def seed_corpus(state, count: int = 3) -> list[StoredChunk]:
@@ -31,20 +53,25 @@ async def seed_corpus(state, count: int = 3) -> list[StoredChunk]:
     """
     from app.agents.common import rag_query
 
+    if state not in _SETTLED:
+        await settle_corpus(state)
     model = state.prefs.model_for("embedding").model
     grounding = rag_query(make_cluster())
-    chunks = [
-        StoredChunk(
+    chunks = []
+    for index in range(count):
+        # Round 14: the retriever serves only ``runbook`` chunks of the Published-only
+        # projection, so the seeded corpus carries the projection's document shape.
+        document_id = runbook_document_id(f"replay-doc-{index}", 1, f"{index:012x}")
+        chunks.append(StoredChunk(
             text=f"{grounding} runbook step {index}: verify and record the outcome",
             source="runbook",
-            metadata={"document_id": f"doc-{index}", "content_hash": f"hash-{index}"},
+            metadata={"document_id": document_id, "content_hash": f"hash-{index}",
+                      "trust_class": TRUST_BUNDLED_RUNBOOK},
             embedding=_hash_embed(f"{grounding} runbook step {index}"),
             embedding_model=model,
             dim=256,
-            doc_id=f"doc-{index}",
-        )
-        for index in range(count)
-    ]
+            doc_id=f"{document_id}:triage",
+        ))
     await state.rag.store.add(chunks)
     return chunks
 

@@ -54,15 +54,13 @@ RESOURCES: dict[str, list[str]] = {
     "settings": ["read", "manage"],
     "users": ["manage"],
     "proposals": ["read", "approve"],
-    # ``playbooks`` stays for one release (SPEC Round 14 §3.7): existing routes and
-    # chat tools still gate on it until the runbook feature replaces them, after which
-    # it leaves this vocabulary and every stored grant maps onto ``runbooks``.
-    "playbooks": ["read", "run", "manage"],
     # Round 14 (SPEC §3.7): one runbook feature. ``read`` sees the library and a
     # case's runs; ``run`` works a case's checklist (steps, decisions, lookups);
     # ``manage`` authors drafts, duplicates, imports and retires; ``publish`` makes a
     # version live, the only step that lets runbook text reach the investigator as
-    # trusted guidance (#9).
+    # trusted guidance (#9). The retired ``playbooks`` resource left this vocabulary in
+    # Round 14 (§3.7 step 3); a stored ``playbooks`` grant or deny is still accepted and
+    # read as its ``runbooks`` equivalent (:data:`LEGACY_RUNBOOK_RESOURCE`).
     "runbooks": ["read", "run", "manage", "publish"],
     "rag": ["read", "manage"],
     "memory": ["read", "manage"],
@@ -114,10 +112,12 @@ ALL = "*"  # wildcard action grant
 # were separate resources, so the mapping UNIONS into any ``runbooks`` entry already
 # in the same map and never replaces it. In the current vocabulary a ``runbooks``
 # entry that is present is authoritative and the alias is mapped only when it is
-# absent: the legacy load already unioned the two and stamped the map, and the
-# ``playbooks`` key itself is left in place while routes still gate on it (§3.7 step
-# 3 removes it from ``RESOURCES``), so re-unioning that stale key on every later
-# validation would silently undo a narrowing of ``runbooks`` (or keep a lifted deny).
+# absent: the legacy load already unioned the two and stamped the map, so re-unioning
+# a stale ``playbooks`` key on every later validation would silently undo a narrowing
+# of ``runbooks`` (or keep a lifted deny). The ``playbooks`` key itself is kept
+# verbatim in a stored map (a rollback reads the grant it stored), but it grants
+# nothing: the resource left ``RESOURCES`` in Round 14 (§3.7 step 3), so the
+# resolvers skip it, and only its ``runbooks`` meaning applies.
 #
 # ``runbooks:publish`` is new. A grant layer stored before Round 14 that grants
 # ``runbooks:manage`` also gains ``publish`` once (``legacy=True``), and the stored
@@ -129,8 +129,13 @@ ALL = "*"  # wildcard action grant
 #: stored grant map). Version 2 is the Round 14 runbook vocabulary; a stored map
 #: without the stamp (or with a lower one) was written before it.
 RBAC_GRANTS_VERSION = 2
-#: The retired resource name accepted as an alias on load (never shown in the matrix
-#: editor once §3.7 step 3 lands).
+#: The retired resource name, accepted as an alias of ``runbooks`` in every grant and
+#: deny layer. It is no longer in :data:`RESOURCES` or the default matrix (§3.7 step 3),
+#: so it never appears in an effective matrix or in what ``/api/account/permissions``
+#: reports. A client that still lists it (an older Console's role editor, an API
+#: script) has its grants and denies read through the alias above, and a permission
+#: question that names it is answered for its ``runbooks`` meaning
+#: (:func:`resolve_runbook_alias`).
 LEGACY_RUNBOOK_RESOURCE = "playbooks"
 _RUNBOOK_RESOURCE = "runbooks"
 #: How each retired action maps onto the runbook vocabulary.
@@ -139,6 +144,22 @@ _LEGACY_RUNBOOK_ACTIONS: dict[str, tuple[str, ...]] = {
     "run": ("run",),
     "manage": ("manage", "publish"),
 }
+
+
+def resolve_runbook_alias(resource: str, action: str) -> tuple[str, str]:
+    """The current-vocabulary ``(resource, action)`` a permission question names.
+
+    The retired ``playbooks`` resource reads as ``runbooks`` with the action it maps to
+    (``read`` and ``run`` keep their name, ``manage`` reads as ``manage``, its first
+    meaning, and ``*`` stays ``*``), so a spot check such as ``GET /api/roles/simulate``
+    answers a stored alias for the access it really grants. An action the alias never
+    had keeps its name (and is then unknown on ``runbooks``, so it is denied). Every
+    other pair is returned unchanged. Pure."""
+    if resource != LEGACY_RUNBOOK_RESOURCE:
+        return resource, action
+    if action == ALL:
+        return _RUNBOOK_RESOURCE, ALL
+    return _RUNBOOK_RESOURCE, _LEGACY_RUNBOOK_ACTIONS.get(action, (action,))[0]
 
 
 def _union_actions(existing: Any, extra: list[str]) -> Any:
@@ -242,7 +263,7 @@ def normalise_denies(denies: Any, *, legacy: bool = False) -> Any:
 
 
 #: The built-in roles' grants of the two procedure resources BEFORE Round 14, frozen
-#: here (they must outlive the retired resource leaving the matrix, §3.7 step 3). A
+#: here because the retired resource has left the matrix (§3.7 step 3). A
 #: stored ``roles`` override REPLACES a role's grants per resource, so before Round 14
 #: an override that named only one of the two resources left the other at this
 #: default; :func:`normalise_role_overrides` restores that meaning.
@@ -418,7 +439,6 @@ _SOC_MANAGER: dict[str, list[str]] = {
     "settings": [ALL],
     "users": ["manage"],
     "proposals": [ALL],
-    "playbooks": [ALL],
     "runbooks": [ALL],
     "rag": [ALL],
     "memory": [ALL],
@@ -435,7 +455,6 @@ _ANALYST_TIER2: dict[str, list[str]] = {
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read"],
-    "playbooks": ["read", "run"],
     "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
@@ -449,7 +468,6 @@ _ANALYST_TIER1: dict[str, list[str]] = {
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read"],
-    "playbooks": ["read"],
     # Round 14 (SPEC E8): working a case's runbook checklist is the analyst's core
     # task, so every role except the auditor may run it.
     "runbooks": ["read", "run"],
@@ -461,12 +479,11 @@ _ANALYST_TIER1: dict[str, list[str]] = {
 }
 
 _RESPONDER: dict[str, list[str]] = {
-    # analyst_tier1 + playbooks:run + proposals:approve
+    # analyst_tier1 + proposals:approve
     "cases": ["read", "write", "comment", "assign"],
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read", "approve"],
-    "playbooks": ["read", "run"],
     "runbooks": ["read", "run"],
     "rag": ["read"],
     "memory": ["read"],
@@ -483,7 +500,6 @@ _AUDITOR: dict[str, list[str]] = {
     "sources": ["read"],
     "settings": ["read"],
     "proposals": ["read"],
-    "playbooks": ["read"],
     "runbooks": ["read"],
     "rag": ["read"],
     "memory": ["read"],

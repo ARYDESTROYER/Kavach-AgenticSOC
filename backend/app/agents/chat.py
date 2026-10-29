@@ -2371,8 +2371,9 @@ class _AgentTurn:
 
     def _bounded_step_timeout(self) -> float:
         """Bounded mode (D1: the question's wall clock is a cap there): one model call
-        may take ``model_step_timeout_s`` (default 300 s since Round 12, the unlimited
-        stall timeout) but never past the question's ``turn_timeout_s``; once that has
+        may take ``model_step_timeout_s`` (default 900 s since Round 14, tripled from
+        Round 12's 300 s; the unlimited stall timeout) but never past the question's
+        ``turn_timeout_s``; once that has
         run out, the one final-answer step still gets the pre-Round-12 30 s. So a
         90-second question cannot run on for minutes inside a single call."""
         left = float(self.cfg.turn_timeout_s) - self._elapsed()

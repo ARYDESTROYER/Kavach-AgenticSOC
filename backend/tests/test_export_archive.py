@@ -397,13 +397,26 @@ def test_archive_uses_real_sqlite_pages_and_discloses_weaker_consistency(
     assert names == ["audit.ndjson", "manifest.json"]
     archived = _read_ndjson(members["audit.ndjson"])
     assert archived == [{"record": row} for row in expected_rows]
-    assert [row["record"]["result_summary"] for row in archived] == [
+    # The first start of a store writes one runbook conversion summary row before
+    # anything is seeded (SPEC §4.10.17 step 5); every other row is a seeded one,
+    # in write order.
+    startup = [
+        row["record"] for row in archived if row["record"].get("surface") == "runbook_migration"
+    ]
+    assert [(row["actor"], row["action"]) for row in startup] == [
+        ("runbook_migration", "runbook.migration_completed")
+    ]
+    assert [
+        row["record"]["result_summary"]
+        for row in archived
+        if row["record"].get("surface") != "runbook_migration"
+    ] == [
         "sqlite-row-0",
         "sqlite-row-1",
         "sqlite-row-2",
     ]
     scope_manifest = json.loads(members["manifest.json"])["scopes"]["audit"]
-    assert scope_manifest["snapshot_total"] == len(expected_rows) == 3
+    assert scope_manifest["snapshot_total"] == len(expected_rows) == 3 + len(startup)
     assert scope_manifest["exported"] == len(expected_rows)
     assert scope_manifest["status"] == "complete"
     assert scope_manifest["pit_consistent"] is False

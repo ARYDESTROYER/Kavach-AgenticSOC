@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Literal, NamedTuple
 from pydantic import Field, PrivateAttr, field_validator
 
 from ...constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, CaseStatus, Verdict
-from ...models import Citation, humanise_relative_window
+from ...models import PHASE_LABELS, Citation, humanise_relative_window
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
     CASE_STATUS_WORDS,
@@ -707,13 +707,17 @@ class SearchCasesTool(ChatTool):
 # --------------------------------------------------------------------------- #
 # get_case
 # --------------------------------------------------------------------------- #
-GET_CASE_SECTIONS = ("summary", "evidence", "timeline", "decision", "mitre", "rationale", "campaign")
+GET_CASE_SECTIONS = ("summary", "evidence", "timeline", "decision", "mitre", "runbook", "rationale", "campaign")
+#: What ``get_case`` reads when the call names no section. ``runbook`` (Round 14 SPEC
+#: §4.10.10) is one per-case document read, so "what is next on this case" is answered
+#: from any case read.
+GET_CASE_DEFAULT_SECTIONS = ("summary", "evidence", "timeline", "decision", "mitre", "runbook")
 
 
 class GetCaseInput(ToolInput):
     case_id: str | None = Field(default=None, max_length=128)
     include: list[Literal[GET_CASE_SECTIONS]] = Field(  # type: ignore[valid-type]
-        default_factory=lambda: ["summary", "evidence", "timeline", "decision", "mitre"], max_length=7,
+        default_factory=lambda: list(GET_CASE_DEFAULT_SECTIONS), max_length=len(GET_CASE_SECTIONS),
     )
 
     @field_validator("case_id", mode="before")
@@ -725,14 +729,15 @@ class GetCaseInput(ToolInput):
     @classmethod
     def _include(cls, value: Any) -> Any:
         if value in (None, "", []):
-            return ["summary", "evidence", "timeline", "decision", "mitre"]
+            return list(GET_CASE_DEFAULT_SECTIONS)
         if isinstance(value, str):
             value = [value]
         if isinstance(value, list):
             out = []
             for item in value:
                 key = str(item).strip().lower()
-                key = {"why": "rationale", "history": "timeline", "attack": "mitre"}.get(key, key)
+                key = {"why": "rationale", "history": "timeline", "attack": "mitre", "runbooks": "runbook",
+                       "run": "runbook", "progress": "runbook", "next_step": "runbook"}.get(key, key)
                 if key in GET_CASE_SECTIONS and key not in out:
                     out.append(key)
             return out or ["summary"]
@@ -756,6 +761,22 @@ async def find_case(ctx: ChatToolContext, case_id: str) -> Any:
     )
 
 
+def progress_text(progress: Any) -> str:
+    """A run's progress as the Console's chip reads it (Round 14 SPEC §4.10.7): "4/11"
+    (done over total), with "· 1 blocked" and "· 1 waiting" when steps are blocked or
+    wait for an approval."""
+    def _n(name: str) -> int:
+        value = progress.get(name) if isinstance(progress, dict) else getattr(progress, name, 0)
+        return int(value or 0)
+
+    out = f"{_n('done'):,}/{_n('total'):,}"
+    if _n("blocked"):
+        out += f" · {_n('blocked'):,} blocked"
+    if _n("waiting"):
+        out += f" · {_n('waiting'):,} waiting"
+    return out
+
+
 def _last_decision_reason(case: Any) -> str | None:
     for entry in reversed(list(case.status_history or [])):
         if str(getattr(entry, "by", "")) in ("agent", "system", "analyst_policy"):
@@ -769,10 +790,10 @@ class GetCaseTool(ChatTool):
     running_label: ClassVar[str] = "Reading a case"
     scope: ClassVar[str] = "cases"
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("cases", "read"),)
-    optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("cost", "view"),)
-    data_source: ClassVar[str] = "Case store and audit trail"
+    optional_grants: ClassVar[tuple[tuple[str, str], ...]] = (("cost", "view"), ("runbooks", "read"))
+    data_source: ClassVar[str] = "Case store, runbook runs and audit trail"
     signature: ClassVar[str] = (
-        "get_case(case_id?, include?=[summary,evidence,timeline,decision,mitre] (+rationale, campaign)) "
+        "get_case(case_id?, include?=[summary,evidence,timeline,decision,mitre,runbook] (+rationale, campaign)) "
         "-- one case: verdict, risk, evidence summaries, status timeline and the recorded decision"
     )
     display_keys: ClassVar[tuple[str, ...]] = ("case_id", "include")
@@ -780,7 +801,7 @@ class GetCaseTool(ChatTool):
     def display_params(self, inp: dict[str, Any]) -> dict[str, Any]:
         params = dict(inp) if isinstance(inp, dict) else {}
         if isinstance(params.get("include"), list):
-            params["include"] = ",".join(str(i) for i in params["include"][:7])
+            params["include"] = ",".join(str(i) for i in params["include"][:len(GET_CASE_SECTIONS)])
         return super().display_params(params)
 
     async def run(self, ctx: ChatToolContext, **inp: Any) -> ToolOutcome:
@@ -842,6 +863,10 @@ class GetCaseTool(ChatTool):
                     "tactic": str(tactics[0]) if tactics else None,
                 })
             observation["mitre"] = technique_rows
+        runbook_runs: list[dict[str, Any]] = []
+        if "runbook" in include:
+            observation["runbook"] = await self._runbook(ctx, case)
+            runbook_runs = list(observation["runbook"].get("runs") or [])
         if "rationale" in include and ctx.audit is not None:
             observation["rationale"] = await self._rationale(ctx, case)
         if "campaign" in include and case.campaign_id and ctx.campaigns is not None:
@@ -855,7 +880,7 @@ class GetCaseTool(ChatTool):
                     "status": enum_value(campaign.status), "case_count": len(campaign.case_ids),
                 }
         related = await self._related(ctx, case)
-        artifacts = self._artifacts(ctx, case, technique_rows, history, related)
+        artifacts = self._artifacts(ctx, case, technique_rows, history, related, runbook_runs)
         verdict = enum_value(case.verdict) or "no verdict"
         status = enum_value(case.status) or "unknown"
         summary = (
@@ -885,9 +910,12 @@ class GetCaseTool(ChatTool):
         text, §5.2) and ``knowledge[].snippet`` comes from the CONTEXT row's
         ``tool_input`` (imported intel and precedent text). Only tool names and call
         counts, the native queries bounded like ``audit_search`` does, knowledge
-        source labels, the persona/playbook ids, the deterministic case-manager
-        rationale and a bounded reasoning excerpt are projected; the engine fences
-        the whole observation."""
+        source labels, the persona id, the runbook that guided the run (its id and
+        version; Round 14) and the legacy playbook id of an earlier run, the
+        deterministic case-manager rationale and a bounded reasoning excerpt are
+        projected; the engine fences the whole observation. The runbook's selection
+        reason and match explanation are never projected: they quote rule names and
+        other values that come from logs (#9)."""
         from ...engine.case_rationale import build_rationale
 
         try:
@@ -911,6 +939,8 @@ class GetCaseTool(ChatTool):
         )
         persona = data.get("persona") if isinstance(data.get("persona"), str) else ""
         playbook = data.get("playbook") if isinstance(data.get("playbook"), dict) else {}
+        runbook = data.get("runbook") if isinstance(data.get("runbook"), dict) else {}
+        runbook_version = runbook.get("version")
         return {
             "available": True,
             "tool_calls": [{"tool": name, "calls": n} for name, n in sorted(calls.items())][:10],
@@ -920,8 +950,66 @@ class GetCaseTool(ChatTool):
             # Engine-authored by case_manager (verdict enum, numbers, policy values).
             "decision_rationale": opt_text(data.get("decision_rationale"), 400),
             "persona": opt_text(persona, 60),
+            # Round 14: set only when the runbook's guidance reached the investigator.
+            "runbook": opt_text(runbook.get("id"), 64),
+            "runbook_version": (
+                runbook_version
+                if isinstance(runbook_version, int) and not isinstance(runbook_version, bool)
+                else None
+            ),
+            # Runs before Round 14 recorded their procedure here.
             "playbook": opt_text(playbook.get("id"), 60),
         }
+
+    async def _runbook(self, ctx: ChatToolContext, case: Any) -> dict[str, Any]:
+        """The case's runbook runs as Case chat may read them (Round 14 SPEC
+        §4.10.10): per run that is not abandoned, its title, version, status, progress,
+        the next step's title and the required steps still open (``run_summary``),
+        plus the titles of those open steps (at most five). No lookup result is
+        included, so no raw log row can reach a prompt (#7); the engine fences the
+        whole observation (#9). It needs ``runbooks:read`` beside ``cases:read``, like
+        the case runbook route, and reads as not available without it, without a run
+        store, or when the store cannot be read (never as "no runbook")."""
+        if not ctx.has("runbooks", "read"):
+            return {"available": False, "reason": "no access to runbooks"}
+        store = getattr(ctx, "runbook_runs", None)
+        if store is None:
+            return {"available": False, "reason": "runbook runs are not available here"}
+        from ...engine.runbook_runs import next_step, ordered_steps, run_summary
+
+        try:
+            case_runs = await store.get(str(case.case_id))
+        except Exception as exc:  # noqa: BLE001 -- explainability degrades, never fails
+            logger.info("runbook runs unavailable for chat: %s", exc)
+            return {"available": False, "reason": "the runbook runs could not be read"}
+        live = [run for run in case_runs.runs if run.status != "abandoned"]
+        summaries = run_summary(live)
+        runs: list[dict[str, Any]] = []
+        for run, summary in zip(live, summaries):
+            progress = summary.get("progress") or {}
+            nxt = next_step(run)
+            open_titles = [
+                text(step.title, 160)
+                for step in ordered_steps(run.snapshot)
+                if step.required and getattr(run.steps.get(step.id), "status", "todo") not in ("done", "not_applicable")
+            ][:5]
+            runs.append({
+                "title": text(summary.get("title"), 120),
+                "version": summary.get("version"),
+                "status": summary.get("status"),
+                "attached_by": run.attached_by,
+                "progress": progress_text(progress),
+                "done": progress.get("done"),
+                "total": progress.get("total"),
+                "not_applicable": progress.get("not_applicable"),
+                "blocked": progress.get("blocked"),
+                "waiting_for_approval": progress.get("waiting"),
+                "required_open": summary.get("required_open"),
+                "next_step": opt_text(summary.get("next_step"), 160),
+                "next_step_phase": PHASE_LABELS.get(nxt.phase, nxt.phase) if nxt is not None else None,
+                "open_required_steps": open_titles,
+            })
+        return {"available": True, "runs": runs}
 
     async def _related(self, ctx: ChatToolContext, case: Any) -> list[dict[str, Any]]:
         """The entity card's related cases (at most 5): each named by its display number
@@ -945,7 +1033,8 @@ class GetCaseTool(ChatTool):
         return out
 
     def _artifacts(self, ctx: ChatToolContext, case: Any, techniques: list[dict[str, Any]], history: list[Any],
-                   related: list[dict[str, Any]] | None = None) -> list[Artifact]:
+                   related: list[dict[str, Any]] | None = None,
+                   runbook_runs: list[dict[str, Any]] | None = None) -> list[Artifact]:
         artifacts: list[Artifact] = []
         entity_type = enum_value(getattr(case.entity, "type", None)) or ""
         kind = _ENTITY_KIND.get(entity_type)
@@ -971,6 +1060,9 @@ class GetCaseTool(ChatTool):
             facts.append({"label": "Source", "value": str(case.source_name or case.source_id), "untrusted": True})
         if case.assignee:
             facts.append({"label": "Assignee", "value": str(case.assignee), "untrusted": True})
+        for run in (runbook_runs or [])[:2]:
+            # Round 14: the runbook on the case and how far it is ("4/11").
+            facts.append({"label": "Runbook", "value": f"{run['title']} v{run['version']} · {run['progress']}"})
         if kind:
             artifacts.append(Artifact(
                 id="a1", kind="entity", title="Case entity", title_trusted=True,
