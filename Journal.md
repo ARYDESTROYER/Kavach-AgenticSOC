@@ -11652,3 +11652,10 @@
 - Tests: backend full suite 10,861 passed, 6 skipped; remaining failures are the five sandbox-only network and environment tests, one records test that waits for WP-DOC, and two fixed by the applied patches (rechecked green); ruff fatal clean; check_docs, check_version, check_ci_contract green; web tsc 0, lint 0/0, gates, 446 test files (two known pre-existing failures: console map regeneration and one Tuning help text test owned by W9b).
 - Status: done (committed `bad2438`).
 - Next: run 3 in two streams: backend A6b, A7a, A7b, A7c; web W5 (Audit page), W6a (rule sheet), W4c and W4b (dashboard widgets and the Dashboards library), plus console map and corpus regeneration.
+
+### 2026-10-29 02:50Z — Orchestrator — Round 14 run r3b-backend: chat drill and severity, runbook stores, library API, case runs
+- Context: SPEC §7.3 A6b, A7a, A7b, A7c (asks 6, 7, 9). Resumed once after a container restart.
+- Did: chat rule and severity drill targets built by code with named severity levels, top rules, trends and Split by; the runbook library and run stores, config with retired keys mapped, the new runbook permissions with the playbooks grant mapping and the one-shot audited migration; the governed library API (Draft, In review, Published, Retired; revision-checked publish; match preview; metrics; v1 read alias; 410 for old-shape writes); runbook runs on a case (attach and re-evaluate, steps, approvals, read-only lookups under the caller's grants with fenced results, AI suggestion and drafts through the gateway, the close reason for open required steps) and the playbook aliases. Reviews found 52 issues across the four packages; all fixed or recorded, re-reviewed. `decide()` untouched.
+- Tests: backend full suite 11,390 passed, 6 skipped; two failures fixed by the gate; nine legacy tests outside the run's files need rewrites (assigned to the next run), one records test waits for WP-DOC, five are sandbox-only; ruff fatal clean.
+- Status: done (committed `56e0a88`).
+- Next: run r4b: a fix-up package (legacy tests, bulk close reason, Demo runbook AI answers), then A8a, A8b, A8c; web run r3w continues.
