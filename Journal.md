@@ -11687,3 +11687,10 @@
 - Tests: gates agent: tsc clean, eslint 0/0, MkDocs strict build clean; Vitest 166 primary files 2,354 passed / 1 skipped; 251 dependent files 3,033 passed / 1 failed (Tuning.render authority sentence, owned by W9b).
 - Status: done.
 - Next: r5a-fix (FX2b, FX2w, B1) running; Wave D page migrations next; then WP-DOC and WP-GEN.
+
+### 2026-10-29 14:40Z — orchestrator — Round 14 run r5a-fix (FX2b, FX2w, B1)
+- Context: Round 14 fix-up packages from the r4 hand-offs, and WP-B1 (SPEC §7.4).
+- Did: FX2b (Demo suspicious-activity plan, chat case card rule links, tripled timeout fallback, automation runbook resolver order, Demo chat reads the published library, golden singular figures, duration-free comments); FX2w (W6b patches applied and verified live, entity rule links, Cases cast removed, small copy fixes); B1 (openapi.json and api-types.gen.ts regenerated, mirrors reconciled, legacy client types removed, client tests). Orchestrator applied the entity_fact_items contract limit, BLOCKS amendment 36, chat and ui-standard docs, two client hand-offs (runbook discard revision, audit record through the client) and two comment fixes. Commit 9bc4e5e. runbook_runs.py, chat_tools/cases.py and three tests that depend on them are held for the FX3b commit (shared files).
+- Tests: gates agent full backend 11,788 tests, 11,776 passed, 6 failed (5 sandbox proxy/AWS env, 1 WP-DOC records), 6 skipped; ruff fatal clean; OpenAPI and generated types byte-identical to a fresh dump; tsc 0, eslint 0/0, design gates pass; Vitest 495 related files, 15 failures none from this run (9 load flakes passing alone, 6 from in-flight Wave D packages); entry chunk 328,442 B (B1 took 2,448 B off).
+- Status: done.
+- Next: Wave D (r5w1, r5w2) running; then a leftover fix package (typed lifecycle jobs, stale mocks, audit export destination, legacy resolver order in the editor, Demo case rule ids); WP-DOC; WP-GEN.
