@@ -398,7 +398,8 @@ async def test_case_lists_and_related_cases_carry_the_case_number() -> None:
     assert related == [
         {"case_id": "r-1", "case_number": "CASE-000007", "title": "host:ws-1 · edr_alert"},
         {"case_id": "r-2", "case_number": None, "title": f"ip:203.0.113.7{CASE_TITLE_SEPARATOR}rule_r-2"},
-        {"case_id": "gone", "case_number": None, "title": "gone"},
+        # Round 14 (F7): the internal id is the link target, never the visible name.
+        {"case_id": "gone", "case_number": None, "title": "Related case, not found"},
     ]
     assert_artifacts_render(got)
     assert case_list_item(_case("x", age=timedelta(hours=1), number="CASE-1"), ctx.prefs)["case_number"] == "CASE-1"

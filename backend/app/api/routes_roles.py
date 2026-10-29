@@ -57,9 +57,12 @@ from ..rbac.policy import (
     DEFAULT_ROLE,
     RESOURCES,
     can,
+    normalise_denies,
+    normalise_grants,
     resolve_matrix,
 )
 from ..state import AppState
+from ..stores.custom_roles import CustomRoleExists, CustomRoleMissing
 from .deps import (
     _rbac_config_with_custom_roles,
     current_user,
@@ -117,7 +120,17 @@ def _validate_custom_role(body: CustomRoleBody | RolePreviewBody) -> CustomRole:
     """Validate a submitted role into a :class:`CustomRole`, rejecting an empty name
     or a name that collides with a built-in role (400). The store + the matrix
     resolver also clean the grant/deny maps, so an unknown resource/action is dropped
-    leniently rather than erroring."""
+    leniently rather than erroring.
+
+    Round 14 (SPEC §3.7): every body this router accepts (create, update, preview) is
+    read through the ``playbooks`` -> ``runbooks`` alias here, BEFORE anything could
+    clean the retired resource away, so a grant or deny an older client sends is never
+    dropped silently: ``playbooks:manage`` becomes ``runbooks:manage`` and
+    ``runbooks:publish``, a deny of it denies both. A body is current vocabulary, so a
+    ``runbooks:manage`` grant here does NOT imply ``publish`` (that once-only rule is
+    for maps stored before Round 14), and a ``runbooks`` entry in the body is
+    authoritative: a ``playbooks`` key echoed beside it (the matrix editor still shows
+    that row) never widens it back, so a narrowing sticks."""
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="custom role name is required")
@@ -132,8 +145,8 @@ def _validate_custom_role(body: CustomRoleBody | RolePreviewBody) -> CustomRole:
                 "name": name,
                 "description": body.description or "",
                 "inherits": list(body.inherits or []),
-                "grants": dict(body.grants or {}),
-                "denies": dict(body.denies or {}),
+                "grants": normalise_grants(dict(body.grants or {})),
+                "denies": normalise_denies(dict(body.denies or {})),
             }
         )
     except Exception as exc:  # noqa: BLE001 — surface a clean 400 on a malformed body
@@ -167,24 +180,45 @@ async def _audited_rbac_write(
     changes: list[Any],
     summary: str,
     write: Any,
+    store_unavailable: dict[str, str] | None = None,
 ) -> Any:
     """An RBAC change, audit-first (SPEC §3.6): the row (real audit log, never the
     Demo one) is appended before ``write`` runs; a failed append is ``503
-    audit_unavailable`` and nothing changes."""
-    return await audited_write(
-        state,
-        sink="control",
-        action=action,
-        target=target,
-        expected_revision=None,
-        changes=changes,
-        write=write,
-        action_type=ActionType.USER_MGMT,
-        actor=current_username(request) or "",
-        surface="rbac",
-        context=audit_context(request),
-        result_summary=summary,
-    )
+    audit_unavailable`` and nothing changes.
+
+    ``store_unavailable`` (``{"code", "message"}``) is the answer when the store write
+    itself fails with anything but a domain refusal (an ``HTTPException``): a storage
+    outage or an exhausted compare-and-set is then a structured ``503`` instead of a
+    bare ``500``, after the failure row has recorded the store's own error."""
+    try:
+        return await audited_write(
+            state,
+            sink="control",
+            action=action,
+            target=target,
+            expected_revision=None,
+            changes=changes,
+            write=write,
+            action_type=ActionType.USER_MGMT,
+            actor=current_username(request) or "",
+            surface="rbac",
+            context=audit_context(request),
+            result_summary=summary,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        if store_unavailable is None:
+            raise
+        logger.warning("RBAC write %s failed in the store: %s", action, exc)
+        raise HTTPException(status_code=503, detail=dict(store_unavailable)) from exc
+
+
+#: The answer when the custom role store cannot save a change (SPEC §3.6 step 3).
+_ROLE_STORE_UNAVAILABLE: dict[str, str] = {
+    "code": "role_store_unavailable",
+    "message": "The role could not be saved. Try again.",
+}
 
 
 def _draft_rbac_config(rbac: Any, draft: CustomRole):
@@ -265,17 +299,22 @@ async def create_role(
         raise HTTPException(status_code=409, detail=f"custom role '{role.name}' already exists")
 
     async def _create() -> CustomRole:
-        # Created by another request while the row was appended: refused, so the
-        # failure row is written instead of a creation that silently replaced it.
-        if await store.get(role.name) is not None:
-            raise HTTPException(status_code=409, detail=f"custom role '{role.name}' already exists")
-        return await store.put(role)
+        # Created by another request while the row was appended: refused inside the
+        # store's compare-and-set, so the failure row is written instead of a
+        # creation that silently replaced it (and a storage failure raises).
+        try:
+            return await store.create_if_absent(role)
+        except CustomRoleExists as exc:
+            raise HTTPException(
+                status_code=409, detail=f"custom role '{role.name}' already exists"
+            ) from exc
 
     stored = await _audited_rbac_write(
         state, request, action="role.created", target=_role_target(role.name),
         changes=diff_changes({}, _role_doc(role)),
         summary=f"created custom role '{role.name}'",
         write=_create,
+        store_unavailable=_ROLE_STORE_UNAVAILABLE,
     )
     return {"ok": True, "role": stored.model_dump(mode="json")}
 
@@ -300,18 +339,23 @@ async def update_role(
 
     async def _update() -> CustomRole:
         # Deleted while the row was appended: answered 404 with its failure row. The
-        # store's put is an upsert, so writing anyway would bring the role back (and
-        # with it the grants of every account still holding its name) under a row
-        # that says it was only updated.
-        if await store.get(role.name) is None:
-            raise HTTPException(status_code=404, detail=f"custom role '{role.name}' not found")
-        return await store.put(role)
+        # existence check is decided inside the store's compare-and-set, so a
+        # concurrent delete is never undone (an upsert would bring the role back, and
+        # with it the grants of every account still holding its name, under a row
+        # that says it was only updated).
+        try:
+            return await store.update_existing(role)
+        except CustomRoleMissing as exc:
+            raise HTTPException(
+                status_code=404, detail=f"custom role '{role.name}' not found"
+            ) from exc
 
     stored = await _audited_rbac_write(
         state, request, action="role.updated", target=_role_target(existing.name),
         changes=diff_changes(_role_doc(existing), _role_doc(role)),
         summary=f"updated custom role '{role.name}'",
         write=_update,
+        store_unavailable=_ROLE_STORE_UNAVAILABLE,
     )
     return {"ok": True, "role": stored.model_dump(mode="json")}
 
@@ -338,17 +382,19 @@ async def delete_role(
         raise HTTPException(status_code=404, detail=f"custom role '{nm}' not found")
 
     async def _delete() -> bool:
-        removed = await store.delete(nm)
-        if not removed:
+        try:
+            await store.delete_strict(nm)
+        except CustomRoleMissing as exc:
             # Gone between the read and the delete: the failure row says so.
-            raise HTTPException(status_code=404, detail=f"custom role '{nm}' not found")
-        return removed
+            raise HTTPException(status_code=404, detail=f"custom role '{nm}' not found") from exc
+        return True
 
     await _audited_rbac_write(
         state, request, action="role.deleted", target=_role_target(existing.name),
         changes=diff_changes(_role_doc(existing), {}),
         summary=f"deleted custom role '{nm}'",
         write=_delete,
+        store_unavailable=_ROLE_STORE_UNAVAILABLE,
     )
     return {"ok": True}
 

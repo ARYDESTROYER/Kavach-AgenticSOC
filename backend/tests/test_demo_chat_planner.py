@@ -214,12 +214,18 @@ def test_read_prompt_takes_lookups_at_once_from_the_configured_value(configured:
 
 
 def test_the_new_lookups_ceiling_keeps_a_working_plan() -> None:
-    """The highest configurable value (24) still yields a working plan. The Demo planner
-    reads at most 16 lookups at once (its own clamp in ``read_prompt``), so a configured
-    17 to 24 plans 16 a step in Demo Mode. Pinned exactly so any change to that clamp
-    is deliberate and moves this test with it."""
+    """The highest configurable value (24) still yields a working plan, and the Demo
+    planner reads it whole: its clamp in ``read_prompt`` is the configured ceiling
+    (``CHAT_AGENT_BOUNDS``), so a configured 17 to 24 plans that many a step in Demo
+    Mode, exactly as a live model may. Pinned exactly so any change to that clamp is
+    deliberate and moves this test with it."""
     assert CHAT_AGENT_BOUNDS["max_parallel"] == (1, 24)
-    assert read_prompt(prompt("How are we doing?", max_parallel=24)).max_parallel == 16
+    assert read_prompt(prompt("How are we doing?", max_parallel=24)).max_parallel == 24
+    assert read_prompt(prompt("How are we doing?", max_parallel=17)).max_parallel == 17
+    # A prompt that states no limit plans the model's own default, never a stale 4.
+    bare = [{"role": "system", "content": "No lookup limit is stated here."},
+            {"role": "user", "content": "How are we doing?"}]
+    assert read_prompt(bare).max_parallel == DEFAULT_PARALLEL == 12
     assert read_prompt(prompt("How are we doing?", max_parallel=DEFAULT_PARALLEL)).max_parallel == 12
     # A brief plans its whole first batch at the ceiling, the same as at the default.
     wide = tools_of(plan_turn(prompt("/shift-brief", max_parallel=24)))

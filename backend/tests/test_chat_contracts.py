@@ -1214,6 +1214,86 @@ def test_logs_nav_opts_are_shared_with_the_webui_router() -> None:
     assert B.clean_nav_opts({"from_": "now"}) == {}
 
 
+def test_drill_contract_is_shared_with_the_webui() -> None:
+    """Round 14 (SPEC §4.6.3, §4.7.2): the drill page, keys, split keys, subjects and
+    limits equal the shared contract (the webui pins the same file), and the drill opts
+    validate EXACTLY like the router's ``rule``/``severity`` deep links on the server:
+    a valid value survives ``clean_nav_opts``, a Logs ref, a ``rule`` page ref and the
+    by-alias dump; an invalid one is dropped and invalidates the ref."""
+    contract = _load(_ANSWER_CONTRACT)
+    drill = contract["drill"]
+    assert drill["rule_page"] == B.RULE_PAGE
+    assert drill["keys"] == list(B.DRILL_NAV_KEYS)
+    assert drill["severity_split_keys"] == list(B.SEVERITY_SPLIT_KEYS)
+    assert drill["severity_subjects"] == ["events", "cases"]
+    assert drill["limits"] == {
+        "row_trend_points": B.MAX_ROW_TREND_POINTS, "rule_chars": B.MAX_RULE_CHARS,
+        "severity_rules": B.MAX_SEVERITY_RULES, "severity_raw_values": B.MAX_SEVERITY_RAW_VALUES,
+        "severity_split_top": B.MAX_SEVERITY_SPLIT_TOP,
+    }
+    examples = contract["nav_drill_examples"]
+    assert set(examples["valid"]) == set(examples["invalid"]) == set(B.DRILL_NAV_KEYS)
+    pages = {"rule": ("rule", "logs"), "severity": ("logs",)}
+    for key, values in examples["valid"].items():
+        for value in values:
+            assert B.clean_nav_opts({key: value}) == {key: value}, (key, value)
+            for page in pages[key]:
+                ref = {"page": page, "opts": {key: value, "from": "now-3d", "to": "now"}}
+                assert B.parse_ref(ref) is not None, (page, key, value)
+                callout = B.CalloutBlock.model_validate({
+                    "id": "c1", "type": "callout", "tone": "info", "text": "t", "provenance": "code",
+                    "open_in": ref})
+                assert B.dump_block(callout)["open_in"] == ref, (page, key, value)
+    for key, values in examples["invalid"].items():
+        for value in values:
+            assert B.clean_nav_opts({key: value}) == {}, (key, repr(value))
+            for page in pages[key]:
+                assert B.parse_ref({"page": page, "opts": {key: value}}) is None, (page, key, repr(value))
+    # The rule rule is the router's: 256 code points, never trimmed.
+    assert any(len(v) == B.MAX_RULE_CHARS for v in examples["valid"]["rule"])
+    assert any(v != v.strip() for v in examples["valid"]["rule"])
+
+
+def test_table_drill_trend_and_severity_are_code_side_and_aligned() -> None:
+    """A table's ``drill`` and ``trend`` stay aligned with its rows through every repair
+    (a clip, a short list, an invalid ref dropped one by one), the severity breakdown
+    always holds the five levels in fixed order, and a model-written block never carries
+    a destination."""
+    ref = {"page": "rule", "opts": {"rule": "Web scanner", "from": "now-3d", "to": "now"}}
+    table = dict(VALID_BLOCKS["table"], rows=[["a", 1], ["b", 2], ["c", 3]],
+                 drill=[ref, {"page": "logs", "opts": {"from": "yesterday"}}],
+                 trend=[[1, 2, 3], "x", [float("nan"), 4]])
+    kept, dropped = B.validate_blocks([table])
+    assert dropped == []
+    block = kept[0]
+    assert block["drill"] == [ref, None, None]
+    assert block["trend"] == [[1, 2, 3], None, [None, 4]]
+    assert B.validate_blocks([block])[0][0] == block            # re-validation is a no-op
+    only_bad = dict(table, drill=[{"page": "logs", "opts": {"from": "yesterday"}}])
+    assert "drill" not in B.validate_blocks([only_bad])[0][0]
+    long = dict(table, trend=[list(range(40))])
+    assert B.validate_blocks([long])[0][0]["trend"][0] == list(range(16, 40))   # the newest 24 points
+    # A data block the model wrote is dropped whole: no number and no destination survive.
+    kept_ai, dropped_ai = B.validate_blocks([dict(table, provenance="ai")])
+    assert kept_ai == [] and len(dropped_ai) == 1
+    severity = {"levels": [{"level": "HIGH", "count": 3, "share": 75, "rules": [
+        {"key": "r1", "count": 3, "drill": ref}, {"key": "", "count": 1}, "junk"]},
+        {"level": "low", "count": 1, "share": 25}, {"level": "nope", "count": 9}],
+        "splits": {"rule": {"high": {"top": [{"key": "r1", "count": 3}], "other": 0}, "bogus": {"top": []}},
+                   "host": {"high": {"top": []}}},
+        "sample": {"counted": 4, "total": 10, "per_source_cap": 200, "exact": False}}
+    shown = B.validate_blocks([dict(VALID_BLOCKS["table"], severity=severity)])[0][0]["severity"]
+    assert [lv["level"] for lv in shown["levels"]] == list(B.SEVERITY_KEYS)
+    high = shown["levels"][1]
+    assert high["count"] == 3 and high["share"] == 75.0 and high["rules_total"] == 1
+    assert high["rules"] == [{"key": "r1", "count": 3, "drill": ref}]
+    assert shown["levels"][0]["count"] == 0 and shown["levels"][4]["count"] == 0
+    assert list(shown["splits"]) == ["rule"] and list(shown["splits"]["rule"]) == ["high"]
+    assert shown["sample"]["counted"] == 4 and shown["sample"]["exact"] is False
+    # A malformed payload is dropped, never the whole block.
+    assert "severity" not in B.validate_blocks([dict(VALID_BLOCKS["table"], severity="x")])[0][0]
+
+
 def test_open_in_is_a_code_side_ref_never_a_model_one() -> None:
     """``open_in`` (the exact console view of a block) survives on a code/source
     block, is dropped (never fatal) when invalid, and is stripped from anything the

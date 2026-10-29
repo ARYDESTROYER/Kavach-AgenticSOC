@@ -1040,6 +1040,73 @@
       ]
     }
   },
+  "drill": {
+    "_comment": "Round 14 (SPEC §4.6.3, §4.7.2): drill targets and the severity breakdown. A tool builds a per-label (chart) or per-row (table) `drill` InternalRef from a validated value; `rule_page` is the page id the client resolves to the rule sheet (never a route); `keys` are the drill opts a ref may add (`rule` on the rule page and on Logs and Cases, `severity` a named level on Logs). A table block may carry `drill` and `trend` aligned with its rows and a `severity` breakdown (subject events or cases, five levels in fixed order, splits by `severity_split_keys`). A level carries at most `limits.severity_rules` rules ranked by count while its `rules_total` counts every rule it holds, so an opened row lists those rules and then \"+N more rules\" (N = `rules_total` less the rules listed) with the level's own Logs view; a split lists its top `limits.severity_split_top` keys and an `other` count. blocks.py pins these limits; schema.ts pins them when it parses the new table fields.",
+    "rule_page": "rule",
+    "keys": [
+      "rule",
+      "severity"
+    ],
+    "severity_split_keys": [
+      "rule",
+      "source"
+    ],
+    "severity_subjects": [
+      "events",
+      "cases"
+    ],
+    "limits": {
+      "row_trend_points": 24,
+      "rule_chars": 256,
+      "severity_rules": 20,
+      "severity_raw_values": 5,
+      "severity_split_top": 5
+    }
+  },
+  "nav_drill_examples": {
+    "_comment": "Drill opts (Round 14 SPEC §4.6.3, §4.6.6): `rule` is the router's `^[^\\p{C}\\u2028\\u2029]{1,256}$` (spaces and any letters, kept byte for byte, never trimmed) on the `rule` page and on Logs and Cases; `severity` is one of the five named levels on Logs. blocks.NavRefOpts accepts exactly `valid` and refuses `invalid` (an invalid opt invalidates the whole ref); the webui test checks the router's pageHash serialises exactly the valid ones.",
+    "valid": {
+      "rule": [
+        "Web scanner user agent detected",
+        "Fehlgeschlagene Anmeldung über SSH",
+        "5710",
+        "rule:with:colons",
+        "trailing space ",
+        "名前 ルール",
+        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr"
+      ],
+      "severity": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ]
+    },
+    "invalid": {
+      "rule": [
+        "",
+        "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+        "line\nbreak",
+        "tab\there",
+        "zero\u200bwidth",
+        "bidi\u202eoverride",
+        "sep\u2028arator",
+        "nul\u0000byte",
+        "private\ue000use",
+        "unassigned\u0378"
+      ],
+      "severity": [
+        "",
+        "High",
+        "CRITICAL",
+        "severe",
+        " high",
+        "30",
+        "medium "
+      ]
+    }
+  },
   "fallback_text": "This part of the answer could not be displayed",
   "expired_text": "Expired from saved history"
 }

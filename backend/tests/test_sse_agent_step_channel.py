@@ -27,21 +27,26 @@ from app.realtime import (
     AGENT_STEP_EVENT,
     CASE_ACTIVITY_EVENT,
     CASE_CHANGED_EVENT,
+    CASE_RUNBOOK_EVENT,
     CHAT_READ_EVENT,
     CHAT_TURN_EVENT,
     INAPP_EVENT,
     JOB_EVENT,
     OVERFLOW_EVENT,
+    RUNBOOKS_TOPIC,
     SSE_EVENT_TYPES,
     EventBus,
+    publish_case_runbook,
 )
 
 
 def test_registry_lists_exactly_the_channels_the_backend_publishes() -> None:
     assert SSE_EVENT_TYPES == {
         AGENT_STEP_EVENT, CASE_ACTIVITY_EVENT, INAPP_EVENT, JOB_EVENT, CHAT_TURN_EVENT,
-        CHAT_READ_EVENT, CASE_CHANGED_EVENT, OVERFLOW_EVENT,
+        CHAT_READ_EVENT, CASE_CHANGED_EVENT, CASE_RUNBOOK_EVENT, OVERFLOW_EVENT,
     }
+    # Round 14 (SPEC §4.10.15): a case's runbook run changed, topic ``runbooks``.
+    assert CASE_RUNBOOK_EVENT == "case.runbook"
     # Round 12 (WP-CM): the live Case Manager queue nudge on topic ``cases``.
     assert CASE_CHANGED_EVENT == "case.changed"
     assert CHAT_TURN_EVENT == "chat.turn"
@@ -95,4 +100,32 @@ async def test_the_old_channel_name_would_have_delivered_nothing() -> None:
     replayed = bus.replay(frozenset({"cases:case-0002"}), None, "0")
     assert replayed and replayed[0].event_type == AGENT_STEP_EVENT
     assert replayed[0].event_type != "agent"
+    bus.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_runbooks_subscriber_receives_a_typed_case_runbook_frame() -> None:
+    """Round 14: the run engine's progress nudge carries ``event: case.runbook`` on the
+    ``runbooks`` topic, with ids, progress counts and the revision only."""
+    bus = EventBus(heartbeat_seconds=60)
+    frames: list[str] = []
+
+    async def _consume() -> None:
+        async for chunk in bus.subscribe([RUNBOOKS_TOPIC], user=None):
+            frames.append(chunk.decode("utf-8"))
+            if len(frames) >= 2:
+                break
+
+    task = asyncio.create_task(_consume())
+    await asyncio.sleep(0)
+    progress = {"total": 11, "done": 4, "not_applicable": 1, "required_open": 5, "waiting": 1,
+                "blocked": 0, "note": "dropped: not a count"}
+    assert publish_case_runbook(bus, "case-0003", "run-1", progress, 7) is not None
+    await asyncio.wait_for(task, timeout=5)
+    assert "event: case.runbook\n" in frames[1]
+    payload = json.loads(frames[1].split("data: ", 1)[1].split("\n", 1)[0])
+    assert payload == {"case_id": "case-0003", "run_id": "run-1", "revision": 7, "progress": {
+        "total": 11, "done": 4, "not_applicable": 1, "required_open": 5, "waiting": 1, "blocked": 0}}
+    # Nothing to name, nothing published.
+    assert publish_case_runbook(bus, "", "run-1", progress, 1) is None
     bus.clear()

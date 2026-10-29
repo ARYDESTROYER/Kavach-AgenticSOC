@@ -12,12 +12,14 @@ from __future__ import annotations
 from app.config import Preferences
 
 
-# All the top-level NESTED-MODEL blocks that must round-trip through GET/PUT.
+# All the top-level NESTED-MODEL blocks that must round-trip through GET/PUT. Round 14
+# (SPEC §4.10.19): ``runbooks`` is the one Runbooks section; the retired ``playbooks``
+# section is accepted on load but is no setting (see the retired-section tests below).
 _NESTED_BLOCKS = [
     "rbac", "mfa", "sso", "notifications", "case_id_format",
     "cross_source_correlation", "threat_context", "threshold_automation",
     "auto_close", "enrichment", "rag", "standup", "trace", "personas",
-    "runbooks", "playbooks", "branding", "caps", "risk_weights",
+    "runbooks", "branding", "caps", "risk_weights",
     "default_correlation", "release_updates",
 ]
 
@@ -65,7 +67,10 @@ def test_partial_put_preserves_sibling_subtrees(client):
     assert after["rag"]["top_k"] == before["rag"]["top_k"] + 3
     # ...sibling fields inside the SAME block survived (deep, not shallow, merge).
     assert after["rag"]["min_score"] == before["rag"]["min_score"]
-    assert after["rag"]["use_runbooks"] == before["rag"]["use_runbooks"]
+    assert after["rag"]["use_mitre"] == before["rag"]["use_mitre"]
+    # Round 14: the retired ``rag.use_runbooks`` is a read-only mirror of
+    # ``runbooks.rag_corpus`` and survives a sibling write unchanged.
+    assert after["rag"]["use_runbooks"] == after["runbooks"]["rag_corpus"] == before["rag"]["use_runbooks"]
     # ...and sibling BLOCKS are completely untouched.
     for block in _NESTED_BLOCKS:
         if block == "rag":
@@ -269,6 +274,71 @@ def test_settings_schema_endpoint(client):
     general_fields = {f["name"]: f for f in by_key["general"]["fields"]}
     assert general_fields["entity_strategy"]["type"] == "enum"
     assert general_fields["entity_strategy"]["choices"]
+
+
+def test_settings_schema_hides_the_retired_runbook_keys(client):
+    """Round 14 (SPEC §4.10.19, §3.1): the retired procedure section and the retired
+    ``rag.use_runbooks`` switch are accepted on load but are no settings, so no
+    Settings surface renders them; the Runbooks section lists every new key."""
+    body = client.get("/api/settings/schema").json()
+    by_key = {s["key"]: s for s in body["sections"]}
+    assert "playbooks" not in by_key
+    # No section title or field name uses the retired word; the only occurrence left
+    # is the kept wire literal ``run_playbook`` (an automation action choice, SPEC
+    # §4.10.16), which the Console shows as "Attach a runbook".
+    blob = repr(body).lower().replace("run_playbook", "")
+    assert "playbook" not in blob
+    assert "use_runbooks" not in {f["name"] for f in by_key["rag"]["fields"]}
+    runbooks = by_key["runbooks"]
+    assert runbooks["title"] == "Runbooks"
+    assert runbooks["model"] == "RunbookConfig"
+    fields = {f["name"]: f for f in runbooks["fields"]}
+    assert list(fields) == [
+        "enabled", "auto_attach", "fallback", "investigator_guidance", "rag_corpus",
+        "ai_suggest", "ai_step_drafts", "require_distinct_approver", "step_approvals",
+        "review_every_days_default", "runbooks_config_version",
+    ]
+    assert fields["review_every_days_default"]["default"] == 180
+    assert fields["review_every_days_default"]["minimum"] == 30
+    assert fields["review_every_days_default"]["maximum"] == 730
+    assert fields["require_distinct_approver"]["default"] is False
+    assert fields["auto_attach"]["default"] is True
+
+
+def test_the_retired_runbook_keys_mirror_their_successors_through_a_put(client):
+    """A settings PUT of the new Runbooks keys is what the retired keys report back:
+    ``playbooks.enabled`` follows ``investigator_guidance`` and ``rag.use_runbooks``
+    follows ``rag_corpus`` (one truth). A body that only echoes the stored retired
+    values (a client resending whole sections) changes nothing."""
+    out = _put(client, {"runbooks": {"investigator_guidance": False, "rag_corpus": False}})
+    assert out["runbooks"]["investigator_guidance"] is False
+    assert out["playbooks"]["enabled"] is False
+    assert out["rag"]["use_runbooks"] is False
+    assert out["runbooks"]["enabled"] is True
+    out = _put(client, {"playbooks": {"enabled": False}, "rag": {"use_runbooks": False},
+                        "runbooks": {"investigator_guidance": True}})
+    assert out["runbooks"]["investigator_guidance"] is True  # the successor wins
+    assert out["playbooks"]["enabled"] is True
+    assert out["rag"]["use_runbooks"] is False and out["runbooks"]["rag_corpus"] is False
+    # The section stays readable on its own (compatibility, one release).
+    r = client.get("/api/settings/playbooks")
+    assert r.status_code == 200 and r.json()["value"]["enabled"] is True
+
+
+def test_a_put_that_changes_a_retired_runbook_key_carries_it_onto_its_successor(client):
+    """SPEC §4.10.19: ``rag.use_runbooks`` and ``playbooks.enabled`` are mirrors of
+    ``runbooks.rag_corpus`` and ``runbooks.investigator_guidance``. A write that
+    CHANGES a retired key (the Knowledge "Use runbooks" switch, an older API client)
+    is carried onto its successor, never answered 200 while changing nothing. The
+    settings route maps the body (``config.map_retired_runbook_writes``) before its
+    deep merge."""
+    _put(client, {"runbooks": {"investigator_guidance": True, "rag_corpus": True}})
+    out = _put(client, {"rag": {"use_runbooks": False}})
+    assert out["runbooks"]["rag_corpus"] is False and out["rag"]["use_runbooks"] is False
+    out = _put(client, {"playbooks": {"enabled": False}})
+    assert out["runbooks"]["investigator_guidance"] is False and out["playbooks"]["enabled"] is False
+    out = _put(client, {"rag": {"use_runbooks": True}, "playbooks": {"enabled": True}})
+    assert out["runbooks"]["rag_corpus"] is True and out["runbooks"]["investigator_guidance"] is True
 
 
 def test_settings_schema_carries_no_secrets(client):

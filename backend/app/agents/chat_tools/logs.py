@@ -22,6 +22,22 @@ A search's match total is only exact when the backend says so: Elasticsearch and
 OpenSearch stop counting at 10,000 by default (``hits.total.relation == "gte"``).
 Such a total is presented as "at least 10,000" (G4) unless one ``size: 0`` count
 through ``aggregate()`` (``track_total_hits: true``) can make it exact.
+
+Round 14 (SPEC §4.6, §4.7):
+
+* A ``rule`` filter matches ANY rule identity of an event (its rule field, its rule
+  name, the suite rule it is classified as), exactly as the Logs page's "Rule is"
+  filter does: the Elastic-family connectors compile it natively
+  (``connectors.elastic.LogFilterQuery``), every other source reads it through its
+  own filtered reader (:class:`app.engine.log_rows.BrowseTarget.filtered`). A
+  rule-filtered answer can therefore carry its exact "Open in Logs" view.
+* A rule or rule name value in ``log_stats`` carries a ``drill`` ref built here to the
+  rule sheet (``{"page": "rule"}``), never by the model.
+* ``group_by`` severity is a severity BREAKDOWN (``categories`` with ``kind:
+  "severity"``): every raw value is projected through its OWN source's ceiling before
+  sources are merged, into the five named levels in fixed order (zeros included), each
+  with its share, trend, rules (exact through a composite aggregation where the source
+  can count, else the newest 200 per source, said so) and a Logs drill per level.
 """
 
 from __future__ import annotations
@@ -37,15 +53,21 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import Field, field_validator
 
+from ...config import ChatAgentConfig
 from ...connectors.base import StructuredQuery
-from ...engine.log_rows import BrowseTarget, clamp_per_source_timeout, fan_out
+from ...constants import DEFAULT_SEVERITY_SCALE_MAX
+from ...engine.log_rows import BrowseTarget, LogFilter, clamp_per_source_timeout, event_rule_identities, fan_out
+from ...engine.severity_levels import SeverityTally, level_of_raw, level_ranges, source_scale_max
 from ...utils import dotted_get
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
     EMPTY_VALUE_LABEL,
+    SEVERITY_LEVELS,
+    SeverityLevelCounts,
     ToolInput,
     Window,
     align_to_bucket,
+    coarsen_counts,
     column,
     finite,
     fmt_int,
@@ -54,6 +76,10 @@ from .common import (
     none_if_blank,
     parse_input,
     resolve_window,
+    rule_drill,
+    severity_categories,
+    severity_drill,
+    severity_sample_caption,
     text,
     visible_text,
     window_input,
@@ -108,6 +134,17 @@ _MAX_SERIES_POINTS = 200
 _MAX_HEATMAP_X = 48
 _MAX_HEATMAP_Y = 10
 _DEFAULT_SOURCE_TIMEOUT = 8.0
+# The chat lookup budget when no ``chat_agent`` block is configured: the model's own
+# default (45 s since Round 14), never a stale literal.
+_DEFAULT_TOOL_TIMEOUT_S = float(ChatAgentConfig.model_fields["tool_timeout_s"].default)
+# The sparkline widths a severity trend is cut in (SPEC §4.7.2: at most 24 points over
+# the window), fixed and epoch-aligned in UTC like the connectors' fixed intervals.
+_TREND_WIDTHS: tuple[tuple[str, int], ...] = (
+    ("5m", 300), ("15m", 900), ("30m", 1_800), ("1h", 3_600), ("3h", 10_800), ("6h", 21_600),
+    ("12h", 43_200), ("1d", 86_400), ("2d", 172_800), ("7d", 604_800), ("14d", 1_209_600),
+    ("30d", 2_592_000), ("90d", 7_776_000), ("365d", 31_536_000),
+)
+_TREND_POINTS = 24
 # Elasticsearch/OpenSearch count hits exactly only up to this many by default; past
 # it ``hits.total`` is ``{"value": 10000, "relation": "gte"}``.
 ES_TOTAL_CAP = 10_000
@@ -366,6 +403,35 @@ def _action_of(source: Any) -> str | None:
     return text(value, 120) or None if value not in (None, "") else None
 
 
+def _raw_identity(value: Any) -> str | None:
+    """A stored rule value exactly as the source holds it (never trimmed, cut or folded),
+    or ``None`` when there is none. Grouping and drill refs read it; display goes through
+    :func:`text`/:func:`visible_text`."""
+    return value if isinstance(value, str) and value != "" else None
+
+
+#: Private row keys: the raw rule identity a grouping and a drill read (the public
+#: ``rule``/``rule_name`` are bounded display copies) and the message free text is
+#: matched on. Never sent to the model or shown (:func:`_public_row`, :func:`_strip_private`).
+_PRIVATE_ROW_KEYS = ("_message", "_rule_raw", "_rule_name_raw")
+
+
+def _strip_private(rows: list[dict[str, Any]]) -> None:
+    for row in rows:
+        for key in _PRIVATE_ROW_KEYS:
+            row.pop(key, None)
+
+
+def raw_value(row: dict[str, Any], field: str) -> Any:
+    """``row[field]`` as stored: the raw rule identity for ``rule``/``rule_name`` (a drill
+    names exactly the value events carry, SPEC §4.6.3), else the row's own value."""
+    if field in ("rule", "rule_name"):
+        raw = row.get(f"_{field}_raw")
+        if raw is not None:
+            return raw
+    return row.get(field)
+
+
 def event_row(event: Any, source_name: str) -> dict[str, Any]:
     """A ``RawEvent`` as the identity row (model samples + table)."""
     return {
@@ -378,6 +444,8 @@ def event_row(event: Any, source_name: str) -> dict[str, Any]:
         "rule_name": text(event.rule_name, 200) or None if event.rule_name else None,
         "severity": finite(event.severity),
         "action": _action_of(getattr(event, "source", None)),
+        "_rule_raw": _raw_identity(event.rule),
+        "_rule_name_raw": _raw_identity(event.rule_name),
     }
 
 
@@ -396,17 +464,22 @@ def browse_row(row: dict[str, Any]) -> dict[str, Any]:
         "severity": finite(row.get("severity")),
         "action": _action_of(raw),
         "_message": str(row.get("message") or "")[:2000],
+        "_rule_raw": _raw_identity(row.get("rule")),
+        "_rule_name_raw": None,
     }
 
 
-def _matches_buffer(row: dict[str, Any], args: _LogFilters, window: Window) -> bool:
-    """Apply the filters a live-tail ring ignored (mode ``buffer``)."""
+def _matches_buffer(row: dict[str, Any], args: _LogFilters, window: Window, *, rule_applied: bool = False) -> bool:
+    """Apply the filters a live-tail ring ignored (mode ``buffer``). ``rule_applied``:
+    the ring's own filtered reader already matched the rule on every rule identity of
+    the event (the row shows only one of them), so it is not checked again here."""
     ts = _parse_ts(row.get("ts"))
     if ts is not None and not (window.start <= ts <= window.end):
         return False
-    for key in ("ip", "user", "host", "rule"):
+    for key in ("ip", "user", "host") if rule_applied else ("ip", "user", "host", "rule"):
         wanted = getattr(args, key)
-        if wanted is not None and str(row.get(key) or "") != wanted:
+        # The rule is compared on the stored value (exact, never the bounded display copy).
+        if wanted is not None and str(raw_value(row, key) or "") != wanted:
             return False
     if args.severity_gte is not None and (finite(row.get("severity")) or 0.0) < args.severity_gte:
         return False
@@ -446,16 +519,115 @@ def _top(rows: list[dict[str, Any]], key: str, n: int = _TOP_FACETS) -> list[dic
     return [{"value": value, "count": count} for value, count in ranked]
 
 
-def _structured_query(args: _LogFilters, window: Window, *, size: int, ids: list[str] | None = None) -> StructuredQuery:
-    return StructuredQuery(
-        ip=args.ip, user=args.user, host=args.host, rule=args.rule,
+def compiles_rule_identity(conn: Any) -> bool:
+    """Does ``conn`` compile a rule-identity filter natively (``LogFilterQuery``)? The
+    bundled Elastic-family connectors do; any other connector reads ``StructuredQuery.rule``
+    its own way (the Demo adapters already match a rule on its rule and rule name)."""
+    return callable(getattr(conn, "carve_outs_native", None))
+
+
+def _structured_query(
+    args: _LogFilters, window: Window, *, size: int, ids: list[str] | None = None, conn: Any = None,
+    rule: bool = True,
+) -> StructuredQuery:
+    """The read of one call. A ``rule`` filter on a connector that compiles rule
+    identities becomes a ``LogFilterQuery`` (any rule identity, the Logs page's exact
+    "Rule is"); ``rule=False`` leaves the rule out (a filtered reader applies it)."""
+    fields = dict(
+        ip=args.ip, user=args.user, host=args.host, rule=args.rule if rule else None,
         severity_gte=args.severity_gte, contains=args.contains, ids=list(ids or []),
         time_from=window.time_from, time_to=window.time_to, size=size, sort_desc=True,
     )
+    if rule and args.rule is not None and conn is not None and compiles_rule_identity(conn):
+        from ...connectors.elastic import LogFilterQuery
+
+        return LogFilterQuery(rule_any=args.rule, **{**fields, "rule": None})
+    return StructuredQuery(**fields)
+
+
+def _rule_rechecked(ctx: ChatToolContext, conn: Any, args: _LogFilters, events: list[Any]) -> tuple[list[Any], bool]:
+    """``(events, agreed)``: the events a native rule-identity read returned, re-checked
+    with the Python form of the same match; ``agreed`` is False when the native clause
+    let through an event whose identities do not carry the rule (its total then counts
+    something the rows do not show, so it is no longer exact)."""
+    if args.rule is None or not compiles_rule_identity(conn):
+        return events, True
+    try:
+        prefs = conn._effective_prefs(ctx.prefs)
+    except Exception:  # noqa: BLE001 -- the shared prefs still name the rule fields
+        prefs = ctx.prefs
+    kept = [ev for ev in events if args.rule in event_rule_identities(ev, prefs)]
+    return kept, len(kept) == len(events)
+
+
+@dataclass
+class _Searched:
+    """One connector search with the call's filters (:func:`_rule_search`)."""
+
+    result: Any
+    events: list[Any]
+    total: int
+    total_exact: bool
+    #: False when a native rule match let through an event the rule identity does not
+    #: carry, or the cluster refused the rule clause: only the kept rows are known, and a
+    #: recount through ``aggregate()`` would count (or be refused) the same way.
+    recountable: bool = True
+
+
+async def _rule_search(
+    ctx: ChatToolContext, conn: Any, args: _LogFilters, window: Window, *, size: int, name: str,
+    ids: list[str] | None = None,
+) -> _Searched:
+    """``conn.search`` with the call's filters, a rule matched on every rule identity of
+    an event (the Logs page's "Rule is") and re-checked in Python.
+
+    A cluster can refuse a suite rule's catalog clause (a ``prefix`` on a numeric field is
+    a 400). The read is then retried ONCE with the rule left to the Python match, as the
+    Logs page's own reader does (``log_rows.pull_filtered_reader``): the newest events of
+    the window, kept when they carry the rule; their total is exact only when that read
+    held every event the window has, else it is a floor."""
+    try:
+        result = await conn.search(ctx.prefs, _structured_query(args, window, size=size, ids=ids, conn=conn))
+    except Exception as exc:
+        from ...connectors.elastic import _http_status
+
+        if args.rule is None or not compiles_rule_identity(conn) or _http_status(exc) != 400:
+            raise
+        logger.warning("chat log read on %s: the rule clause was refused (%s); filtering the newest "
+                       "events instead", name, type(exc).__name__)
+        result = await conn.search(ctx.prefs, _structured_query(args, window, size=size, ids=ids, rule=False))
+        events, _agreed = _rule_rechecked(ctx, conn, args, list(result.events))
+        total, total_exact = reported_total(result)
+        whole = total_exact and total <= len(result.events)
+        return _Searched(result, events, len(events), whole, recountable=False)
+    events, agreed = _rule_rechecked(ctx, conn, args, list(result.events))
+    total, total_exact = reported_total(result)
+    if not agreed:
+        # The native rule match let through an event the rule identity does not carry:
+        # only the rows kept are known, as a floor.
+        return _Searched(result, events, len(events), False, recountable=False)
+    return _Searched(result, events, total, total_exact)
+
+
+async def _target_read(
+    target: BrowseTarget, args: _LogFilters, window: Window, *, size: int,
+) -> tuple[list[dict[str, Any]], int | None, bool]:
+    """One fan-out source's bounded read: ``(rows, total, exact)``. A ``rule`` filter
+    goes through the source's filtered reader (the Logs page's exact "Rule is", over
+    every rule identity of an event); otherwise the ordinary read. ``exact`` is False
+    when the total is only a lower bound (a partial answer, a live-tail ring)."""
+    if args.rule is not None and target.filtered is not None:
+        read = await target.filtered(_structured_query(args, window, size=size, rule=False), LogFilter(rule=args.rule))
+        if read.total is None:
+            return list(read.rows), None, False
+        return list(read.rows), int(read.total), read.relation == "eq"
+    rows, total = await target.read(_structured_query(args, window, size=size))
+    return rows, total, True
 
 
 def _per_source_timeout(ctx: ChatToolContext) -> float:
-    tool_timeout = float(getattr(getattr(ctx.prefs, "chat_agent", None), "tool_timeout_s", 15) or 15)
+    configured = getattr(getattr(ctx.prefs, "chat_agent", None), "tool_timeout_s", None)
+    tool_timeout = float(configured or _DEFAULT_TOOL_TIMEOUT_S)
     # Leave the tool's own deadline a margin so a slow source degrades to a per-source
     # error instead of timing out the whole lookup.
     return clamp_per_source_timeout(min(_DEFAULT_SOURCE_TIMEOUT, max(0.5, tool_timeout - 2.0)))
@@ -500,7 +672,7 @@ async def exact_total(ctx: ChatToolContext, conn: Any, args: _LogFilters, window
     if not callable(aggregate):
         return None
     try:
-        agg = await aggregate(ctx.prefs, _structured_query(args, window, size=0), (), None, 1)
+        agg = await aggregate(ctx.prefs, _structured_query(args, window, size=0, conn=conn), (), None, 1)
     except Exception as exc:  # noqa: BLE001 — the lower bound stands
         logger.info("exact count failed: %s", exc)
         return None
@@ -715,15 +887,16 @@ class SearchLogsTool(ChatTool):
             await _close(plan)
 
     async def _single(self, ctx: ChatToolContext, args: SearchLogsInput, window: Window, plan: _Plan) -> ToolOutcome:
-        sq = _structured_query(args, window, size=args.size, ids=args.ids)
         try:
-            result = await plan.connector.search(ctx.prefs, sq)
-        except Exception as exc:  # noqa: BLE001 — engine template only (§5.2)
+            searched = await _rule_search(ctx, plan.connector, args, window, size=args.size, ids=args.ids,
+                                          name=plan.name)
+        except Exception as exc:  # noqa: BLE001 -- engine template only (§5.2)
             logger.warning("search_logs failed on %s: %s", plan.name, exc)
             return ToolOutcome.failure("The log source did not answer the search")
-        rows = [event_row(ev, plan.name) for ev in result.events]
-        total, total_exact = reported_total(result)
-        if not total_exact and not args.ids:
+        result = searched.result
+        rows = [event_row(ev, plan.name) for ev in searched.events]
+        total, total_exact = searched.total, searched.total_exact
+        if not total_exact and not args.ids and searched.recountable:
             counted = await exact_total(ctx, plan.connector, args, window)
             if counted is not None:
                 total, total_exact = counted, True
@@ -749,15 +922,25 @@ class SearchLogsTool(ChatTool):
 
     async def _fanout(self, ctx: ChatToolContext, args: SearchLogsInput, window: Window, plan: _Plan) -> ToolOutcome:
         totals: dict[str, int | None] = {}
+        lower: set[str] = set()
 
         def wrap(target: BrowseTarget) -> BrowseTarget:
             async def read(sq: StructuredQuery) -> tuple[list[dict[str, Any]], int | None]:
-                rows, total = await target.read(sq)
+                if args.ids:
+                    rows, total = await target.read(sq)
+                    exact = True
+                else:
+                    # A rule filter reads through the source's own filtered reader (the
+                    # Logs page's "Rule is"); a lower-bound total is remembered as one.
+                    rows, total, exact = await _target_read(target, args, window, size=sq.size)
                 if target.mode == "buffer":
                     # A live-tail ring ignores the query: filter its rows HERE, before
                     # the merge caps the result, so non-matching ring rows can never
                     # crowd matching rows of the other sources out of the page.
-                    rows = [r for r in rows if _matches_buffer(browse_row(r), args, window)]
+                    applied = args.rule is not None and target.filtered is not None and not args.ids
+                    rows = [r for r in rows if _matches_buffer(browse_row(r), args, window, rule_applied=applied)]
+                if not exact:
+                    lower.add(target.source_id)
                 totals[target.source_id] = total
                 return rows, total
             return BrowseTarget(target.source_id, target.source_name, target.mode, read)
@@ -792,7 +975,7 @@ class SearchLogsTool(ChatTool):
             src_exact = False
             if s.get("ok") and s.get("mode") == "search" and src_total is not None:
                 src_total = int(src_total)
-                src_exact = src_total != ES_TOTAL_CAP
+                src_exact = src_total != ES_TOTAL_CAP and s["source_id"] not in lower
                 if recounts.get(s["source_id"]) is not None:
                     src_total, src_exact = int(recounts[s["source_id"]]), True
                 total += max(src_total, returned)
@@ -813,8 +996,7 @@ class SearchLogsTool(ChatTool):
         if any(s["mode"] == "buffer" for s in status):
             notes.append("live-tail sources hold only recent events; their rows were filtered here")
         plan.notes = notes
-        for row in rows:
-            row.pop("_message", None)
+        _strip_private(rows)
         return self._outcome(args, window, plan, rows, status, total=total, total_known=total_known)
 
     def _outcome(
@@ -831,8 +1013,7 @@ class SearchLogsTool(ChatTool):
         language: str | None = None,
         free_text: dict[str, Any] | None = None,
     ) -> ToolOutcome:
-        for row in rows:
-            row.pop("_message", None)
+        _strip_private(rows)
         answered = [s for s in status if s["status"] == "ok"]
         if status and not answered:
             return ToolOutcome.failure("No log source answered the search")
@@ -957,6 +1138,22 @@ class SearchLogsTool(ChatTool):
 # log_stats
 # --------------------------------------------------------------------------- #
 @dataclass
+class _SeverityFold:
+    """One source's events folded into the five named levels (Round 14 SPEC §4.7.2).
+
+    ``tally`` holds each level's count, raw values, rules and source; ``trend`` each
+    level's counts per sparkline bucket (bucket index, ``None`` when the source could
+    not bucket them); ``exact`` says the fold counted every matching event (a complete
+    composite aggregation, or a sample that held the whole population), else it is the
+    newest events read (``counted`` of them)."""
+
+    tally: SeverityTally
+    trend: dict[str, Counter] | None
+    exact: bool
+    counted: int
+
+
+@dataclass
 class _SourceStats:
     name: str
     status: str = "ok"                   # ok | error | timeout
@@ -979,6 +1176,118 @@ class _SourceStats:
     # False when the source counted exactly but could not bucket by a CALENDAR period
     # (a third-party aggregate without ``time_zone``): no series is drawn from it.
     over_time_ok: bool = True
+    # Round 14: the source's id (a drill names it) and the ceiling its raw severity
+    # values are projected through; the severity breakdown when one was asked for.
+    source_id: str | None = None
+    scale_max: float = DEFAULT_SEVERITY_SCALE_MAX
+    severity: _SeverityFold | None = None
+
+
+def trend_width(window: Window) -> tuple[str, int] | None:
+    """The sparkline bucket of a severity trend: the narrowest fixed width that cuts the
+    window into at most 24 epoch-aligned buckets, or ``None`` for all time (no start)."""
+    if window.all_time:
+        return None
+    span = max(1.0, (window.end - window.start).total_seconds())
+    for token, seconds in _TREND_WIDTHS:
+        if math.ceil(span / seconds) + 1 <= _TREND_POINTS:
+            return token, seconds
+    return _TREND_WIDTHS[-1]
+
+
+def _trend_index(value: Any, seconds: int) -> int | None:
+    moment = value if isinstance(value, datetime) else _parse_ts(value)
+    if moment is None:
+        return None
+    return int(moment.timestamp()) // seconds
+
+
+def trend_axis(window: Window, seconds: int) -> list[int]:
+    """The bucket indexes covering ``[start, end)``, oldest first (at most 24)."""
+    first = int(window.start.timestamp()) // seconds
+    last = int((window.end - timedelta(microseconds=1)).timestamp()) // seconds
+    return list(range(first, last + 1))[-_TREND_POINTS:]
+
+
+def _fold_rows(rows: list[dict[str, Any]], scale_max: float, source: str, width: tuple[str, int] | None,
+               *, exact: bool) -> _SeverityFold:
+    """Fold sampled identity rows (their own ``severity`` and ``rule``) into levels."""
+    tally = SeverityTally()
+    trend: dict[str, Counter] | None = {level: Counter() for level in SEVERITY_LEVELS} if width else None
+    for row in rows:
+        rule = raw_value(row, "rule")  # the stored value, as the rule table groups it
+        level = tally.add(row.get("severity"), scale_max=scale_max, count=1,
+                          rule=str(rule) if rule not in (None, "") else None, source=source)
+        if trend is not None and width is not None:
+            index = _trend_index(row.get("ts"), width[1])
+            if index is not None:
+                trend[level][index] += 1
+    return _SeverityFold(tally=tally, trend=trend, exact=exact, counted=tally.total)
+
+
+async def _fold_composite(
+    conn: Any, prefs: Any, query: StructuredQuery, scale_max: float, source: str, width: tuple[str, int] | None,
+) -> _SeverityFold | None:
+    """An EXACT fold through the connector's composite aggregation (severity then rule,
+    every combination paged), and the trend through a second one (severity per time
+    bucket, or each level's raw range per bucket when the values are a continuous
+    score). ``None`` when the source cannot count every combination (no composite, a
+    cap reached, a partial answer): the caller then states a sample instead."""
+    composite = getattr(conn, "aggregate_composite", None)
+    if not callable(composite):
+        return None
+    try:
+        result = await composite(prefs, query, ["severity", "rule"])
+    except Exception as exc:  # noqa: BLE001 -- the stated sample stands in
+        logger.info("severity composite on %s failed: %s", source, exc)
+        return None
+    if result is None or not getattr(result, "complete", False):
+        return None
+    tally = SeverityTally()
+    for keys, count in result.rows:
+        raw = keys[0] if keys else None
+        rule = keys[1] if len(keys) > 1 else None
+        tally.add(raw, scale_max=scale_max, count=int(count),
+                  rule=str(rule) if rule not in (None, "") else None, source=source)
+    if tally.total != int(result.total or 0):
+        # A multi-valued rule field counted an event more than once: not one per event.
+        return None
+    trend: dict[str, Counter] | None = None
+    if width is not None:
+        trend = await _composite_trend(conn, prefs, query, scale_max, width)
+    return _SeverityFold(tally=tally, trend=trend, exact=True, counted=tally.total)
+
+
+async def _composite_trend(
+    conn: Any, prefs: Any, query: StructuredQuery, scale_max: float, width: tuple[str, int],
+) -> dict[str, Counter] | None:
+    token, seconds = width
+    trend: dict[str, Counter] = {level: Counter() for level in SEVERITY_LEVELS}
+    try:
+        series = await conn.aggregate_composite(prefs, query, ["severity"], interval=token)
+    except Exception:  # noqa: BLE001 -- no trend rather than a wrong one
+        series = None
+    if series is not None and getattr(series, "complete", False):
+        for keys, count in series.rows:
+            index = _trend_index(keys[0] if keys else None, seconds)
+            if index is not None:
+                trend[level_of_raw(keys[1] if len(keys) > 1 else None, scale_max)][index] += int(count)
+        return trend
+    levels = getattr(conn, "aggregate_level_series", None)
+    if not callable(levels):
+        return None
+    try:
+        ranged = await levels(prefs, query, level_ranges(scale_max), interval=token)
+    except Exception:  # noqa: BLE001
+        ranged = None
+    if ranged is None or not getattr(ranged, "complete", False):
+        return None
+    for keys, count in ranged.rows:
+        index = _trend_index(keys[0] if keys else None, seconds)
+        level = keys[1] if len(keys) > 1 else None
+        if index is not None and level in trend:
+            trend[level][index] += int(count)
+    return trend
 
 
 async def call_aggregate(
@@ -1026,9 +1335,12 @@ def _stats_from_rows(
     stats = _SourceStats(name=name, mode=mode, exact=complete, total=total, total_exact=total_exact,
                          sampled=len(rows), distinct_exact=complete)
     first = group_by[0] if group_by else None
+    # A rule is grouped by its STORED value (never the bounded display copy), so a drill
+    # built from the group key names exactly what events carry (SPEC §4.6.3), as the
+    # aggregate path's raw terms keys do.
     for fld in group_by:
         counter: Counter[str] = Counter(
-            str(r.get(fld)) for r in rows if r.get(fld) not in (None, "")
+            str(raw_value(r, fld)) for r in rows if raw_value(r, fld) not in (None, "")
         )
         ranked = dict(sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:top_n])
         stats.groups[fld] = Counter(ranked)
@@ -1039,9 +1351,20 @@ def _stats_from_rows(
         if key is None:
             continue
         stats.over_time[key] += 1
-        if first and r.get(first) not in (None, ""):
-            stats.matrix.setdefault(str(r.get(first)), Counter())[key] += 1
+        if first and raw_value(r, first) not in (None, ""):
+            stats.matrix.setdefault(str(raw_value(r, first)), Counter())[key] += 1
     return stats
+
+
+def _named_source(plan: _Plan, ctx: ChatToolContext) -> str | None:
+    """The one source a call read BY NAME (the request's selection, the call's own
+    ``source_id``, a one-source fan-out), else ``None`` (every source, or the implicit
+    primary source whose id is not known here)."""
+    if ctx.source_id:
+        return ctx.source_id
+    if plan.source_id:
+        return plan.source_id
+    return None
 
 
 class LogStatsTool(ChatTool):
@@ -1096,9 +1419,12 @@ class LogStatsTool(ChatTool):
         compared: list[list[_SourceStats]] = []
         try:
             # The window and every compared period are read at the same time: a
-            # comparison costs the slowest period, not the sum of them (P0-4).
+            # comparison costs the slowest period, not the sum of them (P0-4). Only the
+            # asked window reads a severity breakdown; a compared period counts levels
+            # only as its top values.
             others = [p.window for p in periods if p.window is not window] if len(periods) > 1 else []
-            reads = await asyncio.gather(*(self._read(ctx, args, w, plan, group_by, interval)
+            reads = await asyncio.gather(*(self._read(ctx, args, w, plan, group_by, interval,
+                                                      severity=w is window and "severity" in group_by)
                                            for w in [window, *others]))
             per_source = reads[0]
             if others:
@@ -1106,34 +1432,40 @@ class LogStatsTool(ChatTool):
                 compared = [per_source if p.window is window else by_window[id(p.window)] for p in periods]
         finally:
             await _close(plan)
-        outcome = self._outcome(args, window, plan, per_source, group_by, interval)
+        outcome = self._outcome(ctx, args, window, plan, per_source, group_by, interval)
         if outcome.ok and compared:
             _add_log_comparison(outcome, window, periods, compared, group_by)
         return outcome
 
     async def _read(
         self, ctx: ChatToolContext, args: LogStatsInput, window: Window, plan: _Plan,
-        group_by: list[str], interval: str,
+        group_by: list[str], interval: str, *, severity: bool = False,
     ) -> list[_SourceStats]:
         if plan.mode == "single":
-            return [await self._single(ctx, args, window, plan, group_by, interval)]
-        return await self._fanout(ctx, args, window, plan, group_by, interval)
+            return [await self._single(ctx, args, window, plan, group_by, interval, severity=severity)]
+        return await self._fanout(ctx, args, window, plan, group_by, interval, severity=severity)
 
     async def _single(
         self, ctx: ChatToolContext, args: LogStatsInput, window: Window, plan: _Plan,
-        group_by: list[str], interval: str,
+        group_by: list[str], interval: str, *, severity: bool = False,
     ) -> _SourceStats:
-        return await self._read_connector(ctx, plan.connector, plan.name, args, window, group_by, interval)
+        source_id = plan.source_id or getattr(plan.connector, "connector_id", None)
+        stats = await self._read_connector(ctx, plan.connector, plan.name, args, window, group_by, interval,
+                                           scale_max=source_scale_max(ctx.prefs, source_id), severity=severity)
+        stats.source_id = plan.source_id
+        return stats
 
     async def _read_connector(
         self, ctx: ChatToolContext, conn: Any, name: str, args: LogStatsInput, window: Window,
-        group_by: list[str], interval: str,
+        group_by: list[str], interval: str, *, scale_max: float = DEFAULT_SEVERITY_SCALE_MAX,
+        severity: bool = False,
     ) -> _SourceStats:
+        width = trend_width(window) if severity else None
         if callable(getattr(conn, "aggregate", None)):
             try:
                 agg, bucketed = await call_aggregate(
-                    conn, ctx.prefs, _structured_query(args, window, size=0), group_by, interval, args.top_n,
-                    window.tz,
+                    conn, ctx.prefs, _structured_query(args, window, size=0, conn=conn), group_by, interval,
+                    args.top_n, window.tz,
                 )
             except Exception as exc:  # noqa: BLE001 — degrade to the sample path
                 logger.info("aggregate on %s failed: %s", name, exc)
@@ -1141,37 +1473,71 @@ class LogStatsTool(ChatTool):
             if agg is not None:
                 stats = _stats_from_aggregate(name, agg, group_by)
                 stats.over_time_ok = bucketed
+                stats.scale_max = scale_max
+                if severity:
+                    stats.severity = await _fold_composite(
+                        conn, ctx.prefs, _structured_query(args, window, size=0, conn=conn), scale_max, name, width)
+                    if stats.severity is None:
+                        stats.severity = await self._sampled_fold(ctx, conn, name, args, window, scale_max, width)
                 return stats
         try:
-            result = await conn.search(ctx.prefs, _structured_query(args, window, size=_STATS_SAMPLE))
-        except Exception as exc:  # noqa: BLE001 — engine template only
+            searched = await _rule_search(ctx, conn, args, window, size=_STATS_SAMPLE, name=name)
+        except Exception as exc:  # noqa: BLE001 -- engine template only
             logger.warning("log_stats sample search failed on %s: %s", name, exc)
             return _SourceStats(name=name, status="error")
-        rows = [event_row(ev, name) for ev in result.events]
-        total, total_exact = reported_total(result)
-        stats = _stats_from_rows(name, rows, total, group_by, interval, top_n=args.top_n,
-                                 total_exact=total_exact, tz=window.tz)
-        stats.query = result.rendering.query if result.rendering else None
+        rows = [event_row(ev, name) for ev in searched.events]
+        stats = _stats_from_rows(name, rows, searched.total, group_by, interval, top_n=args.top_n,
+                                 total_exact=searched.total_exact, tz=window.tz)
+        rendering = searched.result.rendering
+        stats.query = rendering.query if rendering else None
+        stats.scale_max = scale_max
+        if severity:
+            stats.severity = _fold_rows(rows, scale_max, name, width, exact=stats.exact)
         return stats
+
+    async def _sampled_fold(
+        self, ctx: ChatToolContext, conn: Any, name: str, args: LogStatsInput, window: Window,
+        scale_max: float, width: tuple[str, int] | None,
+    ) -> _SeverityFold | None:
+        """The newest :data:`_STATS_SAMPLE` events of a source whose counts were exact
+        but whose severity by rule could not be counted exactly (stated as a sample)."""
+        try:
+            searched = await _rule_search(ctx, conn, args, window, size=_STATS_SAMPLE, name=name)
+        except Exception as exc:  # noqa: BLE001 -- no breakdown for this source
+            logger.info("severity sample on %s failed: %s", name, exc)
+            return None
+        rows = [event_row(ev, name) for ev in searched.events]
+        whole = searched.total_exact and len(rows) >= searched.total
+        return _fold_rows(rows, scale_max, name, width, exact=whole)
 
     async def _fanout(
         self, ctx: ChatToolContext, args: LogStatsInput, window: Window, plan: _Plan,
-        group_by: list[str], interval: str,
+        group_by: list[str], interval: str, *, severity: bool = False,
     ) -> list[_SourceStats]:
         timeout = _aggregate_source_timeout(ctx)
+        width = trend_width(window) if severity else None
 
         async def one(target: BrowseTarget) -> _SourceStats:
+            scale = float(getattr(target, "scale_max", DEFAULT_SEVERITY_SCALE_MAX) or DEFAULT_SEVERITY_SCALE_MAX)
             if target.mode == "search" and ctx.source_resolver is not None:
                 resolved = await resolve_source(ctx, target.source_id)
                 if resolved is not None:
                     conn, _name, closer = resolved
                     agg, bucketed = None, False
+                    fold: _SeverityFold | None = None
                     try:
                         if callable(getattr(conn, "aggregate", None)):
                             agg, bucketed = await call_aggregate(
-                                conn, ctx.prefs, _structured_query(args, window, size=0), group_by,
+                                conn, ctx.prefs, _structured_query(args, window, size=0, conn=conn), group_by,
                                 interval, args.top_n, window.tz,
                             )
+                        if agg is not None and severity:
+                            fold = await _fold_composite(
+                                conn, ctx.prefs, _structured_query(args, window, size=0, conn=conn), scale,
+                                target.source_name, width)
+                            if fold is None:
+                                fold = await self._sampled_fold(ctx, conn, target.source_name, args, window, scale,
+                                                                width)
                     except Exception:  # noqa: BLE001 — degrade to the sample read
                         agg = None
                     finally:
@@ -1183,31 +1549,39 @@ class LogStatsTool(ChatTool):
                     if agg is not None:
                         stats = _stats_from_aggregate(target.source_name, agg, group_by)
                         stats.over_time_ok = bucketed
+                        stats.source_id, stats.scale_max, stats.severity = target.source_id, scale, fold
                         return stats
-            raw_rows, total = await target.read(_structured_query(args, window, size=_STATS_SAMPLE))
+            raw_rows, total, total_exact = await _target_read(target, args, window, size=_STATS_SAMPLE)
             rows = [browse_row(r) for r in raw_rows]
             if target.mode == "buffer":
-                rows = [r for r in rows if _matches_buffer(r, args, window)]
+                rows = [r for r in rows if _matches_buffer(r, args, window, rule_applied=args.rule is not None
+                                                           and target.filtered is not None)]
                 total = None
-            return _stats_from_rows(
+            stats = _stats_from_rows(
                 target.source_name, rows, total, group_by, interval, mode=target.mode, top_n=args.top_n,
-                total_exact=total is None or int(total) != ES_TOTAL_CAP, tz=window.tz,
+                total_exact=total is None or (total_exact and int(total) != ES_TOTAL_CAP), tz=window.tz,
             )
+            stats.source_id, stats.scale_max = target.source_id, scale
+            if severity:
+                stats.severity = _fold_rows(rows, scale, target.source_name, width, exact=stats.exact)
+            return stats
 
         async def guarded(target: BrowseTarget) -> _SourceStats:
             try:
                 return await asyncio.wait_for(one(target), timeout=timeout)
             except asyncio.TimeoutError:
-                return _SourceStats(name=target.source_name, status="timeout", mode=target.mode)
+                return _SourceStats(name=target.source_name, status="timeout", mode=target.mode,
+                                    source_id=target.source_id)
             except Exception as exc:  # noqa: BLE001 — partial success (#11)
                 logger.warning("log_stats read failed for %s: %s", target.source_id, exc)
-                return _SourceStats(name=target.source_name, status="error", mode=target.mode)
+                return _SourceStats(name=target.source_name, status="error", mode=target.mode,
+                                    source_id=target.source_id)
 
         return list(await asyncio.gather(*(guarded(t) for t in plan.targets)))
 
     def _outcome(
-        self, args: LogStatsInput, window: Window, plan: _Plan, per_source: list[_SourceStats],
-        group_by: list[str], interval: str,
+        self, ctx: ChatToolContext, args: LogStatsInput, window: Window, plan: _Plan,
+        per_source: list[_SourceStats], group_by: list[str], interval: str,
     ) -> ToolOutcome:
         answered = [s for s in per_source if s.status == "ok"]
         if not answered:
@@ -1276,6 +1650,9 @@ class LogStatsTool(ChatTool):
         axis = bucket_axis(window, interval, list(over_time)) if bucketed else []
         series_values = [int(over_time.get(t, 0)) for t in axis]
         labels = bucket_labels(axis, interval, window.tz)
+        named = _named_source(plan, ctx)
+        breakdown = (_severity_breakdown(answered, window, named, args, all_sources=plan.mode == "fanout" and not named)
+                     if "severity" in group_by else None)
         observation: dict[str, Any] = {
             "window": window.label,
             "window_clamped_to_request": window.clamped,
@@ -1287,13 +1664,16 @@ class LogStatsTool(ChatTool):
             "top_values_are_lower_bounds": merged_remainder or not all_exact,
             # Raw values (bounded, invisible characters kept for the fence to escape):
             # a lookalike value is its own bucket, never merged into the real one.
-            "top": {f: [{"value": text(k, 200), "count": v} for k, v in top[f]] for f in group_by},
-            "other": other,
+            "top": {f: [{"value": text(k, 200), "count": v} for k, v in top[f]] for f in group_by
+                    if not (f == "severity" and breakdown is not None)},
+            "other": {f: n for f, n in other.items() if not (f == "severity" and breakdown is not None)},
             "over_time": ({"interval": interval, "start": axis[0] if axis else None, "counts": series_values,
                            **({"labels": labels, "timezone": window.tz} if labels else {})}
                           if bucketed else {"interval": interval, "available": False,
                                             "reason": "a source cannot count by calendar period"}),
         }
+        if breakdown is not None:
+            observation["severity"] = breakdown["observation"]
         if total == 0:
             observation["suggestions"] = zero_log_suggestions("log_stats", args, window, plan)
         if distinct:
@@ -1312,14 +1692,37 @@ class LogStatsTool(ChatTool):
             observation["notes"] = list(plan.notes)
 
         artifacts: list[Artifact] = []
+        first = group_by[0] if group_by else None
         for f in group_by:
+            if f == "severity" and breakdown is not None:
+                # Named levels in fixed order with their rules (Round 14 SPEC §4.7.2).
+                artifacts.append(Artifact(
+                    id=f"a{len(artifacts) + 1}", kind="categories", title=GROUP_TITLES[f], title_trusted=True,
+                    data=breakdown["data"], provenance="source", untrusted_labels=True,
+                    basis=breakdown["basis"], window=window.label,
+                ))
+                continue
             pairs = top[f]
+            data: dict[str, Any] = {
+                "labels": [visible_text(k, 200) or EMPTY_VALUE_LABEL for k, _v in pairs],
+                "values": [v for _k, v in pairs],
+                "unit": "count", "dimension": _GROUP_DIMENSIONS.get(f, f), "other": other[f],
+            }
+            if f in ("rule", "rule_name"):
+                # Each rule opens its rule sheet over this window (SPEC §4.6.3), built here
+                # from the RAW value; a value a ref cannot carry gets no link.
+                drill = [rule_drill(k, window, named) for k, _v in pairs]
+                if any(d is not None for d in drill):
+                    data["drill"] = drill
+            if f == first and matrix and len(axis) >= 2:
+                # Each value's own counts over the window (a sparkline in the table view).
+                trend = [coarsen_counts([matrix[k].get(t, 0) for t in axis]) if k in matrix else None
+                         for k, _v in pairs]
+                if any(t is not None for t in trend):
+                    data["trend"] = trend
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="categories", title=GROUP_TITLES[f], title_trusted=True,
-                data={"labels": [visible_text(k, 200) or EMPTY_VALUE_LABEL for k, _v in pairs],
-                      "values": [v for _k, v in pairs],
-                      "unit": "count", "dimension": f, "other": other[f]},
-                provenance="source", untrusted_labels=True,
+                data=data, provenance="source", untrusted_labels=True,
                 basis="sample" if (all_exact and merged_remainder) else basis,
                 total=population.get(f), truncated=other[f] > 0 or merged_remainder,
                 window=window.label,
@@ -1350,7 +1753,7 @@ class LogStatsTool(ChatTool):
         # counted events, a lower bound (G4).
         items = [kpi("events", "Matching events", total, context=window.label, bound=not total_known)]
         for f in group_by[:3]:
-            if f in distinct:
+            if f in distinct and not (f == "severity" and breakdown is not None):
                 items.append(kpi(f"distinct_{f}", DISTINCT_LABELS[f], distinct[f], context="approximate"))
         if plan.mode == "fanout":
             items.append(kpi("sources_answered", "Sources answered", len(answered), context=f"of {len(per_source)}"))
@@ -1359,8 +1762,10 @@ class LogStatsTool(ChatTool):
             data={"items": items[:6]}, provenance="source", basis=basis,
             total=total if total_known else None, window=window.label,
         ))
-        if args.include_heatmap and group_by and matrix and 2 <= len(axis) <= _MAX_HEATMAP_X:
-            first = group_by[0]
+        # A severity breakdown carries its own trend per named level; its matrix holds
+        # raw source values, which are never shown as rows.
+        if (args.include_heatmap and group_by and matrix and 2 <= len(axis) <= _MAX_HEATMAP_X
+                and not (first == "severity" and breakdown is not None)):
             ys = [k for k, _v in top[first][:_MAX_HEATMAP_Y] if k in matrix]
             if ys:
                 artifacts.append(Artifact(
@@ -1368,7 +1773,7 @@ class LogStatsTool(ChatTool):
                     title_trusted=True,
                     data={"x": axis, "y": [visible_text(y, 200) for y in ys], "unit": "count",
                           "cells": [[int(matrix[y].get(t, 0)) for t in axis] for y in ys],
-                          "x_label": "Time", "y_label": first},
+                          "x_label": "Time", "y_label": _GROUP_DIMENSIONS.get(first, first)},
                     provenance="source", untrusted_labels=True, basis=basis, window=window.label,
                 ))
 
@@ -1385,6 +1790,8 @@ class LogStatsTool(ChatTool):
         summary += f", grouped by {', '.join(group_by)}" if group_by else ""
         if window.clamped:
             summary += "; window limited to the selected range"
+        if breakdown is not None and breakdown["caption"]:
+            coverage = "; ".join(x for x in (coverage, f"severity levels: {breakdown['caption']}") if x)
         queries = [s.query for s in answered if s.query]
         return ToolOutcome(
             ok=True,
@@ -1398,6 +1805,116 @@ class LogStatsTool(ChatTool):
             coverage=coverage,
             sources=[s.name for s in per_source],
         )
+
+
+def _severity_breakdown(
+    answered: list[_SourceStats], window: Window, named: str | None, args: Any, *, all_sources: bool,
+) -> dict[str, Any] | None:
+    """The severity breakdown of the answering sources (Round 14 SPEC §4.7.2): each
+    source's fold merged level by level (raw values were already projected through that
+    source's own ceiling), the five levels with shares, trends, rules and drills, the
+    rule and source splits, and the honest sample statement. ``None`` when no source
+    could fold its events."""
+    folds = [(s, s.severity) for s in answered if s.severity is not None]
+    if not folds:
+        return None
+    levels = {level: SeverityLevelCounts(raw_values=[], rules={}, sources={}) for level in SEVERITY_LEVELS}
+    width = trend_width(window)
+    trended = width is not None and all(fold.trend is not None for _s, fold in folds) and len(folds) == len(answered)
+    axis = trend_axis(window, width[1]) if trended and width is not None else []
+    # The source split is keyed by source ID (two sources may share a display name: each
+    # keeps its own row, count and Logs view) and labelled by name, with the id beside a
+    # name another answering source also has ("Wazuh (wazuh-lab)").
+    names = Counter(stats.name for stats, _fold in folds)
+    ids: dict[str, str | None] = {}
+    source_labels: dict[str, str] = {}
+    for stats, fold in folds:
+        key = stats.source_id or stats.name
+        ids[key] = stats.source_id
+        source_labels[key] = (f"{stats.name} ({stats.source_id})" if names[stats.name] > 1 and stats.source_id
+                              else stats.name)
+        for summary in fold.tally.levels():
+            facts = levels[summary.level]
+            facts.count += summary.count
+            for raw in summary.raw_values:
+                if raw not in facts.raw_values and len(facts.raw_values) < 5:
+                    facts.raw_values.append(raw)
+            for rule, n in summary.rules.items():
+                facts.rules[rule] = facts.rules.get(rule, 0) + n
+            # One fold is one source: its events count under that source's key.
+            in_source = sum(summary.sources.values())
+            if in_source:
+                facts.sources[key] = facts.sources.get(key, 0) + in_source
+    if axis:
+        for level in SEVERITY_LEVELS:
+            counts = Counter()
+            for _stats, fold in folds:
+                counts.update((fold.trend or {}).get(level, Counter()))
+            levels[level].trend = [int(counts.get(index, 0)) for index in axis]
+    exact_folds = [(s, f) for s, f in folds if f.exact]
+    sampled_folds = [(s, f) for s, f in folds if not f.exact]
+    missing = [s for s in answered if s.severity is None]
+    counted = sum(f.counted for _s, f in folds)
+    stated: int | None = sum(f.counted for _s, f in exact_folds)
+    bound = False
+    for stats, fold in sampled_folds:
+        if stats.total is None:
+            stated = None
+            break
+        stated += max(int(stats.total), fold.counted)
+        bound = bound or not stats.total_exact
+    if stated is not None:
+        for stats in missing:
+            if stats.total is None:
+                stated = None
+                break
+            stated += int(stats.total)
+            bound = bound or not stats.total_exact
+    caption = severity_sample_caption(
+        counted, stated, cap=_STATS_SAMPLE, sampled_sources=len(sampled_folds) + len(missing),
+        exact_sources=len(exact_folds), total_bound=bound,
+    )
+    exact = caption is None
+    sample = {"counted": counted, "total": stated, "per_source_cap": _STATS_SAMPLE if not exact else None,
+              "exact": exact, "sources_exact": len(exact_folds), "sources_sampled": len(sampled_folds) + len(missing)}
+
+    # A level (or a level of one source) opens the Logs page with the same filters the
+    # count ran with: the window, the rule and the free text it had. A filter the page
+    # cannot express (an IP, a user, a host, a raw severity floor) means no Logs view,
+    # and free text means none when a live-tail ring (which ignores it) was read.
+    expressible = (all(getattr(args, key, None) in (None, [], ()) for key in ("ip", "user", "host", "severity_gte"))
+                   and not (args.contains is not None and any(s.mode == "buffer" for s in answered)))
+
+    def level_drill(level: str, source_id: str | None = named) -> Any:
+        if not expressible:
+            return None
+        return severity_drill(level, window, source_id, rule=args.rule, log_query=args.contains)
+
+    def source_drill(level: str, key: str) -> Any:
+        sid = ids.get(key)
+        return level_drill(level, sid) if sid else None
+
+    data = severity_categories(
+        levels, subject="events",
+        level_drill=level_drill if (named or all_sources) else None,
+        rule_drill_of=lambda rule: rule_drill(rule, window, named),
+        source_drill_of=source_drill, source_label_of=lambda key: source_labels.get(key, key),
+        sample=sample, basis_caption=caption,
+        splits=("rule", "source") if len(folds) > 1 else ("rule",),
+    )
+    observation = {
+        "levels": [{"level": lv["level"], "count": lv["count"], "share_pct": lv["share"],
+                    "top_rules": [{"rule": text(r["key"], 200), "count": r["count"]} for r in lv["rules"][:3]],
+                    "rules_total": lv["rules_total"]}
+                   for lv in data["levels"]],
+        "basis": "exact" if exact else "sample",
+        "note": "levels use each source's own severity scale (Critical, High, Medium, Low, Info); "
+                "name them by level, never by a raw number",
+    }
+    if caption:
+        observation["sample"] = caption
+    return {"data": data, "observation": observation, "basis": "exact" if exact else "newest_n",
+            "caption": caption}
 
 
 def _calendar_axis_data(axis: list[str], interval: str, window: Window) -> dict[str, Any]:
@@ -1495,7 +2012,14 @@ def _add_log_comparison(
         merged: Counter[str] = Counter()
         rest = 0
         for s in answered:
-            merged.update(s.groups.get(first, Counter()))
+            groups = s.groups.get(first, Counter())
+            if first == "severity":
+                # Raw values on each source's own scale become named levels first, so
+                # periods compare "High" with "High", never "30.0" with "3.0".
+                for raw, n in groups.items():
+                    merged[level_of_raw(raw, s.scale_max).capitalize()] += int(n)
+            else:
+                merged.update(groups)
             rest += int(s.other.get(first, 0))
         for value, count in merged.items():
             per_value.setdefault(value, [None] * len(compared))[index] = count

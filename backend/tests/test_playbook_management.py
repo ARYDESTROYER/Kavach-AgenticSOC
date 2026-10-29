@@ -1,194 +1,163 @@
-"""Operator Markdown playbook management: files, API, RBAC, and audit.
+"""The retired procedure routes for one release (Round 14 SPEC §4.10.16, D44, E14).
 
-The management surface is deliberately narrower than arbitrary file editing: ids
-are slugs, writes remain inside the configured directory, replacements are atomic,
-and packaged reference playbooks stay read-only.  The tests never invoke the case
-decision engine; playbook text remains recommendation-only investigation context.
+Playbooks are now runbooks. The old reads stay as ALIASES over the runbook library in
+the old response shape (each Published runbook mapped to the old fields, ``content``
+and ``body`` exported as Markdown) with ``Deprecation`` and ``Link`` headers, behind
+``runbooks:read``. Every old write answers ``410 runbooks_moved``: an old-shape write
+cannot be honoured without making unreviewed text live (#9). Nothing here reads the
+retired registry or reaches ``decide()`` (#3).
 """
 
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
+from functools import partial
 
 import pytest
 
-from app.playbooks.registry import (
-    DEFAULT_BUNDLED_PLAYBOOK_FILES,
-    PlaybookConflictError,
-    PlaybookManagementError,
-    PlaybookProtectedError,
-    PlaybookRegistry,
-)
-from app.api.routes import playbook_selection
+from app.api import routes as routes_mod
+from app.engine import runbook_runs as R
+from app.engine.runbook_model import load_builtin_runbooks
+from app.models import Case, Entity, LookupResult
+from app.constants import CaseStatus, EntityType, SourceSurface
+
+MOVED = {"code": "runbooks_moved", "detail": "Playbooks are now runbooks.", "see": "/api/runbooks"}
 
 
-def _document(playbook_id: str, *, version: int = 1, body: str = "Confirm the signal.") -> str:
-    return (
-        "---\n"
-        f"id: {playbook_id}\n"
-        f"name: {playbook_id.replace('_', ' ').title()}\n"
-        f"version: {version}\n"
-        "description: Operator-authored response procedure.\n"
-        "priority: 25\n"
-        "match:\n"
-        "  rule_ids: [operator_rule]\n"
-        "suggested_tools: [es_query]\n"
-        "---\n"
-        "## Procedure\n"
-        f"{body}\n"
-    )
+@pytest.fixture(autouse=True)
+def _no_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_execute(state, case, template, *, ran_by, now=None, events=None, load_events=True):
+        return LookupResult(tool=template.tool, status="empty", count=0, ran_at="2026-10-28T10:00:00Z",
+                            ran_by=ran_by)
+
+    monkeypatch.setattr(R, "execute_lookup", fake_execute)
 
 
-def test_registry_creates_reads_and_atomically_updates_operator_file(tmp_path: Path) -> None:
-    registry = PlaybookRegistry(tmp_path)
-    registry.load()
+def _grants(endpoint) -> set[tuple[str, str]]:
+    """Every ``require_permission(resource, action)`` dependency of a route."""
+    out: set[tuple[str, str]] = set()
+    for param in inspect.signature(endpoint).parameters.values():
+        dependency = getattr(param.default, "dependency", None)
+        closure = getattr(dependency, "__closure__", None) or ()
+        names = getattr(getattr(dependency, "__code__", None), "co_freevars", ())
+        values = dict(zip(names, (cell.cell_contents for cell in closure)))
+        if "resource" in values and "action" in values:
+            out.add((values["resource"], values["action"]))
+    return out
 
-    created, summary = registry.create_operator("containment_check", _document("containment_check"))
-    assert created.id == "containment_check"
-    assert summary["ids"] == ["containment_check"]
-    assert (tmp_path / "containment_check.md").is_file()
-    assert registry.metadata(created) == {
-        "source_type": "operator",
-        "protected": False,
-        "editable": True,
-        "file_name": "containment_check.md",
+
+def _deprecated(response) -> None:
+    assert response.headers["Deprecation"] == "true"
+    assert response.headers["Link"] == '</api/runbooks>; rel="successor-version"'
+
+
+def test_list_alias_answers_the_old_shape_from_the_runbook_library(client) -> None:
+    r = client.get("/api/playbooks")
+    assert r.status_code == 200, r.text
+    _deprecated(r)
+    body = r.json()
+    assert body["enabled"] is True
+    assert body["count"] == len(load_builtin_runbooks()) == len(body["playbooks"])
+    item = next(p for p in body["playbooks"] if p["id"] == "brute-force-password-spray")
+    assert {"id", "name", "version", "description", "priority", "match", "suggested_tools", "rag_queries",
+            "escalate_if", "suggested_verdict_bias", "source_type", "protected", "editable",
+            "file_name"} <= set(item)
+    assert item["source_type"] == "bundled" and item["protected"] is True and item["editable"] is False
+    assert "mail_auth" in item["match"]["rule_ids"]
+    assert "content" not in item and "source_path" not in item
+
+
+def test_detail_alias_exports_markdown_and_maps_a_retired_id(client) -> None:
+    r = client.get("/api/playbooks/brute_force_login")
+    assert r.status_code == 200, r.text
+    _deprecated(r)
+    item = r.json()
+    assert item["id"] == "brute-force-password-spray"
+    assert item["content"].startswith("---\n")
+    assert not item["body"].startswith("---") and item["body"].strip()
+    direct = client.get("/api/playbooks/brute-force-password-spray").json()
+    assert direct["content"] == item["content"]
+    # An unknown id keeps the old error shape (a string ``detail``), so an old client's
+    # error handling still works; the headers still name the successor.
+    missing = client.get("/api/playbooks/missing")
+    assert missing.status_code == 404 and missing.json() == {"detail": "playbook not found"}
+    _deprecated(missing)
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("post", "/api/playbooks", {"id": "x", "content": "---\nid: x\n---\n"}),
+    ("post", "/api/playbooks/reload", None),
+    ("post", "/api/playbooks/dry-run", {"rule_ids": ["mail_auth"]}),
+    ("put", "/api/playbooks/brute_force_login", {"content": "anything"}),
+])
+def test_every_old_write_answers_410_runbooks_moved(client, method: str, path: str, body) -> None:
+    kwargs = {"json": body} if body is not None else {}
+    r = getattr(client, method)(path, **kwargs)
+    assert r.status_code == 410
+    assert r.json() == MOVED
+    _deprecated(r)
+
+
+def test_no_route_is_invented_for_a_write_that_never_existed(client) -> None:
+    """The procedure API never had a DELETE; it still answers 405, as before, and the
+    retired routes add nothing to the API surface beyond the old ones."""
+    assert client.delete("/api/playbooks/brute_force_login").status_code == 405
+    methods = {
+        (method, route.path)
+        for route in client.app.routes
+        if str(getattr(route, "path", "")).startswith("/api/playbooks")
+        for method in (getattr(route, "methods", None) or ())
+    }
+    assert methods == {
+        ("GET", "/api/playbooks"), ("POST", "/api/playbooks"), ("POST", "/api/playbooks/reload"),
+        ("POST", "/api/playbooks/dry-run"), ("GET", "/api/playbooks/coverage"),
+        ("GET", "/api/playbooks/selection/{case_id}"), ("GET", "/api/playbooks/{playbook_id}"),
+        ("PUT", "/api/playbooks/{playbook_id}"),
     }
 
-    opened, content = registry.read_document("containment_check")
-    assert opened.id == "containment_check"
-    assert "Confirm the signal." in content
 
-    updated, summary = registry.update_operator(
-        "containment_check",
-        _document("containment_check", version=2, body="Validate, contain, and document."),
-    )
-    assert updated.version == 2
-    assert summary["loaded"] == 1
-    assert "Validate, contain, and document." in (tmp_path / "containment_check.md").read_text()
-
-
-def test_registry_rejects_traversal_mismatch_conflict_and_bad_markdown(tmp_path: Path) -> None:
-    registry = PlaybookRegistry(tmp_path)
-    registry.load()
-
-    with pytest.raises(PlaybookManagementError, match="lowercase slug"):
-        registry.create_operator("../escape", _document("escape"))
-    with pytest.raises(PlaybookManagementError, match="must match"):
-        registry.create_operator("expected_id", _document("different_id"))
-    with pytest.raises(PlaybookManagementError, match="front matter"):
-        registry.create_operator("missing_manifest", "# procedure only")
-    with pytest.raises(PlaybookManagementError, match="reserved"):
-        registry.create_operator("readme", _document("readme"))
-
-    registry.create_operator("unique", _document("unique"))
-    with pytest.raises(PlaybookConflictError, match="already exists"):
-        registry.create_operator("unique", _document("unique", version=2))
-
-    assert not (tmp_path.parent / "escape.md").exists()
-    assert [p.id for p in registry.all()] == ["unique"]
-
-
-def test_reload_summary_redacts_server_paths(tmp_path: Path) -> None:
-    registry = PlaybookRegistry(tmp_path)
-    (tmp_path / "broken.md").write_text("---\nname: missing id\n---\nBody.\n", encoding="utf-8")
-    summary = registry.reload()
-
-    assert summary["skipped"] == [
-        {"file": "broken.md", "reason": "invalid_or_unparseable"}
-    ]
-    assert str(tmp_path) not in str(summary)
-
-
-def test_playbook_selection_route_requires_case_read_permission() -> None:
-    dependency = inspect.signature(playbook_selection).parameters["_"].default.dependency
-    closure_values = {cell.cell_contents for cell in (dependency.__closure__ or ())}
-    assert {"cases", "read"}.issubset(closure_values)
-
-
-def test_registry_protects_packaged_file_but_allows_plain_read(tmp_path: Path) -> None:
-    filename = next(iter(DEFAULT_BUNDLED_PLAYBOOK_FILES))
-    playbook_id = filename.removesuffix(".md")
-    (tmp_path / filename).write_text(_document(playbook_id), encoding="utf-8")
-    registry = PlaybookRegistry(tmp_path, protected_filenames={filename})
-    registry.load()
-    bundled = registry.get(playbook_id)
-    assert bundled is not None
-    assert registry.metadata(bundled)["source_type"] == "bundled"
-    assert registry.metadata(bundled)["editable"] is False
-    assert registry.read_document(playbook_id)[0].id == playbook_id
-    with pytest.raises(PlaybookProtectedError, match="bundled and read-only"):
-        registry.update_operator(playbook_id, _document(playbook_id, version=2))
-
-
-def _point_client_at(client, directory: Path) -> None:
+def test_coverage_alias_matches_cases_without_the_fallback(client) -> None:
     state = client.app.state.tlsoc
-    state.prefs.playbooks.dir = str(directory)
-    state.reload_playbooks()
+    for cid, rule in (("cov-1", "mail_auth"), ("cov-2", "nothing_matches_this")):
+        client.portal.call(state.cases.save, Case(
+            case_id=cid, cluster_signature=cid, source_surface=SourceSurface.INVESTIGATE, rule_ids=[rule],
+            entity=Entity(type=EntityType.IP, value="198.51.100.1"), status=CaseStatus.NEEDS_HUMAN))
+    r = client.get("/api/playbooks/coverage")
+    assert r.status_code == 200
+    _deprecated(r)
+    body = r.json()
+    assert body["scanned_cases"] == 2 and body["covered_cases"] == 1 and body["coverage_percent"] == 50.0
+    assert body["selected_playbooks"] == [{"playbook_id": "brute-force-password-spray", "case_count": 1}]
+    assert body["unmatched_rule_families"] == [{"rule_id": "nothing_matches_this", "case_count": 1}]
 
 
-def test_playbook_management_api_create_open_update_and_audit(client, tmp_path: Path) -> None:
-    _point_client_at(client, tmp_path)
-    original = _document("api_response")
-
-    created = client.post("/api/playbooks", json={"id": "api_response", "content": original})
-    assert created.status_code == 200, created.text
-    item = created.json()["playbook"]
-    assert item["source_type"] == "operator"
-    assert item["editable"] is True
-    assert "source_path" not in item
-
-    listing = client.get("/api/playbooks")
-    assert listing.status_code == 200
-    assert listing.json()["count"] == 1
-    assert listing.json()["playbooks"][0]["file_name"] == "api_response.md"
-
-    opened = client.get("/api/playbooks/api_response")
-    assert opened.status_code == 200
-    assert opened.json()["content"].startswith("---\nid: api_response")
-    assert opened.json()["body"].startswith("## Procedure")
-
-    updated = client.put(
-        "/api/playbooks/api_response",
-        json={"content": _document("api_response", version=2, body="Collect and contain.")},
-    )
-    assert updated.status_code == 200, updated.text
-    assert updated.json()["playbook"]["version"] == 2
-    assert client.get("/api/playbooks/api_response").json()["content"].find("Collect and contain.") > 0
-
-    audit_docs = [
-        doc
-        for bucket in client.app.state.tlsoc.es.docs.values()
-        for doc in bucket.values()
-        if doc.get("action_type") == "playbook"
-    ]
-    assert [doc["result_summary"].split()[0] for doc in audit_docs] == ["created", "updated"]
-    assert all(doc["surface"] == "playbooks" for doc in audit_docs)
+def test_selection_alias_reports_the_attached_runbook(client) -> None:
+    state = client.app.state.tlsoc
+    case = Case(case_id="sel-1", cluster_signature="sel-1", source_surface=SourceSurface.INVESTIGATE,
+                rule_ids=["mail_auth"], entity=Entity(type=EntityType.IP, value="198.51.100.2"),
+                status=CaseStatus.NEEDS_HUMAN)
+    client.portal.call(state.cases.save, case)
+    empty = client.get("/api/playbooks/selection/sel-1").json()
+    assert empty == {"case_id": "sel-1", "playbook_id": "", "reason": ""}
+    client.portal.call(partial(R.reevaluate_case, state, case, trigger="test"))
+    r = client.get("/api/playbooks/selection/sel-1")
+    _deprecated(r)
+    body = r.json()
+    assert body["playbook_id"] == "brute-force-password-spray"
+    assert "mail_auth" in body["reason"]
 
 
-def test_playbook_management_api_returns_bounded_errors(client, tmp_path: Path) -> None:
-    _point_client_at(client, tmp_path)
-    assert client.post(
-        "/api/playbooks", json={"id": "../escape", "content": _document("escape")}
-    ).status_code == 400
-    assert client.post(
-        "/api/playbooks", json={"id": "mismatch", "content": _document("different")}
-    ).status_code == 400
-    assert client.get("/api/playbooks/missing").status_code == 404
-    assert client.put(
-        "/api/playbooks/missing", json={"content": _document("missing")}
-    ).status_code == 404
+def test_alias_and_retired_route_grants() -> None:
+    assert _grants(routes_mod.playbooks) == {("runbooks", "read")}
+    assert _grants(routes_mod.playbook_detail) == {("runbooks", "read")}
+    assert _grants(routes_mod.playbooks_coverage) == {("runbooks", "read")}
+    assert _grants(routes_mod.playbook_selection) == {("cases", "read"), ("runbooks", "read")}
+    for write in (routes_mod.playbooks_create, routes_mod.playbooks_reload, routes_mod.playbook_update):
+        assert _grants(write) == {("runbooks", "manage")}
+    assert _grants(routes_mod.playbooks_dry_run) == {("runbooks", "read")}
 
 
-def test_packaged_playbook_api_is_viewable_but_protected(client) -> None:
-    # The default AppState points at backend/playbooks and marks the three shipped
-    # procedures as bundled.  Viewing is allowed; replacing is not.
-    item = client.get("/api/playbooks/brute_force_login")
-    assert item.status_code == 200
-    assert item.json()["source_type"] == "bundled"
-    assert item.json()["protected"] is True
-    changed = client.put(
-        "/api/playbooks/brute_force_login",
-        json={"content": _document("brute_force_login", version=99)},
-    )
-    assert changed.status_code == 403
+def test_routes_no_longer_import_the_retired_registry() -> None:
+    source = inspect.getsource(routes_mod)
+    assert "playbooks.registry" not in source
+    assert "state.playbooks" not in source

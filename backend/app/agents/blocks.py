@@ -122,6 +122,12 @@ MAX_SNIPPET = 280
 MAX_SECTION_SUMMARY = 1_200
 MAX_SOURCES = 20
 MAX_TIMESTAMP_CHARS = 40
+# Round 14 (SPEC §4.6.3, §4.7.2): drill targets and the severity breakdown.
+MAX_ROW_TREND_POINTS = 24             # a table row's (or a level's) trend sparkline
+MAX_RULE_CHARS = 256                  # a rule value in a ref (the router's "Rule is")
+MAX_SEVERITY_RULES = 20               # rules listed per level (``rules_total`` counts them all)
+MAX_SEVERITY_RAW_VALUES = 5           # distinct raw source values a level names
+MAX_SEVERITY_SPLIT_TOP = 5            # keys per level in a split, the rest in ``other``
 
 # Compact storage form (SPEC §7.5 / amendment 7): what a persisted answer keeps.
 STORED_TABLE_ROWS = 25
@@ -619,12 +625,23 @@ class NavRefOpts(_Strict):
     from_: str | None = Field(default=None, alias="from", pattern=NAV_TIME_PATTERN)
     to: str | None = Field(default=None, pattern=NAV_TIME_PATTERN)
     sourceId: str | None = Field(default=None, pattern=NAV_ID_PATTERN)
+    # Round 14 (SPEC §4.6.3): the exact rule value of a ``rule`` page ref (the rule
+    # sheet) or of the Logs and Cases "Rule is" filter: 1 to 256 code points on one
+    # line with no control or format character, kept byte for byte (never trimmed).
+    rule: str | None = Field(default=None, min_length=1, max_length=MAX_RULE_CHARS)
 
     @field_validator("logQuery")
     @classmethod
     def _log_query(cls, value: str | None) -> str | None:
         if value is not None and not is_safe_log_query(value):
             raise ValueError("log query must be plain single-line text")
+        return value
+
+    @field_validator("rule")
+    @classmethod
+    def _rule(cls, value: str | None) -> str | None:
+        if value is not None and (len(value) > MAX_RULE_CHARS or not is_safe_log_query(value)):
+            raise ValueError("rule must be plain single-line text")
         return value
 
 
@@ -636,7 +653,11 @@ _NAV_OPT_ATTRS: dict[str, str] = {
 
 class InternalRef(_Strict):
     """An in-app destination: a page id plus validated options. The webui checks
-    ``page`` with ``isPageId`` (the backend has no page registry, only the grammar)."""
+    ``page`` with ``isPageId`` (the backend has no page registry, only the grammar).
+
+    Round 14 (SPEC §4.6.3): ``page: "rule"`` (:data:`RULE_PAGE`) is not a route. The
+    client opens the rule sheet for ``opts.rule`` over ``opts.from``/``opts.to``
+    (``opts.sourceId`` when the answer read one source)."""
 
     page: str = Field(pattern=PAGE_PATTERN)
     opts: NavRefOpts | None = None
@@ -682,6 +703,11 @@ AnyRef = Annotated[Union[DocRef, InternalRef], BeforeValidator(_required_ref)]
 
 # The wire keys of the Logs deep link ("Open in Logs", SPEC §13 A14).
 LOG_NAV_KEYS = ("logQuery", "from", "to", "sourceId")
+# Round 14 (SPEC §4.6.3, §4.6.6): the drill keys a tool-built ref may add. ``rule`` on
+# the ``rule`` page (the rule sheet) and on Logs ("Rule is"); ``severity`` (a named
+# level) on Logs. Pinned for both stacks by the contract's ``nav_drill_examples``.
+RULE_PAGE = "rule"
+DRILL_NAV_KEYS = ("rule", "severity")
 
 
 def clean_nav_opts(raw: Any) -> dict[str, str | int]:
@@ -750,7 +776,9 @@ class _BlockBase(_Strict):
         out = dict(data)
         out["provenance"] = _enum_or(out.get("provenance"), PROVENANCES, "ai")
         if out["provenance"] == "ai":
-            out.pop("open_in", None)   # navigation targets are never model-made
+            # Navigation targets are never model-made (G5): no console view, no drill.
+            out.pop("open_in", None)
+            out.pop("drill", None)
         out["artifact_kind"] = _enum_or(out.get("artifact_kind"), ARTIFACT_KINDS, None)
         views = out.get("allowed_views")
         out["allowed_views"] = [
@@ -1166,11 +1194,196 @@ _TABLE_COLUMN = TypeAdapter(TableColumn)
 _TABLE_SORT = TypeAdapter(TableSort)
 
 
+# --------------------------------------------------------------------------- #
+# Round 14 (SPEC §4.7.2): the severity breakdown a table block may carry.
+# Every count is a number a tool counted (G5); every rule, source and raw value is
+# source-derived and untrusted (G7, #9); every ``drill`` is a ref built by code.
+# --------------------------------------------------------------------------- #
+def _count_or_zero(value: Any) -> int:
+    number = _nonneg_int_or_none(value)
+    return number if number is not None else 0
+
+
+Count = Annotated[int, BeforeValidator(_count_or_zero), Field(ge=0)]
+OptCount = Annotated[Union[int, None], BeforeValidator(_nonneg_int_or_none)]
+
+
+def _share_or_none(value: Any) -> float | None:
+    number = finite_number(value)
+    if number is None or number < 0 or number > 100:
+        return None
+    return round(float(number), 1)
+
+
+OptShare = Annotated[Union[float, None], BeforeValidator(_share_or_none)]
+
+
+def _trend_points(value: Any) -> list[Any] | None:
+    """A sparkline's counts: the NEWEST :data:`MAX_ROW_TREND_POINTS`, each a finite
+    number or ``null`` (not measured); anything that is not a list is no trend."""
+    if not isinstance(value, (list, tuple)):
+        return None
+    points = [finite_number(v) for v in list(value)[-MAX_ROW_TREND_POINTS:]]
+    return points or None
+
+
+OptTrend = Annotated[Union[list[Union[int, float, None]], None], BeforeValidator(_trend_points)]
+
+
+class SeverityRawValue(_Strict):
+    """One raw source value a level holds, on its source's own scale (``High (73, 8)``:
+    73 on a 0 to 100 source, 8 on a 0 to 10 one)."""
+
+    value: FiniteNumber
+    scale_max: FiniteNumber
+
+
+#: A rule or split key: display-sanitised, never blank (a blank key names nothing).
+SeverityKeyText = Annotated[str, BeforeValidator(lambda v: _scalar_text(v, MAX_CATEGORY_CHARS)),
+                            Field(min_length=1, max_length=MAX_CATEGORY_CHARS)]
+
+
+class SeverityRuleCount(_Strict):
+    """A rule (or a split key) inside one level, with its count and its destination."""
+
+    key: SeverityKeyText
+    count: Count = 0
+    drill: OptNavRef = None
+
+
+_SEVERITY_RAW = TypeAdapter(SeverityRawValue)
+_SEVERITY_RULE = TypeAdapter(SeverityRuleCount)
+
+
+class SeverityLevel(_Strict):
+    """One named level of a breakdown (all five are always present, zeros included)."""
+
+    level: SeverityKey
+    count: Count = 0
+    share: OptShare = None
+    raw_values: list[SeverityRawValue] = Field(default_factory=list, max_length=MAX_SEVERITY_RAW_VALUES)
+    trend: OptTrend = None
+    rules: list[SeverityRuleCount] = Field(default_factory=list, max_length=MAX_SEVERITY_RULES)
+    rules_total: Count = 0
+    drill: OptNavRef = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        """Lists clipped to their bounds and their invalid items dropped one by one;
+        ``rules_total`` never below the rules listed."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        data["raw_values"], _ = _filter_valid(_SEVERITY_RAW, data.get("raw_values"), MAX_SEVERITY_RAW_VALUES)
+        data["rules"], _ = _filter_valid(_SEVERITY_RULE, data.get("rules"), MAX_SEVERITY_RULES)
+        listed = len(data["rules"])
+        data["rules_total"] = max(_count_or_zero(data.get("rules_total")), listed)
+        return data
+
+
+class SeveritySplitLevel(_Strict):
+    """One level of a split: its top keys (rules or sources) and the rest as ``other``."""
+
+    top: list[SeverityRuleCount] = Field(default_factory=list, max_length=MAX_SEVERITY_SPLIT_TOP)
+    other: Count = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        data["top"], _ = _filter_valid(_SEVERITY_RULE, data.get("top"), MAX_SEVERITY_SPLIT_TOP)
+        return data
+
+
+SeveritySplitKey = Literal["rule", "source"]
+SEVERITY_SPLIT_KEYS: tuple[str, ...] = get_args(SeveritySplitKey)
+_SEVERITY_SPLIT_LEVEL = TypeAdapter(SeveritySplitLevel)
+
+
+class SeveritySample(_Strict):
+    """What the levels cover (SPEC §4.7.2 honesty): ``counted`` events of ``total``
+    (``None``: the total is not known), the newest ``per_source_cap`` read from each
+    sampled source, and how many sources counted exactly or were sampled."""
+
+    counted: Count = 0
+    total: OptCount = None
+    per_source_cap: OptCount = None
+    exact: bool = False
+    sources_exact: Count = 0
+    sources_sampled: Count = 0
+
+
+class SeverityBreakdown(_Strict):
+    """A severity breakdown (Round 14 SPEC §4.7.2, ask 7): the five named levels in
+    fixed order with their share, trend and rules, the splits the server computed
+    (by ``rule``, by ``source``), and what was sampled. ``subject`` names what is
+    counted (log events, or cases). ``multi_level_rules`` is how many rules were seen
+    in two or more levels (the matrix view is offered only then)."""
+
+    subject: Literal["events", "cases"] = "events"
+    levels: list[SeverityLevel] = Field(min_length=len(SEVERITY_KEYS), max_length=len(SEVERITY_KEYS))
+    splits: dict[SeveritySplitKey, dict[SeverityKey, SeveritySplitLevel]] = Field(default_factory=dict)
+    sample: Annotated[Union[SeveritySample, None], BeforeValidator(_lenient(TypeAdapter(SeveritySample)))] = None
+    multi_level_rules: Count = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        """All five levels in the fixed order (Critical, High, Medium, Low, Info): the
+        first entry of each level is kept, a missing level is a zero, an unknown one is
+        dropped. A split keeps only known levels; an invalid split is dropped."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        by_level: dict[str, Any] = {}
+        raw_levels = data.get("levels")
+        for item in raw_levels if isinstance(raw_levels, (list, tuple)) else []:
+            key = _enum_or(item.get("level"), SEVERITY_KEYS, None) if isinstance(item, dict) else None
+            if key is not None and key not in by_level:
+                by_level[key] = {**item, "level": key}
+        data["levels"] = [by_level.get(key) or {"level": key} for key in SEVERITY_KEYS]
+        splits: dict[str, dict[str, Any]] = {}
+        raw_splits = data.get("splits")
+        for name, per_level in (raw_splits.items() if isinstance(raw_splits, dict) else ()):
+            if name not in SEVERITY_SPLIT_KEYS or not isinstance(per_level, dict):
+                continue
+            kept: dict[str, Any] = {}
+            for level, entry in per_level.items():
+                key = _enum_or(level, SEVERITY_KEYS, None)
+                if key is None or key in kept:
+                    continue
+                try:
+                    kept[key] = _SEVERITY_SPLIT_LEVEL.validate_python(entry)
+                except Exception:  # noqa: BLE001 -- one bad level never sinks the split
+                    continue
+            if kept:
+                splits[name] = kept
+        data["splits"] = splits
+        return data
+
+
+_SEVERITY_BREAKDOWN = TypeAdapter(SeverityBreakdown)
+
+
 class TableBlock(_BlockBase):
     type: Literal["table"]
     columns: list[TableColumn] = Field(min_length=1, max_length=MAX_TABLE_COLUMNS)
     rows: list[list[Cell]] = Field(max_length=MAX_TABLE_ROWS)
     sort: Annotated[Union[TableSort, None], BeforeValidator(_lenient(_TABLE_SORT))] = None
+    # Round 14 (SPEC §4.6.3): each row's in-app destination (the rule sheet, a Logs
+    # view), aligned with ``rows`` (``null``: that row has none). Built by code from a
+    # validated ref, never by a model; an invalid ref is dropped, never fatal.
+    drill: list[OptNavRef] | None = Field(default=None, max_length=MAX_TABLE_ROWS)
+    # Each row's counts over the window (a sparkline, newest points last), aligned with
+    # ``rows`` (``null``: that row has none).
+    trend: list[OptTrend] | None = Field(default=None, max_length=MAX_TABLE_ROWS)
+    # Round 14 (SPEC §4.7.2): the named levels behind a severity breakdown table. The
+    # rows stay the plain table (reports, print and exports); the client renders the
+    # breakdown from this payload when it is present. An invalid payload is dropped.
+    severity: Annotated[Union[SeverityBreakdown, None], BeforeValidator(_lenient(_SEVERITY_BREAKDOWN))] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1208,7 +1421,27 @@ class TableBlock(_BlockBase):
         sort = data.get("sort")
         if isinstance(sort, dict) and sort.get("key") not in seen:
             data["sort"] = None
+        for key in ("drill", "trend"):
+            # Aligned with the rows a clip kept: cut to them, padded with ``null``, and
+            # dropped when no row has one (a storage clip or a repair never misaligns).
+            values = data.get(key)
+            if isinstance(values, (list, tuple)):
+                kept = list(values)[: len(aligned)]
+                kept += [None] * (len(aligned) - len(kept))
+                data[key] = kept if any(v is not None for v in kept) else None
+            else:
+                data[key] = None
         return data
+
+    @model_validator(mode="after")
+    def _no_empty_alignments(self) -> "TableBlock":
+        """A drill or trend list whose every entry failed validation is no list at all,
+        so a repaired block and its re-validation dump the same bytes."""
+        if self.drill is not None and all(d is None for d in self.drill):
+            self.drill = None
+        if self.trend is not None and all(t is None for t in self.trend):
+            self.trend = None
+        return self
 
 
 class CaseListItem(_Strict):
@@ -2004,7 +2237,16 @@ def artifact_views(artifact: Any) -> list[str]:
             views = [v for v in views if v != "stacked_bar"]
     elif kind == "comparison":
         views = comparison_views(data)
+    if kind == "categories" and is_severity_data(data) and "table" in views:
+        # A severity breakdown reads as its table first (Round 14 SPEC §4.7.3, option A).
+        views = ["table", *[v for v in views if v != "table"]]
     return views
+
+
+def is_severity_data(data: Any) -> bool:
+    """Is this ``categories`` payload a severity breakdown (SPEC §4.7.2: ``kind:
+    "severity"`` with its ``levels``)?"""
+    return isinstance(data, dict) and data.get("kind") == "severity" and isinstance(data.get("levels"), list)
 
 
 def comparison_views(data: dict[str, Any]) -> list[str]:
@@ -2366,7 +2608,13 @@ def _caption(
     parts: list[str] = []
     if truncation:
         parts.append(truncation)
-    basis = _BASIS_CAPTIONS.get(str(getattr(artifact, "basis", None) or ""))
+    data = getattr(artifact, "data", None)
+    stated = data.get("basis_caption") if isinstance(data, dict) else None
+    # A tool may state its own basis in full ("1,000 of 2,500 events sampled, newest 200
+    # per source", Round 14 SPEC §4.7.2): an engine template, said instead of the
+    # generic phrase.
+    basis = (display_text(stated, MAX_CAPTION) if isinstance(stated, str) and stated.strip()
+             else _BASIS_CAPTIONS.get(str(getattr(artifact, "basis", None) or "")))
     if basis:
         parts.append(basis)
     window = getattr(artifact, "window", None)
@@ -2415,20 +2663,30 @@ def _top_n(options: MaterialiseOptions, available: int) -> int:
     return max(0, min(limit, available))
 
 
-def _sorted_categories(data: dict[str, Any]) -> tuple[list[str], list[int | float | None]]:
-    """Labels and values aligned, sorted by value descending (not measured last), ties
-    by label, so the order — and with it every colour — is deterministic. ``ordered``
-    data keeps the producer's order (a canonical one: Critical, High, Medium, Low, Info;
-    Round 12 SPEC §7.2 decision 27)."""
+def _sorted_category_rows(data: dict[str, Any]) -> list[tuple[str, int | float | None, int]]:
+    """``(label, value, index)`` per category, sorted by value descending (not measured
+    last), ties by label then by position, so the order (and with it every colour) is
+    deterministic. ``index`` is the category's position in ``data["labels"]``: the key
+    that keeps a row's drill and trend its own after the sort and any clip, since two
+    distinct values can share one shown label (a long value cut to the label limit, or
+    one differing only in surrounding spaces). ``ordered`` data keeps the producer's
+    order (a canonical one: Critical, High, Medium, Low, Info; Round 12 SPEC §7.2
+    decision 27)."""
     labels = data.get("labels") if isinstance(data.get("labels"), (list, tuple)) else []
     values = data.get("values") if isinstance(data.get("values"), (list, tuple)) else []
-    pairs = [
-        (_label_text(label), finite_number(values[i]) if i < len(values) else None)
+    rows = [
+        (_label_text(label), finite_number(values[i]) if i < len(values) else None, i)
         for i, label in enumerate(labels)
     ]
     if data.get("ordered") is not True:
-        pairs.sort(key=lambda p: (p[1] is None, -(p[1] or 0), p[0]))
-    return [p[0] for p in pairs], [p[1] for p in pairs]
+        rows.sort(key=lambda r: (r[1] is None, -(r[1] or 0), r[0], r[2]))
+    return rows
+
+
+def _sorted_categories(data: dict[str, Any]) -> tuple[list[str], list[int | float | None]]:
+    """Labels and values aligned, in :func:`_sorted_category_rows` order."""
+    rows = _sorted_category_rows(data)
+    return [r[0] for r in rows], [r[1] for r in rows]
 
 
 def _is_other_label(label: Any) -> bool:
@@ -2536,7 +2794,8 @@ def _text_column(key: str, label: str, *, untrusted: bool = False, ctype: str = 
 
 def _build_categories(artifact: Any, options: MaterialiseOptions, view: str, views: list[str]) -> dict[str, Any]:
     data = artifact.data
-    labels, values = _sorted_categories(data)
+    rows = _sorted_category_rows(data)
+    labels, values = [r[0] for r in rows], [r[1] for r in rows]
     unit = _unit(data.get("unit"))
     other = finite_number(data.get("other"))
     # A donut is a part-to-whole: only for a COMPLETE population that fits in six
@@ -2553,10 +2812,15 @@ def _build_categories(artifact: Any, options: MaterialiseOptions, view: str, vie
     if data.get("ordered") is True and n < len(labels):
         # A canonical order (Critical, High…): the busiest values are kept, then shown
         # in that order, never the first ones of the order.
-        pairs = _busiest_kept(list(zip(labels, values)), n, lambda p: p[1], lambda p: _is_other_label(p[0]))
-        labels, values = [p[0] for p in pairs], [p[1] for p in pairs]
+        rows = _busiest_kept(rows, n, lambda r: r[1], lambda r: _is_other_label(r[0]))
+        labels, values = [r[0] for r in rows], [r[1] for r in rows]
+    shown = [r[2] for r in rows[:n]]
     block = _base_block(artifact, options, views)
     dimension = _label_text(data.get("dimension"), MAX_LABEL) or None
+    drill = _aligned_by_position(data, "drill", shown)
+    if view == "table" and is_severity_data(data):
+        return _with_truncation(_severity_table(block, data, unit), artifact, options,
+                                shown=len(SEVERITY_KEYS), available=len(SEVERITY_KEYS))
     if view == "table":
         block.update({
             "type": "table",
@@ -2566,18 +2830,123 @@ def _build_categories(artifact: Any, options: MaterialiseOptions, view: str, vie
             ],
             "rows": [[labels[i], values[i]] for i in range(n)],
         })
+        # Round 14 (SPEC §4.6.3): a table row opens what its bar opens, and shows its
+        # trend (the tool's per-value counts over the window).
+        trend = _aligned_by_position(data, "trend", shown)
+        if drill is not None:
+            block["drill"] = drill
+        if trend is not None:
+            block["trend"] = trend
     else:
         block.update({
             "type": "chart", "kind": view, "unit": unit,
             "x": {"kind": "category", "values": labels[:n], **({"label": dimension} if dimension else {})},
             "series": [{"key": "value", "label": _value_label(data, unit), "values": values[:n]}],
         })
-        drill = data.get("drill")
-        if isinstance(drill, (list, tuple)) and len(drill) == len(data.get("labels") or []):
-            # Re-align the drill refs with the sorted labels (by original label text).
-            by_label = {_label_text(lbl): ref for lbl, ref in zip(data.get("labels") or [], drill)}
-            block["drill"] = [by_label.get(lbl) for lbl in labels[:n]]
+        if drill is not None:
+            block["drill"] = drill
     return _with_truncation(block, artifact, options, shown=n, available=len(labels))
+
+
+def _aligned_by_position(data: dict[str, Any], key: str, shown: list[int]) -> list[Any] | None:
+    """``data[key]`` (a list aligned with ``data["labels"]``: drill refs, trends)
+    re-aligned with the categories as SHOWN (sorted, clipped): ``shown`` holds each
+    shown row's position in ``data["labels"]``, so every row keeps its OWN entry even
+    when two distinct values share one shown label (a label is display text, never an
+    identity: Round 14 SPEC §4.6.3, a drill names exactly the value events carry, or
+    there is no link). ``None`` when the producer gave none or it is not aligned."""
+    values = data.get(key)
+    labels = data.get("labels") if isinstance(data.get("labels"), (list, tuple)) else []
+    if not isinstance(values, (list, tuple)) or len(values) != len(labels):
+        return None
+    out = [values[i] for i in shown]
+    return out if any(v is not None for v in out) else None
+
+
+#: The severity breakdown table's canonical columns (SPEC §4.7.3): the plain form a
+#: report, print or export shows, and the rows the client's breakdown view keys on.
+_SEVERITY_COLUMNS = ("label", "value", "share", "top")
+_SEVERITY_TOP_SHOWN = 3
+
+
+def severity_level_label(level: dict[str, Any]) -> str:
+    """"High (73, 8)": the level's plain name and the distinct raw source values it
+    holds, each on its own source's scale (SPEC D23); just "High" when it holds none."""
+    name = str(level.get("level") or "").capitalize() or "Info"
+    raws = []
+    for raw in level.get("raw_values") or []:
+        value = finite_number(raw.get("value")) if isinstance(raw, dict) else None
+        if value is None:
+            continue
+        shown = _plain_number(float(value))
+        if shown not in raws:
+            raws.append(shown)
+    return f"{name} ({', '.join(raws)})" if raws else name
+
+
+def severity_top_text(level: dict[str, Any]) -> str:
+    """The plain "Top rules" cell: up to three rules with their counts, then how many
+    more ("+7 more rules"); "None" when the level holds no rule."""
+    rules = [r for r in level.get("rules") or [] if isinstance(r, dict)]
+    parts = [f"{display_text(r.get('key'), MAX_CATEGORY_CHARS)} ({_fmt_count(int(finite_number(r.get('count')) or 0))})"
+             for r in rules[:_SEVERITY_TOP_SHOWN]]
+    total = int(finite_number(level.get("rules_total")) or len(rules))
+    more = max(0, total - min(len(rules), _SEVERITY_TOP_SHOWN))
+    if more:
+        parts.append(f"+{_fmt_count(more)} more {'rule' if more == 1 else 'rules'}")
+    return "; ".join(parts) if parts else "None"
+
+
+def _severity_table(block: dict[str, Any], data: dict[str, Any], unit: str) -> dict[str, Any]:
+    """The severity breakdown as a table block (SPEC §4.7.3): one row per level in the
+    fixed order, its plain cells (name with raw values, count, share, top rules) for
+    reports, print and exports, and the ``severity`` payload the client renders."""
+    payload = {k: data.get(k) for k in ("levels", "splits", "sample", "subject", "multi_level_rules")
+               if data.get(k) is not None}
+    by_level = {str(lv.get("level")): lv for lv in payload.get("levels") or [] if isinstance(lv, dict)}
+    levels = [by_level.get(key) or {"level": key} for key in SEVERITY_KEYS]
+    noun = "Cases" if data.get("subject") == "cases" else "Events"
+    block.update({
+        "type": "table",
+        "columns": [
+            _text_column(_SEVERITY_COLUMNS[0], "Severity"),
+            _number_column(_SEVERITY_COLUMNS[1], noun, unit),
+            _number_column(_SEVERITY_COLUMNS[2], "Share", "percent"),
+            _text_column(_SEVERITY_COLUMNS[3], "Top rules", untrusted=True),
+        ],
+        "rows": [[severity_level_label(lv), finite_number(lv.get("count")) or 0, _share_or_none(lv.get("share")),
+                  severity_top_text(lv)] for lv in levels],
+        "severity": payload,
+        "untrusted": True,
+    })
+    drill = [lv.get("drill") for lv in levels]
+    if any(d is not None for d in drill):
+        block["drill"] = drill
+    trend = [lv.get("trend") for lv in levels]
+    if any(t is not None for t in trend):
+        block["trend"] = trend
+    return block
+
+
+def severity_data_from_payload(payload: dict[str, Any], *, unit: str = "count") -> dict[str, Any]:
+    """The ``categories`` artifact data of a stored severity breakdown (its payload is
+    the whole breakdown), so a view change keeps every level, split and drill."""
+    levels = [lv for lv in payload.get("levels") or [] if isinstance(lv, dict)]
+    by_level = {str(lv.get("level")): lv for lv in levels}
+    ordered = [by_level.get(key) or {"level": key} for key in SEVERITY_KEYS]
+    out: dict[str, Any] = {
+        "labels": [str(lv["level"]).capitalize() for lv in ordered],
+        "values": [finite_number(lv.get("count")) or 0 for lv in ordered],
+        "unit": unit, "dimension": "Severity", "ordered": True, "kind": "severity",
+        "levels": ordered,
+    }
+    for key in ("splits", "sample", "subject", "multi_level_rules"):
+        if payload.get(key) is not None:
+            out[key] = payload[key]
+    drill = [lv.get("drill") for lv in ordered]
+    if any(d is not None for d in drill):
+        out["drill"] = drill
+    return out
 
 
 def _series_rows(data: dict[str, Any]) -> tuple[list[str], list[dict[str, Any]], bool]:
@@ -3273,6 +3642,8 @@ def _materialise(artifact: "Artifact",
     # (:func:`comparison_views`: tiles with deltas lead for a metric comparison).
     if kind == "comparison" and views:
         default = views[0]
+    elif kind == "categories" and is_severity_data(data) and "table" in views:
+        default = "table"   # a severity breakdown is a table first (SPEC §4.7.3)
     else:
         default = DEFAULT_VIEW[kind] if DEFAULT_VIEW[kind] in views or not views else views[0]
     requested = options.view if options.view in views else default
@@ -3466,17 +3837,26 @@ def _artifact_data_from_block(block: dict[str, Any]) -> dict[str, Any] | None:
     if kind not in ARTIFACT_KINDS:
         return None
     if kind == "categories":
+        if btype == "table" and isinstance(block.get("severity"), dict):
+            return severity_data_from_payload(block["severity"], unit=_column_unit(block, "value"))
         if btype == "chart":
             series = (block.get("series") or [{}])[0]
             x = block.get("x") or {}
             # A stored block is already in its final order: a new view keeps it.
-            return {"labels": list(x.get("values") or []), "values": list(series.get("values") or []),
-                    "unit": block.get("unit"), "dimension": x.get("label"), "value_label": series.get("label"),
-                    "ordered": True}
-        labels, values = _table_column(block, "label"), _table_column(block, "value")
-        if labels is None or values is None:
-            return None
-        return {"labels": labels, "values": values, "unit": _column_unit(block, "value"), "ordered": True}
+            out = {"labels": list(x.get("values") or []), "values": list(series.get("values") or []),
+                   "unit": block.get("unit"), "dimension": x.get("label"), "value_label": series.get("label"),
+                   "ordered": True}
+        else:
+            labels, values = _table_column(block, "label"), _table_column(block, "value")
+            if labels is None or values is None:
+                return None
+            out = {"labels": labels, "values": values, "unit": _column_unit(block, "value"), "ordered": True}
+            if isinstance(block.get("trend"), list) and len(block["trend"]) == len(labels):
+                out["trend"] = list(block["trend"])
+        # A bar and a row open the same destination in every view (Round 14 §4.6.3).
+        if isinstance(block.get("drill"), list) and len(block["drill"]) == len(out["labels"]):
+            out["drill"] = list(block["drill"])
+        return out
     if kind == "series":
         if btype == "chart":
             x = block.get("x") or {}

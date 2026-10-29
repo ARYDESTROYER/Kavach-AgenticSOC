@@ -288,6 +288,30 @@ describe('SSE channel names (A4)', () => {
     expect(STREAM_CHANNELS).not.toContain('agent');
   });
 
+  it('listens on the runbook run channel (Round 14) and hands its frame over', async () => {
+    expect(STREAM_CHANNELS as readonly string[]).toContain('case.runbook');
+    (globalThis as unknown as { EventSource: unknown }).EventSource = MockEventSource;
+    MockEventSource.instances = [];
+    const fetchMock = vi.fn().mockResolvedValue(probeResponse(200));
+    (globalThis as unknown as { fetch: unknown }).fetch = fetchMock;
+    const onEvent = vi.fn();
+    const { result, unmount } = renderHook(() =>
+      useEventStream(['runbooks'], { enabled: true, onEvent }),
+    );
+    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    const es = MockEventSource.instances[0];
+    expect(es.url).toContain('topics=runbooks');
+    act(() => es.emitOpen());
+    await waitFor(() => expect(result.current.live).toBe(true));
+    const frame = { case_id: 'c-1', run_id: 'run-1', progress: { done: 2, total: 5 }, revision: 3 };
+    act(() => es.emit('case.runbook', JSON.stringify(frame), '11'));
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'case.runbook', data: frame, lastEventId: '11' }),
+    );
+    unmount();
+    vi.restoreAllMocks();
+  });
+
   it('covers every typed channel the backend registry declares', (ctx) => {
     // A REAL skip, not a silent pass, if the backend tree is not checked out alongside
     // the webui (the CI lanes always have both). An early `return` inside an `it()` body

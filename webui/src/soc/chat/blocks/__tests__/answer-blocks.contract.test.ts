@@ -52,7 +52,7 @@ import { DOC_LINK_RE, isDocLink } from '@/soc/chat/display';
 import { ADDITIVE_UNITS, SHARE_TOLERANCE, chartKindFits, switchableViews } from '@/soc/chat/blocks/views';
 import type { ChartBlock, ChartKind, ValueUnit } from '@/soc/chat/blocks/schema';
 import { parseBlock, parseInternalRef } from '@/soc/chat/blocks/schema';
-import { pageHash } from '@/soc/router';
+import { pageHash, type PageId } from '@/soc/router';
 import type { NavOpts } from '@/soc/nav-types';
 import { isSafeCaseResultStatus } from '@/soc/case-result-route';
 
@@ -248,6 +248,38 @@ describe('answer-blocks contract', () => {
       for (const value of examples.invalid[key]) {
         expect(parseInternalRef({ page: 'logs', opts: { [key]: value } }), `${key}=${JSON.stringify(value)}`).toBeNull();
         expect(serialised(key, value), `${key}=${JSON.stringify(value)}`).toBeNull();
+      }
+    }
+  });
+
+  it('serialises the drill opts exactly like the router (shared nav_drill_examples, Round 14)', () => {
+    // The server pins the same vectors to `NavRefOpts` (`test_drill_contract_is_shared_with_the_webui`):
+    // `rule` is the router's exact "Rule is" on Logs and Cases, `severity` a named level on Logs.
+    // The parser half (`parseInternalRef` of a `rule` page and these opts) is pinned by the
+    // schema owner against the same vectors.
+    const drill = contract.drill;
+    expect(drill.rule_page).toBe('rule');
+    expect([...drill.keys]).toEqual(['rule', 'severity']);
+    expect(drill.limits.rule_chars).toBe(256);
+    const examples = contract.nav_drill_examples;
+    expect(Object.keys(examples.valid).sort()).toEqual([...drill.keys].sort());
+    expect(Object.keys(examples.invalid).sort()).toEqual([...drill.keys].sort());
+    const pages: Record<string, PageId[]> = { rule: ['logs', 'cases'], severity: ['logs'] };
+    const serialised = (page: PageId, key: string, value: string) =>
+      new URLSearchParams(pageHash(page, { [key]: value } as NavOpts).split('?')[1] ?? '').get(key);
+    for (const [key, values] of Object.entries(examples.valid)) {
+      for (const value of values) {
+        for (const page of pages[key]) {
+          // Written into the durable hash and read back byte for byte (never trimmed).
+          expect(serialised(page, key, value), `${page} ${key}=${value}`).toBe(value);
+        }
+      }
+    }
+    for (const [key, values] of Object.entries(examples.invalid)) {
+      for (const value of values) {
+        for (const page of pages[key]) {
+          expect(serialised(page, key, value), `${page} ${key}=${JSON.stringify(value)}`).toBeNull();
+        }
       }
     }
   });

@@ -79,7 +79,13 @@ from ..agents.chat_tools.cases import ASSIGNEE_ME_NOBODY, ASSIGNEE_ME_OWN
 from ..agents.chat_tools.common import console_num, fmt_pct, round_half_up, visible_text
 from ..agents.chat_tools.taint import REFUSED_TAINT
 from ..constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+from ..config import CHAT_AGENT_BOUNDS, ChatAgentConfig
 from ..models import ChatStarter
+
+#: How many lookups a step may run at once: the configured ceiling, and the model's
+#: default when the prompt states none (Round 14 SPEC §4.2: 24 and 12).
+_PARALLEL_CEILING: int = CHAT_AGENT_BOUNDS["max_parallel"][1]
+_PARALLEL_DEFAULT: int = int(ChatAgentConfig.model_fields["max_parallel"].default)
 
 __all__ = [
     "DEMO_STARTERS",
@@ -597,7 +603,10 @@ def read_prompt(messages: Sequence[Mapping[str, Any]]) -> PromptView:
         if kinds:
             view.kinds[match.group(1)] = tuple(kinds.group(1).split("|"))
     parallel = _PARALLEL_RE.search(system)
-    view.max_parallel = max(1, min(16, int(parallel.group(1)))) if parallel else 4
+    # The configured ceiling (``CHAT_AGENT_BOUNDS``) and, with no line, the model's own
+    # default: Demo plans exactly as many lookups at once as a live model is allowed.
+    view.max_parallel = (max(1, min(_PARALLEL_CEILING, int(parallel.group(1)))) if parallel
+                         else _PARALLEL_DEFAULT)
     window = _ANALYST_WINDOW_RE.search(system)
     view.analyst_window = window.group(1) if window else None
     scopes = _SCOPES_RE.search(system)
@@ -990,6 +999,10 @@ def _block(result: Result | None, kind: str, *, nth: int = 1, view: str | None =
     request: dict[str, Any] = {"ref": entry.ref}
     if entry.views:
         request["view"] = view if view in entry.views else entry.views[0]
+        if kind == "categories" and view in ("hbar", "bar") and entry.views[0] == "table":
+            # A severity breakdown (Round 14 SPEC §4.7.3) lists its table first: named
+            # levels with their rules read as the table, never as bare bars.
+            request["view"] = "table"
     if title:
         request["title"] = title[:120]
     if top_n:
@@ -6744,6 +6757,11 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
             return _no_log_events(o, what)
         scope = f"matching {what}" if what else ""
     lead = _with_coverage(f"**{_plural(total, 'event')}** {scope + ' ' if scope else ''}{_in(window)}", coverage)
+    levels = _say_severity_levels(o) if fld == "severity" and total else None
+    if levels:
+        # Round 14 (SPEC §4.7): a severity breakdown reads as named levels with the
+        # rules behind them, never as raw source numbers.
+        return f"{lead}; {levels}"
     if not total or not top:
         return lead + "."
     lead += f"; by {label}, {_ranked(top)}."
@@ -6752,6 +6770,45 @@ def _say_log_stats(r: Result, *, subject: str | None = None) -> str:
         lead += f" {_plural(other, 'more event')} fall outside the top {len(top)}."
     basis = _basis_phrase(o)
     return f"{lead} {basis}".strip()
+
+
+_LEVEL_NAMES = {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Info"}
+
+
+def _say_severity_levels(o: Mapping[str, Any]) -> str | None:
+    """A severity breakdown (``log_stats`` ``observation["severity"]``) in words: the
+    busiest named levels with the rules behind each, a Critical level stated even when it
+    is empty, and what the levels cover when they were sampled. ``None`` when the
+    observation has no breakdown."""
+    sev = o.get("severity") if isinstance(o.get("severity"), Mapping) else None
+    levels = [lv for lv in (sev or {}).get("levels") or [] if isinstance(lv, Mapping)]
+    if not levels:
+        return None
+    named = [lv for lv in levels if (_num(lv.get("count")) or 0) > 0]
+    busiest = sorted(named, key=lambda lv: -(_num(lv.get("count")) or 0))[:2]
+    parts: list[str] = []
+    for index, lv in enumerate(busiest):
+        name = _LEVEL_NAMES.get(str(lv.get("level")), "Info")
+        rules = [r for r in lv.get("top_rules") or [] if isinstance(r, Mapping)][:2]
+        said = [_code(r.get("rule")) for r in rules]
+        if index == 0:
+            text = f"**{name}** leads with {_plural(lv.get('count'), 'event')}"
+            if said:
+                text += f", mostly {_join(said)}"
+        else:
+            text = f"**{name}** has {_count(lv.get('count'))}"
+            if said:
+                text += f", mostly {said[0]}"
+        parts.append(text)
+    critical = next((lv for lv in levels if lv.get("level") == "critical"), None)
+    tail = ""
+    if critical is not None and not (_num(critical.get("count")) or 0):
+        tail = " No Critical events."
+    sample = (sev or {}).get("sample")
+    basis = f" The levels count {display_text(sample, 200)}." if isinstance(sample, str) and sample else ""
+    if not parts:
+        return f"no event carries a severity.{tail}{basis}".strip()
+    return f"by severity, {'; '.join(parts)}.{tail}{basis}"
 
 
 def _say_search_logs(r: Result, *, subject: str | None = None) -> str:
@@ -8962,9 +9019,12 @@ def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
             body.extend(lines)
     if intent == "regroup":
         body.insert(0, f"Re-ran the earlier lookup grouped by {label} (same filters).")
-    # One block per figure set: the chart's view switcher already offers the table.
+    # One block per figure set: the chart's view switcher already offers the table. A
+    # severity breakdown is a table of named levels first (Round 14 SPEC §4.7.3).
+    title = (f"Events by severity ({window.split(' (')[0]})" if fld == "severity"
+             else f"Top {_plural_noun(label)} ({window.split(' (')[0]})")
     return Final(body=body, blocks=_keep(
-        _block(stats, "categories", view="hbar", title=f"Top {_plural_noun(label)} ({window.split(' (')[0]})"),
+        _block(stats, "categories", view="table" if fld == "severity" else "hbar", title=title),
         _block_titled(stats, "comparison", view="grouped_bar"),
     ), follow_ups=_follow_ups(view, intent, charts=True, field=fld))
 

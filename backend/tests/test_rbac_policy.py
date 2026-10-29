@@ -52,12 +52,17 @@ TRUTH_TABLE = [
     (MGR, "cases", "close", True),
     (MGR, "settings", "manage", True),
     (MGR, "runbooks", "manage", True),
-    # analyst_tier2: full case lifecycle, read-only support surfaces, playbook run
+    # Round 14 (SPEC §3.7): only the two managing roles may publish a runbook.
+    (MGR, "runbooks", "publish", True),
+    (MGR, "runbooks", "run", True),
+    (MGR, "audit", "export", True),
+    # analyst_tier2: full case lifecycle, read-only support surfaces, runbook run
     (T2, "cases", "close", True),
     (T2, "cases", "reinvestigate", True),
-    (T2, "playbooks", "run", True),
+    (T2, "runbooks", "run", True),
     (T2, "runbooks", "read", True),
     (T2, "runbooks", "manage", False),
+    (T2, "runbooks", "publish", False),
     (T2, "metrics", "view", True),
     (T2, "cost", "view", True),
     (T2, "users", "manage", False),
@@ -71,14 +76,18 @@ TRUTH_TABLE = [
     (T1, "cases", "assign", True),
     (T1, "cases", "close", False),
     (T1, "cases", "reinvestigate", False),
-    (T1, "playbooks", "run", False),
+    # Round 14 (E8): working a case's runbook checklist is the analyst's core task,
+    # so tier 1 runs runbooks (it never ran the retired procedures).
+    (T1, "runbooks", "run", True),
     (T1, "runbooks", "read", True),
     (T1, "runbooks", "manage", False),
+    (T1, "runbooks", "publish", False),
     (T1, "proposals", "approve", False),
-    # responder: tier1 + playbooks:run + proposals:approve
-    (RESP, "playbooks", "run", True),
+    # responder: tier1 + runbooks:run + proposals:approve
+    (RESP, "runbooks", "run", True),
     (RESP, "runbooks", "read", True),
     (RESP, "runbooks", "manage", False),
+    (RESP, "runbooks", "publish", False),
     (RESP, "proposals", "approve", True),
     (RESP, "cases", "close", False),  # responders triage/act, not close
     (RESP, "users", "manage", False),
@@ -92,9 +101,12 @@ TRUTH_TABLE = [
     (AUD, "settings", "manage", False),
     (AUD, "users", "manage", False),
     (AUD, "proposals", "approve", False),
-    (AUD, "playbooks", "run", False),
+    # Round 14 (E8): the auditor is the one role that does not run runbooks.
+    (AUD, "runbooks", "run", False),
     (AUD, "runbooks", "read", True),
     (AUD, "runbooks", "manage", False),
+    (AUD, "runbooks", "publish", False),
+    (AUD, "audit", "export", True),
 ]
 
 

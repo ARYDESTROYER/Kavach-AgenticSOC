@@ -47,6 +47,7 @@ from app.agents.prompts import render_chat_agent_system
 from app.api.metrics_shared import invalidate_case_page_cache, invalidate_case_population_cache
 from app.config import Preferences
 from app.constants import CaseStatus, DecisionBy, EntityType, SourceSurface, Verdict
+from app.engine.case_aggregate import AggregateRequestError
 from app.engine.metrics import quality_metrics
 from app.es.fake import InMemoryESClient
 from app.models import Case, Entity, TimeRange, UsageDoc
@@ -273,7 +274,9 @@ async def test_a_bucket_too_fine_is_coarsened_and_a_refusal_is_an_input_error(mo
     assert timing.ok and timing.observation["bucket"] != "hour"
 
     async def refuse(*_args: Any, **_kwargs: Any) -> Any:
-        raise ValueError("9601 hour buckets is too many for all time; use week buckets")
+        # The engine's own refusal class (a ``ValueError`` subclass); a plain
+        # ``ValueError`` is a store failure (see the test below).
+        raise AggregateRequestError("9601 hour buckets is too many for all time; use week buckets")
 
     monkeypatch.setattr(stats_module, "run_case_aggregate", refuse)
     out = await CaseStatsTool().run(ctx, window="now-7d")
@@ -284,9 +287,45 @@ async def test_a_bucket_too_fine_is_coarsened_and_a_refusal_is_an_input_error(mo
     assert "case_store_unavailable" not in (posture.observation or {})
 
 
+@pytest.mark.parametrize("failure", ["json", "validation", "unicode"])
+async def test_a_store_value_error_is_a_store_failure_never_an_input_error(monkeypatch, failure: str) -> None:
+    """``json.JSONDecodeError``, pydantic's ``ValidationError`` and ``UnicodeDecodeError``
+    are ``ValueError`` too: a store raising one while reading is "The case store did not
+    answer" (as ``GET /api/metrics/breakdown`` answers 503), never the caller's input
+    error, and none of its text (it can carry stored values) reaches the answer."""
+    store = await _store([_case(1, NOW - timedelta(days=3))])
+    secret = "10.66.6.6 api_key=s3cr3t"
+
+    async def corrupt(*_a: Any, **_kw: Any) -> Any:
+        if failure == "json":
+            json.loads('{"title": "' + secret)
+        if failure == "validation":
+            Case.model_validate({"case_id": secret})
+        raise UnicodeDecodeError("utf-8", secret.encode(), 0, 1, "bad byte")
+
+    monkeypatch.setattr(store, "aggregate", corrupt)   # a push-down failure alone folds
+    monkeypatch.setattr(store, "scan_page", corrupt)
+    ctx = _ctx(cases=store)
+    for args in ({"group_by": ["rule"]}, {"group_by": ["rule"], "metrics": ["analyst_fp"]},
+                 {"group_by": ["day"], "window": "all"}):
+        out = await CaseStatsTool().run(ctx, **args)
+        assert not out.ok and out.error == "The case store did not answer", (args, out.error)
+        assert "10.66" not in f"{out.error} {out.summary} {out.observation}"
+    posture = await SocMetricsTool().run(ctx, kind="posture", window="now-7d")
+    assert not posture.ok and not str(posture.error).startswith("Invalid input")
+    assert "10.66" not in f"{posture.error} {posture.summary} {posture.observation}"
+
+
 async def test_a_cut_first_bucket_is_labelled_partial() -> None:
+    # "last N days" starts at midnight N - 1 days back (``align_whole_periods``). When
+    # that day is the 1st of a month nothing is cut (on 29 Oct 2026, "last 90 days"
+    # starts on 1 Aug), so N is picked to start inside a month on the day the test runs,
+    # also when the run crosses midnight UTC.
+    today = datetime.now(timezone.utc).date()
+    days = next(n for n in range(90, 94)
+                if (today - timedelta(days=n - 1)).day != 1 and (today - timedelta(days=n - 2)).day != 1)
     store = await _store([_case(1, NOW - timedelta(days=80)), _case(2, NOW - timedelta(days=5))])
-    out = await CaseStatsTool().run(_ctx(cases=store), window="now-90d", bucket="month")
+    out = await CaseStatsTool().run(_ctx(cases=store), window=f"now-{days}d", bucket="month")
     assert out.ok
     first = out.observation["buckets"][0]
     assert first["partial"].startswith("from ")

@@ -97,6 +97,7 @@ JOB_EVENT = "job"                    # durable background-job progress, topic jo
 CHAT_TURN_EVENT = "chat.turn"        # the caller's own chat turn lifecycle, topic chat
 CHAT_READ_EVENT = "chat.read"        # the caller read a conversation's answer, topic chat
 CASE_CHANGED_EVENT = "case.changed"  # a case was saved (created or updated), topic cases
+CASE_RUNBOOK_EVENT = "case.runbook"  # a case's runbook run changed (progress only), topic runbooks
 OVERFLOW_EVENT = "overflow"          # bus control frame: this subscriber dropped events
 
 SSE_EVENT_TYPES: frozenset[str] = frozenset({
@@ -107,6 +108,7 @@ SSE_EVENT_TYPES: frozenset[str] = frozenset({
     CHAT_TURN_EVENT,
     CHAT_READ_EVENT,
     CASE_CHANGED_EVENT,
+    CASE_RUNBOOK_EVENT,
     OVERFLOW_EVENT,
 })
 
@@ -115,6 +117,11 @@ CHAT_TOPIC = "chat"
 
 # The topic case-save frames are published on (``GET /api/events?topics=cases``).
 CASES_TOPIC = "cases"
+
+# The topic runbook-run frames are published on (``GET /api/events?topics=runbooks``,
+# Round 14 SPEC §4.10.15). ``GET /api/events`` serves it only to a caller holding
+# BOTH ``runbooks:read`` and ``cases:read``.
+RUNBOOKS_TOPIC = "runbooks"
 
 
 # --------------------------------------------------------------------------- #
@@ -540,6 +547,35 @@ def publish_case_changed(
         }
         return (bus or get_event_bus()).publish(CASES_TOPIC, CASE_CHANGED_EVENT, payload)
     except Exception:  # noqa: BLE001 — realtime is advisory; a save must never fail on it
+        return None
+
+
+def publish_case_runbook(
+    bus: "EventBus | None", case_id: str, run_id: str, progress: Any, revision: int,
+) -> str | None:
+    """Publish one ``case.runbook`` frame on the ``runbooks`` topic after a run change
+    was saved and audited (Round 14 SPEC §4.10.15).
+
+    A NUDGE only: the console refetches ``GET /api/cases/{id}/runbooks``. The payload
+    carries the case id, the run id, the run's progress counts and the case's runs
+    revision ONLY, never a step title, note, lookup result or any log-derived text
+    (#7/#9), and nothing here decides anything (#3). ``GET /api/events`` serves the
+    topic only to holders of ``runbooks:read`` and ``cases:read``. FIRE-AND-FORGET:
+    a failure is swallowed so a realtime problem never fails a run write. Returns the
+    event id, or ``None`` when nothing was sent."""
+    try:
+        cid = str(case_id or "").strip()
+        rid = str(run_id or "").strip()
+        if not cid or not rid:
+            return None
+        counts: dict[str, int] = {}
+        if isinstance(progress, dict):
+            for key, value in progress.items():
+                if isinstance(value, int) and not isinstance(value, bool):
+                    counts[str(key)] = value
+        payload = {"case_id": cid, "run_id": rid, "progress": counts, "revision": int(revision)}
+        return (bus or get_event_bus()).publish(RUNBOOKS_TOPIC, CASE_RUNBOOK_EVENT, payload)
+    except Exception:  # noqa: BLE001 (realtime is advisory; a run write never fails on it)
         return None
 
 

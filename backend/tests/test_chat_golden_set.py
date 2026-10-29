@@ -346,6 +346,13 @@ LOGS = [
     G("Search logs for user pnair", tools=("search_logs",), params=(P("search_logs", user="pnair", contains=None),)),
     G("Events by severity this week", tools=("log_stats",),
       params=(P("log_stats", group_by="severity", window="this_week"),)),
+    # Round 14 (asks 6 and 7): the operator's two questions, verbatim. Rule rows open the
+    # rule sheet, severities are named levels with the rules behind each, never raw numbers.
+    G("What are the top detection rules this week?", tools=("log_stats",),
+      params=(P("log_stats", group_by="rule", window="this_week"),)),
+    G("Show alerts by severity for the last 3 days", tools=("log_stats",),
+      params=(P("log_stats", group_by="severity", time_from="now-3d"),),
+      contains=("by severity, **",), absent=("`30.0`", "`10.0`")),
     G("Show me the logs for today", tools=("search_logs",), params=(P("search_logs", window="today", contains=None),)),
 ]
 
@@ -1100,6 +1107,8 @@ def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> Non
     assert len(questions) >= 120 and len(set(questions)) == len(questions)
     for verbatim in ("Create a report of lifetime performance pls thanks",
                      "Last 90 days or whatever reports you can",
+                     "What are the top detection rules this week?",
+                     "Show alerts by severity for the last 3 days",
                      ("The amount of total cases right now that are open, when were they all opened ? Segregate "
                       "month wise pls thanks")):
         assert verbatim in questions
@@ -1256,6 +1265,17 @@ def test_the_takeaway_check_reads_label_and_value_as_one_clause() -> None:
     assert _t15_violations(named_three, group)
     assert not _t15_violations("- Cases: **7** in W41.\n- False-positive rate: **42.9%** in W41.", group)
     assert not _t15_violations("Cases per hour: 17 Oct 19:00: 0 and 17 Oct 22:00: 7. FP rate **42.9%**.", group)
+    # A word two labels share ("positive") never names the other figure: the
+    # false-positive rate's baseline that happens to equal the true-positive rate is the
+    # false-positive rate's figure, and the true-positive rate stays unnamed.
+    rates = [{"type": "kpi_group", "title": "Change", "items": [
+        {"label": "Cases", "value": 7, "unit": "count"},
+        {"label": "False-positive rate", "value": 28.57, "unit": "percent"},
+        {"label": "True-positive rate", "value": 42.86, "unit": "percent"}]}]
+    assert not _t15_violations("- Cases: **7** in W43 vs 7 in W42.\n"
+                               "- False-positive rate: **29%** in W43 vs 43% in W42.", rates)
+    assert _t15_violations("- Cases: **7** in W43.\n- False-positive rate: **29%** in W43.\n"
+                           "- True-positive rate: **43%** in W43.", rates)
 
 
 def _t15_violations(answer: str, blocks: Any) -> list[tuple[Any, list[Any]]]:
@@ -1272,8 +1292,14 @@ def _t15_violations(answer: str, blocks: Any) -> list[tuple[Any, list[Any]]]:
         if len(items) < 3:
             continue
         named: dict[frozenset[str], list[Any]] = {}
-        for item in items:
-            forms, keys = _t15_forms(item), _t15_keywords(item)
+        all_keys = [_t15_keywords(item) for item in items]
+        for at, item in enumerate(items):
+            forms, keys = _t15_forms(item), all_keys[at]
+            # The words that tell this figure from the group's others: "positive" names
+            # both rates, so only "false" or "true" says which one a clause states (the
+            # false-positive rate's baseline of 43% is not the true-positive rate's 43%).
+            others = set().union(*(k for i, k in enumerate(all_keys) if i != at))
+            keys = (keys - others) or keys
             if any(_t15_named(c, f) and any(k in c for k in keys) for c in clauses for f in forms):
                 named.setdefault(frozenset(forms), []).append(item.get("label"))
         if len(named) > 2:
@@ -1579,6 +1605,40 @@ def test_golden_answers_are_deterministic(client: TestClient) -> None:
         strip = re.compile(r'"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+\+00:00"')
         assert strip.sub("", json.dumps(first["blocks"], sort_keys=True)) == strip.sub(
             "", json.dumps(second["blocks"], sort_keys=True))
+
+
+def test_the_operator_rule_and_severity_answers_open_their_detail(client: TestClient) -> None:
+    """Round 14 (SPEC §4.6.3, §4.7, acceptance A6b): the operator's two questions
+    reproduce with clickable rows. Every rule bar (and its table row) opens the rule
+    sheet of exactly that rule over the answer's window; the severity answer is a table of
+    the five named levels in fixed order, each level opening the Logs page filtered to it
+    and each rule in it the rule sheet; nothing is labelled with a raw source number."""
+    rules = _stream(client, "What are the top detection rules this week?")
+    chart = next(b for b in rules["blocks"] if b.get("artifact_kind") == "categories")
+    labels = chart["x"]["values"] if chart["type"] == "chart" else [r[0] for r in chart["rows"]]
+    drill = chart["drill"]
+    assert len(drill) == len(labels) and labels
+    for label, ref in zip(labels, drill):
+        assert ref["page"] == "rule" and ref["opts"]["rule"] == label
+        assert {"from", "to"} <= set(ref["opts"])
+    assert "table" in chart["allowed_views"]
+
+    severity = _stream(client, "Show alerts by severity for the last 3 days")
+    table = next(b for b in severity["blocks"] if b.get("artifact_kind") == "categories")
+    assert table["type"] == "table" and table["columns"][0]["label"] == "Severity"
+    names = [row[0].split(" (")[0] for row in table["rows"]]
+    assert names == ["Critical", "High", "Medium", "Low", "Info"]
+    payload = table["severity"]
+    assert [lv["level"] for lv in payload["levels"]] == ["critical", "high", "medium", "low", "info"]
+    shares = [lv["share"] for lv in payload["levels"] if lv["count"]]
+    assert abs(sum(shares) - 100.0) <= 0.1 * len(shares)
+    for level, ref in zip(payload["levels"], table["drill"]):
+        assert ref["page"] == "logs" and ref["opts"]["severity"] == level["level"]
+        for rule in level["rules"]:
+            assert rule["drill"]["page"] == "rule" and rule["drill"]["opts"]["rule"] == rule["key"]
+    assert "30.0" not in json.dumps(table["rows"])
+    # The Demo sources count exactly (every event fits the newest 200): no sample stated.
+    assert payload["sample"]["exact"] is True and "sampled" not in (table.get("caption") or "")
 
 
 # --------------------------------------------------------------------------- #

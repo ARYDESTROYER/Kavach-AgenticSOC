@@ -27,6 +27,7 @@ from ...constants import OPEN_CASE_STATUSES, TERMINAL_CASE_STATUSES, CaseStatus,
 from ...models import Citation, humanise_relative_window
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .common import (
+    CASE_STATUS_WORDS,
     PREVIOUS_WINDOW_LABEL,
     ToolInput,
     case_list_item,
@@ -44,6 +45,8 @@ from .common import (
     opt_text,
     parse_input,
     resolve_window,
+    status_change_detail,
+    status_change_label,
     text,
     verdict_semantic,
     whole_periods,
@@ -922,18 +925,22 @@ class GetCaseTool(ChatTool):
 
     async def _related(self, ctx: ChatToolContext, case: Any) -> list[dict[str, Any]]:
         """The entity card's related cases (at most 5): each named by its display number
-        and title when the store has it, else by its id (one bounded read per case)."""
+        and title when the store has it (one bounded read per case). The internal id is
+        only the link target, never the visible name (Round 14 F7): a case without a
+        title, or one that could not be read, gets a fixed Console name instead."""
         out: list[dict[str, Any]] = []
         for cid in list(case.related_case_ids or [])[:5]:
             other = None
+            failed = False
             try:
                 other = await ctx.cases.get(str(cid))
-            except Exception as exc:  # noqa: BLE001 -- the id alone still names it
+            except Exception as exc:  # noqa: BLE001 -- the link still opens it
+                failed = True
                 logger.info("related case read failed: %s", exc)
             out.append({
                 "case_id": str(cid),
                 "case_number": opt_text(getattr(other, "case_number", ""), 64) if other is not None else None,
-                "title": display(getattr(other, "title", "") or cid) if other is not None else str(cid),
+                "title": related_case_title(other, failed=failed),
             })
         return out
 
@@ -945,8 +952,14 @@ class GetCaseTool(ChatTool):
         # Facts are prose captions (BLOCKS.md rule 22): enum values as the console
         # labels them, never internal constants. The verdict is the card's own badge,
         # so it is a fact row only when there is no verdict to badge.
+        # Round 14 (F7): a case is named by its number, never its internal id; a case
+        # stored before numbering is named by its title (source-derived, untrusted).
+        named = (
+            {"label": "Case", "value": str(case.case_number)} if case.case_number
+            else {"label": "Case", "value": display(case.title or "Untitled case"), "untrusted": True}
+        )
         facts = [
-            {"label": "Case", "value": str(case.case_number or case.case_id)},
+            named,
             {"label": "Status", "value": _label(_STATUS_LABELS, case.status, "Unknown")},
         ]
         if verdict_semantic(case.verdict) is None:
@@ -967,7 +980,8 @@ class GetCaseTool(ChatTool):
                     "verdict": verdict_semantic(case.verdict),
                     "facts": facts,
                     "related_cases": related if related is not None else [
-                        {"case_id": str(cid), "title": str(cid)} for cid in list(case.related_case_ids or [])[:5]
+                        {"case_id": str(cid), "title": RELATED_CASE_UNREAD}
+                        for cid in list(case.related_case_ids or [])[:5]
                     ],
                     "first_seen": iso_or_none(case.created_at),
                     "last_seen": iso_or_none(case.updated_at),
@@ -977,9 +991,12 @@ class GetCaseTool(ChatTool):
         if history:
             artifacts.append(Artifact(
                 id=f"a{len(artifacts) + 1}", kind="timeline", title="Status history", title_trusted=True,
+                # Round 14 (F7): the move and its reason in plain words ("Open to
+                # Escalated", "Automatic close of a confirmed threat is off (by the
+                # system)"); an analyst's own reason stays as written.
                 data={"events": [
-                    {"at": iso_or_none(h.at), "label": f"{h.from_status or 'created'} -> {h.to_status}",
-                     "detail": opt_text(f"by {h.by}: {h.reason}" if h.reason else f"by {h.by}", 500),
+                    {"at": iso_or_none(h.at), "label": status_change_label(h.from_status, h.to_status),
+                     "detail": opt_text(status_change_detail(h.by, h.reason), 500),
                      "kind": "action", "semantic": h.to_status if h.to_status in (
                          "new", "investigating", "escalated", "on_hold", "resolved", "closed") else None}
                     for h in history[-50:] if iso_or_none(h.at)
@@ -1025,14 +1042,30 @@ class ShiftReportInput(ToolInput):
 # "Needs human" tile shows the same verdict figure; the legacy ``needs_human`` STATUS
 # count is its "Awaiting analyst" tile, which chat does not show, and the workload rows
 # carry it as ``awaiting_analyst`` so no figure here reads as a second "needs human".
-# Console display labels for the case enums an entity card states as facts (the
-# status wording matches the console's status badge: ``needs_human`` is the legacy
-# alias of "Open · awaiting analyst").
-_STATUS_LABELS = {
-    "new": "New", "open": "Open", "needs_human": "Open · awaiting analyst",
-    "investigating": "Investigating", "escalated": "Escalated", "on_hold": "On hold",
-    "resolved": "Resolved", "closed": "Closed",
-}
+#: A related case's visible name when the card has nothing better (Round 14 F7: the
+#: internal ``case-...`` id is the link target, never the name shown).
+RELATED_CASE_UNTITLED = "Untitled case"
+RELATED_CASE_UNREAD = "Related case"
+RELATED_CASE_UNREADABLE = "Related case, not readable"
+RELATED_CASE_GONE = "Related case, not found"
+
+
+def related_case_title(other: Any, *, failed: bool = False) -> str:
+    """A related case's visible name: its title (source-derived, shown with invisible
+    characters made visible), else a fixed Console name saying why there is none."""
+    if failed:
+        return RELATED_CASE_UNREADABLE
+    if other is None:
+        return RELATED_CASE_GONE
+    title = display(getattr(other, "title", "") or "")
+    return title or RELATED_CASE_UNTITLED
+
+
+# Console display labels for the case enums an entity card states as facts. Status
+# names come from the ONE shared table (Round 14, D25), which the Status history moves
+# read too: ``needs_human`` is the legacy alias of "Open · awaiting analyst", as the
+# console's status badge says.
+_STATUS_LABELS = CASE_STATUS_WORDS
 _VERDICT_LABELS = {"TRUE_POSITIVE": "True positive", "FALSE_POSITIVE": "False positive", "NEEDS_HUMAN": "Needs human"}
 _DECIDED_BY_LABELS = {
     "agent": "Agent", "analyst": "Analyst", "system": "System", "analyst_policy": "Analyst policy",

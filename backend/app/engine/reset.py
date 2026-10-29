@@ -6,12 +6,14 @@ each a strict SUPERSET of the previous (see the tier table in
 
 * ``cases``    — clear the case store + the case-adjacent collaboration/observability
                  KV stores (campaigns, baseline sketches, noise-reduction counters,
-                 inbox, case thread/activity/tasks, batch jobs) + the in-memory
-                 live-tail rings. KEEP sources, settings, users, RAG, secrets, cost
-                 ledger, audit.
+                 inbox, case thread/activity/tasks, batch jobs, and, since Round 14,
+                 every runbook RUN: the per-case run documents and the run ledger,
+                 SPEC §4.10.6) + the in-memory live-tail rings. KEEP sources,
+                 settings, users, RAG, secrets, cost ledger, audit and the runbook
+                 LIBRARY (operator runbooks are not case state).
 * ``sources``  — the cases tier PLUS ``Preferences.sources[]`` (configured feeds) +
                  the polling cursors. KEEP secrets, users, settings, the ``setup``
-                 flag.
+                 flag and the runbook library.
 * ``factory``  — the sources tier PLUS users/sessions/user-prefs/custom-roles/
                  proposals/memory, Workspace chat history and chat REPORTS (the
                  ``REPORTS_NS`` per-report and per-user index documents, SPEC §9.1) +
@@ -67,9 +69,11 @@ from ..constants import (
     CASE_THREAD_NS,
     CASES_READ_PATTERN,
     CASES_WRITE_ALIAS,
+    CONFIG_INDEX,
     CURSOR_INDEX,
     NOISE_KEY,
     NOISE_NS,
+    RUNBOOK_RUNS_NS,
     USAGE_INDEX,
     USAGE_READ_PATTERN,
     ResetScope,
@@ -173,6 +177,17 @@ async def reset_service(
                 cleared.append(f"kv:{ns}")
             else:
                 failed.append(f"kv:{ns}")
+    # Round 14 (SPEC §4.10.6): runbook runs belong to cases, so the cases tier (and
+    # therefore the sources tier) removes every per-case run document and the run
+    # ledger. Factory is skipped, as for the case-adjacent KV above: the wholesale KV
+    # purge covers it. The runbook LIBRARY is never touched below the factory tier.
+    if scope != ResetScope.FACTORY:
+        attempted.append("kv:runbook_runs")
+        removed_runs, runs_ok = await _clear_runbook_runs(app_state)
+        if runs_ok:
+            cleared.append(f"kv:runbook_runs:{removed_runs}")
+        else:
+            failed.append("kv:runbook_runs")
     # Frozen replay fixtures hold each member event's complete raw record — strictly
     # more log content than the Case it came from retained — so a cases/sources reset
     # that left them behind would keep raw records for cases the operator just deleted.
@@ -440,6 +455,55 @@ async def _clear_chat_history(app_state: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 -- reset remains best-effort
         logger.warning("chat-history clear failed (%s); continuing", exc)
         return False
+
+
+async def _clear_runbook_runs(app_state: Any) -> tuple[int, bool]:
+    """Remove every document of the ``runbook_runs`` KV namespace (the per-case run
+    documents and the run ledger months, ``stores.runbook_runs``). The namespace holds
+    one document per case, so it is cleared by enumeration on the backend rather than
+    by key: SQL deletes the namespace's KV rows in one statement; Elasticsearch pages
+    the config index for the documents tagged ``runbook_store: runbook_runs`` (every
+    run document carries it) and deletes each by id. Raw log rows a lookup kept as
+    evidence go with them, so a cases reset leaves no case's evidence behind.
+    Best-effort like the rest of the cases tier: returns ``(removed, ok)``."""
+    if _is_sql(app_state):
+        try:
+            removed = await _sql_delete_all(
+                app_state, "kv", where=f"namespace = '{RUNBOOK_RUNS_NS}'", strict=True,
+            )
+            return removed, True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("runbook run clear failed (%s); continuing", exc)
+            return 0, False
+    es = getattr(app_state, "es", None)
+    if es is None:
+        return 0, False
+    query = {"bool": {"should": [
+        {"term": {"runbook_store": RUNBOOK_RUNS_NS}},
+        {"term": {"runbook_store.keyword": RUNBOOK_RUNS_NS}},
+    ], "minimum_should_match": 1}}
+    removed = 0
+    try:
+        while True:
+            resp = await es.search(CONFIG_INDEX, {"size": 500, "from": 0, "query": query,
+                                                  "_source": False})
+            hits = resp.get("hits", {}).get("hits", [])
+            if not hits:
+                return removed, True
+            progress = 0
+            for hit in hits:
+                doc_id = hit.get("_id")
+                if not doc_id or not str(doc_id).startswith(f"{RUNBOOK_RUNS_NS}:"):
+                    continue
+                if await es.delete_doc(CONFIG_INDEX, str(doc_id), refresh=True):
+                    removed += 1
+                    progress += 1
+            if progress == 0:
+                logger.warning("runbook run clear made no progress on a %d-hit page", len(hits))
+                return removed, False
+    except Exception as exc:  # noqa: BLE001 - reported; the cases reset continues
+        logger.warning("runbook run clear failed (%s); cleared %d so far", exc, removed)
+        return removed, False
 
 
 def _clear_live_tail(app_state: Any) -> bool:

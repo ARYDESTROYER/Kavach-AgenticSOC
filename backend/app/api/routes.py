@@ -35,6 +35,7 @@ from ..config import (
     Preferences,
     SourceInstance,
     SuppressionRule,
+    map_retired_runbook_writes,
 )
 from ..connectors.registry import get_registry
 from ..constants import (
@@ -101,7 +102,6 @@ from ..models import (
     ChatRequest,
     ChatResponse,
     Cluster,
-    Entity,
     FeedbackEntry,
     InvestigateRequest,
     Proposal,
@@ -109,13 +109,6 @@ from ..models import (
     StatusHistoryEntry,
     TraceStep,
     validate_avatar,
-)
-from ..playbooks.registry import (
-    MAX_PLAYBOOK_BYTES,
-    PlaybookConflictError,
-    PlaybookManagementError,
-    PlaybookNotFoundError,
-    PlaybookProtectedError,
 )
 from ..state import AppState
 from ..stores.base import CASE_STATUS_GROUPS
@@ -435,7 +428,30 @@ async def health_build_info(state: AppState = Depends(get_state)) -> BuildInfoRe
 # Topics the UI may subscribe to. A single case-detail view may also request
 # 'cases:{case_id}' (exact-match topic) — allowed via the prefix below. ``chat``
 # (Round 12) carries only owner-targeted ``chat.turn`` frames (``realtime.publish_chat_turn``).
-_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat"})
+_REALTIME_TOPICS = frozenset({"notifications", "inbox", "jobs", "cases", "agent", "chat", "runbooks"})
+
+# The grants a principal must hold for a topic to be served (Round 12 WP-CM: case
+# topics carry case ids and lifecycle status; Round 14 SPEC §4.10.15: the ``runbooks``
+# topic carries ``case.runbook`` progress frames, served only with BOTH grants). A topic
+# not listed here needs no grant beyond the stream itself.
+_REALTIME_TOPIC_GRANTS: dict[str, tuple[tuple[str, str], ...]] = {
+    "cases": (("cases", "read"),),
+    "runbooks": (("runbooks", "read"), ("cases", "read")),
+}
+
+
+def _topic_grants(topic: str) -> tuple[tuple[str, str], ...]:
+    """The grants ``topic`` needs (an exact case room ``cases:{id}`` needs ``cases:read``)."""
+    if topic.startswith("cases:"):
+        return _REALTIME_TOPIC_GRANTS["cases"]
+    return _REALTIME_TOPIC_GRANTS.get(topic, ())
+
+
+def gate_realtime_topics(topics: list[str], allows: Any) -> list[str]:
+    """``topics`` without those the caller may not receive (``allows(resource, action)``
+    is the caller's RBAC view). Pure; dropping an optional topic is not an access attempt,
+    so nothing is audited."""
+    return [t for t in topics if all(allows(resource, action) for resource, action in _topic_grants(t))]
 
 
 @router.get("/events")
@@ -476,17 +492,18 @@ async def realtime_events(
         allowed = list(_REALTIME_TOPICS)
     # Round 12 (WP-CM): case topics carry case ids and lifecycle status (the live
     # ``case.changed`` queue nudges and per-case rooms), so they are served only to a
-    # principal that may read cases. A no-op when auth or RBAC is off (``allows`` is
-    # then always true). Resolved WITHOUT the denial audit row ``_enforce`` writes:
-    # dropping an optional topic from a stream is not an access attempt.
-    if any(t == "cases" or t.startswith("cases:") for t in allowed):
+    # principal that may read cases; Round 14: the ``runbooks`` topic (``case.runbook``
+    # progress frames) only to one holding ``runbooks:read`` AND ``cases:read``. A no-op
+    # when auth or RBAC is off (``allows`` is then always true). Resolved WITHOUT the
+    # denial audit row ``_enforce`` writes: dropping an optional topic from a stream is
+    # not an access attempt.
+    if any(_topic_grants(t) for t in allowed):
         from .deps import resolve_access
 
         view = await resolve_access(request)
-        if not view.allows("cases", "read"):
-            allowed = [t for t in allowed if t != "cases" and not t.startswith("cases:")]
-            if not allowed:
-                return Response(status_code=204)
+        allowed = gate_realtime_topics(allowed, view.allows)
+        if not allowed:
+            return Response(status_code=204)
 
     user = current_user(request)
     username = getattr(user, "username", None) if user is not None else None
@@ -1964,7 +1981,12 @@ async def put_settings(
         # document before any `ge=` constraint can fire. See `_reject_out_of_range_caps`.
         _reject_out_of_range_caps(body)
         _reject_out_of_range_remember_me(body)
-        merged = _deep_update(current.model_dump(mode="json"), body)
+        # Round 14 (SPEC §4.10.19): a retired runbook key the body CHANGES
+        # (``rag.use_runbooks``, ``playbooks.enabled``) is carried onto its successor
+        # under ``runbooks`` before the merge; validation rewrites the retired key as a
+        # read-only mirror, so without this the write would answer 200 and change nothing.
+        mapped = map_retired_runbook_writes(body, current)
+        merged = _deep_update(current.model_dump(mode="json"), mapped)
         # Demo Mode is managed ONLY by the /api/demo/* endpoints — never via this path.
         merged["demo"] = current.demo.model_dump(mode="json")
         try:
@@ -2907,159 +2929,119 @@ async def bulk_reject_proposals(
     }
 
 
-def _playbook_payload(state: AppState, playbook, *, content: str | None = None) -> dict[str, Any]:
-    """Stable public playbook shape; never exposes the server filesystem path."""
-    payload: dict[str, Any] = {
-        "id": playbook.id,
-        "name": playbook.name,
-        "version": playbook.version,
-        "description": playbook.manifest.description,
-        "priority": playbook.manifest.priority,
+# --------------------------------------------------------------------------- #
+# Retired procedure routes (Round 14 SPEC §4.10.16, D44, E14). For one release the
+# reads stay as ALIASES over the runbook library in the old response shape, with
+# ``Deprecation`` and ``Link`` headers, behind ``runbooks:read``; every write answers
+# ``410 runbooks_moved``, because an old-shape write cannot be honoured without making
+# unreviewed text live (#9). Nothing here reads the retired registry.
+# --------------------------------------------------------------------------- #
+def _legacy_markdown_body(content: str) -> str:
+    """The exported Markdown without its front matter (the old ``body`` field)."""
+    if content.startswith("---\n"):
+        end = content.find("\n---\n", 4)
+        if end != -1:
+            return content[end + 5:].lstrip("\n")
+    return content
+
+
+def _legacy_playbook_item(
+    runbook_id: str, version: Any, builtin: Any, *, include_content: bool,
+) -> dict[str, Any]:
+    """One Published runbook in the old procedure item shape (read-only)."""
+    from ..engine.runbook_catalog import export_markdown
+
+    defn = version.definition
+    applies = defn.applies_when
+    escalate = next((s.escalate_if for s in defn.steps if s.escalate_if), None)
+    item: dict[str, Any] = {
+        "id": runbook_id,
+        "name": defn.title,
+        "version": version.version,
+        "description": defn.summary,
+        "priority": defn.priority,
         "match": {
-            "rule_ids": list(playbook.manifest.match.rule_ids),
-            "entity_types": list(playbook.manifest.match.entity_types),
-            "mitre": list(playbook.manifest.match.mitre),
-            "min_event_count": playbook.manifest.match.min_event_count,
-            "any_tags": list(playbook.manifest.match.any_tags),
+            "rule_ids": list(applies.rule_ids),
+            "entity_types": [str(getattr(e, "value", e)) for e in applies.entity_types],
+            "mitre": list(dict.fromkeys([*applies.mitre, *defn.mitre])),
+            "min_event_count": applies.min_event_count or 0,
+            "any_tags": list(applies.any_tags),
         },
-        "suggested_tools": list(playbook.manifest.suggested_tools),
-        "rag_queries": list(playbook.manifest.rag_queries),
-        "escalate_if": playbook.manifest.escalate_if,
-        "suggested_verdict_bias": playbook.manifest.suggested_verdict_bias,
-        **state.playbooks.metadata(playbook),
+        "suggested_tools": [],
+        "rag_queries": list(defn.retrieval_queries),
+        "escalate_if": escalate,
+        "suggested_verdict_bias": None,
+        "source_type": "bundled" if builtin is not None else "operator",
+        "protected": builtin is not None,
+        "editable": False,
+        "file_name": builtin.file_name if builtin is not None else None,
     }
-    if content is not None:
-        payload["content"] = content
-        payload["body"] = playbook.body
-    return payload
+    if include_content:
+        content = export_markdown(version)
+        item["content"] = content
+        item["body"] = _legacy_markdown_body(content)
+    return item
 
 
-class PlaybookCreateRequest(BaseModel):
-    """Create one operator-owned Markdown playbook."""
+async def _legacy_published(state: AppState) -> list[tuple[str, Any, Any, Any]]:
+    from ..engine.runbook_catalog import published_versions
+    from ..stores.runbook_library import RunbookStoreUnavailable
 
-    id: str = Field(min_length=1, max_length=64)
-    content: str = Field(min_length=1, max_length=MAX_PLAYBOOK_BYTES)
-
-
-class PlaybookUpdateRequest(BaseModel):
-    """Replace one operator-owned Markdown playbook; the id remains immutable."""
-
-    content: str = Field(min_length=1, max_length=MAX_PLAYBOOK_BYTES)
-    expected_revision: int | None = Field(default=None, ge=1)
-
-
-class PlaybookDryRunRequest(BaseModel):
-    """Synthetic cluster attributes for deterministic procedure diagnostics."""
-
-    rule_ids: list[str] = Field(default_factory=list, max_length=100)
-    entity_type: EntityType = EntityType.RULE
-    event_count: int = Field(default=1, ge=0, le=1_000_000)
-
-
-def _raise_playbook_management_http(exc: Exception) -> None:
-    if isinstance(exc, PlaybookNotFoundError):
-        raise HTTPException(status_code=404, detail="playbook not found") from exc
-    if isinstance(exc, PlaybookConflictError):
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if isinstance(exc, PlaybookProtectedError):
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    if isinstance(exc, PlaybookManagementError):
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    raise exc
-
-
-@router.get("/playbooks")
-async def playbooks(
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
-) -> dict[str, Any]:
-    await state.refresh_playbooks()
-    pbs = state.playbooks.all()
-    return {
-        "enabled": state.prefs.playbooks.enabled,
-        "count": len(pbs),
-        "playbooks": [_playbook_payload(state, p) for p in pbs],
-    }
-
-
-@router.post("/playbooks")
-async def playbooks_create(
-    body: PlaybookCreateRequest,
-    request: Request,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
-) -> dict[str, Any]:
-    """Create an operator Markdown file, atomically reload it, and audit the change.
-
-    The front-matter id must equal ``body.id``.  IDs are slug/path constrained and
-    a create never overwrites any existing file or bundled playbook.  Playbook text
-    remains recommendation-only context; this endpoint never touches ``decide()``.
-    """
     try:
-        playbook, summary = await state.create_playbook(
-            body.id,
-            body.content,
-            actor=current_username(request) or "operator",
-        )
-    except Exception as exc:  # mapped to bounded, non-path-leaking HTTP errors
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=f"created operator playbook {playbook.id} v{playbook.version}",
-    )
-    return {"ok": True, "playbook": _playbook_payload(state, playbook), "reload": summary}
+        return await published_versions(state.runbook_library)
+    except RunbookStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "runbook_store_unavailable",
+            "message": "Runbooks could not be read. Try again.",
+        }) from exc
 
 
-@router.post("/playbooks/reload")
-async def playbooks_reload(
-    request: Request,
+def _deprecated(response: Response) -> None:
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS
+
+    for name, value in DEPRECATION_HEADERS.items():
+        response.headers[name] = value
+
+
+@router.get("/playbooks", deprecated=True)
+async def playbooks(
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
+    _=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Hot-reload playbooks from disk (atomic; a broken file never replaces a good
-    live set). Returns the load summary."""
-    summary = await state.refresh_playbooks()
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=(
-            f"reloaded playbooks loaded={summary.get('loaded', 0)} "
-            f"skipped={len(summary.get('skipped', []))}"
-        ),
-    )
-    return summary
+    """Deprecated alias: every Published runbook in the old procedure list shape. Use
+    ``GET /api/runbooks``."""
+    _deprecated(response)
+    items = [
+        _legacy_playbook_item(rid, version, builtin, include_content=False)
+        for rid, version, builtin, _doc in await _legacy_published(state)
+    ]
+    cfg = getattr(state.execution_prefs, "runbooks", None)
+    return {"enabled": bool(getattr(cfg, "enabled", True)), "count": len(items), "playbooks": items}
 
 
-@router.post("/playbooks/dry-run")
-async def playbooks_dry_run(
-    body: PlaybookDryRunRequest,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
-) -> dict[str, Any]:
-    """Explain exact match and no-match reasons without running an investigation."""
-    await state.refresh_playbooks()
-    rules = [str(value).strip() for value in body.rule_ids if str(value).strip()]
-    cluster = Cluster(
-        signature="playbook-dry-run",
-        entity=Entity(type=body.entity_type, value="dry-run"),
-        group_by=body.entity_type,
-        rule_values=rules,
-        count=body.event_count,
-    )
-    return state.playbooks.diagnose(cluster)
-
-
-@router.get("/playbooks/coverage")
+@router.get("/playbooks/coverage", deprecated=True)
 async def playbooks_coverage(
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
+    _=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Coverage over the stored case population, paged without a 200-row cap."""
-    await state.refresh_playbooks()
+    """Deprecated alias: which runbook each stored case would match (the fallback does
+    not count as coverage), over at most 20,000 cases. Use ``GET /api/runbooks/metrics``
+    for runbook coverage."""
+    from ..engine import runbook_runs
+    from ..engine.runbook_match import match
+    from ..stores.runbook_library import RunbookStoreUnavailable
+
+    _deprecated(response)
+    try:
+        catalog = await runbook_runs.load_catalog(state)
+    except RunbookStoreUnavailable as exc:
+        raise HTTPException(status_code=503, detail={
+            "code": "runbook_store_unavailable",
+            "message": "Runbooks could not be read. Try again.",
+        }) from exc
+    prefs = state.execution_prefs
     offset = 0
     page_size = 500
     max_cases = 20_000
@@ -3071,25 +3053,13 @@ async def playbooks_coverage(
         if not page:
             break
         for case in page:
-            count = max(
-                len(case.member_event_keys or []),
-                len(case.member_event_ids or []),
-                1,
-            )
-            cluster = Cluster(
-                signature=case.cluster_signature,
-                entity=case.entity,
-                group_by=case.entity.type,
-                rule_values=list(case.rule_ids or []),
-                count=count,
-            )
-            chosen, _reason = state.playbooks.select(cluster)
+            result = match(runbook_runs.case_facts(case, prefs), catalog.matchable, fallback=False)
             scanned += 1
-            if chosen is not None:
+            if result.winner is not None:
                 covered += 1
-                selected_counts[chosen.id] = selected_counts.get(chosen.id, 0) + 1
+                selected_counts[result.winner.id] = selected_counts.get(result.winner.id, 0) + 1
             else:
-                families = sorted({str(value).strip() for value in case.rule_ids if str(value).strip()}) or ["<no-rule-id>"]
+                families = sorted({str(v).strip() for v in case.rule_ids if str(v).strip()}) or ["<no-rule-id>"]
                 for family in families:
                     unmatched_rules[family] = unmatched_rules.get(family, 0) + 1
             if scanned >= max_cases:
@@ -3115,73 +3085,98 @@ async def playbooks_coverage(
     }
 
 
-@router.get("/playbooks/selection/{case_id}")
+@router.get("/playbooks/selection/{case_id}", deprecated=True)
 async def playbook_selection(
     case_id: str,
+    response: Response,
     state: AppState = Depends(get_state),
     _=Depends(require_permission("cases", "read")),
+    __=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Why a given case selected the playbook it did (from the audit trail)."""
+    """Deprecated alias: the runbook on a case and why it was attached (the first run
+    that is not abandoned). Use ``GET /api/cases/{case_id}/runbooks``."""
+    from ..engine.runbook_match import describe_explanation
+    from ..models import MatchExplanation
+
+    _deprecated(response)
     case = await state.cases.get(case_id)
+    runbook_id = ""
     reason = ""
-    try:
-        records = await state.audit.records_for_case(case_id)
-        for r in records:
-            actor = r.get("actor") if isinstance(r, dict) else getattr(r, "actor", "")
-            if actor == "playbook_selector":
-                reason = r.get("result_summary") if isinstance(r, dict) else getattr(r, "result_summary", "")
-                break
-    except Exception:  # noqa: BLE001 — explainability is best-effort
-        reason = ""
-    return {
-        "case_id": case_id,
-        "playbook_id": (case.playbook_id if case else ""),
-        "reason": reason,
-    }
+    if case is not None:
+        try:
+            runs = (await state.runbook_runs.get(case_id)).runs
+        except Exception:  # noqa: BLE001 (explainability is best-effort)
+            runs = []
+        run = next((r for r in runs if r.status != "abandoned"), None)
+        if run is not None:
+            runbook_id = run.runbook_id
+            info = run.attached_reason or {}
+            if run.attached_by in ("rule", "fallback") and "tier" in info and "matched" in info:
+                try:
+                    reason = describe_explanation(MatchExplanation.model_validate(info))
+                except Exception:  # noqa: BLE001
+                    reason = ""
+            elif run.attached_actor:
+                reason = f"Added by {run.attached_actor}"
+        else:
+            runbook_id = str(getattr(case, "playbook_id", "") or "")
+    return {"case_id": case_id, "playbook_id": runbook_id, "reason": reason}
 
 
-@router.get("/playbooks/{playbook_id}")
+@router.get("/playbooks/{playbook_id}", deprecated=True)
 async def playbook_detail(
     playbook_id: str,
+    response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "read")),
+    _=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
-    """Open one playbook as plain UTF-8 Markdown plus parsed catalog metadata."""
-    await state.refresh_playbooks()
-    try:
-        playbook, content = state.playbooks.read_document(playbook_id)
-    except Exception as exc:
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    return _playbook_payload(state, playbook, content=content)
+    """Deprecated alias: one Published runbook in the old procedure detail shape,
+    ``content`` and ``body`` exported as Markdown. A retired bundled procedure id
+    answers with the runbook that replaced it; an unknown id answers the old ``404``
+    (``{"detail": "playbook not found"}``). Use ``GET /api/runbooks/{id}``."""
+    from ..engine.runbook_model import LEGACY_BUNDLED_RUNBOOK_MAP
+
+    _deprecated(response)
+    wanted = {playbook_id, LEGACY_BUNDLED_RUNBOOK_MAP.get(playbook_id, playbook_id)}
+    for rid, version, builtin, _doc in await _legacy_published(state):
+        if rid in wanted:
+            return _legacy_playbook_item(rid, version, builtin, include_content=True)
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS
+
+    raise HTTPException(status_code=404, detail="playbook not found", headers=dict(DEPRECATION_HEADERS))
 
 
-@router.put("/playbooks/{playbook_id}")
-async def playbook_update(
-    playbook_id: str,
-    body: PlaybookUpdateRequest,
-    request: Request,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "manage")),
-) -> dict[str, Any]:
-    """Atomically update an operator playbook. Bundled playbooks are read-only."""
-    try:
-        playbook, summary = await state.update_playbook(
-            playbook_id,
-            body.content,
-            actor=current_username(request) or "operator",
-            expected_revision=body.expected_revision,
-        )
-    except Exception as exc:
-        _raise_playbook_management_http(exc)
-        raise AssertionError("unreachable")  # pragma: no cover
-    await state.control_audit.record(
-        action_type=ActionType.PLAYBOOK,
-        surface="playbooks",
-        actor=current_username(request) or "operator",
-        result_summary=f"updated operator playbook {playbook.id} v{playbook.version}",
-    )
-    return {"ok": True, "playbook": _playbook_payload(state, playbook), "reload": summary}
+def _runbooks_moved() -> Any:
+    from ..engine.runbook_catalog import runbooks_moved_response
+
+    return runbooks_moved_response()
+
+
+@router.post("/playbooks", deprecated=True, status_code=410)
+async def playbooks_create(_=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. Create a runbook with ``POST /api/runbooks``."""
+    return _runbooks_moved()
+
+
+@router.post("/playbooks/reload", deprecated=True, status_code=410)
+async def playbooks_reload(_=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. The runbook library needs no reload."""
+    return _runbooks_moved()
+
+
+@router.post("/playbooks/dry-run", deprecated=True, status_code=410)
+async def playbooks_dry_run(_=Depends(require_permission("runbooks", "read"))) -> Any:
+    """Retired: ``410 runbooks_moved``. Preview matching with ``POST
+    /api/runbooks/match-preview``."""
+    return _runbooks_moved()
+
+
+@router.put("/playbooks/{playbook_id}", deprecated=True, status_code=410)
+async def playbook_update(playbook_id: str, _=Depends(require_permission("runbooks", "manage"))) -> Any:
+    """Retired write: ``410 runbooks_moved``. Edit a draft with ``PUT
+    /api/runbooks/{id}/draft``."""
+    del playbook_id
+    return _runbooks_moved()
 
 
 # --------------------------------------------------------------------------- #
@@ -6763,6 +6758,30 @@ class CaseAction(BaseModel):
         ),
         json_schema_extra={"deprecated": True},
     )
+    # Round 14 (SPEC §4.10.15, D34): closing by hand never blocks. When an active
+    # runbook run still has required steps open, a terminal move records why
+    # (``case.closed_with_open_steps``). Only ``require_open_steps_reason`` (the Console
+    # sends it so it can show its dialog) turns a missing reason into ``409
+    # runbook_steps_open``; every other caller closes exactly as before.
+    open_steps_reason: str | None = Field(
+        default=None,
+        max_length=500,
+        title="Why the case closes with required runbook steps open",
+        description="1 to 500 characters; audited on case.closed_with_open_steps.",
+    )
+    require_open_steps_reason: bool = Field(
+        default=False,
+        title="Refuse the close when required runbook steps are open and no reason is given",
+        description="The Console sets it to show its close dialog; the default never blocks a close.",
+    )
+
+    @field_validator("open_steps_reason")
+    @classmethod
+    def _clean_open_steps_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = " ".join(str(value).split())
+        return text or None
 
 
 # Lifecycle status reached by each action. ``None`` = the action does not move the
@@ -6947,11 +6966,22 @@ async def case_action(
 
         user = await _enforce(request, "cases", _grant_for_body(body))
     actor = getattr(user, "username", "") or body.analyst or "analyst"
-    return await _perform_case_action(case_id, body, actor, state)
+    return await _perform_case_action(case_id, body, actor, state, context=_request_audit_context(request))
+
+
+def _request_audit_context(request: Request | None) -> Any:
+    """The request's audit context (client, session, role, request id) for the rows a
+    case action writes, or ``None`` for an in-process call without a request."""
+    if request is None:
+        return None
+    from ..audit.context import audit_context
+
+    return audit_context(request)
 
 
 async def _perform_case_action(
-    case_id: str, body: CaseAction, actor: str, state: AppState, batch_id: str = ""
+    case_id: str, body: CaseAction, actor: str, state: AppState, batch_id: str = "",
+    via: str | None = None, context: Any = None,
 ) -> dict[str, Any]:
     """Apply ONE human lifecycle action to ONE case — the SINGLE source of truth for
     the analyst-action path (used by the single-case endpoint AND the bulk endpoint).
@@ -6965,7 +6995,16 @@ async def _perform_case_action(
     transaction. A bulk action is a single human decision applied to hundreds of cases,
     and the bounded precedent window has to be able to tell that apart from hundreds of
     independent decisions — otherwise one bulk action buys the whole window. Stamped
-    only when supplied, so a single-case action's history entry is unchanged."""
+    only when supplied, so a single-case action's history entry is unchanged.
+
+    ``via`` (Round 14, D34) names how a close with required runbook steps open was
+    made (``bulk`` for the bulk endpoint and the ``case_lifecycle`` job, ``proposal``
+    for an approved proposal); a single action derives ``console`` or ``api`` from
+    ``require_open_steps_reason``. A bulk close never fails an item for open steps.
+    ``context`` is the request's audit context, carried onto the
+    ``case.closed_with_open_steps`` row (a job has none). The runbook state is read
+    only on this human path: automatic closes never read it and ``decide()`` /
+    ``AutoClosePolicy`` are untouched (#3)."""
     case = await state.cases.get(case_id)
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
@@ -6975,6 +7014,7 @@ async def _perform_case_action(
     merged_tags = (
         _merge_case_tags(case.tags, body.tags, replace=False) if body.tags is not None else None
     )
+    previous_tags = list(case.tags or [])
 
     prev_status = case.status
 
@@ -7002,6 +7042,43 @@ async def _perform_case_action(
 
     _guard_transition(body.action, prev_status, target)
 
+    # The request is validated in full before the runbook check below, so a request
+    # that can never succeed is answered with its own 400, never with the close
+    # dialog's 409 (a reason would not make it valid). Nothing is applied here.
+    if body.action == "set_disposition" and not body.disposition:
+        raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
+    requested_disposition: Disposition | None = None
+    if body.action in _DISPOSITION_ACTIONS and body.disposition:
+        try:
+            requested_disposition = Disposition(body.disposition)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+    # "Mark duplicate" (SPEC §4.10.15): a terminal move that carries the duplicate
+    # disposition. Decided once from the request, so the 409 exemption and the audit
+    # row's ``via`` and note always agree, whatever the case carried before.
+    marks_duplicate = requested_disposition == Disposition.DUPLICATE
+
+    # Round 14 (D34): the first terminal move of a case with required runbook steps
+    # still open. Read before anything changes so a 409 leaves the case untouched; an
+    # unreadable run store never blocks a close (``None``).
+    open_steps = None
+    if target is not None and target in _TERMINAL and prev_status not in _TERMINAL:
+        from ..engine import runbook_runs
+
+        open_steps = await runbook_runs.open_required_steps(state, case_id)
+        if (open_steps and body.require_open_steps_reason and not body.open_steps_reason
+                and via != "bulk" and not marks_duplicate):
+            raise HTTPException(status_code=409, detail={
+                "code": "runbook_steps_open",
+                "message": (
+                    f"{len(open_steps)} required runbook "
+                    f"{'step is' if len(open_steps) == 1 else 'steps are'} still open. "
+                    "Say why you are closing the case."
+                ),
+                "required_open": len(open_steps),
+                "steps": [step.model_dump(mode="json") for step in open_steps],
+            })
+
     # A disposition supplied with the action. ``set_disposition`` requires one; ``close``
     # accepts one (the Console's unified Close-with-disposition flow sends it).
     #
@@ -7022,18 +7099,12 @@ async def _perform_case_action(
     # the analyst's label into the model's while the classification entry still vouches
     # for it. The lifecycle move itself still happens; only the echo is not applied.
     classified_disposition = ""
-    if body.action == "set_disposition" and not body.disposition:
-        raise HTTPException(status_code=400, detail="set_disposition requires a disposition")
-    if body.action in _DISPOSITION_ACTIONS and body.disposition:
-        try:
-            requested = Disposition(body.disposition)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"unknown disposition: {body.disposition}")
+    if requested_disposition is not None:
         if body.action in _SELF_DECLARING_ACTIONS or body.disposition_declared:
-            case.disposition = requested
-            classified_disposition = requested.value
+            case.disposition = requested_disposition
+            classified_disposition = requested_disposition.value
         elif standing_analyst_disposition(case) is None:
-            case.disposition = requested
+            case.disposition = requested_disposition
 
     # confirm_fp is its own classification: the verb IS the analyst's declaration (it is
     # in ``analyst_outcomes.CLASSIFICATION_ACTIONS``), and the newest decision wins. It
@@ -7125,6 +7196,26 @@ async def _perform_case_action(
         )
     except Exception as exc:  # noqa: BLE001 — audit is best-effort, never blocks the action
         logger.warning("Status audit failed for %s: %s", case_id, exc)
+    # Round 14 (D34, SPEC §4.10.15): a person closed with required runbook steps open,
+    # so record why (#2), whoever closed and however; the close itself already stands.
+    if open_steps and case.status in _TERMINAL:
+        from ..engine import runbook_runs
+
+        # A reason the person gave is always recorded, a duplicate included.
+        how = via or ("console" if (body.require_open_steps_reason or marks_duplicate) else "api")
+        await runbook_runs.record_closed_with_open_steps(
+            state, case, actor=actor, via=how, reason=body.open_steps_reason,
+            steps=open_steps, note="Duplicate" if marks_duplicate else None, context=context,
+        )
+    # Round 14 (SPEC §4.10.4): a human move that leaves the case needing a person
+    # (reopen, escalate, a status change) or changes its tags is a re-evaluation
+    # trigger: the matching runbook attaches when the case has none yet, or a more
+    # specific one does. Never raises and never changes the action's outcome.
+    tags_changed = merged_tags is not None and list(merged_tags) != list(previous_tags)
+    if case.status not in _TERMINAL and (case.status != prev_status or tags_changed):
+        from ..engine import runbook_runs
+
+        await runbook_runs.reevaluate_case(state, case, trigger=f"action:{body.action}")
     # On close / confirm-FP, index the resolved case as RAG baseline memory (C3-5)
     # so future investigations of similar entities learn from this decision + note.
     # Fail-safe: a RAG/embedding failure must NEVER break the analyst's action.
@@ -7236,6 +7327,7 @@ async def cases_bulk_action(
     # single operator decision it is instead of N independent ones; see
     # ``PrecedentWindowConfig.max_transaction_fraction``.
     batch_id = new_id("bulk-")
+    bulk_context = _request_audit_context(request)
 
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -7244,7 +7336,8 @@ async def cases_bulk_action(
             continue  # de-dupe so a repeated id isn't applied (and audited) twice
         seen.add(cid)
         try:
-            await _perform_case_action(cid, single, actor, state, batch_id=batch_id)
+            await _perform_case_action(cid, single, actor, state, batch_id=batch_id, via="bulk",
+                                       context=bulk_context)
             results.append({"id": cid, "ok": True})
         except HTTPException as exc:
             results.append({"id": cid, "ok": False, "error": str(exc.detail)})
@@ -7389,6 +7482,7 @@ async def case_tags(
         raise HTTPException(status_code=404, detail="Case not found")
     # De-dupe, trim and bound the count; a new tag over the length limit is refused,
     # never cut (``_merge_case_tags``).
+    previous_tags = list(case.tags or [])
     case.tags = _merge_case_tags(case.tags, body.tags, replace=True)
     case.updated_at = iso_now()
     await state.cases.save(case)
@@ -7396,6 +7490,12 @@ async def case_tags(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
         case_id=case_id, result_summary=f"tags set ({len(case.tags)})",
     )
+    # Round 14 (SPEC §4.10.4): a tag change is a re-evaluation trigger (a runbook may
+    # apply by tag). Never raises and never changes the tag write.
+    if list(case.tags or []) != previous_tags:
+        from ..engine import runbook_runs
+
+        await runbook_runs.reevaluate_case(state, case, trigger="tags")
     return _case_view(case, state)
 
 
@@ -7613,58 +7713,16 @@ async def case_reinvestigate(
     return _case_view(updated, state)
 
 
-class RunPlaybookRequest(BaseModel):
-    """Manually RUN a specific playbook on a case (F10). ``playbook_id`` selects the
-    playbook to FORCE-inject as TRUSTED operator procedure for a re-investigation."""
-
-    playbook_id: str
-    analyst: str = "analyst"
-
-
-@router.post("/cases/{case_id}/run-playbook")
+@router.post("/cases/{case_id}/run-playbook", deprecated=True, status_code=410)
 async def case_run_playbook(
     case_id: str,
-    body: RunPlaybookRequest,
-    state: AppState = Depends(get_state),
-    _=Depends(require_permission("playbooks", "run")),
-) -> dict[str, Any]:
-    """Manually run a chosen playbook on a case (F10) — CONTEXT-ONLY, #3-safe.
-
-    Re-investigates the case through the SHARED pipeline with ``playbook_id`` FORCED
-    as the injected TRUSTED operator procedure. The playbook can only RECOMMEND; the
-    deterministic close/escalate decision in the Case Manager is untouched (#3). 404
-    if the case or playbook is unknown; 400 (NEUTRAL) when no events remain to rebuild
-    the cluster. Returns the updated Case. Gated by ``playbooks:run``."""
-    case = await state.cases.get(case_id)
-    if not case:
-        raise HTTPException(status_code=404, detail="Case not found")
-    if state.playbooks.get(body.playbook_id) is None:
-        raise HTTPException(status_code=404, detail=f"Unknown playbook: {body.playbook_id}")
-    # Rebuild the cluster from live logs; if the events aged out, fall back to a
-    # minimal reconstruction from the case's STORED evidence so the playbook can still
-    # be run over what we retained rather than dead-ending (#3 untouched).
-    query_source = state.active_source_for_id(case.source_id)
-    cluster = await _cluster_for_case(
-        state, case, allow_stored_reconstruction=True, query_source=query_source
-    )
-    if cluster is None:
-        raise HTTPException(
-            status_code=400,
-            detail="This case has no stored evidence to reinvestigate.",
-        )
-    await state.audit.record(
-        action_type=ActionType.DECISION, surface=case.source_surface.value,
-        actor="run_playbook", case_id=case_id,
-        result_summary=(
-            f"manual playbook run requested by {body.analyst or 'analyst'}: "
-            f"playbook={body.playbook_id}"
-        ),
-    )
-    updated = await state.playbooks.run(
-        state.pipeline, cluster, case.source_surface, state.execution_prefs, body.playbook_id,
-        query_source=query_source,
-    )
-    return _case_view(updated, state)
+    _=Depends(require_permission("runbooks", "run")),
+) -> Any:
+    """Retired (Round 14 SPEC §4.10.16): ``410 runbooks_moved``. Start a runbook on a
+    case with ``POST /api/cases/{case_id}/runbooks``; re-investigate with ``POST
+    /api/cases/{case_id}/reinvestigate``."""
+    del case_id
+    return _runbooks_moved()
 
 
 @router.get("/cases/{case_id}/threat-context")

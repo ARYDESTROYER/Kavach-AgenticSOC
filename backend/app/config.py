@@ -38,6 +38,14 @@ from .evidence_fields import (
 # Aliased so the module-level resolver is unambiguous next to the identically
 # named ``Preferences.free_text_search_fields`` method that wraps it.
 from .evidence_fields import free_text_search_fields as _resolve_free_text_search_fields
+from .rbac.policy import (
+    RBAC_GRANTS_VERSION,
+    grants_version_is_legacy,
+    normalise_custom_role,
+    normalise_role_grant_map,
+    normalise_role_overrides,
+    rbac_layers_name_round14_actions,
+)
 from .utils import dotted_get, iso_now, new_id, slug
 
 logger = logging.getLogger("tlsoc.config")
@@ -739,18 +747,24 @@ class AutoClosePolicy(BaseModel):
     )
 
 
-class PlaybookConfig(BaseModel):
-    """Markdown playbook system. When ``enabled``, the deterministically-selected
-    playbook for a cluster is injected as TRUSTED operator procedure into the
-    investigator (it can only RECOMMEND; code/settings decide). With ``enabled``
-    False, or no playbook matching, the investigator uses the generic prompt
-    exactly as before. ``dir`` overrides the default ``backend/playbooks`` location;
-    ``llm_select`` is reserved for an optional LLM-assisted selector (off by default —
-    selection is rule-based)."""
+class LegacyPlaybookConfig(BaseModel):
+    """The retired procedure section (``Preferences.playbooks``), accepted on load
+    for one release (Round 14 SPEC §4.10.19). It is no longer a setting and is never
+    shown in Settings (``api.settings_schema`` hides it).
+
+    * ``enabled`` is a read-only MIRROR of ``runbooks.investigator_guidance``:
+      :meth:`Preferences._mirror_retired_runbook_keys` rewrites it on every
+      validation, so code that still reads the old key sees the new truth. A stored
+      ``false`` written before Round 14 is mapped ONCE onto
+      ``investigator_guidance=false`` (:func:`_map_retired_runbook_keys`).
+    * ``dir`` names the retired directory of operator procedure files. It is kept
+      read-only for the one-shot runbook migration (``engine.runbook_migration``),
+      which imports its ``*.md`` files once; afterwards it is ignored, and startup
+      logs a warning while it is still set.
+    * The retired ``llm_select`` key is dropped on load (it never had an effect)."""
 
     enabled: bool = True
     dir: str | None = None
-    llm_select: bool = False
 
 
 class CaseIdFormatConfig(BaseModel):
@@ -1289,7 +1303,11 @@ class RagConfig(BaseModel):
     # Minimum cosine similarity a retrieved chunk must clear to be returned.
     # Drops weakly-related noise before it reaches a prompt.
     min_score: float = 0.2
-    use_runbooks: bool = True
+    # Round 14 (SPEC §4.10.18, §4.10.19): retired, replaced by ``runbooks.rag_corpus``.
+    # Accepted on load (a stored ``false`` maps once onto ``rag_corpus=false``) and
+    # kept as a read-only MIRROR of ``runbooks.rag_corpus`` for one release, so code
+    # that still reads it sees the new setting. Hidden from Settings.
+    use_runbooks: bool = Field(default=True, json_schema_extra={"deprecated_alias": True})
     use_mitre: bool = True
     use_resolved_cases: bool = True
     use_suppression_rules: bool = True
@@ -1356,17 +1374,222 @@ class PersonaConfig(BaseModel):
     overrides: dict[str, str] = Field(default_factory=dict)  # rule name -> persona id
 
 
-class RunbookConfig(BaseModel):
-    """Plain-text runbook KNOWLEDGE for the RAG corpus.
+#: Bumped when the meaning of a stored ``runbooks`` block changes. Version 1 is the
+#: Round 14 runbook feature (SPEC §4.10.19); a block without the stamp predates it.
+CURRENT_RUNBOOKS_CONFIG_VERSION = 1
+#: Inclusive bounds of ``RunbookConfig.review_every_days_default`` (E6), the same as a
+#: runbook's own ``review_every_days``.
+RUNBOOK_REVIEW_DAYS_MIN = 30
+RUNBOOK_REVIEW_DAYS_MAX = 730
+RUNBOOK_REVIEW_DAYS_DEFAULT = 180
+#: The boolean switches of :class:`RunbookConfig` and their defaults (D32, D33, D35).
+_RUNBOOK_SWITCH_DEFAULTS: dict[str, bool] = {
+    "enabled": True,
+    "auto_attach": True,
+    "fallback": True,
+    "investigator_guidance": True,
+    "rag_corpus": True,
+    "ai_suggest": True,
+    "ai_step_drafts": True,
+    "require_distinct_approver": False,
+    "step_approvals": False,
+}
 
-    Runbooks ship as Markdown files under ``backend/app/runbooks/`` and feed the RAG
-    ``runbook`` corpus (retrievable knowledge) when ``rag.use_runbooks`` is on and
-    ``enabled`` here. NOTE: per-cluster PROCEDURE injection is now owned by the
-    Markdown **playbook** system (``app/playbooks/`` + ``PlaybookConfig``); runbooks
-    are retrieval knowledge only. Disabling is exact: no runbook source is indexed
-    or retrieved until the operator enables it again."""
+
+class RunbookConfig(BaseModel):
+    """The one Runbooks feature (Round 14 SPEC §4.10.19), under ``Preferences.runbooks``.
+    It replaces the retired procedure section and the old reference-runbook switch.
+
+    * ``enabled``: the feature (library, runs, guidance). Never derived from an old key.
+    * ``auto_attach``: attach the matching runbook to cases that need a person (D32).
+    * ``fallback``: attach Generic incident when nothing else matches (D33).
+    * ``investigator_guidance``: feed the winning Published runbook to the
+      investigator as trusted, advisory guidance (#9).
+    * ``rag_corpus``: index Published runbooks for retrieval.
+    * ``ai_suggest`` / ``ai_step_drafts``: offer "Suggest a runbook" and "Draft note"
+      as clicks; each is one gateway call, ledgered and budget-gated (#6).
+    * ``require_distinct_approver``: the publisher must differ from the author (D35).
+    * ``step_approvals``: honour a step's ``approval_role`` (D35).
+    * ``review_every_days_default``: the review cadence of a new operator runbook
+      (E6), 30 to 730 days.
+    * ``runbooks_config_version``: the migration marker of the retired keys.
+
+    Retired keys are accepted on load and mapped ONCE by meaning, never by name
+    (:func:`_map_retired_runbook_keys`). A runbook, a run and these switches never
+    feed ``case_manager.decide()`` or ``AutoClosePolicy`` (#3).
+
+    :meth:`_repair` repairs, never rejects, a stored value (a malformed switch takes
+    its default, an out-of-range cadence is clamped): both preference loaders answer
+    any validation error with a full default ``Preferences()``, which would also reset
+    the close policy, the rule catalog and the sources (the ``_clamp_caps`` rule)."""
 
     enabled: bool = True
+    auto_attach: bool = True
+    fallback: bool = True
+    investigator_guidance: bool = True
+    rag_corpus: bool = True
+    ai_suggest: bool = True
+    ai_step_drafts: bool = True
+    require_distinct_approver: bool = False
+    step_approvals: bool = False
+    review_every_days_default: int = Field(
+        default=RUNBOOK_REVIEW_DAYS_DEFAULT,
+        ge=RUNBOOK_REVIEW_DAYS_MIN,
+        le=RUNBOOK_REVIEW_DAYS_MAX,
+    )
+    runbooks_config_version: int = Field(default=CURRENT_RUNBOOKS_CONFIG_VERSION, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        """Repair a stored block: a switch that is not a boolean (or a common
+        spelling of one) takes its default; the cadence is clamped into 30 to 730
+        days (its default when it is not a number); a malformed version reads as 0.
+        Never raises."""
+        if not isinstance(data, dict):
+            return data
+        out = dict(data)
+        for name, default in _RUNBOOK_SWITCH_DEFAULTS.items():
+            if name in out:
+                out[name] = _remember_repair_bool(out[name], default)
+        if "review_every_days_default" in out:
+            days = _remember_repair_int(out["review_every_days_default"])
+            out["review_every_days_default"] = (
+                RUNBOOK_REVIEW_DAYS_DEFAULT if days is None
+                else max(RUNBOOK_REVIEW_DAYS_MIN, min(RUNBOOK_REVIEW_DAYS_MAX, days))
+            )
+        if "runbooks_config_version" in out:
+            version = _remember_repair_int(out["runbooks_config_version"])
+            out["runbooks_config_version"] = max(0, version) if version is not None else 0
+        return out
+
+
+def _stored_bool(value: Any) -> bool | None:
+    """A stored retired switch as a bool, or ``None`` when it is absent/unreadable."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "1", "yes", "on"):
+            return True
+        if text in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, int):
+        return bool(value)
+    return None
+
+
+def _section_value(section: Any, key: str) -> Any:
+    """``section[key]`` for a stored dict or ``section.key`` for a model (else None)."""
+    if isinstance(section, Mapping):
+        return section.get(key)
+    if isinstance(section, BaseModel):
+        return getattr(section, key, None)
+    return None
+
+
+#: The keys only the Round 14 :class:`RunbookConfig` has. A ``runbooks`` block that
+#: names any of them is written in the current vocabulary, stamped or not (the old
+#: block had only ``enabled``).
+_RUNBOOK_CURRENT_ONLY_KEYS: frozenset[str] = frozenset(
+    set(_RUNBOOK_SWITCH_DEFAULTS) - {"enabled"} | {"review_every_days_default"}
+)
+
+#: The retired settings keys and the successor each one now mirrors (SPEC §4.10.19):
+#: ``(section, key)`` of the retired key -> ``runbooks.<successor>``.
+RETIRED_RUNBOOK_WRITE_KEYS: dict[tuple[str, str], str] = {
+    ("rag", "use_runbooks"): "rag_corpus",
+    ("playbooks", "enabled"): "investigator_guidance",
+}
+
+
+def map_retired_runbook_writes(body: Any, current: "Preferences | None" = None) -> Any:
+    """A settings write body with each CHANGED retired runbook key carried onto its
+    successor (SPEC §4.10.19). Pure: returns a new body, never mutates ``body``.
+
+    ``rag.use_runbooks`` and ``playbooks.enabled`` are read-only mirrors of
+    ``runbooks.rag_corpus`` and ``runbooks.investigator_guidance`` (validation
+    rewrites them), so a write that changed only the retired key would answer 200 and
+    change nothing. A settings route calls this before its deep merge: a retired key
+    the body sets to a value other than ``current``'s (the stored mirror) is copied to
+    its successor, unless the body also names the successor (the successor wins). A
+    body that only echoes the stored value (a client resending a whole section) maps
+    nothing. Without ``current`` every retired key the body names is carried."""
+    if not isinstance(body, Mapping):
+        return body
+    out: dict[str, Any] = dict(body)
+    successors: dict[str, bool] = {}
+    for (section, key), successor in RETIRED_RUNBOOK_WRITE_KEYS.items():
+        block = body.get(section)
+        if not isinstance(block, Mapping) or key not in block:
+            continue
+        value = _stored_bool(block.get(key))
+        if value is None:
+            continue
+        if current is not None:
+            stored = _stored_bool(_section_value(getattr(current, section, None), key))
+            if stored is not None and stored == value:
+                continue
+        successors[successor] = value
+    if not successors:
+        return out
+    runbooks = body.get("runbooks")
+    block_out: dict[str, Any] = dict(runbooks) if isinstance(runbooks, Mapping) else {}
+    for successor, value in successors.items():
+        block_out.setdefault(successor, value)
+    out["runbooks"] = block_out
+    return out
+
+
+def _map_retired_runbook_keys(data: dict[str, Any]) -> dict[str, Any]:
+    """The one-time mapping of the retired runbook keys (SPEC §4.10.19), on a copy.
+
+    A ``runbooks`` block stamped with ``runbooks_config_version`` >= 1 is current and
+    left alone, so an operator's later choice is never re-decided. So is an unstamped
+    block that names a key only the current :class:`RunbookConfig` has (a block code,
+    an import or Demo built in the new vocabulary): it is stamped, never remapped, so
+    its ``enabled`` keeps its new meaning. Otherwise (no block, or a block from before
+    Round 14, which held only ``enabled``) the retired keys map BY MEANING:
+
+    * ``playbooks.enabled=false`` → ``investigator_guidance=false`` (it switched off
+      the procedure in the investigator prompt);
+    * ``runbooks.enabled=false`` (the OLD meaning: stop reference-runbook retrieval)
+      → ``rag_corpus=false``; the new ``enabled`` is never derived from an old key and
+      stays true;
+    * ``rag.use_runbooks=false`` → ``rag_corpus=false``.
+
+    An explicit stored ``false`` is preserved (the Round 10 opt-out rule); an old
+    ``true`` maps to nothing (the new defaults are on). Every other key of an old
+    block is kept, and the block is stamped so this never runs twice."""
+    raw_block = data.get("runbooks")
+    if isinstance(raw_block, RunbookConfig):
+        return data  # a constructed current block
+    if isinstance(raw_block, Mapping):
+        version = _remember_repair_int(raw_block.get("runbooks_config_version"))
+        if version is not None and version >= CURRENT_RUNBOOKS_CONFIG_VERSION:
+            return data
+        if _RUNBOOK_CURRENT_ONLY_KEYS.intersection(raw_block):
+            out = dict(data)
+            out["runbooks"] = {**raw_block, "runbooks_config_version": CURRENT_RUNBOOKS_CONFIG_VERSION}
+            return out
+        block: dict[str, Any] = dict(raw_block)
+        old_enabled = _stored_bool(block.pop("enabled", None))
+    elif raw_block is None:
+        block = {}
+        old_enabled = None
+    else:
+        return data  # malformed: normal validation reports it
+    guidance = _stored_bool(_section_value(data.get("playbooks"), "enabled"))
+    use_runbooks = _stored_bool(_section_value(data.get("rag"), "use_runbooks"))
+    if guidance is False:
+        block["investigator_guidance"] = False
+    if old_enabled is False or use_runbooks is False:
+        block["rag_corpus"] = False
+    block["enabled"] = True
+    block["runbooks_config_version"] = CURRENT_RUNBOOKS_CONFIG_VERSION
+    out = dict(data)
+    out["runbooks"] = block
+    return out
 
 
 class ThreatContextConfig(BaseModel):
@@ -3165,6 +3388,13 @@ class SourceInstance(BaseModel):
         return True
 
 
+#: The keys of a stored ``RBACConfig`` dump written before Round 14 (every one is
+#: present in a persisted block; a constructed block usually names a subset).
+_RBAC_PERSISTED_MARKERS: tuple[str, ...] = (
+    "enabled", "default_role", "roles", "custom_roles", "resources", "denies",
+)
+
+
 class RBACConfig(BaseModel):
     """Role-based access control configuration (Wave 1 / F2).
 
@@ -3191,6 +3421,57 @@ class RBACConfig(BaseModel):
     custom_roles: list[dict[str, Any]] = Field(default_factory=list)
     resources: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
     denies: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    # Round 14 (SPEC §3.7, E8): the grant vocabulary these maps were written in. A
+    # stored block without it (or below 2) predates the runbook vocabulary: on load
+    # its ``runbooks:manage`` grants also gain ``runbooks:publish`` (and a deny of it
+    # also denies publish) ONCE, then the block is stamped, so a later removal of
+    # ``publish`` sticks. The ``playbooks`` -> ``runbooks`` alias applies always: on
+    # that first load it is unioned into ``runbooks``; after it a ``runbooks`` entry
+    # that is present is authoritative (the alias maps only where it is absent), so a
+    # narrowing of ``runbooks`` sticks beside the ``playbooks`` key the load kept.
+    rbac_grants_version: int = Field(default=RBAC_GRANTS_VERSION, ge=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_grant_layers(cls, data: Any) -> Any:
+        """Apply the Round 14 grant aliases to every stored layer (SPEC §3.7):
+        ``roles`` (REPLACE semantics per role, :func:`normalise_role_overrides`),
+        ``resources`` (additive), ``denies`` and each custom role's ``grants`` and
+        ``denies``. Runs on load and on every
+        write (the settings PUT validates the merged document), BEFORE the matrix
+        resolver could skip the retired resource. The once-only ``publish`` rule
+        applies to a block stored before Round 14 (it carries the full set of stored
+        keys but no current ``rbac_grants_version``); a constructed block (a subset of
+        keys, as code and tests build one) is read in the current vocabulary. So is a
+        block that names an action only Round 14 has (``runbooks:run``,
+        ``runbooks:publish``, ``audit:export``) in any layer: a build from before
+        Round 14 drops the unknown stamp on its next save but keeps the maps, so a
+        downgrade, a save and a re-upgrade never re-run the once-only rules over a
+        Round 14 choice (:func:`app.rbac.policy.rbac_layers_name_round14_actions`).
+        Pure on a copy; never raises (a malformed layer is passed through for normal
+        validation to report)."""
+        if not isinstance(data, dict):
+            return data
+        legacy = (
+            grants_version_is_legacy(data.get("rbac_grants_version"))
+            and all(key in data for key in _RBAC_PERSISTED_MARKERS)
+            and not rbac_layers_name_round14_actions(data)
+        )
+        out = dict(data)
+        if isinstance(out.get("roles"), dict):
+            # REPLACE semantics: an override naming one of the two procedure
+            # resources keeps the other's pre-Round 14 default (no silent loss).
+            out["roles"] = normalise_role_overrides(out["roles"], legacy=legacy)
+        if isinstance(out.get("resources"), dict):
+            out["resources"] = normalise_role_grant_map(out["resources"], legacy=legacy)
+        if isinstance(out.get("denies"), dict):
+            out["denies"] = normalise_role_grant_map(out["denies"], legacy=legacy, deny=True)
+        if isinstance(out.get("custom_roles"), list):
+            out["custom_roles"] = [
+                normalise_custom_role(spec, legacy=legacy) for spec in out["custom_roles"]
+            ]
+        out["rbac_grants_version"] = RBAC_GRANTS_VERSION
+        return out
 
 
 def _remember_repair_bool(raw: Any, default: bool) -> bool:
@@ -3756,6 +4037,32 @@ class Preferences(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
+    def _migrate_retired_runbook_keys(cls, data: Any) -> Any:
+        """Map the retired runbook keys once (SPEC §4.10.19,
+        :func:`_map_retired_runbook_keys`). A fresh install and any document whose
+        ``runbooks`` block is already stamped are left untouched."""
+        if not isinstance(data, dict) or not data:
+            return data
+        return _map_retired_runbook_keys(data)
+
+    @model_validator(mode="after")
+    def _mirror_retired_runbook_keys(self) -> "Preferences":
+        """Keep the two retired keys equal to their successors (SPEC §4.10.19):
+        ``playbooks.enabled`` mirrors ``runbooks.investigator_guidance`` and
+        ``rag.use_runbooks`` mirrors ``runbooks.rag_corpus``. The new keys are the
+        one truth; code that still reads an old key sees it, and a stored old key can
+        never disagree with the setting the Console shows. Copies are assigned, so a
+        section model the caller passed in is never changed in place."""
+        guidance = bool(self.runbooks.investigator_guidance)
+        if self.playbooks.enabled != guidance:
+            self.playbooks = self.playbooks.model_copy(update={"enabled": guidance})
+        corpus = bool(self.runbooks.rag_corpus)
+        if self.rag.use_runbooks != corpus:
+            self.rag = self.rag.model_copy(update={"use_runbooks": corpus})
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
     def _migrate_fp_auto_close(cls, data: Any) -> Any:
         """Back-compat: a stored config predating ``auto_close`` carried only
         ``fp_auto_close``. Map it into ``auto_close.false_positive`` so old persisted
@@ -3986,8 +4293,11 @@ class Preferences(BaseModel):
     # Multi-agent roster + plain-text runbooks/playbooks (Vigil-inspired). All
     # default ON and degrade to prior behaviour when disabled.
     personas: PersonaConfig = Field(default_factory=PersonaConfig)
+    # Round 14 (SPEC §4.10.19): the one Runbooks feature. ``playbooks`` is the retired
+    # section, accepted on load for one release (its ``enabled`` mirrors
+    # ``runbooks.investigator_guidance``; its ``dir`` is read once by the migration).
     runbooks: RunbookConfig = Field(default_factory=RunbookConfig)
-    playbooks: PlaybookConfig = Field(default_factory=PlaybookConfig)
+    playbooks: LegacyPlaybookConfig = Field(default_factory=LegacyPlaybookConfig)
     # Threat-context case panel (Wave 6 / F11) — advisory, read-only, fail-open.
     threat_context: ThreatContextConfig = Field(default_factory=ThreatContextConfig)
     # Threshold automation (Wave 6 / F10) — default OFF; post-decision, #3-safe. It

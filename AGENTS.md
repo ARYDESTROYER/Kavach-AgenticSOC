@@ -456,7 +456,7 @@ backend/app/
                      POST /chat + per-user /chat/conversations list/detail/rename/delete;
                      Round-4: acknowledge → INVESTIGATING + GET /api/logs [unified
                      scatter-gather over browse-capable sources] + /cases/{id}/forwarding
-                     + /sources/health) + **38 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters; Round 14 added routes_audit and routes_rule_summary), ALL
+                     + /sources/health) + **39 `routes_*.py` feature routers** (Round 12 added routes_chat_library and routes_chat_entity; Round 13 added routes_chat_starters; Round 14 added routes_audit, routes_rule_summary and routes_case_runbooks), ALL
                      auto-discovered at boot (`main.py::discover_feature_routers()` walks
                      `app.api.routes_*`, requires a top-level `router: APIRouter` — no
                      manual registration needed): Round-3's routes_metrics ·
@@ -544,6 +544,10 @@ backend/app/
                      where a source counts all of its data, "at least" where it cannot (a
                      live-tail ring, a sample, a failed shard), a top list the store
                      approximates across shards said so; cases all time; no model call] ·
+                     routes_case_runbooks [Round 14: runbook runs on a case (attach,
+                     steps, approvals, read-only lookups under the caller's grants, the
+                     AI draft and suggestion), `POST /api/runbooks/progress` and
+                     `/lookup-test`; audit-first; `case.runbook` frames on `runbooks`] ·
                      routes_reports [`/api/reports*` owner-scoped reports,
                      server-resolved add, one-call AI summary with dry-run estimate;
                      Round 12: `from-answer`, `from-conversation`, 60 items,

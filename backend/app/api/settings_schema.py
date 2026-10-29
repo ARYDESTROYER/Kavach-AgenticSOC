@@ -78,8 +78,10 @@ _SECTION_TITLES: dict[str, str] = {
     "fp_auto_close": "Auto-Close (legacy)",
     "enrichment": "Enrichment",
     "personas": "Personas",
+    # Round 14 (SPEC §4.10.19): one Runbooks feature. The retired procedure section
+    # (``Preferences.playbooks``) is accepted on load but is no setting, so it has no
+    # label and is left out of the schema (:data:`_RETIRED_SECTIONS`).
     "runbooks": "Runbooks",
-    "playbooks": "Playbooks",
     "caps": "Caps / Kill Switch",
     "standup": "Standup",
     "trace": "Trace",
@@ -104,6 +106,19 @@ _SECTION_TITLES: dict[str, str] = {
     # curated Settings section and the Help Center use.
     "chat_agent": "Chat assistant",
 }
+
+
+# Sections accepted on load for compatibility but no longer settings (Round 14 SPEC
+# §4.10.19): never described, so no Settings surface renders them.
+_RETIRED_SECTIONS: frozenset[str] = frozenset({"playbooks"})
+
+
+def _is_retired_field(field: FieldInfo) -> bool:
+    """A field kept only as a read-only mirror of its successor (marked
+    ``json_schema_extra={"deprecated_alias": True}``, for example ``rag.use_runbooks``
+    after Round 14): left out of the schema, since editing it would change nothing."""
+    extra = field.json_schema_extra
+    return isinstance(extra, dict) and bool(extra.get("deprecated_alias"))
 
 
 def _humanise(key: str) -> str:
@@ -225,6 +240,7 @@ def _describe_model_fields(model: type[BaseModel], depth: int = 0) -> list[dict[
     return [
         _describe_field(fn, ff, getattr(inst, fn, None) if inst is not None else None, depth)
         for fn, ff in model.model_fields.items()
+        if not _is_retired_field(ff)
     ]
 
 
@@ -290,6 +306,8 @@ def settings_schema() -> dict[str, Any]:
     general_fields: list[dict[str, Any]] = []
 
     for name, field in Preferences.model_fields.items():
+        if name in _RETIRED_SECTIONS or _is_retired_field(field):
+            continue
         ann = field.annotation
         live_value = getattr(live, name, None)
         if _is_object_section(ann):
@@ -305,6 +323,7 @@ def settings_schema() -> dict[str, Any]:
             fields = [
                 _describe_field(fn, ff, getattr(sub_live, fn, None) if sub_live is not None else None)
                 for fn, ff in sub_model.model_fields.items()
+                if not _is_retired_field(ff)
             ]
             object_sections.append(
                 {

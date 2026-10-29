@@ -52,8 +52,11 @@ from .cases import (
     resolve_assignee_me,
 )
 from .common import (
+    SEVERITY_LEVELS,
+    SeverityLevelCounts,
     Window,
     align_to_bucket,
+    case_severity_drill,
     categories,
     column,
     finite,
@@ -61,6 +64,8 @@ from .common import (
     kpi,
     parse_input,
     resolve_window,
+    rule_drill,
+    severity_categories,
     text,
     visible_text,
     whole_periods,
@@ -515,6 +520,152 @@ ZERO_CASE_FILTER_LABELS: dict[str, str] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# Round 14 (SPEC §4.7.2): the case-side severity breakdown (case_stats, soc_metrics).
+# --------------------------------------------------------------------------- #
+#: The most points a level's trend sparkline draws (the blocks bound).
+SEVERITY_TREND_POINTS = 24
+
+
+def _level_of(value: Any) -> str | None:
+    """A case's severity band as one of the five levels, or ``None`` when the case has
+    no readable band (the aggregator's "unknown"): such a case is never folded into
+    Info, which is a real level."""
+    key = _raw_key(value)
+    return key if key in SEVERITY_LEVELS else None
+
+
+def case_severity_counts(result: Any) -> tuple[dict[str, int], int]:
+    """``(counts, unreadable)`` from an aggregate grouped by severity: every level's
+    case count (zero where none, in the five-level order; rows that name the same level
+    add up), and how many cases have no readable band. Those are never folded into a
+    level (Info is a real level). The ONE reading of severity rows, shared by the
+    rendered breakdown and every observation that states the same figures."""
+    counts = dict.fromkeys(SEVERITY_LEVELS, 0)
+    unreadable = 0
+    for row in result_rows(result)[0]:
+        level = _level_of(_key_of(row, "severity"))
+        if level is None:
+            unreadable += _count_of(row)
+        else:
+            counts[level] += _count_of(row)
+    return counts, unreadable
+
+
+def unreadable_severity_note(unreadable: int) -> str | None:
+    """The caption phrase for cases left out of every level, or ``None`` for none."""
+    if unreadable <= 0:
+        return None
+    if unreadable == 1:
+        return "1 case has no readable severity and is not shown"
+    return f"{fmt_int(unreadable)} cases have no readable severity and are not shown"
+
+
+async def case_severity_breakdown(
+    ctx: ChatToolContext, window: Window, *, filters: dict[str, Any] | None = None, levels_result: Any = None,
+) -> dict[str, Any] | None:
+    """A severity breakdown over the cases of ``window`` (``categories`` data with
+    ``kind: "severity"``): every count exact through the case aggregator (severity per
+    case, then by rule and by source, a case under two rules under both), each level's
+    trend in the finest calendar unit that keeps it at or under 24 points, a Cases list
+    drill per level only where the list shows exactly the cases counted (the call's
+    ``filters`` and window included, :func:`case_severity_drill`), and a rule sheet per
+    rule.
+    ``levels_result`` reuses an aggregate already grouped by severity alone. ``None``
+    when the store refused or failed any read (the caller keeps its plain breakdown)."""
+    from ...engine.case_aggregate import AggregateRequestError
+
+    try:
+        if levels_result is None:
+            levels_result = await run_case_aggregate(ctx, window, filters=filters, group_by=("severity",))
+        by_rule = await run_case_aggregate(ctx, window, filters=filters, group_by=("severity", "rule"))
+        by_source = await run_case_aggregate(ctx, window, filters=filters, group_by=("severity", "source"))
+        trend, trend_result = await _case_level_trend(ctx, window, filters)
+    except (AggregateRequestError, NotImplementedError):
+        return None
+    except Exception as exc:  # noqa: BLE001 -- the plain breakdown stands
+        logger.info("case severity breakdown unavailable: %s: %s", type(exc).__name__, exc)
+        return None
+    level_counts, unreadable = case_severity_counts(levels_result)
+    levels = {level: SeverityLevelCounts(count=level_counts[level], rules={}, sources={})
+              for level in SEVERITY_LEVELS}
+    for row in result_rows(by_rule)[0]:
+        rule = _key_of(row, "rule")
+        level = _level_of(_key_of(row, "severity"))
+        if rule not in (None, "") and level is not None:
+            facts = levels[level]
+            facts.rules[str(rule)] = facts.rules.get(str(rule), 0) + _count_of(row)  # type: ignore[index]
+    for row in result_rows(by_source)[0]:
+        level = _level_of(_key_of(row, "severity"))
+        if level is None:
+            continue
+        name = group_label("source", _key_of(row, "source"))
+        facts = levels[level]
+        facts.sources[name] = facts.sources.get(name, 0) + _count_of(row)  # type: ignore[index]
+    if trend is not None:
+        for level in SEVERITY_LEVELS:
+            levels[level].trend = trend.get(level)
+    results = [r for r in (levels_result, by_rule, by_source, trend_result) if r is not None]
+    sample: dict[str, Any] | None = None
+    notes: list[str] = []
+    known = sum(levels[level].count for level in SEVERITY_LEVELS)
+    stopped = next((r for r in results if bool(getattr(r, "partial", False))), None)
+    if stopped is not None:
+        # The store stopped answering part way: the levels cover only what was counted.
+        counted = int(finite(getattr(stopped, "scanned", None)) or 0)
+        expected = finite(getattr(stopped, "expected_total", None))
+        sample = {"counted": counted, "total": int(expected) if expected is not None else None, "exact": False}
+        notes.append(f"partial: {fmt_int(counted)} of {fmt_int(expected)} cases counted before the case store "
+                     "stopped answering" if expected is not None else "partial: the case store stopped answering")
+    unreadable_note = unreadable_severity_note(unreadable)
+    if unreadable_note:
+        # The levels cover every case but these: said, never folded into a level
+        # (Info is a real level). The bars then do not cover the stated total.
+        if sample is None:
+            sample = {"counted": known, "total": known + unreadable, "exact": False}
+        notes.append(unreadable_note)
+    elif stopped is None and not all(is_exact(r) for r in results):
+        # A stored case that could not be read in full but still had a band: its level
+        # stands, while what else it holds may not have been read.
+        damaged = max(int(finite(getattr(r, "unreadable", 0)) or 0) for r in results)
+        if damaged:
+            notes.append("1 case could not be read in full, so these figures may be incomplete" if damaged == 1
+                         else f"{fmt_int(damaged)} cases could not be read in full, so these figures may be "
+                         "incomplete")
+    caption = "; ".join(notes) or None
+    return severity_categories(
+        levels, subject="cases",
+        level_drill=lambda level: case_severity_drill(level, window, filters),
+        rule_drill_of=lambda rule: rule_drill(rule, window),
+        sample=sample, basis_caption=caption,
+    )
+
+
+async def _case_level_trend(
+    ctx: ChatToolContext, window: Window, filters: dict[str, Any] | None,
+) -> tuple[dict[str, list[int]] | None, Any]:
+    """Each level's case count per calendar bucket (the finest unit with at most 24
+    buckets over the window, oldest first), or ``(None, None)`` for all time."""
+    if window.all_time:
+        return None, None
+    from ...engine.time_windows import auto_bucket
+
+    unit = str(auto_bucket(window.as_resolved(), max_points=SEVERITY_TREND_POINTS))
+    aligned = align_to_bucket(window, unit)
+    result = await run_case_aggregate(ctx, aligned, filters=filters, group_by=("severity",), bucket=unit)
+    order = [str(b[0]) for b in getattr(result, "buckets", None) or [] if isinstance(b, (list, tuple)) and len(b) == 2]
+    if not order:
+        return None, result
+    index = {label: i for i, label in enumerate(order)}
+    trend = {level: [0] * len(order) for level in SEVERITY_LEVELS}
+    for row in result_rows(result)[0]:
+        slot = index.get(str(row.get("bucket")))
+        level = _level_of(_key_of(row, "severity"))
+        if slot is not None and level is not None:
+            trend[level][slot] += _count_of(row)
+    return {level: counts[-SEVERITY_TREND_POINTS:] for level, counts in trend.items()}, result
+
+
 def invalid_aggregate_input(exc: Exception) -> ToolOutcome:
     """The aggregator's own ``ValueError`` (engine text: "9601 hour buckets is too many
     for all time; use week buckets") as a visible INPUT error the model can act on,
@@ -621,8 +772,8 @@ async def run_bucketed(
 
     A bounded window is checked before the scan. An all-time window has no known
     span: its result is checked after the scan, and when the aggregator refuses the
-    unit outright (``ValueError``: too many buckets) ``probe`` (a count-only run)
-    finds the oldest record first. Returns ``(result, unit used, coarsening)`` where
+    unit outright (``BucketBudgetError``: too many buckets) ``probe`` (a count-only run)
+    finds the oldest record first; a store failure is never mistaken for that refusal. Returns ``(result, unit used, coarsening)`` where
     ``coarsening`` is ``{"requested", "used", "points"}`` (``points`` the requested
     unit's count when known) or ``None``."""
     requested = bucket
@@ -633,9 +784,11 @@ async def run_bucketed(
             bucket = _finest_fitting(window)
         result = await run(bucket)
     else:
+        from ...engine.case_aggregate import AggregateRequestError
+
         try:
             result = await run(bucket)
-        except ValueError:
+        except AggregateRequestError:
             if probe is None:
                 raise
             seen = await probe()
@@ -820,6 +973,8 @@ class CaseStatsTool(ChatTool):
         filters = args.aggregate_filters()
         coarsened: dict[str, Any] | None = None
         series_result: Any = None
+        from ...engine.case_aggregate import AggregateRequestError
+
         try:
             if bucket:
                 async def run_with(unit: str) -> Any:
@@ -860,15 +1015,24 @@ class CaseStatsTool(ChatTool):
                     ))
         except NotImplementedError:
             raise
-        except ValueError as exc:
+        except AggregateRequestError as exc:
             # The aggregator refused the REQUEST (engine text naming what to use
             # instead), which is not a store outage.
             return invalid_aggregate_input(exc)
         except Exception as exc:  # noqa: BLE001 — engine template only
-            logger.warning("case_stats aggregate failed: %s", exc)
+            # A store failure, a ``ValueError`` it raised while reading included (a
+            # corrupt document's ``json.JSONDecodeError``): logged, never shown as the
+            # caller's input error and never echoed (it can carry stored text).
+            logger.warning("case_stats aggregate failed: %s: %s", type(exc).__name__, exc)
             return ToolOutcome.failure("The case store did not answer")
+        severity_data = None
+        if fields == ["severity"] and not bucket:
+            # Named levels with the rules behind each (Round 14 SPEC §4.7.2); the main
+            # aggregate is the level counts, so every figure agrees with the KPIs.
+            severity_data = await case_severity_breakdown(
+                ctx, window, filters=filters, levels_result=result if args.top_n is None else None)
         outcome = _outcome(args, window, fields, bucket, metrics, result, periods, compared,
-                           series_result=series_result, coarsened=coarsened)
+                           series_result=series_result, coarsened=coarsened, severity_data=severity_data)
         if me and outcome.ok:
             outcome.observation["assignee_me"] = ASSIGNEE_ME_OWN
         return outcome
@@ -925,7 +1089,7 @@ def _other_groups(result: Any) -> int:
 def _outcome(
     args: CaseStatsInput, window: Window, fields: list[str], bucket: str | None, metrics: tuple[str, ...],
     result: Any, periods: list[Period], compared: list[Any], *, series_result: Any = None,
-    coarsened: dict[str, Any] | None = None,
+    coarsened: dict[str, Any] | None = None, severity_data: dict[str, Any] | None = None,
 ) -> ToolOutcome:
     total = int(getattr(result, "total", 0) or 0)
     exact = is_exact(result)
@@ -972,7 +1136,7 @@ def _outcome(
     elif fields:
         artifacts.extend(_group_artifacts(next_id, fields, metrics, rows, _other_metrics(result), total,
                                           caption, basis, untrusted, overlap_note=overlap_note,
-                                          other_groups=_other_groups(result)))
+                                          other_groups=_other_groups(result), severity_data=severity_data))
     comparison = None
     comparison_partial = None
     if len(periods) > 1 and len(compared) == len(periods):
@@ -1238,13 +1402,20 @@ _UNIT_TITLES = {"percent": "Rates", "minutes": "Response times", "score": "Avera
 def _group_artifacts(
     next_id: Any, fields: list[str], metrics: tuple[str, ...], rows: list[dict[str, Any]],
     other: dict[str, Any] | None, total: int, caption: str, basis: str, untrusted: bool,
-    *, overlap_note: str | None = None, other_groups: int = 0,
+    *, overlap_note: str | None = None, other_groups: int = 0, severity_data: dict[str, Any] | None = None,
 ) -> list[Artifact]:
     out: list[Artifact] = []
     other_count = finite((other or {}).get("count")) if other else None
     # Severity, verdict, status and priority rows read in their canonical order.
     rows = canonical_rows(rows, fields)
-    if len(fields) == 1:
+    if severity_data is not None and fields == ["severity"]:
+        # The five named levels with the rules behind each (Round 14 SPEC §4.7.2): rule
+        # names are case-derived, so the labels are untrusted.
+        out.append(Artifact(
+            id=next_id(), kind="categories", title=_GROUP_TITLES["severity"], title_trusted=True,
+            data=severity_data, provenance="code", untrusted_labels=True, basis=basis, window=caption,
+        ))
+    elif len(fields) == 1:
         # The categories' own population ("Top 5 of 7" rules): the groups shown plus the
         # ones the top_n cut folded into "Other". ``total`` counts CASES, which the
         # caption already states ("95 cases · exact · …").
@@ -1326,6 +1497,8 @@ __all__ = [
     "METRICS",
     "basis_caption",
     "bucket_axis",
+    "case_severity_breakdown",
+    "case_severity_counts",
     "bucket_edges",
     "canonical_rank",
     "canonical_rows",
@@ -1347,5 +1520,6 @@ __all__ = [
     "progress_reporter",
     "run_case_aggregate",
     "series_semantic",
+    "unreadable_severity_note",
     "zero_case_suggestions",
 ]

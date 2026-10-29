@@ -707,8 +707,15 @@ class JobRunner:
         batch_id = f"bulk-{job.job_id}"
 
         async def run(case_id: str) -> None:
+            # ``via="bulk"`` (Round 14, D34): a bulk close never fails an item for open
+            # runbook steps, and each ``case.closed_with_open_steps`` row records
+            # ``via: "bulk"``. Its ``reason`` is the job's ``open_steps_reason`` param,
+            # forwarded through ``CaseAction`` above, only when the submit contract
+            # (``CaseLifecycleParams`` in ``api/routes_jobs.py``) declares that field;
+            # otherwise the row's reason is null. The action path also runs the runbook
+            # re-evaluation hook for each case.
             await _perform_case_action(
-                case_id, body, job.actor, self.state, batch_id=batch_id
+                case_id, body, job.actor, self.state, batch_id=batch_id, via="bulk"
             )
 
         await self._item_loop(job, token, run, result_kind="case_lifecycle")
@@ -724,6 +731,8 @@ class JobRunner:
         await self._item_loop(job, token, run, result_kind="case_assignment")
 
     async def _case_tag(self, job: Job, token: str) -> None:
+        # ``case_tags`` runs the runbook re-evaluation hook (Round 14 SPEC §4.10.4) for
+        # each case whose tags this job changes.
         from ..api.routes import TagsBody, case_tags
 
         tag = str(job.params["tag"])

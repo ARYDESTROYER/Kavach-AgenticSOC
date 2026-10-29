@@ -494,6 +494,139 @@ class AppState:
             self._oidc_state_store = store
         return store
 
+    # ------------------------------------------------------------------ #
+    # Round 14 runbooks (SPEC §4.10.6, §3.5). Built lazily over the shared KV and
+    # rebound when ``_wire()`` swaps the KV, like ``oidc_state``.
+    # ------------------------------------------------------------------ #
+    @property
+    def runbook_library(self):
+        """The operator runbook LIBRARY (``stores.runbook_library``): always the REAL
+        store. The Demo pipeline and matcher read it (D45), and while Demo Mode is on
+        every write is refused (``409 runbook_demo_readonly``)."""
+        store = getattr(self, "_runbook_library_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.runbook_library import RunbookLibraryStore
+
+            store = RunbookLibraryStore(kv, read_only=lambda: self._demo is not None)
+            self._runbook_library_store = store
+        return store
+
+    @property
+    def real_runbook_runs(self):
+        """The REAL per-case run store (``stores.runbook_runs``), whatever Demo Mode
+        shows (the cases reset clears it)."""
+        store = getattr(self, "_real_runbook_runs_store", None)
+        kv = getattr(self, "_kv", None)
+        if store is None or store.kv is not kv:
+            from .stores.runbook_runs import RunbookRunStore
+
+            store = RunbookRunStore(kv)
+            self._real_runbook_runs_store = store
+        return store
+
+    @property
+    def runbook_runs(self):
+        """Per-case runs for the active real/Demo boundary (SPEC §3.5): Demo cases have
+        Demo runs, stored on the Demo stack's own KV and gone when Demo Mode ends. A
+        Demo stack that does not build its own run store gets one over its KV."""
+        demo = self._demo
+        if demo is None:
+            return self.real_runbook_runs
+        store = getattr(demo, "runbook_runs", None)
+        if store is not None:
+            return store
+        cached = getattr(self, "_demo_runbook_runs", None)
+        if cached is not None and cached[0] is demo:
+            return cached[1]
+        from .stores.runbook_runs import RunbookRunStore
+
+        store = RunbookRunStore(demo.kv)
+        self._demo_runbook_runs = (demo, store)
+        return store
+
+    @property
+    def legacy_procedures(self):
+        """Read-only access to the retired procedure namespaces (one release): the
+        runbook migration and the legacy export groups read them only through this
+        (``stores.legacy_procedures``, which has no write method)."""
+        from .stores.legacy_procedures import LegacyProcedureReader
+
+        return LegacyProcedureReader(self._kv)
+
+    async def _project_runbook_corpus(self, generation: str) -> bool:
+        """Step 7 of the runbook migration (SPEC §4.10.17): the full Published-only RAG
+        projection, every chunk tagged ``generation``. The RAG service supplies it
+        (``RagService.project_runbook_corpus(generation=..., library=...)``); until a
+        build has it, the projection stays pending and the next start resumes it."""
+        project = getattr(getattr(self, "rag", None), "project_runbook_corpus", None)
+        if not callable(project):
+            return False
+        result = await project(generation=generation, library=self.runbook_library)
+        return result is not False
+
+    async def run_runbook_migration(self, *, project_in_background: bool = False):
+        """Convert the stored operator procedures into runbooks once (SPEC §4.10.17,
+        E9), or resume an interrupted conversion or projection. Audited in the REAL
+        control audit as the system actor ``runbook_migration``.
+
+        :meth:`startup` passes ``project_in_background=True``: the conversion (steps 1
+        to 6, at most 200 documents, no model call) runs inline, and the RAG
+        reprojection (step 7, which embeds the whole Published corpus) runs as a
+        tracked background task (:meth:`_start_runbook_projection`), so a slow or
+        unreachable embedding provider never delays the API. Until it completes the
+        retriever excludes untagged legacy runbook chunks (#9). A failure is logged by
+        the caller and the next start resumes."""
+        from .engine.runbook_migration import run_runbook_migration
+
+        outcome = await run_runbook_migration(
+            library=self.runbook_library,
+            legacy=self.legacy_procedures,
+            audit=self.control_audit,
+            prefs=self.prefs,
+            projector=self._project_runbook_corpus,
+            project=not project_in_background,
+        )
+        if project_in_background and not outcome.projection_completed:
+            self._start_runbook_projection()
+        legacy_dir = getattr(getattr(self.prefs, "playbooks", None), "dir", None)
+        if legacy_dir:
+            logger.warning(
+                "Preferences.playbooks.dir is set: its procedure files were converted into "
+                "runbooks once, the setting is ignored from now on and can be removed."
+            )
+        return outcome
+
+    def _start_runbook_projection(self) -> asyncio.Task[Any] | None:
+        """Run the migration's pending RAG projection (step 7) as a tracked tenant
+        writer: a factory reset or shutdown cancels it (``cancel_mutation_tasks``) and
+        the next start resumes it from the marker. Returns the task, or ``None`` when
+        writes are fenced (a reset is running) or one is already running."""
+        running = getattr(self, "_runbook_projection_task", None)
+        if running is not None and not running.done():
+            return running
+        from .engine.runbook_migration import resume_runbook_projection
+
+        async def _project() -> bool:
+            try:
+                done = await resume_runbook_projection(
+                    library=self.runbook_library, projector=self._project_runbook_corpus,
+                )
+            except Exception as exc:  # noqa: BLE001 - resumed at the next start
+                logger.warning("Runbook RAG projection did not finish (%s); it resumes at the next start", exc)
+                return False
+            if done:
+                logger.info("Runbook RAG projection completed")
+            return done
+
+        try:
+            task = self.spawn_mutation_task(_project(), name="runbook-rag-projection")
+        except RuntimeError as exc:
+            logger.warning("Runbook RAG projection not started (%s); it resumes at the next start", exc)
+            return None
+        self._runbook_projection_task = task
+        return task
+
     @property
     def cases(self):
         return self._demo.cases if self._demo is not None else self._real_cases
@@ -2833,6 +2966,14 @@ class AppState:
             await self.refresh_playbooks()
         except Exception as exc:  # noqa: BLE001 — packaged procedures still remain live
             logger.warning("Durable playbook refresh failed (%s); using packaged set", exc)
+        # Round 14 (SPEC §4.10.17, E9): convert the stored operator procedures into
+        # runbooks once (or resume an interrupted run); the RAG reprojection then runs
+        # in the background, so startup never waits for the embedding provider.
+        # Before the Demo restore below, so the library is written as real state.
+        try:
+            await self.run_runbook_migration(project_in_background=True)
+        except Exception as exc:  # noqa: BLE001 - resumed at the next start
+            logger.error("Runbook migration did not finish (%s); it resumes at the next start", exc)
         # Round 4: now that the PERSISTED prefs (incl. configured sources) are loaded,
         # re-point the primary log surface + (re)build the PollerManager fan-out so a
         # deployment that boots WITH multiple persisted PULL sources polls ALL of them,
@@ -3399,10 +3540,13 @@ class AppState:
         except Exception as exc:  # noqa: BLE001 — never break enable on a capability pass
             logger.debug("demo initial capability pass failed: %s", exc)
 
-        # Commit the fully-built stack. update_prefs() does not yield after assigning
-        # self.prefs; the following synchronous assignment therefore presents one
-        # atomic off→ready transition to other asyncio tasks.
-        await self.update_prefs(pending_prefs)
+        # Commit the fully-built stack. Only the Demo switch is written, onto the LIVE
+        # settings read inside the write lock: a real settings save that landed while
+        # the stack was seeding (and has already written its ``settings.updated`` row)
+        # is kept, never undone by the copy taken before seeding. mutate_prefs() does
+        # not yield after assigning self.prefs; the following synchronous assignment
+        # therefore presents one atomic off→ready transition to other asyncio tasks.
+        await self.mutate_prefs(lambda live: live.model_copy(update={"demo": new_demo}))
         self._demo = demo_stack
         self._demo_generation += 1
         # Start the live simulator only after the complete stack is publicly visible.
@@ -3469,9 +3613,9 @@ class AppState:
                 pass
             self._demo = None
             self._demo_generation += 1
-        prefs = self.prefs.model_copy(deep=True)
-        prefs.demo = DemoConfig()  # mode='off', run_id=''
-        await self.update_prefs(prefs)
+        # Only the Demo switch is written, onto the live settings read inside the write
+        # lock, so a real settings save made while the stack was torn down is kept.
+        await self.mutate_prefs(lambda live: live.model_copy(update={"demo": DemoConfig()}))
         logger.info("Demo mode DISABLED; real state restored")
         return await self.demo_status()
 

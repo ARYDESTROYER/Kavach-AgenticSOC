@@ -53,6 +53,7 @@ from typing import Any, ClassVar, Literal
 from pydantic import Field, field_validator
 
 from ...utils import iso_now
+from ...engine.case_aggregate import AggregateRequestError
 from .base import Artifact, ChatTool, ChatToolContext, ToolOutcome
 from .cases import load_case_page
 from .common import (
@@ -88,6 +89,8 @@ from .stats import (
     AGGREGATE_TOOL_TIMEOUT_S,
     bucket_axis,
     canonical_rank,
+    case_severity_breakdown,
+    case_severity_counts,
     coarsened_note,
     comparison_basis,
     counted_share,
@@ -103,6 +106,7 @@ from .stats import (
     result_rows,
     run_bucketed,
     run_case_aggregate,
+    unreadable_severity_note,
     window_caption_label,
 )
 
@@ -645,11 +649,12 @@ class SocMetricsTool(ChatTool):
             outcome = ToolOutcome.failure(CASE_STORE_DOWN)
             outcome.observation = {"kind": args.kind, "case_store_unavailable": True}
             return outcome
-        except ValueError as exc:
+        except AggregateRequestError as exc:
             if args.kind not in AGGREGATE_KINDS:
                 raise
             # The aggregator refused the REQUEST (engine text naming what to use
-            # instead): an input error, never a store outage.
+            # instead): an input error, never a store outage. A ``ValueError`` the
+            # store raised while reading (a corrupt document) falls to the store branch.
             return invalid_aggregate_input(exc)
         except Exception as exc:  # noqa: BLE001 — an aggregate store failure is "not measured"
             if args.kind not in AGGREGATE_KINDS:
@@ -726,9 +731,16 @@ class SocMetricsTool(ChatTool):
         mttr = metric_value("mttr_p50", totals.get("mttr_p50"))
         comparison_rows = self._posture_rows(compared) if len(periods) > 1 else []
         by_key = {r["key"]: r for r in comparison_rows}
-        sev_rows, _ = result_rows(severity)
-        sev = {str((g.get("key") or {}).get("severity") or "info"): int(finite((g.get("metrics") or {}).get("count")) or 0)
-               for g in sev_rows}
+        breakdown = await case_severity_breakdown(ctx, window, levels_result=severity)
+        # The same reading of the same rows as the breakdown: a case with no readable
+        # band is in no level (never counted as Info, a real level), and rows naming
+        # one level add up, so the observation and the block state the same figures.
+        sev, sev_unreadable = case_severity_counts(severity)
+        plain_levels = categories([(group_label("severity", b), sev.get(b, 0)) for b in _SEVERITIES],
+                                  dimension="Severity", ordered=True)
+        unreadable_note = unreadable_severity_note(sev_unreadable)
+        if unreadable_note:
+            plain_levels["basis_caption"] = unreadable_note
         risk_index = extras.get("active_risk_index")
         items = [
             kpi("active_risk_index", "Active Risk Index", risk_index, "score", display="gauge",
@@ -748,15 +760,18 @@ class SocMetricsTool(ChatTool):
                      data={"items": items}, provenance="code", basis="exact" if exact else "sample",
                      total=main.total, window=caption),
             Artifact(id="a2", kind="categories", title="Cases by severity", title_trusted=True,
-                     data=categories([(group_label("severity", b), sev.get(b, 0)) for b in _SEVERITIES],
-                                     dimension="Severity", ordered=True),
-                     provenance="code", total=main.total, window=caption),
+                     # Named levels with the rules behind each (Round 14 SPEC §4.7.2); the
+                     # plain levels when the breakdown could not be read.
+                     data=breakdown or plain_levels,
+                     provenance="code", untrusted_labels=breakdown is not None, total=main.total, window=caption),
         ]
         observation: dict[str, Any] = {
             "window": label,
             "case_count": main.total,
             "exact": exact,
             "severity_counts": {b: sev.get(b, 0) for b in _SEVERITIES},
+            # Cases left out of every level above (no readable band): never folded into info.
+            "severity_unreadable": sev_unreadable,
             "open_now": {"count": totals.get("open_now"), "window_exempt": True, "exact": exact},
             # Rates are 0..1 ratios, as on the dashboard (the tiles show them in percent).
             "quality": {
@@ -1706,7 +1721,7 @@ class CostUsageTool(ChatTool):
         budget = await self._budget(ctx)
         try:
             outcome = await self._aggregated(ctx, args, window, periods, budget, plan=(bucket, planned))
-        except ValueError as exc:
+        except AggregateRequestError as exc:
             # The aggregator refused the REQUEST (engine text): an input error, never
             # a ledger outage.
             return invalid_aggregate_input(exc)

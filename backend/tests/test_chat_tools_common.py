@@ -184,9 +184,10 @@ def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
     assert iso["opts"]["from"] == "2026-10-01T00:00:00Z" and iso["opts"]["to"] == "2026-10-01T22:00:00Z"
     # Not expressible on the Logs page: a structured filter, ids, unsafe or padded
     # free text, an id outside the router grammar.
-    for refused in (args(ip="10.0.0.1"), args(user="alice"), args(host="web01"), args(rule="r1"),
+    for refused in (args(ip="10.0.0.1"), args(user="alice"), args(host="web01"),
                     args(severity_gte=5.0), args(ids=["e1"]), args(contains="a\u200bb"),
-                    args(contains=" padded")):
+                    args(contains=" padded"), args(rule="a\u200bb"), args(rule="line\nbreak"),
+                    args(rule="r" * 257)):
         assert view(make_ctx(), refused, fanout) is None, refused
     assert view(make_ctx(source_id="bad id"), args(), fanout) is None
     # The implicit primary source (id unknown), or no record of what ran: no view.
@@ -194,6 +195,38 @@ def test_logs_console_view_only_for_filters_the_logs_page_can_express() -> None:
     assert view(make_ctx(), args(), None) is None
     assert view(make_ctx(source_id="src-a"), args(), None) is None
     assert view(make_ctx(source_id="src-a"), args(), {"window": "last 24h"}) is None
+
+
+def test_logs_console_view_carries_an_exact_rule_filter() -> None:
+    """Round 14 (SPEC §4.6.1, §4.6.6): the Logs page has an exact "Rule is" filter and
+    the log tools match a rule the way it does, so a rule-filtered call gets its view,
+    with the rule byte for byte (spaces, non-ASCII letters, never trimmed). A ring the
+    call read still applies the rule (the page filters ring rows itself), but not free
+    text; a malformed record of what ran still gets no view."""
+    from types import SimpleNamespace
+
+    from app.agents.chat_tools.common import logs_console_view
+
+    def args(**kw: object) -> SimpleNamespace:
+        base = {k: None for k in ("ip", "user", "host", "rule", "severity_gte", "contains",
+                                  "time_from", "time_to", "source_id", "window")}
+        base["ids"] = []
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    rule = "Fehlgeschlagene Anmeldung über SSH "
+    fanout = {"sources": [{"name": "A", "mode": "search"}, {"name": "B", "mode": "search"}]}
+    got = logs_console_view(make_ctx(), args(rule=rule), fanout, now=NOW)
+    assert got == {"page": "logs", "opts": {"rule": rule, "from": "2026-10-07T12:00:00Z",
+                                             "to": "2026-10-08T12:00:00Z"}}
+    both = logs_console_view(make_ctx(), args(rule="r1", contains="failed"), fanout, now=NOW)
+    assert both["opts"]["rule"] == "r1" and both["opts"]["logQuery"] == "failed"
+    ring = {"sources": [{"name": "A", "mode": "search"}, {"name": "push", "mode": "buffer"}]}
+    assert logs_console_view(make_ctx(), args(rule="r1"), ring, now=NOW)["opts"]["rule"] == "r1"
+    assert logs_console_view(make_ctx(), args(rule="r1", contains="x"), ring, now=NOW) is None
+    for malformed in ({"sources": []}, {"sources": "A"}, {"sources": [{"name": "B"}]},
+                      {"sources": [{"name": "B", "mode": "tail"}]}):
+        assert logs_console_view(make_ctx(), args(rule="r1"), malformed, now=NOW) is None, malformed
 
 
 def test_logs_console_view_never_for_a_live_tail_source() -> None:
