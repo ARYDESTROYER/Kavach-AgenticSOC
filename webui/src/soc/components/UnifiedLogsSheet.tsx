@@ -58,6 +58,7 @@ import {
   TableCell,
 } from '@/ui/table';
 import { CodeBlock } from '@/soc/components/CodeBlock';
+import { useOverflowRight } from '@/soc/hooks/useOverflowRight';
 import type { AskAiChipProps } from '@/soc/components/AskAiChip';
 import { useAuth } from '@/soc/auth';
 import { useRoute } from '@/soc/router';
@@ -232,37 +233,6 @@ const RowSeverity: React.FC<{ severity: number; scaleMax: number }> = ({ severit
     <SeverityBadge severity={severity} scaleMax={scaleMax} className="px-1.5 text-2xs" />
   </span>
 );
-
-/**
- * Whether a horizontally scrolling region has more content to its right, for the
- * right-edge fade (the cue `DataTable` draws, SPEC §4.9.2). Re-measured on scroll, on a
- * resize of the region or its table, and whenever `deps` change.
- */
-function useMoreToTheRight(el: HTMLElement | null, deps: readonly unknown[]): boolean {
-  const [more, setMore] = React.useState(false);
-  const measure = React.useCallback(() => {
-    setMore(el ? el.scrollWidth - el.clientWidth - el.scrollLeft > 1 : false);
-  }, [el]);
-  React.useLayoutEffect(() => {
-    measure();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [measure, ...deps]);
-  React.useEffect(() => {
-    if (!el) return undefined;
-    el.addEventListener('scroll', measure, { passive: true });
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      observer = new ResizeObserver(() => measure());
-      observer.observe(el);
-      if (el.firstElementChild) observer.observe(el.firstElementChild);
-    }
-    return () => {
-      el.removeEventListener('scroll', measure);
-      observer?.disconnect();
-    };
-  }, [el, measure]);
-  return more;
-}
 
 /* -------------------------------------------------------------------------- */
 /* Per-source status strip                                                    */
@@ -639,7 +609,8 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
   );
   const isMobile = useIsMobile();
   const [scrollEl, setScrollEl] = React.useState<HTMLDivElement | null>(null);
-  const moreToTheRight = useMoreToTheRight(scrollEl, [rows, hideRuleColumn, expanded]);
+  // The right-edge fade: the same measurement `DataTable` draws its cue from.
+  const moreToTheRight = useOverflowRight(scrollEl, [rows, hideRuleColumn, expanded]);
   const ceilingBySource = React.useMemo(() => {
     const out = new Map<string, number>();
     for (const s of sources) out.set(s.source_id, severityCeiling(s, ceilings));

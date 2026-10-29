@@ -10,8 +10,9 @@
  * range for Agent health, one refresh for both reports, freshness), then Agent health and
  * the observed outcomes, each module on the tinted panel. While the headline is still
  * collecting evidence, the detail modules (comparisons, guardrails, evidence quality,
- * daily evidence) fold behind one disclosure so the page does not open on a wall of
- * "collecting" rows. `AgentEffectivenessSummary` is the compact form Auto-tuning embeds.
+ * daily evidence, and the rows behind the operational outcomes strip) fold behind one
+ * disclosure so the page does not open on a wall of "collecting" rows.
+ * `AgentEffectivenessSummary` is the compact form Auto-tuning embeds.
  */
 import * as React from 'react';
 import {
@@ -47,7 +48,11 @@ import {
   AgentOperationalOutcomes,
   SourceCoverageGuidance,
   TuningOutcomeContext,
+  asSentence,
+  outcomesCollecting,
+  outcomesForPeriod,
   type AgentImprovementEvidenceWithOutcomes,
+  type OutcomePeriod,
 } from '@/soc/components/AgentOperationalOutcomes';
 import { HealthDiagnostics } from '@/soc/components/HealthDiagnostics';
 import { KpiTile } from '@/soc/components/KpiTile';
@@ -359,7 +364,7 @@ export function AgentEffectivenessSummary({
               accent="success"
               icon={CheckCircle2}
               sub={
-                metrics.analyst_reported_verdict_agreement.current.reason ||
+                asSentence(metrics.analyst_reported_verdict_agreement.current.reason) ||
                 'Source × severity mix adjusted'
               }
               status={evidenceStatus(metrics.analyst_reported_verdict_agreement)}
@@ -379,7 +384,7 @@ export function AgentEffectivenessSummary({
               accent="high"
               icon={Scale}
               sub={
-                metrics.material_analyst_correction_rate.current.reason ||
+                asSentence(metrics.material_analyst_correction_rate.current.reason) ||
                 'Source × severity mix adjusted'
               }
               status={evidenceStatus(metrics.material_analyst_correction_rate)}
@@ -402,7 +407,7 @@ export function AgentEffectivenessSummary({
               accent="primary"
               icon={Clock3}
               sub={
-                metrics.human_review_turnaround.current.reason ||
+                asSentence(metrics.human_review_turnaround.current.reason) ||
                 'Median elapsed review time'
               }
               status={evidenceStatus(metrics.human_review_turnaround)}
@@ -517,7 +522,9 @@ function windowsLine(data: AgentImprovementEvidence): string {
 
 function EvidenceReport({ data, loading, error, load }: EvidenceState) {
   const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const [outcomePeriod, setOutcomePeriod] = React.useState<OutcomePeriod>('week_over_week');
   const detailsId = React.useId();
+  const operationalDetailsId = React.useId();
 
   if (loading && !data) {
     return (
@@ -547,17 +554,36 @@ function EvidenceReport({ data, loading, error, load }: EvidenceState) {
   const HeadlineIcon = headline.icon;
   const collecting = data.headline.state === 'insufficient_evidence';
   const expandedEvidence = data as AgentImprovementEvidenceWithOutcomes;
-  const hasOutcomes = Boolean(
-    expandedEvidence.period_comparisons?.week_over_week?.outcomes ?? expandedEvidence.outcomes,
-  );
+  // The outcomes the operational panel shows: the selected period's, or (older backend)
+  // the fixed cohorts'.
+  const shownOutcomes = outcomesForPeriod(expandedEvidence, outcomePeriod);
+  const hasOutcomes = Boolean(shownOutcomes);
   const showDetails = !collecting || detailsOpen;
   // A guardrail the server could evaluate is never folded away: the headline can say
   // "not enough evidence" (other domains are still collecting) while the false-negative
   // guardrail is already measured, even breached. Only rows still collecting fold.
   const guardrailEvaluable = guardrailsEvaluable(data);
-  const foldedNames = guardrailEvaluable
-    ? 'Outcome comparisons, evidence quality and the daily evidence are'
-    : 'Outcome comparisons, safety guardrails, evidence quality and the daily evidence are';
+  // The operational outcomes keep their headline strip on the page; the rows behind it
+  // (what supports the movements, the system layers, the trend check) fold with the rest.
+  // They are named as still collecting only when a comparison on the strip is: with every
+  // tile on a sufficient sample, the sentence must not say otherwise.
+  const operationalCollecting = shownOutcomes ? outcomesCollecting(shownOutcomes) : false;
+  const folded = [
+    'Outcome comparisons',
+    operationalCollecting ? 'the evidence behind the operational outcomes' : null,
+    guardrailEvaluable ? null : 'safety guardrails',
+    'evidence quality',
+    'the daily evidence',
+  ].filter((name): name is string => name !== null);
+  const foldedNames = `${folded.slice(0, -1).join(', ')} and ${folded[folded.length - 1]} are`;
+  const foldSentence = [
+    `${foldedNames} still collecting the minimum samples.`,
+    hasOutcomes && !operationalCollecting ? 'The rows behind the operational outcomes are folded with them.' : '',
+    'Show them to see what each one is waiting for.',
+  ]
+    .filter(Boolean)
+    .join(' ');
+  const controls = hasOutcomes ? `${detailsId} ${operationalDetailsId}` : detailsId;
 
   return (
     <div className={cn('flex flex-col', PANEL_GAP)} data-testid="agent-effectiveness">
@@ -612,14 +638,9 @@ function EvidenceReport({ data, loading, error, load }: EvidenceState) {
         />
       ) : null}
 
-      {hasOutcomes ? (
-        <Panel title="Operational outcomes" caption="complete UTC days" data-testid="agent-operational-outcomes">
-          <AgentOperationalOutcomes evidence={expandedEvidence} />
-        </Panel>
-      ) : null}
-
-      {collecting && guardrailEvaluable ? <SafetyGuardrails data={data} /> : null}
-
+      {/* The disclosure comes BEFORE everything it controls (the operational rows and the
+          folded modules), so showing them only adds content below the focused button:
+          reading and focus order follow it, and the button never moves out of view. */}
       {collecting ? (
         <Panel
           title="Evidence details"
@@ -629,7 +650,7 @@ function EvidenceReport({ data, loading, error, load }: EvidenceState) {
               variant="outline"
               size="sm"
               aria-expanded={detailsOpen}
-              aria-controls={detailsId}
+              aria-controls={controls}
               onClick={() => setDetailsOpen((open) => !open)}
             >
               {detailsOpen ? 'Hide details' : 'Show details'}
@@ -637,12 +658,21 @@ function EvidenceReport({ data, loading, error, load }: EvidenceState) {
           }
           data-testid="agent-effectiveness-details-toggle"
         >
-          <p className="text-sm text-muted-foreground">
-            {foldedNames} still collecting the minimum samples. Open them to see what each one is
-            waiting for.
-          </p>
+          <p className="text-sm text-muted-foreground">{foldSentence}</p>
         </Panel>
       ) : null}
+
+      {hasOutcomes ? (
+        <AgentOperationalOutcomes
+          evidence={expandedEvidence}
+          detailsHidden={!showDetails}
+          detailsId={operationalDetailsId}
+          period={outcomePeriod}
+          onPeriodChange={setOutcomePeriod}
+        />
+      ) : null}
+
+      {collecting && guardrailEvaluable ? <SafetyGuardrails data={data} /> : null}
 
       {/* Always in the DOM, so the disclosure's aria-controls names an element that exists;
           `hidden` keeps the folded modules out of the layout and the accessibility tree. No
@@ -659,9 +689,7 @@ function EvidenceReport({ data, loading, error, load }: EvidenceState) {
         <DailyEvidence data={data} />
       </div>
 
-      <Panel title="Evidence coverage" data-testid="agent-coverage-guidance" className="[&>section]:border-y-0 [&>section]:py-0">
-        <SourceCoverageGuidance evidence={expandedEvidence} />
-      </Panel>
+      <SourceCoverageGuidance evidence={expandedEvidence} />
 
       <p className="text-sm text-muted-foreground" data-testid="agent-effectiveness-footer">
         Reporting only: deterministic case decisions are unchanged. No model calls or billing, and no
@@ -692,7 +720,7 @@ function OutcomeComparisons({ data }: { data: AgentImprovementEvidence }) {
           goodDirection="up"
           accent="success"
           icon={CheckCircle2}
-          sub={metrics.analyst_reported_verdict_agreement.current.reason || 'Source × severity mix adjusted'}
+          sub={asSentence(metrics.analyst_reported_verdict_agreement.current.reason) || 'Source × severity mix adjusted'}
           status={evidenceStatus(metrics.analyst_reported_verdict_agreement)}
           sample={{ count: qualitySample, label: 'comparable grades' }}
           definition={metrics.analyst_reported_verdict_agreement.definition}
@@ -707,7 +735,7 @@ function OutcomeComparisons({ data }: { data: AgentImprovementEvidence }) {
           goodDirection="down"
           accent="high"
           icon={Scale}
-          sub={metrics.material_analyst_correction_rate.current.reason || 'Source × severity mix adjusted'}
+          sub={asSentence(metrics.material_analyst_correction_rate.current.reason) || 'Source × severity mix adjusted'}
           status={evidenceStatus(metrics.material_analyst_correction_rate)}
           sample={{ count: metrics.material_analyst_correction_rate.current.sample_count, label: 'comparable grades' }}
           definition={metrics.material_analyst_correction_rate.definition}
@@ -722,7 +750,7 @@ function OutcomeComparisons({ data }: { data: AgentImprovementEvidence }) {
           goodDirection="down"
           accent="primary"
           icon={Clock3}
-          sub={metrics.human_review_turnaround.current.reason || 'Median elapsed review time'}
+          sub={asSentence(metrics.human_review_turnaround.current.reason) || 'Median elapsed review time'}
           status={evidenceStatus(metrics.human_review_turnaround)}
           sample={{ count: turnaroundSample, label: 'human-reviewed cases' }}
           definition={metrics.human_review_turnaround.definition}

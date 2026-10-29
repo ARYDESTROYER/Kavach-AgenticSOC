@@ -256,3 +256,22 @@ describe('BrandingEditor — faithful minimal login preview', () => {
     },
   );
 });
+
+describe('BrandingEditor copy (Round 14)', () => {
+  beforeEach(() => {
+    getMock.mockReset().mockResolvedValue({ ...SAVED_BRANDING });
+    putMock.mockReset().mockImplementation((_p: string, b: unknown) => Promise.resolve(b));
+    getBrandingMock.mockReset().mockResolvedValue({ ...SAVED_BRANDING });
+    window.localStorage.clear();
+  });
+
+  it('explains accent presets, design tokens and the material pack without em dashes', async () => {
+    renderEditor();
+    expect(
+      await screen.findByText('One-click brand hues, each checked to keep white text at WCAG AA on the accent fill.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/^Bounded layout tokens: corner radius and display font\./)).toBeInTheDocument();
+    expect(screen.getByText(/denser command-center feel; colours and text contrast are unchanged\.$/)).toBeInTheDocument();
+    expect(document.body.textContent ?? '').not.toMatch(/[–—]/);
+  });
+});

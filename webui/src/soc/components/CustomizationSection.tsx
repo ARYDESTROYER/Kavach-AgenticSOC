@@ -1,5 +1,5 @@
 /**
- * CustomizationSection — Settings > Appearance & customization (Wave 7).
+ * CustomizationSection: Settings > Account > Appearance (Wave 7; renamed in Round 14).
  *
  * Two-store model surfaced in one panel:
  *  - PERSONAL (every signed-in user): the colour-mode theme, "Reduce transparency"
@@ -10,8 +10,8 @@
  *    default theme. Org edits go through `api.prefs.putOrg` / `api.terminology.put`,
  *    then the cascade is refreshed so the change applies immediately.
  *
- * SECURITY (#9): every terminology key/label + saved-view name is user/operator DATA
- * — rendered as plain text, never markup, never an LLM-prompt input.
+ * SECURITY (#9): every terminology key/label + saved-view name is user/operator DATA,
+ * rendered as plain text, never markup, never an LLM-prompt input.
  *
  * IMPORTANT (React #310): every hook is declared at the top of the component, ABOVE
  * any conditional return.
@@ -53,15 +53,18 @@ const TRANSPARENCY_OPTIONS: Array<{ value: TransparencyPreference; label: string
   { value: 'reduced', label: 'On' },
 ];
 
-/** The high-traffic terminology keys offered in the editor (each defaulted). */
-const TERM_KEYS: Array<{ key: string; help: string }> = [
-  { key: 'cases', help: 'The "Cases" nav + page title' },
-  { key: 'case', help: 'The singular noun, e.g. "this case"' },
-  { key: 'alerts', help: 'The "Alerts" label' },
-  { key: 'alert', help: 'The singular alert noun' },
-  { key: 'sources', help: 'The "Sources" label' },
-  { key: 'source', help: 'The singular source noun' },
-  { key: 'analyst', help: 'The operator role noun' },
+/**
+ * The high-traffic terminology keys offered in the editor (each defaulted). Each field is
+ * labelled by the word it renames, never by its stored key; the key is only the wire name.
+ */
+const TERM_KEYS: Array<{ key: string; label: string; help: string }> = [
+  { key: 'cases', label: 'Cases (plural)', help: 'In navigation and page titles.' },
+  { key: 'case', label: 'Case (singular)', help: 'In sentences, for example "this case".' },
+  { key: 'alerts', label: 'Alerts (plural)', help: 'Where alerts are listed.' },
+  { key: 'alert', label: 'Alert (singular)', help: 'In sentences, for example "this alert".' },
+  { key: 'sources', label: 'Sources (plural)', help: 'In navigation and page titles.' },
+  { key: 'source', label: 'Source (singular)', help: 'In sentences, for example "this source".' },
+  { key: 'analyst', label: 'Analyst', help: 'The role of the people who triage cases.' },
 ];
 
 export const CustomizationSection: React.FC = () => {
@@ -86,7 +89,7 @@ export const CustomizationSection: React.FC = () => {
     setTransparency(next);
     applyTransparencyPreference(next);
     void api.prefs.putUser({ misc: { [TRANSPARENCY_PREF_KEY]: next } }).catch(() => {
-      /* best-effort — the local apply already happened */
+      /* best-effort: the local apply already happened */
     });
   }, []);
 
@@ -94,8 +97,8 @@ export const CustomizationSection: React.FC = () => {
   const [terms, setTerms] = React.useState<Record<string, string>>({});
   const [orgTheme, setOrgTheme] = React.useState<ThemeMode>('system');
   // The FULL org customization as last loaded, so a partial save (e.g. "Save default"
-  // theme) can round-trip the fields this panel has no editor for — org saved views,
-  // pinned view ids, and per-role default dashboards. `PUT /api/prefs/org` REPLACES the
+  // theme) can round-trip the fields this panel has no editor for (org saved views,
+  // pinned view ids, and per-role default dashboards). `PUT /api/prefs/org` REPLACES the
   // whole object (no server-side merge), so omitting them would silently wipe them.
   const [orgFull, setOrgFull] = React.useState<OrgCustomization>({});
   const [orgLoaded, setOrgLoaded] = React.useState(false);
@@ -111,7 +114,7 @@ export const CustomizationSection: React.FC = () => {
         setTerms({ ...(org.terminology ?? {}) });
         setOrgTheme((org.default_theme as ThemeMode) ?? 'system');
       } catch {
-        /* non-admins may 403 on a future write — the GET is allowed, but be safe */
+        /* non-admins may 403 on a future write; the GET is allowed, but be safe */
       } finally {
         if (alive) setOrgLoaded(true);
       }
@@ -163,9 +166,9 @@ export const CustomizationSection: React.FC = () => {
       const saved = await api.prefs.putOrg(patch);
       setOrgFull(saved);
       await refresh();
-      toast.success('Org defaults saved');
+      toast.success('Organization defaults saved');
     } catch (e) {
-      const msg = e instanceof ApiError ? e.message : 'Could not save org defaults';
+      const msg = e instanceof ApiError ? e.message : 'Could not save organization defaults';
       toast.error(msg);
     } finally {
       setSavingOrg(false);
@@ -175,8 +178,8 @@ export const CustomizationSection: React.FC = () => {
   return (
     <div className="space-y-0" data-testid="customization-settings-surface">
       <SectionTitle
-        title="Appearance & customization"
-        sub="Choose your personal theme, manage saved views, and—when permitted—set organization terminology and defaults."
+        title="Appearance"
+        sub="Choose your personal theme and manage saved views. Administrators also set the organization's terminology and default theme."
       />
 
       {/* ---- Personal theme -------------------------------------------------- */}
@@ -232,7 +235,7 @@ export const CustomizationSection: React.FC = () => {
           <h3 className="text-sm font-semibold text-foreground">Saved views</h3>
           <p className="text-sm text-muted-foreground">
             Reusable list configurations. Create them from a list’s “Save view”
-            button; manage them here. Org-shared views are marked.
+            button; manage them here. Views shared with the organization are marked.
           </p>
         </div>
         {savedViews.length === 0 ? (
@@ -276,7 +279,8 @@ export const CustomizationSection: React.FC = () => {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="size-8 text-critical hover:text-critical"
+                    // Neutral at rest; red only on hover and focus (SPEC §4.9.2 RowActions).
+                    className="size-8 text-muted-foreground hover:bg-critical/10 hover:text-critical-text focus-visible:text-critical-text"
                     aria-label={`Delete ${v.name}`}
                     onClick={() =>
                       void deleteView(v.id).then((ok) =>
@@ -300,31 +304,33 @@ export const CustomizationSection: React.FC = () => {
         <section className="space-y-4 border-t border-border py-5">
           <div>
             <h3 className="text-sm font-semibold text-foreground">
-              Terminology <span className="text-xs font-normal text-muted-foreground">(org default — admin)</span>
+              Terminology <span className="text-xs font-normal text-muted-foreground">(organization default, administrators)</span>
             </h3>
             <p className="text-sm text-muted-foreground">
-              Rename high-traffic labels org-wide (e.g. call a case an “incident”).
+              Rename high-traffic labels organization-wide (for example, call a case an “incident”).
               Leave blank to use the built-in label. Plain text only.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            {TERM_KEYS.map(({ key, help }) => (
+            {TERM_KEYS.map(({ key, label, help }) => (
               <div key={key} className="space-y-1">
-                <Label htmlFor={`term-${key}`} className="text-xs text-muted-foreground">
-                  {key}{' '}
-                  <span className="text-muted-foreground/70">
-                    (default: {DEFAULT_TERMS[key] ?? key})
-                  </span>
+                {/* Named by its visible label (WCAG 2.5.3); the built-in word is the
+                    placeholder, and the help line says where the word appears. */}
+                <Label htmlFor={`term-${key}`} className="text-sm font-medium text-foreground">
+                  {label}
                 </Label>
                 <Input
                   id={`term-${key}`}
                   value={terms[key] ?? ''}
                   onChange={(e) => setTerm(key, e.target.value)}
                   placeholder={DEFAULT_TERMS[key] ?? key}
-                  aria-label={`Terminology for ${key} — ${help}`}
+                  aria-describedby={`term-${key}-help`}
                   disabled={!orgLoaded}
                   maxLength={120}
                 />
+                <p id={`term-${key}-help`} className="text-xs text-muted-foreground">
+                  {help}
+                </p>
               </div>
             ))}
           </div>
@@ -336,10 +342,12 @@ export const CustomizationSection: React.FC = () => {
           </div>
 
           <div className="space-y-2 pt-2">
-            <Label className="text-xs text-muted-foreground">Org default theme</Label>
+            <Label id="org-default-theme-label" className="text-sm font-medium text-foreground">
+              Organization default theme
+            </Label>
             <div className="flex items-center gap-2">
               <Select value={orgTheme} onValueChange={(v) => setOrgTheme(v as ThemeMode)}>
-                <SelectTrigger className="w-[12rem]" aria-label="Org default theme">
+                <SelectTrigger className="w-[12rem]" aria-labelledby="org-default-theme-label">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>

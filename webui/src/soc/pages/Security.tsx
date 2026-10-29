@@ -484,9 +484,16 @@ export function SecurityMfaInner({ embedded = false }: SecurityMfaInnerProps) {
   const [mfaEnabled, setMfaEnabled] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<unknown>(null);
+  // The enrollment or turn-off flow, opened from the row's action (SPEC §4.9.6): one row
+  // states the state ("Two-factor authentication · Off · Turn on") and the flow appears
+  // under it only while it runs.
+  const [flowOpen, setFlowOpen] = React.useState(false);
+  const actionRef = React.useRef<HTMLButtonElement | null>(null);
+  const returnFocus = React.useRef(false);
 
-  const load = React.useCallback(async () => {
-    setLoading(true);
+  /** Read the enrolled state. `quiet` keeps the row on screen while it re-reads. */
+  const load = React.useCallback(async (quiet = false) => {
+    if (!quiet) setLoading(true);
     setLoadError(null);
     try {
       const me = await api.auth.me();
@@ -502,11 +509,29 @@ export function SecurityMfaInner({ embedded = false }: SecurityMfaInnerProps) {
     void load();
   }, [load]);
 
+  // Closing the flow (Cancel, or a finished change) returns focus to the row's action,
+  // which is back on the page once the flow has gone.
+  const closeFlow = React.useCallback(() => {
+    returnFocus.current = true;
+    setFlowOpen(false);
+  }, []);
+  React.useEffect(() => {
+    if (flowOpen || !returnFocus.current || !actionRef.current) return;
+    returnFocus.current = false;
+    actionRef.current.focus();
+  }, [flowOpen, mfaEnabled, loading]);
+
+  // A finished change flips the state in the same render that closes the flow, so the row
+  // action that takes focus back already names the new state ("Turn off" after turning two-
+  // factor on), never the stale one for a moment. The quiet re-read then reconciles it with
+  // the server.
   const onChanged = React.useCallback(async () => {
+    setMfaEnabled((wasEnabled) => !wasEnabled);
+    closeFlow();
     await refresh();
-    await load();
+    await load(true);
     toast.success('Two-factor settings updated.');
-  }, [refresh, load]);
+  }, [closeFlow, refresh, load]);
 
   const ready = authEnabled && isAuthenticated && Boolean(username) && !loading && !loadError;
   const body = (
@@ -551,10 +576,31 @@ export function SecurityMfaInner({ embedded = false }: SecurityMfaInnerProps) {
                 label="Two-factor authentication"
                 help="A code from an authenticator app, asked for each time you sign in."
                 status={<StatusDot tone={mfaEnabled ? 'success' : 'neutral'}>{mfaEnabled ? 'On' : 'Off'}</StatusDot>}
+                action={
+                  ready && !flowOpen ? (
+                    <Button
+                      ref={actionRef}
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      // The visible word starts the name (WCAG 2.5.3); the rest says what it changes.
+                      aria-label={mfaEnabled ? 'Turn off two-factor authentication' : 'Turn on two-factor authentication'}
+                      onClick={() => setFlowOpen(true)}
+                    >
+                      {mfaEnabled ? 'Turn off' : 'Turn on'}
+                    </Button>
+                  ) : null
+                }
               />
-              {ready ? (
+              {ready && flowOpen ? (
                 <SettingRow variant="block">
-                  <MfaSetupCard enabled={mfaEnabled} onChanged={onChanged} frameless />
+                  <MfaSetupCard
+                    enabled={mfaEnabled}
+                    onChanged={onChanged}
+                    onCancel={closeFlow}
+                    autoStart
+                    frameless
+                  />
                 </SettingRow>
               ) : null}
             </>

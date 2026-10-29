@@ -9,11 +9,10 @@
  * header, the Runbook tab, the Overview card, the facts rail and the close dialog always
  * agree with each other and with the queue chip the server computes.
  *
- * The Next step is the Console's own rule (`nextStep`): the first open REQUIRED step that
- * is not waiting for approval, and none when no required step is left to act on (the
- * card then says "All required steps are done." or that the rest wait for approval). The
- * server's `next_step`, which case chat reads, still names a step waiting for approval
- * and falls back to an optional step; aligning it is recorded for the backend owner.
+ * The Next step is one rule shared with the server's next_step (engine/runbook_runs.py),
+ * which case chat reads: the first open REQUIRED step that is not waiting for approval,
+ * and none when no required step is left to act on (the card then says "All required
+ * steps are done." or that the rest wait for approval).
  *
  * Only an abandoned run is read only (`runWorkable`): the server marks a run completed in
  * the same write that finishes its last required step and keeps accepting step writes on

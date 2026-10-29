@@ -93,3 +93,13 @@ describe('DemoModeSection knobs (Round-6 #31/#32)', () => {
     await waitFor(() => expect(enable).toBeEnabled());
   });
 });
+
+describe('DemoModeSection enable form copy (Round 14)', () => {
+  it('reads without dashes used as punctuation and labels its mode picker in sentence case', () => {
+    renderDemo();
+    expect(document.body.textContent ?? '').not.toMatch(/[–—]/);
+    expect(screen.getByText('Live mode only: how often a new synthetic batch arrives.')).toBeInTheDocument();
+    expect(screen.getByText('Deterministic: the same seed reproduces the same data.')).toBeInTheDocument();
+    expect(screen.getByText('Mode').className).not.toMatch(/\buppercase\b|\btracking-/);
+  });
+});

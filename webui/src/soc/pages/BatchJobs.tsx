@@ -20,7 +20,7 @@
  * advisory plumbing and never touches `decide()`.
  */
 import * as React from 'react';
-import { Download, Layers, Percent, Square } from 'lucide-react';
+import { ArrowRight, Download, Layers, Percent, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { ListRow, ListRows, LoadingState, Panel, StatusDot } from '@/design-system';
@@ -40,7 +40,7 @@ import { LoadError } from '@/soc/components/LoadError';
 import { InlineCode } from '@/soc/components/CodeBlock';
 import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
 import { useCan } from '@/soc/components/Can';
-import { settingsSectionHash } from '@/soc/router';
+import { pageHash, settingsSectionHash } from '@/soc/router';
 import {
   batchApi,
   BATCH_STATE_META,
@@ -48,11 +48,13 @@ import {
   type BatchJobRow,
 } from '@/soc/Batch.api';
 import {
+  destinationActionLabel,
   downloadJobArtifact,
   isActiveJobStatus,
   JOBS_CHANGED_EVENT,
   jobSummary,
 } from '@/soc/jobs/jobs';
+import { auditExportView } from '@/soc/jobs/audit-export-view';
 
 const JOB_POLL_MS = 15_000;
 const JOB_POLL_MS_LIVE = 60_000;
@@ -276,33 +278,48 @@ export function BatchJobsInner() {
         id: 'actions',
         header: 'Actions',
         align: 'right',
-        cell: (job) => (
-          <span className="inline-flex justify-end gap-1.5">
-            {job.result?.artifact_id ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7"
-                onClick={() => void downloadArtifact(job)}
-              >
-                <Download className="size-3.5" aria-hidden />
-                Download
-              </Button>
-            ) : null}
-            {isActiveJobStatus(job.status) ? (
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7"
-                disabled={job.cancel_requested}
-                onClick={() => void cancelJob(job)}
-              >
-                <Square className="size-3.5" aria-hidden />
-                {job.cancel_requested ? 'Stopping…' : 'Cancel'}
-              </Button>
-            ) : null}
-          </span>
-        ),
+        cell: (job) => {
+          // SPEC §4.5.8: a finished audit export links into the audit log, in the view it
+          // holds. The row's own name tells this job's controls from the next row's.
+          const view = auditExportView(job);
+          const name = `${humanizeToken(job.kind)} ${job.job_id}`;
+          return (
+            <span className="inline-flex justify-end gap-1.5">
+              {view ? (
+                <Button asChild variant="outline" size="sm" className="h-7">
+                  <a href={pageHash(view.page, view.opts)} aria-label={`${destinationActionLabel(view)} for ${name}`}>
+                    {destinationActionLabel(view)}
+                    <ArrowRight className="size-3.5" aria-hidden />
+                  </a>
+                </Button>
+              ) : null}
+              {job.result?.artifact_id ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7"
+                  aria-label={`Download ${name}`}
+                  onClick={() => void downloadArtifact(job)}
+                >
+                  <Download className="size-3.5" aria-hidden />
+                  Download
+                </Button>
+              ) : null}
+              {isActiveJobStatus(job.status) ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7"
+                  disabled={job.cancel_requested}
+                  onClick={() => void cancelJob(job)}
+                >
+                  <Square className="size-3.5" aria-hidden />
+                  {job.cancel_requested ? 'Stopping…' : 'Cancel'}
+                </Button>
+              ) : null}
+            </span>
+          );
+        },
       },
     ],
     [cancelJob, downloadArtifact],

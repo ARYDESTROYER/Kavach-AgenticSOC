@@ -68,6 +68,7 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { IconButton } from '@/soc/components/IconButton';
 import { useAnnouncer } from '@/soc/components/announcer';
@@ -910,17 +911,16 @@ export function ReportPanel({ conversationId, reportId, mode, onClose, onCountCh
                 <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="report-summary-stale">
                   <span className="font-medium text-warning-text">Out of date</span>
                   <span className="text-muted-foreground">The report changed after this summary was written.</span>
-                  <Button
-                    variant="outline"
-                    size="sm"
+                  {/* The one refresh spinner (SPEC §4.9.2): it turns only while the
+                      summary is being rewritten, and keeps its label so the row never
+                      shifts. */}
+                  <RefreshButton
+                    label="Regenerate"
                     className="h-7"
-                    disabled={summaryBusy}
+                    refreshing={summaryBusy}
                     onClick={() => void generate()}
                     aria-describedby={estimateText && !summaryBusy ? estimateId : undefined}
-                  >
-                    <RefreshCw aria-hidden className={cn(summaryBusy && 'animate-spin motion-reduce:animate-none')} />
-                    Regenerate
-                  </Button>
+                  />
                   {summaryBusy ? null : estimateCaption}
                 </div>
               ) : null}

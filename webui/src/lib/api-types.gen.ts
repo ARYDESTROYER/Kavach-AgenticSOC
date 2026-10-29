@@ -10858,11 +10858,16 @@ export interface components {
         };
         /**
          * NotificationProvidersResponse
-         * @description The notification providers catalog envelope (no secrets — names/ids only).
+         * @description The notification providers catalog envelope (no secrets, names and ids only).
+         *
+         *     ``channel_types`` holds the registered channel type ids as plain strings, the
+         *     shape ``notifications.channel.channel_types()`` returns (``["email", "slack",
+         *     ...]``). Typing it as a list of objects made the response validation fail, so
+         *     the route answered 500 instead of the catalog.
          */
         NotificationProvidersResponse: {
             /** Channel Types */
-            channel_types?: Record<string, never>[];
+            channel_types?: string[];
             /** Email Presets */
             email_presets?: Record<string, never>[];
             /** Template Ids */
@@ -12318,6 +12323,10 @@ export interface components {
          *     is no empty library: the 12 built-ins are always listed.
          */
         RunbookLibrary: {
+            /** Migrated Procedures */
+            migrated_procedures?: {
+                [key: string]: string;
+            };
             migration?: components["schemas"]["RunbookMigrationNotice"] | null;
             /** Runbooks */
             runbooks?: components["schemas"]["RunbookSummary"][];

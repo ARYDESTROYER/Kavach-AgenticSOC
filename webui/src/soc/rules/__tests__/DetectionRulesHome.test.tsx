@@ -424,6 +424,22 @@ describe('DetectionRulesHome "Needs a runbook"', () => {
     expect(screen.queryByText('Needs a runbook')).toBeNull();
   });
 
+  it("prefers the server's migration map from the library read over the rows", async () => {
+    runbooks.list.mockResolvedValue({
+      runbooks: [summary({ id: 'brute-force-password-spray' }), summary({ id: 'old-proc' })],
+      migration: null,
+      migrated_procedures: { old_proc: 'old-proc', brute_force_login: 'gone-runbook' },
+    });
+    renderHome(
+      prefsWith(attach('migrated', { playbook_id: 'old_proc' }), attach('mapped-away', { playbook_id: 'brute_force_login' })),
+    );
+    const rowOf = (name: string) => screen.getByRole('button', { name }).closest('tr') as HTMLElement;
+    // The map sends brute_force_login to a runbook the library does not list, so the server
+    // skips the rule even though the built-in exists; old_proc attaches through the map.
+    await waitFor(() => expect(within(rowOf('mapped-away')).getByText('Needs a runbook')).toBeInTheDocument());
+    expect(within(rowOf('migrated')).queryByText('Needs a runbook')).toBeNull();
+  });
+
   it('flags only a rule that names no runbook when the library cannot be read (no false warning)', async () => {
     runbooks.list.mockRejectedValue(new Error('403'));
     renderHome(prefsWith(attach('named', { runbook_id: 'maybe-published' }), attach('blank', {})));

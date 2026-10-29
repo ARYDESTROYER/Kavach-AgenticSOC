@@ -654,10 +654,10 @@ describe('Tuning page', () => {
 
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Outcomes' }), { key: 'Enter' });
     fireEvent.click(screen.getByRole('button', { name: 'View full evidence' }));
-    expect(onNavigate).toHaveBeenCalledWith('metrics', { tab: 'effectiveness' });
+    expect(onNavigate).toHaveBeenCalledWith('effectiveness');
   });
 
-  it('drills through to the Analytics host when navigation comes from router context', async () => {
+  it('drills through to Agent effectiveness when navigation comes from router context', async () => {
     window.location.hash = '#/tuning';
     render(
       <RouterProvider>
@@ -670,7 +670,7 @@ describe('Tuning page', () => {
 
     fireEvent.keyDown(screen.getByRole('tab', { name: 'Outcomes' }), { key: 'Enter' });
     fireEvent.click(screen.getByRole('button', { name: 'View full evidence' }));
-    await waitFor(() => expect(window.location.hash).toBe('#/metrics?tab=effectiveness'));
+    await waitFor(() => expect(window.location.hash).toBe('#/effectiveness'));
   });
 
   it('keeps tuning available when the operator lacks the separate metrics grant', async () => {

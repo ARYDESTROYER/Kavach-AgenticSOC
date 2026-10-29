@@ -843,6 +843,29 @@ describe('the hand mirrors', () => {
     expect(rationale.procedure_provenance?.runbook?.version).toBe(4);
   });
 
+  it('retires the Scans page calls with the page (W8b: #/scans opens the Case Manager)', () => {
+    const client = api as unknown as Record<string, unknown>;
+    expect(client.scans).toBeUndefined();
+    expect(client.scanNotifications).toBeUndefined();
+    const types = stripComments(readFileSync(resolve(LIB, 'types.ts'), 'utf8'));
+    expect(types).not.toMatch(/^export\s+interface\s+ScanNotifications\b/m);
+    // No test mock keeps a key for the retired calls either.
+    const stale: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (/\.test\.tsx?$/.test(entry) && path !== fileURLToPath(import.meta.url)) {
+          if (/\bscanNotifications\s*:|\bscans\s*:\s*(?:ok|vi\.fn)\b/.test(readFileSync(path, 'utf8'))) {
+            stale.push(path.slice(SRC.length + 1));
+          }
+        }
+      }
+    };
+    walk(SRC);
+    expect(stale).toEqual([]);
+  });
+
   it('retires the pre-Round 14 audit, playbook and runbook calls', () => {
     const client = api as unknown as Record<string, unknown> & { cases: Record<string, unknown> };
     for (const retired of [
@@ -864,6 +887,23 @@ describe('the hand mirrors', () => {
       expect(client[retired], retired).toBeUndefined();
     }
     expect(client.cases.runPlaybook).toBeUndefined();
+    // No test mock still names a retired call: a spy on a method that no longer exists
+    // can never be called, so a "never called" assertion on it would pass vacuously.
+    const stale: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir)) {
+        const path = join(dir, entry);
+        if (statSync(path).isDirectory()) walk(path);
+        else if (/\.test\.tsx?$/.test(entry) && path !== fileURLToPath(import.meta.url)) {
+          const text = readFileSync(path, 'utf8');
+          if (/\b(?:getPlaybooks?|runPlaybook|getRunbooks?|reindexRunbooks?|dryRunPlaybookSelection)\s*:|\baudit:\s*\{\s*list\b/.test(text)) {
+            stale.push(path.slice(SRC.length + 1));
+          }
+        }
+      }
+    };
+    walk(SRC);
+    expect(stale).toEqual([]);
     const types = stripComments(readFileSync(resolve(LIB, 'types.ts'), 'utf8'));
     expect(types).not.toMatch(
       /^export\s+interface\s+(Playbook\w*|Runbook(?:Detail|sResponse|MutationResponse|DeleteResponse|IndexResult|AuthoringStandard)?|AuditRecord|AuditResponse|AuditQuery)\b/m,

@@ -24,7 +24,9 @@ const api = vi.hoisted(() => ({
   suggestRunbook: vi.fn(),
   getRunbookProgress: vi.fn(),
   getCaseRunbooks: vi.fn(),
+  exportRunbookVersionMarkdown: vi.fn(),
 }));
+const download = vi.hoisted(() => ({ downloadBlob: vi.fn() }));
 
 vi.mock('@/lib/api-runbooks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api-runbooks')>();
@@ -42,10 +44,16 @@ vi.mock('@/soc/pages/CaseDetail.api', async (importOriginal) => {
   };
 });
 
+vi.mock('@/lib/download-blob', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/download-blob')>();
+  return { ...actual, downloadBlob: download.downloadBlob };
+});
+
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), message: vi.fn(), warning: vi.fn() },
 }));
 
+import { toast } from 'sonner';
 import { ApiError } from '@/lib/api';
 import type { Case } from '@/lib/types';
 import type { CaseRunbooks, RunbookRunUpdate } from '@/lib/types-runbooks';
@@ -130,6 +138,7 @@ function tabStops(root: HTMLElement): HTMLElement[] {
 
 beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockReset();
+  download.downloadBlob.mockReset().mockReturnValue(true);
   api.draftRunbookStep.mockResolvedValue({ update: null, estimate: null });
   api.getRunbookCandidates.mockResolvedValue({ candidates: [] });
 });
@@ -373,6 +382,37 @@ describe('RunbookPanel run view', () => {
     const nav = screen.getByRole('navigation', { name: 'Runbooks on this case' });
     await user.click(within(nav).getByRole('button', { name: /Generic incident/ }));
     expect(await screen.findByText(/Fallback · /)).toBeInTheDocument();
+  });
+
+  it("exports the run's pinned version through the runbook client, named for that version", async () => {
+    const user = userEvent.setup();
+    const blob = new Blob(['# Brute force'], { type: 'text/markdown' });
+    api.exportRunbookVersionMarkdown.mockResolvedValue({ blob, contentDisposition: null, contentType: 'text/markdown' });
+    render(<Harness initial={makeData([makeRun({ runbook_id: 'brute-force', version: 4 })])} />);
+    const actions = screen.getByRole('button', { name: 'Runbook actions' });
+    act(() => actions.focus());
+    await user.keyboard('{Enter}');
+    await user.click(await screen.findByRole('menuitem', { name: 'Export as Markdown' }));
+    await waitFor(() => expect(download.downloadBlob).toHaveBeenCalledWith('brute-force-v4.md', blob));
+    expect(api.exportRunbookVersionMarkdown).toHaveBeenCalledTimes(1);
+    expect(api.exportRunbookVersionMarkdown).toHaveBeenCalledWith('brute-force', 4);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('says why an export failed, in the refusal the server gave', async () => {
+    const user = userEvent.setup();
+    api.exportRunbookVersionMarkdown.mockRejectedValue(
+      new ApiError(404, 'That version of the runbook is not available.', {
+        detail: { code: 'runbook_version_not_found', message: 'That version of the runbook is not available.' },
+      }),
+    );
+    render(<Harness initial={makeData([makeRun({ runbook_id: 'brute-force', version: 4 })])} />);
+    const actions = screen.getByRole('button', { name: 'Runbook actions' });
+    act(() => actions.focus());
+    await user.keyboard('{Enter}');
+    await user.click(await screen.findByRole('menuitem', { name: 'Export as Markdown' }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('That version of the runbook is not available.'));
+    expect(download.downloadBlob).not.toHaveBeenCalled();
   });
 
   it('keeps refreshing quietly while a lookup has not answered yet (no step text changes)', async () => {

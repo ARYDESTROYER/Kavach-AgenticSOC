@@ -77,6 +77,34 @@ describe('Attach a runbook', () => {
     expect(screen.queryByText('Needs a runbook')).toBeNull();
   });
 
+  it("resolves a retired procedure id through the server's migration map from the library read", async () => {
+    mocks.listRunbookLibrary.mockResolvedValue({
+      runbooks: [
+        makeSummary({ id: 'brute-force-password-spray', title: 'Brute force and password spray', origin: 'builtin', state: 'published', live_version: 1 }),
+        makeSummary({ id: 'old-proc', title: 'Old procedure', origin: 'imported', state: 'published', live_version: 1 }),
+        makeSummary({ id: 'bf-imported', title: 'Imported draft', origin: 'imported', state: 'draft', live_version: null, draft_version: 1 }),
+      ],
+      migration: null,
+      migrated_procedures: { old_proc: 'old-proc', brute_force_login: 'bf-imported' },
+    });
+    await renderActions(ruleWith({ playbook_id: 'old_proc' }));
+    expect(await screen.findByText('Found from the earlier id old_proc. It keeps working; pick the runbook again to record its id.')).toBeInTheDocument();
+    expect(screen.queryByText('Needs a runbook')).toBeNull();
+  });
+
+  it("needs a runbook when the server's map sends a retired id to a draft (the built-in is not used)", async () => {
+    mocks.listRunbookLibrary.mockResolvedValue({
+      runbooks: [
+        makeSummary({ id: 'brute-force-password-spray', title: 'Brute force and password spray', origin: 'builtin', state: 'published', live_version: 1 }),
+        makeSummary({ id: 'bf-imported', title: 'Imported draft', origin: 'imported', state: 'draft', live_version: null, draft_version: 1 }),
+      ],
+      migration: null,
+      migrated_procedures: { brute_force_login: 'bf-imported' },
+    });
+    await renderActions(ruleWith({ playbook_id: 'brute_force_login' }));
+    expect(await screen.findByText('Needs a runbook')).toBeInTheDocument();
+  });
+
   it('says a rule needs a runbook when its target is a draft only', async () => {
     await renderActions(ruleWith({ runbook_id: 'my-draft', playbook_id: 'my-draft' }));
     expect(await screen.findByText('Needs a runbook')).toBeInTheDocument();

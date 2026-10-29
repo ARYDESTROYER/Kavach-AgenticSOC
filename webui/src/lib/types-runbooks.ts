@@ -480,6 +480,13 @@ export interface RunbookLibrary {
   runbooks: RunbookSummary[];
   /** `null` when nothing was migrated. */
   migration: RunbookMigrationNotice | null;
+  /**
+   * Retired procedure id to the runbook id the one-shot migration gave it: the map a "Run a
+   * runbook" automation rule saved with a retired procedure id resolves through at fire time.
+   * Only the entries whose runbook the viewer may see; empty before the migration, when
+   * nothing was migrated, or when the server could not read the migration record.
+   */
+  migrated_procedures: Record<string, string>;
 }
 
 /** Query of `GET /api/runbooks`. */

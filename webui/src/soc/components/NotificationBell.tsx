@@ -377,7 +377,7 @@ export function NotificationBell({
 
   const goEffectiveness = React.useCallback(() => {
     setOpen(false);
-    onNavigate('metrics', { tab: 'effectiveness' });
+    onNavigate('effectiveness');
   }, [onNavigate]);
 
   const badge = badgeText(unread);

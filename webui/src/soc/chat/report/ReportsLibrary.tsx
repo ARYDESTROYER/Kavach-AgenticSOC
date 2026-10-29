@@ -1,11 +1,12 @@
 /**
- * ReportsLibrary — the body of the Workspace's report library (chat revamp SPEC §10.6),
+ * ReportsLibrary: the body of the Workspace's report library (chat revamp SPEC §10.6),
  * loaded lazily by the thin `pages/Reports.tsx` route shell (so the entry chunk lists
  * only that shell; the report modules stay out of the entry's preload table).
  *
- *   - List: every report the analyst built from chat answers — title, template, items,
- *     source conversation, last update — with search, open, rename, export and delete.
- *     Reports are never evicted; at 100 a new one is refused (the chat says so).
+ *   - List: every report the analyst built from chat answers (title, template, items,
+ *     source conversation, last update) with search, open, rename, export and delete,
+ *     on one "Saved reports" panel (Round 14, SPEC §4.9.1). Reports are never evicted;
+ *     at 100 a new one is refused (the chat says so), and the panel says so only then.
  *   - Document: the SAME renderer the exports use (`ReportDocument`), with a visible
  *     "Download PDF", the flat Export menu and a link back to each item's source
  *     conversation (`navigate('chat', {conversationId, messageId})`). A deleted or
@@ -16,13 +17,26 @@
  * Exports run through one guarded runner (`useReportExport`): progress on the button,
  * one file per pick, a toast with the file name, and an inline error with Retry.
  *
+ * Round 14 (SPEC §4.9.3): both views use the Overview's page header. The list is titled
+ * "Reports" with its explanation in the help tip; the document is titled by the report,
+ * with an "All reports" link above the title and its item count beside it in the controls
+ * slot, so it is always visible. The template and last update are stated once, in the
+ * document's own meta row right under the header (the same row its exports carry), never
+ * repeated beside the title. No icon, overline or description line.
+ *
+ * The list's columns declare their widths (SPEC §4.9.2), so the table keeps a fixed
+ * layout: a search that leaves only short titles never moves the columns, and a narrow
+ * screen scrolls sideways behind the right-edge fade with the title held in view. The
+ * whole row opens the report by pointer; the title button is its named keyboard action.
+ *
  * Every string is plain text (#9); report data is re-validated before it renders. Every
  * write carries the report's `expected_version`.
  */
 import * as React from 'react';
-import { ArrowLeft, FileText, MessageSquare, MoreHorizontal, Pencil, Search, Trash2 } from 'lucide-react';
+import { FileText, MessageSquare, MoreHorizontal, Pencil, Search, Trash2 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
+import { DASH, fmtNumber } from '@/lib/format';
 import { focusRing } from '@/lib/ui-recipes';
 import { CONSOLE_RELEASE_IDENTITY } from '@/lib/release';
 import { exportFileStem } from '@/lib/download';
@@ -46,7 +60,7 @@ import { PageHeader } from '@/soc/components/PageHeader';
 import { useAnnouncer } from '@/soc/components/announcer';
 import { useAuth } from '@/soc/auth';
 import { useNavigateOptional } from '@/soc/router';
-import { LoadingState } from '@/design-system';
+import { LoadingState, PANEL_PADDING_X, Panel } from '@/design-system';
 import { deleteReport, getReport, listConversations, listReports, patchReport } from '../chat-api';
 import { displayText } from '../stream-events';
 import { formatUtc } from '../blocks/format';
@@ -65,6 +79,29 @@ const MENU_TRIGGER = cn(
 );
 
 const ORIGIN = 'reports-page';
+
+/**
+ * The page's explanation, shown in the help tip beside the title. The same words as the
+ * route shell's `REPORTS_HELP` (`pages/Reports.tsx`), which shows while this body loads.
+ */
+export const REPORTS_LIBRARY_HELP =
+  'Reports you built from chat answers. Open one to read it, export it or go back to the conversation it came from.';
+
+/** The per-user report cap (the server refuses a new report at this count). */
+export const REPORT_LIMIT = 100;
+
+/** The link above a report's title, back to the list it was opened from (SPEC §4.9.3). */
+const BACK_TO_LIBRARY = { label: 'All reports', href: '#/reports' } as const;
+
+/**
+ * "6 items": the one fact beside the report's title. The document's meta row right under
+ * the header already states the template and the last update ("Updated … · Template:
+ * Investigation"), so the header never repeats them.
+ */
+export function reportFacts(report: Pick<Report, 'items'>): string {
+  const count = report.items.length;
+  return `${fmtNumber(count)} ${count === 1 ? 'item' : 'items'}`;
+}
 
 
 type PrintModule = typeof import('./export/print');
@@ -304,24 +341,18 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
     defang,
   );
 
-  const back = (
-    <Button variant="ghost" size="sm" onClick={onBack}>
-      <ArrowLeft aria-hidden /> All reports
-    </Button>
-  );
-
   if (loading && !report) {
     return (
-      <PageContainer variant="wide" className="space-y-6">
-        <PageHeader icon={FileText} eyebrow="Reports" title="Report" actions={back} />
+      <PageContainer variant="wide">
+        <PageHeader title="Report" back={BACK_TO_LIBRARY} />
         <LoadingState label="Loading report" layout="page" />
       </PageContainer>
     );
   }
   if (!report || !doc) {
     return (
-      <PageContainer variant="wide" className="space-y-6">
-        <PageHeader icon={FileText} eyebrow="Reports" title="Report" actions={back} />
+      <PageContainer variant="wide">
+        <PageHeader title="Report" back={BACK_TO_LIBRARY} />
         {error ? (
           <LoadError error={error} title="Could not open the report" fallback={reportErrorMessage(error, 'The report could not be loaded.')} onRetry={() => void load()} />
         ) : (
@@ -334,7 +365,6 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
   const busy = exports.exporting(report.id);
   const actions = (
     <div className="flex flex-wrap items-center gap-1">
-      {back}
       <DownloadPdfButton buttonRef={pdfRef} busy={busy} onClick={() => doExport('print', defang)} />
       <ExportMenu
         triggerRef={exportRef}
@@ -371,12 +401,15 @@ function ReportDocumentView({ reportId, onBack }: { reportId: string; onBack: ()
   );
 
   return (
-    <PageContainer variant="wide" className="space-y-6">
+    <PageContainer variant="wide">
       <PageHeader
-        icon={FileText}
-        eyebrow="Reports"
         title={report.title}
-        description={`${TEMPLATE_LABEL[report.template]} · ${report.items.length} ${report.items.length === 1 ? 'item' : 'items'} · updated ${formatUtc(report.updated_at)}`}
+        back={BACK_TO_LIBRARY}
+        controls={
+          <span className="text-sm tabular-nums text-muted-foreground" data-testid="report-facts">
+            {reportFacts(report)}
+          </span>
+        }
         actions={actions}
       />
       {notice ? <p className="text-sm text-critical-text">{notice}</p> : null}
@@ -535,20 +568,23 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
     void exports.run(entry.id, () => getReport(entry.id), format, on, { title: entry.title });
   };
 
+  // Declared widths keep the table in a fixed layout (SPEC §4.9.2): the title takes the
+  // spare width, every other column holds its own, so filtering never moves a column.
   const columns: DataTableColumn<ReportListEntry>[] = [
     {
       id: 'title',
       header: 'Title',
       sortable: true,
       lockVisible: true,
+      minWidth: '12rem',
       cell: (r) => (
         <button
           type="button"
           onClick={() => onOpen(r.id)}
-          // A rem cap, not max-w-full: in an auto-layout table a percentage never caps
-          // the column, so a long title pushed Updated and the actions off-screen.
+          // The row's named action: a 44px target on a phone (SPEC §3.3), the row's own
+          // height from `sm` up. The fixed column caps it, so it truncates in place.
           className={cn(
-            'block max-w-[18rem] truncate rounded-sm text-left font-medium text-foreground hover:underline 2xl:max-w-[28rem]',
+            'block min-h-11 max-w-full truncate rounded-sm py-2 text-left font-medium text-foreground hover:underline sm:min-h-0 sm:py-0',
             focusRing,
           )}
           title={r.title}
@@ -557,22 +593,24 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
         </button>
       ),
     },
-    { id: 'template', header: 'Template', sortable: true, cell: (r) => TEMPLATE_LABEL[r.template] },
+    { id: 'template', header: 'Template', sortable: true, width: '10rem', cell: (r) => TEMPLATE_LABEL[r.template] },
     {
       id: 'items',
       header: 'Items',
       sortable: true,
       align: 'right',
-      cell: (r) => <span className="tabular-nums">{r.item_count}</span>,
+      width: '6rem',
+      cell: (r) => <span className="tabular-nums">{fmtNumber(r.item_count)}</span>,
     },
     {
       id: 'conversation',
       header: 'Source conversation',
+      width: '14rem',
       cell: (r) => {
         // A draft's own conversation, else the one its items came from (a report saved
         // from an answer or a whole conversation is not that conversation's draft).
         const sourceId = r.conversation_id ?? r.source_conversation_id ?? null;
-        if (!sourceId) return <span className="text-muted-foreground">—</span>;
+        if (!sourceId) return <span className="text-muted-foreground">{DASH}</span>;
         const known = conversations?.titles.get(sourceId);
         if (!known && conversations?.complete) return <span className="text-muted-foreground">{SOURCE_UNAVAILABLE}</span>;
         // A report started from a conversation is titled after it: never print the same
@@ -582,10 +620,7 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
           <button
             type="button"
             onClick={() => navigate('chat', { conversationId: sourceId })}
-            className={cn(
-              'inline-flex max-w-[12rem] items-center gap-1 rounded-sm text-primary hover:underline 2xl:max-w-[16rem]',
-              focusRing,
-            )}
+            className={cn('inline-flex max-w-full items-center gap-1 rounded-sm text-primary hover:underline', focusRing)}
             aria-label={`Open the source conversation of ${r.title}${known ? `: ${known}` : ''}`}
             title={known}
           >
@@ -599,6 +634,7 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
       id: 'updated',
       header: 'Updated (UTC)',
       sortable: true,
+      width: '13rem',
       className: 'whitespace-nowrap',
       headerClassName: 'whitespace-nowrap',
       cell: (r) => <span className="tabular-nums text-muted-foreground">{formatUtc(r.updated_at)}</span>,
@@ -609,6 +645,8 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
       menuLabel: 'Actions',
       align: 'right',
       lockVisible: true,
+      // Two 32px icon buttons and the panel's trailing inset.
+      width: '7rem',
       cell: (r) => (
         <div className="flex items-center justify-end gap-0.5">
         <ExportMenu
@@ -649,74 +687,96 @@ function ReportList({ onOpen }: { onOpen: (id: string) => void }) {
     },
   ];
 
+  const filtered = query.trim().length > 0;
+  const atLimit = (rows?.length ?? 0) >= REPORT_LIMIT;
+  const firstUse = rows !== null && rows.length === 0;
+
   return (
-    <PageContainer variant="wide" className="space-y-6">
-      <PageHeader
-        icon={FileText}
-        eyebrow="Workspace"
-        title="Reports"
-        description="Reports you built from chat answers. Open one to read it, export it or go back to the conversation it came from."
-      />
+    <PageContainer variant="wide">
+      <PageHeader title="Reports" help={REPORTS_LIBRARY_HELP} />
+      {notice ? <p className="text-sm text-critical-text">{notice}</p> : null}
+      {exports.error ? (
+        <ExportErrorNote
+          error={exports.error}
+          onRetry={exports.retry}
+          onDismiss={exports.dismissError}
+          showTitle
+          returnFocus={() => (exports.error ? triggers.current.get(exports.error.reportId) : null)}
+        />
+      ) : null}
       {error ? (
         <LoadError error={error} title="Could not load reports" fallback={reportErrorMessage(error, 'Reports could not be loaded.')} onRetry={() => void load()} />
-      ) : rows === null ? (
-        <LoadingState label="Loading reports" layout="table" shape="rows" shapeRows={5} />
       ) : (
-        <div className="space-y-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-[14rem] flex-1 sm:max-w-sm">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input
-                className="h-9 pl-9"
-                placeholder="Search reports"
-                aria-label="Search reports"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </div>
-            {/* The stored count against the per-user cap (a new report is refused at 100). */}
-            <span className="text-xs text-muted-foreground" title="You can keep up to 100 reports.">
-              <span className="tabular-nums">{rows.length}</span> {rows.length === 1 ? 'report' : 'reports'} · limit 100
-            </span>
-          </div>
-          {notice ? <p className="text-sm text-critical-text">{notice}</p> : null}
-          {exports.error ? (
-            <ExportErrorNote
-              error={exports.error}
-              onRetry={exports.retry}
-              onDismiss={exports.dismissError}
-              showTitle
-              returnFocus={() => (exports.error ? triggers.current.get(exports.error.reportId) : null)}
-            />
-          ) : null}
+        // One panel from the first paint: while the list loads it holds the table's own
+        // loading rows, so nothing jumps when the reports arrive.
+        <Panel
+          title="Saved reports"
+          padding="none"
+          // The stored count, or "n of m" while a search narrows the list.
+          count={
+            rows === null || firstUse
+              ? undefined
+              : filtered
+                ? `${fmtNumber(visible.length)} of ${fmtNumber(rows.length)}`
+                : rows.length
+          }
+          // Said only when it matters: at the cap a new report is refused.
+          caption={atLimit ? `Limit of ${fmtNumber(REPORT_LIMIT)} reached. Delete a report to save a new one.` : undefined}
+          actions={
+            rows === null || firstUse ? undefined : (
+              <div className="relative w-64 max-w-full">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                <Input
+                  className="h-8 pl-9"
+                  placeholder="Search reports"
+                  aria-label="Search reports"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+            )
+          }
+          data-testid="reports-panel"
+        >
           <DataTable
+            surface="panel"
             columns={columns}
             rows={visible}
             getRowId={(r) => r.id}
             sort={sort}
             onSortChange={setSort}
-            density="compact"
             ariaLabel="Reports"
-            empty={
-              rows.length === 0 ? (
-                <EmptyState
-                  icon={FileText}
-                  state="first-use"
-                  compact
-                  title="No reports yet"
-                  description="In Chat, use Add to report on an answer or a block. Each conversation keeps a draft report."
-                  action={
-                    <Button variant="outline" size="sm" onClick={() => navigate('chat', { newChat: true })}>
-                      Open Chat
-                    </Button>
-                  }
-                />
-              ) : (
-                <EmptyState icon={Search} state="no-results" compact title="No matching reports" description="Try another search." />
-              )
+            loading={rows === null}
+            loadingRows={5}
+            // The whole row opens the report by pointer; the title button in the row is
+            // its named keyboard action, so no second "Open" button is added.
+            onRowClick={(r) => onOpen(r.id)}
+            showRowAction={false}
+            // Narrow screens scroll sideways; the title stays in view.
+            stickyFirstColumn
+            // Nothing saved yet: the first-use state replaces the table, header row included.
+            emptyState={
+              firstUse ? (
+                <div className={cn(PANEL_PADDING_X, 'pb-4 xl:pb-5 3xl:pb-6')}>
+                  <EmptyState
+                    icon={FileText}
+                    state="first-use"
+                    compact
+                    title="No reports yet"
+                    description="In Chat, use Add to report on an answer or a block. Each conversation keeps a draft report."
+                    action={
+                      <Button variant="outline" size="sm" onClick={() => navigate('chat', { newChat: true })}>
+                        Open Chat
+                      </Button>
+                    }
+                  />
+                </div>
+              ) : undefined
             }
+            // A search that matches nothing keeps the columns in view.
+            empty={<EmptyState icon={Search} state="no-results" compact title="No matching reports" description="Try another search." />}
           />
-        </div>
+        </Panel>
       )}
       <RenameDialog
         open={renaming !== null}

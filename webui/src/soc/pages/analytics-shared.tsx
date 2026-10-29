@@ -29,6 +29,7 @@ import * as React from 'react';
 import type { NavOpts } from '@/lib/types';
 import { cn } from '@/lib/cn';
 import { DASH, fmtNumber, humanizeAge, humanizeToken } from '@/lib/format';
+import { onSignedOut } from '@/lib/session-events';
 import { Panel } from '@/design-system/panel';
 
 import { Button } from '@/ui/button';
@@ -74,13 +75,19 @@ export function windowCaption(hours: number): string {
   return analyticsWindow(hours).caption;
 }
 
-/** The range picked last in this session (a module value, so it outlives a page change). */
+/**
+ * The range picked last by the person signed in to this tab (a module value, so it
+ * outlives a page change). It is theirs: a sign-out, an ended session or another person
+ * signing in forgets it, so the next person starts on the default range.
+ */
 let rememberedHours = DEFAULT_ANALYTICS_HOURS;
 
-/** Tests: forget the remembered range (a fresh session starts on the default range). */
-export function resetAnalyticsWindowForTests(): void {
+/** Forget the remembered range: the next Analytics page opens on the default range. */
+export function resetAnalyticsWindow(): void {
   rememberedHours = DEFAULT_ANALYTICS_HOURS;
 }
+
+onSignedOut(resetAnalyticsWindow);
 
 /**
  * The Analytics range, shared by the Analytics pages for the session: `[hours, setHours]`.

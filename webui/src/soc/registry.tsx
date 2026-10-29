@@ -83,6 +83,7 @@ export type PageId =
   | 'chat'
   | 'reports'
   | 'intelligence'
+  | 'analytics'
   | 'metrics'
   | 'effectiveness'
   | 'models'
@@ -358,10 +359,14 @@ export const FEATURES: FeatureNode[] = [
 
   /* ---- Analytics ------------------------------------------------------- */
   {
-    id: 'metrics',
+    // The group has its own id (Round 14, finding 20) and opens Metrics, so on `#/metrics`
+    // the current element and the breadcrumb name the page ("Metrics"), never the group.
+    // `#/analytics` is a redirect to `#/metrics` (router PAGE_REDIRECTS).
+    id: 'analytics',
     label: 'Analytics',
     icon: BarChart3,
     group: 'analytics',
+    target: 'metrics',
     children: [
       // The Metrics page loads GET /api/metrics, which routes_metrics.py gates on
       // `metrics:view` — so the nav child gates on the SAME grant (mirroring the
@@ -634,6 +639,9 @@ export const ROUTES: Record<PageId, RouteDef> = {
     render: (c) => <Workspace tab={c.opts?.tab} caseId={c.opts?.caseId} />,
   },
   metrics: { element: Analytics, render: (c) => <Analytics tab={c.opts?.tab} /> },
+  // The Analytics group's own id redirects to `#/metrics` (router PAGE_REDIRECTS); this
+  // entry is the defensive fallback should the redirect entry ever be dropped.
+  analytics: { element: Analytics },
   intelligence: { element: Intelligence, render: (c) => <Intelligence tab={c.opts?.tab} /> },
 
   /* ---- Deep-link leaves that force a host sub-tab ----

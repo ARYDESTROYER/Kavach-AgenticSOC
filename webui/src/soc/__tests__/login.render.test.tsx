@@ -97,14 +97,14 @@ import Login from '../pages/Login';
 import { ApiError as ApiErrorFromMock } from '@/lib/api';
 
 /**
- * Every accessible name the Login page authors. The shared theme pill
- * (`components/auth/ThemeModePill.tsx`, outside this page) is left out: its label is
- * reported to the orchestrator for the same em dash fix.
+ * Every accessible name on the sign-in screen, the shared theme pill
+ * (`components/auth/ThemeModePill.tsx`) included: it names its state and action with a
+ * colon, never an em dash (Round 14).
  */
 function loginAriaLabels(): string[] {
-  return Array.from(document.body.querySelectorAll('[aria-label]'))
-    .filter((el) => !el.hasAttribute('data-login-theme-pill'))
-    .map((el) => el.getAttribute('aria-label') ?? '');
+  return Array.from(document.body.querySelectorAll('[aria-label]')).map(
+    (el) => el.getAttribute('aria-label') ?? '',
+  );
 }
 
 function renderLogin() {
@@ -233,12 +233,12 @@ describe('Login — four-mode render', () => {
     );
     // The appearance pill names the mode you are IN and switches to the other one.
     // jsdom's matchMedia reports no dark preference, so `system` resolves to light.
-    const pill = screen.getByRole('button', { name: 'Light mode — switch to dark mode' });
+    const pill = screen.getByRole('button', { name: 'Light mode: switch to dark mode' });
     expect(pill).toHaveAttribute('data-appearance', 'light');
     fireEvent.click(pill);
     expect(window.localStorage.getItem('soc.theme')).toBe('dark');
     expect(
-      screen.getByRole('button', { name: 'Dark mode — switch to light mode' }),
+      screen.getByRole('button', { name: 'Dark mode: switch to light mode' }),
     ).toHaveAttribute('data-appearance', 'dark');
     // Choosing an explicit appearance releases `system`.
     expect(screen.getByRole('button', { name: 'Use system theme' })).toHaveAttribute(
@@ -255,7 +255,7 @@ describe('Login — four-mode render', () => {
     );
     // `system` resolves back to light under jsdom's matchMedia, so the pill follows.
     expect(
-      screen.getByRole('button', { name: 'Light mode — switch to dark mode' }),
+      screen.getByRole('button', { name: 'Light mode: switch to dark mode' }),
     ).toHaveAttribute('data-appearance', 'light');
     expect(document.querySelector('[data-login-shell]')).toHaveAttribute(
       'data-login-theme-palette-settling',
@@ -393,7 +393,9 @@ describe('Login — four-mode render', () => {
     renderLogin();
     await screen.findByLabelText('Username');
     expect(document.body.textContent ?? '').not.toContain('\u2014');
-    loginAriaLabels().forEach((label) => expect(label).not.toContain('\u2014'));
+    // The theme pill is checked like every other name on the screen.
+    expect(loginAriaLabels()).toContain('Light mode: switch to dark mode');
+    loginAriaLabels().forEach((label) => expect(label).not.toMatch(/[\u2013\u2014]/));
   });
 
   it('keeps the focus-only mode heading free of an always-on outline (forced colours)', async () => {
@@ -691,7 +693,7 @@ describe('Login — mandated MFA enrollment during login', () => {
     // Confirm success destroys the one-time recovery codes → the explicit
     // saved-codes acknowledgment gates the submit.
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
     await waitFor(() =>
       expect(enrollConfirmMock).toHaveBeenCalledWith('pend-enroll-1', '123456'),
@@ -719,7 +721,7 @@ describe('Login — mandated MFA enrollment during login', () => {
       target: { value: '123456' },
     });
     fireEvent.click(screen.getByLabelText(/saved my recovery codes/i));
-    fireEvent.click(screen.getByRole('button', { name: 'Verify & sign in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and sign in' }));
 
     expect(await screen.findByText('Set a new password')).toBeInTheDocument();
     expect(onAuth).not.toHaveBeenCalled();

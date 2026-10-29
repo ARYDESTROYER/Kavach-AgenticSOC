@@ -1,325 +1,21 @@
+import * as React from 'react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { describe, expect, it } from 'vitest';
 
-import type {
-  AgentOperationalOutcomes as OutcomeContract,
-  AgentPeriodComparison,
-} from '@/lib/types';
 import { TooltipProvider } from '@/ui/tooltip';
 import {
   AgentOperationalOutcomes,
   SourceCoverageGuidance,
   TuningOutcomeContext,
+  asSentence,
+  outcomeWindowCaption,
   type AgentImprovementEvidenceWithOutcomes,
+  type OutcomePeriod,
 } from '../AgentOperationalOutcomes';
+import { evidence, outcomes } from './agent-outcome-fixtures';
 
 expect.extend(toHaveNoViolations);
-
-const DEFINITION = {
-  formula: 'bounded aggregate formula',
-  numerator: 'Eligible current observations.',
-  denominator: 'Eligible observations in the same window.',
-  eligibility: 'Complete UTC windows.',
-  caveats: 'Observed association only.',
-};
-
-function outcomes(): OutcomeContract {
-  return {
-    recorded_case_cost: {
-      label: 'Recorded case-associated AI cost',
-      unit: 'USD',
-      currency: 'USD',
-      status: 'enough_data',
-      reason: '',
-      current: {
-        total_cost: 18.4,
-        call_count: 80,
-        costed_cases: 40,
-        cost_per_costed_case: 0.46,
-        cost_per_day: 2.628571,
-      },
-      baseline: {
-        total_cost: 20,
-        call_count: 88,
-        costed_cases: 40,
-        cost_per_costed_case: 0.5,
-        cost_per_day: 0.714286,
-      },
-      delta: {
-        cost_per_day_relative: 2.68,
-        cost_per_costed_case_relative: -0.08,
-      },
-      direction: 'up',
-      cost_per_day_direction: 'up',
-      definition: DEFINITION,
-    },
-    observed_time_saved: {
-      label: 'Estimated elapsed time avoided',
-      unit: 'minutes',
-      status: 'enough_data',
-      reason: '',
-      current: {
-        status: 'enough_data',
-        reason: '',
-        human_owned_closure_p50_minutes: 52,
-        agent_closed_p50_minutes: 18,
-        observed_difference_minutes_per_case: 34,
-        observed_aggregate_elapsed_difference_minutes: 680,
-        estimated_total_minutes_saved: 680,
-        human_owned_closure_count: 28,
-        agent_closed_count: 20,
-        analyst_reported_total_minutes_saved: 610,
-        analyst_reported_sample_count: 18,
-        minimum_sample_per_owner: 10,
-      },
-      baseline: {
-        status: 'enough_data',
-        reason: '',
-        human_owned_closure_p50_minutes: 50,
-        agent_closed_p50_minutes: 20,
-        observed_difference_minutes_per_case: 30,
-        observed_aggregate_elapsed_difference_minutes: 570,
-        estimated_total_minutes_saved: 570,
-        human_owned_closure_count: 30,
-        agent_closed_count: 19,
-        analyst_reported_total_minutes_saved: 500,
-        analyst_reported_sample_count: 16,
-        minimum_sample_per_owner: 10,
-      },
-      delta: { minutes_per_case: 4 },
-      direction: 'stable',
-      definition: DEFINITION,
-    },
-    confirmed_positive_case_rate: {
-      label: 'Confirmed-positive share of evaluated cases',
-      unit: 'ratio',
-      status: 'enough_data',
-      reason: '',
-      current: {
-        value: 0.12,
-        available: true,
-        status: 'enough_data',
-        reason: '',
-        sample_count: 60,
-        minimum_sample: 30,
-        confirmed_positive_cases: 7,
-        outcome_evaluable_cases: 60,
-      },
-      baseline: {
-        value: 0.1,
-        available: true,
-        status: 'enough_data',
-        reason: '',
-        sample_count: 70,
-        minimum_sample: 30,
-        confirmed_positive_cases: 7,
-        outcome_evaluable_cases: 70,
-      },
-      delta: { percentage_points: 2 },
-      direction: 'up',
-      definition: DEFINITION,
-    },
-    true_positive_alert_yield: {
-      label: 'True-positive alert yield',
-      unit: 'ratio',
-      status: 'unavailable',
-      reason:
-        'Analyst outcomes are persisted per case while durable volume is counted per alert; the current schema has no defensible alert-level outcome lineage.',
-      current: {
-        value: null,
-        true_positive_alerts: null,
-        total_alerts: 8_400,
-        lineage_coverage: null,
-      },
-      baseline: {
-        value: null,
-        true_positive_alerts: null,
-        total_alerts: 7_700,
-        lineage_coverage: null,
-      },
-      delta: { percentage_points: null },
-      direction: 'insufficient_evidence',
-      supported_alternative: 'confirmed_positive_case_rate',
-      definition: DEFINITION,
-    },
-    alert_volume: {
-      label: 'Observed alert volume',
-      unit: 'alerts',
-      status: 'enough_data',
-      reason: '',
-      window_basis: 'complete_utc_days',
-      current: {
-        ingested_alerts: 8_400,
-        after_clustering_alerts: 980,
-        clustering_reduction_count: 7_420,
-        clustering_reduction_rate: 0.8833,
-        ingested_per_day: 1_200,
-        after_clustering_per_day: 140,
-      },
-      baseline: {
-        ingested_alerts: 30_800,
-        after_clustering_alerts: 4_200,
-        clustering_reduction_count: 26_600,
-        clustering_reduction_rate: 0.8636,
-        ingested_per_day: 1_100,
-        after_clustering_per_day: 150,
-      },
-      delta: {
-        ingested_per_day_relative: 0.091,
-        after_clustering_per_day_relative: -0.067,
-      },
-      direction: 'down',
-      ingested_direction: 'up',
-      after_clustering_direction: 'down',
-      definition: DEFINITION,
-    },
-    tuning_context: {
-      label: 'Threshold-tuning context',
-      status: 'enough_data',
-      reason: '',
-      current: { applied_changes: 2, rolled_back_changes: 0 },
-      baseline: { applied_changes: 1, rolled_back_changes: 1 },
-      delta: { applied_changes: 1 },
-      direction: 'down',
-      cooccurring_after_clustering_direction: 'down',
-      causal_claim: false,
-      model_fine_tuning_evidence: false,
-      definition: DEFINITION,
-    },
-    source_guidance: {
-      status: 'not_available',
-      reason:
-        'The current product does not persist validated source-gap-to-alert recommendation evidence.',
-      items: [],
-      long_term_objective: true,
-      required_evidence:
-        'A governed coverage model linking missing telemetry to alert-specific triage uncertainty.',
-    },
-  };
-}
-
-function period(days: number, currentAgreement: number): AgentPeriodComparison {
-  const compact = (
-    current: number,
-    baseline: number,
-    direction: 'improving' | 'stable' | 'regressing' | 'up' | 'down',
-  ) => ({
-    status: 'enough_data' as const,
-    reason: '',
-    current,
-    baseline,
-    current_sample_count: 40,
-    baseline_sample_count: 45,
-    delta: current - baseline,
-    direction,
-  });
-  const operational = outcomes();
-  if (days === 7) {
-    operational.recorded_case_cost.current.total_cost = 12.2;
-    operational.recorded_case_cost.current.cost_per_day = 1.743;
-    operational.recorded_case_cost.current.cost_per_costed_case = 0.61;
-    operational.recorded_case_cost.baseline.total_cost = 11;
-    operational.recorded_case_cost.baseline.cost_per_day = 1.571;
-    operational.recorded_case_cost.baseline.cost_per_costed_case = 0.55;
-    operational.recorded_case_cost.delta.cost_per_costed_case_relative = 0.109;
-    operational.observed_time_saved.current.human_owned_closure_p50_minutes = 31;
-    operational.observed_time_saved.current.agent_closed_p50_minutes = 20;
-    operational.observed_time_saved.current.observed_difference_minutes_per_case = 11;
-    operational.observed_time_saved.current.observed_aggregate_elapsed_difference_minutes = 220;
-    operational.observed_time_saved.current.estimated_total_minutes_saved = 220;
-    operational.observed_time_saved.baseline.human_owned_closure_p50_minutes = 29;
-    operational.observed_time_saved.baseline.agent_closed_p50_minutes = 21;
-    operational.observed_time_saved.baseline.observed_difference_minutes_per_case = 8;
-    operational.observed_time_saved.baseline.observed_aggregate_elapsed_difference_minutes = 152;
-    operational.observed_time_saved.baseline.estimated_total_minutes_saved = 152;
-    operational.observed_time_saved.delta.minutes_per_case = 3;
-    operational.alert_volume.current.after_clustering_alerts = 637;
-    operational.alert_volume.current.clustering_reduction_count = 7_763;
-    operational.alert_volume.current.clustering_reduction_rate = 0.9242;
-    operational.alert_volume.current.after_clustering_per_day = 91;
-    operational.alert_volume.baseline.after_clustering_alerts = 700;
-    operational.alert_volume.baseline.clustering_reduction_count = 7_000;
-    operational.alert_volume.baseline.clustering_reduction_rate = 0.9091;
-    operational.alert_volume.baseline.after_clustering_per_day = 100;
-    operational.alert_volume.delta.after_clustering_per_day_relative = -0.09;
-  } else {
-    operational.recorded_case_cost.current.total_cost = 29.2;
-    operational.recorded_case_cost.current.cost_per_day = 1.043;
-    operational.recorded_case_cost.current.cost_per_costed_case = 0.73;
-    operational.recorded_case_cost.baseline.total_cost = 25.6;
-    operational.recorded_case_cost.baseline.cost_per_day = 0.914;
-    operational.recorded_case_cost.baseline.cost_per_costed_case = 0.64;
-    operational.recorded_case_cost.delta.cost_per_costed_case_relative = 0.141;
-    operational.observed_time_saved.current.human_owned_closure_p50_minutes = 45;
-    operational.observed_time_saved.current.agent_closed_p50_minutes = 22;
-    operational.observed_time_saved.current.observed_difference_minutes_per_case = 23;
-    operational.observed_time_saved.current.observed_aggregate_elapsed_difference_minutes = 460;
-    operational.observed_time_saved.current.estimated_total_minutes_saved = 460;
-    operational.observed_time_saved.baseline.human_owned_closure_p50_minutes = 39;
-    operational.observed_time_saved.baseline.agent_closed_p50_minutes = 24;
-    operational.observed_time_saved.baseline.observed_difference_minutes_per_case = 15;
-    operational.observed_time_saved.baseline.observed_aggregate_elapsed_difference_minutes = 285;
-    operational.observed_time_saved.baseline.estimated_total_minutes_saved = 285;
-    operational.observed_time_saved.delta.minutes_per_case = 8;
-    operational.alert_volume.current.after_clustering_alerts = 2_016;
-    operational.alert_volume.current.clustering_reduction_count = 31_584;
-    operational.alert_volume.current.clustering_reduction_rate = 0.94;
-    operational.alert_volume.current.after_clustering_per_day = 72;
-    operational.alert_volume.baseline.after_clustering_alerts = 2_688;
-    operational.alert_volume.baseline.clustering_reduction_count = 28_112;
-    operational.alert_volume.baseline.clustering_reduction_rate = 0.9127;
-    operational.alert_volume.baseline.after_clustering_per_day = 96;
-    operational.alert_volume.delta.after_clustering_per_day_relative = -0.25;
-  }
-
-  return {
-    label: days === 7 ? 'Week over week' : 'Rolling 28 days over prior 28 days',
-    status: 'enough_data',
-    reason: '',
-    current: {
-      start: days === 7 ? '2026-07-21' : '2026-06-30',
-      end_exclusive: '2026-07-28',
-      days,
-    },
-    baseline: {
-      start: days === 7 ? '2026-07-14' : '2026-06-02',
-      end_exclusive: days === 7 ? '2026-07-21' : '2026-06-30',
-      days,
-    },
-    calendar_period: false,
-    metrics: {
-      analyst_reported_verdict_agreement: compact(currentAgreement, 0.8, 'improving'),
-      material_analyst_correction_rate: compact(0.08, 0.12, 'improving'),
-      human_review_turnaround: compact(42, 53, 'improving'),
-      confirmed_positive_case_rate: compact(0.12, 0.1, 'up'),
-    },
-    outcomes: operational,
-  };
-}
-
-function evidence(): AgentImprovementEvidenceWithOutcomes {
-  return {
-    windows: {
-      as_of_exclusive: '2026-07-28',
-      current: { start: '2026-07-21', end_exclusive: '2026-07-28', days: 7 },
-      baseline: { start: '2026-06-23', end_exclusive: '2026-07-21', days: 28 },
-      timezone: 'UTC',
-      complete_days_only: true,
-    },
-    headline: {
-      signal_domains: {
-        analyst_grade_quality: 'improving',
-        human_review_turnaround: 'improving',
-      },
-    },
-    outcomes: outcomes(),
-    period_comparisons: {
-      week_over_week: period(7, 0.84),
-      month_over_month: period(28, 0.88),
-    },
-  } as AgentImprovementEvidenceWithOutcomes;
-}
 
 function renderOutcome(node: React.ReactNode) {
   return render(<TooltipProvider>{node}</TooltipProvider>);
@@ -329,7 +25,8 @@ describe('AgentOperationalOutcomes', () => {
   it('renders exact backend outcome fields and the true period-comparison contract', async () => {
     const view = renderOutcome(<AgentOperationalOutcomes evidence={evidence()} />);
 
-    expect(screen.getByText('Operational outcome brief')).toBeInTheDocument();
+    const panel = screen.getByRole('region', { name: 'Operational outcomes' });
+    expect(screen.getByRole('heading', { level: 2, name: 'Operational outcomes' })).toBeInTheDocument();
     expect(screen.getByRole('radiogroup', { name: 'Outcome trend period' })).toBeInTheDocument();
     expect(screen.getAllByText('Confirmed-positive case share').length).toBeGreaterThan(0);
     expect(screen.getByText('Observed elapsed-time difference')).toBeInTheDocument();
@@ -352,8 +49,13 @@ describe('AgentOperationalOutcomes', () => {
     expect(screen.getByText(/Model spend only; no labor cost is inferred/)).toBeInTheDocument();
     expect(screen.getByText(/does not prove causation/)).toBeInTheDocument();
     expect(screen.getByText(/No composite score or causal claim/)).toBeInTheDocument();
+    // The caption names the window; the line under it gives the days, without repeating it.
+    expect(within(panel).getByText('last 7 complete UTC days against the 7 before')).toBeInTheDocument();
+    expect(screen.getByTestId('operational-outcomes-windows').textContent).toBe(
+      'Current Jul 21 to 27, 2026; prior Jul 14 to 20, 2026',
+    );
 
-    const agreement = screen.getByRole('group', {
+    const agreement = screen.getByRole('listitem', {
       name: 'Analyst-reported agreement period trend',
     });
     expect(agreement).toHaveTextContent('84.0%');
@@ -362,9 +64,15 @@ describe('AgentOperationalOutcomes', () => {
     expect(timeMetric).toHaveTextContent('23 min faster / case');
     expect(costMetric).toHaveTextContent('$0.730');
     expect(volumeMetric).toHaveTextContent('72 / day');
-    expect(screen.getAllByText(/Current 2026-06-30 to before 2026-07-28/)[0]).toHaveTextContent(
-      /prior 2026-06-02 to before 2026-06-30/,
+    // Days in words, inclusive, with the exclusive end already subtracted; the caption
+    // follows the period switch.
+    expect(within(panel).getByText('last 28 complete UTC days against the 28 before')).toBeInTheDocument();
+    expect(within(panel).queryByText('last 7 complete UTC days against the 7 before')).toBeNull();
+    expect(screen.getByTestId('operational-outcomes-windows').textContent).toBe(
+      'Current Jun 30 to Jul 27, 2026; prior Jun 2 to 29, 2026',
     );
+    // The trend check keeps the full line.
+    expect(screen.getByText('Current Jun 30 to Jul 27, 2026; prior Jun 2 to 29, 2026; complete UTC days')).toBeInTheDocument();
 
     expect(screen.getByText('Evidence by system layer')).toBeInTheDocument();
     expect(screen.getByText('AI verdict quality')).toBeInTheDocument();
@@ -372,6 +80,164 @@ describe('AgentOperationalOutcomes', () => {
     expect(screen.getByText('Alert handling')).toBeInTheDocument();
     expect(screen.getByText(/Not measured as improvement: upstream alert generation/)).toBeInTheDocument();
     expect(await axe(view.container)).toHaveNoViolations();
+  });
+
+  it('puts the period switch in the panel title row, beside the title', () => {
+    renderOutcome(<AgentOperationalOutcomes evidence={evidence()} />);
+    const titleRow = screen
+      .getByRole('heading', { level: 2, name: 'Operational outcomes' })
+      .closest('[data-panel-title-row]');
+    expect(titleRow).not.toBeNull();
+    expect(titleRow).toContainElement(screen.getByRole('radiogroup', { name: 'Outcome trend period' }));
+  });
+
+  it('shows the four headline comparisons as one strip on the panel, with no framed cells', () => {
+    renderOutcome(<AgentOperationalOutcomes evidence={evidence()} />);
+    const strip = screen.getByTestId('operational-outcomes-strip');
+    const tiles = Array.from(strip.children);
+    expect(tiles.map((tile) => tile.getAttribute('data-testid'))).toEqual([
+      'comparison-outcome-confirmed_positive_case_rate',
+      'comparison-outcome-observed_time_saved',
+      'comparison-outcome-alert_volume',
+      'comparison-outcome-recorded_case_cost',
+    ]);
+    // The strip grammar: rules only between tiles, no frame, no cell fill and no
+    // hairline grid of 1px gaps over a border colour.
+    expect(strip.closest('[data-kpi-grid-frame="panel"]')).not.toBeNull();
+    for (const tile of tiles) {
+      expect(tile.className).not.toMatch(/(^|\s)(bg-background|bg-card|rounded|shadow)/);
+      expect(tile.className).not.toMatch(/(^|\s)border(\s|$)/);
+    }
+    expect(strip.className).not.toMatch(/gap-px|bg-border/);
+    // One tile a row on a phone-width strip (each tile carries five to seven lines), two
+    // from 28rem, four on a wide strip; the base two-column class is replaced, not added.
+    expect(strip).toHaveClass('grid-cols-1', '@[28rem]:grid-cols-2', 'md:@[40rem]:grid-cols-4');
+    expect(strip).not.toHaveClass('grid-cols-2');
+    // Each tile spans two rows of the strip's grid (subgrid), so the figure blocks share one
+    // height per strip row and the evidence lines under them start level.
+    for (const tile of tiles) {
+      expect(tile).toHaveClass('row-span-2', 'grid', 'grid-rows-subgrid');
+      expect(tile.children).toHaveLength(2);
+      expect(tile.children[1]).toHaveAttribute('data-outcome-tile-details');
+    }
+  });
+
+  it('names a change that rounds to zero minutes in words', () => {
+    const flat = evidence();
+    flat.period_comparisons!.week_over_week.outcomes.observed_time_saved.delta.minutes_per_case = 0.02;
+    renderOutcome(<AgentOperationalOutcomes evidence={flat} />);
+    const tile = screen.getByTestId('comparison-outcome-observed_time_saved');
+    expect(within(tile).getByRole('img', { name: 'No change' })).toHaveTextContent('No change');
+    expect(tile).not.toHaveTextContent(/0\.0 min/);
+  });
+
+  it('can share its period with the host (controlled)', () => {
+    const seen: string[] = [];
+    function Host() {
+      const [period, setPeriod] = React.useState<OutcomePeriod>('month_over_month');
+      return (
+        <AgentOperationalOutcomes
+          evidence={evidence()}
+          period={period}
+          onPeriodChange={(next) => {
+            seen.push(next);
+            setPeriod(next);
+          }}
+        />
+      );
+    }
+    renderOutcome(<Host />);
+    expect(screen.getByRole('radio', { name: 'Rolling 28 days' })).toBeChecked();
+    expect(screen.getByTestId('comparison-outcome-observed_time_saved')).toHaveTextContent('23 min faster / case');
+    fireEvent.click(screen.getByRole('radio', { name: 'Week over week' }));
+    expect(seen).toEqual(['week_over_week']);
+    expect(screen.getByRole('radio', { name: 'Week over week' })).toBeChecked();
+    expect(screen.getByTestId('comparison-outcome-observed_time_saved')).toHaveTextContent('11 min faster / case');
+  });
+
+  it('writes server reasons as whole sentences, never spliced fragments', () => {
+    const collecting = evidence();
+    const week = collecting.period_comparisons!.week_over_week.outcomes;
+    week.observed_time_saved.status = 'insufficient_evidence';
+    week.observed_time_saved.reason = 'requires at least 10 human-owned and 10 agent closures';
+    week.observed_time_saved.current.observed_difference_minutes_per_case = 0;
+    week.tuning_context.status = 'insufficient_evidence';
+    week.tuning_context.reason = 'no threshold changes were recorded in either reporting window';
+    week.tuning_context.current.applied_changes = 0;
+    week.alert_volume.status = 'insufficient_evidence';
+    week.alert_volume.reason = 'durable counters cover only part of the requested reporting windows';
+    week.alert_volume.after_clustering_direction = 'insufficient_evidence';
+    week.tuning_context.cooccurring_after_clustering_direction = 'insufficient_evidence';
+    const view = renderOutcome(<AgentOperationalOutcomes evidence={collecting} />);
+    const text = view.container.textContent ?? '';
+
+    expect(text).not.toMatch(/observed No/);
+    expect(text).not.toMatch(/insufficient evidence after-clustering/i);
+    // No sentence starts lowercase, and none runs into the next without a full stop.
+    expect(text).not.toMatch(/\. [a-z]/);
+    expect(
+      screen.getByText(/Agent-closed and human-owned cases showed no observed closure-time difference\. Requires at least 10 human-owned and 10 agent closures\. Closure cohorts are unmatched/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/^No threshold changes were recorded in either reporting window\. After-clustering volume could not be compared\. Threshold tuning is downstream/),
+    ).toBeInTheDocument();
+    // The tile's own reason line reads as a sentence.
+    expect(within(screen.getByTestId('comparison-outcome-observed_time_saved')).getByText(
+      'Requires at least 10 human-owned and 10 agent closures.',
+    )).toBeInTheDocument();
+  });
+
+  it('uses sentence case and proportional Inter figures: no capitals, no monospace', () => {
+    const view = renderOutcome(<AgentOperationalOutcomes evidence={evidence()} />);
+    expect(view.container.querySelector('.uppercase')).toBeNull();
+    expect(view.container.querySelector('[class*="tracking-wider"]')).toBeNull();
+    expect(view.container.querySelector('[class*="font-mono"]')).toBeNull();
+    // No word typed in capitals (the old micro-labels read "CASE OUTCOMES").
+    expect(view.container.textContent ?? '').not.toMatch(/\b[A-Z]{5,}\b/);
+    // Figures set as tabular numerals.
+    expect(screen.getByText('7,763 · 92.4%')).toHaveClass('tabular-nums');
+    // Every section heading is sentence case, nested under the panel title.
+    expect(screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual([
+      'What supports these movements',
+      'Evidence by system layer',
+      'Trend check',
+    ]);
+    expect(screen.getAllByRole('heading', { level: 4 }).map((h) => h.textContent)).toEqual([
+      'Case outcomes',
+      'Closure timing',
+      'Alert path',
+      'AI processing cost',
+      'AI verdict quality',
+      'Workflow speed',
+      'Alert handling',
+    ]);
+  });
+
+  it('folds the supporting rows while the page holds them, and keeps the strip on view', async () => {
+    const view = renderOutcome(
+      <AgentOperationalOutcomes evidence={evidence()} detailsHidden detailsId="outcome-rows" />,
+    );
+    const rows = document.getElementById('outcome-rows');
+    expect(rows).not.toBeNull();
+    expect(rows).toHaveAttribute('hidden');
+    // No display utility, so the attribute keeps it out of the layout.
+    expect(rows!.className).not.toMatch(/(^|\s)(flex|grid|block)(\s|$)/);
+    for (const name of ['What supports these movements', 'Evidence by system layer', 'Trend check']) {
+      expect(screen.queryByRole('heading', { name })).toBeNull();
+      expect(within(rows!).getByText(name)).toBeInTheDocument();
+    }
+    // The headline strip and the period switch stay.
+    expect(screen.getByTestId('operational-outcomes-strip')).toBeVisible();
+    expect(screen.getByRole('radiogroup', { name: 'Outcome trend period' })).toBeInTheDocument();
+    expect(await axe(view.container)).toHaveNoViolations();
+
+    view.rerender(
+      <TooltipProvider>
+        <AgentOperationalOutcomes evidence={evidence()} detailsHidden={false} detailsId="outcome-rows" />
+      </TooltipProvider>,
+    );
+    expect(document.getElementById('outcome-rows')).not.toHaveAttribute('hidden');
+    expect(screen.getByRole('heading', { level: 3, name: 'Trend check' })).toBeInTheDocument();
   });
 
   it('keeps a missing human-owned closure benchmark unavailable instead of inventing zero', () => {
@@ -455,9 +321,14 @@ describe('AgentOperationalOutcomes', () => {
 
 describe('SourceCoverageGuidance', () => {
   it('labels absent source-gap evidence as a long-term objective, not a recommendation', () => {
-    renderOutcome(<SourceCoverageGuidance evidence={evidence()} />);
+    const view = renderOutcome(<SourceCoverageGuidance evidence={evidence()} />);
 
-    expect(screen.getByText('Evidence coverage opportunities')).toBeInTheDocument();
+    // One panel, titled once: no inner heading repeating the panel title, no nested frame.
+    const panel = screen.getByRole('region', { name: 'Evidence coverage' });
+    expect(panel).toHaveAttribute('data-testid', 'agent-coverage-guidance');
+    expect(screen.getAllByRole('heading').map((h) => h.textContent)).toEqual(['Evidence coverage']);
+    expect(within(panel).getByText('suggestions, not diagnosis')).toBeInTheDocument();
+    expect(view.container.querySelector('[class*="border-dashed"], [class*="border-y"]')).toBeNull();
     expect(screen.getByText('Long-term objective')).toBeInTheDocument();
     expect(screen.getByText(/Coverage recommendation unavailable/)).toBeInTheDocument();
     expect(screen.getByText(/does not persist validated source-gap/)).toBeInTheDocument();
@@ -486,7 +357,36 @@ describe('SourceCoverageGuidance', () => {
     renderOutcome(<SourceCoverageGuidance evidence={ready} />);
 
     expect(screen.getByText('Add outbound DNS telemetry')).toBeInTheDocument();
-    expect(screen.getByText('Suggestion, not diagnosis')).toBeInTheDocument();
+    // Said once, in the panel caption, for every item.
+    expect(screen.getByText('suggestions, not diagnosis')).toBeInTheDocument();
     expect(screen.getByText('3 aggregate evidence gaps')).toBeInTheDocument();
+  });
+});
+
+describe('outcome copy helpers', () => {
+  it('turns a reason fragment into one sentence', () => {
+    expect(asSentence('requires at least 10 closures')).toBe('Requires at least 10 closures.');
+    expect(asSentence('  Already a sentence.  ')).toBe('Already a sentence.');
+    expect(asSentence('Is it?')).toBe('Is it?');
+    expect(asSentence('')).toBe('');
+    expect(asSentence(undefined)).toBe('');
+  });
+
+  it('captions the window from the days it spans', () => {
+    expect(
+      outcomeWindowCaption(
+        { start: '2026-07-21', end_exclusive: '2026-07-28' },
+        { start: '2026-06-23', end_exclusive: '2026-07-21' },
+      ),
+    ).toBe('last 7 complete UTC days against the 28 before');
+    expect(
+      outcomeWindowCaption(
+        { start: '2026-07-21', end_exclusive: '2026-07-28', days: 7 },
+        { start: '2026-07-14', end_exclusive: '2026-07-21', days: 7 },
+      ),
+    ).toBe('last 7 complete UTC days against the 7 before');
+    expect(
+      outcomeWindowCaption({ start: 'bad', end_exclusive: 'bad' }, { start: 'bad', end_exclusive: 'bad' }),
+    ).toBe('complete UTC days');
   });
 });

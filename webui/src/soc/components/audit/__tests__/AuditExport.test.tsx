@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   artifact: vi.fn(),
   saveBlob: vi.fn(() => 'agentic-soc-audit.csv'),
   announce: vi.fn(),
+  release: vi.fn(),
   demo: { active: false, confirmed: true, loading: false, status: { mode: 'off' as string, run_id: null as string | null } },
   toast: { info: vi.fn(), error: vi.fn(), success: vi.fn() },
 }));
@@ -51,6 +52,7 @@ vi.mock('@/soc/jobs/jobs', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/soc/jobs/jobs')>()),
   saveBlob: h.saveBlob,
   announceJobAccepted: h.announce,
+  releaseJobToast: h.release,
 }));
 vi.mock('@/soc/auth', () => ({ useAuth: () => ({ authEnabled: false, hasPermission: () => true }) }));
 vi.mock('@/soc/demo', () => ({ useDemo: () => h.demo }));
@@ -86,7 +88,7 @@ async function openDialog(format: 'CSV' | 'JSON Lines' = 'CSV') {
 
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW);
-  for (const f of [h.list, h.count, h.submit, h.request, h.jobsGet, h.artifact, h.saveBlob, h.announce]) f.mockReset();
+  for (const f of [h.list, h.count, h.submit, h.request, h.jobsGet, h.artifact, h.saveBlob, h.announce, h.release]) f.mockReset();
   Object.values(h.toast).forEach((f) => f.mockReset());
   h.saveBlob.mockReturnValue('agentic-soc-audit.csv');
   h.demo = { active: false, confirmed: true, loading: false, status: { mode: 'off', run_id: null } };
@@ -141,15 +143,15 @@ describe('the export dialog', () => {
         scope: 'people',
         q: 'role',
         from: '2026-10-18T15:10:00Z',
-        to: '2026-10-25T15:10:00Z',
+        to: '2026-10-25T15:09:59Z',
         cap: 100_001,
       }),
       expect.anything(),
     );
-    expect(within(dialog).getByTestId('audit-export-range')).toHaveTextContent('18 Oct 15:10 to 25 Oct 15:10 UTC');
+    expect(within(dialog).getByTestId('audit-export-range')).toHaveTextContent('18 Oct 15:10 to 25 Oct 15:09 UTC');
     expect(within(dialog).getByText('Search: "role"')).toBeInTheDocument();
     expect(within(dialog).getByText('Oldest first, times in ISO 8601 UTC')).toBeInTheDocument();
-    expect(dialog).toHaveTextContent('agentic-soc-audit_2026-10-18T151000Z_2026-10-25T151000Z.csv');
+    expect(dialog).toHaveTextContent('agentic-soc-audit_2026-10-18T151000Z_2026-10-25T150959Z.csv');
     expect(dialog).toHaveTextContent('You will be asked to sign in again. This export is recorded in the audit log.');
     expect(within(dialog).getByRole('button', { name: 'Export 1,284 events' })).toBeEnabled();
   });
@@ -162,12 +164,12 @@ describe('the export dialog', () => {
     expect(within(dialog).getByRole('button', { name: 'Export' })).toBeDisabled();
     const narrow = await within(dialog).findByRole('button', { name: 'Use last 30 days' });
     expect(h.count).toHaveBeenLastCalledWith(
-      expect.objectContaining({ from: '2026-09-25T15:10:00Z', to: '2026-10-25T15:10:00Z' }),
+      expect.objectContaining({ from: '2026-09-25T15:10:00Z', to: '2026-10-25T15:09:59Z' }),
       expect.anything(),
     );
     await user.click(narrow);
     expect(within(dialog).getByRole('heading', { name: 'Export 84,386 events?' })).toBeInTheDocument();
-    expect(within(dialog).getByTestId('audit-export-range')).toHaveTextContent('25 Sep 15:10 to 25 Oct 15:10 UTC (last 30 days)');
+    expect(within(dialog).getByTestId('audit-export-range')).toHaveTextContent('25 Sep 15:10 to 25 Oct 15:09 UTC (last 30 days)');
     expect(within(dialog).getByRole('button', { name: 'Export 84,386 events' })).toBeEnabled();
   });
 
@@ -196,13 +198,42 @@ describe('the export dialog', () => {
       order: 'asc',
       scope: 'people',
       from: '2026-10-18T15:10:00Z',
-      to: '2026-10-25T15:10:00Z',
+      to: '2026-10-25T15:09:59Z',
       q: 'role',
     });
     expect(String(key)).toMatch(/^audit_export-/);
-    await waitFor(() => expect(h.saveBlob).toHaveBeenCalledWith(expect.anything(), 'agentic-soc-audit_2026-10-18T151000Z_2026-10-25T151000Z.ndjson'));
+    await waitFor(() => expect(h.saveBlob).toHaveBeenCalledWith(expect.anything(), 'agentic-soc-audit_2026-10-18T151000Z_2026-10-25T150959Z.ndjson'));
     expect(h.toast.success).toHaveBeenCalledWith('Audit export downloaded.', expect.anything());
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    // One action, one notice: the shell holds its own toast for the job this dialog
+    // waited for, and never shows it once the dialog has said the file downloaded.
+    expect(h.announce).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'job-1' }), { quiet: true });
+    expect(h.release).toHaveBeenCalledTimes(1);
+    expect(h.release).toHaveBeenCalledWith('job-1', { reported: true });
+  });
+
+  it('exports exactly the events it counted, although its own count writes a row', async () => {
+    // The server reads `to` as its whole second, and every audit read (the dialog's count
+    // too) writes an "Audit log viewed" row a moment later. A range ending in the second
+    // in progress would let the job's recount and the file hold that row as well.
+    const store = [Date.UTC(2026, 9, 20, 9, 0), Date.UTC(2026, 9, 25, 15, 9, 59, 900)];
+    const covered = (from: string, to: string) =>
+      store.filter((t) => t >= Date.parse(from) && t < Date.parse(to) + 1000).length;
+    h.count.mockImplementation(async (q: { from: string; to: string }) => {
+      const count = covered(q.from, q.to);
+      store.push(NOW + 380);
+      return { count, relation: 'eq' };
+    });
+    h.submit.mockResolvedValue({ job_id: 'job-3', kind: 'audit_export', status: 'succeeded', result: { kind: 'audit_export', artifact_id: 'a3', counts: {} }, failures: [] });
+    h.artifact.mockResolvedValue({ blob: new Blob(['x']), contentDisposition: null, contentType: 'text/csv' });
+    renderAudit();
+    const { user, dialog } = await openDialog();
+    await user.click(await within(dialog).findByRole('button', { name: 'Export 2 events' }));
+    await waitFor(() => expect(h.submit).toHaveBeenCalled());
+    const [params] = h.submit.mock.calls[0];
+    // The job's recount over the same instants finds the same events as the dialog.
+    expect(store).toContain(NOW + 380);
+    expect(covered(params.from, params.to)).toBe(2);
   });
 
   it('runs a large export in the background with the usual notice', async () => {
@@ -213,6 +244,9 @@ describe('the export dialog', () => {
     await user.click(await within(dialog).findByRole('button', { name: 'Export 12,000 events' }));
     await waitFor(() => expect(h.toast.success).toHaveBeenCalledWith('Audit export started.', expect.anything()));
     expect(h.artifact).not.toHaveBeenCalled();
+    // Not waited for here: the shell tells the outcome, as for any background job.
+    expect(h.announce).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'job-2' }), { quiet: false });
+    expect(h.release).not.toHaveBeenCalled();
   });
 
   it('explains a refusal and keeps the dialog open', async () => {
@@ -250,9 +284,12 @@ describe('the export dialog', () => {
     await user.click(leave);
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(h.toast.info).toHaveBeenCalledWith('The export is still running.', expect.objectContaining({ action: expect.anything() }));
-    // The wait it left stops: no download lands on the page afterwards.
+    // The wait it left stops: no download lands on the page afterwards, and the shell
+    // tells the outcome when the job ends.
+    expect(h.release).toHaveBeenCalledWith('job-3', { reported: false });
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect(h.saveBlob).not.toHaveBeenCalled();
+    expect(h.release).toHaveBeenCalledTimes(1);
   });
 
   it('closes on Esc while it waits, with the same background notice', async () => {
@@ -265,6 +302,19 @@ describe('the export dialog', () => {
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(h.toast.info).toHaveBeenCalledWith('The export is still running.', expect.anything());
+    expect(h.release).toHaveBeenCalledWith('job-4', { reported: false });
+  });
+
+  it('hands the outcome back to the shell when the page closes while it waits', async () => {
+    h.submit.mockResolvedValue({ job_id: 'job-8', kind: 'audit_export', status: 'queued', result: null, failures: [] });
+    h.jobsGet.mockReturnValue(new Promise(() => {}));
+    const view = renderAudit();
+    const { user, dialog } = await openDialog();
+    await user.click(await within(dialog).findByRole('button', { name: 'Export 1,284 events' }));
+    await within(dialog).findByRole('button', { name: 'Continue in the background' });
+    expect(h.release).not.toHaveBeenCalled();
+    view.unmount();
+    expect(h.release).toHaveBeenCalledWith('job-8', { reported: false });
   });
 
   it('never says the export did not run once the job was accepted', async () => {
@@ -279,6 +329,8 @@ describe('the export dialog', () => {
     );
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByText('The export did not run.')).toBeNull();
+    // Still running as far as the dialog knows: the shell tells the outcome.
+    expect(h.release).toHaveBeenCalledWith('job-5', { reported: false });
   });
 
   it('points to Jobs when the finished file cannot be downloaded here', async () => {
@@ -289,6 +341,7 @@ describe('the export dialog', () => {
     await user.click(await within(dialog).findByRole('button', { name: 'Export 1,284 events' }));
     await waitFor(() => expect(h.toast.info).toHaveBeenCalledWith('The export finished. Download the file from Jobs.', expect.anything()));
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(h.release).toHaveBeenCalledWith('job-6', { reported: true });
   });
 
   it('says a job that ended without its file did not finish', async () => {
@@ -299,6 +352,8 @@ describe('the export dialog', () => {
     expect(await within(dialog).findByText('The export did not finish.')).toBeInTheDocument();
     expect(within(dialog).getByText('The export failed: audit_export_too_large')).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeEnabled();
+    // The dialog shows how it ended, so the shell adds no second notice.
+    expect(h.release).toHaveBeenCalledWith('job-7', { reported: true });
   });
 
   it('never shows an em dash, an en dash or the retired word', async () => {

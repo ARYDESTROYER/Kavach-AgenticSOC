@@ -164,15 +164,15 @@ function DailyMetricLane({
       <div className="min-w-0">
         <h4 className="text-xs font-semibold text-foreground">{config.label}</h4>
         <div className="mt-1.5 flex items-baseline gap-2">
-          <span className="font-mono text-base font-semibold tabular-nums text-foreground">
+          <span className="text-base font-semibold tabular-nums text-foreground">
             {currentValue}
           </span>
-          <span className="text-2xs text-muted-foreground">vs {baselineValue}</span>
+          <span className="text-xs tabular-nums text-muted-foreground">vs {baselineValue}</span>
         </div>
-        <p className={cn('mt-1 text-2xs font-medium', movement.className)}>
+        <p className={cn('mt-1 text-xs font-medium tabular-nums', movement.className)}>
           {movement.label}
         </p>
-        <p className="mt-1 text-2xs text-muted-foreground">
+        <p className="mt-1 text-xs tabular-nums text-muted-foreground">
           {movement.measurable} of {current.length} current days measurable
         </p>
       </div>
@@ -245,7 +245,7 @@ function EvidenceGate({
       />
       <div className="min-w-0">
         <p className="text-xs font-medium text-foreground">{label}</p>
-        <p className="mt-0.5 text-2xs leading-relaxed text-muted-foreground">{value}</p>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{value}</p>
       </div>
     </div>
   );
@@ -435,7 +435,7 @@ export function AgentOutcomeReview({
           />
         </div>
 
-        <p className="mt-2 text-2xs leading-relaxed text-muted-foreground">
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
           Daily points use eligible cases for each UTC day and are not source × severity adjusted.
           The period comparisons above are mix adjusted. Observed movement is descriptive, not a
           causal claim.
@@ -450,7 +450,7 @@ export function AgentOutcomeReview({
       >
         <div className={cn('border-l-2 py-1 pl-3', reviewDecision.tone)}>
           <p className="text-xs font-semibold">{reviewDecision.title}</p>
-          <p className="mt-1 text-2xs leading-relaxed text-muted-foreground">
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
             {reviewDecision.detail}
           </p>
         </div>
@@ -513,11 +513,11 @@ export function AgentOutcomeReview({
               <History className="h-4 w-4 text-muted-foreground" aria-hidden />
               Applied changes in reporting window
             </span>
-            <span className="font-mono text-2xs font-normal text-muted-foreground">
+            <span className="text-xs font-normal tabular-nums text-muted-foreground">
               {contextualChanges.length}
             </span>
           </summary>
-          <p className="mt-2 text-2xs leading-relaxed text-muted-foreground">
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
             Context only. Outcome attribution is not inferred.
           </p>
           {contextualChanges.length ? (
@@ -525,7 +525,7 @@ export function AgentOutcomeReview({
               {contextualChanges.map((change) => (
                 <li key={change.id} className="py-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <time className="font-mono text-2xs text-muted-foreground" dateTime={change.at ?? undefined}>
+                    <time className="text-2xs tabular-nums text-muted-foreground" dateTime={change.at ?? undefined}>
                       {change.at ? longDay(new Date(change.at).toISOString().slice(0, 10)) : 'Unknown date'}
                     </time>
                     <Badge variant={change.state === 'rolled_back' ? 'secondary' : 'info'}>
@@ -535,7 +535,7 @@ export function AgentOutcomeReview({
                   <p className="mt-1 truncate text-xs font-medium text-foreground" title={change.label}>
                     {change.label}
                   </p>
-                  <p className="mt-0.5 text-2xs leading-relaxed text-muted-foreground">
+                  <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
                     {change.detail}
                   </p>
                 </li>

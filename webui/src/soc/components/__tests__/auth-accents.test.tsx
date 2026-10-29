@@ -101,14 +101,14 @@ describe('ThemeModePill', () => {
     const onToggle = vi.fn();
     const { rerender } = render(<ThemeModePill dark={false} onToggle={onToggle} />);
 
-    const light = screen.getByRole('button', { name: 'Light mode — switch to dark mode' });
+    const light = screen.getByRole('button', { name: 'Light mode: switch to dark mode' });
     expect(light).toHaveAttribute('data-appearance', 'light');
     expect(light).toHaveTextContent('Light mode');
     fireEvent.click(light);
     expect(onToggle).toHaveBeenCalledWith('dark');
 
     rerender(<ThemeModePill dark onToggle={onToggle} />);
-    const dark = screen.getByRole('button', { name: 'Dark mode — switch to light mode' });
+    const dark = screen.getByRole('button', { name: 'Dark mode: switch to light mode' });
     expect(dark).toHaveAttribute('data-appearance', 'dark');
     expect(dark).toHaveTextContent('Dark mode');
     fireEvent.click(dark);

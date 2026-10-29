@@ -8,16 +8,18 @@
  * skipped:
  *
  *   1. `payload.runbook_id`;
- *   2. a `payload.playbook_id` that one of the 9 retired bundled procedures held
- *      ({@link LEGACY_BUNDLED_PLAYBOOK_IDS}), through {@link LEGACY_BUNDLED_RUNBOOK_MAP}: such
- *      a rule ran the bundled procedure before the upgrade, never an operator document of the
- *      same id (the migration turned that document into a shadowed Draft);
- *   3. `payload.playbook_id` through the one-shot migration of the procedure documents (a
- *      runbook whose `migrated_from` names that id in the `playbook_dir` or `playbooks`
- *      namespace, the configured folder first); the reference runbooks were never
- *      procedures, so a `runbooks` namespace document never answers a rule;
- *   4. `payload.playbook_id` through {@link LEGACY_BUNDLED_RUNBOOK_MAP} (a retired reference
- *      runbook id).
+ *   2. `payload.playbook_id` through the one-shot migration's id map (the marker's `id_map`
+ *      for the procedure sources, `migrated_procedure_ids` in
+ *      `backend/app/engine/runbook_migration.py`): the procedure the rule ran, as migrated.
+ *      The configured folder (`playbook_dir`) answers first, then the stored documents
+ *      (`playbooks`). A retired bundled procedure id ({@link LEGACY_BUNDLED_PLAYBOOK_IDS}) is
+ *      answered by the folder only: a stored document with that id never ran from a rule
+ *      (the bundled procedure won the id, so the migration made the document a shadowed
+ *      Draft). The reference runbooks (`runbooks`) were never procedures, so they never
+ *      answer a rule;
+ *   3. `payload.playbook_id` through {@link LEGACY_BUNDLED_RUNBOOK_MAP}: the built-in that
+ *      merged a retired bundled procedure or reference runbook, for a rule the migration
+ *      answers nothing for.
  *
  * There is no further step: a `playbook_id` naming a new runbook id directly resolves to
  * nothing on the server, so it resolves to nothing here. A target that is unmapped,
@@ -26,9 +28,19 @@
  * still attached when a rule names it (the server's `catalog.published`), so the caller
  * passes a library read with `show_replaced`.
  *
- * The server reads step 3 from the migration marker's id map; the client reads it from the
- * library's `migrated_from` fields, which hold the same pairs while the migrated runbook
- * exists.
+ * Step 2 prefers the server's own map, which the library read carries as
+ * `RunbookLibrary.migrated_procedures`, so callers pass it. A caller that holds only the
+ * rows gets the map rebuilt from their `migrated_from` fields, which hold the same pairs
+ * only while the migrated runbook is in the library: once that runbook is gone the rows
+ * cannot show the mapping, and a retired bundled procedure id falls through to step 3.
+ *
+ * The server filters that map to the runbooks the viewer may see. For a viewer without
+ * `runbooks:manage` or `runbooks:publish` it leaves out an entry whose runbook that viewer
+ * may not see (a Draft, or a runbook that is gone), so a retired bundled procedure id
+ * migrated to such a runbook resolves here through {@link LEGACY_BUNDLED_RUNBOOK_MAP} and
+ * reads as attaching the built-in, while the server skips the rule. The server never
+ * discloses that entry to this viewer, so the editor cannot tell. Any other id the map
+ * leaves out resolves to nothing, so it still reads as needing a runbook.
  */
 import type { RunbookSummary } from '@/lib/types-runbooks';
 
@@ -91,22 +103,44 @@ export function isAttachable(r: RunbookSummary | null | undefined): boolean {
   return !!r && r.live_version != null && !r.retired;
 }
 
-/** The runbook the migration made from the legacy procedure `playbookId`, or null. */
-function migratedProcedure(library: readonly RunbookSummary[], playbookId: string): RunbookSummary | null {
+/**
+ * The migration's procedure map rebuilt from the library rows: legacy procedure id to the
+ * runbook made from it, with the server's precedence (`migrated_procedure_ids`): the
+ * configured folder first, then the stored documents, and never a stored document that
+ * holds a retired bundled procedure id (it never ran from a rule).
+ */
+export function migratedProceduresFromLibrary(library: readonly RunbookSummary[]): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const namespace of PROCEDURE_NAMESPACES) {
-    const hit = library.find((r) => r.migrated_from?.namespace === namespace && r.migrated_from.id === playbookId);
-    if (hit) return hit;
+    for (const row of library) {
+      const from = row.migrated_from;
+      if (!from || from.namespace !== namespace || typeof from.id !== 'string' || !from.id) continue;
+      if (namespace === 'playbooks' && LEGACY_BUNDLED_PLAYBOOK_IDS.has(from.id)) continue;
+      if (!Object.prototype.hasOwnProperty.call(out, from.id)) out[from.id] = row.id;
+    }
   }
-  return null;
+  return out;
+}
+
+/**
+ * The runbook id `map` holds for `playbookId`, read as the server's dictionary lookup reads
+ * it: own keys only (a `playbook_id` such as `constructor` names nothing), trimmed text.
+ */
+function mappedId(map: Readonly<Record<string, string>>, playbookId: string): string | null {
+  return Object.prototype.hasOwnProperty.call(map, playbookId) ? text(map[playbookId]) : null;
 }
 
 /**
  * Resolve a `run_playbook` rule's payload against the library. `library` null means the
  * library could not be read, so the status is `unknown` rather than a false warning.
+ * `migratedProcedures` is the server's map from the same library read
+ * (`RunbookLibrary.migrated_procedures`); when it is absent the map is rebuilt from the
+ * rows ({@link migratedProceduresFromLibrary}).
  */
 export function resolveAutomationRunbook(
   payload: Record<string, unknown> | null | undefined,
   library: readonly RunbookSummary[] | null,
+  migratedProcedures?: Readonly<Record<string, string>> | null,
 ): AutomationRunbookTarget {
   const runbookId = text(payload?.runbook_id);
   const playbookId = text(payload?.playbook_id);
@@ -115,17 +149,23 @@ export function resolveAutomationRunbook(
   let id: string | null = null;
   let via: AutomationRunbookTarget['via'] = null;
   if (runbookId) {
+    // Step 1.
     id = runbookId;
     via = 'runbook_id';
   } else if (playbookId) {
-    const migrated = LEGACY_BUNDLED_PLAYBOOK_IDS.has(playbookId) ? null : migratedProcedure(library, playbookId);
+    const map =
+      migratedProcedures && typeof migratedProcedures === 'object'
+        ? migratedProcedures
+        : migratedProceduresFromLibrary(library);
+    const migrated = mappedId(map, playbookId);
     if (migrated) {
-      id = migrated.id;
+      // Step 2.
+      id = migrated;
       via = 'migration';
-    } else if (LEGACY_BUNDLED_RUNBOOK_MAP[playbookId]) {
-      // A retired bundled procedure id (step 2) or a retired reference runbook id (step 4).
-      id = LEGACY_BUNDLED_RUNBOOK_MAP[playbookId];
-      via = 'legacy_map';
+    } else {
+      // Step 3: a retired bundled procedure id or a retired reference runbook id.
+      id = mappedId(LEGACY_BUNDLED_RUNBOOK_MAP, playbookId);
+      via = id ? 'legacy_map' : null;
     }
   }
   const runbook = id ? library.find((r) => r.id === id) ?? null : null;

@@ -33,7 +33,7 @@ const CASES = [
   { case_id: 'case-002', title: 'Bravo', status: 'closed', assignee: 'bob', updated_at: '2026-06-29T01:00:00Z', tags: ['phishing'], comments: [] },
 ];
 function renderCases(props: React.ComponentProps<typeof Cases> = {}) { return render(<ThemeProvider><TooltipProvider><AuthProvider><PrefsProvider><DemoProvider><RouterProvider><Cases {...props} /></RouterProvider></DemoProvider></PrefsProvider></AuthProvider></TooltipProvider></ThemeProvider>); }
-async function selectAll() { renderCases(); await screen.findByText('Alpha'); fireEvent.click(screen.getByLabelText('Select all rows')); return screen.findByRole('region', { name: /bulk actions/i }); }
+async function selectAll() { renderCases(); await screen.findByText('Alpha'); fireEvent.click(screen.getByLabelText('Select all cases on this page')); return screen.findByRole('region', { name: /bulk actions/i }); }
 
 describe('Cases durable tag/assign jobs', () => {
   beforeEach(() => {

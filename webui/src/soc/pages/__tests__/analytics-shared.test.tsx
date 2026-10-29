@@ -11,6 +11,7 @@ import { act, fireEvent, render, renderHook, screen, within } from '@testing-lib
 import userEvent from '@testing-library/user-event';
 
 import { DASH } from '@/lib/format';
+import { notifySignedOut } from '@/lib/session-events';
 import { KpiTile } from '@/soc/components/KpiTile';
 import {
   ANALYTICS_WINDOWS,
@@ -20,7 +21,7 @@ import {
   StripPanel,
   UpdatedStamp,
   analyticsWindow,
-  resetAnalyticsWindowForTests,
+  resetAnalyticsWindow,
   shareOfTotal,
   tokenLabel,
   useAnalyticsWindow,
@@ -28,7 +29,7 @@ import {
 } from '../analytics-shared';
 
 afterEach(() => {
-  resetAnalyticsWindowForTests();
+  resetAnalyticsWindow();
   vi.useRealTimers();
 });
 
@@ -73,6 +74,18 @@ describe('Analytics windows', () => {
     // An unknown range is not remembered as such: it reads as the default.
     act(() => second.result.current[1](5));
     expect(second.result.current[0]).toBe(168);
+  });
+
+  it('forgets the picked range when the person signed in leaves (a sign-out)', () => {
+    const first = renderHook(() => useAnalyticsWindow());
+    act(() => first.result.current[1](24));
+    first.unmount();
+    expect(renderHook(() => useAnalyticsWindow()).result.current[0]).toBe(24);
+
+    // The auth provider's sign-out signal (lib/session-events): the next person starts
+    // on the default range, not on the range the last person picked.
+    notifySignedOut();
+    expect(renderHook(() => useAnalyticsWindow()).result.current[0]).toBe(DEFAULT_ANALYTICS_HOURS);
   });
 });
 

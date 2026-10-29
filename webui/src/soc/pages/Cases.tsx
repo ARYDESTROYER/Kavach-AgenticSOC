@@ -38,7 +38,7 @@ import {
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import type { BackgroundJobKind, Case, CaseActionInput, SavedView } from '@/lib/types';
+import type { BackgroundJobKind, Case, CaseLifecycleInput, SavedView } from '@/lib/types';
 import { Can, useCan } from '@/soc/components/Can';
 import { humanizeAge, humanizeToken, DASH } from '@/lib/format';
 import { caseTagError } from '@/lib/tags';
@@ -180,6 +180,8 @@ function AskAiChip(props: AskAiChipProps) {
 
 /** Stable id for the Cases table's per-user column state (Wave 7). */
 const CASES_TABLE_ID = 'cases';
+/** The selection announcements' noun ("25 cases selected"). */
+const CASE_NOUN = { one: 'case', other: 'cases' } as const;
 /** The surface scope saved views on this page belong to. */
 const CASES_VIEW_SCOPE = 'cases';
 
@@ -1204,8 +1206,10 @@ export default function Cases({
     [bulkBusy, navigate, selectedCases],
   );
 
+  // Typed with the job's own params (never the single-case `CaseActionInput`), so a
+  // single-case field such as `require_open_steps_reason` fails tsc instead of a 422.
   const runBulk = React.useCallback(
-    (input: CaseActionInput, activity = 'are being updated') =>
+    (input: CaseLifecycleInput, activity = 'are being updated') =>
       submitCaseJob('case_lifecycle', { ...input }, activity),
     [submitCaseJob],
   );
@@ -2101,6 +2105,13 @@ export default function Cases({
               columnState={effectiveColumnState}
               rows={pageRows}
               getRowId={(c) => c.case_id}
+              // Name a row by the number the page shows ("Select CASE-000048"), never by
+              // the internal id.
+              getRowLabel={(c) => c.case_number || c.case_id}
+              // The header checkbox selects this page only (25 of a longer list), so it
+              // says so, and the selection is announced in cases.
+              selectAllLabel="Select all cases on this page"
+              rowNoun={CASE_NOUN}
               sort={sort}
               onSortChange={setSort}
               page={page}

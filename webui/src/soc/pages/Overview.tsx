@@ -4721,7 +4721,7 @@ export default function Overview({ onNavigate }: OverviewProps) {
                             usageUnavailable
                               ? () => void retryUsage()
                               : navigate
-                                ? () => navigate('metrics', { tab: 'cost' })
+                                ? () => navigate('cost')
                                 : undefined
                           }
                           className={cn(

@@ -2,8 +2,8 @@
  * Tiny hash router for the SOC console.
  *
  * Routes are `#/<pageid>`; an unknown/empty hash resolves to `overview`, and an alias
- * (`#/dashboard`, `#/playbooks`, `#/catalog`, `#/scans`) is replaced by its destination
- * ({@link redirectRoute}). Most
+ * (`#/dashboard`, `#/playbooks`, `#/catalog`, `#/scans`, `#/analytics`, a retired Metrics
+ * tab) is replaced by its destination ({@link redirectRoute}). Most
  * navigation options (`{ status?, severity?, ... }`) live only in React state
  * next to the page id, so a KPI drill-through can pre-seed Cases without turning
  * every ephemeral filter into URL state. The selected `caseId` is the deliberate
@@ -188,6 +188,15 @@ const DEEP_LINK_KEYS: Readonly<Record<string, Readonly<Record<string, Check>>>> 
   },
 };
 
+/**
+ * The Metrics tabs a hash carries: Operational is the bare `#/metrics`. The former
+ * Agent effectiveness and Cost tabs are pages of their own now, so `#/metrics?tab=cost`
+ * (a bookmark, or an in-app navigate) opens `#/cost` ({@link redirectRoute}).
+ */
+const METRICS_TAB = re(/^(performance|posture)$/);
+const METRICS_TAB_PAGES: Readonly<Record<string, PageId>> = { effectiveness: 'effectiveness', cost: 'cost' };
+const hasOwn = (o: object, key: string) => Object.prototype.hasOwnProperty.call(o, key);
+
 /** The Cases page's two virtual status facets (Overview drill-throughs write them). */
 const isCasesStatus = (value: string) =>
   value === '__active__' || value === '__terminal__' || isSafeCaseResultStatus(value);
@@ -212,7 +221,7 @@ function hashKeys(page: PageId): Readonly<Record<string, Check>> {
   }
   // The engine's closer values (the `closed_by` filter of GET /api/cases); `#/scans` uses `agent`.
   if (page === 'case_manager') return { caseId: isSafeCaseId, closedBy: re(/^(agent|analyst|analyst_policy|system)$/) };
-  if (page === 'metrics') return { tab: (value) => value === 'effectiveness' };
+  if (page === 'metrics') return { tab: (value) => METRICS_TAB(value) || hasOwn(METRICS_TAB_PAGES, value) };
   return DEEP_LINK_KEYS[page] ?? {};
 }
 
@@ -223,6 +232,11 @@ function hashKeys(page: PageId): Readonly<Record<string, Check>> {
  * keeps its dedicated section hash above. Empty keys are omitted, never written as `k=`.
  */
 export function pageHash(page: PageId, opts?: NavOpts): string {
+  // A retired Metrics tab is written as the page it became, so an href (opened in a new
+  // tab, or with a modifier) lands where a plain click does ({@link redirectRoute}).
+  if (page === 'metrics' && opts?.tab && hasOwn(METRICS_TAB_PAGES, opts.tab)) {
+    return pageHash(METRICS_TAB_PAGES[opts.tab]);
+  }
   const params = new URLSearchParams();
   const values = (opts ?? {}) as Record<string, unknown>;
   if ((page === 'cases' || page === 'case_manager') && opts?.caseId) {
@@ -233,7 +247,7 @@ export function pageHash(page: PageId, opts?: NavOpts): string {
     if (opts?.assignee) params.set('assignee', opts.assignee);
     if (opts?.tag) params.set('tag', opts.tag);
   }
-  if (page === 'metrics' && opts?.tab === 'effectiveness') {
+  if (page === 'metrics' && opts?.tab && METRICS_TAB(opts.tab)) {
     params.set('tab', opts.tab);
   }
   const validated = { ...DEEP_LINK_KEYS[page] };
@@ -258,6 +272,8 @@ export function pageHash(page: PageId, opts?: NavOpts): string {
  * (`history.replaceState`), so Back never bounces through an alias.
  */
 const PAGE_REDIRECTS: Readonly<Partial<Record<PageId, { page: PageId; opts?: NavOpts }>>> = {
+  // The Analytics navigation group's own id: its row opens Metrics.
+  analytics: { page: 'metrics' },
   dashboard: { page: 'overview' },
   playbooks: { page: 'runbooks' },
   catalog: { page: 'runbooks' },
@@ -268,13 +284,18 @@ const PAGE_REDIRECTS: Readonly<Partial<Record<PageId, { page: PageId; opts?: Nav
 export const LANDING_BOARD_ID = 'builtin:cyber-defence-center';
 
 /**
- * Apply {@link PAGE_REDIRECTS} and the landing-board rule to a route. Returns
- * `redirected: true` when the route changed, so the caller can replace the hash.
+ * Apply {@link PAGE_REDIRECTS}, the landing-board rule and the retired Metrics tabs
+ * (`#/metrics?tab=effectiveness` opens `#/effectiveness`, `tab=cost` opens `#/cost`) to a
+ * route. Returns `redirected: true` when the route changed, so the caller can replace the
+ * hash.
  */
 export function redirectRoute(page: PageId, opts?: NavOpts): { page: PageId; opts?: NavOpts; redirected: boolean } {
   const hit = PAGE_REDIRECTS[page];
   if (hit) return { page: hit.page, opts: hit.opts ? { ...hit.opts } : undefined, redirected: true };
   if (page === 'dashboards' && opts?.board === LANDING_BOARD_ID) return { page: 'overview', redirected: true };
+  if (page === 'metrics' && opts?.tab && hasOwn(METRICS_TAB_PAGES, opts.tab)) {
+    return { page: METRICS_TAB_PAGES[opts.tab], redirected: true };
+  }
   return { page, opts, redirected: false };
 }
 
@@ -344,6 +365,26 @@ function replaceHash(hash: string): void {
   } catch {
     /* a sandboxed frame may refuse; the in-memory route is already right */
   }
+}
+
+/**
+ * Keys that pick a view of one page (the Metrics tabs). A navigation that stays on the
+ * page and changes only these replaces the history entry, so tab clicks never stack Back
+ * steps: Back leaves the page.
+ */
+const VIEW_KEYS: Readonly<Partial<Record<PageId, readonly string[]>>> = { metrics: ['tab'] };
+
+/** True when `to` is `from` with only a {@link VIEW_KEYS} value changed, on `page`. */
+function changesOnlyView(page: PageId, from: string, to: string): boolean {
+  const keys = VIEW_KEYS[page];
+  if (!keys || rawPageOf(from) !== page || rawPageOf(to) !== page) return false;
+  const rest = (hash: string) => {
+    const qi = hash.indexOf('?');
+    const params = new URLSearchParams(qi < 0 ? '' : hash.slice(qi + 1));
+    for (const key of keys) params.delete(key);
+    return params.toString();
+  };
+  return rest(from) === rest(to);
 }
 
 /** One-shot requests (a new chat, a question to ask or send): never re-applied by Back/Forward. */
@@ -456,9 +497,14 @@ export const RouterProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       setPage(target.page);
       setOpts(target.opts);
       if (window.location.hash !== target.hash) {
-        window.location.hash = target.hash;
-        // Read back: the browser may normalise what was written.
-        echoRef.current = window.location.hash;
+        if (changesOnlyView(target.page, window.location.hash, target.hash)) {
+          // Another tab of the same page: replace the entry (no `hashchange` fires).
+          replaceHash(target.hash);
+        } else {
+          window.location.hash = target.hash;
+          // Read back: the browser may normalise what was written.
+          echoRef.current = window.location.hash;
+        }
       }
     },
     [resolveNavigation],

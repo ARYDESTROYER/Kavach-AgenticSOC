@@ -528,12 +528,16 @@ function AttachRunbookField({
   onChange: (runbookId: string) => void;
 }) {
   const [library, setLibrary] = React.useState<RunbookSummary[] | null>(null);
+  // The server's migration map from the same read (what the rule resolves through at fire time).
+  const [migrated, setMigrated] = React.useState<Readonly<Record<string, string>> | undefined>(undefined);
   const [failed, setFailed] = React.useState(false);
   React.useEffect(() => {
     let alive = true;
     listRunbookLibrary({ show_replaced: true })
       .then((lib) => {
-        if (alive) setLibrary(lib.runbooks);
+        if (!alive) return;
+        setLibrary(lib.runbooks);
+        setMigrated(lib.migrated_procedures);
       })
       .catch(() => {
         if (alive) setFailed(true);
@@ -542,7 +546,7 @@ function AttachRunbookField({
       alive = false;
     };
   }, []);
-  const target = resolveAutomationRunbook(payload, failed ? null : library);
+  const target = resolveAutomationRunbook(payload, failed ? null : library, migrated);
   const stored =
     (typeof payload.runbook_id === 'string' && payload.runbook_id) ||
     (typeof payload.playbook_id === 'string' && payload.playbook_id) ||

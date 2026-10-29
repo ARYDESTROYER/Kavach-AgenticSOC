@@ -250,7 +250,6 @@ describe('FULL_WIDTH_SECTIONS (Round 14, C9 A: tables and wide editors)', () => 
       'notifications',
       'appearance',
       'demo',
-      'danger',
     ]) {
       expect(FULL_WIDTH_SECTIONS.has(id)).toBe(true);
     }
@@ -278,6 +277,9 @@ describe('FULL_WIDTH_SECTIONS (Round 14, C9 A: tables and wide editors)', () => 
       'data_export',
       'profile',
       'account_security',
+      // DangerZone renders itself at form width so each tier's button stays near its
+      // name; the registry says the same, so the save bar and footer follow it.
+      'danger',
     ]) {
       expect(FULL_WIDTH_SECTIONS.has(id)).toBe(false);
     }
@@ -316,16 +318,15 @@ describe('Chat assistant is findable (Settings search + command palette)', () =>
   }
 });
 
-describe('Runbooks settings search leaves the Approvals page name alone', () => {
+describe('Runbooks settings search finds step approvals', () => {
   const allowAll = () => true;
-  it('"step approval" finds the Runbooks section and its Publishing and review card', () => {
-    const hits = searchJumpTargets('step approval', allowAll);
-    expect(hits.some((t) => t.section === 'runbooks' && !t.anchor)).toBe(true);
-    expect(hits.some((t) => t.section === 'runbooks' && t.anchor === 'runbooks-publishing')).toBe(true);
-  });
-
-  it('the page name "approvals" matches no settings target, so the palette Enter opens the page', () => {
-    expect(searchJumpTargets('approvals', allowAll)).toEqual([]);
-    expect(searchJumpTargets('Approvals', allowAll)).toEqual([]);
-  });
+  // The command palette ranks a page whose name is the query (Approvals) above every
+  // Settings target (command-palette tests), so the setting's own words can be keywords.
+  for (const query of ['step approvals', 'step approval', 'Step approvals']) {
+    it(`"${query}" finds the Runbooks section and its Publishing and review card`, () => {
+      const hits = searchJumpTargets(query, allowAll);
+      expect(hits.some((t) => t.section === 'runbooks' && !t.anchor)).toBe(true);
+      expect(hits.some((t) => t.section === 'runbooks' && t.anchor === 'runbooks-publishing')).toBe(true);
+    });
+  }
 });

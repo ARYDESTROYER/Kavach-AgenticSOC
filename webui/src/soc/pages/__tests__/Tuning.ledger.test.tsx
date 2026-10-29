@@ -120,7 +120,9 @@ describe('Tuning ledger render (bug #12)', () => {
       </TooltipProvider>,
     );
     await waitFor(() => expect(recsMock).toHaveBeenCalled());
-    fireEvent.keyDown(screen.getByRole('tab', { name: 'Policy & history' }), {
+    // The tabs appear once the page's first reads settle, which can be after the read
+    // started: wait for the tab itself, never a synchronous lookup after the waitFor.
+    fireEvent.keyDown(await screen.findByRole('tab', { name: 'Policy & history' }), {
       key: 'Enter',
     });
     await screen.findByText('rule-live');

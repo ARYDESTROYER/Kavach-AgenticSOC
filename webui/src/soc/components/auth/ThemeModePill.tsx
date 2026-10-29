@@ -1,5 +1,5 @@
 /**
- * ThemeModePill — the identity canvas's Light mode / Dark mode switch.
+ * ThemeModePill: the identity canvas's Light mode / Dark mode switch.
  *
  * A gradient pill that names the mode you are currently IN, with a crescent on
  * the left and a plain disc on the right that scale-swap as the mode changes,
@@ -66,7 +66,7 @@ export function ThemeModePill({ dark, onToggle, className }: ThemeModePillProps)
       data-appearance={dark ? 'dark' : 'light'}
       // Opens with the visible label so voice control can target it (WCAG 2.5.3),
       // then names the action, because the label alone reads as a statement.
-      aria-label={`${label} — ${action}`}
+      aria-label={`${label}: ${action}`}
       onClick={() => onToggle(dark ? 'light' : 'dark')}
       className={cn('login-theme-pill', focusRing, className)}
     >

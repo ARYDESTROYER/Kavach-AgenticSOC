@@ -5,11 +5,12 @@
  * can be matched and never reach the investigator (the cheap router path, the kill
  * switch, a guidance budget), and the Console never claims it was used then.
  *
- * Read defensively: the rationale type keeps an index signature, so every field is
- * checked here. Titles are Published operator text and reasons are plain text (#9).
- * Nothing here decides anything (#3).
+ * The two halves are typed (`CaseRationale.runbook`, `RationaleProcedureProvenance.runbook`)
+ * and still read value by value: an older server leaves them out, a run before Round 14
+ * leaves them empty, and a version may arrive as text. Titles are Published operator text
+ * and reasons are plain text (#9). Nothing here decides anything (#3).
  */
-import type { CaseRationale } from '@/lib/types';
+import type { CaseRationale, RationaleRunbook, RationaleRunbookProvenance } from '@/lib/types';
 
 export interface RunbookGuidance {
   /** The runbook id the investigator received; empty when it never received one. */
@@ -20,10 +21,6 @@ export interface RunbookGuidance {
   title: string;
   reason: string;
   consulted: boolean;
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 function text(value: unknown): string {
@@ -42,8 +39,8 @@ function whole(value: unknown): number | null {
 /** The latest run's runbook guidance, or null when no runbook was matched or received. */
 export function rationaleRunbook(rationale: CaseRationale | null | undefined): RunbookGuidance | null {
   if (!rationale) return null;
-  const top = record((rationale as Record<string, unknown>).runbook);
-  const procedure = record(record(rationale.procedure_provenance)?.runbook);
+  const top: RationaleRunbook | null = rationale.runbook ?? null;
+  const procedure: RationaleRunbookProvenance | null = rationale.procedure_provenance?.runbook ?? null;
   const consulted = top?.consulted === true || procedure?.consulted === true;
   const id = text(top?.id) || (consulted ? text(procedure?.selected_id) : '');
   const selectedId = text(procedure?.selected_id) || text(top?.selected_id) || id;

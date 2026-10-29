@@ -281,7 +281,58 @@ describe('unified Jobs surface', () => {
     renderPage();
 
     await screen.findByText('job-no-artifact');
-    expect(screen.getAllByRole('button', { name: 'Download' })).toHaveLength(1);
+    // Each Download names its job, so two rows never offer two identical controls.
+    expect(screen.getAllByRole('button', { name: /^Download/ })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Download Data export archive job-with-artifact' })).toBeInTheDocument();
+  });
+
+  it('links a finished audit export into the audit log, in the view it holds (SPEC §4.5.8)', async () => {
+    const exported = (id: string, overrides: Partial<BackgroundJob> = {}) =>
+      job({
+        job_id: id,
+        kind: 'audit_export',
+        status: 'succeeded',
+        finished_at: '2026-10-29T17:58:20Z',
+        progress: { done: 12, total: 12, unit: 'events' },
+        result: { kind: 'audit_export', artifact_id: `a-${id}`, counts: { events: 12 } },
+        params: {
+          format: 'csv',
+          order: 'asc',
+          scope: 'people',
+          from: '2026-09-29T17:58:15Z',
+          to: '2026-10-29T17:58:15Z',
+          q: 'Admin',
+          filters: { outcome: 'denied' },
+        },
+        ...overrides,
+      });
+    mocks.listJobs.mockResolvedValue(
+      response({
+        jobs: [
+          exported('job-audit-1'),
+          exported('job-audit-2', { status: 'running', finished_at: null, result: null }),
+        ],
+        total: 2,
+      }),
+    );
+    renderPage();
+
+    await screen.findByText('job-audit-1');
+    // A navigation is a link, never a button that changes the hash (SPEC §3.3).
+    const link = screen.getByRole('link', { name: 'Open audit log for Audit export job-audit-1' });
+    expect(link).toHaveTextContent('Open audit log');
+    const href = link.getAttribute('href') ?? '';
+    expect(href.startsWith('#/audit?')).toBe(true);
+    expect(Object.fromEntries(new URLSearchParams(href.slice('#/audit?'.length)))).toEqual({
+      scope: 'people',
+      from: '2026-09-29T17:58:15Z',
+      to: '2026-10-29T17:58:15Z',
+      q: 'Admin',
+      outcome: 'denied',
+    });
+    // Only a finished export links; a running one offers Cancel only.
+    expect(screen.getAllByRole('link', { name: /^Open audit log/ })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Download Audit export job-audit-1' })).toBeInTheDocument();
   });
 
   it('keeps a named blocking state until the first authoritative snapshot', async () => {

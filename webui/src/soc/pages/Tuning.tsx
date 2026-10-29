@@ -1118,7 +1118,7 @@ function TuningBody({ onNavigate }: TuningProps) {
                   <AgentEffectivenessSummary
                     refreshKey={effectivenessRefreshKey}
                     changes={outcomeChanges}
-                    onOpenFull={() => navigate('metrics', { tab: 'effectiveness' })}
+                    onOpenFull={() => navigate('effectiveness')}
                   />
                   <TelemetryOpportunities data={telemetryRecommendations} />
                 </>

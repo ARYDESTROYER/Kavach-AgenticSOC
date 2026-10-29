@@ -4,7 +4,7 @@
  * The QR code is a lazy chunk, and the card renders on the eager Login page, which sits
  * outside every error boundary. A rejected chunk import (a stale hashed file after a
  * redeploy or supervised update, a proxy, going offline) must not unmount the tree:
- * the card shows its "QR unavailable" box and the secret, URI, recovery codes and the
+ * the card shows its "QR code unavailable" box and the secret, URI, recovery codes and the
  * confirm form stay usable.
  */
 import * as React from 'react';
@@ -56,7 +56,7 @@ describe('MfaSetupCard — QR chunk load failure', () => {
     render(<MfaSetupCard enabled={false} frameless pendingToken="pend-9" />);
 
     expect(
-      await screen.findByText('QR unavailable — enter the secret manually below.'),
+      await screen.findByText('QR code unavailable. Enter the secret by hand below.'),
     ).toBeInTheDocument();
     expect(screen.getByText('CHUNKSECRET234567')).toBeInTheDocument();
     expect(screen.getByText(/otpauth:\/\/totp\/Agentic%20SOC:ann/)).toBeInTheDocument();
@@ -67,13 +67,13 @@ describe('MfaSetupCard — QR chunk load failure', () => {
 
   it('session enrolment (Security page) shows the same fallback', async () => {
     render(<MfaSetupCard enabled={false} />);
-    fireEvent.click(screen.getByRole('button', { name: /enable two-factor/i }));
+    fireEvent.click(screen.getByRole('button', { name: /turn on two-factor/i }));
 
     await waitFor(() => expect(setupMock).toHaveBeenCalled());
     expect(
-      await screen.findByText('QR unavailable — enter the secret manually below.'),
+      await screen.findByText('QR code unavailable. Enter the secret by hand below.'),
     ).toBeInTheDocument();
     expect(screen.getByText('CHUNKSECRET234567')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /verify & enable/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /verify and turn on/i })).toBeInTheDocument();
   });
 });

@@ -328,8 +328,8 @@ describe('Standup shift handoff (Round 3 / F11)', () => {
     expect(rows[1]).toHaveTextContent('2h 40m over');
     expect(rows[1].textContent).not.toContain('—');
     const posture = within(sla).getByRole('link', { name: 'Open posture' });
-    // The hash carries the Metrics page; the router keeps only the tabs it can restore.
-    expect(posture.getAttribute('href')).toMatch(/^#\/metrics(\?|$)/);
+    // The hash names the Posture tab, so a modified click or a new tab opens it too.
+    expect(posture).toHaveAttribute('href', '#/metrics?tab=posture');
     fireEvent.click(posture);
     expect(onNavigate).toHaveBeenCalledWith('metrics', { tab: 'posture' });
   });

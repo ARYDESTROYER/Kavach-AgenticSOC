@@ -347,7 +347,7 @@ describe('Cases: closing a case with runbook steps open (D34)', () => {
     const user = userEvent.setup();
     renderCases();
     await screen.findByText('Phishing link clicked');
-    await user.click(screen.getByLabelText('Select all rows'));
+    await user.click(screen.getByLabelText('Select all cases on this page'));
     const bar = await screen.findByRole('region', { name: /bulk actions/i });
     await user.click(within(bar).getByRole('button', { name: 'Close' }));
     await screen.findByTestId('bulk-close-dialog');

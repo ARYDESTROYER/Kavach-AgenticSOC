@@ -139,3 +139,53 @@ describe('TabsList variants (Round 14, SPEC §4.9.2)', () => {
     expect(first).toHaveAttribute('aria-selected', 'true');
   });
 });
+
+describe('forced colours and inactive panels (Round 14, finding 25 and W8a)', () => {
+  function renderPair(variant?: 'boxed' | 'underline', panelClass?: string) {
+    return render(
+      <Tabs defaultValue="a">
+        <TabsList variant={variant} aria-label="Sections">
+          <TabsTrigger value="a">Overview</TabsTrigger>
+          <TabsTrigger value="b">Runbook</TabsTrigger>
+        </TabsList>
+        <TabsContent value="a" className={panelClass}>
+          Panel A
+        </TabsContent>
+        <TabsContent value="b" className={panelClass} data-testid="panel-b">
+          Panel B
+        </TabsContent>
+      </Tabs>,
+    );
+  }
+
+  it('underline: the selected rule takes the system selection colour in forced colours', () => {
+    renderPair('underline');
+    const tab = screen.getByRole('tab', { name: 'Overview' });
+    // The hairline and the rule would otherwise share one forced text colour and merge.
+    expect(tab).toHaveClass('forced-colors:data-[state=active]:after:border-[Highlight]');
+  });
+
+  it('boxed: the selected trigger keeps a system outline when forced colours drop its tint', () => {
+    renderPair('boxed');
+    const tab = screen.getByRole('tab', { name: 'Overview' });
+    expect(tab).toHaveClass(
+      'forced-colors:data-[state=active]:outline',
+      'forced-colors:data-[state=active]:outline-2',
+      'forced-colors:data-[state=active]:outline-[Highlight]',
+    );
+  });
+
+  it('keeps an inactive panel hidden even when the caller gives it a display utility', () => {
+    renderPair('underline', 'grid gap-4');
+    // Radix keeps the inactive panel in the DOM, empty and `hidden`; a `grid` from the
+    // caller would override the attribute and leave its margin in the layout.
+    const inactive = screen.getByTestId('panel-b');
+    expect(inactive).toHaveAttribute('hidden');
+    expect(inactive).toBeEmptyDOMElement();
+    expect(inactive).toHaveClass('grid', '[&[hidden]]:hidden');
+    // The active panel carries the same rule and is not hidden.
+    const active = screen.getByText('Panel A');
+    expect(active).not.toHaveAttribute('hidden');
+    expect(active).toHaveClass('grid', '[&[hidden]]:hidden');
+  });
+});

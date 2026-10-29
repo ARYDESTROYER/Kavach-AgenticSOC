@@ -149,7 +149,7 @@ describe('Cases controls', () => {
   it('renders the bulk action bar via a portal to <body>, outside the @container (#0)', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText('Select all rows'));
+    fireEvent.click(screen.getByLabelText('Select all cases on this page'));
     const bar = await screen.findByRole('region', { name: /bulk actions/i });
 
     // Portaled out: no `@container` (container-type: inline-size) ancestor captures the

@@ -176,3 +176,36 @@ describe('isLiveDeclaration', () => {
     expect(isLiveDeclaration(policy({ expires_at: 'not-a-date' }))).toBe(true);
   });
 });
+
+describe('AnalystPolicyBuilder rows (Round 14, SPEC §4.9.6)', () => {
+  it('lists declarations as hairline rows like the suppression rules beside them', () => {
+    wrap(
+      <AnalystPolicyBuilder
+        policies={[policy(), policy({ id: 'arp-2', rule_id: 'dns_tunnel', enabled: false })]}
+        onChange={vi.fn()}
+      />,
+    );
+    const list = screen.getByRole('list', { name: 'Declarations' });
+    expect(list).toHaveClass('divide-y');
+    const rows = Array.from(list.querySelectorAll(':scope > li'));
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.className).not.toMatch(/\bborder\b|\brounded-/);
+    }
+  });
+
+  it('keeps the row glyph beside its text and names each field by its visible label', () => {
+    wrap(<AnalystPolicyBuilder policies={[policy({ created_by: 'agent', enabled: false })]} onChange={vi.fn()} />);
+    const text = screen.getByText('Close matching cases without a model call');
+    const textLine = text.parentElement as HTMLElement;
+    expect(textLine).toHaveClass('flex-wrap');
+    expect(textLine).toContainElement(screen.getByText('Drafted by the agent'));
+    const pair = textLine.parentElement as HTMLElement;
+    expect(pair.className).not.toMatch(/\bflex-wrap\b/);
+    expect(pair.querySelector(':scope > svg')).not.toBeNull();
+    // Each field's name is its label (WCAG 2.5.3), not a different sentence.
+    for (const name of ['Reason', 'Source (optional)', 'Expires (optional)']) {
+      expect(screen.getByLabelText(name, { selector: 'input' })).not.toHaveAttribute('aria-label');
+    }
+  });
+});

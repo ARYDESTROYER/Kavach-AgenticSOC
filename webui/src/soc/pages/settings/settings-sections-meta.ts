@@ -423,9 +423,10 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     help: 'How runbooks reach cases and the agent. Only Published runbook text is trusted, and a runbook never closes or escalates a case.',
     icon: BookOpenCheck,
     perm: SETTINGS_MANAGE,
-    // "step approval", never the plural: a keyword holding "approvals" would make the
-    // typed page name Approvals jump here in the command palette instead of to the page.
-    keywords: ['runbook', 'runbooks', 'procedure', 'checklist', 'auto attach', 'fallback', 'generic incident', 'guidance', 'publish', 'approver', 'review', 'step approval', 'draft note'],
+    // "step approvals", the words of the "Honour step approvals" setting. The command
+    // palette ranks a page whose name is the query (Approvals) above every Settings
+    // target, so this keyword never takes the typed page name's Enter.
+    keywords: ['runbook', 'runbooks', 'procedure', 'checklist', 'auto attach', 'fallback', 'generic incident', 'guidance', 'publish', 'approver', 'review', 'step approvals', 'draft note'],
     ownedKeys: ['runbooks'],
   },
 
@@ -582,7 +583,8 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     blurb: 'Reset cases, sources or the whole tenant in tiers. Never wipes environment secrets.',
     help: 'Reset Agentic SOC data in explicit tiers. Each reset asks for an exact phrase and a fresh sign-in; environment secrets and upstream logs are never touched.',
     icon: Trash2,
-    width: 'full',
+    // A form-width section (44rem), as DangerZone renders itself: each tier's button stays
+    // within reach of its name.
     keywords: ['danger', 'reset', 'factory reset', 'wipe', 'delete', 'destructive', 'revoke all', 'kill switch'],
   },
 ];
@@ -630,7 +632,7 @@ export const SETTING_ANCHORS: readonly SettingAnchor[] = [
   { section: 'knowledge', anchor: 'knowledge-corpus', label: 'Knowledge corpus', keywords: ['resolved cases', 'knowledge corpus', 'mitre corpus', 'precedent'] },
   // Integrations › Runbooks
   { section: 'runbooks', anchor: 'runbooks-cases', label: 'Runbooks on cases', keywords: ['auto attach', 'attach', 'fallback', 'generic incident'] },
-  { section: 'runbooks', anchor: 'runbooks-publishing', label: 'Publishing and review', keywords: ['publish', 'approver', 'review', 'step approval', 'cadence'] },
+  { section: 'runbooks', anchor: 'runbooks-publishing', label: 'Publishing and review', keywords: ['publish', 'approver', 'review', 'step approvals', 'cadence'] },
   // Organization › Advanced
   { section: 'advanced', anchor: 'advanced-caps', label: 'Per-case caps', keywords: ['caps', 'budget', 'max tokens', 'max cost', 'concurrency'] },
   { section: 'advanced', anchor: 'advanced-killswitch', label: 'Kill switch', keywords: ['kill switch', 'pause', 'stop', 'disable'] },

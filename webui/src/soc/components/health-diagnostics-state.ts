@@ -26,7 +26,7 @@ export interface AutoCloseStatusView {
   tone: HealthStatusTone;
   /** True when the status is a POSITIVELY DETECTED problem (not merely unmeasured). */
   problem: boolean;
-  /** True when the status means "we could not measure this" — never a health claim. */
+  /** True when the status means "we could not measure this": never a health claim. */
   unmeasured: boolean;
 }
 
@@ -48,21 +48,21 @@ export function autoCloseStatusView(status: string | undefined | null): AutoClos
       return { label: 'Turned off', tone: 'secondary', problem: false, unmeasured: false };
     case 'no_volume':
       return {
-        label: 'Not measured — no volume',
+        label: 'Not measured: no volume',
         tone: 'outline',
         problem: false,
         unmeasured: true,
       };
     case 'insufficient_evidence':
       return {
-        label: 'Not measured — insufficient evidence',
+        label: 'Not measured: not enough evidence',
         tone: 'outline',
         problem: false,
         unmeasured: true,
       };
     case 'ok':
       return {
-        label: 'Measured — within tolerance',
+        label: 'Within tolerance',
         tone: 'success',
         problem: false,
         unmeasured: false,

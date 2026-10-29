@@ -210,7 +210,7 @@ describe('hover intent in the 64 px rail', () => {
     vi.useFakeTimers();
     setup({ collapsed: true });
     // A sweep down the rail: every icon is crossed, none is rested on.
-    const sweep = ['overview', 'cases', 'case_manager', 'chat', 'intelligence', 'metrics', 'settings'];
+    const sweep = ['overview', 'cases', 'case_manager', 'chat', 'intelligence', 'analytics', 'settings'];
     for (const id of sweep) {
       const row = screen.getByTestId(`nav-${id}`);
       for (let i = 0; i < 4; i += 1) {
@@ -262,14 +262,14 @@ describe('hover intent in the 64 px rail', () => {
   it('closes a flyout 400 ms after the pointer leaves the icon and the flyout', () => {
     vi.useFakeTimers();
     setup({ collapsed: true });
-    const metrics = screen.getByTestId('nav-metrics');
-    fireEvent.pointerMove(metrics, { clientX: 30, clientY: 300 });
+    const analytics = screen.getByTestId('nav-analytics');
+    fireEvent.pointerMove(analytics, { clientX: 30, clientY: 300 });
     act(() => vi.advanceTimersByTime(NAV_REST_MS));
-    const panel = screen.getByTestId('nav-flyout-metrics');
-    fireEvent.pointerLeave(metrics, { clientX: 60, clientY: 300 });
+    const panel = screen.getByTestId('nav-flyout-analytics');
+    fireEvent.pointerLeave(analytics, { clientX: 60, clientY: 300 });
     fireEvent.pointerEnter(panel);
     act(() => vi.advanceTimersByTime(1_000));
-    expect(screen.getByTestId('nav-flyout-metrics')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-flyout-analytics')).toBeInTheDocument();
     fireEvent.pointerLeave(panel, { clientX: 400, clientY: 600 });
     act(() => vi.advanceTimersByTime(399));
     expect(flyouts()).toHaveLength(1);
@@ -401,13 +401,16 @@ describe('what the navigation highlights (SPEC §2.2 item 9)', () => {
     expect(markers[0]).toHaveTextContent(label);
   });
 
-  it('marks a host that is also its own child once (Analytics > Metrics), open or closed', () => {
-    const open = setup({ page: 'metrics', open: ['metrics'] });
+  it('marks the Metrics page once: its child while Analytics is open, the group row while closed', () => {
+    // The Analytics group has its own id (finding 20), so the row and its Metrics child are
+    // two elements with two names; the open group marks the child, which names the page.
+    const open = setup({ page: 'metrics', open: ['analytics'] });
     expect(currentMarkers()).toHaveLength(1);
-    expect(currentMarkers()[0]).toHaveTextContent('Metrics');
+    expect(currentMarkers()[0]).toHaveTextContent(/^Metrics$/);
+    expect(screen.getByTestId('nav-analytics')).not.toHaveAttribute('aria-current');
     open.unmount();
     setup({ page: 'metrics', open: [] });
-    expect(currentMarkers()).toEqual([screen.getByTestId('nav-metrics')]);
+    expect(currentMarkers()).toEqual([screen.getByTestId('nav-analytics')]);
   });
 });
 
@@ -429,7 +432,7 @@ describe('keyboard in the 64 px rail', () => {
       'nav-chat',
       'nav-approvals',
       'nav-intelligence',
-      'nav-metrics',
+      'nav-analytics',
       'nav-inbox',
       'nav-sources',
       'nav-audit',
@@ -474,8 +477,8 @@ describe('keyboard in the 64 px rail', () => {
 
   it('Space on a grouped icon does what a click does (opens its page)', () => {
     const { onNavigate } = setup({ collapsed: true, page: 'cases' });
-    const metrics = screen.getByTestId('nav-metrics');
-    act(() => fireEvent.keyDown(metrics, { key: ' ' }));
+    const analytics = screen.getByTestId('nav-analytics');
+    act(() => fireEvent.keyDown(analytics, { key: ' ' }));
     expect(onNavigate).toHaveBeenCalledWith('metrics');
   });
 });
@@ -511,7 +514,7 @@ describe('destinations', () => {
   });
 
   it('carries no em dash and never the retired word in its copy', () => {
-    setup({ page: 'cases', open: ['overview', 'chat', 'intelligence', 'metrics', 'settings'] });
+    setup({ page: 'cases', open: ['overview', 'chat', 'intelligence', 'analytics', 'settings'] });
     const text = aside().textContent ?? '';
     expect(text).not.toMatch(/[—–]/);
     expect(text).not.toMatch(/playbook/i);
@@ -544,16 +547,16 @@ describe('switching between flyouts (SPEC §4.8.1 "Flyouts")', () => {
   it('switches to a neighbour after a 120 ms rest once one is open, one flyout throughout', () => {
     vi.useFakeTimers();
     setup({ collapsed: true });
-    const metrics = screen.getByTestId('nav-metrics');
+    const analytics = screen.getByTestId('nav-analytics');
     const intelligence = screen.getByTestId('nav-intelligence');
-    fireEvent.pointerMove(metrics, { clientX: 30, clientY: 400 });
+    fireEvent.pointerMove(analytics, { clientX: 30, clientY: 400 });
     act(() => vi.advanceTimersByTime(NAV_REST_MS));
-    expect(screen.getByTestId('nav-flyout-metrics')).toBeInTheDocument();
-    fireEvent.pointerLeave(metrics, { clientX: 30, clientY: 380 });
+    expect(screen.getByTestId('nav-flyout-analytics')).toBeInTheDocument();
+    fireEvent.pointerLeave(analytics, { clientX: 30, clientY: 380 });
     fireEvent.pointerMove(intelligence, { clientX: 30, clientY: 360 });
     act(() => vi.advanceTimersByTime(NAV_SWITCH_REST_MS - 1));
     expect(flyouts()).toHaveLength(1);
-    expect(screen.getByTestId('nav-flyout-metrics')).toBeInTheDocument();
+    expect(screen.getByTestId('nav-flyout-analytics')).toBeInTheDocument();
     act(() => vi.advanceTimersByTime(1));
     expect(flyouts()).toHaveLength(1);
     expect(screen.getByTestId('nav-flyout-intelligence')).toBeInTheDocument();
@@ -716,17 +719,17 @@ describe('content on hover or focus (WCAG 2.2 SC 1.4.13)', () => {
   it('Escape closes a flyout the pointer opened, wherever focus is; it stays closed until the pointer leaves', () => {
     vi.useFakeTimers();
     setup({ collapsed: true });
-    const metrics = screen.getByTestId('nav-metrics');
-    fireEvent.pointerMove(metrics, { clientX: 30, clientY: 300 });
+    const analytics = screen.getByTestId('nav-analytics');
+    fireEvent.pointerMove(analytics, { clientX: 30, clientY: 300 });
     act(() => vi.advanceTimersByTime(NAV_REST_MS));
     expect(flyouts()).toHaveLength(1);
     expect(escape().defaultPrevented).toBe(true);
     expect(flyouts()).toHaveLength(0);
-    fireEvent.pointerMove(metrics, { clientX: 34, clientY: 306 });
+    fireEvent.pointerMove(analytics, { clientX: 34, clientY: 306 });
     act(() => vi.advanceTimersByTime(NAV_REST_MS * 2));
     expect(flyouts()).toHaveLength(0);
-    fireEvent.pointerLeave(metrics, { clientX: 30, clientY: 360 });
-    fireEvent.pointerMove(metrics, { clientX: 30, clientY: 300 });
+    fireEvent.pointerLeave(analytics, { clientX: 30, clientY: 360 });
+    fireEvent.pointerMove(analytics, { clientX: 30, clientY: 300 });
     act(() => vi.advanceTimersByTime(NAV_REST_MS));
     expect(flyouts()).toHaveLength(1);
   });
@@ -734,13 +737,13 @@ describe('content on hover or focus (WCAG 2.2 SC 1.4.13)', () => {
   it('Escape on a grouped icon closes its keyboard flyout, which stays closed while focus stays', () => {
     vi.useFakeTimers();
     setup({ collapsed: true });
-    const metrics = screen.getByTestId('nav-metrics');
-    act(() => metrics.focus());
+    const analytics = screen.getByTestId('nav-analytics');
+    act(() => analytics.focus());
     expect(flyouts()).toHaveLength(1);
-    act(() => fireEvent.keyDown(metrics, { key: 'Escape' }));
+    act(() => fireEvent.keyDown(analytics, { key: 'Escape' }));
     expect(flyouts()).toHaveLength(0);
-    expect(document.activeElement).toBe(metrics);
-    fireEvent.pointerMove(metrics, { clientX: 30, clientY: 300 });
+    expect(document.activeElement).toBe(analytics);
+    fireEvent.pointerMove(analytics, { clientX: 30, clientY: 300 });
     act(() => vi.advanceTimersByTime(NAV_REST_MS * 2));
     expect(flyouts()).toHaveLength(0);
   });
@@ -750,7 +753,7 @@ describe('a state switch from anywhere (the toggle, the strip or the shell Ctrl+
   it('cancels a pending flyout rest: nothing opens over the drawer', () => {
     vi.useFakeTimers();
     setup({ collapsed: true });
-    fireEvent.pointerMove(screen.getByTestId('nav-metrics'), { clientX: 30, clientY: 300 });
+    fireEvent.pointerMove(screen.getByTestId('nav-analytics'), { clientX: 30, clientY: 300 });
     act(() => vi.advanceTimersByTime(100));
     // What the shell's Ctrl+B handler runs (it never goes through the toggle).
     act(() => navStore.toggleCollapsed());
@@ -772,7 +775,7 @@ describe('a state switch from anywhere (the toggle, the strip or the shell Ctrl+
 
   it('never draws a flyout over the labelled drawer', () => {
     setup({ collapsed: false });
-    act(() => navStore.setFlyout('metrics', 120));
+    act(() => navStore.setFlyout('analytics', 120));
     expect(flyouts()).toHaveLength(0);
   });
 
@@ -814,9 +817,9 @@ describe('the phone sheet saves the groups it shows', () => {
   });
 
   it('hiding a group the store has open closes it in both', () => {
-    setup({ page: 'cases', variant: 'sheet', open: ['metrics'] });
+    setup({ page: 'cases', variant: 'sheet', open: ['analytics'] });
     act(() => fireEvent.click(screen.getByRole('button', { name: 'Hide Analytics pages' })));
-    expect(navStore.getState().openGroups.has('metrics')).toBe(false);
+    expect(navStore.getState().openGroups.has('analytics')).toBe(false);
     expect(putUser).toHaveBeenLastCalledWith({ misc: { nav_open_groups: [] } });
   });
 });
@@ -849,7 +852,7 @@ describe('forced colours (Windows high contrast)', () => {
     );
 
   it('no navigation control drops its outline outside focus-visible (forced colours paint it)', () => {
-    setup({ page: 'standup', open: ['overview', 'metrics'] });
+    setup({ page: 'standup', open: ['overview', 'analytics'] });
     expect(bareOutline(aside())).toEqual([]);
     for (const id of ['nav-overview', 'nav-standup', 'nav-toggle']) {
       expect(screen.getByTestId(id)).toHaveClass('focus-visible:outline-none');

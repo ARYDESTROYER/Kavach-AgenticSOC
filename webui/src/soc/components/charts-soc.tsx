@@ -3,14 +3,17 @@
  *
  * These complement the generic wrappers in `charts.tsx` with SOC-shaped views:
  *   - `MitreHeatmap`     — re-exported from `./MitreHeatmap` (ATT&CK coverage grid, no recharts).
- *   - `BurnDownChart`    — open vs closed cases over time (stacked area + net line).
  *   - `AreaSpark`        — a gradient-filled area sparkline (thin stroke, no axes).
  *   - `MultiSeriesTrend` — several labelled series over time with a legend.
  *
  * UNTRUSTED-data note (#9): every value here is numeric or a caller-supplied label,
  * rendered as plain SVG `<text>` / recharts category strings / plain DOM text —
  * NEVER HTML. Attacker-influenced labels cannot inject markup. Colours resolve from
- * the live CSS tokens via palette.ts, so all four track the active theme with no hex.
+ * the live CSS tokens via palette.ts, so all three track the active theme with no hex.
+ *
+ * Round 14: the open-versus-closed `BurnDownChart` is gone. No surface drew it any more,
+ * and it drew its Closed series as a `Line` inside an `AreaChart`, which recharts never
+ * renders, so it could only ever show half its data.
  */
 import * as React from 'react';
 import {
@@ -110,104 +113,6 @@ function SemanticLegend({ payload }: { payload?: LegendEntry[] }) {
 
 export { MitreHeatmap } from './MitreHeatmap';
 export type { MitreCell, MitreTacticColumn, MitreHeatmapProps } from './MitreHeatmap';
-
-/* ========================================================================= */
-/* BurnDownChart                                                             */
-/* ========================================================================= */
-
-export interface BurnDownPoint {
-  /** X label (e.g. a date string). Plain text. */
-  x: string;
-  /** Open (or backlog) count at this point. */
-  open: number;
-  /** Closed/resolved count at this point. */
-  closed: number;
-}
-
-export interface BurnDownChartProps {
-  data: BurnDownPoint[];
-  height?: number;
-  format?: (v: number) => string;
-  /** Series labels (for the legend + tooltip). */
-  openLabel?: string;
-  closedLabel?: string;
-  ariaLabel?: string;
-  className?: string;
-}
-
-/**
- * Open-vs-closed burn-down: a stacked gradient area of the open backlog with a
- * solid closed line, over time. Tracks the theme (info=open, success=closed).
- */
-export const BurnDownChart = React.forwardRef<HTMLDivElement, BurnDownChartProps>(
-  ({ data, height = 240, format, openLabel = 'Open', closedLabel = 'Closed', ariaLabel, className }, ref) => {
-    const rows = data ?? [];
-    const gid = React.useId().replace(/:/g, '');
-    const openColor = token('info');
-    const closedColor = token('success');
-    const label = ariaLabel ?? `Burn-down of open vs closed over ${rows.length} point(s)`;
-
-    if (rows.length === 0) {
-      return (
-        <div
-          ref={ref}
-          role="img"
-          aria-label={`${label} (no data)`}
-          className={cn('flex items-center justify-center text-sm text-muted-foreground', className)}
-          style={{ height }}
-        >
-          No data
-        </div>
-      );
-    }
-
-    return (
-      <div ref={ref} role="img" aria-label={label} className={className} style={{ height }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <AreaChart data={rows} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-            <defs>
-              <linearGradient id={`bd-open-${gid}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={openColor} stopOpacity={0.32} />
-                <stop offset="100%" stopColor={openColor} stopOpacity={0.02} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid stroke="hsl(var(--border))" strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="x" tickLine={false} axisLine={false} tick={AXIS_TICK} minTickGap={24} />
-            <YAxis
-              tickLine={false}
-              axisLine={false}
-              tick={AXIS_TICK}
-              width={40}
-              tickFormatter={(v) => (format ? format(Number(v)) : String(v))}
-            />
-            <Tooltip content={<SocTooltip format={format} />} cursor={{ stroke: openColor, strokeOpacity: 0.3 }} />
-            <Legend content={<SemanticLegend />} />
-            <Area
-              type="monotone"
-              dataKey="open"
-              name={openLabel}
-              stroke={openColor}
-              strokeWidth={2}
-              fill={`url(#bd-open-${gid})`}
-              isAnimationActive={false}
-              dot={false}
-            />
-            <Line
-              type="monotone"
-              dataKey="closed"
-              name={closedLabel}
-              stroke={closedColor}
-              strokeWidth={2}
-              dot={false}
-              isAnimationActive={false}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
-    );
-  },
-);
-BurnDownChart.displayName = 'BurnDownChart';
 
 /* ========================================================================= */
 /* AreaSpark — gradient-area sparkline (thin stroke, no axes/tooltip).        */

@@ -26,7 +26,7 @@ vi.mock('@/lib/api', async () => ({
 }));
 
 import Cost from '../Cost';
-import { resetAnalyticsWindowForTests } from '../analytics-shared';
+import { resetAnalyticsWindow } from '../analytics-shared';
 
 const summary = (total: number) => ({
   total_cost: total,
@@ -38,7 +38,7 @@ const summary = (total: number) => ({
 
 describe('Cost window-switch race', () => {
   beforeEach(() => {
-    resetAnalyticsWindowForTests();
+    resetAnalyticsWindow();
     pending.clear();
     usageSummary.mockClear();
   });

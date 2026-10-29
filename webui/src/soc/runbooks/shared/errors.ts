@@ -4,27 +4,21 @@
  * `length` for `runbook_prompt_budget`, `revision` and `latest` for `runbook_conflict`
  * (and `exists` when a create names an id that is taken).
  * The page states branch on `code`; the message the server wrote is shown as plain text.
- *
- * Three codes the library routes also answer, beyond the SPEC table (A7b hand-off):
- * `runbook_scope_unsupported` (row-level scope on), `runbook_window_invalid` and
- * `runbook_body_too_large`.
+ * Every code the runbook routes answer is in {@link RunbookErrorCode} (`types-runbooks.ts`).
  */
 import { ApiError } from '@/lib/api';
 import { errorMessage } from '@/lib/errorMessage';
 import type { RunbookDetail, RunbookErrorCode, RunbookIssue } from '@/lib/types-runbooks';
 
-export type RunbookApiCode =
-  | RunbookErrorCode
-  | 'runbook_scope_unsupported'
-  | 'runbook_window_invalid'
-  | 'runbook_body_too_large'
-  | 'case_not_found';
-
 export interface RunbookApiFailure {
   /** HTTP status (0 when the backend could not be reached). */
   status: number;
-  /** The stable code, or `null` for an error without one. */
-  code: RunbookApiCode | string | null;
+  /**
+   * The stable code, or `null` for an error without one. A code outside
+   * {@link RunbookErrorCode} (a newer server, or a route outside the runbook family) is
+   * kept as it came.
+   */
+  code: RunbookErrorCode | (string & {}) | null;
   /** A plain sentence to show. */
   message: string;
   /** `runbook_invalid`: the problems, each with its path. */

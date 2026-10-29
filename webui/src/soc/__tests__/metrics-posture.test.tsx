@@ -70,7 +70,7 @@ vi.mock('@/soc/auth', () => ({
 }));
 
 import Metrics, { slaRowTiming } from '../pages/Metrics';
-import { resetAnalyticsWindowForTests } from '../pages/analytics-shared';
+import { resetAnalyticsWindow } from '../pages/analytics-shared';
 import type { PostureResponse, MitreCoverageResponse } from '../pages/Metrics.posture.api';
 
 const POSTURE: PostureResponse = {
@@ -170,7 +170,7 @@ const MITRE: MitreCoverageResponse = {
 
 describe('Metrics posture (Round 3 / F5)', () => {
   beforeEach(() => {
-    resetAnalyticsWindowForTests();
+    resetAnalyticsWindow();
     fetchPostureMock.mockReset();
     fetchMitreMock.mockReset();
     fetchPostureMock.mockResolvedValue(POSTURE);

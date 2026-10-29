@@ -85,7 +85,7 @@ vi.mock('@/lib/api', async () => {
 import Analytics from '../pages/Analytics';
 import Metrics, { openNeedsHuman } from '../pages/Metrics';
 import Cost from '../pages/Cost';
-import { resetAnalyticsWindowForTests } from '../pages/analytics-shared';
+import { resetAnalyticsWindow } from '../pages/analytics-shared';
 import type { PostureResponse } from '../pages/Metrics.posture.api';
 
 const METRICS = {
@@ -250,7 +250,7 @@ async function pickRange(label: string) {
 }
 
 beforeEach(() => {
-  resetAnalyticsWindowForTests();
+  resetAnalyticsWindow();
   authState.canReadRunbooks = true;
   fetchPostureMock.mockReset().mockResolvedValue(POSTURE);
   fetchMitreMock.mockReset().mockResolvedValue(null);
@@ -267,7 +267,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetAnalyticsWindowForTests();
+  resetAnalyticsWindow();
 });
 
 describe('Analytics host: one page per navigation destination', () => {

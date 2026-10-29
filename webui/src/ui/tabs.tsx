@@ -28,6 +28,16 @@ export type TabsListVariant = 'boxed' | 'underline';
 
 const TabsVariantContext = React.createContext<TabsListVariant>('boxed');
 
+/**
+ * The selected state in forced colours (Windows contrast themes), where backgrounds become
+ * Canvas and every border and label shares one text colour. System colour keywords are the
+ * values a forced palette keeps, so the selected trigger uses `Highlight`, the system's
+ * own selection colour: the underline rule, or an outline around a boxed trigger.
+ */
+const FORCED_ACTIVE_RULE = 'forced-colors:data-[state=active]:after:border-[Highlight]';
+const FORCED_ACTIVE_BOX =
+  'forced-colors:data-[state=active]:outline forced-colors:data-[state=active]:outline-2 forced-colors:data-[state=active]:-outline-offset-2 forced-colors:data-[state=active]:outline-[Highlight]';
+
 const TabsList = React.forwardRef<
   React.ElementRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List> & { variant?: TabsListVariant }
@@ -70,12 +80,17 @@ const TabsTrigger = React.forwardRef<
               // directly on the list's hairline (overlapping the hairline would be clipped
               // by the list's horizontal scroll) and is a BORDER, so forced colours keep it.
               'data-[state=active]:text-foreground data-[state=active]:after:absolute data-[state=active]:after:inset-x-1.5 data-[state=active]:after:bottom-0 data-[state=active]:after:h-0 data-[state=active]:after:rounded-full data-[state=active]:after:border-b-2 data-[state=active]:after:border-primary',
+              // Forced colours paint the hairline and the rule in one text colour, so the
+              // rule would merge into the hairline: it takes the system selection colour.
+              FORCED_ACTIVE_RULE,
             )
           : cn(
               'inline-flex h-8 items-center justify-center whitespace-nowrap rounded-sm px-3 py-1 text-sm font-medium ring-offset-background transition-colors',
               'hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
               'disabled:pointer-events-none disabled:opacity-50',
               'data-[state=active]:bg-accent/70 data-[state=active]:text-foreground',
+              // Forced colours drop the tint: the selected trigger keeps a system outline.
+              FORCED_ACTIVE_BOX,
             ),
         className,
       )}
@@ -101,6 +116,10 @@ const TabsContent = React.forwardRef<
     ref={ref}
     className={cn(
       'mt-4 ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+      // Radix keeps every inactive panel in the DOM as an empty element with `hidden`. A
+      // display utility from the caller (`grid`, `flex`) would override the attribute and
+      // leave the panel's margin and gap in the layout, so `hidden` always wins here.
+      '[&[hidden]]:hidden',
       animate && 'animate-fade-in',
       className,
     )}

@@ -1,5 +1,5 @@
 /**
- * ConfirmDialog — the ONE destructive-action gate (DESIGN_STANDARD §5.2). Replaces
+ * ConfirmDialog: the ONE destructive-action gate (DESIGN_STANDARD §5.2). Replaces
  * every `window.confirm(...)` (Roles.tsx / Users.tsx) with an accessible,
  * themeable, promise-based confirmation.
  *
@@ -13,6 +13,15 @@
  * 2) Declarative (controlled) via `<ConfirmDialog open onOpenChange .../>` when you
  *    already hold open state.
  *
+ * Async confirm (Round 14): pass `busy` when the confirmed work is asynchronous. The
+ * confirm then leaves the dialog open; while `busy` is true the action shows that it is
+ * working and does nothing when pressed, and Cancel, Escape and click-away wait, so the
+ * operator sees the work finish (or fail) where they started it. The caller closes the
+ * dialog when the work ends (`open={false}`), or keeps it open to show what went wrong.
+ * Busy, not disabled: both buttons stay focusable (`aria-disabled`), because a browser
+ * moves focus from a button that becomes `disabled` to the page body, which would take a
+ * keyboard or screen reader user out of the dialog while the work runs (WCAG 2.4.3).
+ *
  * a11y / safety (§5.2, map §3.16): built on the vendored AlertDialog (role=
  * alertdialog, no top-right close). For `destructive` gates we SUPPRESS
  * dismiss-on-overlay-click and Escape so a dangerous action is never confirmed by
@@ -20,7 +29,7 @@
  * All text renders plain (#9).
  */
 import * as React from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Loader2 } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -68,7 +77,19 @@ export interface ConfirmDialogProps extends ConfirmOptions {
    * technology reads all of it.
    */
   richDescription?: boolean;
+  /**
+   * Async confirm: set while the confirmed work runs (see the module comment). Passing
+   * it at all, even `false`, means the confirm does not close the dialog by itself; the
+   * caller closes it when the work ends.
+   */
+  busy?: boolean;
 }
+
+/**
+ * A busy button looks unavailable but keeps focus (see the module comment): the
+ * `aria-disabled` styling from the Wizard's busy Remove, not the native `disabled` one.
+ */
+const BUSY_INERT = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50';
 
 /** The controlled dialog. */
 export function ConfirmDialog({
@@ -85,7 +106,12 @@ export function ConfirmDialog({
   hideConfirm = false,
   returnFocusRef,
   richDescription = false,
+  busy,
 }: ConfirmDialogProps) {
+  // An async confirm (`busy` given) keeps the dialog open after the click; while the work
+  // runs nothing can close it.
+  const asyncConfirm = busy !== undefined;
+  const working = busy === true;
   // The Action/Cancel buttons are Radix `Close`s, so clicking either ALSO fires
   // `onOpenChange(false)`. We route the cancel/dismiss path through onOpenChange
   // ONLY (single source of truth) and mark a confirm so the ensuing close does
@@ -96,6 +122,8 @@ export function ConfirmDialog({
     <AlertDialog
       open={open}
       onOpenChange={(next) => {
+        // Nothing closes the dialog while the confirmed work runs.
+        if (!next && working) return;
         if (!next) {
           if (confirmedRef.current) {
             confirmedRef.current = false; // a confirm-driven close: onConfirm already ran
@@ -111,7 +139,7 @@ export function ConfirmDialog({
         // to the primitive's `dismissible` switch as the single source of truth — it
         // suppresses pointer-outside, Escape AND interact-outside (the hand-rolled
         // handlers missed the last one), so no accidental dismissal slips through.
-        dismissible={!destructive}
+        dismissible={!destructive && !working}
         onCloseAutoFocus={
           returnFocusRef
             ? (event) => {
@@ -141,16 +169,40 @@ export function ConfirmDialog({
         </AlertDialogHeader>
         {children}
         <AlertDialogFooter>
-          {/* Cancel closes the dialog; onCancel fires via onOpenChange (single path). */}
-          <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
+          {/* Cancel closes the dialog; onCancel fires via onOpenChange (single path).
+              While the work runs it stays focusable but does nothing: preventing the
+              click stops the primitive's own close, and onOpenChange ignores a close
+              while working as a backstop. */}
+          <AlertDialogCancel
+            aria-disabled={working || undefined}
+            className={BUSY_INERT}
+            onClick={(event) => {
+              if (working) event.preventDefault();
+            }}
+          >
+            {cancelLabel}
+          </AlertDialogCancel>
           {hideConfirm ? null : (
             <AlertDialogAction
               variant={destructive ? 'destructive' : 'default'}
-              onClick={() => {
-                confirmedRef.current = true;
+              aria-disabled={working || undefined}
+              aria-busy={working || undefined}
+              className={BUSY_INERT}
+              onClick={(event) => {
+                if (working) {
+                  event.preventDefault();
+                  return;
+                }
+                if (asyncConfirm) {
+                  // The caller closes the dialog when the work ends.
+                  event.preventDefault();
+                } else {
+                  confirmedRef.current = true;
+                }
                 onConfirm();
               }}
             >
+              {working ? <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden /> : null}
               {confirmLabel}
             </AlertDialogAction>
           )}

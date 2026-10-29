@@ -78,7 +78,6 @@ vi.mock('@/lib/api', () => {
       }),
       ragStats: ok({ total_chunks: 0, document_count: 0, embedding_model: '', vector_dims: 0, by_source: [] }),
       getFeedbackStats: ok({}),
-      scanNotifications: ok({ new_count: 0 }),
     },
   };
 });

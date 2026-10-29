@@ -64,6 +64,7 @@ import {
 
 import { NotificationPrefs } from '@/soc/components/NotificationPrefs';
 import {
+  destinationActionLabel,
   downloadJobArtifactById,
   isActiveJobStatus,
   JOBS_CHANGED_EVENT,
@@ -257,7 +258,7 @@ const InboxRow: React.FC<{
           ) : null}
           {item.job_id && !activeJob && resultDestination ? (
             <Button variant="outline" size="sm" className="h-7" onClick={() => onOpenResult(item)}>
-              View result
+              {destinationActionLabel(resultDestination)}
               <ArrowRight className="size-3.5" aria-hidden />
             </Button>
           ) : null}

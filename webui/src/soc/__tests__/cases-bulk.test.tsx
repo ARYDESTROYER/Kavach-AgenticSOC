@@ -3,7 +3,7 @@
  *
  * Renders the Cases list with two cases, selects all rows via the header checkbox,
  * triggers the bulk "Acknowledge" action, and asserts it calls POST /api/cases/bulk
- * (api.cases.bulk) with BOTH selected ids — the #3-safe human action applied to N
+ * (api.cases.bulk) with BOTH selected ids: the #3-safe human action applied to N
  * cases. The api client is fully mocked (offline).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -103,7 +103,7 @@ describe('Cases bulk actions (W7c)', () => {
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
 
     // Select all via the header checkbox.
-    const selectAll = screen.getByLabelText('Select all rows');
+    const selectAll = screen.getByLabelText('Select all cases on this page');
     fireEvent.click(selectAll);
 
     // The sticky bulk bar appears with the count + the Acknowledge action.
@@ -120,13 +120,33 @@ describe('Cases bulk actions (W7c)', () => {
     expect(bulkMock).not.toHaveBeenCalled();
   });
 
+  it('names each row checkbox by the case number the page shows, never the internal id', async () => {
+    listCasesMock.mockResolvedValue({
+      cases: [...CASES, { ...CASES[0], case_id: 'case-003', case_number: '', title: 'Charlie' }],
+      total: CASES.length + 1,
+    });
+    renderCases();
+    await waitFor(() => expect(screen.getByText('Charlie')).toBeInTheDocument());
+    expect(screen.getByRole('checkbox', { name: 'Select TLSOC-001' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Select TLSOC-002' })).toBeInTheDocument();
+    // A case without a number falls back to its id rather than "row case-003".
+    expect(screen.getByRole('checkbox', { name: 'Select case-003' })).toBeInTheDocument();
+    // The header checkbox selects this page only, and says so ("all rows" overstated it).
+    expect(screen.getByRole('checkbox', { name: 'Select all cases on this page' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Select all rows' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /^Select row / })).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select TLSOC-002' }));
+    const bar = await screen.findByRole('region', { name: /bulk actions/i });
+    expect(within(bar).getByText('1 selected')).toBeInTheDocument();
+  });
+
   it('does not wrap the bulk bar onto multiple lines and reserves bottom space (#3)', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText('Select all rows'));
+    fireEvent.click(screen.getByLabelText('Select all cases on this page'));
 
     const bar = await screen.findByRole('region', { name: /bulk actions/i });
-    // The Card is the bar's only child — assert it carries flex-nowrap +
+    // The Card is the bar's only child: assert it carries flex-nowrap +
     // overflow-x-auto and NOT flex-wrap (regression guard for the wrap glitch).
     const card = bar.firstElementChild as HTMLElement;
     expect(card.className).toMatch(/flex-nowrap/);
@@ -143,7 +163,7 @@ describe('Cases bulk actions (W7c)', () => {
   it('renders Acknowledge as the primary (filled) CTA, not the muted/secondary style (#3)', async () => {
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText('Select all rows'));
+    fireEvent.click(screen.getByLabelText('Select all cases on this page'));
 
     const bar = await screen.findByRole('region', { name: /bulk actions/i });
     const ack = within(bar).getByRole('button', { name: /acknowledge/i });

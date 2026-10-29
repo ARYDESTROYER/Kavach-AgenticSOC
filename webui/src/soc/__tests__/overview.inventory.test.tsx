@@ -528,7 +528,7 @@ describe('Overview — Round 12 data inventory (every datum survives the redesig
     expect(spend).toHaveTextContent('$1.25');
     expect(spend).toHaveTextContent('12K tokens · 8 calls');
     await userEvent.click(spend);
-    expect(onNavigate).toHaveBeenCalledWith('metrics', { tab: 'cost' });
+    expect(onNavigate).toHaveBeenCalledWith('cost');
 
     // Ingest coverage.
     const coverage = screen.getByTestId('coverage-tile');

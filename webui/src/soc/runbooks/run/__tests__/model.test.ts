@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import type { CaseRationale, RationaleProcedureProvenance } from '@/lib/types';
 import { parseProgress, parseRunbookFrame } from '../live';
 import {
   actorName,
@@ -25,7 +26,7 @@ import {
   statusLine,
   utcTime,
 } from '../model';
-import { rationaleRunbook } from '../provenance';
+import { guidanceName, rationaleRunbook } from '../provenance';
 import { NOW, STEPS, completedRun, makeData, makeRun, state } from './fixtures';
 
 describe('run model', () => {
@@ -198,5 +199,64 @@ describe('run model', () => {
       runbook: { id: '', consulted: false, selected_id: 'brute-force' },
     } as never);
     expect(selected).toMatchObject({ id: '', selectedId: 'brute-force', consulted: false });
+  });
+
+  it('reads the typed procedure provenance half beside the top-level runbook', () => {
+    const provenance = (runbook: RationaleProcedureProvenance['runbook']): RationaleProcedureProvenance => ({
+      persona: { selected_id: '', selection_reason: '', consulted: false },
+      playbook: { selected_id: '', selection_reason: '', consulted: false },
+      runbook,
+      consultation_path: 'investigator',
+      retrieval_query_groups: [],
+      knowledge: [],
+    });
+    // Consulted through the provenance alone (an older top-level shape left out): the id is
+    // the one the matcher chose, and the version, title and reason come from that half.
+    const onlyProvenance: CaseRationale = {
+      case_id: 'c',
+      procedure_provenance: provenance({
+        selected_id: 'brute-force',
+        selection_reason: 'Rule ssh_auth_failed',
+        consulted: true,
+        version: 4,
+        title: 'Brute force',
+      }),
+    };
+    const guidance = rationaleRunbook(onlyProvenance);
+    expect(guidance).toEqual({
+      id: 'brute-force',
+      selectedId: 'brute-force',
+      version: 4,
+      title: 'Brute force',
+      reason: 'Rule ssh_auth_failed',
+      consulted: true,
+    });
+    expect(guidance && guidanceName(guidance)).toBe('Brute force · v4');
+    // Selected but never received: the selection stays visible, never claimed as used.
+    const selectedOnly: CaseRationale = {
+      case_id: 'c',
+      runbook: null,
+      procedure_provenance: provenance({ selected_id: 'phishing', selection_reason: 'Technique T1566', consulted: false, version: null, title: '' }),
+    };
+    expect(rationaleRunbook(selectedOnly)).toMatchObject({ id: '', selectedId: 'phishing', consulted: false, version: null });
+    // The provenance version wins over the top-level one; the top-level title wins.
+    const both: CaseRationale = {
+      case_id: 'c',
+      runbook: {
+        id: 'brute-force',
+        version: 3,
+        title: 'Brute force and password spray',
+        reason: 'Matched',
+        consulted: true,
+        selected_id: 'brute-force',
+        status: '',
+        tier: null,
+        explanation: null,
+      },
+      procedure_provenance: provenance({ selected_id: 'brute-force', selection_reason: '', consulted: true, version: 4, title: 'Brute force' }),
+    };
+    expect(rationaleRunbook(both)).toMatchObject({ version: 4, title: 'Brute force and password spray', reason: 'Matched' });
+    // A run before Round 14 has no runbook half at all.
+    expect(rationaleRunbook({ case_id: 'c', procedure_provenance: provenance(undefined) })).toBeNull();
   });
 });

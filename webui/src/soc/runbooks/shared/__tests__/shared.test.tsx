@@ -5,6 +5,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { ApiError } from '@/lib/api';
 import type { RunbookSummary } from '@/lib/types-runbooks';
@@ -13,7 +16,13 @@ import { RunbookExternalLink, safeHttpsUrl } from '../links';
 import { describeExplanation, missedSentence } from '../explain';
 import { progressChipLabel, progressChipText, progressLine } from '../progress';
 import { isReviewDue, reviewDueState, reviewDueWords } from '../dates';
-import { LEGACY_BUNDLED_PLAYBOOK_IDS, LEGACY_BUNDLED_RUNBOOK_MAP, resolveAutomationRunbook } from '../legacy';
+import {
+  LEGACY_BUNDLED_PLAYBOOK_IDS,
+  LEGACY_BUNDLED_RUNBOOK_MAP,
+  PROCEDURE_NAMESPACES,
+  migratedProceduresFromLibrary,
+  resolveAutomationRunbook,
+} from '../legacy';
 import { isCaseFiguresHidden, runbookFailure } from '../errors';
 import { StatusMark } from '../chips';
 import { windowLabel } from '../labels';
@@ -185,7 +194,7 @@ describe('which runbook a case-automation rule attaches', () => {
     expect(LEGACY_BUNDLED_RUNBOOK_MAP.brute_force_login).toBe('brute-force-password-spray');
   });
 
-  it('resolves in the server order: runbook_id, a bundled procedure id, the migration, then the map', () => {
+  it('resolves in the server order: runbook_id, the migration, then the map', () => {
     expect(resolveAutomationRunbook({ runbook_id: 'brute-force-password-spray' }, library)).toMatchObject({
       status: 'attaches',
       via: 'runbook_id',
@@ -206,7 +215,7 @@ describe('which runbook a case-automation rule attaches', () => {
     );
   });
 
-  it('sends a retired bundled procedure id through the map before the migration (a shadowed copy is a draft)', () => {
+  it('never answers a retired bundled procedure id from a stored document (a shadowed copy is a draft)', () => {
     expect(LEGACY_BUNDLED_PLAYBOOK_IDS.size).toBe(9);
     for (const id of LEGACY_BUNDLED_PLAYBOOK_IDS) expect(LEGACY_BUNDLED_RUNBOOK_MAP[id]).toBeTruthy();
     const shadowed = [
@@ -243,6 +252,148 @@ describe('which runbook a case-automation rule attaches', () => {
       summary({ id: 'from-folder', origin: 'imported', migrated_from: { namespace: 'playbook_dir', id: 'triage', revision: 1 } }),
     ];
     expect(resolveAutomationRunbook({ playbook_id: 'triage' }, both).id).toBe('from-folder');
+  });
+
+  it('answers a retired bundled procedure id from the configured folder (what the rule ran)', () => {
+    const folder = [
+      summary(),
+      summary({
+        id: 'brute-force-ours',
+        title: 'Brute force (ours)',
+        origin: 'imported',
+        migrated_from: { namespace: 'playbook_dir', id: 'brute_force_login', revision: null },
+      }),
+    ];
+    expect(resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, folder)).toMatchObject({
+      status: 'attaches',
+      id: 'brute-force-ours',
+      via: 'migration',
+    });
+    // The folder answers even when the stored documents also held the id.
+    const both = [
+      ...folder,
+      summary({
+        id: 'brute_force_login-imported',
+        origin: 'imported',
+        state: 'draft',
+        live_version: null,
+        draft_version: 1,
+        migrated_from: { namespace: 'playbooks', id: 'brute_force_login', revision: 2 },
+      }),
+    ];
+    expect(resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, both).id).toBe('brute-force-ours');
+  });
+
+  it('rebuilds the server map from the rows with the same precedence (migrated_procedure_ids)', () => {
+    const rows = [
+      summary({ id: 'x', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'x', revision: 1 } }),
+      summary({ id: 'x-dir', origin: 'imported', migrated_from: { namespace: 'playbook_dir', id: 'x', revision: null } }),
+      summary({ id: 'shadow', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'malware_x', revision: 1 } }),
+      summary({ id: 'bf-dir', origin: 'imported', migrated_from: { namespace: 'playbook_dir', id: 'brute_force_login', revision: null } }),
+      summary({ id: 'bf-store', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'web_scanner_activity', revision: 1 } }),
+      summary({ id: 'ref', origin: 'imported', migrated_from: { namespace: 'runbooks', id: 'mail_abuse', revision: 1 } }),
+      summary({ id: 'plain', origin: 'operator' }),
+    ];
+    expect(migratedProceduresFromLibrary(rows)).toEqual({
+      x: 'x-dir',
+      malware_x: 'shadow',
+      brute_force_login: 'bf-dir',
+    });
+  });
+
+  it("prefers the server's map from the library read over the rows", () => {
+    const rows = [
+      summary(),
+      summary({ id: 'from-rows', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'triage', revision: 1 } }),
+      summary({ id: 'from-server', origin: 'imported' }),
+    ];
+    expect(resolveAutomationRunbook({ playbook_id: 'triage' }, rows, { triage: 'from-server' })).toMatchObject({
+      status: 'attaches',
+      id: 'from-server',
+      via: 'migration',
+    });
+    // An empty map is the server's answer (nothing migrated): the rows are not scanned, so
+    // the rule falls through to the legacy map, or to nothing.
+    expect(resolveAutomationRunbook({ playbook_id: 'triage' }, rows, {})).toMatchObject({
+      status: 'needs_runbook',
+      id: null,
+      via: null,
+    });
+    // Without the map (a caller that holds only the rows) the rows answer.
+    expect(resolveAutomationRunbook({ playbook_id: 'triage' }, rows).id).toBe('from-rows');
+    expect(resolveAutomationRunbook({ playbook_id: 'triage' }, rows, null).id).toBe('from-rows');
+  });
+
+  it('needs a runbook when the map names a runbook the library does not list (the server skips it)', () => {
+    // The map answers before the legacy map, as on the server, so the built-in is not used.
+    expect(
+      resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, library, { brute_force_login: 'gone-runbook' }),
+    ).toMatchObject({ status: 'needs_runbook', id: 'gone-runbook', runbook: null, via: 'migration' });
+    // A blank entry answers nothing, as the server's text check reads it.
+    expect(
+      resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, library, { brute_force_login: '  ' }),
+    ).toMatchObject({ status: 'attaches', id: 'brute-force-password-spray', via: 'legacy_map' });
+  });
+
+  it('follows the rows only while the migrated runbook is in the library, and the map after it is gone', () => {
+    // A configured-folder copy of a retired bundled id, migrated as a Draft and then
+    // discarded: the marker still maps the id, so the server skips the rule.
+    const gone = [summary()];
+    const marker = { brute_force_login: 'brute_force_login-imported' };
+    expect(resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, gone, marker)).toMatchObject({
+      status: 'needs_runbook',
+      id: 'brute_force_login-imported',
+      runbook: null,
+      via: 'migration',
+    });
+    // The rows alone cannot see that mapping any more.
+    expect(resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, gone)).toMatchObject({
+      status: 'attaches',
+      id: 'brute-force-password-spray',
+      via: 'legacy_map',
+    });
+  });
+
+  it('pins the documented limit of the filtered map for a viewer who cannot see unpublished runbooks', () => {
+    // The server leaves the Draft and its map entry out for this viewer, so the retired
+    // bundled id reads as attaching the built-in although the server skips the rule.
+    const visible = [summary()];
+    expect(resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, visible, {})).toMatchObject({
+      status: 'attaches',
+      id: 'brute-force-password-spray',
+      via: 'legacy_map',
+    });
+    // Any other id the filtered map leaves out resolves to nothing: it still needs a runbook.
+    expect(resolveAutomationRunbook({ playbook_id: 'triage' }, visible, {})).toMatchObject({
+      status: 'needs_runbook',
+      id: null,
+      via: null,
+    });
+  });
+
+  it('reads only own keys of the maps, so an id such as constructor names nothing', () => {
+    for (const playbookId of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(resolveAutomationRunbook({ playbook_id: playbookId }, library), playbookId).toMatchObject({
+        status: 'needs_runbook',
+        id: null,
+        via: null,
+      });
+      expect(resolveAutomationRunbook({ playbook_id: playbookId }, library, {}).id, playbookId).toBeNull();
+    }
+  });
+
+  it("mirrors the server's legacy ids and namespace order (runbook_model.py, runbook_migration.py)", () => {
+    const engine = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../../backend/app/engine');
+    const model = readFileSync(resolve(engine, 'runbook_model.py'), 'utf8');
+    const mapBody = /^LEGACY_BUNDLED_RUNBOOK_MAP[^=]*= \{([\s\S]*?)^\}/m.exec(model)?.[1] ?? '';
+    const serverMap = Object.fromEntries([...mapBody.matchAll(/"([a-z_]+)": "([a-z-]+)"/g)].map((m) => [m[1], m[2]]));
+    expect(serverMap).toEqual(LEGACY_BUNDLED_RUNBOOK_MAP);
+    const idsBody = /^LEGACY_BUNDLED_PLAYBOOK_IDS[^=]*= frozenset\(\{([\s\S]*?)\}\)/m.exec(model)?.[1] ?? '';
+    expect([...idsBody.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort()).toEqual([...LEGACY_BUNDLED_PLAYBOOK_IDS].sort());
+    const migration = readFileSync(resolve(engine, 'runbook_migration.py'), 'utf8');
+    const constant = (name: string) => new RegExp(`^${name} = "([a-z_]+)"`, 'm').exec(migration)?.[1];
+    const order = /^PROCEDURE_NAMESPACES[^=]*= \(([^)]*)\)/m.exec(migration)?.[1] ?? '';
+    expect(order.split(',').map((name) => name.trim()).filter(Boolean).map(constant)).toEqual([...PROCEDURE_NAMESPACES]);
   });
 
   it('never treats a bare runbook id in playbook_id as a target (the server does not)', () => {

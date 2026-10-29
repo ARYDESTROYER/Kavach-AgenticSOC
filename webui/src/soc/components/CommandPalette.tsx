@@ -296,6 +296,39 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
   );
   const showRecents = term.length === 0 && recents.length > 0;
   const isDiscoveryState = term.length === 0;
+
+  // A page whose name IS the query ranks first (Round 14): typing "Approvals", "Cases" or
+  // "Models" opens that page on Enter, never a Settings section, an action or a search
+  // hit whose words merely contain it. Each such page is listed once, here, and left out
+  // of its rail group below (cmdk values stay unique).
+  const exactPages = React.useMemo(() => {
+    if (!term) return [];
+    const seen = new Set<string>();
+    const out: (typeof navGroups)[number]['targets'] = [];
+    for (const group of navGroups) {
+      for (const t of group.targets) {
+        if (t.label.toLowerCase() !== term || seen.has(t.key)) continue;
+        seen.add(t.key);
+        out.push(t);
+      }
+    }
+    return out;
+  }, [navGroups, term]);
+  const exactKeys = new Set(exactPages.map((t) => t.key));
+
+  const navItem = (t: (typeof navGroups)[number]['targets'][number]) => {
+    const Icon = t.icon;
+    return (
+      // `group` here is load-bearing: the ArrowRight below reveals via the
+      // `group-data-[selected=true]` variant, which needs an ancestor with
+      // the literal `group` class carrying cmdk's `data-selected`.
+      <CommandItem key={t.key} value={t.key} className="group" onSelect={() => go(t.id, t.label)}>
+        {Icon ? <Icon aria-hidden /> : null}
+        <span>{t.label}</span>
+        <ArrowRight className="ml-auto opacity-0 group-data-[selected=true]:opacity-60" aria-hidden />
+      </CommandItem>
+    );
+  };
   const matchNewChat = localMatch('new chat workspace investigate assistant');
   const matchTheme = localMatch('toggle theme dark light appearance');
   const matchSettings = localMatch('go to settings preferences configuration');
@@ -324,6 +357,11 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
           />
           <CommandList className="max-h-[min(60dvh,420px)]">
             <CommandEmpty>No results.</CommandEmpty>
+
+            {/* The page the query names exactly: first, so it takes the default Enter. */}
+            {exactPages.length > 0 ? (
+              <CommandGroup heading="Go to page">{exactPages.map(navItem)}</CommandGroup>
+            ) : null}
 
             {/* Recently visited (only on an empty query). */}
             {showRecents ? (
@@ -480,33 +518,14 @@ export function CommandPalette({ open, onOpenChange, onNavigate }: CommandPalett
             {navGroups.map((group) => {
               const items = group.targets.filter(
                 (t) =>
+                  !exactKeys.has(t.key) &&
                   (!isDiscoveryState || t.depth === 'host') &&
                   localMatch('page', t.label, t.id),
               );
               if (!items.length) return null;
               return (
                 <CommandGroup key={`nav-${group.id}`} heading={group.label}>
-                  {items.map((t) => {
-                    const Icon = t.icon;
-                    return (
-                      // `group` here is load-bearing: the ArrowRight below reveals via the
-                      // `group-data-[selected=true]` variant, which needs an ancestor with
-                      // the literal `group` class carrying cmdk's `data-selected`.
-                      <CommandItem
-                        key={t.key}
-                        value={t.key}
-                        className="group"
-                        onSelect={() => go(t.id, t.label)}
-                      >
-                        {Icon ? <Icon aria-hidden /> : null}
-                        <span>{t.label}</span>
-                        <ArrowRight
-                          className="ml-auto opacity-0 group-data-[selected=true]:opacity-60"
-                          aria-hidden
-                        />
-                      </CommandItem>
-                    );
-                  })}
+                  {items.map(navItem)}
                 </CommandGroup>
               );
             })}

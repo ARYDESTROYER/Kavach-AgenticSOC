@@ -272,10 +272,18 @@ export function SystemUpdateControl({
             disabled={upgrade.starting}
             onClick={begin}
           >
-            <RefreshCw
-              className={cn('h-3.5 w-3.5', trigger.spinning && !reducedMotion && 'animate-spin')}
-              aria-hidden
-            />
+            {/* A running update is progress, not a refresh: the progress ring turns while
+                a job runs and the update glyph rests otherwise (SPEC §4.9.2 keeps the
+                spinning refresh glyph for RefreshButton alone). */}
+            {trigger.spinning ? (
+              <Loader2
+                className={cn('h-3.5 w-3.5', !reducedMotion && 'animate-spin')}
+                aria-hidden
+                data-update-progress=""
+              />
+            ) : (
+              <RefreshCw className="h-3.5 w-3.5" aria-hidden />
+            )}
             {/* The label shows where the top bar has room (`@container/topbar`, 62rem of
                 bar, folding when the bar is crowded); compact, the icon keeps its tooltip
                 and full accessible name. */}
@@ -377,7 +385,7 @@ export function SystemUpdateControl({
           <ScrollArea className="min-h-0 flex-1">
             <div className="space-y-6 p-6">
               {upgrade.connection === 'reconnecting' ? (
-                <Alert variant="info" icon={<RefreshCw className={cn(!reducedMotion && 'animate-spin')} />}>
+                <Alert variant="info" icon={<Loader2 className={cn(!reducedMotion && 'animate-spin')} />}>
                   <AlertTitle>Reconnecting to the updated services</AlertTitle>
                   <AlertDescription>
                     A short disconnect is expected while the backend and Console restart. The
@@ -418,20 +426,17 @@ export function SystemUpdateControl({
                         ? ` ${upgrade.status.release_discovery.issue.remediation}`
                         : ''}
                     </p>
+                    {/* While the check runs the label says so and the button rests;
+                        the glyph never spins outside RefreshButton (SPEC §4.9.2). */}
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
                       disabled={upgrade.checking}
+                      aria-busy={upgrade.checking}
                       onClick={() => void upgrade.checkNow()}
                     >
-                      <RefreshCw
-                        className={cn(
-                          'h-4 w-4',
-                          upgrade.checking && !reducedMotion && 'animate-spin',
-                        )}
-                        aria-hidden
-                      />
+                      <RefreshCw className="h-4 w-4" aria-hidden />
                       {upgrade.checking ? 'Checking…' : 'Check again'}
                     </Button>
                   </AlertDescription>

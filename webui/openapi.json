@@ -8174,11 +8174,11 @@
         "type": "object"
       },
       "NotificationProvidersResponse": {
-        "description": "The notification providers catalog envelope (no secrets — names/ids only).",
+        "description": "The notification providers catalog envelope (no secrets, names and ids only).\n\n``channel_types`` holds the registered channel type ids as plain strings, the\nshape ``notifications.channel.channel_types()`` returns (``[\"email\", \"slack\",\n...]``). Typing it as a list of objects made the response validation fail, so\nthe route answered 500 instead of the catalog.",
         "properties": {
           "channel_types": {
             "items": {
-              "type": "object"
+              "type": "string"
             },
             "title": "Channel Types",
             "type": "array"
@@ -11241,6 +11241,13 @@
       "RunbookLibrary": {
         "description": "``GET /api/runbooks`` (the new shape): built-ins and operator runbooks. There\nis no empty library: the 12 built-ins are always listed.",
         "properties": {
+          "migrated_procedures": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Migrated Procedures",
+            "type": "object"
+          },
           "migration": {
             "anyOf": [
               {

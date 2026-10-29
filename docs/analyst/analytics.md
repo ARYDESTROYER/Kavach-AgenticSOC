@@ -22,7 +22,7 @@ on the same tinted panel and names its window after its title ("all time", "last
 days", "now"). A caption always names the range of the figures on screen: while a new
 range is being read, and if it cannot be read, the page keeps the previous figures under
 their own captions and says which range it shows. The range you pick on one Analytics
-page is kept for the others until you reload the page. The navigation switches between
+page is kept for the others until you reload the page or sign out. The navigation switches between
 the pages; there is no second row of page tabs.
 
 **Metrics** has three tabs:
@@ -54,7 +54,11 @@ the pages; there is no second row of page tabs.
   posture rollup cannot be read, SLA attainment says it is not available, never that
   tracking is off.
 
-Older links still work: `#/metrics?tab=effectiveness` opens Agent effectiveness.
+Each Metrics tab has its own link, so a reload or a bookmark opens the same tab:
+`#/metrics` (Operational), `#/metrics?tab=performance` and `#/metrics?tab=posture`.
+Switching tabs does not add a step to the browser's Back history. Older links still
+work: `#/metrics?tab=effectiveness` opens Agent effectiveness and `#/metrics?tab=cost`
+opens Cost.
 
 ## Agent health diagnostics
 
@@ -256,12 +260,20 @@ an outcome. This is detection-threshold tuning, not model fine-tuning. Quality m
 describe the agent's case assessment; volume metrics describe the alert-to-case funnel.
 Neither proves the upstream alert generator itself is getting better.
 
-Open **Analytics → Agent effectiveness** for the detailed operator surface. While the
-headline is still collecting evidence, the comparisons, evidence quality and daily
-evidence fold behind **Show details**, so the page does not open on a list of rows that
-are all still collecting. The safety guardrails fold with them only while neither can be
-evaluated: a guardrail with enough data, and above all a breached one, always stays on
-the page. Auto-tuning
+Open **Analytics → Agent effectiveness** for the detailed operator surface. The
+**Operational outcomes** panel shows its four headline comparisons as one strip, with
+**Week over week** or **Rolling 28 days** in the panel's title row; its caption names
+the window ("last 7 complete UTC days against the 7 before"). While the headline is
+still collecting evidence, an **Evidence details** panel sits above the strip with a
+**Show details** button. The comparisons, the rows behind the operational outcomes
+(**What supports these movements**, **Evidence by system layer** and the **Trend
+check**), evidence quality and daily evidence fold behind it, so the page does not open
+on a list of rows that are all still collecting; the strip itself stays. Everything the
+button shows opens below it. Its sentence names the operational rows as still collecting
+only when a comparison on the strip is. The safety guardrails fold with them only while
+neither can be evaluated: a guardrail with enough data, and above all a breached one,
+always stays on the page. **Evidence coverage** closes the page with telemetry
+suggestions, which are suggestions, not diagnosis. Auto-tuning
 reuses this same read-only aggregate beside rule-health and recommendation review. It
 adds synchronized daily lanes, durable volume, an evidence/guardrail rail, and
 applied-tuning chronology. The daily lanes are raw eligible UTC-day cohorts, while the

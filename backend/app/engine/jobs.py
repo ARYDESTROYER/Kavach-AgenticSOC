@@ -20,7 +20,7 @@ import zipfile
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from fastapi import HTTPException
 
@@ -73,6 +73,55 @@ def account_generation(username: str, created_at: str) -> str:
     ).hexdigest()
 
 
+#: An export's filters the audit log's own hash carries (SPEC §4.5.1, §4.5.8), as
+#: (job params name, route key). The route has no key for the actor kind, the surface or
+#: the source, so those stay out and the link shows at least the exported events.
+_AUDIT_ROUTE_FILTERS: tuple[tuple[str, str], ...] = (
+    ("event", "event"),
+    ("actor", "actor"),
+    ("actor_contains", "actor_contains"),
+    ("outcome", "outcome"),
+    ("case_id", "case"),
+    ("target", "target"),
+    ("ip", "ip"),
+)
+
+
+def _audit_route_instant(value: Any) -> str | None:
+    """One end of an export's range as the audit log's link writes it: UTC to the
+    second (a fraction is cut, so the link covers at least the exported range), with a
+    four-digit year (``strftime("%Y")`` drops the zeros of an early year on Linux)."""
+    from .audit_export import parse_instant
+
+    try:
+        parsed = parse_instant(value, "range")
+    except HTTPException:
+        return None
+    return parsed.replace(microsecond=0, tzinfo=None).isoformat() + "Z"
+
+
+def _audit_export_url(params: Mapping[str, Any], scope: str | None) -> str:
+    """The audit log in the view an export holds: its scope, its two instants, its
+    search and the filters the route has keys for, each URL-encoded, empty keys left
+    out. The Console re-validates every key against the route's own grammar."""
+    query: list[tuple[str, str]] = []
+    if scope:
+        query.append(("scope", scope))
+    start, end = _audit_route_instant(params.get("from")), _audit_route_instant(params.get("to"))
+    if start and end:
+        query += [("from", start), ("to", end)]
+    search = params.get("q")
+    if isinstance(search, str) and search.strip():
+        query.append(("q", search.strip()))
+    filters = params.get("filters")
+    if isinstance(filters, Mapping):
+        for name, key in _AUDIT_ROUTE_FILTERS:
+            value = filters.get(name)
+            if isinstance(value, str) and value.strip():
+                query.append((key, value.strip()))
+    return f"#/audit?{urlencode(query, safe='', quote_via=quote)}" if query else "#/audit"
+
+
 def job_url(job: Job) -> str:
     """Return only allow-listed Console hash routes."""
     kind = job.kind
@@ -112,9 +161,9 @@ def job_url(job: Job) -> str:
         # No dedicated Console surface; the unified Jobs page owns it.
         return "#/batchjobs"
     if kind == JobKind.AUDIT_EXPORT:
-        # The audit log the file came from (SPEC §4.5.8), in the exported scope.
+        # The audit log in the view the file holds (SPEC §4.5.8).
         scope = str(job.params.get("scope") or "")
-        return f"#/audit?scope={scope}" if scope in {"people", "agent", "all"} else "#/audit"
+        return _audit_export_url(job.params, scope if scope in {"people", "agent", "all"} else None)
     return "#/settings?s=storage"
 
 

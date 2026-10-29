@@ -28,9 +28,9 @@ import { BookCheck, Info } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { cn } from '@/lib/cn';
-import { api, requestResponse } from '@/lib/api';
+import { api } from '@/lib/api';
 import { downloadBlob } from '@/lib/download-blob';
-import { abandonRunbookRun, switchRunbookRunVersion } from '@/lib/api-runbooks';
+import { abandonRunbookRun, exportRunbookVersionMarkdown, switchRunbookRunVersion } from '@/lib/api-runbooks';
 import type { Case } from '@/lib/types';
 import type { PhaseId, RunbookAttachResult, RunbookRun } from '@/lib/types-runbooks';
 import { Button } from '@/ui/button';
@@ -158,11 +158,8 @@ function useViewerRoles(
 /** Download one run's pinned version as Markdown. */
 async function exportRunVersion(run: RunbookRun): Promise<void> {
   try {
-    const res = await requestResponse('GET', `runbooks/${encodeURIComponent(run.runbook_id)}/export`, {
-      query: { version: run.version },
-    });
-    const blob = await res.blob();
-    if (!downloadBlob(`${run.runbook_id}-v${run.version}.md`, blob)) toast.error('This browser could not start the download.');
+    const file = await exportRunbookVersionMarkdown(run.runbook_id, run.version);
+    if (!downloadBlob(`${run.runbook_id}-v${run.version}.md`, file.blob)) toast.error('This browser could not start the download.');
   } catch (err) {
     toast.error(runbookFailure(err, 'Could not export this runbook.').message);
   }

@@ -34,7 +34,7 @@ vi.mock('@/lib/useEventStream', () => ({
 vi.mock('sonner', () => ({ toast: toastMock }));
 
 import { setChatFrameSink, type ChatFrame } from '@/soc/chat-activity/store';
-import { announceJobAccepted } from '../jobs';
+import { announceJobAccepted, releaseJobToast } from '../jobs';
 import { JobMonitor } from '../JobMonitor';
 
 function job(overrides: Partial<BackgroundJob> = {}): BackgroundJob {
@@ -192,6 +192,80 @@ describe('JobMonitor durable terminal delivery', () => {
     const options = toastMock.success.mock.calls[0][1];
     act(() => options.action.onClick());
     expect(navigate).toHaveBeenCalledWith('cases', { status: 'active' });
+  });
+});
+
+describe('JobMonitor holds the toast of a job its surface reports itself', () => {
+  const exportJob = (overrides: Partial<BackgroundJob> = {}) =>
+    job({
+      job_id: 'export-1',
+      kind: 'audit_export',
+      result: { kind: 'audit_export', artifact_id: 'a1', counts: { events: 12 } },
+      ...overrides,
+    });
+  const queued = () => exportJob({ status: 'queued', started_at: null, finished_at: null, result: null });
+  const toasts = () => Object.values(toastMock).reduce((n, mock) => n + mock.mock.calls.length, 0);
+
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    listMock.mockReset();
+    getMock.mockReset().mockResolvedValue({ items: [] });
+    Object.values(toastMock).forEach((mock) => mock.mockReset());
+  });
+
+  async function acceptQuietly() {
+    listMock.mockResolvedValueOnce(response([])).mockResolvedValue(response([exportJob()]));
+    render(<JobMonitor actor="analyst.one" onNavigate={vi.fn()} />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    act(() => announceJobAccepted(queued(), { quiet: true }));
+    // The accepted job ends while the surface still waits for it.
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+  }
+
+  it('shows no second notice for a waited export that the dialog downloaded', async () => {
+    await acceptQuietly();
+    expect(toasts()).toBe(0);
+    act(() => releaseJobToast('export-1', { reported: true }));
+    // Later refreshes see the same terminal job: still no toast.
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(3));
+    expect(toasts()).toBe(0);
+  });
+
+  it('shows the held outcome once when the surface stops waiting without reporting it', async () => {
+    await acceptQuietly();
+    expect(toasts()).toBe(0);
+    act(() => releaseJobToast('export-1'));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledTimes(1));
+    expect(toastMock.success.mock.calls[0][0]).toBe('Audit export completed');
+    expect(toastMock.success.mock.calls[0][1]).toHaveProperty('cancel.label', 'Download');
+    // Released twice (a stale call) or refreshed again: still one toast.
+    act(() => releaseJobToast('export-1'));
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(3));
+    expect(toasts()).toBe(1);
+  });
+
+  it('toasts as usual when the surface stopped waiting before the job ended', async () => {
+    listMock.mockResolvedValue(response([]));
+    render(<JobMonitor actor="analyst.one" onNavigate={vi.fn()} />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    listMock.mockResolvedValue(response([queued()]));
+    act(() => announceJobAccepted(queued(), { quiet: true }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    act(() => releaseJobToast('export-1'));
+    expect(toasts()).toBe(0);
+    listMock.mockResolvedValue(response([exportJob()]));
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledTimes(1));
+  });
+
+  it('still toasts every job that was not accepted quietly', async () => {
+    listMock.mockResolvedValueOnce(response([])).mockResolvedValue(response([exportJob()]));
+    render(<JobMonitor actor="analyst.one" onNavigate={vi.fn()} />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    act(() => announceJobAccepted(queued()));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledTimes(1));
   });
 });
 

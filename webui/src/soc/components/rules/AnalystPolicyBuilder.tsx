@@ -78,22 +78,27 @@ function PolicyRow({
   const live = isLiveDeclaration(policy);
   const isAgent = (policy.created_by ?? '') === 'agent';
   return (
-    <div className="space-y-3 rounded-md border border-border bg-surface px-4 py-3">
+    // A hairline-divided row on the host's panel, like the suppression rules beside it
+    // (Round 14, SPEC §4.9.6): no bordered box per declaration.
+    <li className="space-y-3 py-4 first:pt-0 last:pb-0" data-analyst-declaration="">
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Gavel className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-          <span className="text-xs font-medium text-muted-foreground">
-            Close matching cases without a model call
-          </span>
-          {isAgent ? (
-            <Badge variant="secondary" className="gap-1">
-              <Bot className="h-3 w-3" aria-hidden />
-              Drafted by the agent
-            </Badge>
-          ) : null}
-          {!enabled ? <Badge variant="outline">Off</Badge> : null}
-          {/* Enabled but past its expiry: the row looks active and is not. Say so. */}
-          {enabled && !live ? <Badge variant="outline">Expired</Badge> : null}
+        {/* The glyph stays beside the text at every width; only the badges wrap. */}
+        <div className="flex min-w-0 items-start gap-2">
+          <Gavel className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="min-w-0 text-sm font-medium text-foreground">
+              Close matching cases without a model call
+            </span>
+            {isAgent ? (
+              <Badge variant="secondary" className="gap-1">
+                <Bot className="h-3 w-3" aria-hidden />
+                Drafted by the agent
+              </Badge>
+            ) : null}
+            {!enabled ? <Badge variant="outline">Off</Badge> : null}
+            {/* Enabled but past its expiry: the row looks active and is not. Say so. */}
+            {enabled && !live ? <Badge variant="outline">Expired</Badge> : null}
+          </div>
         </div>
         <div className="flex items-center gap-3">
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -134,7 +139,6 @@ function PolicyRow({
             value={policy.reason ?? ''}
             disabled={disabled}
             placeholder="Internal PHP CI runner; these alerts carry no request context"
-            aria-label="Why this detection is benign here"
             onChange={(e) => onChange({ ...policy, reason: e.target.value })}
           />
         </Field>
@@ -145,8 +149,7 @@ function PolicyRow({
           <Input
             value={policy.source_id ?? ''}
             disabled={disabled}
-            placeholder="all sources"
-            aria-label="Limit this declaration to one source"
+            placeholder="All sources"
             onChange={(e) => onChange({ ...policy, source_id: e.target.value || null })}
             className="font-mono text-sm"
           />
@@ -185,7 +188,6 @@ function PolicyRow({
             type="date"
             value={(policy.expires_at ?? '').slice(0, 10)}
             disabled={disabled}
-            aria-label="Expiry date (optional)"
             onChange={(e) =>
               onChange({
                 ...policy,
@@ -202,7 +204,7 @@ function PolicyRow({
           {policy.created_at ? ` on ${policy.created_at.slice(0, 10)}` : ''}
         </p>
       ) : null}
-    </div>
+    </li>
   );
 }
 
@@ -254,7 +256,7 @@ export function AnalystPolicyBuilder({
       </div>
 
       {policies.length ? (
-        <div className="space-y-3">
+        <ul className="divide-y divide-border/70" aria-label="Declarations">
           {policies.map((policy, i) => (
             <PolicyRow
               key={policy.id || i}
@@ -264,7 +266,7 @@ export function AnalystPolicyBuilder({
               onRemove={() => remove(i)}
             />
           ))}
-        </div>
+        </ul>
       ) : (
         <EmptyState
           compact

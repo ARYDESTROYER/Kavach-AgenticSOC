@@ -180,10 +180,12 @@ SIEM)**. **Full application export** opens the data export in Settings for peopl
 `data_export:export`.
 
 The export dialog fixes the time range to exact UTC times when it opens (for example "18
-Oct 15:10 to 25 Oct 15:10 UTC"); the count it shows, the file name and the export all use
-those times. One file holds at most 100,000 events. Above that the dialog reads "More than
-100,000 events", Export stays disabled, and it offers **Use last 30 days** when that range
-fits; otherwise narrow the filters. Nothing is ever cut off silently.
+Oct 15:10 to 25 Oct 15:09 UTC"); the count it shows, the file name and the export all use
+those times. A range that ends now ends at the last whole second that has passed, so the
+count and the file hold the same events, as long as this device's clock is set correctly.
+One file holds at most 100,000 events. Above that the dialog reads "More than 100,000
+events", Export stays disabled, and it offers **Use last 30 days** when that range fits;
+otherwise narrow the filters. Nothing is ever cut off silently.
 
 - You are asked to sign in again before the export runs.
 - One export per person runs at a time.
@@ -192,7 +194,7 @@ fits; otherwise narrow the filters. Nothing is ever cut off silently.
   **Jobs**. Larger exports run in the background; you get an Inbox notice and the file is
   in **Jobs**. See [Background jobs](../operations/background-jobs.md).
 - The file is named after the range, for example
-  `agentic-soc-audit_2026-10-18T151000Z_2026-10-25T151000Z.csv` (`.ndjson` for JSON
+  `agentic-soc-audit_2026-10-18T151000Z_2026-10-25T150959Z.csv` (`.ndjson` for JSON
   Lines). Exports always read oldest first, with times in ISO 8601 UTC.
 - **CSV** has one fixed set of columns covering every field; the tool input, the changes
   and the truncated field list are JSON text. A text cell that starts like a spreadsheet

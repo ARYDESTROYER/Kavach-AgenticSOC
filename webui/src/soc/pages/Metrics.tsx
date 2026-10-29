@@ -126,16 +126,13 @@ const TAB_BODY = 'mt-4 xl:mt-5 3xl:mt-6';
 /** The column of one tab's modules, one gutter apart. */
 const TAB_STACK = cn('flex flex-col', PANEL_GAP);
 
-/** `GET /api/metrics` with the Round 14 runbook usage (the client type predates it). */
-type MetricsPayload = Metrics & { runbook_usage?: Record<string, number> };
-
 /** The open cases by AI verdict: the "Needs human" binding of Standup and the dashboards. */
 const OPEN_BY_VERDICT: MetricsBreakdownQuery = { by: 'verdict', status_group: 'open', window: 'all' };
 
 /** One committed read of the page: every figure and the range it was read for. */
 interface MetricsSnapshot {
   hours: number;
-  data: MetricsPayload;
+  data: Metrics;
   rag: RagStats | null;
   memory: MemoryResponse | null;
   posture: PostureResponse | null;
@@ -371,7 +368,7 @@ export default function MetricsPage({ onNavigate, tab: tabProp, onTabChange }: M
       if (request !== requestRef.current) return;
       setSnapshot({
         hours,
-        data: m as MetricsPayload,
+        data: m,
         rag: ragStats,
         memory: mem,
         posture: post,
@@ -489,7 +486,7 @@ export default function MetricsPage({ onNavigate, tab: tabProp, onTabChange }: M
 // =========================================================================== //
 
 interface OperationalTabProps {
-  data: MetricsPayload | null;
+  data: Metrics | null;
   rag: RagStats | null;
   memory: MemoryResponse | null;
   /** The open cases by AI verdict (the "Needs human" tile); `null` when not readable. */

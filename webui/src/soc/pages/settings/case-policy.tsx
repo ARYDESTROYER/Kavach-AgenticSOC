@@ -198,7 +198,9 @@ export function CasePolicySection({ prefs, update }: SecProps) {
         caption="Map every impact and urgency pair to a priority. Priority orders the queue and picks the SLA tier, never the decision."
       >
         <SettingRow variant="block">
+          {/* The group caption carries the explanation (D26): no standing note. */}
           <PriorityMatrixEditor
+            intro={false}
             matrix={prefs.priority_matrix ?? {}}
             onChange={(next) => update({ priority_matrix: next })}
           />
@@ -212,6 +214,7 @@ export function CasePolicySection({ prefs, update }: SecProps) {
       >
         <SettingRow variant="block">
           <SuppressionRuleBuilder
+            intro={false}
             rules={rules}
             onChange={(next) => update({ suppression_rules: next })}
             onRequestRemove={(index, rule) => setPendingRemove({ index, rule })}

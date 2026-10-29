@@ -322,10 +322,43 @@ describe('Inbox page (read-state)', () => {
     const { onNavigate } = renderInbox();
     await screen.findByText('Known export');
 
-    const actions = screen.getAllByRole('button', { name: 'View result' });
+    // The action says where it goes, as the toast's does.
+    const actions = screen.getAllByRole('button', { name: 'Open Data export' });
     expect(actions).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'View result' })).not.toBeInTheDocument();
     fireEvent.click(actions[0]);
     expect(onNavigate).toHaveBeenCalledWith('settings', { section: 'data_export' });
+  });
+
+  it('names a finished audit export\'s action by the audit log it opens', async () => {
+    listMock.mockResolvedValue({
+      items: [
+        {
+          id: 'audit-export-done',
+          category: 'system',
+          title: 'Background job · audit export',
+          body: '12 events exported',
+          state: 'read',
+          job_id: 'job-audit-1',
+          job_status: 'succeeded',
+          progress: { done: 12, total: 12, unit: 'events' },
+          result: { kind: 'audit_export', artifact_id: 'a1', counts: { events: 12 } },
+          url: '#/audit?scope=people&from=2026-09-29T17%3A58%3A15Z&to=2026-10-29T17%3A58%3A15Z&q=Admin',
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+    });
+    const { onNavigate } = renderInbox();
+    await screen.findByText('12 events exported');
+    fireEvent.click(screen.getByRole('button', { name: 'Open audit log' }));
+    expect(onNavigate).toHaveBeenCalledWith('audit', {
+      scope: 'people',
+      from: '2026-09-29T17:58:15Z',
+      to: '2026-10-29T17:58:15Z',
+      q: 'Admin',
+    });
   });
 
   it('switches to the unread-only view and re-queries', async () => {

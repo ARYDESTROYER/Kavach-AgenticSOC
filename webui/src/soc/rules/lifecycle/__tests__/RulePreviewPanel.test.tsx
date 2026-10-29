@@ -2,64 +2,67 @@
  * RulePreviewPanel spec (Round-5 G6, R5): the read-only, NO-COST rule preview.
  *
  * THE load-bearing assertion for this wave: running a preview hits ONLY the pure,
- * read-only `api.rules.preview` path: it NEVER calls any LLM / case-mutating path
- * (`chat` / `investigate` / `reinvestigateCase` / `runPlaybook` / `caseAction` /
- * `bulkCases`), so it bills ZERO UsageDoc (#6) and never closes/escalates a case (#3).
- * It also renders the match count + histogram from the pure endpoint's result.
+ * read-only `api.rules.preview` path. Every other method of the API client and of the
+ * Round 14 runbook client is a spy, and none of them is called: no LLM path (chat,
+ * investigate, reinvestigate), no case write (an action, a job) and no runbook run
+ * write, so a preview bills ZERO UsageDoc (#6) and never closes or escalates a case
+ * (#3). The spies are built from the real modules, so the check cannot name a method
+ * that no longer exists or miss one that was added. It also renders the match count
+ * and histogram from the pure endpoint's result.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { TooltipProvider } from '@/ui/tooltip';
 
-// Spy every method the panel COULD reach. `rules.preview` is the ONLY one it may call;
-// the LLM/close/mutating spies must stay untouched (the no-cost / #3 guarantee).
-// `vi.hoisted` lets these be referenced inside the hoisted `vi.mock` factory.
-const {
-  previewSpy,
-  previewDecisionSpy,
-  chatSpy,
-  investigateSpy,
-  reinvestigateSpy,
-  runPlaybookSpy,
-  caseActionSpy,
-  bulkCasesSpy,
-} = vi.hoisted(() => ({
-  previewSpy: vi.fn(async () => ({
-    scanned: 1000,
-    matched: 42,
-    match_rate: 0.042,
-    histogram: [
-      { bucket: '2026-07-01T00:00:00+00:00', count: 20 },
-      { bucket: '2026-07-01T12:00:00+00:00', count: 22 },
-    ],
-    sample: [],
-    predicates: 1,
-    predicates_evaluated: 1,
-    hard_capped: false,
-  })),
-  previewDecisionSpy: vi.fn(),
-  chatSpy: vi.fn(),
-  investigateSpy: vi.fn(),
-  reinvestigateSpy: vi.fn(),
-  runPlaybookSpy: vi.fn(),
-  caseActionSpy: vi.fn(),
-  bulkCasesSpy: vi.fn(),
-}));
+// `vi.hoisted` lets these be referenced inside the hoisted `vi.mock` factories.
+const h = vi.hoisted(() => {
+  /** Every function in a module or client namespace as a spy, recursively. */
+  const spyEverything = (value: unknown): unknown => {
+    if (typeof value === 'function') return vi.fn();
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, spyEverything(inner)]));
+    }
+    return value;
+  };
+  return {
+    spyEverything,
+    previewSpy: vi.fn(async () => ({
+      scanned: 1000,
+      matched: 42,
+      match_rate: 0.042,
+      histogram: [
+        { bucket: '2026-07-01T00:00:00+00:00', count: 20 },
+        { bucket: '2026-07-01T12:00:00+00:00', count: 22 },
+      ],
+      sample: [],
+      predicates: 1,
+      predicates_evaluated: 1,
+      hard_capped: false,
+    })),
+  };
+});
+const { previewSpy } = h;
 
-vi.mock('@/lib/api', () => ({
+vi.mock('@/lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/api')>();
+  const api = h.spyEverything(actual.api) as typeof actual.api;
+  (api.rules as unknown as { preview: unknown }).preview = h.previewSpy;
   // LoadError formats a failed preview through `errorMessage`, which checks for ApiError.
-  ApiError: class ApiError extends Error {},
-  api: {
-    rules: { preview: previewSpy, versions: vi.fn(), rollback: vi.fn() },
-    triage: { previewDecision: previewDecisionSpy },
-    chat: chatSpy,
-    investigate: investigateSpy,
-    reinvestigateCase: reinvestigateSpy,
-    runPlaybook: runPlaybookSpy,
-    caseAction: caseActionSpy,
-    bulkCases: bulkCasesSpy,
-  },
-}));
+  return { ...(h.spyEverything({ ...actual }) as object), ApiError: actual.ApiError, api };
+});
+vi.mock('@/lib/api-runbooks', async (importOriginal) => h.spyEverything({ ...(await importOriginal<object>()) }) as object);
+
+import * as apiModule from '@/lib/api';
+import * as runbookModule from '@/lib/api-runbooks';
+
+/** The dotted names of every spy in `value` that was called. */
+function calledSpies(value: unknown, path: string[] = []): string[] {
+  if (vi.isMockFunction(value)) return value.mock.calls.length ? [path.join('.')] : [];
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.entries(value).flatMap(([key, inner]) => calledSpies(inner, [...path, key]));
+  }
+  return [];
+}
 
 import { RulePreviewPanel, isRenderablePreview } from '../RulePreviewPanel';
 import type { RuleForm } from '../../types';
@@ -99,14 +102,15 @@ describe('RulePreviewPanel', () => {
     expect(arg.match).toEqual([{ field: 'rule.id', op: 'equals', value: '5710' }]);
     expect(String(arg.from)).toMatch(/^now-7d$/);
 
-    // ⛔ the whole point: NO LLM / case-mutating / close path was ever invoked.
-    expect(previewDecisionSpy).not.toHaveBeenCalled(); // no what-if decision fired on a preview
-    expect(chatSpy).not.toHaveBeenCalled();
-    expect(investigateSpy).not.toHaveBeenCalled();
-    expect(reinvestigateSpy).not.toHaveBeenCalled();
-    expect(runPlaybookSpy).not.toHaveBeenCalled();
-    expect(caseActionSpy).not.toHaveBeenCalled();
-    expect(bulkCasesSpy).not.toHaveBeenCalled();
+    // The whole point: nothing but the read-only preview was called. No LLM path, no
+    // what-if decision, no case action or job, no runbook run write.
+    expect(calledSpies(apiModule)).toEqual(['api.rules.preview']);
+    expect(calledSpies(runbookModule)).toEqual([]);
+    // The spies cover the real surface (a spy per method, not a hand-kept list).
+    expect(vi.isMockFunction(apiModule.api.caseActionExec)).toBe(true);
+    expect(vi.isMockFunction(apiModule.api.jobs.submit)).toBe(true);
+    expect(vi.isMockFunction(runbookModule.attachRunbook)).toBe(true);
+    expect(vi.isMockFunction(runbookModule.updateRunbookStep)).toBe(true);
   });
 
   it('renders the match count + histogram from the pure result', async () => {

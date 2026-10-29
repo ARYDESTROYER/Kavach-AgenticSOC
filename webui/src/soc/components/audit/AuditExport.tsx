@@ -53,6 +53,7 @@ import { RadioGroup, RadioGroupItem } from '@/ui/radio-group';
 import {
   announceJobAccepted,
   isTerminalJobStatus,
+  releaseJobToast,
   retainJobSubmissionIntent,
   saveBlob,
   type JobSubmissionIntent,
@@ -243,14 +244,26 @@ export function AuditExportDialog({
   // The wait a submit started; anything else (Continue in the background, Esc, a new
   // opening) moves it on, and the old wait stops at its next check.
   const waitRunRef = React.useRef(0);
+  // The small export this dialog waits for. The shell holds its terminal toast while the
+  // dialog reports the outcome itself, so the dialog releases it when it stops waiting.
+  const waitedJobRef = React.useRef<string | null>(null);
   const filters = React.useMemo(() => apiFilters(view, local), [view, local]);
+
+  /** Stop waiting: `reported` when the dialog told the person the outcome itself. */
+  const releaseWaitedJob = React.useCallback((reported: boolean) => {
+    const jobId = waitedJobRef.current;
+    waitedJobRef.current = null;
+    if (jobId) releaseJobToast(jobId, { reported });
+  }, []);
 
   React.useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
+      // The page closed mid-wait: the shell's toast tells the outcome instead.
+      releaseWaitedJob(false);
     };
-  }, []);
+  }, [releaseWaitedJob]);
 
   // Resolve the range and count once per opening (SPEC §4.5.6: absolute instants).
   React.useEffect(() => {
@@ -263,6 +276,7 @@ export function AuditExportDialog({
     setBusy(null);
     intentRef.current = null;
     waitRunRef.current += 1;
+    releaseWaitedJob(false);
     if (!resolved) {
       setCount({ phase: 'error', error: new Error('The time range of this view cannot be read.') });
       return undefined;
@@ -334,6 +348,7 @@ export function AuditExportDialog({
   /** Stop waiting here: the job keeps running and its file lands in Jobs. */
   const continueInBackground = () => {
     waitRunRef.current += 1;
+    releaseWaitedJob(false);
     setBusy(null);
     onOpenChange(false);
     stillRunning();
@@ -347,6 +362,7 @@ export function AuditExportDialog({
       if (!waiting()) return;
       if (Date.now() - started > WAIT_LIMIT_MS) {
         waitRunRef.current += 1;
+        releaseWaitedJob(false);
         onOpenChange(false);
         stillRunning();
         return;
@@ -378,6 +394,7 @@ export function AuditExportDialog({
     }
     if (!waiting()) return;
     const saved = saveBlob(download, name);
+    releaseWaitedJob(true);
     onOpenChange(false);
     toast.success('Audit export downloaded.', { description: saved });
   };
@@ -410,8 +427,10 @@ export function AuditExportDialog({
       return;
     }
     intentRef.current = null;
-    announceJobAccepted(job);
-    if (events > SMALL_EXPORT_ROWS) {
+    // A small export is waited for here, and this dialog reports how it ends.
+    const waited = events <= SMALL_EXPORT_ROWS;
+    announceJobAccepted(job, { quiet: waited });
+    if (!waited) {
       if (aliveRef.current) setBusy(null);
       onOpenChange(false);
       toast.success('Audit export started.', {
@@ -421,6 +440,7 @@ export function AuditExportDialog({
       return;
     }
     const run = (waitRunRef.current += 1);
+    waitedJobRef.current = job.job_id;
     setBusy('waiting');
     try {
       await waitAndDownload(job, fileName, run);
@@ -428,13 +448,18 @@ export function AuditExportDialog({
       if (!aliveRef.current || waitRunRef.current !== run) return;
       if (error instanceof AfterAcceptance) {
         // The job exists and finishes (or has finished) in Jobs: never "did not run".
+        // A finished job's notice below is its outcome; a running one's comes from the
+        // shell when it ends.
         waitRunRef.current += 1;
+        releaseWaitedJob(error.finished);
         onOpenChange(false);
         toast.info(error.finished ? 'The export finished. Download the file from Jobs.' : 'The export is running. The file will be in Jobs.', {
           description: error.message,
           action: { label: 'Open Jobs', onClick: onOpenJobs },
         });
       } else {
+        // The dialog shows how the export ended.
+        releaseWaitedJob(true);
         setSubmitError({ title: 'The export did not finish.', text: errorMessage(error, 'The export failed.') });
       }
     } finally {

@@ -387,6 +387,13 @@ export interface AbsoluteRange {
  * The view's range as absolute instants (SPEC §4.5.6): the export dialog resolves
  * `now-7d` once when it opens, and the count, the shown range, the file name and the job
  * all use these instants. Null when a bound cannot be read or the range is empty.
+ *
+ * The server reads a `to` given to the second as that whole second. A range that ends
+ * now therefore ends at the last whole second that has already passed: the second in
+ * progress could still gain rows after the count, among them the "Audit log viewed" row
+ * the dialog's own count request writes, which the export's recount and the file would
+ * then hold although the dialog never counted them. `nowMs` is this device's clock: when
+ * it runs a second or more ahead of the server's, that row can still fall inside `to`.
  */
 export function absoluteRange(view: Pick<AuditView, 'from' | 'to'>, nowMs: number): AbsoluteRange | null {
   const toMs = view.to ? parseDateMath(view.to, nowMs) : nowMs;
@@ -394,7 +401,7 @@ export function absoluteRange(view: Pick<AuditView, 'from' | 'to'>, nowMs: numbe
   const fromMs = parseDateMath(view.from, nowMs);
   if (fromMs === null) return null;
   const from = Math.floor(fromMs / 1000) * 1000;
-  const to = Math.floor(toMs / 1000) * 1000;
+  const to = Math.floor(toMs / 1000) * 1000 - (view.to ? 0 : 1000);
   if (from >= to) return null;
   return { fromMs: from, toMs: to, from: isoSecond(from), to: isoSecond(to) };
 }

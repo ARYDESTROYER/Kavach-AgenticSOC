@@ -1,5 +1,5 @@
 /**
- * Settings → Appearance & customization → "Reduce transparency" (Round 12, SYNTHESIS-ux
+ * Settings → Appearance → "Reduce transparency" (Round 12, SYNTHESIS-ux
  * §1.7): the in-app override for browsers that never report
  * `prefers-reduced-transparency`. Choosing "On" stamps `data-transparency="reduced"` on
  * <html> (theme.css then paints every material and the top bar solid), mirrors it on the

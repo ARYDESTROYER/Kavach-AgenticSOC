@@ -120,7 +120,7 @@ export function AgentQualityWidget(props: WidgetProps) {
     <WidgetShell
       title={title}
       caption={`Last ${days} days against the ${baseDays} before · agreement with analyst reviews`}
-      exit={{ label: 'View effectiveness', page: 'metrics', opts: { tab: 'effectiveness' } }}
+      exit={{ label: 'View effectiveness', page: 'effectiveness' }}
       state={state}
       stale={staleOf(answer, onRetry)}
       footer={

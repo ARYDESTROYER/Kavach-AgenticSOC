@@ -10,7 +10,7 @@ import type { LucideIcon } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { middleEllipsis } from './caseFacts';
-import { humanizeToken } from '@/lib/format';
+import { DASH, humanizeToken } from '@/lib/format';
 import { Badge } from '@/ui/badge';
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/ui/hover-card';
 
@@ -60,7 +60,7 @@ function secondsLabel(seconds: number): string {
 
 function NodeCard({
   icon: Icon,
-  eyebrow,
+  label,
   title,
   summary,
   tone = 'default',
@@ -68,7 +68,8 @@ function NodeCard({
   hover,
 }: {
   icon: LucideIcon;
-  eyebrow: string;
+  /** The node's role in the flow ("Input alerts"), a sentence-case label above its title. */
+  label: string;
   title: string;
   summary: string;
   tone?: 'default' | 'primary' | 'success';
@@ -81,7 +82,7 @@ function NodeCard({
         <button
           type="button"
           className={cn(
-            'group min-h-32 w-full min-w-0 rounded-[4px] border bg-surface-sunken p-4 text-left',
+            'group min-h-32 w-full min-w-0 rounded-md border bg-surface-sunken p-4 text-left',
             'transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             tone === 'primary' && 'border-primary/35',
             tone === 'success' && 'border-success/35',
@@ -91,7 +92,7 @@ function NodeCard({
           <div className="flex items-start gap-3">
             <span
               className={cn(
-                'mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[4px] border border-border bg-background text-muted-foreground',
+                'mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border bg-background text-muted-foreground',
                 tone === 'primary' && 'border-primary/30 text-primary',
                 tone === 'success' && 'border-success/30 text-success-text',
               )}
@@ -100,7 +101,7 @@ function NodeCard({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block text-xs font-medium text-muted-foreground">
-                {eyebrow}
+                {label}
               </span>
               {/* Wraps instead of clipping: an already middle-ellipsised id must not be
                   cut a second time by CSS (CM-8). */}
@@ -165,7 +166,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
       <div className="grid min-w-0 items-center gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1.1fr)_auto_minmax(0,1fr)]">
         <NodeCard
           icon={Bell}
-          eyebrow="Input alerts"
+          label="Input alerts"
           title={`${inputCount || observed} matched signal${(inputCount || observed) === 1 ? '' : 's'}`}
           summary={sources.length ? `${sources.length} contributing source${sources.length === 1 ? '' : 's'}` : 'Source detail was not persisted for this case.'}
           hover={(
@@ -203,7 +204,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
 
         <NodeCard
           icon={GitMerge}
-          eyebrow="Correlation cluster"
+          label="Correlation cluster"
           title={clusterLabel}
           summary={correlationSummary}
           tone="primary"
@@ -212,7 +213,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
               <p className="text-sm font-semibold text-foreground">Why these alerts clustered</p>
               <dl className="space-y-1.5 border-t border-border pt-2 text-xs">
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Mode</dt><dd className="font-mono text-foreground">{humanizeToken(correlation.mode || 'Unavailable')}</dd></div>
-                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Observed / threshold</dt><dd className="font-mono text-foreground">{observed || inputCount} / {threshold || '—'}</dd></div>
+                <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Observed / threshold</dt><dd className="font-mono text-foreground">{observed || inputCount} / {threshold || DASH}</dd></div>
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Window</dt><dd className="font-mono text-foreground">{secondsLabel(Number(correlation.window_seconds || 0))}</dd></div>
                 <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Group</dt><dd className="font-mono text-foreground">{humanizeToken(correlation.group_by || 'Unavailable')}</dd></div>
               </dl>
@@ -234,7 +235,7 @@ export function ClusterFormationDiagram({ data }: { data: ClusterExplanation | n
 
         <NodeCard
           icon={ShieldCheck}
-          eyebrow="Opened case"
+          label="Opened case"
           title={caseLabel}
           summary="One case preserves the cluster identity so repeated polling attaches instead of duplicating it."
           tone="success"

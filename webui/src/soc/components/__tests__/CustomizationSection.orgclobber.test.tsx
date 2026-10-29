@@ -106,7 +106,7 @@ describe('CustomizationSection — org defaults save (Round-6 clobber fix)', () 
     renderSection();
 
     expect(
-      await screen.findByRole('heading', { name: 'Appearance & customization', level: 2 }),
+      await screen.findByRole('heading', { name: 'Appearance', level: 2 }),
     ).toBeInTheDocument();
     const list = screen.getByTestId('saved-views-list');
     expect(list).toHaveClass('border-y', 'divide-y');

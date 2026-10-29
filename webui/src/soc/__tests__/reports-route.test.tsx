@@ -19,7 +19,6 @@ vi.mock('@/lib/api', () => {
     api: {
       auth: { me: ok({ authenticated: false, auth_enabled: false, user: null }) },
       roles: { get: ok({ roles: [], default_role: '', rbac_enabled: false, matrix: {} }) },
-      audit: { list: ok({ records: [] }) },
     },
     // The Round 14 audit log reads through the shared request helper (`lib/api-audit`).
     request: ok({

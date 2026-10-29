@@ -3,13 +3,16 @@ import { PageHeader } from './PageHeader';
 import type { LucideIcon } from 'lucide-react';
 
 export interface HeroPanelProps {
-  /** Small uppercase eyebrow (e.g. "CYBER COMMAND CENTER"). Plain text. */
+  /** @deprecated Round 14 (C8): page headers carry no overline. Ignored. */
   eyebrow?: string;
-  /** Main hero title. Plain text. */
+  /** Main title. Plain text. */
   title: string;
-  /** Optional supporting line under the title. Plain text. */
+  /**
+   * The page's explanation, one or two plain sentences. Shown in the help tip beside the
+   * title (Round 14, C8), never as a line under it.
+   */
   description?: string;
-  /** Optional leading icon for the eyebrow row. */
+  /** @deprecated Round 14 (C8): no icon chip beside a page title. Ignored. */
   icon?: LucideIcon;
   /** Right-aligned meta (e.g. "Last refresh ..."), rendered above actions. */
   meta?: React.ReactNode;
@@ -17,25 +20,22 @@ export interface HeroPanelProps {
   actions?: React.ReactNode;
   className?: string;
   children?: React.ReactNode;
-  /** Optional stable test anchor forwarded to the hero root. */
+  /** Optional stable test anchor forwarded to the header root. */
   'data-testid'?: string;
 }
 
 /**
- * @deprecated `HeroPanel` was merged into `PageHeader` as `variant='hero'` (W0-D D2,
- * DESIGN_STANDARD §4.2). This is now a THIN re-export kept for one transition wave so
- * existing callers (Overview/Standup/Home/Wizard/layouts) keep working unchanged; the
- * Codemod wave migrates them to `<PageHeader variant="hero" .../>` directly.
+ * @deprecated `HeroPanel` is a thin wrapper over the one page header (`PageHeader`), kept
+ * only for `CommandCenterLayout`. New code uses `PageHeader` directly.
  *
- * The old right-side `meta`-over-`actions` stack is preserved by folding both into
- * PageHeader's right-aligned `actions` slot (denser posture band, not the old
- * ~176px marketing hero). All text plain (UNTRUSTED-safe, #9).
+ * Round 14 (SPEC §4.9.3): it renders the Overview grammar like every page header: the
+ * title with its explanation in the help tip, no overline, no icon chip and no hero band.
+ * The right-side `meta` over `actions` stack is kept in the header's `actions` slot.
+ * Every string renders as plain text (#9).
  */
 export function HeroPanel({
-  eyebrow,
   title,
   description,
-  icon,
   meta,
   actions,
   className,
@@ -45,24 +45,22 @@ export function HeroPanel({
   const right =
     meta || actions ? (
       <div className="flex shrink-0 flex-col items-start gap-3 sm:items-end">
-        {meta ? <div className="font-mono text-xs text-muted-foreground">{meta}</div> : null}
+        {meta ? <div className="text-sm tabular-nums text-muted-foreground">{meta}</div> : null}
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
     ) : undefined;
 
   return (
-    <PageHeader
-      variant="hero"
-      eyebrow={eyebrow}
-      title={title}
-      description={description}
-      icon={icon}
-      actions={right}
-      className={className}
-      data-testid={dataTestId}
-    >
+    <>
+      <PageHeader
+        title={title}
+        help={description}
+        actions={right}
+        className={className}
+        data-testid={dataTestId}
+      />
       {children}
-    </PageHeader>
+    </>
   );
 }
 

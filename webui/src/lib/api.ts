@@ -86,7 +86,6 @@ import type {
   RolesResponse,
   UpstreamReleasesResponse,
   SessionsResponse,
-  ScanNotifications,
   SearchResult,
   SecretsUpdate,
   SettingsResponse,
@@ -1428,13 +1427,6 @@ export const api = {
     ),
   investigate: (body: Record<string, unknown>) =>
     request<Case>('POST', 'investigate', { body }),
-  scans: (limit = 50) => request<CasesResponse>('GET', 'scans', { query: { limit } }),
-  // How many automated-scan cases are new since `since` (an ISO timestamp the
-  // caller persists in localStorage). `since` is only sent when set.
-  scanNotifications: (since?: string) =>
-    request<ScanNotifications>('GET', 'scans/notifications', {
-      query: since ? { since } : undefined,
-    }),
   standup: (windowHours?: number) =>
     request<StandupResponse>('GET', 'standup', { query: { window_hours: windowHours } }),
   usageSummary: (windowHours = 24) =>

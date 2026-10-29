@@ -18,7 +18,7 @@ vi.mock('@/lib/api', async () => ({
 }));
 
 import Cost, { spendStats, spendTimeline, trendDelta } from '../Cost';
-import { resetAnalyticsWindowForTests } from '../analytics-shared';
+import { resetAnalyticsWindow } from '../analytics-shared';
 
 const HOUR = 3_600_000;
 /** A fixed "now" in the middle of an hour. */
@@ -140,7 +140,7 @@ describe('trendDelta', () => {
 
 describe('Cost spend over time', () => {
   beforeEach(() => {
-    resetAnalyticsWindowForTests();
+    resetAnalyticsWindow();
     usageSummary.mockReset();
   });
 

@@ -29,7 +29,7 @@ import * as React from 'react';
 import { History, Plus, Trash2, Workflow } from 'lucide-react';
 
 import type { Preferences } from '@/lib/types';
-import type { RunbookSummary } from '@/lib/types-runbooks';
+import type { RunbookLibrary, RunbookSummary } from '@/lib/types-runbooks';
 import { listRunbookLibrary } from '@/lib/api-runbooks';
 import { cn } from '@/lib/cn';
 
@@ -165,11 +165,12 @@ function ruleNameButton(root: HTMLElement | null, key: string): HTMLElement | nu
 export function rulesNeedingRunbook(
   prefs: Preferences,
   library: readonly RunbookSummary[] | null,
+  migratedProcedures?: Readonly<Record<string, string>> | null,
 ): Set<string> {
   const keys = new Set<string>();
   (prefs.threshold_automation?.rules ?? []).forEach((rule, i) => {
     if (rule.action !== 'run_playbook') return;
-    if (resolveAutomationRunbook(rule.payload ?? {}, library).status === 'needs_runbook') {
+    if (resolveAutomationRunbook(rule.payload ?? {}, library, migratedProcedures).status === 'needs_runbook') {
       keys.add(`auto:${i}`);
     }
   });
@@ -208,19 +209,22 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
   // one and the viewer may read runbooks. A failed read flags nothing (no false warning).
   const canReadRunbooks = useCan('runbooks', 'read');
   const attachesRunbook = (prefs.threshold_automation?.rules ?? []).some((r) => r.action === 'run_playbook');
-  const [runbookLibrary, setRunbookLibrary] = React.useState<RunbookSummary[] | null>(null);
+  const [runbookLibrary, setRunbookLibrary] = React.useState<RunbookLibrary | null>(null);
   React.useEffect(() => {
     if (!attachesRunbook || !canReadRunbooks) return undefined;
     const controller = new AbortController();
     listRunbookLibrary({ show_replaced: true }, controller.signal)
-      .then((lib) => setRunbookLibrary(lib.runbooks))
+      .then((lib) => setRunbookLibrary(lib))
       .catch(() => {
         if (!controller.signal.aborted) setRunbookLibrary(null);
       });
     return () => controller.abort();
   }, [attachesRunbook, canReadRunbooks]);
   const needsRunbook = React.useMemo(
-    () => rulesNeedingRunbook(prefs, canReadRunbooks ? runbookLibrary : null),
+    () =>
+      canReadRunbooks && runbookLibrary
+        ? rulesNeedingRunbook(prefs, runbookLibrary.runbooks, runbookLibrary.migrated_procedures)
+        : rulesNeedingRunbook(prefs, null),
     [prefs, canReadRunbooks, runbookLibrary],
   );
 

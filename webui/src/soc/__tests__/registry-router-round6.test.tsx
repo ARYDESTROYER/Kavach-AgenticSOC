@@ -104,9 +104,17 @@ describe('ROUTES — host-tab children route through their host with a forced ta
 /* -------------------------------------------------------------------------- */
 
 describe('registry — Analytics children RBAC gates match their backend routes', () => {
-  const metricsHost = FEATURES.find((f) => f.id === 'metrics')!;
+  const analyticsGroup = FEATURES.find((f) => f.id === 'analytics')!;
   const child = (id: string): FeatureChild | undefined =>
-    (metricsHost.children ?? []).find((c) => c.id === id);
+    (analyticsGroup.children ?? []).find((c) => c.id === id);
+
+  it('gives the group its own id and opens Metrics, so no child shares the group id', () => {
+    expect(analyticsGroup.label).toBe('Analytics');
+    expect(analyticsGroup.target).toBe('metrics');
+    expect((analyticsGroup.children ?? []).map((c) => c.id)).not.toContain('analytics');
+    // `#/analytics` is a registered page id that the router redirects to Metrics.
+    expect(renderRoute('analytics', { onRerunWizard: () => undefined }).type).toBe(ROUTES.metrics.element);
+  });
 
   it('gates the Metrics child on metrics:view (the grant GET /api/metrics requires)', () => {
     expect(child('metrics')?.perm).toEqual({ resource: 'metrics', action: 'view' });
@@ -192,12 +200,10 @@ describe('RouterProvider — initial hash normalization', () => {
     });
   });
 
-  it('round-trips the strict effectiveness analytics tab across refresh', () => {
-    expect(pageHash('metrics', { tab: 'effectiveness' })).toBe(
-      '#/metrics?tab=effectiveness',
-    );
-    window.location.hash = '#/metrics?tab=effectiveness';
-    expect(optsFromHash()).toEqual({ tab: 'effectiveness' });
+  it.each(['performance', 'posture'])('round-trips the Metrics %s tab across refresh', (tab) => {
+    expect(pageHash('metrics', { tab })).toBe(`#/metrics?tab=${tab}`);
+    window.location.hash = `#/metrics?tab=${tab}`;
+    expect(optsFromHash()).toEqual({ tab });
     act(() => {
       render(
         <RouterProvider>
@@ -206,12 +212,62 @@ describe('RouterProvider — initial hash normalization', () => {
       );
     });
     expect(currentPage).toBe('metrics');
-    expect(currentOpts).toEqual({ tab: 'effectiveness' });
+    expect(currentOpts).toEqual({ tab });
+    expect(window.location.hash).toBe(`#/metrics?tab=${tab}`);
+  });
 
-    window.location.hash = '#/metrics?tab=cost';
+  it('writes Operational, the default tab, as the bare page and refuses unknown tabs', () => {
+    expect(pageHash('metrics', { tab: 'operational' })).toBe('#/metrics');
+    expect(pageHash('metrics', { tab: 'nope' })).toBe('#/metrics');
+    for (const hash of [
+      '#/metrics?tab=operational',
+      '#/metrics?tab=Posture',
+      '#/metrics?tab=posture&next=https%3A%2F%2Fevil.example',
+      '#/metrics?tab=posture&tab=performance',
+    ]) {
+      window.location.hash = hash;
+      expect(optsFromHash(), hash).toBeUndefined();
+    }
+  });
+
+  it.each([
+    ['effectiveness', 'effectiveness'],
+    ['cost', 'cost'],
+  ] as const)('replaces #/metrics?tab=%s with its own page #/%s', (tab, page) => {
+    // The former Metrics tabs are pages of their own: the nav and the h1 agree there. An
+    // href built for one is the page's own hash, so a new-tab open lands where a click does.
+    expect(pageHash('metrics', { tab })).toBe(`#/${page}`);
+    window.location.hash = `#/metrics?tab=${tab}`;
     expect(optsFromHash()).toBeUndefined();
-    window.location.hash = '#/metrics?tab=effectiveness&next=https%3A%2F%2Fevil.example';
-    expect(optsFromHash()).toBeUndefined();
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    try {
+      act(() => {
+        render(
+          <RouterProvider>
+            <Reader />
+          </RouterProvider>,
+        );
+      });
+      expect(currentPage).toBe(page);
+      expect(currentOpts).toBeUndefined();
+      expect(window.location.hash).toBe(`#/${page}`);
+      expect(replaceState.mock.calls.map((call) => call[2])).toEqual([`#/${page}`]);
+    } finally {
+      replaceState.mockRestore();
+    }
+  });
+
+  it('redirects the Analytics group id to Metrics', () => {
+    window.location.hash = '#/analytics';
+    act(() => {
+      render(
+        <RouterProvider>
+          <Reader />
+        </RouterProvider>,
+      );
+    });
+    expect(currentPage).toBe('metrics');
+    expect(window.location.hash).toBe('#/metrics');
   });
 
   it('round-trips only allowlisted filtered-case result options', () => {
@@ -289,7 +345,7 @@ describe('CommandPalette — disclosure children are reachable jump targets', ()
     fireEvent.change(input, { target: { value: 'Cost' } });
     // The Cost child (a tab of Analytics — previously unreachable from Cmd-K) is present
     // with its unique `navc-<parent>-<id>` value.
-    const cost = document.querySelector('[cmdk-item][data-value="navc-metrics-cost"]');
+    const cost = document.querySelector('[cmdk-item][data-value="navc-analytics-cost"]');
     expect(cost).toBeTruthy();
     fireEvent.click(cost as HTMLElement);
     expect(onNavigate).toHaveBeenCalledWith('cost');

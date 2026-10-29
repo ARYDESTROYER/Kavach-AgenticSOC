@@ -120,3 +120,43 @@ describe('CustomizationSection saved views (Round-6 #29/#30)', () => {
     expect(shared.className).not.toContain('text-[11px]');
   });
 });
+
+describe('CustomizationSection on the Round 14 grammar', () => {
+  it('keeps a saved view\'s delete neutral at rest, red only on hover and focus', async () => {
+    mocks.effective.mockResolvedValue(withView(false));
+    renderSection();
+    const del = await screen.findByRole('button', { name: /delete mine/i });
+    const classes = del.className.split(/\s+/);
+    expect(classes).toContain('text-muted-foreground');
+    expect(classes).not.toContain('text-critical');
+    expect(classes).not.toContain('text-critical-text');
+    expect(classes).toContain('hover:text-critical-text');
+    expect(classes).toContain('focus-visible:text-critical-text');
+  });
+
+  it('is titled Appearance and reads without em dashes, en dashes or faint labels', async () => {
+    mocks.effective.mockResolvedValue(withView(true));
+    renderSection();
+    expect(await screen.findByRole('heading', { name: 'Appearance', level: 2 })).toBeInTheDocument();
+    // The organization defaults (shown here: auth is off, so every grant holds).
+    await screen.findByText(/organization default, administrators/);
+    const body = document.body;
+    expect(body.textContent ?? '').not.toMatch(/[–—]/);
+    for (const el of Array.from(body.querySelectorAll('[aria-label]'))) {
+      expect(el.getAttribute('aria-label') ?? '').not.toMatch(/[–—]/);
+    }
+    // Default labels stay at full muted contrast (AA), never a faded /70 tint.
+    expect(body.querySelector('.text-muted-foreground\\/70')).toBeNull();
+    // Each terminology field is named by the word it renames, never its stored key, with
+    // where the word appears as its description.
+    const singular = screen.getByRole('textbox', { name: 'Case (singular)' });
+    expect(singular).toHaveAccessibleDescription('In sentences, for example "this case".');
+    expect(singular).toHaveAttribute('placeholder', 'case');
+    expect(screen.getByRole('textbox', { name: 'Cases (plural)' })).toBeInTheDocument();
+    expect(screen.queryByText(/\(default: /)).toBeNull();
+    // "Organization", never the "Org" shorthand.
+    expect(screen.getByRole('combobox', { name: 'Organization default theme' })).toBeInTheDocument();
+    expect(screen.getByText(/Views shared with the organization are marked\./)).toBeInTheDocument();
+    expect(body.textContent ?? '').not.toMatch(/\bOrg\b|Org-/);
+  });
+});

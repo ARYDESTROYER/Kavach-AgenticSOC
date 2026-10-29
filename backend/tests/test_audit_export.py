@@ -1522,11 +1522,48 @@ async def test_the_jobs_projection_keeps_the_question_and_the_inbox_line_counts_
     projected = public_job(final).params
     assert projected == {"format": "csv", "scope": "people", "from": FROM, "to": TO, "order": "asc",
                          "filters": {"actor": "user1"}, "q": "needle"}
-    assert job_url(final) == "#/audit?scope=people"
+    # The audit log in the exported view: scope, both instants, the search and filters.
+    assert job_url(final) == (
+        "#/audit?scope=people&from=2026-10-18T15%3A10%3A00Z&to=2026-10-25T15%3A10%3A00Z"
+        "&q=needle&actor=user1"
+    )
     events = final.result.counts["events"]
     assert _summary(final) == f"{events:,} {'event' if events == 1 else 'events'} exported"
     one = final.model_copy(update={"result": final.result.model_copy(update={"counts": {"events": 1284}})})
     assert _summary(one) == "1,284 events exported"
+
+
+def test_an_audit_export_links_to_the_view_it_holds():
+    """SPEC §4.5.8: "Open audit log" shows the exported view, not the default week.
+    Values are URL-encoded, empty keys left out, the instants written in UTC to the
+    second, and filters the route has no key for stay out."""
+    from app.engine.jobs import job_url
+
+    def url(**overrides: Any) -> str:
+        return job_url(_job(_params(**overrides)))
+
+    assert url(scope="agent", q="role & admin/ops", filters={
+        "event": "user.role_changed", "actor_contains": "adm", "outcome": "denied",
+        "case_id": "case-1", "target": "user-7", "ip": "10.0.0.5",
+        "actor_kind": "human", "surface": "api", "source_id": "src-1", "actor": "  ",
+    }) == (
+        "#/audit?scope=agent&from=2026-10-18T15%3A10%3A00Z&to=2026-10-25T15%3A10%3A00Z"
+        "&q=role%20%26%20admin%2Fops&event=user.role_changed&actor_contains=adm&outcome=denied"
+        "&case=case-1&target=user-7&ip=10.0.0.5"
+    )
+    # Another zone and a fraction: UTC to the second, so the link covers the export.
+    assert url(**{"from": "2026-10-18T20:40:00.750+05:30", "to": "2026-10-25T15:10:00.250Z"}) == (
+        "#/audit?scope=all&from=2026-10-18T15%3A10%3A00Z&to=2026-10-25T15%3A10%3A00Z"
+    )
+    # An early year keeps its four digits, as the Console's own reading writes it.
+    assert url(**{"from": "0999-01-01T00:00:00Z"}) == (
+        "#/audit?scope=all&from=0999-01-01T00%3A00%3A00Z&to=2026-10-25T15%3A10%3A00Z"
+    )
+    # A scope the route does not know, or a range that cannot be read, is left out.
+    assert url(scope="admin", **{"from": "now-7d"}) == "#/audit"
+    assert url(scope="people", q="  ", filters=None) == (
+        "#/audit?scope=people&from=2026-10-18T15%3A10%3A00Z&to=2026-10-25T15%3A10%3A00Z"
+    )
 
 
 def test_the_inbox_line_speaks_in_events_in_every_state():

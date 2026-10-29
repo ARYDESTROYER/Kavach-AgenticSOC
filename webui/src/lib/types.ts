@@ -2733,16 +2733,6 @@ export interface BulkResult {
 }
 
 /**
- * GET /api/scans/notifications — how many automated-scan cases are new since the
- * caller's last-seen timestamp. Drives the "N new" pill on the Scans surface.
- */
-export interface ScanNotifications {
-  new_count: number;
-  since?: string | null;
-  now?: string | null;
-}
-
-/**
  * Navigation options threaded through `Navigate` (router.tsx / App.tsx) so
  * deep-links / drill-throughs can pre-seed a destination page's filters/tab.
  *
@@ -3896,7 +3886,8 @@ export interface CasesPerDay {
 /**
  * One UTC-day bucket of the burndown series (GET /api/metrics → `burndown`): how many
  * cases were `opened` that day vs how many reached a terminal (resolved/closed) state.
- * Powers the open-vs-resolved BurnDownChart. Advisory / reporting only (never #3).
+ * The open-vs-resolved burndown series (no Console chart draws it today). Advisory /
+ * reporting only (never #3).
  */
 export interface BurndownPoint {
   /** UTC date, `YYYY-MM-DD`. */
@@ -3992,6 +3983,16 @@ export interface Metrics {
   by_disposition?: Record<string, number>;
   by_verdict: VerdictBreakdown;
   persona_usage: Record<string, number>;
+  /**
+   * Cases per Published runbook that guided the investigation (Round 14, runbook id to
+   * count; `none` when no runbook reached the investigator). Usage only: it never says a
+   * runbook made a case faster or slower.
+   */
+  runbook_usage: Record<string, number>;
+  /**
+   * @deprecated Round 14: the retired procedure usage, kept by the server for one release
+   * (read from the field earlier releases stored). Read `runbook_usage`.
+   */
   playbook_usage: Record<string, number>;
   /** Mean normalised risk score (0..100). */
   avg_risk_score: number;
@@ -4009,8 +4010,9 @@ export interface Metrics {
   resolved_count: number;
   cases_per_day: CasesPerDay[];
   /**
-   * Open-vs-resolved per UTC day over the trend window (additive) — the BurnDownChart
-   * series. Each point is `{date, opened, resolved}`. Advisory only (never #3).
+   * Open-vs-resolved per UTC day over the trend window (additive): the burndown series
+   * (no Console chart draws it today). Each point is `{date, opened, resolved}`. Advisory
+   * only (never #3).
    */
   burndown?: BurndownPoint[];
   /**

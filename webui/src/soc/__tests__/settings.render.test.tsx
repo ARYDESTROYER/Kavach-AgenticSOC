@@ -79,7 +79,6 @@ vi.mock('@/lib/api', () => {
       // Round-5 Sett-C — the schema-driven "All settings" section fetches this.
       getSettingsSchema: ok({ sections: [] }),
       // Used by sub-sections that may lazily mount; harmless to provide.
-      getPlaybooks: ok({ enabled: false, playbooks: [] }),
       getBranding: ok({}),
       caseIdPreview: ok({ samples: [], valid: true }),
       // Round-2 Wave 4 — the embedded Account/Admin sub-section bodies fetch these
@@ -612,6 +611,9 @@ describe('Settings Round 14 review fixes', () => {
     expect(screen.queryByTestId('settings-view-only')).not.toBeInTheDocument();
   });
 
+  // Each case mounts the whole Settings page and opens a section (the heaviest sweep in
+  // this file). Under a loaded test:strict run a mount can take seconds, so every wait has
+  // an explicit timeout and each case gets 15 s, three times the slowest wait it holds.
   it.each(['detection', 'enrichment', 'admin_users', 'sessions', 'admin_sessions', 'discounted-inference'])(
     'shows %s the registry help, never a second copy from the section body',
     async (id) => {
@@ -620,7 +622,7 @@ describe('Settings Round 14 review fixes', () => {
       renderWithProviders(<Settings />);
       const tip = await screen.findByRole('button', { name: `About ${meta.title}` }, { timeout: 5000 });
       await userEvent.click(tip);
-      expect(await screen.findByText(meta.help as string)).toBeInTheDocument();
+      expect(await screen.findByText(meta.help as string, undefined, { timeout: 5000 })).toBeInTheDocument();
     },
     15_000,
   );

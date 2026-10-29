@@ -9,6 +9,8 @@
  *  - Pointer-clickable rows expose a dedicated, named action button for keyboard
  *    and assistive-technology users. The `<tr>` itself is never given an interactive
  *    role because rows can also contain checkboxes, menus, and links.
+ *  - `getRowLabel` names a row the way the screen shows it ("Select CASE-000048",
+ *    "Open CASE-000048"), never by an internal id only a developer would recognise.
  *  - `rowAccent` draws an OPT-IN left-edge severity band (non-color-only reading of
  *    row risk, §6.1) as an inset box-shadow (no layout shift, no extra column).
  *  - Round 14 (SPEC §4.9.2, C7): one table grammar. Compact density by default (36px
@@ -57,6 +59,9 @@ import {
   SelectContent,
   SelectItem,
 } from '@/ui/select';
+// The right-edge fade measurement, in its own module so a table that is not a
+// `DataTable` (the Logs sheet) shares it without importing this one.
+import { useOverflowRight } from '@/soc/hooks/useOverflowRight';
 import { useAnnouncer } from './announcer';
 import { EmptyState } from './EmptyState';
 import { semanticColor } from './palette';
@@ -191,6 +196,20 @@ export interface DataTableProps<T> {
   /** Accessible name for the dedicated row action button. */
   getRowActionLabel?: (row: T, index: number) => string;
   /**
+   * The row's name as a person reads it ("CASE-000048"), for the selection checkbox's
+   * accessible name ("Select CASE-000048"). Without it the checkbox names the row by
+   * `getRowId`, which is often an internal id a screen reader user never sees on screen.
+   */
+  getRowLabel?: (row: T, index: number) => string;
+  /**
+   * The header checkbox's accessible name, said the way the page counts what it selects
+   * ("Select all cases on this page"). It selects the rows of the current page only, so
+   * the default names rows, never "all" of a longer list.
+   */
+  selectAllLabel?: string;
+  /** What a row is, for the selection announcements ("25 cases selected"). Default: rows. */
+  rowNoun?: { one: string; other: string };
+  /**
    * Render the shared trailing keyboard action for a pointer-clickable row. Disable
    * only when a visible cell already contains an equivalent named button/link.
    */
@@ -314,6 +333,9 @@ const STICKY_CELL =
 
 /** Sticky header cells: the opaque fill only (the header row has no hover or selected tint). */
 const STICKY_HEAD = 'sticky z-[1] bg-card';
+
+/** The selection announcements' noun when a table does not name its rows. */
+const DEFAULT_ROW_NOUN = { one: 'row', other: 'rows' } as const;
 
 function SortIcon({ active, dir }: { active: boolean; dir?: SortDir }) {
   if (!active)
@@ -528,39 +550,6 @@ function resolveColumns<T>(
   return out;
 }
 
-/**
- * Track whether a horizontally scrolling region has more content to its right, for the
- * right-edge fade. Re-measured on scroll, on resize of the region or its content, and
- * whenever `deps` change (rows or columns). Keyed on the element itself (held in state
- * through a callback ref), so the listeners follow the region when it remounts, for
- * example when the table comes back from its `emptyState`.
- */
-function useOverflowRight(el: HTMLElement | null, deps: unknown[]): boolean {
-  const [more, setMore] = React.useState(false);
-  const measure = React.useCallback(() => {
-    setMore(el ? el.scrollWidth - el.clientWidth - el.scrollLeft > 1 : false);
-  }, [el]);
-  React.useLayoutEffect(() => {
-    measure();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [measure, ...deps]);
-  React.useEffect(() => {
-    if (!el) return undefined;
-    el.addEventListener('scroll', measure, { passive: true });
-    let observer: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      observer = new ResizeObserver(() => measure());
-      observer.observe(el);
-      if (el.firstElementChild) observer.observe(el.firstElementChild);
-    }
-    return () => {
-      el.removeEventListener('scroll', measure);
-      observer?.disconnect();
-    };
-  }, [el, measure]);
-  return more;
-}
-
 export function DataTable<T>({
   columns,
   rows,
@@ -580,6 +569,9 @@ export function DataTable<T>({
   getRowSelectionDisabledReason,
   onRowClick,
   getRowActionLabel,
+  getRowLabel,
+  selectAllLabel,
+  rowNoun = DEFAULT_ROW_NOUN,
   showRowAction = true,
   loading = false,
   loadingRows = 8,
@@ -686,13 +678,13 @@ export function DataTable<T>({
     if (!onSelectedChange) return;
     if (allSelected) {
       onSelectedChange((selected ?? []).filter((id) => !selectableRowIds.includes(id)));
-      announce('All rows deselected');
+      announce(`All ${rowNoun.other} deselected`);
     } else {
       const merged = new Set(selected ?? []);
       selectableRowIds.forEach((id) => merged.add(id));
       onSelectedChange(Array.from(merged));
       announce(
-        `${selectableRowIds.length} row${selectableRowIds.length === 1 ? '' : 's'} selected`,
+        `${selectableRowIds.length} ${selectableRowIds.length === 1 ? rowNoun.one : rowNoun.other} selected`,
       );
     }
   };
@@ -797,7 +789,9 @@ export function DataTable<T>({
                         allSelected ? true : someSelected ? 'indeterminate' : false
                       }
                       onCheckedChange={toggleAll}
-                      aria-label={isRowSelectable ? 'Select all available rows' : 'Select all rows'}
+                      aria-label={
+                        selectAllLabel ?? (isRowSelectable ? 'Select all available rows' : 'Select all rows')
+                      }
                       disabled={initialLoading || selectableRowIds.length === 0}
                     />
                   </TableHead>
@@ -903,10 +897,24 @@ export function DataTable<T>({
                   const id = rowIds[rowIndex];
                   const isSelected = selectedSet.has(id);
                   const rowSelectable = isRowSelectable?.(row, rowIndex) ?? true;
+                  // The row as a person reads it: its label when the table has one (a case
+                  // number), else "row <id>".
+                  const rowLabel = getRowLabel?.(row, rowIndex)?.trim();
+                  const rowName = rowLabel || `row ${id}`;
+                  // A caller's reason does not name the row, so its checkbox name adds the
+                  // label ("Sample data cannot be changed: CASE-000048"); the default reason
+                  // already names it ("Selection unavailable for CASE-000048"), once.
+                  const customDisabledReason = rowSelectable
+                    ? undefined
+                    : getRowSelectionDisabledReason?.(row, rowIndex);
                   const selectionDisabledReason = rowSelectable
                     ? undefined
-                    : getRowSelectionDisabledReason?.(row, rowIndex) ??
-                      `Selection unavailable for row ${id}`;
+                    : customDisabledReason ?? `Selection unavailable for ${rowName}`;
+                  const selectionName = rowSelectable
+                    ? `Select ${rowName}`
+                    : customDisabledReason
+                      ? `${customDisabledReason}: ${rowLabel || id}`
+                      : `Selection unavailable for ${rowName}`;
                   const clickable = !!onRowClick;
                   // Left-edge severity band (§6.1), opt-in via `rowAccent`. Drawn as an
                   // inset box-shadow so it needs no extra column and never shifts layout.
@@ -966,11 +974,7 @@ export function DataTable<T>({
                               checked={isSelected}
                               disabled={!rowSelectable}
                               onCheckedChange={() => toggleRow(id, row, rowIndex)}
-                              aria-label={
-                                selectionDisabledReason
-                                  ? `${selectionDisabledReason}: ${id}`
-                                  : `Select row ${id}`
-                              }
+                              aria-label={selectionName}
                             />
                           </span>
                         </TableCell>
@@ -1027,7 +1031,7 @@ export function DataTable<T>({
                             size="icon"
                             className="h-8 w-8 scroll-mt-[var(--header-h)] rounded-sm text-muted-foreground hover:text-foreground"
                             aria-label={
-                              getRowActionLabel?.(row, rowIndex) ?? `Open row ${id}`
+                              getRowActionLabel?.(row, rowIndex) ?? `Open ${rowName}`
                             }
                             onClick={(event) => {
                               event.stopPropagation();

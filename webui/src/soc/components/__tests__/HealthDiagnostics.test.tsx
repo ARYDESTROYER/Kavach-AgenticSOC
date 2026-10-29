@@ -180,6 +180,24 @@ describe('HealthDiagnostics pure rendering rules', () => {
     expect(autoCloseStatusView(undefined).unmeasured).toBe(true);
   });
 
+  it('names every auto-close status in plain words, with no dash used as punctuation', () => {
+    const labels = Object.fromEntries(
+      ['collapsed', 'degraded', 'never_fired', 'disabled', 'no_volume', 'insufficient_evidence', 'ok', 'later'].map(
+        (status) => [status, autoCloseStatusView(status).label],
+      ),
+    );
+    expect(labels).toEqual({
+      collapsed: 'Collapsed',
+      degraded: 'Degraded',
+      never_fired: 'Never fired',
+      disabled: 'Turned off',
+      no_volume: 'Not measured: no volume',
+      insufficient_evidence: 'Not measured: not enough evidence',
+      ok: 'Within tolerance',
+      later: 'Not measured',
+    });
+  });
+
   it('captions the rolling window in words', () => {
     expect(healthWindowCaption(24)).toBe('last 24 hours');
     expect(healthWindowCaption(168)).toBe('last 7 days');
@@ -211,6 +229,26 @@ describe('HealthDiagnostics surface', () => {
     autoCloseMock.mockReset();
     hasPermissionMock.mockReset();
     hasPermissionMock.mockReturnValue(true);
+  });
+
+  it.each([
+    ['collapsed', 'Collapsed'],
+    ['degraded', 'Degraded'],
+    ['never_fired', 'Never fired'],
+    ['disabled', 'Turned off'],
+    ['no_volume', 'Not measured: no volume'],
+    ['insufficient_evidence', 'Not measured: not enough evidence'],
+    ['ok', 'Within tolerance'],
+    ['', 'Not measured'],
+  ])('renders the "%s" status as its badge, and no rendered text has an em or en dash', async (status, label) => {
+    const ac = autoClose({ status, reason: 'decided volume held steady', collapsed: status === 'collapsed' });
+    diagnosticsMock.mockResolvedValue(health({ auto_close: ac }));
+    autoCloseMock.mockResolvedValue(ac);
+
+    const { container } = render(<HealthDiagnostics />);
+
+    expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(container.textContent ?? '').not.toMatch(/[\u2013\u2014]/);
   });
 
   it('renders an auto-close collapse as a detected problem with the backend reason', async () => {

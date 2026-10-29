@@ -56,6 +56,16 @@ function show(props: React.ComponentProps<typeof Reports> = {}) {
   );
 }
 
+/**
+ * The Reports table once its rows are in. The table (named "Reports") is on screen from
+ * the first paint, holding its loading rows, so wait for it to stop being busy.
+ */
+async function findLoadedTable(): Promise<HTMLElement> {
+  const table = await screen.findByRole('table', { name: 'Reports' });
+  await waitFor(() => expect(table.closest('[aria-busy]')).toHaveAttribute('aria-busy', 'false'));
+  return table;
+}
+
 beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockReset();
   exportReport.mockClear();
@@ -80,10 +90,15 @@ describe('Reports library', () => {
     const user = userEvent.setup();
     show();
     expect(await screen.findByRole('heading', { level: 1, name: 'Reports' })).toBeInTheDocument();
-    const table = await screen.findByRole('table', { name: 'Reports' });
+    const table = await findLoadedTable();
     expect(within(table).getByRole('button', { name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
     expect(within(table).getByText('Shift handoff')).toBeInTheDocument();
-    expect(screen.getByText(/reports · limit 100/)).toBeInTheDocument();
+    // Round 14: the list sits on one "Saved reports" panel with its count; the cap is said
+    // only when it applies (it does not here).
+    const panel = screen.getByRole('region', { name: 'Saved reports' });
+    expect(panel).toContainElement(table);
+    expect(panel.querySelector('[data-panel-count]')).toHaveTextContent(/^2$/);
+    expect(screen.queryByText(/limit/i)).toBeNull();
 
     await user.type(screen.getByRole('textbox', { name: 'Search reports' }), 'night');
     expect(within(table).queryByRole('button', { name: 'Brute force on vpn-gw-2' })).toBeNull();
@@ -94,7 +109,7 @@ describe('Reports library', () => {
     api.listReports.mockResolvedValue([...ROWS, { ...ROWS[0], id: 'rep-3', title: 'Old hunt', conversation_id: 'conv-gone' }]);
     const user = userEvent.setup();
     show();
-    const table = await screen.findByRole('table', { name: 'Reports' });
+    const table = await findLoadedTable();
     const link = await within(table).findByRole('button', { name: 'Open the source conversation of Brute force on vpn-gw-2: VPN brute force' });
     expect(link).toHaveTextContent('VPN brute force');
     // The listing holds every conversation, so one it lacks is gone.
@@ -112,7 +127,7 @@ describe('Reports library', () => {
     ]);
     const user = userEvent.setup();
     show();
-    const table = await screen.findByRole('table', { name: 'Reports' });
+    const table = await findLoadedTable();
     const link = await within(table).findByRole('button', { name: 'Open the source conversation of Lifetime performance: VPN brute force' });
     expect(link).toHaveTextContent('VPN brute force');
     const mixed = within(table).getByRole('button', { name: 'Mixed' }).closest('tr')!;
@@ -176,13 +191,23 @@ describe('Reports library', () => {
     expect(navigate).toHaveBeenLastCalledWith('chat', { conversationId: 'conv-1', messageId: 'msg-2' });
   });
 
-  it('opens straight into a deep-linked report and goes back to the list', async () => {
+  it('opens straight into a deep-linked report and links back to the list', async () => {
     const user = userEvent.setup();
-    show({ reportId: 'rep-1' });
+    window.location.hash = '#/reports?reportId=rep-1';
+    show();
     expect(await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
     expect(api.listReports).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: /All reports/ }));
-    expect(navigate).toHaveBeenLastCalledWith('reports');
+    // "All reports" is the page header's one sanctioned link (SPEC §4.9.3), above the
+    // title, followed through the router.
+    const back = screen.getByRole('link', { name: 'All reports' });
+    expect(back).toHaveAttribute('href', '#/reports');
+    await user.click(back);
+    expect(navigate.mock.lastCall?.[0]).toBe('reports');
+    // The router follows it: the URL is the list, so the page is the list.
+    act(() => {
+      window.location.hash = '#/reports';
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
     expect(await screen.findByRole('heading', { level: 1, name: 'Reports' })).toBeInTheDocument();
   });
 
@@ -204,7 +229,7 @@ describe('Reports library', () => {
       });
     // Back: the URL is the list, so the page is the list (never the stale document).
     go('#/reports');
-    expect(await screen.findByRole('table', { name: 'Reports' })).toBeInTheDocument();
+    expect(await findLoadedTable()).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1, name: 'Reports' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Download PDF' })).toBeNull();
     // Forward: the document again.
@@ -331,5 +356,138 @@ describe('Reports library', () => {
     await user.click(within(note).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(screen.queryByTestId('report-export-error')).toBeNull());
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Export Night shift handoff' }));
+  });
+});
+
+describe('Reports library on the Round 14 grammar (SPEC §4.9.1, §4.9.3)', () => {
+  const many = (n: number): ReportListEntry[] =>
+    Array.from({ length: n }, (_, i) => ({
+      ...ROWS[1],
+      id: `rep-${i + 10}`,
+      title: `Shift handoff ${i + 1}`,
+      updated_at: `2026-10-07T07:${String(i % 60).padStart(2, '0')}:00Z`,
+    }));
+
+  it('explains the library in the help tip, with no overline, icon or description line', async () => {
+    const user = userEvent.setup();
+    show();
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Reports' });
+    const header = h1.closest('[data-page-header]') as HTMLElement;
+    await findLoadedTable();
+    expect(within(header).queryByText('Workspace')).toBeNull();
+    expect(within(header).queryByText(/Reports you built from chat answers/)).toBeNull();
+    await user.click(within(header).getByRole('button', { name: 'About Reports' }));
+    expect(await screen.findByText(/Reports you built from chat answers/)).toBeInTheDocument();
+  });
+
+  it('shows the first-use state on the panel with no column header row and no search', async () => {
+    api.listReports.mockResolvedValue([]);
+    show();
+    const panel = await screen.findByRole('region', { name: 'Saved reports' });
+    expect(within(panel).getByText('No reports yet')).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Open Chat' })).toBeInTheDocument();
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.queryByRole('columnheader')).toBeNull();
+    expect(screen.queryByRole('textbox', { name: 'Search reports' })).toBeNull();
+    expect(panel.querySelector('[data-panel-count]')).toBeNull();
+  });
+
+  it('says the cap only when it applies, and keeps the columns for a search with no match', async () => {
+    const user = userEvent.setup();
+    api.listReports.mockResolvedValue(many(100));
+    show();
+    const panel = await screen.findByRole('region', { name: 'Saved reports' });
+    expect(within(panel).getByText('Limit of 100 reached. Delete a report to save a new one.')).toBeInTheDocument();
+    expect(panel.querySelector('[data-panel-count]')).toHaveTextContent(/^100$/);
+
+    await user.type(within(panel).getByRole('textbox', { name: 'Search reports' }), 'nothing like this');
+    expect(panel.querySelector('[data-panel-count]')).toHaveTextContent(/^0 of 100$/);
+    expect(within(panel).getByText('No matching reports')).toBeInTheDocument();
+    expect(within(panel).getAllByRole('columnheader').length).toBeGreaterThan(0);
+  });
+
+  it('keeps a fixed column layout, so a search never moves the columns', async () => {
+    const user = userEvent.setup();
+    show();
+    const table = await findLoadedTable();
+    // Declared widths switch the table to a fixed layout; only the title column flexes.
+    expect(table).toHaveClass('table-fixed');
+    const widths = () =>
+      within(table)
+        .getAllByRole('columnheader')
+        .map((th) => (th as HTMLElement).style.width);
+    const before = widths();
+    expect(before).toEqual(['', '10rem', '6rem', '14rem', '13rem', '7rem']);
+    await user.type(screen.getByRole('textbox', { name: 'Search reports' }), 'night');
+    expect(widths()).toEqual(before);
+  });
+
+  it('opens a report from anywhere on its row, with the title as the named action', async () => {
+    const user = userEvent.setup();
+    show();
+    const table = await findLoadedTable();
+    // A pointer click on a plain cell (the template) opens the report.
+    await user.click(within(table).getByText('Investigation'));
+    expect(await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
+  });
+
+  it('names each row by its title button, a phone-sized target, with no second Open button', async () => {
+    show();
+    const table = await findLoadedTable();
+    const title = within(table).getByRole('button', { name: 'Brute force on vpn-gw-2' });
+    expect(title).toHaveClass('min-h-11', 'sm:min-h-0');
+    // DataTable's trailing row action would be "Open row rep-1" (or "Open <title>").
+    expect(within(table).queryByRole('button', { name: /^Open (row |Brute|Night)/ })).toBeNull();
+  });
+
+  it('loads inside the same "Saved reports" panel the rows arrive in', async () => {
+    let resolve: (rows: ReportListEntry[]) => void = () => undefined;
+    api.listReports.mockReturnValue(new Promise((r) => (resolve = r)));
+    show();
+    const panel = await screen.findByRole('region', { name: 'Saved reports' });
+    expect(within(panel).getByTestId('data-table-initial-loading')).toBeInTheDocument();
+    await act(async () => resolve(ROWS));
+    expect(await within(panel).findByRole('button', { name: 'Brute force on vpn-gw-2' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Saved reports' })).toBe(panel);
+  });
+
+  it('counts the matches while a search narrows the list', async () => {
+    const user = userEvent.setup();
+    show();
+    const panel = await screen.findByRole('region', { name: 'Saved reports' });
+    await user.type(within(panel).getByRole('textbox', { name: 'Search reports' }), 'night');
+    expect(panel.querySelector('[data-panel-count]')).toHaveTextContent(/^1 of 2$/);
+    expect(screen.queryByText(/limit/i)).toBeNull();
+  });
+
+  it('shows the item count beside the title and states the template and last update once, without the help tip', async () => {
+    window.location.hash = '#/reports?reportId=rep-1';
+    show();
+    const h1 = await screen.findByRole('heading', { level: 1, name: 'Brute force on vpn-gw-2' });
+    const header = h1.closest('[data-page-header]') as HTMLElement;
+    // Visible text, read without opening anything: no help tip holds the facts.
+    expect(within(header).getByTestId('report-facts')).toHaveTextContent(/^6 items$/);
+    expect(within(header).getByTestId('report-facts')).toBeVisible();
+    expect(within(header).queryByRole('button', { name: /^About / })).toBeNull();
+    // The template and the last update are in the document's meta row right under the
+    // header, once each on the page: the header never repeats them.
+    expect(within(header).queryByText(/Updated|Investigation/)).toBeNull();
+    const doc = document.getElementById(SCREEN_DOC_ID) as HTMLElement;
+    expect(within(doc).getAllByText(/Updated 2026-10-08 13:40 UTC/)).toHaveLength(1);
+    expect(within(doc).getAllByText(/Template: Investigation/)).toHaveLength(1);
+    const page = document.body.textContent ?? '';
+    expect(page.split('Updated 2026-10-08 13:40 UTC').length - 1).toBe(1);
+    expect(page.split('Template: Investigation').length - 1).toBe(1);
+    // No overline or icon chip: the only text above the title is the back link.
+    expect(within(header).queryByText('Reports')).toBeNull();
+    expect(header.textContent ?? '').not.toMatch(/[–—]/);
+  });
+
+  it('keeps the back link on the loading and missing states', async () => {
+    api.getReport.mockRejectedValue(new ApiError(404, 'Report not found.', { detail: { code: 'report_not_found' } }));
+    window.location.hash = '#/reports?reportId=rep-9';
+    show();
+    expect(await screen.findByText('Could not open the report')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'All reports' })).toHaveAttribute('href', '#/reports');
   });
 });

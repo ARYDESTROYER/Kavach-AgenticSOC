@@ -298,7 +298,7 @@ function OutcomesWidget({ title, family }: { title: string; family: OutcomeFamil
     <WidgetShell
       title={title}
       caption={caption}
-      exit={{ label: 'View effectiveness', page: 'metrics', opts: { tab: 'effectiveness' } }}
+      exit={{ label: 'View effectiveness', page: 'effectiveness' }}
       state={state}
       stale={staleOf(answer, onRetry)}
       footer={footer}

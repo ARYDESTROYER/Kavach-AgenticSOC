@@ -171,11 +171,11 @@ describe('the shell navigation', () => {
     window.localStorage.setItem('soc.nav.collapsed', '1');
     try {
       renderShell('cases');
-      const metrics = await screen.findByTestId('nav-metrics');
+      const analytics = await screen.findByTestId('nav-analytics');
       vi.useFakeTimers();
       // The pointer rests on a grouped rail icon; before the 300 ms flyout rest ends the
       // shell's shortcut expands the drawer (it never goes through the toggle).
-      fireEvent.pointerMove(metrics);
+      fireEvent.pointerMove(analytics);
       act(() => vi.advanceTimersByTime(100));
       act(() => {
         fireEvent.keyDown(window, { key: 'b', ctrlKey: true });

@@ -137,8 +137,16 @@ describe('times, ranges and the export file name', () => {
 
   it('resolves a relative range to absolute instants, to the second', () => {
     const range = absoluteRange({ from: 'now-7d', to: null }, NOW)!;
-    expect(range.to).toBe('2026-10-25T15:10:30Z');
+    // A range that ends now ends at the last whole second that has passed: the server
+    // reads `to` as its whole second, so the result is exactly 7 days.
+    expect(range.to).toBe('2026-10-25T15:10:29Z');
     expect(range.from).toBe('2026-10-18T15:10:30Z');
+    expect(range.toMs + 1000 - range.fromMs).toBe(7 * 24 * 3600 * 1000);
+    // Part way through a second, the second in progress is never covered.
+    expect(absoluteRange({ from: 'now-1h', to: null }, Date.UTC(2026, 9, 25, 15, 10, 0, 400))!.to).toBe('2026-10-25T15:09:59Z');
+    // A bound that is not now is kept as given, to the second.
+    expect(absoluteRange({ from: 'now-7d', to: 'now-1h' }, NOW)!.to).toBe('2026-10-25T14:10:30Z');
+    expect(absoluteRange({ from: '2026-10-18T15:10:00Z', to: '2026-10-25T15:10:00Z' }, NOW)!.to).toBe('2026-10-25T15:10:00Z');
     expect(absoluteRange({ from: 'now', to: 'now-1h' }, NOW)).toBeNull();
     expect(isoSecond(Date.UTC(2026, 9, 25, 15, 10, 0, 999))).toBe('2026-10-25T15:10:00Z');
   });

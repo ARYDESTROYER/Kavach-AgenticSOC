@@ -16,6 +16,7 @@
  */
 import * as React from 'react';
 import { api, setUnauthorizedHandler } from '@/lib/api';
+import { notifySignedOut } from '@/lib/session-events';
 import type { AuthMe, RolesResponse, SessionEndReason, UserRole } from '@/lib/types';
 
 // Remember-me device helpers live in a lazy chunk (this provider is first-paint code).
@@ -178,6 +179,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const role = me?.user?.role ?? null;
   const username = me?.user?.username ?? null;
   const mustChangePassword = Boolean(me?.user?.must_change_password);
+
+  // Who is signed in to this tab (null: nobody, or auth is off). When that person leaves
+  // (a sign-out, an ended session, another person in this browser) the lazy modules that
+  // remember things for them (the Analytics range) forget it (`lib/session-events.ts`).
+  const signedInAs = authEnabled && me?.authenticated ? (username ?? '') : null;
+  const signedInAsRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const previous = signedInAsRef.current;
+    signedInAsRef.current = signedInAs;
+    if (previous !== null && previous !== signedInAs) notifySignedOut();
+  }, [signedInAs]);
 
   const hasPermission = React.useCallback(
     (resource: string, action: string): boolean => {

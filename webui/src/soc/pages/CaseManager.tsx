@@ -54,7 +54,7 @@ import { cn } from '@/lib/cn';
 import { errorMessage } from '@/lib/errorMessage';
 import { DASH, humanizeAge, humanizeToken } from '@/lib/format';
 import { caseTagError } from '@/lib/tags';
-import type { BackgroundJob, BackgroundJobKind, Case } from '@/lib/types';
+import type { BackgroundJob, BackgroundJobKind, Case, CaseLifecycleInput } from '@/lib/types';
 import { useEventStream } from '@/lib/useEventStream';
 
 import { Button } from '@/ui/button';
@@ -1543,6 +1543,13 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
     [bulkBusy, route, selectedIds],
   );
 
+  // A `case_lifecycle` job takes the job's own params, never a single-case field (such
+  // as `require_open_steps_reason`): tsc refuses one instead of the server answering 422.
+  const submitLifecycle = React.useCallback(
+    (input: CaseLifecycleInput, label: string) => submitCaseJob('case_lifecycle', { ...input }, label),
+    [submitCaseJob],
+  );
+
   const openBulkForm = React.useCallback(
     (action: BulkFormAction) => {
       setBulkFormValue(
@@ -1576,35 +1583,36 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
       return;
     }
     if (action === 'status') {
-      void submitCaseJob('case_lifecycle', { action: 'set_status', status: value }, 'Status update');
+      void submitLifecycle({ action: 'set_status', status: value }, 'Status update');
       return;
     }
-    void submitCaseJob(
-      'case_lifecycle',
+    void submitLifecycle(
       // A person picked this value in the bulk form, so it is declared (G1).
       { action: 'set_disposition', disposition: value, disposition_declared: true },
       'Disposition update',
     );
-  }, [bulkBusy, bulkFormAction, bulkFormValue, selectedIds.size, submitCaseJob]);
+  }, [bulkBusy, bulkFormAction, bulkFormValue, selectedIds.size, submitCaseJob, submitLifecycle]);
 
   const runConfirmedBulkAction = React.useCallback(() => {
     const action = pendingBulkAction;
     setPendingBulkAction(null);
     if (action === 'acknowledge') {
-      void submitCaseJob('case_lifecycle', { action: 'acknowledge' }, 'Acknowledgement');
+      void submitLifecycle({ action: 'acknowledge' }, 'Acknowledgement');
       return;
     }
     if (action === 'reinvestigate') {
       void submitCaseJob('case_reinvestigate', {}, 'Reinvestigation');
     }
-  }, [pendingBulkAction, submitCaseJob]);
+  }, [pendingBulkAction, submitCaseJob, submitLifecycle]);
 
   const submitBulkTerminal = React.useCallback(
     (input: BulkCloseInput) => {
       setBulkTerminal(null);
       const { action, ...rest } = input;
-      void submitCaseJob(
-        'case_lifecycle',
+      // Through the typed lifecycle submit: the bulk close and resolve params (the one
+      // shared `open_steps_reason`, never `require_open_steps_reason`) are the job's own,
+      // and `JobParamsPins` in types-contract-pins.ts keeps `BulkCloseInput` inside them.
+      void submitLifecycle(
         {
           action,
           ...rest,
@@ -1614,7 +1622,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
         action === 'close' ? 'Close' : 'Resolution',
       );
     },
-    [submitCaseJob],
+    [submitLifecycle],
   );
 
   // ---- keyboard model (CM-4) ------------------------------------------------- //

@@ -90,7 +90,10 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
     const maxRows = cols.reduce((m, c) => Math.max(m, c.cells.length), 0);
 
     return (
-      <div ref={ref} className={cn('w-full', className)}>
+      // `relative`: the screen-reader table below is absolutely positioned (`sr-only`);
+      // without a positioned ancestor of its own it is placed against the page and, being
+      // as wide as its content, widens the whole document on a narrow screen.
+      <div ref={ref} className={cn('relative w-full', className)}>
         {/* Visible grid (decorative; the table below is the accessible source). */}
         <div role="presentation" className="overflow-x-auto">
           <div
@@ -101,7 +104,7 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
             {cols.map((c) => (
               <div
                 key={`h-${c.tactic}`}
-                className="truncate px-1 pb-1 text-center text-2xs font-semibold uppercase tracking-wide text-muted-foreground"
+                className="truncate px-1 pb-1 text-center text-2xs font-medium text-muted-foreground"
                 title={c.label}
               >
                 {c.label}
@@ -135,7 +138,7 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
                         color perception (the sr-only table below carries the full data).*/}
                     <span className="flex max-w-[calc(100%-0.25rem)] items-baseline gap-0.5 rounded-sm bg-background/85 px-1 py-0.5 text-foreground supports-[backdrop-filter]:bg-background/70 supports-[backdrop-filter]:backdrop-blur-[1px]">
                       <span className="truncate">{cell.technique}</span>
-                      <span className="shrink-0 font-mono tabular-nums text-muted-foreground">
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
                         {cell.value.toLocaleString()}
                       </span>
                     </span>
@@ -161,35 +164,42 @@ export const MitreHeatmap = React.forwardRef<HTMLDivElement, MitreHeatmapProps>(
             tactic. This keeps every value bound to its OWN technique + tactic — the
             grid is jagged (each tactic has its own technique list), so a single
             positional matrix would MISATTRIBUTE a value to the wrong technique. The
-            column headers index the technique SLOT within a tactic (1..N). */}
-        <table className="sr-only">
-          <caption>{label}</caption>
-          <thead>
-            <tr>
-              <th scope="col">Tactic</th>
-              {Array.from({ length: maxRows }).map((_, i) => (
-                <th key={i} scope="col">{`Technique ${i + 1}`}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {cols.map((c) => (
-              <tr key={c.tactic}>
-                <th scope="row">{c.label}</th>
-                {Array.from({ length: maxRows }).map((_, slot) => {
-                  const cell = c.cells[slot];
-                  return (
-                    <td key={slot}>
-                      {cell
-                        ? `${cell.technique}${cell.name ? ` (${cell.name})` : ''}: ${cell.value}`
-                        : ''}
-                    </td>
-                  );
-                })}
+            column headers index the technique SLOT within a tactic (1..N). The table sits
+            in a visually hidden box: a table is never narrower than its content, so
+            `sr-only` on the table alone could not clip it, while the box (1px, overflow
+            hidden) does. The table keeps `sr-only` as well: it is the marker the report
+            print stylesheets key on (`table.sr-only`) to leave a screen-reader table out
+            of the printed layout instead of stretching it to the column. */}
+        <div className="sr-only" data-mitre-table="">
+          <table className="sr-only">
+            <caption>{label}</caption>
+            <thead>
+              <tr>
+                <th scope="col">Tactic</th>
+                {Array.from({ length: maxRows }).map((_, i) => (
+                  <th key={i} scope="col">{`Technique ${i + 1}`}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {cols.map((c) => (
+                <tr key={c.tactic}>
+                  <th scope="row">{c.label}</th>
+                  {Array.from({ length: maxRows }).map((_, slot) => {
+                    const cell = c.cells[slot];
+                    return (
+                      <td key={slot}>
+                        {cell
+                          ? `${cell.technique}${cell.name ? ` (${cell.name})` : ''}: ${cell.value}`
+                          : ''}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   },

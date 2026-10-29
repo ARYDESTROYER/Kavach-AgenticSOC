@@ -52,13 +52,11 @@ vi.mock('@/lib/api', () => {
     api: {
       // load-time calls fired when the sheet opens
       getCase: ok(openCase),
-      getPlaybooks: ok({ enabled: false, playbooks: [] }),
       getModels: ok({ providers: {} }),
       getSettings: ok({ prefs: {}, configured: {}, read_only: false }),
       // namespaced calls referenced by the module (only fired on tab change)
       cases: {
         threatContext: ok(null),
-        runPlaybook: ok(openCase),
         notify: ok({ sent: [] }),
       },
     },

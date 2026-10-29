@@ -517,7 +517,7 @@ export function AutoCloseHealthWidget(props: WidgetProps) {
     <WidgetShell
       title={title}
       caption={`${windowInfo.label} against the ${windowInfo.phrase.replace('last ', '')} before`}
-      exit={{ label: 'View effectiveness', page: 'metrics', opts: { tab: 'effectiveness' } }}
+      exit={{ label: 'View effectiveness', page: 'effectiveness' }}
       state={state}
       stale={staleOf(answer, onRetry)}
       footer={footer}
