@@ -11673,3 +11673,10 @@
 - Tests: tsc 0, lint 0/0, gates, 466 web test files (one known Tuning test owned by W9b); entry 378,012 B (82 B under the rebased budget, to be re-measured by the page passes).
 - Status: done (committed `023d145`).
 - Next: W7a and W7b (runbooks UI) finishing in run r4w; the server-side run r4b (FX1, A8a, A8b, A8c) continues.
+
+### 2026-10-29 10:05Z — orchestrator — Round 14 run r4b-backend (FX1, A8a, A8b, A8c)
+- Context: Round 14 item 9 (runbooks replace playbooks), backend half, per SPEC §7 rows FX1, A8a, A8b, A8c.
+- Did: each package implemented, reviewed by two adversarial lenses, fixed, re-reviewed and fixed again. A8a puts the matched runbook into the investigator prompt (fenced, budgeted, provenance on the case) and attaches it to cases that need a person; A8b moves retrieval, chat, replay, metrics, export, automation, search and diagnostics onto the runbook library (Published only); A8c deletes the playbook engine, the old runbook service and stores, and the bundled playbook Markdown, with packaging, CI and RBAC following; FX1 rewrote three legacy tests, added open_steps_reason to bulk close jobs and Demo runbook AI answers. Orchestrator applied the A8c hand-off series (Demo parity, simulate alias, Roles mirror, docs paths, SPEC §11.1) and mirrored the 27 new audit labels into the Console event table. Commit 7083fb2.
+- Tests: gates agent full backend run before the series 11,629 passed / 10 failed (5 sandbox-only proxy/AWS env, 1 date-dependent golden question, 1 WP-DOC records test, 3 fixed by the series); targeted suites after the series green; ruff fatal clean; webui tsc clean; audit contract, audit render and roles tests green. Full backend re-run in progress.
+- Status: done for these packages; remaining items routed in HANDOFF-NOTES (FX2, B1, WP-DOC).
+- Next: commit W7a/W7b when r4w finishes; FX2 + B1 + Wave D; WP-DOC; WP-GEN.
