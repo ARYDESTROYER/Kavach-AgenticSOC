@@ -11659,3 +11659,10 @@
 - Tests: backend full suite 11,390 passed, 6 skipped; two failures fixed by the gate; nine legacy tests outside the run's files need rewrites (assigned to the next run), one records test waits for WP-DOC, five are sandbox-only; ruff fatal clean.
 - Status: done (committed `56e0a88`).
 - Next: run r4b: a fix-up package (legacy tests, bulk close reason, Demo runbook AI answers), then A8a, A8b, A8c; web run r3w continues.
+
+### 2026-10-29 04:10Z — Orchestrator — Round 14 run r3w-web: Audit page, rule sheet, dashboard widgets, Dashboards library
+- Context: SPEC §7.5 W5, W6a, W4c, W4b (asks 2, 3, 6; choices C1 A, C2 library with the operator's change, C4 A) plus housekeeping. Resumed once after a container restart.
+- Did: the rebuilt Audit page (scopes, server search with qualifiers, facets and quick views, a one-line keyboard table, the record inspector side sheet with Who, What changed, Details, Raw record and Related, deep links, the Export dialog on the audit export job, View in audit log links); RuleLink and the rule sheet; dashboard widget data with the KPI honesty rules and one shared Alert reduction rule; the Dashboards library opened from the Overview navigation entry with the Cyber Defence Center marked Default and the three built-in boards, Duplicate and Hide, while the app still lands on the Cyber Defence Center; report timeout wording, Help Center breadcrumbs, console map and corpus regenerated, a clock-independent breakdown test. Reviews found 77 issues across the four packages; all fixed or recorded, re-reviewed. Progress images: Audit, Dashboards library and boards, rule sheet.
+- Tests: tsc 0, lint 0/0, gates, 350 web test files (two failures owned elsewhere: the audit event mirror waits for FX1's new labels, one Tuning help text test waits for W9b); entry 377,678 B (416 B left in the rebased budget).
+- Status: done (committed `7030276`).
+- Next: web run r4w (W6b chat drill, W7a runbook library and editor, W7b the run inside a case) after r4b's backend packages settle the audit event labels.
