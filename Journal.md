@@ -11666,3 +11666,10 @@
 - Tests: tsc 0, lint 0/0, gates, 350 web test files (two failures owned elsewhere: the audit event mirror waits for FX1's new labels, one Tuning help text test waits for W9b); entry 377,678 B (416 B left in the rebased budget).
 - Status: done (committed `7030276`).
 - Next: web run r4w (W6b chat drill, W7a runbook library and editor, W7b the run inside a case) after r4b's backend packages settle the audit event labels.
+
+### 2026-10-29 08:20Z — Orchestrator — Round 14 W6b: rule drill-downs in chat and the severity breakdown
+- Context: SPEC §7.5 W6b (asks 6 and 7; C4 A, C5 A plus Split by). An orchestrator reply sent by agent id started a duplicate implementer; stopping it left the original running, so a restart run coordinated with the original through notes in the work folder and both review chains completed without overwriting each other. Lesson recorded in the run notes: answer workflow agents through their work folder, never by agent id.
+- Did: rule rows, chart bars (bar and columns), severity breakdown links and case card rules open the rule sheet from server drill targets; the severity breakdown view with named levels, zeros, scale help, shares, trends, top rules, expandable rows, Split by and a rules-by-level matrix; block title tooltips only when cut off; case numbers and plain status words; Logs Rule and Severity chips with server counts and Back to answer; a Cases Rule filter; chat Help Center sections. Reviews found 27 issues; fixed or recorded (four ready patches for files outside the package wait for the next fix-up package).
+- Tests: tsc 0, lint 0/0, gates, 466 web test files (one known Tuning test owned by W9b); entry 378,012 B (82 B under the rebased budget, to be re-measured by the page passes).
+- Status: done (committed `023d145`).
+- Next: W7a and W7b (runbooks UI) finishing in run r4w; the server-side run r4b (FX1, A8a, A8b, A8c) continues.
