@@ -1,12 +1,15 @@
 /**
- * Cost — Round-6 window-switch fetch-race guard.
+ * Cost: the Round-6 window-switch fetch-race guard.
  *
- * Switching the time window fires a fresh /usage/summary request. Only the
- * LATEST-issued request may commit, so a slow earlier window can never clobber the
+ * Switching the time range fires a fresh /usage/summary request. Only the
+ * LATEST-issued request may commit, so a slow earlier range can never clobber the
  * current one. We drive two overlapping requests and resolve them out of order.
+ *
+ * Round 14: the range is the page header's Overview pill (the Analytics ranges, last 7
+ * days by default), and the refresh is the header's icon button.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 vi.mock('@/soc/demo', () => ({ useDemo: () => ({ active: false }) }));
@@ -17,11 +20,13 @@ const usageSummary = vi.fn(
   (hours: number) => new Promise((resolve) => pending.set(hours, { resolve })),
 );
 
-vi.mock('@/lib/api', () => ({
+vi.mock('@/lib/api', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/api')>('@/lib/api')),
   api: { usageSummary: (h: number) => usageSummary(h) },
 }));
 
 import Cost from '../Cost';
+import { resetAnalyticsWindowForTests } from '../analytics-shared';
 
 const summary = (total: number) => ({
   total_cost: total,
@@ -33,6 +38,7 @@ const summary = (total: number) => ({
 
 describe('Cost window-switch race', () => {
   beforeEach(() => {
+    resetAnalyticsWindowForTests();
     pending.clear();
     usageSummary.mockClear();
   });
@@ -40,41 +46,43 @@ describe('Cost window-switch race', () => {
   it('ignores a stale earlier-window response that resolves last', async () => {
     render(<Cost />);
 
-    // The initial 24h load is in flight.
-    await waitFor(() => expect(pending.has(24)).toBe(true));
+    // The initial 7-day load is in flight.
+    await waitFor(() => expect(pending.has(168)).toBe(true));
     expect(screen.getByRole('status', { name: 'Loading cost data' })).toBeInTheDocument();
 
-    // Switch the time window to 7d (168h) — a second request is issued. The window
-    // switch is a SegmentedControl (Radix RadioGroup → role="radio"); a click selects.
-    await userEvent.click(screen.getByRole('radio', { name: '7d' }));
-    await waitFor(() => expect(pending.has(24 * 7)).toBe(true));
+    // Switch the range to the last 24 hours: a second request is issued.
+    await userEvent.click(screen.getByRole('button', { name: 'Time range: Last 7 days' }));
+    const ranges = await screen.findByRole('group', { name: 'Relative time ranges' });
+    await userEvent.click(within(ranges).getByRole('button', { name: /^Last 24 hours/ }));
+    await waitFor(() => expect(pending.has(24)).toBe(true));
 
-    // Resolve the LATEST (7d) request first; its total should render.
-    pending.get(24 * 7)!.resolve(summary(99));
-    await waitFor(() => expect(screen.getByText('$99.00')).toBeInTheDocument());
+    // Resolve the LATEST (24h) request first; its total should render.
+    pending.get(24)!.resolve(summary(99));
+    await waitFor(() => expect(screen.getAllByText('$99.00').length).toBeGreaterThan(0));
 
-    // Now the STALE 24h request resolves — it must NOT clobber the 7d view.
-    pending.get(24)!.resolve(summary(1));
+    // Now the STALE 7-day request resolves: it must NOT clobber the 24h view.
+    pending.get(168)!.resolve(summary(1));
     await waitFor(() => expect(usageSummary).toHaveBeenCalledTimes(2));
 
-    expect(screen.getByText('$99.00')).toBeInTheDocument();
+    expect(screen.getAllByText('$99.00').length).toBeGreaterThan(0);
     expect(screen.queryByText('$1.00')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Time range: Last 24 hours' })).toBeInTheDocument();
   });
 
   it('keeps resolved cost data mounted during a manual refresh', async () => {
     render(<Cost />);
-    await waitFor(() => expect(pending.has(24)).toBe(true));
+    await waitFor(() => expect(pending.has(168)).toBe(true));
 
-    pending.get(24)!.resolve(summary(12));
-    await screen.findByText('$12.00');
+    pending.get(168)!.resolve(summary(12));
+    await waitFor(() => expect(screen.getAllByText('$12.00').length).toBeGreaterThan(0));
 
     await userEvent.click(screen.getByRole('button', { name: 'Refresh usage' }));
     await waitFor(() => expect(usageSummary).toHaveBeenCalledTimes(2));
 
-    expect(screen.getByText('$12.00')).toBeInTheDocument();
+    expect(screen.getAllByText('$12.00').length).toBeGreaterThan(0);
     expect(screen.queryByRole('status', { name: 'Loading cost data' })).toBeNull();
 
-    pending.get(24)!.resolve(summary(13));
-    await screen.findByText('$13.00');
+    pending.get(168)!.resolve(summary(13));
+    await waitFor(() => expect(screen.getAllByText('$13.00').length).toBeGreaterThan(0));
   });
 });

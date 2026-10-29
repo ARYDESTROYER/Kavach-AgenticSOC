@@ -13,7 +13,7 @@
  * manage controls render.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 
 const { providersMock, lookupMock, setSecretsMock, setConfigMock } = vi.hoisted(() => ({
   providersMock: vi.fn(),
@@ -146,9 +146,8 @@ describe('EnrichmentProvidersEditor (Feature 7)', () => {
     renderEditor();
     await screen.findByText('AbuseIPDB');
 
-    // Expand the AbuseIPDB keys section.
-    const keyToggle = screen.getByRole('button', { name: /^key$/i });
-    fireEvent.click(keyToggle);
+    // Round 14 (SE6): the keys live in the provider's detail sheet, opened from its row.
+    fireEvent.click(screen.getByRole('button', { name: 'AbuseIPDB' }));
 
     // The configured state shows as the shared SecretField boolean pill ("Configured ✓").
     expect(await screen.findByText(/configured ✓/i)).toBeInTheDocument();
@@ -176,7 +175,7 @@ describe('EnrichmentProvidersEditor (Feature 7)', () => {
     renderEditor();
     await screen.findByText('AbuseIPDB');
 
-    fireEvent.click(screen.getByRole('button', { name: /^key$/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'AbuseIPDB' }));
     const input = await screen.findByPlaceholderText(/enter a new value to replace/i);
     fireEvent.change(input, { target: { value: 'sk-test-123' } });
 
@@ -200,44 +199,124 @@ describe('EnrichmentProvidersEditor (Feature 7)', () => {
     await waitFor(() => expect(setConfigMock).toHaveBeenCalledWith({ enabled: false }));
   });
 
-  it('renders the manifest example blurb under the description (plain text)', async () => {
+  it('renders the manifest example blurb in the provider sheet (plain text)', async () => {
     renderEditor();
     await screen.findByText('AbuseIPDB');
 
+    fireEvent.click(screen.getByRole('button', { name: 'AbuseIPDB' }));
+    const sheet = await screen.findByTestId('enrichment-provider-sheet');
     expect(
-      screen.getByText('Separates known scanners from first-seen sources instantly.'),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('Turns a suspicious URL into a confirmed malware-delivery case.'),
+      within(sheet).getByText('Separates known scanners from first-seen sources instantly.'),
     ).toBeInTheDocument();
   });
 
-  it('shows setup steps in a collapsible, keyboard-reachable ordered list', async () => {
+  it('shows setup steps in the provider sheet as an ordered list of plain text', async () => {
     renderEditor();
     await screen.findByText('AbuseIPDB');
 
-    // Steps are hidden until the "How to set up" toggle is expanded.
+    // The steps are not on the list; they open with the provider.
     expect(screen.queryByText('Create a free account at abuseipdb.com.')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'AbuseIPDB' }));
 
-    const toggles = screen.getAllByRole('button', { name: /how to set up/i });
-    expect(toggles.length).toBe(2); // one per provider with steps
-    expect(toggles[0]).toHaveAttribute('aria-expanded', 'false');
-
-    fireEvent.click(toggles[0]);
-    expect(toggles[0]).toHaveAttribute('aria-expanded', 'true');
-
-    // The steps render as an ORDERED list of plain-text items.
-    const step1 = await screen.findByText('Create a free account at abuseipdb.com.');
+    const sheet = await screen.findByRole('dialog');
+    expect(within(sheet).getByRole('heading', { name: 'How to set up' })).toBeInTheDocument();
+    const step1 = within(sheet).getByText('Create a free account at abuseipdb.com.');
     expect(step1.tagName).toBe('LI');
     expect(step1.closest('ol')).not.toBeNull();
-    expect(screen.getByText('Set TLSOC_ABUSEIPDB_API_KEY in .env.')).toBeInTheDocument();
+    expect(within(sheet).getByText('Set TLSOC_ABUSEIPDB_API_KEY in .env.')).toBeInTheDocument();
+  });
+});
 
-    // Collapsing hides them again.
-    fireEvent.click(toggles[0]);
-    await waitFor(() =>
-      expect(
-        screen.queryByText('Create a free account at abuseipdb.com.'),
-      ).not.toBeInTheDocument(),
+describe('EnrichmentProvidersEditor on the Round 14 grammar (SE6, F13)', () => {
+  beforeEach(() => {
+    providersMock.mockReset();
+    providersMock.mockResolvedValue({
+      enrichment_enabled: true,
+      fusion_enabled: false,
+      providers: [
+        ...PROVIDERS,
+        {
+          ...PROVIDERS[0],
+          name: 'greynoise',
+          display_name: 'GreyNoise',
+          config_key: 'use_greynoise',
+          enabled_by_config: true,
+          key_present: false,
+          secret_fields: [{ ...PROVIDERS[0].secret_fields[0], key: 'greynoise_api_key', configured: false }],
+        },
+      ],
+    });
+  });
+
+  it('lists providers as hairline rows, not bordered cards, with one switch each', async () => {
+    renderEditor();
+    const list = await screen.findByRole('list', { name: 'Enrichment providers' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(3);
+    expect(list.querySelector('.rounded-lg.border')).toBeNull();
+    expect(within(list).getAllByRole('switch')).toHaveLength(3);
+  });
+
+  it('shows "Needs key" as a status only for an enabled provider without its key', async () => {
+    renderEditor();
+    const row = await screen.findByTestId('enrichment-provider-greynoise');
+    expect(row.querySelector('[data-status-tone="warning"]')).toHaveTextContent('Needs key');
+    const healthy = screen.getByTestId('enrichment-provider-abuseipdb');
+    expect(healthy.querySelector('[data-status-tone]')).toBeNull();
+  });
+
+  it('puts the master switches in setting rows and Refresh as an icon on the providers group', async () => {
+    renderEditor();
+    await screen.findByText('AbuseIPDB');
+    expect(screen.getByRole('switch', { name: 'Fuse provider scores' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Refresh providers' })).toBeInTheDocument();
+    // SettingsGroup is a labelled group (role="group", aria-labelledby its title).
+    expect(screen.getByRole('group', { name: 'Try a lookup' })).toBeInTheDocument();
+  });
+
+  it('states enrichment off in words under the master switch and never dims the editable list', async () => {
+    providersMock.mockResolvedValue({
+      enrichment_enabled: false,
+      fusion_enabled: false,
+      providers: PROVIDERS,
+    });
+    const { container } = renderEditor();
+    const list = await screen.findByRole('list', { name: 'Enrichment providers' });
+    expect(screen.getByTestId('enrichment-off-callout')).toHaveTextContent(
+      'Enrichment is off. No provider is queried until you turn it on.',
     );
+    expect(screen.getByTestId('enrichment-off-callout')).toHaveAttribute('role', 'status');
+    // The rows stay at full contrast: they remain editable while the master switch is off.
+    for (let node: HTMLElement | null = list; node && node !== container; node = node.parentElement) {
+      expect(node.className).not.toMatch(/opacity-/);
+    }
+    expect(within(list).getAllByRole('switch')[0]).not.toBeDisabled();
+  });
+
+  it('shows no off notice while enrichment is on', async () => {
+    renderEditor();
+    await screen.findByRole('list', { name: 'Enrichment providers' });
+    expect(screen.queryByTestId('enrichment-off-callout')).toBeNull();
+  });
+
+  it('returns focus to the provider row when its sheet closes (SPEC §3.3)', async () => {
+    renderEditor();
+    const opener = await screen.findByRole('button', { name: 'AbuseIPDB' });
+    opener.focus();
+    fireEvent.click(opener);
+    const sheet = await screen.findByRole('dialog');
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+
+  it('uses no text under 12px and no em dash in its copy', async () => {
+    const { container } = renderEditor();
+    await screen.findByText('AbuseIPDB');
+    expect(container.innerHTML).not.toMatch(/text-\[(?:[0-9]|10)px\]/);
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const text = node.textContent ?? '';
+      if (text.trim() !== '\u2014') expect(text).not.toContain('\u2014');
+    }
   });
 });

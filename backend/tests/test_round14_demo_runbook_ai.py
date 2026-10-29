@@ -26,7 +26,11 @@ from typing import Any
 
 import pytest
 
-from app.agents.prompts import RUNBOOK_DRAFT_SYSTEM_MARKER, RUNBOOK_SUGGEST_SYSTEM_MARKER
+from app.agents.prompts import (
+    RUNBOOK_DRAFT_SYSTEM_MARKER,
+    RUNBOOK_SUGGEST_SYSTEM_MARKER,
+    build_runbook_suggest_messages,
+)
 from app.constants import CaseStatus, EntityType, SourceSurface
 from app.engine import runbook_runs as R
 from app.llm import providers as P
@@ -101,8 +105,11 @@ def _messages(system: str, user: str) -> list[dict[str, str]]:
 
 def test_the_demo_provider_routes_only_the_runbook_markers() -> None:
     provider = P.DemoMockProvider()
-    suggest = _messages(f"{RUNBOOK_SUGGEST_SYSTEM_MARKER}\nPick one.",
-                        '[{"id": "malware-endpoint"}, {"id": "generic-incident"}]')
+    # The real prompt: the builder reads the candidate list under its trusted heading.
+    suggest = build_runbook_suggest_messages(
+        candidates=[{"id": "malware-endpoint", "title": "M"}, {"id": "generic-incident", "title": "G"}],
+        case_context={})
+    assert RUNBOOK_SUGGEST_SYSTEM_MARKER in suggest[0]["content"]
     answer = provider._demo_chat_route("chat", suggest)
     assert answer is not None
     assert json.loads(answer)["runbook_id"] == "malware-endpoint"

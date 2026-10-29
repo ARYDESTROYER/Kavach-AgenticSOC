@@ -110,7 +110,7 @@ factory-reset application state for a presentation problem.
 
 ## A rule keeps routing to a human no matter how many cases we confirm
 
-Check **Analytics → Metrics → Effectiveness → Precedent by rule**. If the rule is listed
+Check **Analytics → Agent effectiveness → Agent health → Precedent by rule**. If the rule is listed
 as not helping, this is expected and confirming more cases will not change it.
 
 The cause is evidence sufficiency, not precedent. If the rule's alerts carry no request
@@ -142,7 +142,7 @@ has fallen to zero while alert volume held steady.
 
 An empty corpus means every investigation runs with no runbook, ATT&CK or precedent
 context, so cases route to a human however confident the model is. Check
-**Analytics → Metrics → Effectiveness**, or `GET /api/diagnostics/health`, which reports
+**Analytics → Agent effectiveness** (Agent health), or `GET /api/diagnostics/health`, which reports
 the corpus size, the last projection outcome, any refused projection, and the
 reconciliation between corpus documents and the qualifying case history.
 

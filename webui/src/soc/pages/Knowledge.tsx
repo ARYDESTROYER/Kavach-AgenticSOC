@@ -1,5 +1,5 @@
 /**
- * Knowledge / RAG — the operator-facing window into the retrieval corpus the
+ * Knowledge / RAG: the operator-facing window into the retrieval corpus the
  * investigator draws on. Rebuilt for the new SOC console (Tailwind + shadcn-style
  * primitives) while preserving the legacy data wiring + features verbatim:
  *
@@ -15,28 +15,31 @@
  *     (guarded seed sources force-delete after a confirm),
  *   - an UNTRUSTED footer note.
  *
- * Security: indexed / retrieved / source / model text is UNTRUSTED — always
+ * Round 14 (IN2 to IN5, F19): no "Knowledge controls" band (the icon Refresh sits on
+ * the indexed-documents panel; the Intelligence host owns the page header); the counts
+ * are a compact `KpiStrip` and the embedding model is a plain line on the corpus panel,
+ * not a numeral; corpus bars use one series colour with the value and share of the total
+ * on the label row; every card is a `Panel`, and the document count pill sits in each
+ * source panel's title row; delete icons are neutral at rest; no icon chips.
+ *
+ * Security: indexed / retrieved / source / model text is UNTRUSTED, always
  * rendered as PLAIN text or inside <CodeBlock>/<InlineCode>, never as markup.
  * Secrets are never shown.
  */
 import * as React from 'react';
 import {
   AlertCircle,
-  BarChart3,
-  Boxes,
   CheckCircle2,
-  Cpu,
   FileText,
   Gauge,
   Layers,
+  Loader2,
   Lock,
   Plus,
-  RefreshCw,
   Search,
   ShieldAlert,
   Tag,
   Trash2,
-  Upload,
   X,
 } from 'lucide-react';
 
@@ -51,18 +54,20 @@ import type {
   RagDocument,
   RagStats,
 } from '@/lib/types';
-import { DASH, fmtNumber, humanizeAge, humanizeToken } from '@/lib/format';
+import { DASH, fmtNumber, humanizeAge } from '@/lib/format';
+import { properName } from '@/lib/proper-names';
 import { errorMessage } from '@/lib/errorMessage';
 import { cn } from '@/lib/cn';
 import { toast } from 'sonner';
 
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
-import { ControlBar } from '@/soc/components/ControlBar';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { LoadError } from '@/soc/components/LoadError';
 import { SegmentedControl } from '@/soc/components/SegmentedControl';
 import { Can, useCan } from '@/soc/components/Can';
-import { KpiTile, type KpiAccent } from '@/soc/components/KpiTile';
+import { KpiStrip } from '@/soc/components/KpiStrip';
+import { KpiTile } from '@/soc/components/KpiTile';
 import { NumberField } from '@/soc/components/NumberField';
 import { BarList, type BarListItem } from '@/soc/components/BarList';
 import {
@@ -71,10 +76,11 @@ import {
   type SortState,
 } from '@/soc/components/DataTable';
 import { EmptyState } from '@/soc/components/EmptyState';
+import { FilterBar, type FilterChip } from '@/soc/components/FilterBar';
 import { CodeBlock } from '@/soc/components/CodeBlock';
-import { Stagger } from '@/soc/components/Stagger';
-import { LoadingState } from '@/design-system';
+import { LoadingState, Panel } from '@/design-system';
 import { TagInput, usePendingTagDraft } from '@/soc/components/TagInput';
+import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import {
   announceJobAccepted,
   retainJobSubmissionIntent,
@@ -83,19 +89,11 @@ import {
 
 import { Button } from '@/ui/button';
 import { Badge, type BadgeProps } from '@/ui/badge';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/ui/card';
 import { Input } from '@/ui/input';
 import { Textarea } from '@/ui/textarea';
 import { Label } from '@/ui/label';
 import { Skeleton } from '@/ui/skeleton';
 import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
-import { Separator } from '@/ui/separator';
 import {
   Select,
   SelectContent,
@@ -159,16 +157,6 @@ function sourceBadgeVariant(source?: string): BadgeProps['variant'] {
   return 'secondary';
 }
 
-/** A bar color token class for a corpus source (used by the BarList). */
-function sourceBarColor(source?: string): string {
-  const s = (source || '').toLowerCase();
-  if (s.includes('runbook') || s.includes('playbook')) return 'bg-info';
-  if (s.includes('case') || s.includes('resolved')) return 'bg-success';
-  if (s.includes('mitre') || s.includes('threat')) return 'bg-critical';
-  if (s.includes('suppression')) return 'bg-warning';
-  return 'bg-accent-bar';
-}
-
 /** Heuristic: which corpus sources are guarded seed material (force-delete only). */
 function isSeedSource(source?: string): boolean {
   const s = (source || '').toLowerCase();
@@ -196,13 +184,6 @@ function readDensity(): Density {
   }
 }
 
-/** A soft tinted icon chip for card headers (matches PageHeader/KpiTile calm look). */
-const CardIcon: React.FC<{ icon: LucideIcon }> = ({ icon: Icon }) => (
-  <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-    <Icon className="size-4" aria-hidden />
-  </span>
-);
-
 /* ------------------------------------------------------------- badges --------- */
 
 /** A corpus source badge (UNTRUSTED label → humanized plain text). */
@@ -219,7 +200,7 @@ const SourceBadge: React.FC<{ source?: string; className?: string }> = ({
   return (
     <Badge variant={sourceBadgeVariant(source)} className={className}>
       <Tag className="size-3" aria-hidden />
-      {humanizeToken(source)}
+      {properName(source)}
     </Badge>
   );
 };
@@ -275,7 +256,9 @@ const ChunkBlock: React.FC<{ chunk: RagChunk; index: number; rank?: number }> = 
 const DocumentSheet: React.FC<{
   documentId: string | null;
   onClose: () => void;
-}> = ({ documentId, onClose }) => {
+  /** Hands focus back to the control that opened the sheet (SPEC §3.3). */
+  onCloseAutoFocus?: (event: Event) => void;
+}> = ({ documentId, onClose, onCloseAutoFocus }) => {
   const [doc, setDoc] = React.useState<RagDocument | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<unknown>(null);
@@ -316,7 +299,7 @@ const DocumentSheet: React.FC<{
     <Sheet open={!!documentId} onOpenChange={(o) => !o && onClose()}>
       {/* Pinned header (with the built-in close X) + an inner scroll region — never
           overflow-y-auto on SheetContent itself or the absolute X scrolls away (#19). */}
-      <SheetContent side="right" size="lg" className="flex flex-col p-0">
+      <SheetContent side="right" size="lg" className="flex flex-col p-0" onCloseAutoFocus={onCloseAutoFocus}>
         <SheetHeader>
           {/* Title is UNTRUSTED — plain text. */}
           <SheetTitle className="pr-8 break-words">
@@ -330,7 +313,6 @@ const DocumentSheet: React.FC<{
             </Badge>
             {doc?.embedding_model ? (
               <Badge variant="outline">
-                <Cpu className="size-3" aria-hidden />
                 {doc.embedding_model}
                 {typeof doc.dim === 'number' ? ` · ${doc.dim}d` : ''}
               </Badge>
@@ -343,7 +325,7 @@ const DocumentSheet: React.FC<{
             ) : null}
             {doc?.added_at ? (
               <span className="text-xs text-muted-foreground">
-                added {humanizeAge(doc.added_at)}
+                Added {humanizeAge(doc.added_at)}
               </span>
             ) : null}
           </div>
@@ -382,8 +364,8 @@ const DocumentSheet: React.FC<{
             <>
               <p className="text-xs text-muted-foreground">
                 These are the exact units the retriever returns. The investigator sees
-                the highest-scoring chunks for a query — text is treated as untrusted
-                evidence.
+                the highest-scoring chunks for a query, and the text is treated as
+                untrusted evidence.
               </p>
               {chunks.length > 4 ? (
                 <div className="space-y-1.5">
@@ -534,7 +516,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
           const qf = await readFile(list[0]);
           if (qf.tooBig) {
             setFileError(
-              `"${qf.name}" is ${fmtNumber(qf.bytes)} bytes — keep documents under ${MAX_IMPORT_LABEL}.`,
+              `"${qf.name}" is ${fmtNumber(qf.bytes)} bytes. Keep documents under ${MAX_IMPORT_LABEL}.`,
             );
             return;
           }
@@ -602,19 +584,13 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
   }, [documents, navigate, reset, settleTags]);
 
   return (
-    <Card className="flex h-full flex-col">
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          <CardIcon icon={Upload} />
-          <CardTitle>Import knowledge</CardTitle>
-        </div>
-        <CardDescription className="pt-1">
-          Index documents into the retrieval corpus. Paste text, or upload one or more
-          .txt / .md / .json / .csv files (each becomes its own document); the
-          investigator can then retrieve them during triage.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-4">
+    <Panel
+      title="Import knowledge"
+      caption="Paste text, or upload .txt, .md, .json or .csv files; each file becomes its own document the investigator can retrieve."
+      className="flex h-full flex-col"
+      data-testid="knowledge-import"
+    >
+      <div className="flex flex-1 flex-col gap-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="rag-title">Title</Label>
@@ -660,7 +636,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
             {batching
               ? 'Disabled while files are queued.'
               : tooBig
-                ? `Too large — keep documents under ${MAX_IMPORT_LABEL}.`
+                ? `Too large. Keep documents under ${MAX_IMPORT_LABEL}.`
                 : !payloadValid
                   ? 'This document and its metadata are too large for one durable job.'
                 : `${fmtNumber(bytes)} bytes`}
@@ -668,7 +644,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
         </div>
 
         <div className="space-y-1.5">
-          <Label htmlFor="rag-files">…or upload files</Label>
+          <Label htmlFor="rag-files">Or upload files</Label>
           <Input
             id="rag-files"
             key={pickerKey}
@@ -684,8 +660,8 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
         </div>
 
         {batching ? (
-          <div className="rounded-md border border-border bg-surface p-3.5">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          <div className="rounded-md bg-muted p-3.5">
+            <p className="mb-2 text-sm font-medium text-foreground">
               {fmtNumber(queue.length)} file{queue.length === 1 ? '' : 's'} queued
             </p>
             <ul className="flex flex-col gap-1.5">
@@ -709,7 +685,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
                   ? `Every filename-derived title must be ${MAX_IMPORT_TITLE_CHARS} characters or fewer.`
                   : !payloadValid
                     ? 'This batch is too large for one durable job. Split it into smaller imports.'
-                    : `Some files exceed ${MAX_IMPORT_LABEL} — remove them and re-select.`}
+                    : `Some files exceed ${MAX_IMPORT_LABEL}. Remove them and select again.`}
               </p>
             ) : null}
           </div>
@@ -718,7 +694,7 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
         <TagInput
           label="Tags (optional)"
           description="Applied to every imported document."
-          placeholder="Type a tag and press Enter…"
+          placeholder="Type a tag and press Enter"
           value={tags}
           onChange={setTags}
           {...tagDraft.bind}
@@ -738,8 +714,8 @@ export const ImportCard: React.FC<{ onImported?: () => void }> = () => {
               : 'Queue document'}
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </Panel>
   );
 };
 
@@ -814,20 +790,18 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
   }, [content, navigate, resetTagDraft, settleTags, tags, title]);
 
   return (
-    <Card className="flex h-full flex-col">
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          <CardIcon icon={ShieldAlert} />
-          <CardTitle>Import threat intel</CardTitle>
-        </div>
-        <CardDescription className="pt-1">
+    <Panel
+      title="Import threat intel"
+      className="flex h-full flex-col"
+      data-testid="knowledge-threat-import"
+    >
+      <div className="flex flex-1 flex-col gap-4">
+        <p className="text-sm text-muted-foreground">
           Add a threat-intel note (actor TTPs, IOC writeups, advisories). It is indexed as{' '}
-          <code className="font-mono text-xs">threat_context</code> and injected into
-          investigations as a clearly-labelled TRUSTED fenced block — the content is treated as
-          untrusted evidence, never executed as instructions.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-4">
+          <code className="font-mono text-xs">threat_context</code> and given to
+          investigations in a clearly labelled, fenced block. The content is treated as
+          untrusted evidence, never run as instructions.
+        </p>
         <div className="space-y-1.5">
           <Label htmlFor="ti-title">Title</Label>
           <Input
@@ -847,18 +821,18 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
           <Textarea
             id="ti-content"
             rows={6}
-            placeholder="Paste the threat-intel writeup, IOC list, or advisory text…"
+            placeholder="Paste the threat-intel writeup, IOC list or advisory text"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             className={cn(tooBig && 'border-critical focus-visible:ring-critical')}
           />
           <p className={cn('text-xs', tooBig ? 'text-critical' : 'text-muted-foreground')}>
-            {tooBig ? `Too large — keep notes under ${MAX_IMPORT_LABEL}.` : `${fmtNumber(bytes)} bytes`}
+            {tooBig ? `Too large. Keep notes under ${MAX_IMPORT_LABEL}.` : `${fmtNumber(bytes)} bytes`}
           </p>
         </div>
         <TagInput
           label="Tags (optional)"
-          placeholder="Type a tag and press Enter…"
+          placeholder="Type a tag and press Enter"
           value={tags}
           onChange={setTags}
           {...tagDraft.bind}
@@ -869,8 +843,8 @@ export const ThreatIntelImportCard: React.FC<{ onImported?: () => void }> = () =
             Queue threat intel
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </Panel>
   );
 };
 
@@ -938,19 +912,13 @@ const PrecedentBootstrapCard: React.FC = () => {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          <CardIcon icon={ShieldAlert} />
-          <CardTitle>Lower-trust precedent bootstrap</CardTitle>
-        </div>
-        <CardDescription className="pt-1">
+    <Panel title="Lower-trust precedent bootstrap" data-testid="knowledge-precedent">
+      <div className="space-y-4">
+        <p className="text-sm text-muted-foreground">
           Ratify eligible model outcomes only into the explicitly capped{' '}
           <code className="font-mono text-xs">{preview.trust_class}</code> tier. This never
-          fabricates analyst feedback, promotes trust, or changes case decisions.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
+          fabricates analyst feedback, promotes trust or changes case decisions.
+        </p>
         <div className="flex flex-wrap gap-2">
           <Badge variant={preview.tier_enabled ? 'success' : 'warning'}>
             {preview.tier_enabled ? 'Tier enabled' : 'Tier disabled'}
@@ -981,12 +949,12 @@ const PrecedentBootstrapCard: React.FC = () => {
         </div>
         <div className="flex justify-end">
           <Button onClick={() => void submit()} disabled={!ready || submitting}>
-            {submitting ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : null}
+            {submitting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
             Start bootstrap job
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </Panel>
   );
 };
 
@@ -1007,60 +975,52 @@ const CorpusSourceSection: React.FC<{
     () => documents.filter((d) => match(d.source)),
     [documents, match],
   );
+  // F19: the document count sits in the title row (the panel's count), never beside the
+  // description, so it cannot collide with a wrapped line.
   return (
-    <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0">
-        <div className="flex items-center gap-3">
-          <CardIcon icon={Icon} />
-          <div>
-            <CardTitle>{title}</CardTitle>
-            <CardDescription className="mt-0.5">{description}</CardDescription>
-          </div>
+    <Panel
+      title={title}
+      count={`${fmtNumber(rows.length)} ${rows.length === 1 ? 'doc' : 'docs'}`}
+      data-testid={`knowledge-source-${title.toLowerCase().replace(/\s+/g, '-')}`}
+    >
+      <p className="-mt-1 mb-3 text-sm text-muted-foreground">{description}</p>
+      {loading && documents.length === 0 ? (
+        <div className="space-y-2">
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} className="h-10 w-full" />
+          ))}
         </div>
-        <Badge variant="outline">
-          {fmtNumber(rows.length)} doc{rows.length === 1 ? '' : 's'}
-        </Badge>
-      </CardHeader>
-      <CardContent>
-        {loading && documents.length === 0 ? (
-          <div className="space-y-2">
-            {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className="h-10 w-full" />
-            ))}
-          </div>
-        ) : rows.length === 0 ? (
-          <EmptyState icon={Icon} compact title="Nothing here yet" description={emptyHint} />
-        ) : (
-          <ul className="divide-y divide-border">
-            {rows.map((d) => (
-              <li
-                key={d.document_id}
-                className="flex flex-wrap items-center gap-2 py-2 first:pt-0 last:pb-0"
+      ) : rows.length === 0 ? (
+        <EmptyState icon={Icon} compact title="Nothing here yet" description={emptyHint} />
+      ) : (
+        <ul className="divide-y divide-border/70">
+          {rows.map((d) => (
+            <li
+              key={d.document_id}
+              className="flex flex-wrap items-center gap-2 py-2 first:pt-0 last:pb-0"
+            >
+              <button
+                type="button"
+                onClick={() => onOpen(d.document_id)}
+                className="min-w-0 flex-1 truncate rounded-sm text-left text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                title={d.title || d.document_id}
               >
-                <button
-                  type="button"
-                  onClick={() => onOpen(d.document_id)}
-                  className="min-w-0 flex-1 truncate text-left text-sm font-medium text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
-                  title={d.title || d.document_id}
-                >
-                  {/* UNTRUSTED title → plain text. */}
-                  {d.title || d.document_id}
-                </button>
-                <Badge variant="outline" className="shrink-0">
-                  <Layers className="size-3" aria-hidden />
-                  {fmtNumber(d.chunk_count)} chunk{d.chunk_count === 1 ? '' : 's'}
-                </Badge>
-                {d.added_at ? (
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    {humanizeAge(d.added_at)}
-                  </span>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </CardContent>
-    </Card>
+                {/* UNTRUSTED title → plain text. */}
+                {d.title || d.document_id}
+              </button>
+              <span className="shrink-0 text-sm tabular-nums text-muted-foreground">
+                {fmtNumber(d.chunk_count)} chunk{d.chunk_count === 1 ? '' : 's'}
+              </span>
+              {d.added_at ? (
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {humanizeAge(d.added_at)}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Panel>
   );
 };
 
@@ -1100,18 +1060,13 @@ const SearchCard: React.FC = () => {
   }, [q, topK]);
 
   return (
-    <Card className="flex h-full flex-col">
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          <CardIcon icon={Search} />
-          <CardTitle>Try a retrieval</CardTitle>
-        </div>
-        <CardDescription className="pt-1">
-          See exactly what RAG would return for a query — the same chunks the
-          investigator gets, ranked by relevance.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-1 flex-col gap-4">
+    <Panel
+      title="Try a retrieval"
+      caption="The same chunks the investigator gets for a query, ranked by relevance."
+      className="flex h-full flex-col"
+      data-testid="knowledge-search"
+    >
+      <div className="flex flex-1 flex-col gap-4">
         <div className="flex items-end gap-2">
           <div className="flex-1 space-y-1.5">
             <Label htmlFor="rag-query">Query</Label>
@@ -1204,8 +1159,8 @@ const SearchCard: React.FC = () => {
             </div>
           )}
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </Panel>
   );
 };
 
@@ -1215,10 +1170,15 @@ const DocumentsSection: React.FC<{
   documents: RagDocument[];
   loading: boolean;
   onOpen: (id: string) => void;
-  onDelete: (doc: RagDocument) => void;
-  /** Whether the current user may delete (rag:manage) — gates the per-row Delete. */
+  /** `opener` is the row's Delete button, where focus returns if the delete is cancelled. */
+  onDelete: (doc: RagDocument, opener: HTMLElement) => void;
+  /** Whether the current user may delete (rag:manage); gates the per-row Delete. */
   canManage: boolean;
-}> = ({ documents, loading, onOpen, onDelete, canManage }) => {
+  /** Extra title-row actions (the page Refresh while the host owns the header). */
+  actions?: React.ReactNode;
+  /** The documents panel: the host finds the next row (or the heading) after a delete. */
+  panelRef?: React.Ref<HTMLElement>;
+}> = ({ documents, loading, onOpen, onDelete, canManage, actions, panelRef }) => {
   const [search, setSearch] = React.useState('');
   const [sourceFilter, setSourceFilter] = React.useState<string>('all');
   const [sort, setSort] = React.useState<SortState>({ id: 'added_at', dir: 'desc' });
@@ -1332,7 +1292,7 @@ const DocumentsSection: React.FC<{
                     </span>
                   </TooltipTrigger>
                   <TooltipContent>
-                    Guarded seed corpus — delete requires force-confirm.
+                    Guarded seed corpus. Deleting it needs a second confirmation.
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -1347,7 +1307,7 @@ const DocumentsSection: React.FC<{
         width: '6rem',
         align: 'right',
         cell: (d) => (
-          <span className="font-mono tabular-nums">{fmtNumber(d.chunk_count)}</span>
+          <span className="tabular-nums">{fmtNumber(d.chunk_count)}</span>
         ),
       },
     ];
@@ -1401,11 +1361,13 @@ const DocumentsSection: React.FC<{
               <Button
                 variant="ghost"
                 size="icon"
-                className="size-7 text-critical hover:text-critical"
+                // Neutral at rest; red only on hover, focus and in the confirm dialog.
+                className="size-7 text-muted-foreground hover:text-critical-text focus-visible:text-critical-text"
                 onClick={(e) => {
                   e.stopPropagation();
-                  onDelete(d);
+                  onDelete(d, e.currentTarget);
                 }}
+                data-doc-delete=""
                 aria-label="Delete from the corpus"
               >
                 <Trash2 className="size-4" aria-hidden />
@@ -1419,84 +1381,95 @@ const DocumentsSection: React.FC<{
     return cols;
   }, [compact, onOpen, onDelete, canManage]);
 
+  const chips: FilterChip[] =
+    sourceFilter !== 'all'
+      ? [{ id: 'source', label: `Source: ${properName(sourceFilter)}`, onRemove: () => setSourceFilter('all') }]
+      : [];
+  const filtered = filteredSorted.length !== documents.length;
+
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-center gap-3">
-          <CardIcon icon={FileText} />
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold tracking-tight text-foreground">
-              Indexed documents
-            </h2>
-            <p className="text-xs text-muted-foreground">
-              {loading
-                ? 'Loading…'
-                : `${fmtNumber(filteredSorted.length)} of ${fmtNumber(documents.length)} shown`}
-            </p>
-          </div>
-        </div>
-        {/* density toggle */}
-        <SegmentedControl<Density>
-          aria-label="Table density"
-          size="sm"
-          className="shrink-0"
-          value={density}
-          onValueChange={changeDensity}
-          options={[
-            { value: 'normal', label: 'Comfortable' },
-            { value: 'compact', label: 'Compact' },
-          ]}
+    <Panel
+      ref={panelRef}
+      title="Indexed documents"
+      count={
+        loading && documents.length === 0
+          ? undefined
+          : filtered
+            ? `${fmtNumber(filteredSorted.length)} of ${fmtNumber(documents.length)} shown`
+            : documents.length
+      }
+      padding="none"
+      data-testid="knowledge-documents"
+      actions={
+        <>
+          <SegmentedControl<Density>
+            aria-label="Table density"
+            size="sm"
+            className="shrink-0"
+            value={density}
+            onValueChange={changeDensity}
+            options={[
+              { value: 'normal', label: 'Comfortable' },
+              { value: 'compact', label: 'Compact' },
+            ]}
+          />
+          {actions}
+        </>
+      }
+    >
+      <div className="px-4 pb-3 xl:px-5 3xl:px-6">
+        <FilterBar
+          aria-label="Document filters"
+          search={{
+            value: search,
+            onChange: setSearch,
+            label: 'Search documents',
+            placeholder: 'Search title, source, tags',
+          }}
+          filters={
+            sourceFacet.length > 1
+              ? [
+                  {
+                    id: 'source',
+                    label: 'Source',
+                    active: sourceFilter !== 'all',
+                    control: ({ placement }) => (
+                      <Select value={sourceFilter} onValueChange={setSourceFilter}>
+                        <SelectTrigger
+                          className={placement === 'bar' ? 'h-8 w-44' : 'h-9 w-full'}
+                          aria-label="Filter by source"
+                        >
+                          <SelectValue placeholder="Source" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All sources</SelectItem>
+                          {sourceFacet.map((src) => (
+                            <SelectItem key={src} value={src}>
+                              {properName(src)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ),
+                  },
+                ]
+              : []
+          }
+          chips={chips}
+          onClearAll={anyFilter ? clearFilters : undefined}
         />
       </div>
 
-      {/* filter toolbar */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative min-w-[16rem] flex-1 sm:max-w-xs">
-          <Search
-            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden
-          />
-          <Input
-            placeholder="Search title, source, tags…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8"
-            aria-label="Search documents"
-          />
-        </div>
-        {sourceFacet.length > 1 ? (
-          <Select value={sourceFilter} onValueChange={setSourceFilter}>
-            <SelectTrigger className="w-[12rem]" aria-label="Filter by source">
-              <SelectValue placeholder="Source" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All sources</SelectItem>
-              {sourceFacet.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {humanizeToken(s)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null}
-        {anyFilter ? (
-          <Button variant="ghost" size="sm" onClick={clearFilters}>
-            <X aria-hidden />
-            Clear
-          </Button>
-        ) : null}
-      </div>
-
       {!loading && documents.length === 0 ? (
-        <Card>
+        <div className="border-t border-border/70">
           <EmptyState
             icon={FileText}
             title="The corpus is empty"
-            description="Import a document above, or seed the backend's runbooks/playbooks to populate retrieval knowledge."
+            description="Import a document above, or publish runbooks to populate retrieval knowledge."
           />
-        </Card>
+        </div>
       ) : !loading && filteredSorted.length === 0 ? (
-        <Card>
+        <div className="border-t border-border/70">
           <EmptyState
             icon={Search}
             title="No documents match"
@@ -1508,7 +1481,7 @@ const DocumentsSection: React.FC<{
               </Button>
             }
           />
-        </Card>
+        </div>
       ) : (
         <DataTable<RagDocument>
           columns={columns}
@@ -1522,10 +1495,11 @@ const DocumentsSection: React.FC<{
           showRowAction={false}
           loading={loading && documents.length === 0}
           density={density}
+          surface="panel"
           ariaLabel="Indexed RAG documents"
         />
       )}
-    </div>
+    </Panel>
   );
 };
 
@@ -1542,13 +1516,15 @@ const DeleteDialog: React.FC<{
   deleting: boolean;
   onCancel: () => void;
   onConfirm: () => void;
-}> = ({ pending, deleting, onCancel, onConfirm }) => {
+  /** Hands focus back to the Delete button that opened the dialog (SPEC §3.3). */
+  onCloseAutoFocus?: (event: Event) => void;
+}> = ({ pending, deleting, onCancel, onConfirm, onCloseAutoFocus }) => {
   if (!pending) return null;
   const { doc, force, guard } = pending;
   const seed = isSeedSource(doc.source);
   return (
     <Dialog open={!!pending} onOpenChange={(o) => !o && onCancel()}>
-      <DialogContent>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           {/* UNTRUSTED title → plain text. */}
           <DialogTitle className="break-words">Delete "{doc.title}"?</DialogTitle>
@@ -1564,7 +1540,7 @@ const DeleteDialog: React.FC<{
             <Lock aria-hidden />
             <AlertTitle>Guarded seed source</AlertTitle>
             <AlertDescription>
-              This is built-in seed knowledge ({humanizeToken(doc.source)}). Deleting it
+              This is built-in seed knowledge ({properName(doc.source)}). Deleting it
               force-removes it from the corpus until the backend re-seeds.
             </AlertDescription>
           </Alert>
@@ -1607,12 +1583,11 @@ export interface KnowledgeProps {
   embedded?: boolean;
 }
 
-const KPI_ACCENTS: Record<string, KpiAccent> = {
-  chunks: 'primary',
-  docs: 'info',
-  model: 'success',
-  dim: 'medium',
-};
+/** The standalone page help (the Intelligence host has its own). */
+const PAGE_HELP =
+  'The retrieval corpus the investigator draws on. Import, inspect and search the index ' +
+  'to see exactly what the agents know. Retrieved text is treated as untrusted evidence: ' +
+  'it is fenced when shown to the investigator and never run as instructions.';
 
 export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
   const [stats, setStats] = React.useState<RagStats | null>(null);
@@ -1642,9 +1617,29 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
     void load();
   }, [load]);
 
-  const requestDelete = React.useCallback((doc: RagDocument) => {
+  // The document sheet and the delete dialog open from state, so each remembers the
+  // control that opened it and hands focus back on close (SPEC §3.3).
+  const docOpener = useReturnFocus();
+  const deleteOpener = useReturnFocus();
+  const openDocument = React.useCallback(
+    (documentId: string) => {
+      docOpener.remember();
+      setSelectedDoc(documentId);
+    },
+    [docOpener],
+  );
+
+  // A confirmed delete removes the row (and its Delete button) when the list reloads,
+  // after the dialog has closed: focus then moves to the next row's Delete, else the
+  // documents heading, never to the page body.
+  const documentsRef = React.useRef<HTMLElement>(null);
+  const requestDelete = React.useCallback((doc: RagDocument, opener: HTMLElement) => {
+    deleteOpener.remember(opener, {
+      peers: () => documentsRef.current?.querySelectorAll('[data-doc-delete]') ?? [],
+      empty: () => headingOf(documentsRef.current),
+    });
     setPending({ doc, force: isSeedSource(doc.source), guard: null });
-  }, []);
+  }, [deleteOpener]);
 
   const runDelete = React.useCallback(async () => {
     if (!pending) return;
@@ -1653,6 +1648,7 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
     try {
       await api.ragDeleteDocument(doc.document_id, force);
       toast.success(`Deleted "${doc.title}".`);
+      deleteOpener.expectRemoval();
       setPending(null);
       void load();
     } catch (e) {
@@ -1670,17 +1666,17 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
     } finally {
       setDeleting(false);
     }
-  }, [pending, load]);
+  }, [pending, load, deleteOpener]);
 
   /* ---- derived ---- */
+  // IN4: one series colour (the shared accent bar), never a colour per source name.
   const bySourceItems = React.useMemo<BarListItem[]>(() => {
     const by = stats?.by_source ?? {};
     return Object.entries(by)
       .sort((a, b) => b[1] - a[1])
       .map(([label, value]) => ({
-        label: humanizeToken(label),
+        label: properName(label),
         value,
-        color: sourceBarColor(label),
       }));
   }, [stats]);
 
@@ -1700,29 +1696,20 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
   const hardLoadFail = !!error && !stats;
 
   const refreshAction = (
-    <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-      <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden />
-      Refresh
-    </Button>
+    <RefreshButton
+      onClick={() => void load()}
+      refreshing={loading}
+      label="Refresh knowledge"
+      display="icon"
+    />
   );
+  const shareOf = (n: number) =>
+    corpusTotalChunks > 0 ? `${fmtNumber(n)} · ${Math.round((n / corpusTotalChunks) * 100)}%` : fmtNumber(n);
 
   const content = (
     <>
-      {embedded ? (
-        <ControlBar
-          title="Knowledge controls"
-          meta="Index health and documents"
-          label="Knowledge corpus controls"
-          controls={refreshAction}
-        />
-      ) : (
-        <PageHeader
-          icon={Boxes}
-          eyebrow="Knowledge"
-          title="Knowledge & RAG"
-          description="The retrieval corpus the investigator draws on. Import, inspect and search the index — see exactly what the agents know."
-          actions={refreshAction}
-        />
+      {embedded ? null : (
+        <PageHeader title="Knowledge & RAG" help={PAGE_HELP} controls={refreshAction} />
       )}
 
       {error ? (
@@ -1743,104 +1730,76 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
         />
       ) : hardLoadFail ? null : (
         <>
-      {/* ---- corpus health KPIs ---- */}
-        <Stagger
-          className="grid grid-cols-1 border-y border-border/70 sm:grid-cols-2 xl:grid-cols-4"
-          itemClassName="h-full min-w-0 border-b border-border/70 sm:border-r xl:border-b-0 xl:last:border-r-0"
-        >
-          <KpiTile
-            label="Total chunks"
-            value={fmtNumber(totalChunks)}
-            sub={avgChunks > 0 ? `≈ ${fmtNumber(avgChunks)} per document` : undefined}
-            icon={Layers}
-            accent={KPI_ACCENTS.chunks}
-            variant="strip"
-          />
-          <KpiTile
-            label="Documents"
-            value={fmtNumber(totalDocs)}
-            sub={
-              bySourceItems.length
-                ? `${fmtNumber(bySourceItems.length)} source${bySourceItems.length === 1 ? '' : 's'}`
-                : undefined
-            }
-            icon={FileText}
-            accent={KPI_ACCENTS.docs}
-            variant="strip"
-          />
-          <KpiTile
-            label="Embedding model"
-            value={
-              <span className="text-base font-mono">{stats?.embedding_model || DASH}</span>
-            }
-            icon={Cpu}
-            accent={KPI_ACCENTS.model}
-            variant="strip"
-          />
-          <KpiTile
-            label="Vector dimensions"
-            value={typeof stats?.dim === 'number' ? fmtNumber(stats.dim) : DASH}
-            icon={Gauge}
-            accent={KPI_ACCENTS.dim}
-            variant="strip"
-          />
-        </Stagger>
+      {/* ---- corpus health counts ---- */}
+      <KpiStrip label="Corpus summary" density="compact" data-testid="knowledge-summary">
+        <KpiTile
+          label="Total chunks"
+          value={fmtNumber(totalChunks)}
+          context={avgChunks > 0 ? `about ${fmtNumber(avgChunks)} per document` : undefined}
+        />
+        <KpiTile
+          label="Documents"
+          value={fmtNumber(totalDocs)}
+          context={
+            bySourceItems.length
+              ? `${fmtNumber(bySourceItems.length)} source${bySourceItems.length === 1 ? '' : 's'}`
+              : undefined
+          }
+        />
+        <KpiTile
+          label="Vector dimensions"
+          value={typeof stats?.dim === 'number' ? fmtNumber(stats.dim) : DASH}
+        />
+      </KpiStrip>
 
-      {/* ---- corpus by source ---- */}
-      {bySourceItems.length ? (
-        <section className="space-y-4 border-b border-border pb-6">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <CardIcon icon={BarChart3} />
-              <div>
-                <h2 className="text-sm font-semibold text-foreground">Corpus by source</h2>
-                <p className="mt-0.5 text-sm text-muted-foreground">
-                  How retrievable knowledge is distributed across corpus sources.
-                </p>
-              </div>
-            </div>
-            <Badge variant="outline">
-              {fmtNumber(corpusTotalChunks)} total chunk
-              {corpusTotalChunks === 1 ? '' : 's'}
-            </Badge>
-          </div>
-          <BarList
-            items={bySourceItems}
-            showPercent
-            format={(n) => fmtNumber(n)}
-          />
-        </section>
-      ) : null}
+      {/* ---- corpus by source (with the embedding model as a plain line) ---- */}
+      <Panel
+        title="Corpus by source"
+        count={`${fmtNumber(corpusTotalChunks)} chunk${corpusTotalChunks === 1 ? '' : 's'}`}
+        aside={
+          <span data-testid="knowledge-embedding-model">
+            Embedding model{' '}
+            <span className="font-mono text-foreground">{stats?.embedding_model || DASH}</span>
+          </span>
+        }
+        data-testid="knowledge-by-source"
+      >
+        {bySourceItems.length ? (
+          <BarList items={bySourceItems} format={shareOf} />
+        ) : (
+          <p className="text-sm text-muted-foreground">No sources indexed yet.</p>
+        )}
+      </Panel>
 
       {/* ---- threat intel + resolved cases (F11) ---- */}
-      <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:gap-5 3xl:gap-6">
         <CorpusSourceSection
           icon={ShieldAlert}
           title="Threat intel"
-          description="Imported threat-intel notes (source: threat_context) the investigator can retrieve."
+          description="Imported threat-intel notes (source threat_context) the investigator can retrieve."
           match={isThreatContextSource}
           documents={documents}
           loading={loading}
           emptyHint="Import a threat-intel note below to seed this corpus."
-          onOpen={setSelectedDoc}
+          onOpen={openDocument}
         />
         <CorpusSourceSection
           icon={CheckCircle2}
           title="Resolved cases"
-          description="Closed/resolved cases auto-indexed (source: resolved_case) so future triage learns from them."
+          description="Closed and resolved cases, indexed automatically (source resolved_case) so future triage learns from them."
           match={isResolvedCaseSource}
           documents={documents}
           loading={loading}
           emptyHint="Resolved cases are indexed automatically when a case closes."
-          onOpen={setSelectedDoc}
+          onOpen={openDocument}
         />
       </div>
 
       {/* ---- import + search ---- */}
       {/* Import is rag:manage; read-only roles (auditor/tier1/tier2/responder) get
-          search only — no import affordance that always 403s. */}
+          search only, with no import affordance that always 403s. */}
       {canManageRag ? (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 xl:gap-5 3xl:gap-6">
           <ImportCard onImported={load} />
           <SearchCard />
         </div>
@@ -1861,26 +1820,32 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
       <DocumentsSection
         documents={documents}
         loading={loading}
-        onOpen={setSelectedDoc}
+        onOpen={openDocument}
         onDelete={requestDelete}
         canManage={canManageRag}
+        panelRef={documentsRef}
+        actions={embedded ? refreshAction : undefined}
       />
 
-      <Separator />
-      <div className="flex items-start gap-2 text-xs text-muted-foreground">
+      <div className="flex items-start gap-2 text-sm text-muted-foreground">
         <Lock className="mt-0.5 size-3.5 shrink-0" aria-hidden />
         <p>
-          Retrieved text is treated as untrusted evidence — it is fenced when shown to the
-          investigator and never executed as instructions.
+          Retrieved text is treated as untrusted evidence. It is fenced when shown to the
+          investigator and never run as instructions.
         </p>
       </div>
         </>
       )}
 
-      <DocumentSheet documentId={selectedDoc} onClose={() => setSelectedDoc(null)} />
+      <DocumentSheet
+        documentId={selectedDoc}
+        onClose={() => setSelectedDoc(null)}
+        onCloseAutoFocus={docOpener.onCloseAutoFocus}
+      />
       <DeleteDialog
         pending={pending}
         deleting={deleting}
+        onCloseAutoFocus={deleteOpener.onCloseAutoFocus}
         onCancel={() => setPending(null)}
         onConfirm={() => void runDelete()}
       />
@@ -1888,12 +1853,12 @@ export default function Knowledge({ embedded = false }: KnowledgeProps = {}) {
   );
 
   if (embedded) {
-    return <section className="space-y-6" aria-label="Knowledge corpus workspace">{content}</section>;
+    return (
+      <section className="flex flex-col gap-4 xl:gap-5 3xl:gap-6" aria-label="Knowledge corpus workspace">
+        {content}
+      </section>
+    );
   }
 
-  return (
-    <PageContainer variant="wide" className="space-y-6">
-      {content}
-    </PageContainer>
-  );
+  return <PageContainer variant="wide">{content}</PageContainer>;
 }

@@ -300,6 +300,11 @@ async def test_the_demo_seed_writes_the_audit_rows_of_the_work_it_seeds() -> Non
             assert {r["tool_input"]["step_id"] for r in step_rows} <= set(worked)
             if worked:
                 assert step_rows and "run.started" in actions
+            # The seed holds no lookup result and so writes no lookup row: the live
+            # engine collects the results, and writes their rows, once Demo Mode is
+            # active (``collect_demo_runbook_lookups``, tests/test_demo_runbook_lookups.py).
+            assert not any(e.kind == "lookup_result" for st in run.steps.values() for e in st.evidence)
+            assert "step.evidence_collected" not in actions
         expected = sum(len(demo_runbook_audit_rows(r, None)) for r in runs)
         assert len(rows) == expected
         # Runbook work is done by people: never by the triage automation's name.

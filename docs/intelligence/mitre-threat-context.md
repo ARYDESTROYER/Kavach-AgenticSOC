@@ -17,8 +17,8 @@ Investigations can record technique IDs on a case. Agentic SOC resolves them aga
 bundled Enterprise ATT&CK corpus and can fall back from an unavailable sub-technique
 to its parent. The mapping is evidence context, not proof that a technique occurred.
 
-Open **Analytics → Metrics → MITRE coverage** to see tactic and technique counts over
-cases. The Navigator export uses the ATT&CK Navigator 4.5 layer format. Coverage means
+Open **Analytics → Metrics → Posture** and read **MITRE ATT&CK coverage** to see tactic
+and technique counts over cases. The Navigator export uses the ATT&CK Navigator 4.5 layer format. Coverage means
 “present on stored cases”; it does not measure preventive-control coverage or test
 effectiveness.
 

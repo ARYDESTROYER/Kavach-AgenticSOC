@@ -1,22 +1,29 @@
 /**
- * Metrics posture/performance tabs (Round 3 / Feature 5) render test.
+ * Metrics Performance and Posture tabs (Round 3 / Feature 5; Round 14 page grammar).
  *
  * Mocks the co-located posture API + the shared `@/lib/api` and asserts:
- *   1. the Performance tab renders the server lifecycle p50 (honest DASH for a
- *      missing block) + a quality delta tile (FP rate falling reads as an
- *      improvement), and
- *   2. the Posture tab renders the MITRE coverage heatmap + the Navigator-layer
- *      export link, plus the SLA breach rollup.
+ *   1. the Performance tab renders the server lifecycle p50 as a duration (an honest dash
+ *      for a missing block), the percentile table, and the triage-quality strip with its
+ *      window caption (FP rate falling reads as an improvement), and
+ *   2. the Posture tab renders open-case aging with readable buckets and shares of the
+ *      total, the SLA rollup (overage in plain words, case numbers as links to the case),
+ *      and the MITRE ATT&CK coverage heatmap with its Navigator-layer export link.
  *
- * Fully offline — the page does not use auth; only the data calls are mocked.
+ * Fully offline: only the data calls are mocked.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { fetchPostureMock, fetchMitreMock } = vi.hoisted(() => ({
+const { fetchPostureMock, fetchMitreMock, breakdownMock } = vi.hoisted(() => ({
   fetchPostureMock: vi.fn(),
   fetchMitreMock: vi.fn(),
+  breakdownMock: vi.fn(),
+}));
+
+vi.mock('@/lib/api-dashboards', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/api-dashboards')>('@/lib/api-dashboards')),
+  getMetricsBreakdown: breakdownMock,
 }));
 
 vi.mock('../pages/Metrics.posture.api', async () => {
@@ -30,7 +37,8 @@ vi.mock('../pages/Metrics.posture.api', async () => {
   };
 });
 
-vi.mock('@/lib/api', () => ({
+vi.mock('@/lib/api', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/api')>('@/lib/api')),
   api: {
     getMetrics: vi.fn().mockResolvedValue({
       total_cases: 10,
@@ -40,7 +48,7 @@ vi.mock('@/lib/api', () => ({
       by_status: {},
       by_verdict: { TRUE_POSITIVE: 2, FALSE_POSITIVE: 5, NEEDS_HUMAN: 1, none: 2 },
       persona_usage: {},
-      playbook_usage: {},
+      runbook_usage: {},
       avg_risk_score: 42,
       mttr_minutes: 120,
       resolved_count: 6,
@@ -57,7 +65,12 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-import Metrics from '../pages/Metrics';
+vi.mock('@/soc/auth', () => ({
+  useAuth: () => ({ authEnabled: false, hasPermission: () => true }),
+}));
+
+import Metrics, { slaRowTiming } from '../pages/Metrics';
+import { resetAnalyticsWindowForTests } from '../pages/analytics-shared';
 import type { PostureResponse, MitreCoverageResponse } from '../pages/Metrics.posture.api';
 
 const POSTURE: PostureResponse = {
@@ -95,7 +108,7 @@ const POSTURE: PostureResponse = {
       { bucket: '>7d', count: 0 },
     ],
     oldest: [
-      { case_id: 'c1', case_number: 'TLSOC-1', age_hours: 6.2, status: 'open', risk_score: 70 },
+      { case_id: 'c1', case_number: 'TLSOC-1', age_hours: 30.5, status: 'investigating', risk_score: 70 },
     ],
     arrivals: 10,
     closures: 6,
@@ -113,7 +126,11 @@ const POSTURE: PostureResponse = {
     breaching: [
       {
         case_id: 'c1', case_number: 'TLSOC-1', priority: 'P1', clock: 'response',
-        state: 'breached', elapsed_minutes: 120, target_minutes: 60, over_pct: 100,
+        state: 'breached', elapsed_minutes: 18673, target_minutes: 60, over_pct: 31000,
+      },
+      {
+        case_id: 'c2', case_number: 'TLSOC-2', priority: 'P2', clock: 'resolve',
+        state: 'at_risk', elapsed_minutes: 200, target_minutes: 240, over_pct: -17,
       },
     ],
   },
@@ -153,55 +170,104 @@ const MITRE: MitreCoverageResponse = {
 
 describe('Metrics posture (Round 3 / F5)', () => {
   beforeEach(() => {
+    resetAnalyticsWindowForTests();
     fetchPostureMock.mockReset();
     fetchMitreMock.mockReset();
     fetchPostureMock.mockResolvedValue(POSTURE);
     fetchMitreMock.mockResolvedValue(MITRE);
+    breakdownMock.mockReset().mockResolvedValue(null);
   });
 
-  it('renders the Performance tab with the server lifecycle p50 + honest DASH', async () => {
-    render(<Metrics embedded />);
+  it('renders the Performance tab with the server lifecycle p50 + honest dash', async () => {
+    render(<Metrics tab="performance" />);
 
-    // Switch to the Performance tab (anchored on the stable testid; the content
-    // assertions below carry the real behavioral value).
-    await waitFor(() => expect(screen.getByTestId('metrics-tab-performance')).toBeInTheDocument());
-    await userEvent.click(screen.getByTestId('metrics-tab-performance'));
+    const timing = await screen.findByTestId('performance-timing-strip');
+    // MTTA p50 45 minutes; MTTR p50 180 minutes reads "3h" (never "180m").
+    expect(within(timing).getByTestId('kpi-timing-mtta')).toHaveTextContent('45m');
+    expect(within(timing).getByTestId('kpi-timing-mtta')).toHaveTextContent('8 samples, last 7 days');
+    expect(within(timing).getByTestId('kpi-timing-mttr')).toHaveTextContent('3h');
+    // Dwell is unavailable: its tile shows the honest reason, not a fake 0.
+    const dwell = within(timing).getByTestId('kpi-timing-dwell');
+    expect(dwell).toHaveTextContent('—');
+    expect(dwell).toHaveTextContent(/no case has received a first response yet/i);
 
-    // MTTA p50 humanizes 45m; the MTTA tile is present (the value also appears in the
-    // percentile-distribution card, so assert at least one occurrence).
-    await waitFor(() => expect(screen.getByText('MTTA (p50)')).toBeInTheDocument());
-    expect(screen.getAllByText('45m').length).toBeGreaterThan(0);
-    // MTTR p50 = 180m → "3h".
-    expect(screen.getAllByText('3h').length).toBeGreaterThan(0);
+    // The percentile table: one row per interval, durations in plain units.
+    const table = screen.getByRole('table', { name: 'Lifecycle timing percentiles' });
+    const rows = within(table).getAllByRole('row');
+    expect(rows.map((r) => r.querySelector('td,th')?.textContent)).toEqual([
+      'Interval',
+      'Time to acknowledge',
+      'Time to resolve',
+      expect.stringContaining('Time to first response'),
+    ]);
+    expect(within(rows[2]).getByText('10h')).toBeInTheDocument();
+    expect(within(rows[2]).getByText('15h')).toBeInTheDocument();
 
-    // Dwell is unavailable → its tile shows the honest reason (not a fake 0).
-    expect(screen.getByText('Dwell (p50)')).toBeInTheDocument();
-    expect(
-      screen.getAllByText(/no case has received a first response yet/i).length,
-    ).toBeGreaterThan(0);
+    // FP-rate quality tile renders as a percent (0.625 is 63%) under the window caption.
+    const quality = screen.getByTestId('performance-quality');
+    expect(quality).toHaveTextContent('Triage quality');
+    expect(quality).toHaveTextContent('last 7 days');
+    expect(within(quality).getByText('FP rate')).toBeInTheDocument();
+    expect(within(quality).getByText('63%')).toBeInTheDocument();
+    expect(screen.getByText(/with the window just before it/)).toBeInTheDocument();
+  });
 
-    // FP-rate quality tile renders as a percent (0.625 → 63%).
-    expect(screen.getByText('FP rate')).toBeInTheDocument();
-    expect(screen.getByText('63%')).toBeInTheDocument();
+  it('says the posture rollup is unavailable instead of drawing zeros', async () => {
+    fetchPostureMock.mockRejectedValue(new Error('down'));
+    render(<Metrics tab="performance" />);
+    expect(await screen.findByText('Performance figures are not available')).toBeInTheDocument();
+    expect(screen.queryByTestId('performance-timing-strip')).toBeNull();
   });
 
   it('renders the Posture tab with the MITRE heatmap + Navigator export link', async () => {
-    render(<Metrics embedded />);
+    render(<Metrics tab="posture" />);
 
-    await waitFor(() => expect(screen.getByTestId('metrics-tab-posture')).toBeInTheDocument());
-    await userEvent.click(screen.getByTestId('metrics-tab-posture'));
-
-    // The MITRE coverage section + a covered technique id render.
-    await waitFor(() => expect(screen.getByText(/MITRE ATT&CK coverage/i)).toBeInTheDocument());
-    expect(screen.getAllByText('T1059').length).toBeGreaterThan(0);
+    // The MITRE coverage module + a covered technique id render; the spelling is MITRE.
+    const mitre = await screen.findByTestId('posture-mitre');
+    expect(within(mitre).getByText('MITRE ATT&CK coverage')).toBeInTheDocument();
+    expect(mitre).toHaveTextContent('all cases');
+    expect(within(mitre).getAllByText('T1059').length).toBeGreaterThan(0);
 
     // The Navigator-layer export link points at the JSON endpoint.
     const exportLink = screen.getByRole('link', { name: /export att&ck navigator layer/i });
     expect(exportLink).toHaveAttribute('href', '/api/mitre/coverage/navigator.layer.json');
+  });
 
-    // The SLA breach rollup surfaces the breached case.
-    expect(screen.getByText('SLA attainment')).toBeInTheDocument();
-    expect(screen.getAllByText('TLSOC-1').length).toBeGreaterThan(0);
+  it('shows open-case aging with readable buckets, shares and durations', async () => {
+    render(<Metrics tab="posture" />);
+    const aging = await screen.findByTestId('posture-aging');
+    expect(aging).toHaveTextContent('Open-case aging');
+    // 30.5 hours is "1d 6h", named by its case number.
+    expect(within(aging).getByText('1d 6h')).toBeInTheDocument();
+    expect(aging).toHaveTextContent('TLSOC-1');
+    expect(screen.getByText('1 to 4 hours')).toBeInTheDocument();
+    expect(screen.getByText('50% of 4')).toBeInTheDocument();
+    expect(screen.queryByText('1-4h')).toBeNull();
+    const oldest = screen.getByRole('list', { name: 'Oldest open cases' });
+    expect(within(oldest).getByRole('link', { name: 'Open TLSOC-1' })).toHaveAttribute(
+      'href',
+      '#/case_manager?caseId=c1',
+    );
+  });
+
+  it('lists SLA rows with the overage in plain words and links to each case', async () => {
+    const navigate = vi.fn();
+    render(<Metrics tab="posture" onNavigate={navigate} />);
+    const sla = await screen.findByTestId('posture-sla');
+    expect(sla).toHaveTextContent('SLA attainment');
+    expect(within(sla).getByText('88%')).toBeInTheDocument();
+
+    const rows = within(screen.getByRole('list', { name: 'Cases breaching or at risk' })).getAllByRole('listitem');
+    expect(rows[0]).toHaveTextContent('Breached');
+    expect(rows[0]).toHaveTextContent('Response target, P1');
+    expect(rows[0]).toHaveTextContent('12d 22h over');
+    expect(rows[0].textContent).not.toMatch(/\+\d+m/);
+    expect(rows[1]).toHaveTextContent('At risk');
+    expect(rows[1]).toHaveTextContent('40m left');
+
+    const link = within(rows[0]).getByRole('link', { name: 'Open TLSOC-1' });
+    await userEvent.click(link);
+    expect(navigate).toHaveBeenCalledWith('case_manager', { caseId: 'c1' });
   });
 
   it('renders SLA attainment that was not measured as a dash, never 0%', async () => {
@@ -219,12 +285,135 @@ describe('Metrics posture (Round 3 / F5)', () => {
         breaching: [],
       },
     });
-    render(<Metrics embedded />);
-    await waitFor(() => expect(screen.getByTestId('metrics-tab-posture')).toBeInTheDocument());
-    await userEvent.click(screen.getByTestId('metrics-tab-posture'));
-    await waitFor(() => expect(screen.getByText('Attainment')).toBeInTheDocument());
-    const tile = screen.getByText('Attainment').closest('div')?.parentElement as HTMLElement;
+    render(<Metrics tab="posture" />);
+    const sla = await screen.findByTestId('posture-sla');
+    await waitFor(() => expect(within(sla).getByText('Attainment')).toBeInTheDocument());
+    const tile = within(sla).getByText('Attainment').closest('[data-testid^="kpi-"]') as HTMLElement;
     expect(tile.textContent).toContain('—');
     expect(tile.textContent).not.toContain('0%');
+    expect(tile).toHaveTextContent(/no case in this window has a priority level/);
+    expect(screen.getByText('No SLA breaches')).toBeInTheDocument();
+  });
+
+  it('says SLA tracking is off when no policy is set', async () => {
+    fetchPostureMock.mockResolvedValue({ ...POSTURE, sla: { ...POSTURE.sla, enabled: false, reason: '' } });
+    render(<Metrics tab="posture" />);
+    expect(await screen.findByText('SLA tracking is off')).toBeInTheDocument();
+    expect(screen.queryByTestId('posture-sla')).toBeNull();
+  });
+
+  it('never calls a failed posture read a setting: SLA is "not available", not "off"', async () => {
+    fetchPostureMock.mockRejectedValue(new Error('down'));
+    render(<Metrics tab="posture" />);
+    expect(await screen.findByText('SLA attainment is not available')).toBeInTheDocument();
+    expect(screen.queryByText('SLA tracking is off')).toBeNull();
+    expect(screen.getByText('Aging is not available')).toBeInTheDocument();
+  });
+
+  it('draws no invented closure trend: arrivals and closures are the strip figures only', async () => {
+    render(<Metrics tab="posture" />);
+    const aging = await screen.findByTestId('posture-aging');
+    expect(aging).toHaveTextContent('cases opened in the last 7 days');
+    expect(within(aging).getByText('Arrivals')).toBeInTheDocument();
+    expect(within(aging).getByText('Closures')).toBeInTheDocument();
+    expect(screen.queryByText('Closure against arrival')).toBeNull();
+    expect(screen.queryByRole('img', { name: /open backlog/i })).toBeNull();
+    // The age buckets follow the window's cases, and the caption says so.
+    expect(screen.getByRole('region', { name: 'Age distribution' })).toHaveTextContent(
+      'open cases opened in the last 7 days',
+    );
+  });
+
+  it('caps the breaching list with Show all instead of cutting rows silently', async () => {
+    const breaching = Array.from({ length: 18 }, (_, i) => ({
+      case_id: `c${i + 1}`,
+      case_number: `TLSOC-${i + 1}`,
+      priority: 'P2',
+      clock: i % 2 ? 'resolution' : 'response',
+      state: 'breached',
+      elapsed_minutes: 600 - i,
+      target_minutes: 60,
+      over_pct: 900 - i,
+    }));
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      sla: { ...POSTURE.sla, response_breached: 9, resolve_breached: 9, response_at_risk: 0, resolve_at_risk: 0, breaching },
+    });
+    render(<Metrics tab="posture" />);
+    const panel = await screen.findByTestId('posture-breaching');
+    const list = within(panel).getByRole('list', { name: 'Cases breaching or at risk' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(10);
+    expect(panel).toHaveTextContent('8 more not shown.');
+    const toggle = within(panel).getByRole('button', { name: 'Show all 18' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveAttribute('aria-controls', list.id);
+    await userEvent.click(toggle);
+    expect(within(list).getAllByRole('listitem')).toHaveLength(18);
+    expect(within(panel).getByRole('button', { name: 'Show fewer' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('says which part of a server-capped breaching list it shows', async () => {
+    const breaching = Array.from({ length: 25 }, (_, i) => ({
+      case_id: `c${i + 1}`, case_number: `TLSOC-${i + 1}`, priority: 'P1', clock: 'response',
+      state: 'breached', elapsed_minutes: 900 - i, target_minutes: 60, over_pct: 1400 - i,
+    }));
+    fetchPostureMock.mockResolvedValue({
+      ...POSTURE,
+      sla: { ...POSTURE.sla, response_breached: 31, resolve_breached: 0, response_at_risk: 0, resolve_at_risk: 0, breaching },
+    });
+    render(<Metrics tab="posture" />);
+    const panel = await screen.findByTestId('posture-breaching');
+    // Folded, the hidden count is against all 31, never only the 25 in hand.
+    expect(panel).toHaveTextContent('21 more not shown; this list holds the 25 furthest past the target.');
+    expect(panel).not.toHaveTextContent('15 more not shown');
+    // The server lists the 25 furthest of 31: "Show 15 more", never "Show all".
+    await userEvent.click(within(panel).getByRole('button', { name: 'Show 15 more' }));
+    expect(panel).toHaveTextContent('Listing 25 of 31, furthest past the target first.');
+    expect(panel).not.toHaveTextContent(/more not shown/);
+  });
+
+  it('caps the oldest open cases with Show all', async () => {
+    const oldest = Array.from({ length: 10 }, (_, i) => ({
+      case_id: `o${i + 1}`, case_number: `TLSOC-${100 + i}`, age_hours: 200 - i, status: 'investigating', risk_score: 50,
+    }));
+    fetchPostureMock.mockResolvedValue({ ...POSTURE, aging: { ...POSTURE.aging, queue_depth: 10, oldest } });
+    render(<Metrics tab="posture" />);
+    const panel = await screen.findByTestId('posture-oldest');
+    const list = within(panel).getByRole('list', { name: 'Oldest open cases' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(8);
+    expect(panel).toHaveTextContent('2 more cases not shown.');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Show all 10' }));
+    expect(within(list).getAllByRole('listitem')).toHaveLength(10);
+  });
+
+  it('counts the folded oldest open list against the whole queue when the server sent part of it', async () => {
+    const oldest = Array.from({ length: 10 }, (_, i) => ({
+      case_id: `o${i + 1}`, case_number: `TLSOC-${100 + i}`, age_hours: 200 - i, status: 'investigating', risk_score: 50,
+    }));
+    fetchPostureMock.mockResolvedValue({ ...POSTURE, aging: { ...POSTURE.aging, queue_depth: 31, oldest } });
+    render(<Metrics tab="posture" />);
+    const panel = await screen.findByTestId('posture-oldest');
+    const list = within(panel).getByRole('list', { name: 'Oldest open cases' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(8);
+    // 31 open, 8 listed: 23 are not shown, not the 2 the client still holds.
+    expect(panel).toHaveTextContent('23 more cases not shown; this list holds the 10 oldest.');
+    expect(panel).not.toHaveTextContent('2 more cases not shown');
+    await userEvent.click(within(panel).getByRole('button', { name: 'Show 2 more' }));
+    expect(within(list).getAllByRole('listitem')).toHaveLength(10);
+    expect(panel).toHaveTextContent('Listing the 10 oldest of 31 open cases.');
+    expect(panel).not.toHaveTextContent(/more cases? not shown/);
+  });
+});
+
+describe('slaRowTiming', () => {
+  it('reads past a target as an overage and before it as time left', () => {
+    expect(slaRowTiming({ elapsed_minutes: 18673, target_minutes: 60 })).toBe('12d 22h over');
+    expect(slaRowTiming({ elapsed_minutes: 120, target_minutes: 60 })).toBe('1h over');
+    expect(slaRowTiming({ elapsed_minutes: 200, target_minutes: 240 })).toBe('40m left');
+    expect(slaRowTiming({ elapsed_minutes: 60, target_minutes: 60 })).toBe('<1m left');
+  });
+
+  it('is a dash when either figure is missing', () => {
+    expect(slaRowTiming({ elapsed_minutes: Number.NaN, target_minutes: 60 })).toBe('—');
   });
 });

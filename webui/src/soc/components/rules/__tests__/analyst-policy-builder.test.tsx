@@ -1,5 +1,5 @@
 /**
- * AnalystPolicyBuilder — the operator's "declared benign" editor.
+ * AnalystPolicyBuilder: the operator's "declared benign" editor.
  *
  * Before this component the whole feature was API-only: the schema describes
  * `analyst_rule_policies` as an array-of-model, and the generic Advanced form can only
@@ -81,7 +81,7 @@ describe('AnalystPolicyBuilder', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it('deletes a disabled declaration directly — nothing is closing because of it', () => {
+  it('deletes a disabled declaration directly, since nothing is closing because of it', () => {
     const onChange = vi.fn();
     wrap(
       <AnalystPolicyBuilder
@@ -101,8 +101,67 @@ describe('AnalystPolicyBuilder', () => {
         onChange={vi.fn()}
       />,
     );
-    expect(screen.getByText('expired')).toBeInTheDocument();
+    expect(screen.getByText('Expired')).toBeInTheDocument();
     expect(screen.getByText(/1 declaration · 0 live/)).toBeInTheDocument();
+  });
+});
+
+describe('AnalystPolicyBuilder risk ceiling (Round 14, Y4)', () => {
+  it('is a NumberField from 0 to 100 whose empty state means no ceiling', () => {
+    wrap(<AnalystPolicyBuilder policies={[policy({ max_risk_score: null })]} onChange={vi.fn()} />);
+    const field = screen.getByRole('spinbutton', { name: /max risk/i });
+    expect(field).toHaveAttribute('aria-valuemin', '0');
+    expect(field).toHaveAttribute('aria-valuemax', '100');
+    expect(field).toHaveValue('');
+    expect(field).toHaveAttribute('placeholder', 'No ceiling');
+    expect(document.querySelector('input[type="number"]')).toBeNull();
+    // No ceiling set: nothing to clear.
+    expect(screen.queryByRole('button', { name: /clear the risk ceiling/i })).toBeNull();
+  });
+
+  it('says in its help line that Clear removes a ceiling (an emptied field keeps it), and sizes from its range', () => {
+    wrap(<AnalystPolicyBuilder policies={[policy({ max_risk_score: 60 })]} onChange={vi.fn()} />);
+    const field = screen.getByRole('spinbutton', { name: /max risk/i });
+    expect(field).toHaveAccessibleDescription(
+      'Above this score the case is investigated instead of closed. With no value there is no ceiling; use Clear to remove one.',
+    );
+    expect(field).not.toHaveAccessibleDescription(/Empty means no ceiling/);
+    // 0 to 100 fits the 8rem field (SPEC §4.9.2), not the full column.
+    expect(field.closest('[data-number-field]')).toHaveAttribute('data-number-field', 'sm');
+  });
+
+  it('commits a typed ceiling clamped to the 0 to 100 range', () => {
+    const onChange = vi.fn();
+    wrap(<AnalystPolicyBuilder policies={[policy({ max_risk_score: null })]} onChange={onChange} />);
+    const field = screen.getByRole('spinbutton', { name: /max risk/i });
+    fireEvent.change(field, { target: { value: '140' } });
+    fireEvent.blur(field);
+    expect(onChange).toHaveBeenLastCalledWith([expect.objectContaining({ max_risk_score: 100 })]);
+  });
+
+  it('keeps the ceiling when the field is emptied, and Clear removes it', () => {
+    const onChange = vi.fn();
+    wrap(<AnalystPolicyBuilder policies={[policy({ max_risk_score: 60 })]} onChange={onChange} />);
+    const field = screen.getByRole('spinbutton', { name: /max risk/i });
+    fireEvent.change(field, { target: { value: '' } });
+    fireEvent.blur(field);
+    // An emptied field is not a value: it never stores a ceiling of 0.
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /clear the risk ceiling/i }));
+    expect(onChange).toHaveBeenCalledWith([expect.objectContaining({ max_risk_score: null })]);
+  });
+
+  it('names the switch after the rule and uses sentence-case states without em dashes', () => {
+    const { container } = wrap(
+      <AnalystPolicyBuilder
+        policies={[policy({ enabled: false, created_by: 'agent' })]}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole('switch', { name: 'Declaration for web_shell_php enabled' })).toBeInTheDocument();
+    expect(screen.getByText('Off')).toBeInTheDocument();
+    expect(screen.getByText('Drafted by the agent')).toBeInTheDocument();
+    expect(container.innerHTML).not.toContain('\u2014');
   });
 });
 

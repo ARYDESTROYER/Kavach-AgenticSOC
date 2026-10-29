@@ -203,7 +203,7 @@ function oobePasswordPolicyError(password: string, username: string): string | n
     return 'Password must not be the same as the username.';
   }
   if (OOBE_COMMON_PASSWORDS.has(pw.trim().toLowerCase())) {
-    return 'That password is too common — choose a less predictable one.';
+    return 'That password is too common. Choose a less predictable one.';
   }
   return null;
 }
@@ -553,6 +553,13 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const submitSignin = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (busy) return;
+    // Sign in stays enabled while the password is empty (a disabled button explains
+    // nothing): an empty submit names the missing field and puts focus on it.
+    if (!password) {
+      setError('Enter your password.');
+      signinPasswordRef.current?.focus();
+      return;
+    }
     setBusy(true);
     clearError();
     rememberRequestedRef.current = rememberChecked;
@@ -708,7 +715,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
   const descByMode: Record<Mode, string> = {
     signin: loginSubtitle || `Sign in to continue to ${wordmark}.`,
     setup:
-      'No accounts exist yet. Create the first administrator to get started — pick a strong, unique password.',
+      'No accounts exist yet. Create the first administrator to get started. Choose a strong, unique password.',
     change: 'Your password must be changed before you can continue.',
     mfa: useRecovery
       ? 'Enter one of your single-use recovery codes.'
@@ -762,7 +769,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
         data-login-identity-pane
       >
         <div className="relative mx-auto my-auto w-full max-w-sm sm:my-0">
-        <div className="mb-5 flex h-14 min-w-0 items-center" aria-label={`${wordmark} — ${tagline}`}>
+        <div className="mb-5 flex h-14 min-w-0 items-center" aria-label={`${wordmark}: ${tagline}`}>
           <div className="flex h-14 w-14 shrink-0 items-center justify-start">
             {logoUrl ? (
               <img src={logoUrl} alt="" className="h-14 w-14 object-contain" />
@@ -788,7 +795,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                 ref={modeHeadingRef}
                 tabIndex={-1}
                 aria-describedby="login-mode-description"
-                className="break-words text-display font-medium text-foreground outline-none"
+                className="break-words text-display font-medium text-foreground outline-0"
               >
                 {activeTitle}
               </h1>
@@ -879,7 +886,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     >
                       {password && setupPolicyError
                         ? setupPolicyError
-                        : `Use at least ${OOBE_MIN_PASSWORD_LEN} characters — not your username or a common password.`}
+                        : `Use at least ${OOBE_MIN_PASSWORD_LEN} characters, not your username or a common password.`}
                     </p>
                   </div>
                   <div className="space-y-2">
@@ -1053,7 +1060,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                     <ShineButton
                       type="submit"
                       className="h-12 w-full"
-                      disabled={busy || password.length === 0}
+                      disabled={busy}
                       busy={busy}
                       icon={
                         busy ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null

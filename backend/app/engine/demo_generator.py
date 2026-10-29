@@ -37,8 +37,8 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterable, NamedTuple
 
 from ..build_identity import current_record_provenance
 from ..config import Preferences
@@ -1157,7 +1157,10 @@ def generate_capability_seed_cases(
 # works a deterministic part of each run: an analyst-closed case's run is complete,
 # with believable step times; an open case's run is part way through. Pure planning
 # (:func:`plan_demo_runbook_runs`) plus one bounded writer; every write lands in the
-# Demo run store and vanishes with Demo Mode. Never a model call, never a log read.
+# Demo run store and vanishes with Demo Mode. Never a model call, and the plan never
+# reads a log: once Demo Mode is active, the seeded runs' lookups are run by the live
+# engine against the Demo stores (:func:`collect_demo_runbook_lookups`), so what a
+# seeded step shows is what "Run lookup" returns for it, never a made-up figure.
 
 #: At most this many seeded runs (the newest human-facing cases first).
 DEMO_RUNBOOK_RUNS_MAX = 80
@@ -1200,6 +1203,14 @@ def _demo_decision_option(step: Any, verdict: Any) -> Any:
     return options[len(options) // 2]
 
 
+def demo_runbook_run_id(seed: int, case_id: str, runbook_id: str) -> str:
+    """The id of the run the seed attaches to ``case_id`` (deterministic for a seed),
+    which also tells a seeded run from one a person started later."""
+    import uuid
+
+    return "run-" + uuid.uuid5(uuid.NAMESPACE_URL, f"{_DEMO_RUN_NAMESPACE}:{seed}:{case_id}:{runbook_id}").hex
+
+
 def plan_demo_runbook_runs(
     cases: list[Case], catalog: Any, *, prefs: Preferences, seed: int, now_millis: int,
     limit: int = DEMO_RUNBOOK_RUNS_MAX,
@@ -1213,16 +1224,19 @@ def plan_demo_runbook_runs(
     The operator's switches apply as they do to a live attachment
     (``runbook_runs.reevaluate_case``): nothing is seeded while runbooks or automatic
     attachment are off, and Generic incident is attached only while the fallback is
-    on."""
-    import uuid
-    from datetime import timedelta
+    on.
+
+    No lookup step carries a result here: the planner is pure and never reads a log
+    source, the case store or the member events a lookup binds from, so any figure
+    it wrote would be made up. The lookups are run by the live engine against the
+    Demo stores once Demo Mode is active (:func:`collect_demo_runbook_lookups`, at
+    the moments :func:`demo_lookup_schedule` gives)."""
     from types import SimpleNamespace
 
-    from ..models import StepState
+    from ..models import RunbookRun, StepState
     from .runbook_runs import (
         _FINISHED_STEP, attachment_blocked, case_facts, ordered_steps, plan_attachment,
     )
-    from ..models import RunbookRun
 
     cfg = getattr(prefs, "runbooks", None)
     if cfg is None or not (cfg.enabled and cfg.auto_attach):
@@ -1302,7 +1316,7 @@ def plan_demo_runbook_runs(
                 if st.status not in _FINISHED_STEP and not step.required:
                     st.status, st.reason, st.revision = "not_applicable", "Not needed for this case.", 1
         run = RunbookRun(
-            run_id="run-" + uuid.uuid5(uuid.NAMESPACE_URL, f"{_DEMO_RUN_NAMESPACE}:{seed}:{case.case_id}:{entry.id}").hex,
+            run_id=demo_runbook_run_id(seed, case.case_id, entry.id),
             case_id=case.case_id, runbook_id=entry.id, version=entry.version, title=entry.definition.title,
             snapshot=entry.definition, attached_by="fallback" if plan.tier == 0 else "rule",
             # The match explanation, as a live attachment stores it (the Why attached
@@ -1318,6 +1332,38 @@ def plan_demo_runbook_runs(
     return runs
 
 
+def _demo_audit_row(case_id: str, label: str, ts: str, action: str, actor: str, actor_type: str, summary: str,
+                    tool_input: dict[str, Any]) -> dict[str, Any]:
+    """One Demo runbook audit row as keyword arguments of ``record_strict``, in the
+    shape the live engine writes (``runbook_runs``)."""
+    from ..constants import ActionType
+    from ..models import AuditTarget
+
+    return {
+        "ts": ts, "action_type": ActionType.RUNBOOK, "surface": "runbook", "actor": actor,
+        "actor_type": actor_type, "action": action, "outcome": "success", "case_id": case_id,
+        "target": AuditTarget(type="case", id=case_id, label=label or case_id),
+        "result_summary": summary, "tool_input": tool_input,
+    }
+
+
+def demo_evidence_audit_row(run: Any, case: Any, step_id: str, result: Any) -> dict[str, Any]:
+    """The ``step.evidence_collected`` row of one stored lookup result, as the live
+    engine writes it (``runbook_runs._store_lookup``), dated when the lookup ran: the
+    system actor for an automatic lookup, else the person who ran it."""
+    from ..models import RUNBOOK_SYSTEM_RUNNER
+
+    case_id = str(getattr(case, "case_id", "") or run.case_id)
+    automatic = result.ran_by == RUNBOOK_SYSTEM_RUNNER
+    return _demo_audit_row(
+        case_id, str(getattr(case, "case_number", "") or ""), str(result.ran_at or run.attached_at),
+        "step.evidence_collected", result.ran_by or "analyst", "system" if automatic else "human",
+        f"Lookup {result.tool} collected evidence ({result.status}).",
+        {"run_id": run.run_id, "step_id": step_id, "tool": result.tool, "status": result.status,
+         "count": result.count, "count_relation": result.count_relation},
+    )
+
+
 def demo_runbook_audit_rows(run: Any, case: Any) -> list[dict[str, Any]]:
     """The Demo audit rows of one seeded run, oldest first, as keyword arguments of
     ``record_strict``: the rows the live engine writes for the same work
@@ -1326,21 +1372,16 @@ def demo_runbook_audit_rows(run: Any, case: Any) -> list[dict[str, Any]]:
 
     ``run.attached`` (the runbook selector), ``run.started`` and one row per worked
     step (``step.decision_recorded``, ``step.action_recorded`` or ``step.updated``,
-    by the person who worked it), then ``run.completed`` for a finished run. Pure."""
-    from ..constants import ActionType
-    from ..models import AuditTarget
-
+    by the person who worked it), one ``step.evidence_collected`` per lookup result
+    the run holds (:func:`demo_evidence_audit_row`; a planned run holds none, the
+    collector writes those rows as it stores each result), then ``run.completed`` for
+    a finished run; ordered by time. Pure."""
     case_id = str(getattr(case, "case_id", "") or run.case_id)
-    target = AuditTarget(type="case", id=case_id,
-                         label=str(getattr(case, "case_number", "") or "") or case_id)
+    label = str(getattr(case, "case_number", "") or "")
 
     def row(ts: str, action: str, actor: str, actor_type: str, summary: str,
             tool_input: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "ts": ts, "action_type": ActionType.RUNBOOK, "surface": "runbook", "actor": actor,
-            "actor_type": actor_type, "action": action, "outcome": "success", "case_id": case_id,
-            "target": target, "result_summary": summary, "tool_input": tool_input,
-        }
+        return _demo_audit_row(case_id, label, ts, action, actor, actor_type, summary, tool_input)
 
     title, version = run.title, run.version
     rows = [row(run.attached_at, "run.attached", "runbook_selector", "system",
@@ -1375,10 +1416,18 @@ def demo_runbook_audit_rows(run: Any, case: Any) -> list[dict[str, Any]]:
                         st.completed_by or (people[0] if people else "analyst"), "human",
                         f"Runbook step {step_id[:64]} updated.",
                         {"run_id": run.run_id, "step_id": step_id}))
+    for step in getattr(run.snapshot, "steps", None) or []:
+        state = run.steps.get(step.id)
+        for item in (state.evidence if state is not None else []):
+            if item.kind == "lookup_result" and item.lookup is not None:
+                rows.append(demo_evidence_audit_row(run, case, step.id, item.lookup))
     if run.status == "completed" and run.completed_at:
         rows.append(row(run.completed_at, "run.completed", people[-1] if people else "analyst", "human",
                         f"Runbook {title} completed: every required step is done or not applicable.",
                         {"run_id": run.run_id}))
+    # Oldest first by instant (a stable sort: rows at the same instant keep the order
+    # above, so the attachment precedes what it started).
+    rows.sort(key=lambda r: _demo_moment(r["ts"], 0))
     return rows
 
 
@@ -1392,7 +1441,9 @@ async def seed_demo_runbook_runs(
     first paint. ``audit`` is the Demo audit: each written run's rows
     (:func:`demo_runbook_audit_rows`) are appended once its document is stored, so the
     activity feed and the audit log show the seeded work too. Returns the runs written.
-    A failed write is logged and skipped; it never stops Demo Mode."""
+    A failed write is logged and skipped; it never stops Demo Mode. The runs hold no
+    lookup result: once the seeded stack is the active one, the caller starts
+    :func:`schedule_demo_runbook_lookups`, which collects them with the live engine."""
     import logging
 
     from .runbook_runs import _ledger_row  # the engine's own projection: seeded rows match live ones
@@ -1420,3 +1471,228 @@ async def seed_demo_runbook_runs(
         except Exception as exc:  # noqa: BLE001 - the seeded run stands; its rows are best effort
             log.warning("demo runbook audit rows for case %s not written: %s", str(run.case_id)[:80], exc)
     return written
+
+
+# --------------------------------------------------------------------------- #
+# The seeded runs' lookups, collected by the live engine (Round 14 SPEC §3.5,
+# §4.10.8, §4.10.18)
+# --------------------------------------------------------------------------- #
+#: An automatic (``on_attach``) lookup of a seeded run is collected this many seconds
+#: after the attachment (seeded per step), always before a person starts a step.
+_DEMO_LOOKUP_DELAY_S = (3, 40)
+
+
+class DemoLookup(NamedTuple):
+    """One lookup a seeded run's step collects: the step, when it ran, who ran it."""
+
+    step: Any
+    ran_at: datetime
+    ran_by: str
+
+
+def demo_lookup_schedule(run: Any, *, seed: int, now: datetime) -> list[DemoLookup]:
+    """The lookups a seeded run's steps collect, in reading order, as a live run
+    collects them (§4.10.8): every ``on_attach`` lookup right after the attachment, by
+    the system actor, whatever later happened to its step; an ``on_demand`` one only on
+    a step a person finished, run by that person when they started it. A step nobody
+    finished keeps "Run lookup". Every moment lies between the attachment and ``now``,
+    an automatic one no later than the first step a person started, and each is a whole
+    second (a stored result's ``ran_at`` reads back as exactly the moment it ran at).
+    Pure and deterministic for a seed."""
+    from ..models import RUNBOOK_SYSTEM_RUNNER
+    from .runbook_runs import ordered_steps
+
+    now_ms = int(now.timestamp() * 1000)
+    attached = min(_demo_moment(run.attached_at, now_ms), now)
+    started = [_demo_moment(st.started_at, now_ms) for st in run.steps.values() if st.started_at]
+    limit = max(attached, min([*started, now]))
+    out: list[DemoLookup] = []
+    for step in ordered_steps(run.snapshot):
+        template = getattr(step, "lookup", None)
+        if step.kind != "lookup" or template is None:
+            continue
+        if template.run == "on_attach":
+            rng = random.Random(f"{seed}:{run.case_id}:{run.runbook_id}:lookup:{step.id}")
+            ran_at = attached + timedelta(seconds=rng.randint(*_DEMO_LOOKUP_DELAY_S))
+            if ran_at >= limit:
+                # A run worked within seconds of its attachment: halfway to the first
+                # step a person started (or to now).
+                ran_at = attached + (limit - attached) / 2
+            out.append(DemoLookup(step, ran_at.replace(microsecond=0), RUNBOOK_SYSTEM_RUNNER))
+            continue
+        st = run.steps.get(step.id)
+        if st is not None and st.status == "done" and st.started_at and st.completed_by:
+            ran_at = min(_demo_moment(st.started_at, now_ms), now)
+            out.append(DemoLookup(step, ran_at.replace(microsecond=0), st.completed_by))
+    return out
+
+
+def _holds_lookup_result(run: Any, step_id: str) -> bool:
+    state = run.steps.get(step_id)
+    return state is not None and any(item.kind == "lookup_result" for item in state.evidence)
+
+
+def _store_if_absent(run_id: str, step_id: str, result: Any, *, drop_table: bool = False) -> Callable[..., Any]:
+    """A run-store change that stores ``result`` as the step's lookup evidence only
+    while the step holds no lookup result: a result a person got with "Run lookup"
+    meanwhile stands, and a second collection writes nothing. A table that would take
+    the case past its lookup-evidence budget is dropped with the store's note, as
+    ``RunbookRunStore.record_lookup_result`` does. Never changes a step's status or
+    revision."""
+    from ..models import RUNBOOK_CASE_EVIDENCE_MAX_BYTES, StepEvidence, StepState
+    from ..stores.runbook_runs import EVIDENCE_LIMIT_NOTE, lookup_table_bytes
+
+    def change(runs: list[Any]) -> tuple[list[Any] | None, Any]:
+        run = next((r for r in runs if r.run_id == run_id), None)
+        if run is None or run.status == "abandoned" or not any(s.id == step_id for s in run.snapshot.steps):
+            return None, None
+        if _holds_lookup_result(run, step_id):
+            return None, None
+        state = run.steps.get(step_id) or StepState()
+        stored = result.model_copy(deep=True)
+        if stored.table is not None:
+            run.steps[step_id] = state.model_copy(update={
+                "evidence": [*state.evidence, StepEvidence(kind="lookup_result", lookup=stored)],
+            })
+            if drop_table or lookup_table_bytes(runs) > RUNBOOK_CASE_EVIDENCE_MAX_BYTES:
+                stored = stored.model_copy(update={"table": None, "table_kind": None, "reason": EVIDENCE_LIMIT_NOTE})
+        run.steps[step_id] = state.model_copy(update={
+            "evidence": [*state.evidence, StepEvidence(kind="lookup_result", lookup=stored)],
+        })
+        return runs, stored
+
+    return change
+
+
+async def collect_demo_runbook_lookups(
+    state: Any, cases: Iterable[Case], *, seed: int, now: datetime | None = None,
+) -> int:
+    """Run the seeded runs' lookups with the live engine against the Demo stores, once
+    Demo Mode is active (§3.5, §4.10.8, §4.10.18). Each lookup of
+    :func:`demo_lookup_schedule` goes through ``runbook_runs.execute_lookup`` at the
+    moment the seed gives (its window is clamped there): the template is bound from the
+    case and its member events, and the Demo log sources, the Demo case store and the
+    campaign store are read exactly as "Run lookup" reads them. So a seeded step shows
+    what the same lookup returns live, never a made-up figure. Each result is stored on
+    its step in the Demo run store, audited in the Demo audit
+    (``step.evidence_collected``, dated when it ran) and announced with a
+    ``case.runbook`` frame.
+
+    Only the seeded runs (:func:`demo_runbook_run_id`) of ``cases`` are touched, and
+    only their steps that hold no lookup result yet. A lookup run in a person's name
+    that could not run is not stored ("Run lookup" stores nothing then). Bounded as
+    background lookups are (``runbook_runs.BACKGROUND_RUNS_AT_ONCE`` runs at once, two
+    lookups at once per run), never a model call ($0), and every result is dropped
+    once Demo Mode switches. Does nothing while Demo Mode is off, so a Demo case's
+    values never query real sources. Never raises; returns the results stored."""
+    import asyncio
+    import logging
+
+    from ..models import RUNBOOK_SYSTEM_RUNNER
+    from ..stores.runbook_runs import RunDocumentFull
+    from . import runbook_runs as engine
+
+    log = logging.getLogger("tlsoc.engine.demo_generator")
+    if not getattr(state, "demo_active", False):
+        return 0
+    identity = engine._demo_identity(state)
+    stack = engine._bind_stack(state)
+    moment = now or datetime.now(timezone.utc)
+    by_id: dict[str, Case] = {}
+    for case in cases:
+        by_id.setdefault(str(case.case_id), case)
+    if not by_id:
+        return 0
+    try:
+        stored = await stack.runs.get_many(list(by_id))
+    except Exception as exc:  # noqa: BLE001 - the seeded runs stand without their results
+        log.warning("demo runbook lookups not collected: the runs could not be read: %s", exc)
+        return 0
+
+    def same_stack() -> bool:
+        return engine._demo_identity(state) == identity
+
+    async def one(case: Case, run: Any, item: DemoLookup, events: list[Any] | None) -> bool:
+        async with engine._run_gate(run.run_id):
+            if not same_stack():
+                return False
+            result = await engine.execute_lookup(state, case, item.step.lookup, ran_by=item.ran_by,
+                                                 now=item.ran_at, events=events, load_events=False)
+            if not same_stack() or (result.status == "error" and item.ran_by != RUNBOOK_SYSTEM_RUNNER):
+                return False
+            case_id = str(case.case_id)
+            try:
+                try:
+                    written, case_runs = await stack.runs.mutate(
+                        case_id, _store_if_absent(run.run_id, item.step.id, result))
+                except RunDocumentFull:
+                    if result.table is None:
+                        raise
+                    written, case_runs = await stack.runs.mutate(
+                        case_id, _store_if_absent(run.run_id, item.step.id, result, drop_table=True))
+            except Exception as exc:  # noqa: BLE001 - one lookup never stops the others
+                log.warning("demo lookup %s for case %s not stored: %s", item.step.id[:64], case_id[:80], exc)
+                return False
+            if written is None:
+                return False
+            try:
+                await stack.audit.record_strict(**demo_evidence_audit_row(run, case, item.step.id, written))
+            except Exception as exc:  # noqa: BLE001 - the stored result stands; its row is best effort
+                log.warning("demo lookup row for case %s not written: %s", case_id[:80], exc)
+            engine._publish_frames(stack, case_id, [r for r in case_runs.runs if r.run_id == run.run_id],
+                                   case_runs.revision)
+            return True
+
+    async def per_run(case: Case, run: Any, pending: list[DemoLookup]) -> int:
+        async with engine._background_gate():
+            if not same_stack():
+                return 0
+            events = await engine._case_events(state, case)
+            outcomes = await asyncio.gather(*(one(case, run, item, events) for item in pending),
+                                            return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                log.warning("demo lookup for case %s failed: %s", str(case.case_id)[:80], outcome)
+        return sum(1 for outcome in outcomes if outcome is True)
+
+    work = []
+    for case_id, case_runs in stored.items():
+        case = by_id.get(case_id)
+        if case is None:
+            continue
+        for run in case_runs.runs:
+            if run.status == "abandoned" or run.run_id != demo_runbook_run_id(seed, case_id, run.runbook_id):
+                continue
+            pending = [item for item in demo_lookup_schedule(run, seed=seed, now=moment)
+                       if not _holds_lookup_result(run, item.step.id)]
+            if pending:
+                work.append(per_run(case, run, pending))
+    totals = await asyncio.gather(*work, return_exceptions=True)
+    return sum(total for total in totals if isinstance(total, int))
+
+
+def schedule_demo_runbook_lookups(state: Any, cases: Iterable[Case], *, seed: int) -> Any | None:
+    """Start :func:`collect_demo_runbook_lookups` in the background, as a live run's
+    ``on_attach`` lookups start: the caller (Demo Mode's enable and reset, right after
+    the seeded stack becomes the active one) never waits for log reads. The task is
+    tracked with the background lookups, so ``runbook_runs.wait_for_background_lookups``
+    waits for it. ``None`` when it could not start (Demo Mode is off, or the mutation
+    fence is closed during a reset)."""
+    import asyncio
+    import logging
+
+    from . import runbook_runs as engine
+
+    if not getattr(state, "demo_active", False):
+        return None
+    coro = collect_demo_runbook_lookups(state, list(cases), seed=seed)
+    try:
+        spawn = getattr(state, "spawn_mutation_task", None)
+        task = spawn(coro, name="demo-runbook-lookups") if callable(spawn) else asyncio.ensure_future(coro)
+    except Exception as exc:  # noqa: BLE001 - the seeded runs stand; their steps keep "Run lookup"
+        coro.close()
+        logging.getLogger("tlsoc.engine.demo_generator").info("demo runbook lookups not started: %s", exc)
+        return None
+    engine._BACKGROUND.add(task)
+    task.add_done_callback(engine._BACKGROUND.discard)
+    return task

@@ -5,24 +5,66 @@ description: Interpret v0.1 posture, timing, noise reduction, ATT&CK coverage, c
 
 # Analytics and standup
 
-Open **Analytics → Metrics** for measured posture and **Overview → Standup** for the
-current action queue. Analytics are advisory: they describe stored cases and ingest
-counters but never feed the case decision policy.
+The **Analytics** group in the navigation opens three pages, each titled by its
+navigation label: **Metrics** (`#/metrics`), **Agent effectiveness**
+(`#/effectiveness`) and **Cost** (`#/cost`). **Overview → Standup** holds the current
+action queue. Analytics are advisory: they describe stored cases and ingest counters but
+never feed the case decision policy.
 
 Posture and ATT&CK endpoints require `metrics:view` when RBAC is enabled.
 
-The **Effectiveness** tab has the stable, reload-safe URL
-`#/metrics?tab=effectiveness`. Browser back/forward and a direct reload preserve the
-tab instead of falling back to Operational.
+## How the Analytics pages are laid out
+
+Each page follows the Overview's layout. The header holds the title with a help tip,
+the time range (last 24 hours, 7 days or 30 days) and one refresh beside it, and on the
+right when the figures were last read ("Updated just now"). Below it, every module sits
+on the same tinted panel and names its window after its title ("all time", "last 7
+days", "now"). A caption always names the range of the figures on screen: while a new
+range is being read, and if it cannot be read, the page keeps the previous figures under
+their own captions and says which range it shows. The range you pick on one Analytics
+page is kept for the others until you reload the page. The navigation switches between
+the pages; there is no second row of page tabs.
+
+**Metrics** has three tabs:
+
+- **Operational**: one strip of summary figures, then the verdict and disposition mix,
+  persona usage, runbook usage, knowledge reference coverage, cases per day, analyst
+  feedback quality and the LLM spend of the selected range, then a module with the
+  knowledge base and memory figures as they are now, beside the corpus by source and
+  the memory by author. The case counts cover every case in the store, so their
+  captions read "all time"; only the LLM spend follows the time range.
+  **Needs human** counts the open cases whose AI verdict is Needs human ("open now"),
+  the same figure Standup and the dashboards show: a case an analyst has closed no
+  longer waits for a person, so it is not counted.
+  **Resolved or closed** and the active count beside it come from the server's own
+  split by status, never from the total minus a count. Each bar's percentage is its
+  share of the whole ("51% of 77"), and each ranked module has its own **Count** or
+  **A to Z** switch. **Runbook usage** shows which Published runbook guided each case's
+  investigation, with **No runbook** when none did; it shows usage only and does not
+  say a runbook made a case faster.
+- **Performance**: lifecycle timing (MTTA and MTTR at p50 against the previous window,
+  and Dwell at p50), the percentile table and the triage quality rates.
+- **Posture**: open-case aging of the cases opened in the range (queue depth, arrivals,
+  closures, the age distribution and the oldest open cases), SLA attainment with the
+  cases breaching or close to a target ("5d 15h over", "2h left"), and MITRE ATT&CK
+  coverage with the Navigator layer export. A long list shows its first rows with
+  **Show all** for the rest; when the server lists only part of a longer list (the 25
+  furthest past their target, the 10 oldest open cases), the panel counts the rows not
+  shown against the full total and says how many it lists of how many there are. If the
+  posture rollup cannot be read, SLA attainment says it is not available, never that
+  tracking is off.
+
+Older links still work: `#/metrics?tab=effectiveness` opens Agent effectiveness.
 
 ## Agent health diagnostics
 
-The complete Agent health surface appears above Agent Effectiveness on
-**Analytics → Metrics → Effectiveness**. It explains resolved-case precedent corpus
-availability, migration/retrieval state, and auto-close health for the selected 24h,
-7d, or 30d Analytics window. The loader is keyed to that window, aborts superseded
-requests, and rejects mismatched response windows, so a quick range change cannot
-combine old health evidence with a new selector.
+The complete Agent health surface appears above the observed outcomes on
+**Analytics → Agent effectiveness**. It explains resolved-case precedent corpus
+availability, migration/retrieval state, and auto-close health for the time range in
+the page header. The page's one refresh reads both Agent health and the outcome
+evidence again. The loader is keyed to that window, aborts superseded requests, and
+rejects mismatched response windows, so a quick range change cannot combine old health
+evidence with a new selector.
 
 The two inputs retain independent RBAC boundaries. The diagnostic rollup requires
 `settings:read`; auto-close health requires `metrics:view`. If only one is readable,
@@ -47,7 +89,7 @@ distribution makes that visible before auto-close is affected.
 The second is futility. A rule can hold hundreds of analyst-confirmed benign outcomes and
 still route every case to a human, because its alerts carry no per-case evidence for an
 investigation to verify. Those rules are named explicitly, with the two remedies that can
-work — enrich the source so the alerts carry that evidence, or declare the detection
+work: enrich the source so the alerts carry that evidence, or declare the detection
 benign with an [analyst rule policy](../automation/rules.md). Confirming more cases of
 such a rule will not change the outcome on its own, and the panel says so rather than
 leaving the request open-ended.
@@ -214,7 +256,12 @@ an outcome. This is detection-threshold tuning, not model fine-tuning. Quality m
 describe the agent's case assessment; volume metrics describe the alert-to-case funnel.
 Neither proves the upstream alert generator itself is getting better.
 
-Open **Analytics → Agent effectiveness** for the detailed operator surface. Auto-tuning
+Open **Analytics → Agent effectiveness** for the detailed operator surface. While the
+headline is still collecting evidence, the comparisons, evidence quality and daily
+evidence fold behind **Show details**, so the page does not open on a list of rows that
+are all still collecting. The safety guardrails fold with them only while neither can be
+evaluated: a guardrail with enough data, and above all a breached one, always stays on
+the page. Auto-tuning
 reuses this same read-only aggregate beside rule-health and recommendation review. It
 adds synchronized daily lanes, durable volume, an evidence/guardrail rail, and
 applied-tuning chronology. The daily lanes are raw eligible UTC-day cohorts, while the
@@ -263,6 +310,18 @@ The Standup report is built from aggregates, never a raw-log dump. It contains:
 - current-versus-prior deltas; and
 - action items and handoff acknowledgements.
 
+The page header holds the handoff range (the last 24 hours or 7 days) and one refresh,
+and on the right the shift, when the snapshot was generated and **Copy summary**. The
+strip compares the shift's headline counts with the window before. The attention queue
+shows its first eight cases, SLA pressure its first six breaches and the sign-off its
+first eight acknowledgements, each with **Show all** for the rest, and each SLA breach
+says how far past its target the case is ("12d 22h over"). **Open posture** links to
+Metrics, Posture for people who can view Metrics. The "Generated" time stays current
+while the page is open, and a failed write to the action items or the sign-off says so
+beside the form. If the report for a newly picked range cannot be read, the previous
+report stays and the error names both ranges ("Could not load the last 7 days; showing
+the last 24 hours").
+
 Its figures are the ones chat's shift report shows for the same window. **Needs human**
 counts the open cases whose AI verdict is Needs human. **Awaiting analyst** counts the open
 cases still in the status the console shows as **Open · awaiting analyst**, the cases the
@@ -273,9 +332,17 @@ Writing action items or acknowledgements requires `cases:write`.
 
 ## Cost
 
-Open **Analytics → Cost** to inspect model calls, tokens, price source, outcomes, and
-spend by model, role, surface, case, and time. Every model call must pass through this
-ledger. A price is an estimate based on the active catalog or operator override; it
+Open **Analytics → Cost** to inspect model calls, tokens, the execution tier each call
+ran on, spend over time, a breakdown by model, role and surface (ranked by cost, tokens
+or calls), the detailed ledger with its cost composition, and the top cost drivers. Every
+tile and module names the range it covers, except **Today**. **Spend over time** places
+the ledger's hourly spend on the range's own time axis, hour by hour for the last 24
+hours and day by day for longer ranges, with the hours that had no spend counted as
+zero; the change on **Total cost** compares the second half of the range with the first.
+**Per hour** and **Per day** divide the range total by the hours or days of the range
+itself, so a 7-day range reads per day over 7 days, not over the 8 calendar days it
+touches.
+Every model call must pass through this ledger. A price is an estimate based on the active catalog or operator override; it
 does not replace the provider invoice.
 
 See [Analyst overview](overview.md), [Cases](cases.md), and

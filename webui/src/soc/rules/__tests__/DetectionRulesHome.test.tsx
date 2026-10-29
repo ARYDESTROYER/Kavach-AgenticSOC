@@ -1,29 +1,48 @@
 /**
- * DetectionRulesHome + registration spec (Round-5 G6 · R2).
+ * DetectionRulesHome + registration spec (Round-5 G6, R2; Round 14 W9b).
  *
  * Proves:
- *  - the home lists BOTH rule families (detection catalog + case-automation) plainly,
+ *  - the home lists BOTH rule families (detection catalog + case-automation) plainly, in
+ *    one compact table on a group panel, with no explanation box above it (Round 14 DR1,
+ *    F11: the section's help tip carries that sentence);
+ *  - a row opens its editor on click; Test and history and Delete live in the row menu,
+ *    neutral at rest (DR2); closing either sheet or the delete confirmation returns focus
+ *    to what opened it, and the rule name carries the panel focus ring (SPEC §3.3);
+ *  - a rule is Enabled or Disabled, its one wire flag: no "shadow" state is offered;
  *  - a config edit (delete) flows through the deep-merge `update` buffer, writing the
- *    exact wire key — never a `decide()` call,
+ *    exact wire key, never a `decide()` call;
+ *  - a case-automation rule that attaches a runbook the server would skip shows "Needs a
+ *    runbook" (the same resolution the rule editor and the server use);
  *  - the "Detection & rules" section is REGISTERED in the settings registry under the
- *    General group, ON BY DEFAULT, gated on the unified `rules` resource (M2 / R9) —
- *    the SAME resource the backend `routes_rules.py` enforces, end-to-end.
+ *    General group, ON BY DEFAULT, gated on the unified `rules` resource (M2 / R9), the
+ *    SAME resource the backend `routes_rules.py` enforces, end-to-end.
  *
- * `useCan` is mocked to grant manage (auth-off back-compat) so the table + actions render.
+ * `useCan` is mocked to grant manage (auth-off back-compat) so the table and actions
+ * render; one test turns it off for the read-only viewer.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { act, render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { TooltipProvider } from '@/ui/tooltip';
+
+const grants = vi.hoisted(() => ({ all: true }));
+const runbooks = vi.hoisted(() => ({ list: vi.fn() }));
 
 // Grant manage so mutations render (mirrors the auth-off default where useCan===true).
 vi.mock('@/soc/components/Can', async () => {
   const actual = await vi.importActual<typeof import('@/soc/components/Can')>('@/soc/components/Can');
-  return { ...actual, useCan: () => true };
+  return { ...actual, useCan: () => grants.all };
+});
+
+vi.mock('@/lib/api-runbooks', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/api-runbooks')>('@/lib/api-runbooks');
+  return { ...actual, listRunbookLibrary: (...args: unknown[]) => runbooks.list(...args) };
 });
 
 import { DetectionRulesHome, automationIdFromName } from '../DetectionRulesHome';
+import { MOBILE_QUERY } from '@/soc/hooks/useMediaQuery';
 import { RULES_PERM, RULES_READ_PERM } from '../types';
 import type { AutomationRule, Preferences } from '@/lib/types';
+import type { RunbookSummary } from '@/lib/types-runbooks';
 
 import {
   SECTION_BY_ID,
@@ -49,6 +68,58 @@ const PREFS: Preferences = {
   },
 };
 
+beforeEach(() => {
+  grants.all = true;
+  runbooks.list.mockReset();
+  runbooks.list.mockResolvedValue({ runbooks: [], migration: null });
+});
+
+/** A library row for the runbook resolver (only the fields it reads matter). */
+function summary(over: Partial<RunbookSummary> & { id: string }): RunbookSummary {
+  return {
+    title: over.id,
+    summary: '',
+    origin: 'built_in',
+    state: 'published',
+    live_version: 1,
+    draft_version: null,
+    in_review_version: null,
+    retired: false,
+    replaces: null,
+    replaced_by: null,
+    derived_from: null,
+    owner: null,
+    phases: [],
+    step_count: 1,
+    applies_to: {},
+    runs_30d: null,
+    review_due_at: null,
+    last_reviewed_at: null,
+    last_reviewed_by: null,
+    updated_at: null,
+    updated_by: null,
+    migrated_from: null,
+    ...over,
+  } as RunbookSummary;
+}
+
+/** Open a row's "More actions" menu and choose an item (Radix opens on ArrowDown). */
+function chooseRowAction(subject: string, item: string, index = 0) {
+  const triggers = screen.getAllByRole('button', { name: `More actions for ${subject}` });
+  fireEvent.keyDown(triggers[index], { key: 'ArrowDown' });
+  fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitem', { name: item }));
+}
+
+function renderWithContainer(prefs: Preferences = PREFS) {
+  const update = vi.fn();
+  const view = render(
+    <TooltipProvider>
+      <DetectionRulesHome prefs={prefs} update={update} />
+    </TooltipProvider>,
+  );
+  return { update, container: view.container };
+}
+
 function renderHome(prefs: Preferences = PREFS) {
   const update = vi.fn();
   render(
@@ -60,37 +131,91 @@ function renderHome(prefs: Preferences = PREFS) {
 }
 
 describe('DetectionRulesHome', () => {
-  it('lists both rule families in one table (plain text)', () => {
-    renderHome();
+  it('lists both rule families in one table (plain text), with no explanation box above it', () => {
+    const { container } = renderWithContainer();
     expect(screen.getByRole('button', { name: 'ssh-bruteforce' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'rule-tag' })).toBeInTheDocument();
-    // the #3 guard is surfaced
-    expect(screen.getByText(/never the verdict/i)).toBeInTheDocument();
+    // Round 14 (DR1, F11): the policy sentence lives in the section help tip, not in a
+    // permanent box, and no internal reference such as "(#3)" reaches the operator.
+    expect(screen.queryByText(/never the verdict/i)).toBeNull();
+    expect(container.textContent ?? '').not.toMatch(/#3|\u2014/);
+    expect(screen.getByRole('heading', { name: 'Rules', level: 3 })).toBeInTheDocument();
+    expect(screen.getByText('2 rules, lower priority numbers run first')).toBeInTheDocument();
   });
 
-  it('keeps the rule catalog inside a narrow Console viewport', () => {
+  it('sits on one group panel with sentence-case headers', () => {
+    const { container } = renderWithContainer();
+    const table = screen.getByRole('table', { name: 'Detection and case automation rules' });
+    expect(container.querySelector('[data-settings-panel]')?.contains(table)).toBe(true);
+    expect(table).toHaveClass('table-fixed');
+    for (const name of ['Name', 'Type', 'State', 'Priority']) {
+      const header = screen.getByRole('columnheader', { name });
+      expect(header.className).not.toMatch(/uppercase|tracking/);
+    }
+    expect(screen.getByRole('button', { name: 'ssh-bruteforce' })).toHaveClass('truncate');
+    expect(screen.getAllByText('Match and threshold')).toHaveLength(1);
+    expect(screen.getAllByText('Case automation')).toHaveLength(1);
+  });
+
+  it('on a phone keeps only the name, with its state under it, and the row menu', () => {
+    const original = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query === MOBILE_QUERY,
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    try {
+      renderHome();
+      const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
+      expect(headers).toEqual(['Name', 'Actions']);
+      const row = screen.getByRole('button', { name: 'ssh-bruteforce' }).closest('tr') as HTMLElement;
+      expect(within(row).getByText('Enabled')).toBeInTheDocument();
+      expect(within(row).getByRole('button', { name: 'More actions for ssh-bruteforce' })).toBeInTheDocument();
+    } finally {
+      window.matchMedia = original;
+    }
+  });
+
+  it('shows each rule state as a quiet word, never a green badge on every row', () => {
     renderHome();
-    const table = screen.getByRole('table');
-    expect(table).toHaveClass('table-fixed', 'sm:table-auto');
-    expect(screen.getByRole('columnheader', { name: 'Type' })).toHaveClass(
-      'hidden',
-      'sm:table-cell',
-    );
-    expect(screen.getByRole('columnheader', { name: 'Priority' })).toHaveClass(
-      'hidden',
-      'sm:table-cell',
-    );
-    expect(screen.getByRole('button', { name: 'ssh-bruteforce' })).toHaveClass(
-      '[overflow-wrap:anywhere]',
-    );
+    const enabled = screen.getAllByText('Enabled');
+    expect(enabled).toHaveLength(2);
+    enabled.forEach((node) => {
+      expect(node.closest('[data-status-tone]')).toHaveAttribute('data-status-tone', 'neutral');
+    });
+  });
+
+  it('keeps row actions neutral at rest and puts Test and history and Delete in the row menu', () => {
+    renderHome();
+    // No red trash icon on every row (DR2).
+    expect(screen.queryByRole('button', { name: /^delete/i })).toBeNull();
+    const more = screen.getAllByRole('button', { name: 'More actions for ssh-bruteforce' })[0];
+    expect(more.className).not.toMatch(/text-critical/);
+    fireEvent.keyDown(more, { key: 'ArrowDown' });
+    const items = within(screen.getByRole('menu')).getAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual(['Test and history', 'Delete rule']);
+  });
+
+  it('opens the editor when the row itself is clicked, not only its name', () => {
+    renderHome();
+    const row = screen.getByRole('button', { name: 'rule-tag' }).closest('tr') as HTMLElement;
+    fireEvent.click(within(row).getAllByRole('cell')[2]);
+    expect(screen.getByRole('tab', { name: 'Define' })).toBeInTheDocument();
   });
 
   it('deleting a detection rule writes rule_catalog via the deep-merge buffer (never decide())', () => {
     const { update } = renderHome();
-    // Delete is confirm-gated (no single-misclick data loss) — click through the dialog.
-    fireEvent.click(screen.getByLabelText('Delete ssh-bruteforce'));
+    // Delete is confirm-gated (no single-misclick data loss): click through the dialog.
+    chooseRowAction('ssh-bruteforce', 'Delete rule');
     expect(update).not.toHaveBeenCalled(); // nothing written until confirmed
-    fireEvent.click(screen.getByRole('button', { name: 'Delete rule' }));
+    const dialog = screen.getByRole('alertdialog');
+    expect(dialog.textContent ?? '').not.toContain('\u2014');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete rule' }));
     expect(update).toHaveBeenCalledTimes(1);
     const patch = update.mock.calls[0][0] as Partial<Preferences>;
     expect(patch).toHaveProperty('rule_catalog');
@@ -101,8 +226,8 @@ describe('DetectionRulesHome', () => {
 
   it('deleting a case-automation rule writes threshold_automation.rules only', () => {
     const { update } = renderHome();
-    fireEvent.click(screen.getByLabelText('Delete rule-tag'));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete rule' }));
+    chooseRowAction('rule-tag', 'Delete rule');
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete rule' }));
     const patch = update.mock.calls[0][0] as Partial<Preferences>;
     expect(patch.threshold_automation?.rules).toEqual([]);
     // the master `enabled` flag is preserved (deep-merge friendly)
@@ -113,6 +238,7 @@ describe('DetectionRulesHome', () => {
     renderHome();
     fireEvent.click(screen.getByRole('button', { name: 'ssh-bruteforce' }));
     expect(screen.getByRole('tab', { name: 'Define' })).toBeInTheDocument();
+    expect(screen.getByText(/Saving writes configuration only\. It never changes a case decision\./)).toBeInTheDocument();
   });
 
   it('surfaces a validation message (not a silent no-op) when a new detection rule has no name/condition', () => {
@@ -121,14 +247,14 @@ describe('DetectionRulesHome', () => {
     // A fresh detection_match rule has an empty name + empty first condition → invalid.
     fireEvent.click(screen.getByRole('button', { name: 'Save rule' }));
     expect(update).not.toHaveBeenCalled();
-    expect(screen.getByText(/Can't save yet/i)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/Can't save yet/i);
     expect(screen.getByText(/at least one condition/i)).toBeInTheDocument();
   });
 
   it('cancelling the delete confirmation does not write anything', () => {
     const { update } = renderHome();
-    fireEvent.click(screen.getByLabelText('Delete ssh-bruteforce'));
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    chooseRowAction('ssh-bruteforce', 'Delete rule');
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -154,19 +280,166 @@ describe('DetectionRulesHome', () => {
       ],
     };
     const { update } = renderHome(dupPrefs);
-    // Both rows carry the same "Delete dup" label — a name filter would wipe BOTH.
-    const deletes = screen.getAllByLabelText('Delete dup');
-    expect(deletes).toHaveLength(2);
-    fireEvent.click(deletes[0]); // the priority-100 row (sourceIndex 0, "first")
-    fireEvent.click(screen.getByRole('button', { name: 'Delete rule' }));
+    // Both rows carry the same "More actions for dup" menu: a name filter would wipe BOTH.
+    expect(screen.getAllByRole('button', { name: 'More actions for dup' })).toHaveLength(2);
+    chooseRowAction('dup', 'Delete rule', 0); // the priority-100 row (sourceIndex 0, "first")
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete rule' }));
     const patch = update.mock.calls[0][0] as Partial<Preferences>;
-    // Exactly ONE rule removed — the one clicked — leaving the other same-named rule.
+    // Exactly ONE rule removed (the one clicked), leaving the other same-named rule.
     expect(patch.rule_catalog).toHaveLength(1);
     expect(patch.rule_catalog?.[0].description).toBe('second');
   });
+
+  it('gives a read-only viewer the catalog and the history, but no New rule and no Delete', () => {
+    grants.all = false;
+    renderHome();
+    expect(screen.getByRole('button', { name: 'ssh-bruteforce' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'New rule' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions for ssh-bruteforce' }), { key: 'ArrowDown' });
+    const items = within(screen.getByRole('menu')).getAllByRole('menuitem');
+    expect(items.map((item) => item.textContent)).toEqual(['Test and history']);
+  });
+
+  it('gives the rule name, the row keyboard control, the design-system focus ring on the panel', () => {
+    renderHome();
+    const name = screen.getByRole('button', { name: 'ssh-bruteforce' });
+    expect(name.className).toContain('focus-visible:ring-2');
+    expect(name.className).toContain('focus-visible:ring-ring');
+    expect(name.className).toContain('focus-visible:ring-offset-panel');
+    expect(name.className).toContain('focus-visible:outline-none');
+  });
+
+  it('returns focus to the rule name when the editor closes with Escape (SPEC §3.3)', async () => {
+    renderHome();
+    const name = screen.getByRole('button', { name: 'ssh-bruteforce' });
+    name.focus();
+    fireEvent.click(name);
+    const sheet = await screen.findByRole('dialog');
+    // Escape closes the topmost layer: a tooltip opened by focus inside the sheet first.
+    while (screen.queryByRole('dialog')) {
+      fireEvent.keyDown(document.activeElement ?? sheet, { key: 'Escape' });
+      await act(async () => {});
+    }
+    await waitFor(() => expect(document.activeElement).toBe(name));
+  });
+
+  it('returns focus to the rule name after Cancel in the editor', async () => {
+    renderHome();
+    const name = screen.getByRole('button', { name: 'rule-tag' });
+    fireEvent.click(name);
+    const sheet = await screen.findByRole('dialog');
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(name));
+  });
+
+  it('returns focus to the row menu button when Test and history closes', async () => {
+    renderHome();
+    const trigger = screen.getByRole('button', { name: 'More actions for ssh-bruteforce' });
+    trigger.focus();
+    chooseRowAction('ssh-bruteforce', 'Test and history');
+    const sheet = await screen.findByRole('dialog');
+    expect(within(sheet).getByRole('heading', { name: /ssh-bruteforce/ })).toBeInTheDocument();
+    // The preview panel is a lazy chunk: let it load inside act before closing.
+    await within(sheet).findByTestId('rule-preview-idle');
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it('offers only Enabled and Disabled in Test and history, and keeps the table words to match', async () => {
+    const { update } = renderHome();
+    chooseRowAction('ssh-bruteforce', 'Test and history');
+    const sheet = await screen.findByRole('dialog');
+    await within(sheet).findByTestId('rule-preview-idle');
+    const states = within(sheet).getByRole('radiogroup', { name: 'Rule state' });
+    expect(within(states).getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Enabled', 'Disabled']);
+    expect(document.body.textContent ?? '').not.toMatch(/shadow/i);
+    fireEvent.click(within(states).getByRole('radio', { name: 'Disabled' }));
+    fireEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Disable rule' }));
+    const patch = update.mock.calls[0][0] as Partial<Preferences>;
+    expect(patch.rule_catalog?.[0].enabled).toBe(false);
+  });
+
+  it('returns focus to the row menu button when the delete confirmation is cancelled', async () => {
+    renderHome();
+    const trigger = screen.getByRole('button', { name: 'More actions for rule-tag' });
+    trigger.focus();
+    chooseRowAction('rule-tag', 'Delete rule');
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it('shows an empty state on the panel when there are no rules', () => {
+    renderHome({});
+    expect(screen.getByText('No rules yet')).toBeInTheDocument();
+    expect(screen.queryByRole('table')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'New rule' }).length).toBeGreaterThan(0);
+  });
 });
 
-describe('automationIdFromName (#25 — the typed Name becomes the rule id)', () => {
+describe('DetectionRulesHome "Needs a runbook"', () => {
+  const attach = (id: string, payload: Record<string, unknown>): AutomationRule => ({
+    id,
+    enabled: true,
+    priority: 10,
+    conditions: {},
+    action: 'run_playbook',
+    payload,
+  });
+  const prefsWith = (...rules: AutomationRule[]): Preferences => ({
+    threshold_automation: { enabled: true, rules },
+  });
+
+  it('flags a rule whose runbook is not published, and not one whose runbook is', async () => {
+    runbooks.list.mockResolvedValue({
+      runbooks: [
+        summary({ id: 'brute-force-password-spray' }),
+        summary({ id: 'draft-only', live_version: null, draft_version: 1, state: 'draft' }),
+      ],
+      migration: null,
+    });
+    renderHome(
+      prefsWith(
+        attach('attach-published', { runbook_id: 'brute-force-password-spray' }),
+        attach('attach-draft', { runbook_id: 'draft-only' }),
+        attach('attach-missing', { runbook_id: 'gone' }),
+      ),
+    );
+    await waitFor(() => expect(screen.getAllByText('Needs a runbook')).toHaveLength(2));
+    expect(runbooks.list).toHaveBeenCalledWith({ show_replaced: true }, expect.any(AbortSignal));
+    const rowOf = (name: string) => screen.getByRole('button', { name }).closest('tr') as HTMLElement;
+    expect(within(rowOf('attach-published')).queryByText('Needs a runbook')).toBeNull();
+    expect(within(rowOf('attach-draft')).getByText('Needs a runbook')).toBeInTheDocument();
+    expect(within(rowOf('attach-missing')).getByText('Needs a runbook')).toBeInTheDocument();
+    expect(screen.getByText(/2 need a runbook/)).toBeInTheDocument();
+  });
+
+  it('resolves a legacy procedure id the way the server does (a retired bundled id attaches its runbook)', async () => {
+    runbooks.list.mockResolvedValue({ runbooks: [summary({ id: 'brute-force-password-spray' })], migration: null });
+    renderHome(prefsWith(attach('legacy', { playbook_id: 'brute_force_login' })));
+    await waitFor(() => expect(runbooks.list).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(screen.queryByText('Needs a runbook')).toBeNull();
+  });
+
+  it('flags only a rule that names no runbook when the library cannot be read (no false warning)', async () => {
+    runbooks.list.mockRejectedValue(new Error('403'));
+    renderHome(prefsWith(attach('named', { runbook_id: 'maybe-published' }), attach('blank', {})));
+    await waitFor(() => expect(runbooks.list).toHaveBeenCalled());
+    const rowOf = (name: string) => screen.getByRole('button', { name }).closest('tr') as HTMLElement;
+    await waitFor(() => expect(within(rowOf('blank')).getByText('Needs a runbook')).toBeInTheDocument());
+    expect(within(rowOf('named')).queryByText('Needs a runbook')).toBeNull();
+  });
+
+  it('never reads the runbook library when no rule attaches a runbook', () => {
+    renderHome();
+    expect(runbooks.list).not.toHaveBeenCalled();
+  });
+});
+
+describe('automationIdFromName (#25: the typed Name becomes the rule id)', () => {
   const rule = (id: string): AutomationRule => ({
     id,
     enabled: true,

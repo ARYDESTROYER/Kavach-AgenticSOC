@@ -81,6 +81,7 @@ import {
 
 import { ConnectorPicker } from '@/soc/components/ConnectorPicker';
 import { HelpTip, ConnectorFieldHelp } from '@/soc/components/HelpTip';
+import { NumberField } from '@/soc/components/NumberField';
 
 /** Best-effort human message from an unknown thrown value. */
 function errorMessage(e: unknown): string {
@@ -121,7 +122,7 @@ const ROLE_DEFS: Array<{
   {
     value: 'ignore',
     label: 'Ignore',
-    help: 'The feed is dropped — its events are skipped at ingest entirely and never form cases. Pinned last for precedence (a more specific ignore feed overrides a broader events/alerts feed).',
+    help: 'The feed is dropped: its events are skipped at ingest entirely and never form cases. Pinned last for precedence (a more specific ignore feed overrides a broader events/alerts feed).',
     active: 'bg-muted text-muted-foreground border-border line-through decoration-1',
   },
 ];
@@ -471,6 +472,40 @@ const FieldRow: React.FC<{
 
   const help = f.help ? <p className="text-xs text-muted-foreground">{f.help}</p> : null;
 
+  // number → the one NumberField (its own label row carries the help and the reset to
+  // the connector's default; an unset field shows the default without storing it, as the
+  // backend applies the same default).
+  if (f.type === 'number') {
+    const stored = value.config[f.key];
+    const fallback = typeof f.default === 'number' ? f.default : undefined;
+    const current =
+      typeof stored === 'number' && Number.isFinite(stored)
+        ? stored
+        : typeof stored === 'string' && stored.trim() !== '' && Number.isFinite(Number(stored))
+          ? Number(stored)
+          : fallback ?? null;
+    return (
+      <NumberField
+        label={
+          <>
+            {f.label}
+            {f.required ? <RequiredMark /> : null}
+          </>
+        }
+        labelAction={<ConnectorFieldHelp field={f} />}
+        description={f.help}
+        error={invalid ? `${f.label} is required.` : undefined}
+        value={current}
+        onChange={(next) => setConfig(f.key, next)}
+        step="any"
+        defaultValue={fallback}
+        empty={fallback === undefined ? 'keep' : 'default'}
+        placeholder={f.placeholder || undefined}
+        required={f.required}
+      />
+    );
+  }
+
   // bool → switch (inline)
   if (f.type === 'bool') {
     const checked =
@@ -504,31 +539,10 @@ const FieldRow: React.FC<{
           type="password"
           autoComplete="off"
           placeholder={
-            configuredSecrets.includes(f.key) ? 'configured — type to replace' : f.placeholder || ''
+            configuredSecrets.includes(f.key) ? 'Configured. Type to replace it' : f.placeholder || ''
           }
           value={value.secrets[f.key] || ''}
           onChange={(e) => setSecret(f.key, e.target.value)}
-          aria-invalid={invalid}
-          className={cn(invalid && 'border-critical')}
-        />
-      );
-      break;
-    case 'number':
-      control = (
-        <Input
-          id={id}
-          type="number"
-          placeholder={f.placeholder || ''}
-          value={
-            value.config[f.key] === undefined || value.config[f.key] === null
-              ? f.default !== undefined && f.default !== null
-                ? String(f.default)
-                : ''
-              : String(value.config[f.key])
-          }
-          onChange={(e) =>
-            setConfig(f.key, e.target.value === '' ? '' : Number(e.target.value))
-          }
           aria-invalid={invalid}
           className={cn(invalid && 'border-critical')}
         />
@@ -563,7 +577,7 @@ const FieldRow: React.FC<{
           onValueChange={(v) => setConfig(f.key, v)}
         >
           <SelectTrigger id={id} aria-invalid={invalid} className={cn(invalid && 'border-critical')}>
-            <SelectValue placeholder="— select —" />
+            <SelectValue placeholder="Select" />
           </SelectTrigger>
           <SelectContent>
             {(f.options || []).map((o) => (
@@ -709,7 +723,7 @@ const FeedPreviewChip: React.FC<{ row: FeedRow }> = ({ row }) => {
   if (row.role === 'ignore') {
     return (
       <Badge variant="secondary" className="font-normal">
-        Dropped at ingest — never investigated
+        Dropped at ingest, never investigated
       </Badge>
     );
   }
@@ -834,7 +848,7 @@ const FeedCard: React.FC<{
         query: row.query.trim() || undefined,
       });
       const n = res.count ?? res.logs.length;
-      setTestMsg({ ok: true, text: `Matched — sampled ${n} event${n === 1 ? '' : 's'}.` });
+      setTestMsg({ ok: true, text: `Matched. Sampled ${n} event${n === 1 ? '' : 's'}.` });
     } catch (e) {
       setTestMsg({ ok: false, text: errorMessage(e) });
     } finally {
@@ -912,7 +926,8 @@ const FeedCard: React.FC<{
             type="button"
             variant="ghost"
             size="icon"
-            className="h-8 w-8 text-critical"
+            // Neutral at rest; red only on hover and focus.
+            className="h-8 w-8 text-muted-foreground hover:text-critical-text focus-visible:text-critical-text"
             aria-label={`Remove feed ${index + 1}`}
             onClick={onRemove}
           >
@@ -962,7 +977,7 @@ const FeedCard: React.FC<{
               </Label>
               <HelpTip
                 label="About Correlate"
-                text="When on (default), this feed's events are grouped into clusters before triage. Turn off only for feeds you never want correlated (events still register — they're never dropped)."
+                text="When on (default), this feed's events are grouped into clusters before triage. Turn off only for feeds you never want correlated (events still register; they are never dropped)."
               />
             </div>
             <div className="flex items-center gap-2">
@@ -986,7 +1001,7 @@ const FeedCard: React.FC<{
               ) : null}
               <HelpTip
                 label="About Auto-investigate"
-                text="When on, this feed's clusters are auto-forwarded to AI investigation. Alerts feeds default on; events feeds follow Correlate. Showing 'default' means it's deriving from the role — toggle to pin it."
+                text="When on, this feed's clusters are auto-forwarded to AI investigation. Alerts feeds default on; events feeds follow Correlate. Showing 'default' means it follows the role; toggle to pin it."
               />
             </div>
           </div>
@@ -1103,19 +1118,34 @@ const FeedCard: React.FC<{
               text="How often this feed is polled, in seconds. Leave blank to inherit the source-wide interval. A fast alerts feed and a slow events feed keep independent cursors so neither skips the other."
             />
           </Label>
-          <Input
-            id={`${idBase}-sched`}
-            type="number"
-            min={1}
-            placeholder="inherit"
-            value={row.pollInterval == null ? '' : String(row.pollInterval)}
-            onChange={(e) =>
-              onPatch({
-                pollInterval: e.target.value === '' ? null : Math.max(1, Number(e.target.value) || 0) || null,
-              })
-            }
-            className="w-32"
-          />
+          {/* Blank means "inherit the source interval", a state NumberField has no
+              empty value for, so this is a digits-only text field sized to its content. */}
+          <div className="relative w-32">
+            <Input
+              id={`${idBase}-sched`}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder="Inherit"
+              // The visible unit is decorative; the unit and the blank state are said here.
+              aria-describedby={`${idBase}-sched-unit`}
+              value={row.pollInterval == null ? '' : String(row.pollInterval)}
+              onChange={(e) => {
+                const digits = e.target.value.replace(/\D+/g, '');
+                onPatch({ pollInterval: digits === '' ? null : Math.max(1, Number(digits)) });
+              }}
+              className="pr-7 tabular-nums"
+            />
+            <span
+              className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-xs text-muted-foreground"
+              aria-hidden="true"
+            >
+              s
+            </span>
+            <span id={`${idBase}-sched-unit`} className="sr-only">
+              In seconds. Leave it blank to use the source interval.
+            </span>
+          </div>
         </div>
         <div className="pb-0.5">
           <FeedMappingDrawer row={row} label={label} onChange={onPatch} />
@@ -1295,14 +1325,14 @@ const TestResultCallout: React.FC<{ result: TestResult }> = ({ result }) => {
         <p>
           {result.message}
           {typeof result.sample === 'number'
-            ? ` — sampled ${result.sample} event${result.sample === 1 ? '' : 's'}.`
+            ? ` Sampled ${result.sample} event${result.sample === 1 ? '' : 's'}.`
             : ''}
         </p>
         {readOnly ? (
           <p className="mt-2">
             The agent can read logs from this source. A <code>cluster:monitor</code> privilege
-            is <strong>not</strong> required — a correctly-scoped read-only key is exactly what
-            we want.
+            is <strong>not</strong> required: a correctly scoped read-only key is exactly what
+            the agent needs.
           </p>
         ) : null}
       </AlertDescription>
@@ -1313,9 +1343,7 @@ const TestResultCallout: React.FC<{ result: TestResult }> = ({ result }) => {
 /* ----------------------------------------------------------- section head -- */
 
 const SectionTitle: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-    {children}
-  </div>
+  <div className="text-sm font-semibold text-foreground">{children}</div>
 );
 
 /* --------------------------------------------------------------- editor ---- */
@@ -1689,7 +1717,7 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
           </Label>
           <HelpTip
             label="About Auto-Correlate"
-            text="When on (default), this source's correlated clusters are automatically forwarded to AI investigation. Turn it off to keep this source in manual triage only — events still correlate into clusters, but the agent won't investigate them automatically. You can also toggle this per index pattern below."
+            text="When on (default), this source's correlated clusters are automatically forwarded to AI investigation. Turn it off to keep this source in manual triage only: events still correlate into clusters, but the agent won't investigate them automatically. You can also toggle this per index pattern below."
           />
         </div>
       </div>
@@ -1743,7 +1771,7 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
           </Select>
           <p className="text-xs text-muted-foreground">
             How a cluster's primary entity is chosen for correlation. Use this for sources that
-            don't send a source IP (e.g. an audit log) so their events still form cases — pin
+            don't send a source IP (for example an audit log) so their events still form cases: pin
             Host, User or Rule.
           </p>
         </div>
@@ -1775,7 +1803,7 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
           <AccordionTrigger className="py-3">
             <span className="flex items-center gap-2">
               <SlidersHorizontal className="h-4 w-4 text-muted-foreground" aria-hidden />
-              Advanced — field mapping &amp; severity scale
+              Advanced settings: field mapping and severity scale
             </span>
           </AccordionTrigger>
           <AccordionContent className="space-y-4">
@@ -1882,27 +1910,27 @@ export const SourceEditor: React.FC<SourceEditorProps> = ({
                   text="The highest value this source can put in its severity field. Every severity is projected onto 0-100 as min(100, max(0, raw / maximum * 100)) before it is banded."
                 />
               </Label>
+              {/* Blank means "not declared" (the 0-100 identity), a state NumberField has
+                  no empty value for, so this is a decimal text field sized to its content.
+                  The valid range is strictly ABOVE zero; validation on save is the single
+                  authority (and matches the backend's `gt=0` boundary). */}
               <Input
                 id="se-sev-scale"
-                type="number"
-                // No `min` attribute: the valid range is strictly ABOVE zero, which the
-                // attribute cannot express, and `min={0}` would advertise 0 as allowed.
-                // Validation on save is the single authority (and matches the backend's
-                // `gt=0` boundary).
-                step="any"
+                type="text"
                 inputMode="decimal"
-                placeholder="100 (leave blank if this source rates severity 0-100)"
+                autoComplete="off"
+                placeholder="100"
                 value={severityScaleMax}
                 onChange={(e) => setSeverityScaleMax(e.target.value)}
+                className="w-32 tabular-nums"
               />
               <p className="text-xs leading-relaxed text-muted-foreground">
-                Declare this if the source does <strong>not</strong> rate severity on 0-100 —
-                e.g. enter <code>10</code> for a 0-10 ladder or <code>16</code> for a 0-16 rule
+                Leave blank if this source rates severity on 0-100. Declare it if it does not:
+                for example, enter <code>10</code> for a 0-10 ladder or <code>16</code> for a 0-16 rule
                 level. Severities are projected as{' '}
-                <code>min(100, max(0, raw / maximum &times; 100))</code>. Leave blank to read
-                the number as-is on 0-100; a narrow ladder left blank reads roughly ten times
-                too low on the severity chip, in the Noise-Reduction funnel and against a
-                feed&apos;s severity floor.
+                <code>min(100, max(0, raw / maximum &times; 100))</code>. A narrow ladder left
+                blank reads roughly ten times too low on the severity chip, in the
+                Noise-Reduction funnel and against a feed&apos;s severity floor.
               </p>
             </div>
           </AccordionContent>

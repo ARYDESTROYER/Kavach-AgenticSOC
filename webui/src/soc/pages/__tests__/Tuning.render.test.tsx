@@ -276,20 +276,17 @@ describe('Tuning page', () => {
     expect(pageHeadings).toHaveLength(1);
     expect(pageHeadings[0]).toHaveTextContent('Auto-tuning');
 
+    // Round 14 (SPEC §4.9.2): the one KPI strip on the Overview's panel (KpiStrip), a
+    // named group of three ink tiles with no icons; the compact density is shared.
     const healthStrip = screen.getByTestId('tuning-health-strip');
-    expect(healthStrip).toHaveClass('grid', 'border-y');
-    expect(healthStrip.className).toMatch(/(?:sm|md|lg|xl):grid-cols-/);
-    expect(healthStrip.className).not.toMatch(/rounded|shadow|bg-card/);
-
-    const cells = Array.from(healthStrip.children);
-    expect(cells).toHaveLength(3);
-    expect(cells[1]).toHaveClass('border-t', 'sm:border-l', 'sm:border-t-0');
-    expect(cells[2]).toHaveClass('border-t', 'sm:border-l', 'sm:border-t-0');
-    // `density="compact"` is a SHARED token: it tightened from `py-3` to `py-2` when the
-    // landing dashboard had to seat its flow diagram, case queue and timing pair in one
-    // screen, and every compact strip on the console — this one included — takes the same
-    // rhythm deliberately. Update it here too if the density changes again; never delete it.
-    expect(screen.getByTestId('kpi-needs-attention')).toHaveClass('min-h-0', 'py-2');
+    expect(healthStrip).toHaveAttribute('role', 'group');
+    expect(healthStrip).toHaveAttribute('aria-label', 'Health summary');
+    expect(healthStrip).toHaveAttribute('data-kpi-strip', 'compact');
+    expect(healthStrip).toHaveClass('surface-panel');
+    for (const label of ['Needs attention', 'Collecting evidence', 'Within target']) {
+      expect(within(healthStrip).getByText(label)).toBeInTheDocument();
+    }
+    expect(healthStrip.querySelector('svg')).toBeNull();
   });
 
   it('uses task-focused workspace tabs and opens on Operations', async () => {
@@ -333,7 +330,7 @@ describe('Tuning page', () => {
     );
     getConfigMock.mockResolvedValueOnce(CONFIG);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh auto-tuning' }));
     expect(
       await screen.findByRole('progressbar', { name: /refreshing auto-tuning/i }),
     ).toBeInTheDocument();
@@ -422,7 +419,63 @@ describe('Tuning page', () => {
   it('states the honest authority boundary without a separate banner', async () => {
     renderTuning();
     await screen.findAllByText('auth-brute');
-    expect(screen.getByText(/tuning never decides a case/i)).toBeInTheDocument();
+    // Round 14 (C8): the page's explanation lives in the header help tip, not a line.
+    expect(screen.queryByText(/tuning never decides a case/i)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'About Auto-tuning' }));
+    expect(await screen.findByText(/tuning never decides a case/i)).toBeInTheDocument();
+  });
+
+  it('puts the operating policy in one muted header line, not a band of its own', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const line = screen.getByTestId('tuning-operating-policy');
+    expect(line.closest('[data-page-header-actions]')).not.toBeNull();
+    expect(line).toHaveAccessibleName('Operating policy');
+    expect(screen.queryByRole('region', { name: 'Tuning operating status' })).toBeNull();
+    expect(line.textContent).toMatch(/Active|Paused/);
+  });
+
+  it('sets tabular figures on numbers only, never on hyphenated prose ([uib] TU2)', async () => {
+    const view = renderTuning();
+    await screen.findAllByText('auth-brute');
+    // Inter's tabular hyphen opens a gap in "analyst-confirmed" and "false-positive", so
+    // no tabular-nums element may hold a hyphenated word.
+    const tabular = Array.from(view.container.querySelectorAll<HTMLElement>('.tabular-nums'));
+    expect(tabular.length).toBeGreaterThan(0);
+    const hyphenated = tabular
+      .map((node) => node.textContent ?? '')
+      .filter((text) => /[A-Za-z]-[A-Za-z]/.test(text));
+    expect(hyphenated).toEqual([]);
+    // The prose itself still reads the same.
+    expect(view.container.textContent ?? '').toMatch(/analyst-confirmed cases/);
+    expect(view.container.textContent ?? '').toMatch(/observed false-positive ratio/);
+  });
+
+  it('uses underline tabs without icons and modules on panels', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const tabs = screen.getByRole('tablist', { name: 'Auto-tuning workspace' });
+    expect(tabs).toHaveAttribute('data-variant', 'underline');
+    expect(tabs.querySelector('svg')).toBeNull();
+    const review = screen.getByRole('region', { name: 'Rule review' });
+    expect(review).toHaveClass('surface-panel');
+  });
+
+  it('has no tracked-capitals labels and no em dash in its copy', async () => {
+    const { container } = renderTuning();
+    await screen.findAllByText('auth-brute');
+    for (const el of container.querySelectorAll('[class]')) {
+      const cls = el.getAttribute('class') ?? '';
+      expect(cls.includes('uppercase') && cls.includes('tracking-'), cls).toBe(false);
+    }
+    const texts: string[] = [];
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const t = (n.textContent ?? '').trim();
+      if (t && t !== '—') texts.push(t);
+    }
+    expect(texts.filter((t) => t.includes('—'))).toEqual([]);
+    expect(texts.filter((t) => /playbook/i.test(t))).toEqual([]);
   });
 
   it('routes a suppression drop to Approvals instead of applying it', async () => {

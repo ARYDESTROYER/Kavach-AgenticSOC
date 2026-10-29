@@ -1,33 +1,38 @@
 /**
- * RuleVersionLedger (Round-5 G6 · R5) — the immutable per-rule VERSION history +
+ * RuleVersionLedger (Round-5 G6, R5): the immutable per-rule VERSION history,
  * red/green inline diff + one-click rollback.
  *
  * ┌─ WHAT IT DOES ──────────────────────────────────────────────────────────────┐
  * │ - Lists every recorded version of ONE rule, NEWEST first (author + when + why).│
  * │ - Selecting a version shows a red/green FIELD DIFF vs the current (newest)      │
  * │   config, computed dep-free (`diffConfigs`, NO diff library).                   │
- * │ - "Restore this version" rolls the rule back via the RB rollback endpoint — a   │
+ * │ - "Restore this version" rolls the rule back via the RB rollback endpoint: a   │
  * │   deep-merge config write that APPENDS a `rollback` version (history is         │
  * │   append-only, #2) and NEVER calls `decide()` (#3). Gated by a ConfirmDialog.   │
  * └────────────────────────────────────────────────────────────────────────────────┘
  *
- * Bug #12: each row renders its REAL state — the NEWEST version is the live baseline
+ * Bug #12: each row renders its REAL state: the NEWEST version is the live baseline
  * ("Current"), a version produced by a rollback is tagged, and older versions are
  * "Superseded". Never a hardcoded "Active" on every row.
  *
  * Every id / actor / summary / config value is operator-authored, log-adjacent data →
  * renders PLAIN text (#9). Rollback is gated on the caller's `canManage` grant (RBAC).
+ *
+ * Round 14 (SPEC §4.9.1): versions are rows divided by hairlines, not bordered cards;
+ * each row's state is a `StatusDot` (Current in green, a rollback in blue, Superseded
+ * quiet); the diff heading is sentence case.
  */
 import * as React from 'react';
 import { History, RotateCcw } from 'lucide-react';
 
-import { Badge, type BadgeProps } from '@/ui/badge';
 import { Button } from '@/ui/button';
 import { Skeleton } from '@/ui/skeleton';
+import { StatusDot, type StatusTone } from '@/design-system/status-dot';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { useAsync } from '@/soc/hooks/useAsync';
+import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { cn } from '@/lib/cn';
 
 import { listRuleVersions, rollbackRule } from '../api';
@@ -71,7 +76,7 @@ export function RuleVersionLedger({
     [kind, ruleId],
   );
   // Memoize the list so it is a stable reference across renders (keeps the derived
-  // `selected` useMemo honest — the ledger returns newest-first).
+  // `selected` useMemo honest; the ledger returns newest-first).
   const versions: RuleVersion[] = React.useMemo(() => data?.versions ?? [], [data]);
 
   // The current baseline = the newest version.
@@ -84,6 +89,12 @@ export function RuleVersionLedger({
   );
 
   const [confirmVersion, setConfirmVersion] = React.useState<RuleVersion | null>(null);
+  // The restore confirm opens from a row's Restore button, not a Radix trigger: focus goes
+  // back to that button when it closes. The row is keyed by version id, so its button is
+  // still there after a restore reloads the list; a version the list no longer has falls
+  // back to the list itself (SPEC §3.3).
+  const restoreOpener = useReturnFocus();
+  const listRef = React.useRef<HTMLOListElement>(null);
   const [rolling, setRolling] = React.useState(false);
   const [rollbackError, setRollbackError] = React.useState<unknown>(null);
 
@@ -110,9 +121,9 @@ export function RuleVersionLedger({
     // Skeleton rows (matching the version-row shape) reserve layout space and match the
     // shared loading grammar, instead of a plain-text loader that jumps on load (#44).
     return (
-      <ol className="space-y-2" aria-busy="true" aria-label="Loading version history">
+      <ol className="divide-y divide-border/70" aria-busy="true" aria-label="Loading version history">
         {[0, 1, 2].map((i) => (
-          <li key={i} className="rounded-md border border-border bg-card p-3">
+          <li key={i} className="py-3">
             <div className="flex items-center gap-2">
               <Skeleton className="h-5 w-20 rounded-full" />
               <Skeleton className="h-4 w-24" />
@@ -134,7 +145,7 @@ export function RuleVersionLedger({
         icon={History}
         compact
         title="No version history yet"
-        description="Every create, edit, enable/disable and rollback of this rule will be recorded here as an immutable version you can diff and restore."
+        description="Every create, edit, enable, disable and rollback of this rule is recorded here as a version you can compare and restore."
       />
     );
   }
@@ -149,7 +160,7 @@ export function RuleVersionLedger({
         />
       ) : null}
 
-      <ol className="space-y-2" data-testid="rule-version-ledger">
+      <ol ref={listRef} className="divide-y divide-border/70" data-testid="rule-version-ledger">
         {versions.map((v, idx) => {
           const isCurrent = current !== null && v.id === current.id;
           const isSelected = v.id === selectedId;
@@ -158,36 +169,36 @@ export function RuleVersionLedger({
             : v.action === 'rollback'
               ? 'Rollback'
               : 'Superseded';
-          const stateVariant: NonNullable<BadgeProps['variant']> = isCurrent
+          const stateTone: StatusTone = isCurrent
             ? 'success'
             : v.action === 'rollback'
               ? 'info'
-              : 'secondary';
+              : 'neutral';
           return (
             <li
               key={v.id}
               className={cn(
-                'rounded-md border border-border bg-card p-3 transition-colors',
-                isSelected && 'ring-1 ring-primary/50',
+                '-mx-3 rounded-md px-3 py-3 transition-colors',
+                isSelected && 'bg-muted/50',
               )}
               data-testid={`rule-version-${v.id}`}
             >
               <div className="flex flex-wrap items-center gap-2">
-                <Badge variant={stateVariant}>{stateLabel}</Badge>
+                <StatusDot tone={stateTone}>{stateLabel}</StatusDot>
                 <span className="text-sm font-medium text-foreground">
                   {ACTION_LABEL[v.action] ?? v.action}
                 </span>
                 {v.rolled_back_to ? (
-                  <span className="text-xs text-muted-foreground">
-                    → restored {v.rolled_back_to}
+                  <span className="text-sm text-muted-foreground">
+                    restored {v.rolled_back_to}
                   </span>
                 ) : null}
-                <span className="ml-auto text-xs tabular-nums text-muted-foreground">
+                <span className="ml-auto whitespace-nowrap text-sm tabular-nums text-muted-foreground">
                   {whenLabel(v.created_at)}
                 </span>
               </div>
 
-              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                 {v.actor ? <span>by {v.actor}</span> : <span>by system</span>}
                 {v.summary ? <span className="break-words">{v.summary}</span> : null}
               </div>
@@ -199,29 +210,38 @@ export function RuleVersionLedger({
                   onClick={() => setSelectedId(isSelected ? null : v.id)}
                   aria-expanded={isSelected}
                 >
-                  {isSelected ? 'Hide diff' : 'Diff vs current'}
+                  {isSelected ? 'Hide changes' : 'Compare with current'}
                 </Button>
                 {canManage && !isCurrent ? (
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => setConfirmVersion(v)}
-                    disabled={rolling}
+                    onClick={(event) => {
+                      if (rolling) return;
+                      restoreOpener.remember(event.currentTarget, {
+                        empty: () => listRef.current,
+                      });
+                      setConfirmVersion(v);
+                    }}
+                    // Busy, not disabled, while a restore runs: the confirm closes at once
+                    // and hands focus back to this button, which a disabled button refuses.
+                    aria-disabled={rolling || undefined}
+                    className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                   >
                     <RotateCcw className="h-4 w-4" aria-hidden />
                     Restore this version
                   </Button>
                 ) : null}
                 {idx === 0 ? (
-                  <span className="text-xs text-muted-foreground">This is the live config.</span>
+                  <span className="text-sm text-muted-foreground">This is the live configuration.</span>
                 ) : null}
               </div>
 
               {isSelected ? (
-                <div className="mt-3 border-t border-border pt-3">
-                  <div className="mb-1 text-2xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Changes to restore (current → this version)
-                  </div>
+                <div className="mt-3 border-t border-border/70 pt-3">
+                  <p className="mb-1 text-sm font-medium text-foreground">
+                    What restoring this version changes
+                  </p>
                   {/* Direction matches the RESTORE action (#42): restoring makes the live
                       config become THIS version, so `before` = current, `after` = v. Now a
                       green "+" is what Restore ADDS and a red "−" is what it REMOVES. */}
@@ -238,6 +258,7 @@ export function RuleVersionLedger({
         onOpenChange={(o) => {
           if (!o) setConfirmVersion(null);
         }}
+        returnFocusRef={restoreOpener.ref}
         title="Restore this version?"
         description={
           selected || confirmVersion
@@ -245,10 +266,10 @@ export function RuleVersionLedger({
                 (confirmVersion?.action ?? '') as string
               ]?.toLowerCase() ?? 'selected'} version from ${
                 confirmVersion ? whenLabel(confirmVersion.created_at) : ''
-              }. It writes configuration only — it never changes a case decision, and it is recorded as a new version you can undo.`
+              }. It writes configuration only. It never changes a case decision, and it is recorded as a new version you can undo.`
             : undefined
         }
-        confirmLabel={rolling ? 'Restoring…' : 'Restore'}
+        confirmLabel={rolling ? 'Restoring' : 'Restore'}
         onConfirm={() => {
           if (confirmVersion) void doRollback(confirmVersion);
         }}

@@ -96,6 +96,17 @@ import Login from '../pages/Login';
 // The MOCKED ApiError (status, message) — for driving 401 expired-pending paths.
 import { ApiError as ApiErrorFromMock } from '@/lib/api';
 
+/**
+ * Every accessible name the Login page authors. The shared theme pill
+ * (`components/auth/ThemeModePill.tsx`, outside this page) is left out: its label is
+ * reported to the orchestrator for the same em dash fix.
+ */
+function loginAriaLabels(): string[] {
+  return Array.from(document.body.querySelectorAll('[aria-label]'))
+    .filter((el) => !el.hasAttribute('data-login-theme-pill'))
+    .map((el) => el.getAttribute('aria-label') ?? '');
+}
+
 function renderLogin() {
   return render(
     <ThemeProvider>
@@ -119,7 +130,9 @@ async function advanceSigninToPassword(username = 'alice') {
   const passwordInput = await screen.findByLabelText('Password');
   expect(passwordInput).toHaveAttribute('placeholder', 'Enter your password');
   expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled();
+  // Round 14 (LI2): Sign in keeps its primary look and stays enabled with an empty
+  // password; an empty submit names the field instead (see the test below).
+  expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
   return { usernameInput, passwordInput };
 }
@@ -272,7 +285,7 @@ describe('Login — four-mode render', () => {
     expect(password).toHaveClass('text-lg', 'sm:text-base');
     expect(password).toBeRequired();
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sign in' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
   });
 
@@ -352,6 +365,47 @@ describe('Login — four-mode render', () => {
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   });
 
+  it('names an empty password on submit and focuses it, without calling the server (LI2)', async () => {
+    renderLogin();
+    const { passwordInput: password } = await advanceSigninToPassword('analyst');
+
+    const signIn = screen.getByRole('button', { name: 'Sign in' });
+    // Never the flat inert face: the button is enabled and not busy.
+    expect(signIn).toBeEnabled();
+    expect(signIn).not.toHaveAttribute('data-busy');
+    fireEvent.click(signIn);
+
+    expect(await screen.findByText('Enter your password.')).toBeInTheDocument();
+    await waitFor(() => expect(password).toHaveFocus());
+    expect(password).toHaveAttribute('aria-invalid', 'true');
+    expect(password).toHaveAttribute('aria-describedby', 'login-error');
+    expect(loginMock).not.toHaveBeenCalled();
+
+    // Typing a password and submitting again clears the message and signs in.
+    loginMock.mockResolvedValue({ user: {} });
+    fireEvent.change(password, { target: { value: 'correct horse' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    await waitFor(() => expect(loginMock).toHaveBeenCalledWith('analyst', 'correct horse'));
+    expect(screen.queryByText('Enter your password.')).not.toBeInTheDocument();
+  });
+
+  it('shows no em dash in the sign-in copy or any accessible name', async () => {
+    renderLogin();
+    await screen.findByLabelText('Username');
+    expect(document.body.textContent ?? '').not.toContain('\u2014');
+    loginAriaLabels().forEach((label) => expect(label).not.toContain('\u2014'));
+  });
+
+  it('keeps the focus-only mode heading free of an always-on outline (forced colours)', async () => {
+    renderLogin();
+    const heading = await screen.findByRole('heading', { level: 1 });
+    // Tailwind 3 `outline-none` is a permanent 2px transparent outline, which
+    // forced-colours mode paints as a box over the subtitle; `outline-0` removes it.
+    expect(heading).toHaveAttribute('tabindex', '-1');
+    expect(heading.className).not.toMatch(/\boutline-none\b/);
+    expect(heading).toHaveClass('outline-0');
+  });
+
   it('keeps the username and returns focus to an announced invalid password after failure', async () => {
     loginMock.mockRejectedValue(new Error('offline'));
     renderLogin();
@@ -394,6 +448,23 @@ describe('Login — OOBE account-setup (setup/account)', () => {
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: pw } });
     fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: confirmPw } });
   }
+
+  it('shows no em dash in the setup copy or any accessible name, before and after a policy message', async () => {
+    renderLogin();
+    await screen.findByText('Create your admin account');
+    const noEmDash = () => {
+      expect(document.body.textContent ?? '').not.toContain('\u2014');
+      loginAriaLabels().forEach((label) => expect(label).not.toContain('\u2014'));
+    };
+    expect(
+      screen.getByText('No accounts exist yet. Create the first administrator to get started. Choose a strong, unique password.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Use at least 12 characters, not your username or a common password.')).toBeInTheDocument();
+    noEmDash();
+    await fillSetup('admin12345678');
+    expect(screen.getByText('That password is too common. Choose a less predictable one.')).toBeInTheDocument();
+    noEmDash();
+  });
 
   it('keeps the create button DISABLED for a weak/short password (client policy gate)', async () => {
     renderLogin();

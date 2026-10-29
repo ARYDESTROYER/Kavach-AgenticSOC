@@ -1,5 +1,5 @@
 /**
- * Memory — operator-managed durable facts the agents always know (NEW UI).
+ * Memory: operator-managed durable facts the agents always know (NEW UI).
  *
  * Memory is a curated set of durable facts (internal IP ranges, known scanners,
  * naming conventions, standing exceptions) injected into every investigation and
@@ -14,6 +14,13 @@
  * Mirrors the legacy MemoryPage data wiring: api.getMemory / addMemory /
  * updateMemory / deleteMemory, optimistic local upsert, toasts, filters (search /
  * source / active / category), sort, group-by-category, inline edit + delete-confirm.
+ *
+ * Round 14 (IN2, IN3, IN7, F10): no "Memory controls" band and no permanent "What is
+ * memory?" callout; the explanation is a help tip on the saved-memories panel, whose
+ * actions hold the icon Refresh (the Intelligence host owns the page header). Counts are a
+ * compact `KpiStrip`; the add form and the saved memories are panels, with Category and
+ * Tags as two aligned `Field`s; filters are one `FilterBar`; rows are hairline-divided
+ * (no card per fact); the delete icon is neutral at rest.
  */
 import * as React from 'react';
 import {
@@ -21,10 +28,8 @@ import {
   CircleAlert,
   CircleCheck,
   Folder,
-  Info,
   Pencil,
   Plus,
-  RefreshCw,
   Save,
   Search,
   Tag,
@@ -47,8 +52,6 @@ import { Textarea } from '@/ui/textarea';
 import { Label } from '@/ui/label';
 import { Switch } from '@/ui/switch';
 import { Badge } from '@/ui/badge';
-import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
-import { Card, CardContent } from '@/ui/card';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip';
 import {
   Select,
@@ -67,13 +70,30 @@ import {
 } from '@/ui/dialog';
 
 import { PageHeader } from '@/soc/components/PageHeader';
-import { ControlBar } from '@/soc/components/ControlBar';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { useCan } from '@/soc/components/Can';
+import { KpiStrip } from '@/soc/components/KpiStrip';
 import { KpiTile } from '@/soc/components/KpiTile';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
-import { LoadingState } from '@/design-system';
+import { Field } from '@/soc/components/Field';
+import { HelpTip } from '@/soc/components/HelpTip';
+import { FilterBar, type FilterChip } from '@/soc/components/FilterBar';
+import { LoadingState, Panel } from '@/design-system';
 import { TagInput, usePendingTagDraft } from '@/soc/components/TagInput';
+import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
+
+/** What memory is: the help tip on the saved-memories panel (formerly a permanent callout). */
+const MEMORY_HELP =
+  'A curated set of durable facts the agents can use: internal IP ranges, known scanners, ' +
+  'naming conventions and standing exceptions. Only active, operator-approved facts are ' +
+  'given to the agents as trusted context; pending agent suggestions stay fenced as ' +
+  'untrusted text. Memory can inform the AI but never overrides the close or escalate ' +
+  'decision, which code makes. Turn Active off to retire a fact without deleting it. ' +
+  'Authorized operators can manage memory here, or say "remember: ..." and "forget ..." in Chat.';
+
+/** The standalone page help (the Intelligence host has its own). */
+const PAGE_HELP = 'Operator-approved durable facts used across investigations and chat.';
 
 /** Uncategorised facts collect under this stable bucket label. */
 const UNCATEGORISED = 'Uncategorised';
@@ -136,7 +156,7 @@ function SourceBadge({ source, author }: { source?: string; author?: string }) {
         </TooltipTrigger>
         <TooltipContent>
           {agent
-            ? 'Authored by an agent. It remains untrusted until an authorized operator approves it.'
+            ? 'Written by an agent. It remains untrusted until an authorized operator approves it.'
             : 'Authored by a human operator and approved at creation.'}
         </TooltipContent>
       </Tooltip>
@@ -185,52 +205,48 @@ function AddMemoryCard({
   }, [text, category, tags, tagDraft, onAdded]);
 
   return (
-    <Card>
-      <CardContent className="space-y-4 p-6">
-        <div className="flex items-center gap-3">
-          <span className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border bg-muted/40 text-primary">
-            <Plus className="h-4 w-4" aria-hidden />
-          </span>
-          <div className="space-y-0.5">
-            <p className="text-sm font-semibold text-foreground">Add a memory</p>
-            <p className="text-xs text-muted-foreground">
-              A durable fact the agents should always know.
-            </p>
-          </div>
-        </div>
-
+    <Panel
+      title="Add a memory"
+      caption="A durable fact the agents should always know."
+      data-testid="memory-add"
+    >
+      <div className="space-y-4">
         <div className="space-y-1.5">
           <Label htmlFor="mem-text">Fact</Label>
           <Textarea
             id="mem-text"
             rows={2}
-            placeholder="e.g. 10.20.0.0/16 is our internal corp network — never treat it as external."
+            placeholder="For example: 10.20.0.0/16 is our internal corporate network. Never treat it as external."
             value={text}
             onChange={(e) => setText(e.target.value)}
           />
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label htmlFor="mem-cat">Category (optional)</Label>
-            <Input
-              id="mem-cat"
-              list="mem-category-suggestions"
-              placeholder="e.g. network, scanners, policy"
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-            />
-            <datalist id="mem-category-suggestions">
-              {categories.map((c) => (
-                <option key={c} value={c}>
-                  {humanizeToken(c)}
-                </option>
-              ))}
-            </datalist>
-          </div>
+        {/* F10: both are Fields, so their labels, controls and help lines align. */}
+        <div className="grid items-start gap-4 sm:grid-cols-2" data-testid="memory-add-fields">
+          <Field label="Category (optional)" description="For example network, scanners or policy.">
+            {({ id, describedBy }) => (
+              <>
+                <Input
+                  id={id}
+                  aria-describedby={describedBy}
+                  list="mem-category-suggestions"
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                />
+                <datalist id="mem-category-suggestions">
+                  {categories.map((c) => (
+                    <option key={c} value={c}>
+                      {humanizeToken(c)}
+                    </option>
+                  ))}
+                </datalist>
+              </>
+            )}
+          </Field>
           <TagInput
             label="Tags (optional)"
-            placeholder="Type a tag and press Enter"
+            description="Type a tag and press Enter."
             value={tags}
             onChange={setTags}
             {...tagDraft.bind}
@@ -247,8 +263,8 @@ function AddMemoryCard({
             {submitting ? 'Saving…' : 'Save memory'}
           </Button>
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </Panel>
   );
 }
 
@@ -268,7 +284,8 @@ function MemoryRow({
   onSave: (id: string, patch: MemoryPatch) => Promise<void>;
   onToggleActive: (entry: MemoryEntry) => void;
   onApprove: (entry: MemoryEntry) => void;
-  onDelete: (entry: MemoryEntry) => void;
+  /** `opener` is the row's Delete button, where focus returns if the delete is cancelled. */
+  onDelete: (entry: MemoryEntry, opener: HTMLElement) => void;
   canManage: boolean;
 }) {
   const [editing, setEditing] = React.useState(false);
@@ -319,23 +336,25 @@ function MemoryRow({
 
   if (editing) {
     return (
-      <Card className="border-primary/30 ring-1 ring-primary/10">
-        <CardContent className="space-y-4 p-4">
+      <li className="list-none py-3" data-memory-row={entry.id}>
+        <div className="space-y-4 rounded-md p-3 ring-1 ring-primary/30">
           <Textarea
             rows={2}
             value={text}
             onChange={(e) => setText(e.target.value)}
             aria-label="Edit memory text"
           />
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label htmlFor={`mem-edit-cat-${entry.id}`}>Category</Label>
-              <Input
-                id={`mem-edit-cat-${entry.id}`}
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-              />
-            </div>
+          <div className="grid items-start gap-3 sm:grid-cols-2">
+            <Field label="Category">
+              {({ id, describedBy }) => (
+                <Input
+                  id={id}
+                  aria-describedby={describedBy}
+                  value={category}
+                  onChange={(e) => setCategory(e.target.value)}
+                />
+              )}
+            </Field>
             <TagInput
               label="Tags"
               placeholder="Type a tag and press Enter"
@@ -353,14 +372,13 @@ function MemoryRow({
               {saving ? 'Saving…' : 'Save'}
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </li>
     );
   }
 
   return (
-    <Card className="transition-colors hover:border-border/80">
-      <CardContent className="p-4">
+    <li className="list-none py-3" data-memory-row={entry.id}>
         <div className="flex items-start gap-4">
           {/* active accent rail */}
           <span
@@ -418,7 +436,7 @@ function MemoryRow({
                 className="text-xs text-muted-foreground"
                 title={formatTimestamp(entry.updated_at || entry.created_at)}
               >
-                updated {humanizeAge(entry.updated_at || entry.created_at)}
+                Updated {humanizeAge(entry.updated_at || entry.created_at)}
               </span>
             </div>
           </div>
@@ -444,10 +462,10 @@ function MemoryRow({
                 </TooltipTrigger>
                 <TooltipContent>
                   {!approved
-                    ? 'Pending review — retained as untrusted text, not injected as operator context'
+                    ? 'Pending review: kept as untrusted text, not given to the agents as operator context'
                     : entry.active
-                      ? 'Active — injected into prompts as approved operator context'
-                      : 'Inactive — retained, not injected'}
+                      ? 'Active: given to the agents as approved operator context'
+                      : 'Inactive: kept, not given to the agents'}
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -478,8 +496,10 @@ function MemoryRow({
                   size="icon"
                   aria-label="Delete memory"
                   disabled={busy}
-                  className="text-critical hover:text-critical"
-                  onClick={() => onDelete(entry)}
+                  data-memory-delete=""
+                  // Neutral at rest; red only on hover, focus and in the confirm dialog.
+                  className="text-muted-foreground hover:text-critical-text focus-visible:text-critical-text"
+                  onClick={(event) => onDelete(entry, event.currentTarget)}
                 >
                   <Trash2 className="h-4 w-4" aria-hidden />
                 </Button>
@@ -487,8 +507,7 @@ function MemoryRow({
             ) : null}
           </div>
         </div>
-      </CardContent>
-    </Card>
+    </li>
   );
 }
 
@@ -511,6 +530,12 @@ export default function Memory({ embedded = false }: MemoryPageProps = {}) {
   const [error, setError] = React.useState<unknown>(null);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<MemoryEntry | null>(null);
+  // The delete dialog opens from a row's Delete button (no Radix trigger), so it hands
+  // focus back to that button when cancelled (SPEC §3.3). A confirmed delete takes the
+  // button away with its row: focus then goes to the next row's Delete, else the list's
+  // heading, never to the page body.
+  const deleteOpener = useReturnFocus();
+  const listRef = React.useRef<HTMLElement>(null);
   const [deleting, setDeleting] = React.useState(false);
 
   // view controls
@@ -721,60 +746,63 @@ export default function Memory({ embedded = false }: MemoryPageProps = {}) {
       onSave={onSave}
       onToggleActive={(e) => void onToggleActive(e)}
       onApprove={(e) => void onApprove(e)}
-      onDelete={(e) => setPendingDelete(e)}
+      onDelete={(e, opener) => {
+        deleteOpener.remember(opener, {
+          peers: () => listRef.current?.querySelectorAll('[data-memory-delete]') ?? [],
+          empty: () => headingOf(listRef.current),
+        });
+        setPendingDelete(e);
+      }}
       canManage={canManage}
     />
   );
 
   const refreshAction = (
-    <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-      <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} aria-hidden />
-      Refresh
-    </Button>
+    <RefreshButton
+      onClick={() => void load()}
+      refreshing={loading}
+      label="Refresh memory"
+      display="icon"
+    />
   );
+
+  // Active filters as removable chips (FilterBar grammar).
+  const chips: FilterChip[] = [];
+  if (categoryFilter !== ANY) {
+    chips.push({
+      id: 'category',
+      label: `Category: ${humanizeToken(categoryFilter)}`,
+      onRemove: () => setCategoryFilter(ANY),
+    });
+  }
+  if (sourceFilter !== 'all') {
+    chips.push({
+      id: 'author',
+      label: `Author: ${SOURCE_OPTIONS.find((o) => o.value === sourceFilter)?.label ?? sourceFilter}`,
+      onRemove: () => setSourceFilter('all'),
+    });
+  }
+  if (activeFilter !== 'all') {
+    chips.push({
+      id: 'state',
+      label: `State: ${ACTIVE_OPTIONS.find((o) => o.value === activeFilter)?.label ?? activeFilter}`,
+      onRemove: () => setActiveFilter('all'),
+    });
+  }
 
   // A hard load failure with no cached data: show one clean LoadError panel instead
   // of zeroed KPI tiles + an interactive add-card whose new rows would be invisible.
   const showLoadFail = !!error && entries.length === 0;
   const initialLoading = loading && entries.length === 0;
+  const filtered = filteredSorted.length !== stats.total;
 
   return (
-    <div className="space-y-6">
-      {embedded ? (
-        <ControlBar
-          title="Memory controls"
-          meta="Facts and review status"
-          label="Operator memory controls"
-          controls={refreshAction}
-        />
-      ) : (
-        <PageHeader
-          icon={Brain}
-          eyebrow="Platform"
-          title="Memory"
-          description="Operator-approved durable facts used across investigations and chat."
-          actions={refreshAction}
-        />
+    <div className="flex flex-col gap-4 xl:gap-5 3xl:gap-6">
+      {embedded ? null : (
+        <PageHeader title="Memory" help={PAGE_HELP} controls={refreshAction} />
       )}
 
-      <Alert>
-        <Info className="h-4 w-4" aria-hidden />
-        <AlertTitle>What is memory?</AlertTitle>
-        <AlertDescription>
-          A curated set of durable facts the agents can use — internal IP ranges, known scanners,
-          naming conventions, and standing exceptions. Only active, operator-approved facts are
-          injected as trusted context; pending agent suggestions stay fenced as untrusted text.
-          Memory can inform the LLM but{' '}
-          <strong className="font-semibold text-foreground">
-            never override the deterministic close/escalate decision
-          </strong>
-          . Authorized operators can manage it here or use{' '}
-          <strong className="font-semibold text-foreground">“remember: …”</strong> and{' '}
-          <strong className="font-semibold text-foreground">“forget …”</strong> in Chat.
-        </AlertDescription>
-      </Alert>
-
-      {/* summary tiles */}
+      {/* summary strip */}
       {showLoadFail ? null : initialLoading ? (
         <LoadingState
           layout="panel"
@@ -783,140 +811,25 @@ export default function Memory({ embedded = false }: MemoryPageProps = {}) {
           description="Preparing durable facts and operator context."
         />
       ) : (
-        <div className="grid border-y border-border/70 sm:grid-cols-2 lg:grid-cols-4">
-          <KpiTile label="Total facts" value={fmtNumber(stats.total)} icon={Brain} accent="primary" variant="strip" className="border-b border-border/70 sm:border-r lg:border-b-0" />
+        <KpiStrip label="Memory summary" density="compact" data-testid="memory-summary">
+          <KpiTile label="Total facts" value={fmtNumber(stats.total)} />
           <KpiTile
             label="Active"
             value={fmtNumber(stats.active)}
-            icon={CircleCheck}
-            accent="success"
-            sub={stats.total > 0 ? `${fmtNumber(stats.total - stats.active)} not injected` : undefined}
-            variant="strip"
-            className="border-b border-border/70 lg:border-b-0 lg:border-r"
+            context={stats.total > 0 ? `${fmtNumber(stats.total - stats.active)} not injected` : undefined}
           />
-          <KpiTile
-            label="Operator-authored"
-            value={fmtNumber(stats.operator)}
-            icon={User}
-            accent="info"
-            variant="strip"
-            className="border-b border-border/70 sm:border-b-0 sm:border-r"
-          />
+          <KpiTile label="Operator-authored" value={fmtNumber(stats.operator)} />
           <KpiTile
             label="Agent-authored"
             value={fmtNumber(stats.agent)}
-            icon={Bot}
-            accent="medium"
-            sub={stats.pending > 0 ? `${fmtNumber(stats.pending)} pending review` : 'All reviewed'}
-            variant="strip"
+            context={stats.pending > 0 ? `${fmtNumber(stats.pending)} pending review` : 'All reviewed'}
           />
-        </div>
+        </KpiStrip>
       )}
 
       {showLoadFail || initialLoading || !canManage ? null : (
         <AddMemoryCard categories={categoryFacet} onAdded={onAdded} />
       )}
-
-      {/* saved memories header + controls */}
-      {showLoadFail || initialLoading ? null : (
-      <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-baseline gap-2.5">
-          <h2 className="text-base font-semibold text-foreground">Saved memories</h2>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {loading
-              ? 'Loading…'
-              : `${fmtNumber(filteredSorted.length)} of ${fmtNumber(stats.total)} shown · ${fmtNumber(
-                  stats.active,
-                )} active`}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {/* A native <label> does not forward clicks to a Radix Switch (a
-              <button role="switch">); the Switch is self-labeled via aria-label.
-              A <div> keeps the layout/behavior identical. */}
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Switch checked={grouped} onCheckedChange={setGrouped} aria-label="Group by category" />
-            Group by category
-          </div>
-          <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
-            <SelectTrigger className="w-[12rem]" aria-label="Sort memories">
-              <SelectValue placeholder="Sort" />
-            </SelectTrigger>
-            <SelectContent>
-              {SORT_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-      )}
-
-      {/* filter toolbar */}
-      {!error && entries.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-2 border-y border-border/70 bg-surface/40 p-2">
-          <div className="relative w-full sm:w-72">
-            <Search
-              className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-            <Input
-              className="pl-8"
-              placeholder="Search facts, category, tags…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              aria-label="Search memories"
-            />
-          </div>
-          {categoryFacet.length > 0 ? (
-            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-              <SelectTrigger className="w-[12rem]" aria-label="Filter by category">
-                <SelectValue placeholder="Category" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ANY}>All categories</SelectItem>
-                {categoryFacet.map((c) => (
-                  <SelectItem key={c} value={c}>
-                    {humanizeToken(c)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : null}
-          <Select value={sourceFilter} onValueChange={(v) => setSourceFilter(v as SourceFilter)}>
-            <SelectTrigger className="w-[11rem]" aria-label="Filter by author">
-              <SelectValue placeholder="Author" />
-            </SelectTrigger>
-            <SelectContent>
-              {SOURCE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={activeFilter} onValueChange={(v) => setActiveFilter(v as ActiveFilter)}>
-            <SelectTrigger className="w-[10rem]" aria-label="Filter by active state">
-              <SelectValue placeholder="State" />
-            </SelectTrigger>
-            <SelectContent>
-              {ACTIVE_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>
-                  {o.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          {anyFilter ? (
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
-              <X className="h-4 w-4" aria-hidden />
-              Clear
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
 
       {/* list / states */}
       {error ? (
@@ -926,64 +839,184 @@ export default function Memory({ embedded = false }: MemoryPageProps = {}) {
           fallback="An unexpected error occurred."
           onRetry={() => void load()}
         />
-      ) : loading && entries.length === 0 ? (
-        null
-      ) : entries.length === 0 ? (
-        <EmptyState
-          icon={Brain}
-          title="No memories yet"
-          description={
-            canManage
-              ? 'Add a durable fact above, or teach the agent one conversationally in Chat with “remember: …”.'
-              : 'No operator-approved memory is available yet.'
+      ) : initialLoading ? null : (
+        <Panel
+          ref={listRef}
+          title="Saved memories"
+          // One formatted count; the active and pending figures are on the strip above,
+          // so the panel does not repeat them.
+          count={
+            filtered
+              ? `${fmtNumber(filteredSorted.length)} of ${fmtNumber(stats.total)} shown`
+              : fmtNumber(stats.total)
           }
-        />
-      ) : filteredSorted.length === 0 ? (
-        <EmptyState
-          icon={Search}
-          title="No memories match"
-          description="No facts match the current filters. Clear them to see all memories."
-          action={
-            <Button size="sm" variant="outline" onClick={clearFilters}>
-              <X className="h-4 w-4" aria-hidden />
-              Clear filters
-            </Button>
+          padding="none"
+          data-testid="memory-saved"
+          actions={
+            <>
+              <HelpTip label="About memory" text={MEMORY_HELP} />
+              {refreshAction}
+            </>
           }
-        />
-      ) : groups ? (
-        <div className="space-y-6">
-          {groups.map(([label, rows]) => (
-            <div key={label} className="space-y-3">
-              <div className="flex items-center gap-2 border-b border-border pb-2">
-                <Folder className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />
-                <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {label}
-                </h3>
-                <span className="text-xs tabular-nums text-muted-foreground/70">
-                  {fmtNumber(rows.length)} fact{rows.length === 1 ? '' : 's'}
-                </span>
-              </div>
-              <div className="space-y-3">{rows.map(renderRow)}</div>
+        >
+          {entries.length > 0 ? (
+            <div className="px-4 pb-3 xl:px-5 3xl:px-6">
+              <FilterBar
+                aria-label="Memory filters"
+                search={{
+                  value: search,
+                  onChange: setSearch,
+                  label: 'Search memories',
+                  placeholder: 'Search facts, category, tags',
+                }}
+                filters={[
+                  ...(categoryFacet.length > 0
+                    ? [
+                        {
+                          id: 'category',
+                          label: 'Category',
+                          active: categoryFilter !== ANY,
+                          control: ({ placement }: { placement: 'bar' | 'menu' | 'sheet' }) => (
+                            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+                              <SelectTrigger
+                                className={placement === 'bar' ? 'h-8 w-44' : 'h-9 w-full'}
+                                aria-label="Filter by category"
+                              >
+                                <SelectValue placeholder="Category" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value={ANY}>All categories</SelectItem>
+                                {categoryFacet.map((c) => (
+                                  <SelectItem key={c} value={c}>
+                                    {humanizeToken(c)}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ),
+                        },
+                      ]
+                    : []),
+                  {
+                    id: 'author',
+                    label: 'Author',
+                    active: sourceFilter !== 'all',
+                    control: ({ placement }: { placement: 'bar' | 'menu' | 'sheet' }) => (
+                      <Select value={sourceFilter} onValueChange={(v) => setSourceFilter(v as SourceFilter)}>
+                        <SelectTrigger
+                          className={placement === 'bar' ? 'h-8 w-36' : 'h-9 w-full'}
+                          aria-label="Filter by author"
+                        >
+                          <SelectValue placeholder="Author" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SOURCE_OPTIONS.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ),
+                  },
+                  {
+                    id: 'state',
+                    label: 'State',
+                    active: activeFilter !== 'all',
+                    control: ({ placement }: { placement: 'bar' | 'menu' | 'sheet' }) => (
+                      <Select value={activeFilter} onValueChange={(v) => setActiveFilter(v as ActiveFilter)}>
+                        <SelectTrigger
+                          className={placement === 'bar' ? 'h-8 w-32' : 'h-9 w-full'}
+                          aria-label="Filter by active state"
+                        >
+                          <SelectValue placeholder="State" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ACTIVE_OPTIONS.map((o) => (
+                            <SelectItem key={o.value} value={o.value}>
+                              {o.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ),
+                  },
+                ]}
+                chips={chips}
+                onClearAll={anyFilter ? clearFilters : undefined}
+                end={
+                  <div className="flex flex-wrap items-center gap-3">
+                    {/* A native <label> does not forward clicks to a Radix Switch (a
+                        <button role="switch">); the Switch is self-labeled via aria-label. */}
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Switch checked={grouped} onCheckedChange={setGrouped} aria-label="Group by category" />
+                      Group by category
+                    </div>
+                    <Select value={sort} onValueChange={(v) => setSort(v as SortKey)}>
+                      <SelectTrigger className="h-8 w-44" aria-label="Sort memories">
+                        <SelectValue placeholder="Sort" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {SORT_OPTIONS.map((o) => (
+                          <SelectItem key={o.value} value={o.value}>
+                            {o.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                }
+              />
             </div>
-          ))}
-        </div>
-      ) : (
-        <div className="space-y-3">{filteredSorted.map(renderRow)}</div>
-      )}
+          ) : null}
 
-      {/* footer note */}
-      {initialLoading ? null : (
-        <p className="border-t border-border pt-4 text-xs text-muted-foreground">
-          Inactive memories are retained but not injected into prompts — toggle{' '}
-          <strong className="font-semibold text-foreground">Active</strong> off to retire a fact
-          without deleting it. Agent-authored facts remain fenced and excluded until an authorized
-          operator explicitly approves them.
-        </p>
+          <div className="border-t border-border/70 px-4 xl:px-5 3xl:px-6">
+            {entries.length === 0 ? (
+              <EmptyState
+                icon={Brain}
+                title="No memories yet"
+                description={
+                  canManage
+                    ? 'Add a durable fact above, or teach the agent one in Chat with "remember: ...".'
+                    : 'No operator-approved memory is available yet.'
+                }
+              />
+            ) : filteredSorted.length === 0 ? (
+              <EmptyState
+                icon={Search}
+                title="No memories match"
+                description="No facts match the current filters. Clear them to see all memories."
+                action={
+                  <Button size="sm" variant="outline" onClick={clearFilters}>
+                    <X className="h-4 w-4" aria-hidden />
+                    Clear filters
+                  </Button>
+                }
+              />
+            ) : groups ? (
+              <div className="divide-y divide-border/70">
+                {groups.map(([label, rows]) => (
+                  <section key={label} aria-label={label} className="py-3">
+                    <div className="flex items-baseline gap-2">
+                      <h3 className="text-sm font-semibold text-foreground">{label}</h3>
+                      <span className="text-sm tabular-nums text-muted-foreground">
+                        {fmtNumber(rows.length)} {rows.length === 1 ? 'fact' : 'facts'}
+                      </span>
+                    </div>
+                    <ul className="divide-y divide-border/70">{rows.map(renderRow)}</ul>
+                  </section>
+                ))}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border/70">{filteredSorted.map(renderRow)}</ul>
+            )}
+          </div>
+        </Panel>
       )}
 
       {/* delete confirm */}
       <Dialog open={!!pendingDelete} onOpenChange={(o) => (!o ? setPendingDelete(null) : undefined)}>
-        <DialogContent>
+        <DialogContent onCloseAutoFocus={deleteOpener.onCloseAutoFocus}>
           <DialogHeader>
             <DialogTitle>Delete this memory?</DialogTitle>
             <DialogDescription>

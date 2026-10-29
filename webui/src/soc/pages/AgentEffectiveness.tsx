@@ -1,9 +1,17 @@
 /**
- * Agent Effectiveness — aggregate, read-only evidence about observed SOC outcomes.
+ * Agent effectiveness: aggregate, read-only evidence about observed SOC outcomes.
  *
  * This surface intentionally has no synthetic score and never claims that the model
  * learned or caused a change. It mirrors the server's complete-day cohort, sample,
  * case-mix, and guardrail states without turning missing evidence into zero.
+ *
+ * Round 14 (SPEC §4.9, ask 8): `AgentEffectivenessPage` is the `#/effectiveness` page
+ * (Analytics > Agent effectiveness): the page header (title, help tip, the Analytics time
+ * range for Agent health, one refresh for both reports, freshness), then Agent health and
+ * the observed outcomes, each module on the tinted panel. While the headline is still
+ * collecting evidence, the detail modules (comparisons, guardrails, evidence quality,
+ * daily evidence) fold behind one disclosure so the page does not open on a wall of
+ * "collecting" rows. `AgentEffectivenessSummary` is the compact form Auto-tuning embeds.
  */
 import * as React from 'react';
 import {
@@ -11,9 +19,7 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock3,
-  RefreshCw,
   Scale,
-  ShieldCheck,
   Sparkles,
   TrendingUp,
   type LucideIcon,
@@ -25,11 +31,12 @@ import type {
   AgentEvidenceStatus,
   AgentImprovementEvidence,
 } from '@/lib/types';
-import { DASH } from '@/lib/format';
+import { DASH, fmtNumber } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import { Badge } from '@/ui/badge';
 import { Button } from '@/ui/button';
-import { LoadingState } from '@/design-system';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/ui/table';
+import { LoadingState, Panel, PANEL_GAP } from '@/design-system';
 import { LoadingBar } from '@/soc/components/LoadingBar';
 import { ComparisonMetric, type ComparisonMetricStatus } from '@/soc/components/ComparisonMetric';
 import {
@@ -42,8 +49,15 @@ import {
   TuningOutcomeContext,
   type AgentImprovementEvidenceWithOutcomes,
 } from '@/soc/components/AgentOperationalOutcomes';
+import { HealthDiagnostics } from '@/soc/components/HealthDiagnostics';
+import { KpiTile } from '@/soc/components/KpiTile';
 import { LoadError } from '@/soc/components/LoadError';
+import { PageContainer } from '@/soc/components/PageContainer';
+import { PageHeader } from '@/soc/components/PageHeader';
+import { RefreshButton } from '@/soc/components/RefreshButton';
+import type { Navigate } from '@/soc/router';
 import { humanizeMinutes } from './posture.format';
+import { AnalyticsWindowPicker, StripPanel, UpdatedStamp, useAnalyticsWindow } from './analytics-shared';
 
 type HeadlineState = AgentImprovementEvidence['headline']['state'];
 
@@ -99,7 +113,7 @@ function dayRangeLabel(start: string, endExclusive: string): string {
   const startDate = new Date(`${start}T00:00:00Z`);
   const endDate = new Date(`${endExclusive}T00:00:00Z`);
   if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
-    return `${start}–${endExclusive}`;
+    return `${start} to ${endExclusive}`;
   }
   endDate.setUTCDate(endDate.getUTCDate() - 1);
   const month = (value: Date) =>
@@ -107,12 +121,12 @@ function dayRangeLabel(start: string, endExclusive: string): string {
   const sameYear = startDate.getUTCFullYear() === endDate.getUTCFullYear();
   const sameMonth = sameYear && startDate.getUTCMonth() === endDate.getUTCMonth();
   if (sameMonth) {
-    return `${month(startDate)} ${startDate.getUTCDate()}–${endDate.getUTCDate()}, ${endDate.getUTCFullYear()}`;
+    return `${month(startDate)} ${startDate.getUTCDate()} to ${endDate.getUTCDate()}, ${endDate.getUTCFullYear()}`;
   }
   if (sameYear) {
-    return `${month(startDate)} ${startDate.getUTCDate()}–${month(endDate)} ${endDate.getUTCDate()}, ${endDate.getUTCFullYear()}`;
+    return `${month(startDate)} ${startDate.getUTCDate()} to ${month(endDate)} ${endDate.getUTCDate()}, ${endDate.getUTCFullYear()}`;
   }
-  return `${month(startDate)} ${startDate.getUTCDate()}, ${startDate.getUTCFullYear()}–${month(endDate)} ${endDate.getUTCDate()}, ${endDate.getUTCFullYear()}`;
+  return `${month(startDate)} ${startDate.getUTCDate()}, ${startDate.getUTCFullYear()} to ${month(endDate)} ${endDate.getUTCDate()}, ${endDate.getUTCFullYear()}`;
 }
 
 function ratio(value: number | null | undefined, digits = 1): string {
@@ -172,6 +186,16 @@ function evidenceLabel(status: AgentEvidenceStatus, breached: boolean | null): s
   if (status === 'not_applicable') return 'Not applicable';
   if (status === 'unavailable') return 'Unavailable';
   return 'Collecting evidence';
+}
+
+/**
+ * Whether either safety guardrail could be evaluated (enough data, or a breach the server
+ * already reports). An evaluable guardrail stays visible while the headline is still
+ * collecting evidence; only guardrails that are still collecting fold away.
+ */
+export function guardrailsEvaluable(data: AgentImprovementEvidence): boolean {
+  const rows = [data.guardrails?.confirmed_false_negative_rate, data.guardrails?.reopen_after_agent_close_rate];
+  return rows.some((g) => Boolean(g) && (g!.status === 'enough_data' || g!.breached === true));
 }
 
 function guardrailVariant(
@@ -242,18 +266,12 @@ export function AgentEffectivenessSummary({
     >
       <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h2
-            id="tuning-outcomes-heading"
-            className="inline-flex items-center gap-2 text-2xs font-semibold uppercase tracking-wider text-muted-foreground"
-          >
-            <TrendingUp className="h-4 w-4 text-primary" aria-hidden />
+          <h2 id="tuning-outcomes-heading" className="text-md font-semibold text-foreground">
             Observed outcomes
           </h2>
           {headline && data ? (
             <>
-              <p className="mt-2 text-lg font-semibold tracking-tight text-foreground">
-                {headline.title}
-              </p>
+              <p className="mt-2 text-lg font-semibold text-foreground">{headline.title}</p>
               <p className="mt-1 max-w-4xl text-xs leading-relaxed text-muted-foreground">
                 {data.headline.reason}
               </p>
@@ -264,7 +282,7 @@ export function AgentEffectivenessSummary({
             </p>
           )}
           {data ? (
-            <p className="mt-1 font-mono text-2xs leading-relaxed text-muted-foreground">
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
               Current{' '}
               {dayRangeLabel(
                 data.windows.current.start,
@@ -415,8 +433,91 @@ export function AgentEffectivenessSummary({
   );
 }
 
-export default function AgentEffectiveness() {
-  const { data, loading, error, load } = useAgentEffectiveness();
+// =========================================================================== //
+// The page (`#/effectiveness`)
+// =========================================================================== //
+
+/** The page title: the navigation label of `#/effectiveness` (one name per page, D25). */
+const PAGE_TITLE = 'Agent effectiveness';
+
+/** The header help tip (the page explains itself there, never in a line, C8). */
+const PAGE_HELP =
+  'Agent health over the selected range, then observed outcomes: the last seven complete ' +
+  'UTC days against the 28 before. Reporting only; deterministic case decisions do not change.';
+
+/** Whether the Agent health reads exist on this client (an older proxy may lack them). */
+function healthAvailable(): boolean {
+  return typeof api.diagnosticsHealth === 'function' || typeof api.autoCloseHealth === 'function';
+}
+
+export interface AgentEffectivenessPageProps {
+  /** Kept for host parity; the page navigates nowhere today. */
+  onNavigate?: Navigate;
+}
+
+/**
+ * Analytics > Agent effectiveness: the page header, then Agent health (over the selected
+ * range) and the observed outcome evidence (fixed complete-day cohorts). One refresh reads
+ * both again.
+ */
+export function AgentEffectivenessPage(_props: AgentEffectivenessPageProps = {}) {
+  const [hours, setHours] = useAnalyticsWindow();
+  const [healthRefresh, setHealthRefresh] = React.useState(0);
+  const evidence = useAgentEffectiveness();
+  const { load } = evidence;
+  const refresh = React.useCallback(() => {
+    setHealthRefresh((n) => n + 1);
+    void load();
+  }, [load]);
+
+  return (
+    <PageContainer variant="wide">
+      <PageHeader
+        title={PAGE_TITLE}
+        help={PAGE_HELP}
+        controls={
+          <>
+            <AnalyticsWindowPicker hours={hours} onChange={setHours} />
+            <RefreshButton
+              display="icon"
+              label="Refresh agent effectiveness"
+              refreshing={evidence.loading && evidence.data !== null}
+              disabled={evidence.loading}
+              onClick={refresh}
+            />
+          </>
+        }
+        actions={<UpdatedStamp at={evidence.data?.generated_at} />}
+      />
+      {healthAvailable() ? <HealthDiagnostics windowHours={hours} refreshKey={healthRefresh} /> : null}
+      <EvidenceReport {...evidence} />
+    </PageContainer>
+  );
+}
+
+/**
+ * The observed outcome evidence on its own (it loads itself). `refreshKey` reads it again
+ * when it changes.
+ */
+export default function AgentEffectiveness({ refreshKey = 0 }: { refreshKey?: number } = {}) {
+  const evidence = useAgentEffectiveness(refreshKey);
+  return <EvidenceReport {...evidence} />;
+}
+
+type EvidenceState = ReturnType<typeof useAgentEffectiveness>;
+
+/** The day-range line of a reporting window: "Current Jul 21 to 27, 2026; baseline ...". */
+function windowsLine(data: AgentImprovementEvidence): string {
+  return (
+    `Current ${dayRangeLabel(data.windows.current.start, data.windows.current.end_exclusive)}; ` +
+    `baseline ${dayRangeLabel(data.windows.baseline.start, data.windows.baseline.end_exclusive)}; ` +
+    'complete UTC days'
+  );
+}
+
+function EvidenceReport({ data, loading, error, load }: EvidenceState) {
+  const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const detailsId = React.useId();
 
   if (loading && !data) {
     return (
@@ -444,73 +545,63 @@ export default function AgentEffectiveness() {
 
   const headline = HEADLINE_COPY[data.headline.state];
   const HeadlineIcon = headline.icon;
-  const metrics = data.metrics;
-  const qualitySample = metrics.analyst_reported_verdict_agreement.current.sample_count;
-  const turnaroundSample = metrics.human_review_turnaround.current.sample_count;
-  const currentDays = data.daily_points.filter((point) => point.window === 'current').slice(-7);
-  const excluded = Object.values(data.exclusions).reduce((sum, count) => sum + count, 0);
-  const falseNegative = data.guardrails.confirmed_false_negative_rate;
-  const reopen = data.guardrails.reopen_after_agent_close_rate;
+  const collecting = data.headline.state === 'insufficient_evidence';
   const expandedEvidence = data as AgentImprovementEvidenceWithOutcomes;
+  const hasOutcomes = Boolean(
+    expandedEvidence.period_comparisons?.week_over_week?.outcomes ?? expandedEvidence.outcomes,
+  );
+  const showDetails = !collecting || detailsOpen;
+  // A guardrail the server could evaluate is never folded away: the headline can say
+  // "not enough evidence" (other domains are still collecting) while the false-negative
+  // guardrail is already measured, even breached. Only rows still collecting fold.
+  const guardrailEvaluable = guardrailsEvaluable(data);
+  const foldedNames = guardrailEvaluable
+    ? 'Outcome comparisons, evidence quality and the daily evidence are'
+    : 'Outcome comparisons, safety guardrails, evidence quality and the daily evidence are';
 
   return (
-    <div className="space-y-6" data-testid="agent-effectiveness">
-      <section className="border-y border-border/70 py-5" aria-labelledby="agent-effectiveness-heading">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div className="min-w-0 space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={headline.badge}>
-                <HeadlineIcon className="h-3.5 w-3.5" aria-hidden />
-                {domainLabel(data.headline.state)}
+    <div className={cn('flex flex-col', PANEL_GAP)} data-testid="agent-effectiveness">
+      <Panel
+        title="Observed outcomes"
+        caption="last 7 complete UTC days against the 28 before"
+        aside={
+          <span className="flex flex-wrap items-center gap-2">
+            <Badge variant={headline.badge}>
+              <HeadlineIcon className="size-3.5" aria-hidden />
+              {domainLabel(data.headline.state)}
+            </Badge>
+            {data.synthetic ? (
+              <Badge variant="warning">
+                <Sparkles className="size-3.5" aria-hidden />
+                Synthetic demo evidence
               </Badge>
-              <Badge variant="outline">Complete UTC days</Badge>
-              <Badge variant="outline">Aggregate only</Badge>
-              {data.synthetic ? (
-                <Badge variant="warning">
-                  <Sparkles className="h-3.5 w-3.5" aria-hidden />
-                  Synthetic demo evidence
-                </Badge>
-              ) : null}
-            </div>
-            <div>
-              <h2 id="agent-effectiveness-heading" className={cn('text-xl font-semibold', headline.className)}>
-                {headline.title}
-              </h2>
-              <p className="mt-1 max-w-3xl text-sm leading-relaxed text-muted-foreground">
-                {data.headline.reason}
-              </p>
-            </div>
-            <p className="max-w-3xl text-xs leading-relaxed text-muted-foreground">
-              Observed agent-assisted triage outcomes only. This is not a model-learning
-              score and does not establish that the agent caused the change.
-            </p>
-          </div>
-
-          <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
-            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-              <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} aria-hidden />
-              Refresh
-            </Button>
-            <p className="font-mono text-2xs text-muted-foreground">
-              Current {dayLabel(data.windows.current.start)} → before {dayLabel(data.windows.current.end_exclusive)}
-            </p>
-            <p className="font-mono text-2xs text-muted-foreground">
-              Baseline {dayLabel(data.windows.baseline.start)} → before {dayLabel(data.windows.baseline.end_exclusive)}
-            </p>
-          </div>
+            ) : null}
+          </span>
+        }
+        data-testid="agent-effectiveness-headline"
+      >
+        <div className="space-y-2">
+          <p className={cn('text-lg font-semibold', headline.className)}>{headline.title}</p>
+          <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{data.headline.reason}</p>
+          <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
+            Observed agent-assisted triage outcomes only. This is not a model-learning score and does not
+            establish that the agent caused the change.
+          </p>
+          <p className="text-sm tabular-nums text-muted-foreground">{windowsLine(data)}</p>
         </div>
-
-        <div className="mt-5 grid gap-px overflow-hidden border-y border-border/70 bg-border/70 md:grid-cols-2">
+        <dl className="mt-4 grid divide-y divide-border/70 border-t border-border/70 md:grid-cols-2 md:divide-x md:divide-y-0">
           {Object.entries(data.headline.signal_domains).map(([name, direction]) => (
-            <div key={name} className="flex items-center justify-between gap-3 bg-background px-4 py-3">
-              <span className="text-sm font-medium text-foreground">
+            <div key={name} className="flex items-center justify-between gap-3 py-3 md:px-4 md:first:pl-0">
+              <dt className="text-sm font-medium text-foreground">
                 {name === 'analyst_grade_quality' ? 'Analyst-graded quality' : 'Human review turnaround'}
-              </span>
-              <Badge variant={domainVariant(direction)}>{domainLabel(direction)}</Badge>
+              </dt>
+              <dd>
+                <Badge variant={domainVariant(direction)}>{domainLabel(direction)}</Badge>
+              </dd>
             </div>
           ))}
-        </div>
-      </section>
+        </dl>
+      </Panel>
 
       {error ? (
         <LoadError
@@ -521,205 +612,261 @@ export default function AgentEffectiveness() {
         />
       ) : null}
 
-      <AgentOperationalOutcomes evidence={expandedEvidence} />
+      {hasOutcomes ? (
+        <Panel title="Operational outcomes" caption="complete UTC days" data-testid="agent-operational-outcomes">
+          <AgentOperationalOutcomes evidence={expandedEvidence} />
+        </Panel>
+      ) : null}
 
-      <section aria-labelledby="outcome-comparisons-heading" className="space-y-3">
-        <div>
-          <h3 id="outcome-comparisons-heading" className="text-sm font-semibold text-foreground">
-            Outcome comparisons
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            The current seven complete days compared with the preceding 28-day baseline.
-          </p>
-        </div>
-        <div className="grid gap-4 xl:grid-cols-3">
-          <ComparisonMetric
-            label={metrics.analyst_reported_verdict_agreement.label}
-            value={metricValue(metrics.analyst_reported_verdict_agreement, 'current')}
-            prior={metricValue(metrics.analyst_reported_verdict_agreement, 'baseline')}
-            priorLabel="28-day baseline"
-            delta={metricDelta(metrics.analyst_reported_verdict_agreement)}
-            goodDirection="up"
-            accent="success"
-            icon={CheckCircle2}
-            sub={metrics.analyst_reported_verdict_agreement.current.reason || 'Source × severity mix adjusted'}
-            status={evidenceStatus(metrics.analyst_reported_verdict_agreement)}
-            sample={{ count: qualitySample, label: 'comparable grades' }}
-            definition={metrics.analyst_reported_verdict_agreement.definition}
-            testId="agent-agreement"
-          />
-          <ComparisonMetric
-            label={metrics.material_analyst_correction_rate.label}
-            value={metricValue(metrics.material_analyst_correction_rate, 'current')}
-            prior={metricValue(metrics.material_analyst_correction_rate, 'baseline')}
-            priorLabel="28-day baseline"
-            delta={metricDelta(metrics.material_analyst_correction_rate)}
-            goodDirection="down"
-            accent="high"
-            icon={Scale}
-            sub={metrics.material_analyst_correction_rate.current.reason || 'Source × severity mix adjusted'}
-            status={evidenceStatus(metrics.material_analyst_correction_rate)}
-            sample={{ count: metrics.material_analyst_correction_rate.current.sample_count, label: 'comparable grades' }}
-            definition={metrics.material_analyst_correction_rate.definition}
-            testId="agent-correction"
-          />
-          <ComparisonMetric
-            label={metrics.human_review_turnaround.label}
-            value={metricValue(metrics.human_review_turnaround, 'current')}
-            prior={metricValue(metrics.human_review_turnaround, 'baseline')}
-            priorLabel="28-day baseline"
-            delta={metricDelta(metrics.human_review_turnaround)}
-            goodDirection="down"
-            accent="primary"
-            icon={Clock3}
-            sub={metrics.human_review_turnaround.current.reason || 'Median elapsed review time'}
-            status={evidenceStatus(metrics.human_review_turnaround)}
-            sample={{ count: turnaroundSample, label: 'human-reviewed cases' }}
-            definition={metrics.human_review_turnaround.definition}
-            testId="agent-turnaround"
-          />
-        </div>
-      </section>
+      {collecting && guardrailEvaluable ? <SafetyGuardrails data={data} /> : null}
 
-      <section aria-labelledby="safety-guardrails-heading" className="space-y-3">
-        <div>
-          <h3 id="safety-guardrails-heading" className="text-sm font-semibold text-foreground">
-            Safety guardrails
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Favorable efficiency changes are never promoted when an evaluable guardrail regresses.
-          </p>
-        </div>
-        <div className="divide-y divide-border/70 border-y border-border/70">
-          <div className="grid gap-3 py-4 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center">
-            <div className="min-w-0">
-              <p className="font-medium text-foreground">Confirmed false-negative rate</p>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{falseNegative.definition}</p>
-            </div>
-            <div className="flex gap-5 font-mono text-xs tabular-nums text-muted-foreground">
-              <span>Current <strong className="text-foreground">{ratio(falseNegative.current.value)}</strong></span>
-              <span>Baseline <strong className="text-foreground">{ratio(falseNegative.baseline.value)}</strong></span>
-            </div>
-            <Badge variant={guardrailVariant(falseNegative.status, falseNegative.breached)}>
-              {evidenceLabel(falseNegative.status, falseNegative.breached)}
-            </Badge>
-          </div>
-          <div className="grid gap-3 py-4 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center">
-            <div className="min-w-0">
-              <p className="font-medium text-foreground">Reopen after agent close</p>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{reopen.caveat}</p>
-            </div>
-            <div className="flex gap-5 font-mono text-xs tabular-nums text-muted-foreground">
-              <span>Current <strong className="text-foreground">{ratio(reopen.current.rate)}</strong></span>
-              <span>Baseline <strong className="text-foreground">{ratio(reopen.baseline.rate)}</strong></span>
-            </div>
-            <Badge variant={guardrailVariant(reopen.status, reopen.breached)}>
-              {evidenceLabel(reopen.status, reopen.breached)}
-            </Badge>
-          </div>
-        </div>
-      </section>
-
-      <section aria-labelledby="evidence-quality-heading" className="space-y-3">
-        <div>
-          <h3 id="evidence-quality-heading" className="text-sm font-semibold text-foreground">
-            Evidence quality
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Aggregate cohort coverage and exclusions used to qualify the headline.
-          </p>
-        </div>
-        <dl className="grid border-y border-border/70 sm:grid-cols-2 xl:grid-cols-4">
-          {[
-            ['Comparable case mix', ratio(data.case_mix.comparable_mix_coverage, 0)],
-            ['Shared strata', data.case_mix.comparable_strata.toLocaleString()],
-            ['Suppressed strata', data.case_mix.suppressed_strata.toLocaleString()],
-            ['Excluded observations', excluded.toLocaleString()],
-          ].map(([label, value], index) => (
-            <div
-              key={label}
-              className={cn(
-                'px-4 py-3',
-                index > 0 && 'border-t border-border/70',
-                index === 1 && 'sm:border-l sm:border-t-0',
-                index === 2 && 'xl:border-l xl:border-t-0',
-                index === 3 && 'sm:border-l xl:border-t-0',
-              )}
+      {collecting ? (
+        <Panel
+          title="Evidence details"
+          caption="collecting evidence"
+          actions={
+            <Button
+              variant="outline"
+              size="sm"
+              aria-expanded={detailsOpen}
+              aria-controls={detailsId}
+              onClick={() => setDetailsOpen((open) => !open)}
             >
-              <dt className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground">{label}</dt>
-              <dd className="mt-1 font-mono text-lg font-semibold tabular-nums text-foreground">{value}</dd>
-            </div>
-          ))}
-        </dl>
-        {data.provenance.truncated ? (
-          <div role="status" className="flex gap-2 border-y border-warning/30 py-3 text-sm text-warning-text">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-            The case scan was truncated ({data.provenance.fetched.toLocaleString()} of {data.provenance.store_total.toLocaleString()} fetched), so the headline remains insufficient.
-          </div>
-        ) : null}
-      </section>
-
-      <section aria-labelledby="daily-evidence-heading" className="space-y-3">
-        <div>
-          <h3 id="daily-evidence-heading" className="text-sm font-semibold text-foreground">
-            Current-window daily evidence
-          </h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Daily values remain blank until that day meets its own minimum evidence threshold.
+              {detailsOpen ? 'Hide details' : 'Show details'}
+            </Button>
+          }
+          data-testid="agent-effectiveness-details-toggle"
+        >
+          <p className="text-sm text-muted-foreground">
+            {foldedNames} still collecting the minimum samples. Open them to see what each one is
+            waiting for.
           </p>
-        </div>
-        <div className="overflow-x-auto border-y border-border/70">
-          <table className="w-full min-w-[760px] border-collapse text-left text-sm">
-            <caption className="sr-only">Current seven-day agent effectiveness evidence</caption>
-            <thead className="border-b border-border/70 text-2xs uppercase tracking-wider text-muted-foreground">
-              <tr>
-                <th scope="col" className="px-4 py-3 font-semibold">UTC day</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Agreement</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Correction</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Review p50</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Quality n</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Review n</th>
-                <th scope="col" className="px-4 py-3 font-semibold">Evidence</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/70">
-              {currentDays.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-8 text-center text-sm text-muted-foreground">
-                    Daily evidence is not available yet.
-                  </td>
-                </tr>
-              ) : null}
-              {currentDays.map((point) => (
-                <tr key={point.date}>
-                  <th scope="row" className="whitespace-nowrap px-4 py-3 font-medium text-foreground">{dayLabel(point.date)}</th>
-                  <td className="px-4 py-3 font-mono tabular-nums">{ratio(point.analyst_reported_agreement)}</td>
-                  <td className="px-4 py-3 font-mono tabular-nums">{ratio(point.correction_rate)}</td>
-                  <td className="px-4 py-3 font-mono tabular-nums">{humanizeMinutes(point.review_turnaround_p50_minutes)}</td>
-                  <td className="px-4 py-3 font-mono tabular-nums">{point.quality_sample_count.toLocaleString()}</td>
-                  <td className="px-4 py-3 font-mono tabular-nums">{point.turnaround_sample_count.toLocaleString()}</td>
-                  <td className="px-4 py-3">
-                    <Badge variant={point.status === 'enough_data' ? 'success' : 'warning'}>
-                      {point.status === 'enough_data' ? 'Enough data' : 'Collecting'}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
+        </Panel>
+      ) : null}
 
-      <SourceCoverageGuidance evidence={expandedEvidence} />
+      {/* Always in the DOM, so the disclosure's aria-controls names an element that exists;
+          `hidden` keeps the folded modules out of the layout and the accessibility tree. No
+          display utility while hidden: a `flex` class would override the attribute. */}
+      <div
+        id={detailsId}
+        hidden={!showDetails}
+        className={showDetails ? cn('flex flex-col', PANEL_GAP) : undefined}
+        data-testid="agent-effectiveness-details"
+      >
+        <OutcomeComparisons data={data} />
+        {collecting && guardrailEvaluable ? null : <SafetyGuardrails data={data} />}
+        <EvidenceQuality data={data} />
+        <DailyEvidence data={data} />
+      </div>
 
-      <footer className="flex flex-wrap items-center gap-x-5 gap-y-2 border-y border-border/70 py-3 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
-          <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
-          Reporting only — deterministic case decisions are unchanged
-        </span>
-        <span>No model calls or billing</span>
-        <span>No case or source identifiers</span>
-      </footer>
+      <Panel title="Evidence coverage" data-testid="agent-coverage-guidance" className="[&>section]:border-y-0 [&>section]:py-0">
+        <SourceCoverageGuidance evidence={expandedEvidence} />
+      </Panel>
+
+      <p className="text-sm text-muted-foreground" data-testid="agent-effectiveness-footer">
+        Reporting only: deterministic case decisions are unchanged. No model calls or billing, and no
+        case or source identifiers.
+      </p>
     </div>
+  );
+}
+
+function OutcomeComparisons({ data }: { data: AgentImprovementEvidence }) {
+  const metrics = data.metrics;
+  const qualitySample = metrics.analyst_reported_verdict_agreement.current.sample_count;
+  const turnaroundSample = metrics.human_review_turnaround.current.sample_count;
+  return (
+    <Panel
+      title="Outcome comparisons"
+      caption="last 7 complete days against the 28 before"
+      padding="none"
+      data-testid="agent-outcome-comparisons"
+    >
+      <div className="grid divide-y divide-border/70 border-t border-border/70 xl:grid-cols-3 xl:divide-x xl:divide-y-0 [&>section]:border-y-0">
+        <ComparisonMetric
+          label={metrics.analyst_reported_verdict_agreement.label}
+          value={metricValue(metrics.analyst_reported_verdict_agreement, 'current')}
+          prior={metricValue(metrics.analyst_reported_verdict_agreement, 'baseline')}
+          priorLabel="28-day baseline"
+          delta={metricDelta(metrics.analyst_reported_verdict_agreement)}
+          goodDirection="up"
+          accent="success"
+          icon={CheckCircle2}
+          sub={metrics.analyst_reported_verdict_agreement.current.reason || 'Source × severity mix adjusted'}
+          status={evidenceStatus(metrics.analyst_reported_verdict_agreement)}
+          sample={{ count: qualitySample, label: 'comparable grades' }}
+          definition={metrics.analyst_reported_verdict_agreement.definition}
+          testId="agent-agreement"
+        />
+        <ComparisonMetric
+          label={metrics.material_analyst_correction_rate.label}
+          value={metricValue(metrics.material_analyst_correction_rate, 'current')}
+          prior={metricValue(metrics.material_analyst_correction_rate, 'baseline')}
+          priorLabel="28-day baseline"
+          delta={metricDelta(metrics.material_analyst_correction_rate)}
+          goodDirection="down"
+          accent="high"
+          icon={Scale}
+          sub={metrics.material_analyst_correction_rate.current.reason || 'Source × severity mix adjusted'}
+          status={evidenceStatus(metrics.material_analyst_correction_rate)}
+          sample={{ count: metrics.material_analyst_correction_rate.current.sample_count, label: 'comparable grades' }}
+          definition={metrics.material_analyst_correction_rate.definition}
+          testId="agent-correction"
+        />
+        <ComparisonMetric
+          label={metrics.human_review_turnaround.label}
+          value={metricValue(metrics.human_review_turnaround, 'current')}
+          prior={metricValue(metrics.human_review_turnaround, 'baseline')}
+          priorLabel="28-day baseline"
+          delta={metricDelta(metrics.human_review_turnaround)}
+          goodDirection="down"
+          accent="primary"
+          icon={Clock3}
+          sub={metrics.human_review_turnaround.current.reason || 'Median elapsed review time'}
+          status={evidenceStatus(metrics.human_review_turnaround)}
+          sample={{ count: turnaroundSample, label: 'human-reviewed cases' }}
+          definition={metrics.human_review_turnaround.definition}
+          testId="agent-turnaround"
+        />
+      </div>
+    </Panel>
+  );
+}
+
+function SafetyGuardrails({ data }: { data: AgentImprovementEvidence }) {
+  const falseNegative = data.guardrails.confirmed_false_negative_rate;
+  const reopen = data.guardrails.reopen_after_agent_close_rate;
+  const rows: Array<{
+    key: string;
+    title: string;
+    detail: string;
+    current: string;
+    baseline: string;
+    status: AgentEvidenceStatus;
+    breached: boolean | null;
+  }> = [
+    {
+      key: 'false-negative',
+      title: 'Confirmed false-negative rate',
+      detail: falseNegative.definition,
+      current: ratio(falseNegative.current.value),
+      baseline: ratio(falseNegative.baseline.value),
+      status: falseNegative.status,
+      breached: falseNegative.breached,
+    },
+    {
+      key: 'reopen',
+      title: 'Reopen after agent close',
+      detail: reopen.caveat,
+      current: ratio(reopen.current.rate),
+      baseline: ratio(reopen.baseline.rate),
+      status: reopen.status,
+      breached: reopen.breached,
+    },
+  ];
+  return (
+    <Panel title="Safety guardrails" caption="last 7 complete days against the 28 before" data-testid="agent-guardrails">
+      <p className="text-sm text-muted-foreground">
+        A favourable efficiency change is never promoted while an evaluable guardrail regresses.
+      </p>
+      <ul className="mt-3 divide-y divide-border/70 border-t border-border/70">
+        {rows.map((row) => (
+          <li key={row.key} className="grid gap-3 py-3 md:grid-cols-[minmax(0,1fr)_auto_auto] md:items-center">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">{row.title}</p>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{row.detail}</p>
+            </div>
+            <div className="flex gap-5 text-sm tabular-nums text-muted-foreground">
+              <span>
+                Current <strong className="font-semibold text-foreground">{row.current}</strong>
+              </span>
+              <span>
+                Baseline <strong className="font-semibold text-foreground">{row.baseline}</strong>
+              </span>
+            </div>
+            <Badge variant={guardrailVariant(row.status, row.breached)}>{evidenceLabel(row.status, row.breached)}</Badge>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+function EvidenceQuality({ data }: { data: AgentImprovementEvidence }) {
+  const excluded = Object.values(data.exclusions).reduce((sum, count) => sum + count, 0);
+  return (
+    <div className={cn('flex flex-col', PANEL_GAP)}>
+      <StripPanel title="Evidence quality" caption="cohort coverage and exclusions" data-testid="agent-evidence-quality">
+        <KpiTile
+          label="Comparable case mix"
+          value={ratio(data.case_mix.comparable_mix_coverage, 0)}
+          context="of cases in shared strata"
+        />
+        <KpiTile label="Shared strata" value={fmtNumber(data.case_mix.comparable_strata)} context="source and severity pairs" />
+        <KpiTile label="Suppressed strata" value={fmtNumber(data.case_mix.suppressed_strata)} context="below the minimum size" />
+        <KpiTile label="Excluded observations" value={fmtNumber(excluded)} context="not counted" />
+      </StripPanel>
+      {data.provenance.truncated ? (
+        <div role="status" className="flex gap-2 text-sm text-warning-text">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+          The case scan was truncated ({fmtNumber(data.provenance.fetched)} of {fmtNumber(data.provenance.store_total)}{' '}
+          read), so the headline stays at not enough evidence.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DailyEvidence({ data }: { data: AgentImprovementEvidence }) {
+  const currentDays = data.daily_points.filter((point) => point.window === 'current').slice(-7);
+  return (
+    <Panel
+      title="Current-window daily evidence"
+      caption="times in UTC"
+      padding="none"
+      data-testid="agent-daily-evidence"
+    >
+      <p className="px-4 pb-3 text-sm text-muted-foreground xl:px-5 3xl:px-6">
+        A day stays blank until it meets its own minimum evidence threshold.
+      </p>
+      {currentDays.length === 0 ? (
+        <p className="border-t border-border/70 px-4 py-6 text-center text-sm text-muted-foreground xl:px-5 3xl:px-6">
+          Daily evidence is not available yet.
+        </p>
+      ) : (
+        <Table aria-label="Current seven-day agent effectiveness evidence" className="min-w-[44rem]" containerClassName="pb-2">
+          <TableHeader>
+            <TableRow>
+              <TableHead density="compact" className="pl-4 xl:pl-5 3xl:pl-6">UTC day</TableHead>
+              <TableHead density="compact" className="text-right">Agreement</TableHead>
+              <TableHead density="compact" className="text-right">Correction</TableHead>
+              <TableHead density="compact" className="text-right">Review p50</TableHead>
+              <TableHead density="compact" className="text-right">Quality samples</TableHead>
+              <TableHead density="compact" className="text-right">Review samples</TableHead>
+              <TableHead density="compact" className="pr-4 xl:pr-5 3xl:pr-6">Evidence</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {currentDays.map((point) => (
+              <TableRow key={point.date}>
+                <TableCell density="compact" numeric className="pl-4 font-medium xl:pl-5 3xl:pl-6">
+                  {dayLabel(point.date)}
+                </TableCell>
+                <TableCell density="compact" numeric className="text-right">{ratio(point.analyst_reported_agreement)}</TableCell>
+                <TableCell density="compact" numeric className="text-right">{ratio(point.correction_rate)}</TableCell>
+                <TableCell density="compact" numeric className="text-right">{humanizeMinutes(point.review_turnaround_p50_minutes)}</TableCell>
+                <TableCell density="compact" numeric className="text-right">{fmtNumber(point.quality_sample_count)}</TableCell>
+                <TableCell density="compact" numeric className="text-right">{fmtNumber(point.turnaround_sample_count)}</TableCell>
+                <TableCell density="compact" className="pr-4 xl:pr-5 3xl:pr-6">
+                  <Badge variant={point.status === 'enough_data' ? 'success' : 'warning'}>
+                    {point.status === 'enough_data' ? 'Enough data' : 'Collecting'}
+                  </Badge>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+    </Panel>
   );
 }

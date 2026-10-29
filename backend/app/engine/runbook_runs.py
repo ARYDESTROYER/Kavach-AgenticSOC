@@ -462,13 +462,24 @@ def _is_complete(run: RunbookRun) -> bool:
 
 
 def next_step(run: RunbookRun) -> RunbookStep | None:
-    """The step the Next step card shows: the first required step (in reading order)
-    that is not Done or Not applicable, else the first such optional step."""
-    open_steps = [s for s in ordered_steps(run.snapshot) if _step_state(run, s.id).status not in _FINISHED_STEP]
-    for step in open_steps:
-        if step.required:
-            return step
-    return open_steps[0] if open_steps else None
+    """The step the Next step card shows, one rule with the Console's ``nextStep``
+    (``webui/src/soc/runbooks/run/model.ts``): the first REQUIRED step in reading order
+    that is not Done or Not applicable and not waiting for approval. A step waiting for
+    approval belongs to its approver, so it is never next, and an optional step is never
+    next either. ``None`` on an abandoned run and when no required step is left to act
+    on: every required step is finished, or the ones left wait for approval (the card
+    then says "All required steps are done." or "The remaining required steps wait for
+    approval."). A blocked required step is still next: someone has to unblock it."""
+    if run.status == "abandoned":
+        return None
+    for step in ordered_steps(run.snapshot):
+        if not step.required:
+            continue
+        state = _step_state(run, step.id)
+        if state.status in _FINISHED_STEP or _waiting(state):
+            continue
+        return step
+    return None
 
 
 def _refresh_completion(run: RunbookRun, now: str) -> str | None:
@@ -2113,6 +2124,8 @@ async def _log_lookup(state: Any, binding: lookups.LookupBinding, base: dict[str
 
 
 # ---- enrichment ----------------------------------------------------------- #
+#: An enrichment lookup in Demo Mode: the Demo sandbox never calls a provider.
+DEMO_ENRICHMENT_REASON = "Demo Mode does not call enrichment providers."
 _INDICATOR_KINDS = {
     "ip": IndicatorKind.IP, "domain": IndicatorKind.DOMAIN, "url": IndicatorKind.URL,
     "hash": IndicatorKind.FILE_HASH, "email": IndicatorKind.EMAIL,
@@ -2125,6 +2138,11 @@ async def _enrich_lookup(state: Any, binding: lookups.LookupBinding, base: dict[
     indicator = binding.indicator
     if indicator is None or indicator.kind not in _INDICATOR_KINDS:
         return LookupResult(**base, status="not_applicable", reason="This case has no value to enrich.")
+    if getattr(state, "demo_active", False):
+        # The Demo sandbox never calls a provider (``DemoStack._demo_prefs``); the
+        # operator's own enrichment setting is untouched, so "turned off in Settings"
+        # would send them to a page that says it is on.
+        return LookupResult(**base, status="not_applicable", reason=DEMO_ENRICHMENT_REASON)
     prefs = state.execution_prefs
     cfg = getattr(prefs, "enrichment", None)
     if cfg is not None and not getattr(cfg, "enabled", True):
@@ -2970,30 +2988,146 @@ async def suggest_runbook(
     ))
 
 
+#: The Demo suggestion's reason: it picks the first candidate and checks no fit.
+DEMO_SUGGESTION_REASON = "Demo suggestion: the first published runbook in the library that is not attached yet."
+#: The Demo draft's answers when it has no lookup result to report.
+DEMO_DRAFT_NO_RESULTS = "Demo draft: no lookup result is attached yet. Run the lookups, then draft again."
+DEMO_DRAFT_UNREADABLE = ("Demo draft: the lookup results on this case are too large to summarise here. "
+                         "Review them on the steps before you confirm.")
+_DEMO_DRAFT_CLOSING = "Review them against the step's focus before you confirm."
+_DEMO_STEP_NAME_CHARS = 80
+#: The trusted heading the suggestion prompt puts its candidate list under, and the
+#: heading of the fenced case that follows it (``build_runbook_suggest_messages``).
+_SUGGEST_CANDIDATES_HEADING = "## Candidate runbooks (published library)\n"
+_SUGGEST_CASE_HEADING = "\n\n## The case (untrusted data)\n"
+_DEMO_RUNBOOK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _fenced_json(user: str, source: str) -> tuple[bool, Any]:
+    """``(found, payload)``: the parsed JSON body of the ``source=<source>`` untrusted
+    fence in ``user``. ``found`` is False when the prompt has no such fence; the payload
+    is ``None`` when the body does not parse (the fence's safety net cut it short).
+    Forged markers are neutralised in every fenced leaf and in the trusted runbook text,
+    so the opener and the closer found here are the prompt's own."""
+    from ..constants import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+
+    opener = f"{UNTRUSTED_OPEN} source={source}\n"
+    start = user.rfind(opener)
+    if start < 0:
+        return False, None
+    body_start = start + len(opener)
+    end = user.find(f"\n{UNTRUSTED_CLOSE}", body_start)
+    if end < 0:
+        return True, None
+    try:
+        return True, json.loads(user[body_start:end])
+    except ValueError:
+        return True, None
+
+
+def _suggest_candidate_ids(user: str) -> list[str]:
+    """The candidate ids of a suggestion prompt, in the order offered: parsed from the
+    trusted candidate list only, never from the fenced case after it."""
+    start = user.find(_SUGGEST_CANDIDATES_HEADING)
+    if start < 0:
+        return []
+    start += len(_SUGGEST_CANDIDATES_HEADING)
+    end = user.find(_SUGGEST_CASE_HEADING, start)
+    try:
+        rows = json.loads(user[start:end] if end >= 0 else user[start:])
+    except ValueError:
+        return []
+    ids: list[str] = []
+    for row in rows if isinstance(rows, list) else []:
+        value = row.get("id") if isinstance(row, dict) else None
+        if isinstance(value, str) and _DEMO_RUNBOOK_ID_RE.fullmatch(value):
+            ids.append(value)
+    return ids
+
+
+#: How a Demo draft words a lookup's count, by its tool: ``(one, many, none)``, where
+#: ``{n}`` is the count. A count means something different per tool (events for the
+#: log lookups, providers that answered for enrichment, cases, campaigns, ATT&CK
+#: techniques), so the draft never calls them all records. A tool not listed here
+#: keeps the neutral "records".
+_DEMO_COUNT_WORDS: dict[str, tuple[str, str, str]] = {
+    "log_stats": ("found {n} event", "found {n} events", "found no events"),
+    "log_search": ("found {n} event", "found {n} events", "found no events"),
+    "enrich": ("had {n} provider answer", "had {n} providers answer", "had no provider answer"),
+    "related_cases": ("found {n} related case", "found {n} related cases", "found no related cases"),
+    "campaign": ("found {n} campaign", "found {n} campaigns", "found no campaigns"),
+    "mitre": ("found {n} technique", "found {n} techniques", "found no techniques"),
+}
+_DEMO_COUNT_WORDS_DEFAULT = ("found {n} record", "found {n} records", "found no records")
+
+
+def _demo_lookup_count(item: Mapping[str, Any]) -> str:
+    """What one reduced lookup found, in words its tool's count means ("found 7
+    events", "had 3 providers answer", "found at least 1,000 events" when the count is
+    a lower bound), or why it has none. The tool is the one the reduced lookup names
+    (``reduce_lookup_for_prompt``)."""
+    status = item.get("status")
+    if status == "error":
+        return "did not finish"
+    if status == "not_applicable":
+        return "did not apply to this case"
+    count = item.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return "gave no count"
+    tool = item.get("tool")
+    one, many, none = _DEMO_COUNT_WORDS.get(tool if isinstance(tool, str) else "", _DEMO_COUNT_WORDS_DEFAULT)
+    if count == 0:
+        return none
+    bound = "at least " if item.get("count_relation") == "gte" else ""
+    return (one if count == 1 else many).format(n=f"{bound}{count:,}")
+
+
+def _demo_step_name(item: Mapping[str, Any], index: int) -> str:
+    step = item.get("step")
+    name = " ".join(step.split()) if isinstance(step, str) else ""
+    if not name:
+        return f"lookup {index}"
+    if len(name) > _DEMO_STEP_NAME_CHARS:
+        name = name[: _DEMO_STEP_NAME_CHARS - 1].rstrip() + "\u2026"
+    return f'the lookup for "{name}"'
+
+
+def _demo_draft(user: str) -> str:
+    found, evidence = _fenced_json(user, "runbook_lookup")
+    if not found:
+        return DEMO_DRAFT_NO_RESULTS
+    if evidence is None:
+        return DEMO_DRAFT_UNREADABLE
+    items = [e for e in evidence if isinstance(e, dict)] if isinstance(evidence, list) else []
+    if not items:
+        return DEMO_DRAFT_NO_RESULTS
+    parts = [f"{_demo_step_name(item, i)} {_demo_lookup_count(item)}" for i, item in enumerate(items, 1)]
+    return f"Demo draft: {'; '.join(parts)}. {_DEMO_DRAFT_CLOSING}"
+
+
 def demo_runbook_ai_answer(messages: Sequence[Mapping[str, Any]]) -> str | None:
     """The deterministic Demo Mode answer to a runbook draft or suggestion prompt ($0).
     Built only from the prompt; ``None`` when the prompt is not a runbook prompt.
 
-    It is meant for the Demo provider alone: ``DemoMockProvider._demo_chat_route`` in
-    ``llm/providers.py`` is to route a prompt carrying either runbook marker here (a
-    lazy import beside the report-summary and chat-agent markers), so a Demo runbook
-    call still goes through the one gateway and is ledgered at $0 (#6). Until that
-    route is wired, a Demo runbook call falls through to the generic Demo answer."""
+    ``DemoMockProvider._demo_runbook_answer`` in ``llm/providers.py`` routes a prompt
+    carrying either runbook marker here, so a Demo runbook call still goes through the
+    one gateway and is ledgered at $0 (#6).
+
+    The suggestion takes the first candidate the prompt offers (it checks no fit, and
+    its reason says so). The draft reads the reduced lookup results the prompt fences
+    (``source=runbook_lookup``) as JSON, never a pattern over the whole prompt, so a
+    fenced value that spells a count cannot change it (#9), and it reports each
+    lookup's own count in the words its tool's count means (events, providers that
+    answered, related cases, campaigns, techniques), "at least" for a lower bound."""
     from ..agents.prompts import RUNBOOK_DRAFT_SYSTEM_MARKER, RUNBOOK_SUGGEST_SYSTEM_MARKER
 
     system = "\n".join(str(m.get("content", "")) for m in messages if m.get("role") == "system")
     user = "\n".join(str(m.get("content", "")) for m in messages if m.get("role") == "user")
     if RUNBOOK_SUGGEST_SYSTEM_MARKER in system:
-        ids = re.findall(r'"id":\s*"([a-z0-9][a-z0-9_-]{0,63})"', user)
+        ids = _suggest_candidate_ids(user)
         if not ids:
             return json.dumps({"runbook_id": "", "reason": ""})
-        return json.dumps({"runbook_id": ids[0],
-                           "reason": "Demo suggestion: the first published runbook that fits the case."})
+        return json.dumps({"runbook_id": ids[0], "reason": DEMO_SUGGESTION_REASON})
     if RUNBOOK_DRAFT_SYSTEM_MARKER in system:
-        counts = re.findall(r'"count":\s*(\d+)', user)
-        if counts:
-            total = sum(int(c) for c in counts)
-            return (f"Demo draft: the lookups on this case found {total:,} matching "
-                    "records. Review them against the step's focus before you confirm.")
-        return "Demo draft: no lookup result is attached yet. Run the lookups, then draft again."
+        return _demo_draft(user)
     return None

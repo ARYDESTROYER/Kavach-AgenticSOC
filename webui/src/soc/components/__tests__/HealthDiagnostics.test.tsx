@@ -14,12 +14,14 @@
  *   4. a starved precedent corpus and a failed schema migration (with its remediation
  *      SQL) surface;
  *   5. both signals are RBAC-gated on their own grant, and the panel self-hides when
- *      neither endpoint answered.
+ *      neither endpoint answered;
+ *   6. (Round 14) the panel is one titled module captioned with its window, with no
+ *      refresh of its own: the page header's refresh drives it through `refreshKey`.
  *
  * Fully offline: the api client and the auth context are both mocked.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 
 const { diagnosticsMock, autoCloseMock, hasPermissionMock } = vi.hoisted(() => ({
   diagnosticsMock: vi.fn(),
@@ -27,7 +29,8 @@ const { diagnosticsMock, autoCloseMock, hasPermissionMock } = vi.hoisted(() => (
   hasPermissionMock: vi.fn(),
 }));
 
-vi.mock('@/lib/api', () => ({
+vi.mock('@/lib/api', async () => ({
+  ...(await vi.importActual<typeof import('@/lib/api')>('@/lib/api')),
   api: { diagnosticsHealth: diagnosticsMock, autoCloseHealth: autoCloseMock },
 }));
 
@@ -42,6 +45,7 @@ import {
   autoCloseRateText,
   autoCloseStatusView,
   healthSummaryText,
+  healthWindowCaption,
   precedentCountText,
 } from '../HealthDiagnostics';
 
@@ -176,6 +180,15 @@ describe('HealthDiagnostics pure rendering rules', () => {
     expect(autoCloseStatusView(undefined).unmeasured).toBe(true);
   });
 
+  it('captions the rolling window in words', () => {
+    expect(healthWindowCaption(24)).toBe('last 24 hours');
+    expect(healthWindowCaption(168)).toBe('last 7 days');
+    expect(healthWindowCaption(720)).toBe('last 30 days');
+    expect(healthWindowCaption(1)).toBe('last hour');
+    expect(healthWindowCaption(0)).toBe('last 24 hours');
+    expect(healthWindowCaption(Number.NaN)).toBe('last 24 hours');
+  });
+
   it('refuses to call an empty alerts list a clean bill of health when unknowns remain', () => {
     expect(healthSummaryText(0, 2)).toMatch(/not a clean bill of health/);
     expect(healthSummaryText(0, 0)).toMatch(/no problems detected/i);
@@ -252,8 +265,12 @@ describe('HealthDiagnostics surface', () => {
 
     expect(await screen.findByText('80%')).toBeInTheDocument();
     expect(
-      screen.getByText(/1,355 of 1,696 decided cases auto-closed in the last 168h\./),
+      screen.getByText(/1,355 of 1,696 decided cases auto-closed in the last 7 days\./),
     ).toBeInTheDocument();
+    // The module names its window in its title row, like every Analytics module.
+    const panel = screen.getByTestId('health-diagnostics');
+    expect(panel).toHaveTextContent('Agent health');
+    expect(panel).toHaveTextContent('last 7 days');
     expect(diagnosticsMock).toHaveBeenCalledWith(168, expect.any(AbortSignal));
     expect(autoCloseMock).toHaveBeenCalledWith(168, expect.any(AbortSignal));
   });
@@ -425,6 +442,68 @@ describe('HealthDiagnostics surface', () => {
     await waitFor(() => expect(container.querySelector('[data-testid="health-diagnostics"]')).toBeNull());
     expect(diagnosticsMock).not.toHaveBeenCalled();
     expect(autoCloseMock).not.toHaveBeenCalled();
+  });
+
+  it('has no refresh of its own and reads both signals again when the page refreshes', async () => {
+    diagnosticsMock.mockResolvedValue(health());
+    autoCloseMock.mockResolvedValue(autoClose());
+
+    const { rerender } = render(<HealthDiagnostics refreshKey={0} />);
+    const panel = await screen.findByRole('region', { name: 'Agent health' });
+    expect(within(panel).queryByRole('button', { name: /refresh/i })).toBeNull();
+    expect(panel.querySelector('.animate-spin')).toBeNull();
+    expect(diagnosticsMock).toHaveBeenCalledTimes(1);
+    expect(autoCloseMock).toHaveBeenCalledTimes(1);
+
+    // The same key is not a refresh.
+    rerender(<HealthDiagnostics refreshKey={0} />);
+    expect(diagnosticsMock).toHaveBeenCalledTimes(1);
+
+    rerender(<HealthDiagnostics refreshKey={1} />);
+    await waitFor(() => expect(diagnosticsMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(autoCloseMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('is a region labelled by its own visible heading (SPEC §3.3)', async () => {
+    diagnosticsMock.mockResolvedValue(health());
+    autoCloseMock.mockResolvedValue(autoClose());
+    render(<HealthDiagnostics />);
+    const panel = await screen.findByRole('region', { name: 'Agent health' });
+    const heading = within(panel).getByRole('heading', { level: 2, name: 'Agent health' });
+    expect(panel).not.toHaveAttribute('aria-label');
+    expect(panel).toHaveAttribute('aria-labelledby', heading.id);
+  });
+
+  it('never shows a green "Balanced" for an empty precedent corpus', async () => {
+    const spread = (rules: number, confirmed: number) =>
+      ({
+        promotion_enabled: false,
+        promotion_min_confirmed: 25,
+        window_size: 200,
+        window_stratified: true,
+        distribution: {
+          available: true, reason: '', truncated: false, disabled: false, scanned_chunks: confirmed,
+          rule_identities: rules, unattributed_documents: 0, total_confirmed: confirmed, returned: rules, by_rule: [],
+        },
+        futility_measured: true,
+        futility_reason: '',
+        futile_rules: [],
+        futile_rule_count: 0,
+      }) as unknown as DiagnosticsHealth['precedent_effectiveness'];
+    autoCloseMock.mockResolvedValue(autoClose());
+
+    diagnosticsMock.mockResolvedValue(health({ precedent_effectiveness: spread(0, 0) }));
+    const empty = render(<HealthDiagnostics />);
+    const panel = await screen.findByRole('region', { name: 'Agent health' });
+    expect(await within(panel).findByText('No precedents')).toBeInTheDocument();
+    expect(within(panel).queryByText('Balanced')).toBeNull();
+    empty.unmount();
+
+    diagnosticsMock.mockResolvedValue(health({ precedent_effectiveness: spread(8, 846) }));
+    render(<HealthDiagnostics />);
+    const filled = await screen.findByRole('region', { name: 'Agent health' });
+    expect(await within(filled).findByText('Balanced')).toBeInTheDocument();
+    expect(within(filled).queryByText('No precedents')).toBeNull();
   });
 
   it('renders nothing when both endpoints fail rather than implying health', async () => {

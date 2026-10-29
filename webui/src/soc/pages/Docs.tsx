@@ -5,12 +5,17 @@
  * `/docs/{major.minor}/`. This page is deliberately a compact discovery hub rather
  * than a second Markdown renderer: MkDocs owns article navigation and rendering,
  * while the Console owns release context, category discovery, and local filtering.
+ *
+ * Round 14 (HC1 to HC3): the header is the title "Help Center" (the navigation label)
+ * with a help tip, and the release is one muted line in its actions ("Version 0.1.13 ·
+ * docs 0.1 · Testing") instead of a pill and a band; the directory and the other
+ * versions are panels; a selected category looks like the selected navigation item; and
+ * the whole guide row is the link, with no "Open guide" repeated on every row.
  */
 import * as React from 'react';
 import {
   ArrowRight,
   ArrowUpRight,
-  BookOpenText,
   CircleHelp,
   Compass,
   LifeBuoy,
@@ -31,7 +36,7 @@ import {
 } from '@/lib/release';
 import { PageContainer } from '@/soc/components/PageContainer';
 import { PageHeader } from '@/soc/components/PageHeader';
-import { Badge } from '@/ui/badge';
+import { Panel } from '@/design-system';
 import { Button } from '@/ui/button';
 import { Input } from '@/ui/input';
 
@@ -44,6 +49,16 @@ export const DEVELOPMENT_DOCS_URL =
 export function documentationSourceUrl(identity: ReleaseIdentity): string {
   const sourceRef = identity.channel === 'stable' ? `v${identity.version}` : 'Testing';
   return `https://github.com/ARYDESTROYER/Agentic-Kibana/tree/${sourceRef}/docs`;
+}
+
+/** The page help: what the Help Center is (the description that used to sit under the title). */
+const PAGE_HELP =
+  'Guidance for using, administering and operating this installed version of Agentic SOC. ' +
+  'These articles ship with the application and stay available from the same host.';
+
+/** The one muted release line: "Version 0.1.13 · docs 0.1 · Testing". */
+export function docsReleaseLine(version: string, docsLine: string, channelLabel: string): string {
+  return `Version ${version} · docs ${docsLine} · ${channelLabel}`;
 }
 
 export type DocsCategoryId = 'use' | 'admin' | 'operate' | 'reference';
@@ -384,19 +399,15 @@ export default function Docs({
   };
 
   return (
-    <PageContainer variant="wide" className="space-y-6" data-testid="docs-page">
+    <PageContainer variant="wide" data-testid="docs-page">
       <PageHeader
-        breadcrumb={[{ label: 'Help' }, { label: 'Documentation' }]}
         title="Help Center"
-        description="Guidance for using, administering, and operating this installed version of Agentic SOC."
-        icon={BookOpenText}
-        meta={
-          <Badge variant={release.channel === 'stable' ? 'success' : 'warning'}>
-            v{release.version} · {release.channelLabel}
-          </Badge>
-        }
+        help={PAGE_HELP}
         actions={
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <span className="text-sm text-muted-foreground" data-testid="docs-release-line">
+              {docsReleaseLine(release.version, docsLine, release.channelLabel)}
+            </span>
             <Button asChild variant="outline" size="sm">
               <a href={installedDocsUrl}>
                 Browse all guides
@@ -418,55 +429,19 @@ export default function Docs({
         }
       />
 
-      <section
-        aria-label="Installed documentation"
-        className="grid gap-4 border-y border-border py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-      >
-        <div className="flex min-w-0 items-start gap-3">
-          <span className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-primary">
-            <BookOpenText className="size-4" aria-hidden />
-          </span>
-          <div className="min-w-0">
-            <p className="font-medium text-foreground">Documentation for this installation</p>
-            <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">
-              These articles ship with the application and remain available from the same host.
-            </p>
-            {release.mismatch ? (
-              <p className="mt-2 text-xs leading-relaxed text-warning-text" role="status">
-                Console and backend build identities differ. This session is treated as Testing;
-                these guides still match the installed Console bundle.
-              </p>
-            ) : null}
-          </div>
-        </div>
-        <dl className="grid grid-cols-3 gap-x-5 text-xs sm:text-right">
-          <div>
-            <dt className="text-muted-foreground">Application</dt>
-            <dd className="mt-0.5 font-mono font-medium text-foreground">v{release.version}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Docs line</dt>
-            <dd className="mt-0.5 font-mono font-medium text-foreground">{docsLine}</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Channel</dt>
-            <dd className="mt-0.5 font-medium text-foreground">{release.channelLabel}</dd>
-          </div>
-        </dl>
-      </section>
+      {release.mismatch ? (
+        <p className="text-sm leading-relaxed text-warning-text" role="status">
+          Console and backend build identities differ. This session is treated as Testing;
+          these guides still match the installed Console bundle.
+        </p>
+      ) : null}
 
-      <section aria-labelledby="help-directory-title" className="space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h2 id="help-directory-title" className="text-xl font-semibold text-foreground">
-              Find guidance
-            </h2>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Start with product workflows, or search the featured guide directory. Full-text
-              search is available after you open any guide.
-            </p>
-          </div>
-          <div className="relative w-full sm:max-w-md">
+      <Panel
+        title="Find guidance"
+        caption="Featured guides. Full-text search is available after you open any guide."
+        titleId="help-directory-title"
+        actions={
+          <div className="relative w-full sm:w-80">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden
@@ -480,7 +455,7 @@ export default function Docs({
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
               placeholder="Search featured guides…"
-              className="h-10 pl-9 pr-9"
+              className="h-9 pl-9 pr-9"
               aria-controls="docs-results"
             />
             {searchQuery ? (
@@ -488,14 +463,14 @@ export default function Docs({
                 type="button"
                 aria-label="Clear documentation search"
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <X className="size-4" aria-hidden />
               </button>
             ) : null}
           </div>
-        </div>
-
+        }
+      >
         <div className="grid min-w-0 gap-6 lg:grid-cols-[15rem_minmax(0,1fr)]">
           <nav aria-label="Documentation categories" className="min-w-0">
             <ul className="grid gap-1 sm:grid-cols-2 lg:grid-cols-1">
@@ -508,14 +483,18 @@ export default function Docs({
                       type="button"
                       onClick={() => chooseCategory(candidate.id)}
                       aria-current={selected ? 'page' : undefined}
+                      // HC3: the selected category looks like the selected navigation item
+                      // (primary text on the soft tint, no border; forced colours outline it
+                      // through `.nav-tint[data-active]`); others are muted.
+                      data-active={selected ? '' : undefined}
                       className={cn(
-                        'group flex w-full items-center gap-3 rounded-md border-l-2 px-3 py-2.5 text-left',
-                        'transition-[background-color,border-color,color] duration-150 ease-premium',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                        'nav-tint group flex w-full items-center gap-3 rounded-md px-3 py-2 text-left',
+                        'transition-colors duration-150 ease-premium',
+                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                         'motion-reduce:transition-none',
                         selected
-                          ? 'border-primary bg-primary/10 text-foreground'
-                          : 'border-transparent text-muted-foreground hover:border-border-strong hover:bg-muted/50 hover:text-foreground',
+                          ? 'bg-primary/10 font-medium text-primary dark:bg-accent'
+                          : 'text-muted-foreground hover:bg-muted hover:text-foreground',
                       )}
                     >
                       <Icon
@@ -526,7 +505,7 @@ export default function Docs({
                         aria-hidden
                       />
                       <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{candidate.title}</span>
+                        <span className="block truncate text-sm">{candidate.title}</span>
                         <span className="block text-xs text-muted-foreground">
                           {candidate.articles.length} guides
                         </span>
@@ -538,20 +517,20 @@ export default function Docs({
             </ul>
           </nav>
 
-          <div className="min-w-0 border-t border-border lg:border-l lg:border-t-0 lg:pl-6">
+          <div className="min-w-0 border-t border-border/70 lg:border-l lg:border-t-0 lg:pl-6">
             <div className="flex min-h-14 flex-wrap items-start justify-between gap-3 py-3 lg:pt-0">
               <div>
-                <h3 className="text-lg font-semibold text-foreground">
+                <h3 className="text-md font-semibold text-foreground">
                   {normalizedQuery ? 'Search results' : category.title}
                 </h3>
                 <p className="mt-0.5 max-w-3xl text-sm text-muted-foreground">
                   {normalizedQuery
-                    ? `Matching “${searchQuery.trim()}” across the featured guide directory.`
+                    ? `Matching "${searchQuery.trim()}" across the featured guide directory.`
                     : category.description}
                 </p>
               </div>
               <span
-                className="text-xs tabular-nums text-muted-foreground"
+                className="text-sm tabular-nums text-muted-foreground"
                 aria-live="polite"
                 aria-atomic="true"
               >
@@ -559,21 +538,21 @@ export default function Docs({
               </span>
             </div>
 
-            <ul id="docs-results" className="divide-y divide-border border-y border-border">
+            <ul id="docs-results" className="divide-y divide-border/70 border-t border-border/70">
               {results.map(({ article, category: resultCategory }) => (
                 <li key={`${resultCategory.id}-${article.path}`}>
                   <a
                     href={docsArticleUrl(article.path, release.version)}
                     className={cn(
-                      'group grid min-h-24 gap-3 px-1 py-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-3',
-                      'transition-colors duration-150 hover:bg-muted/40',
+                      'group flex min-h-16 items-center gap-3 rounded-md px-1 py-3 sm:px-3',
+                      'transition-colors duration-150 hover:bg-hover',
                       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
                       'motion-reduce:transition-none',
                     )}
                   >
-                    <span className="min-w-0">
+                    <span className="min-w-0 flex-1">
                       {normalizedQuery ? (
-                        <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-primary">
+                        <span className="mb-1 block text-xs font-medium text-muted-foreground">
                           {resultCategory.title}
                         </span>
                       ) : null}
@@ -584,20 +563,18 @@ export default function Docs({
                         {article.description}
                       </span>
                     </span>
-                    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground group-hover:text-primary">
-                      Open guide
-                      <ArrowRight
-                        className="size-4 transition-transform group-hover:translate-x-0.5 motion-reduce:transform-none motion-reduce:transition-none"
-                        aria-hidden
-                      />
-                    </span>
+                    {/* HC3: the whole row is the link; one quiet chevron, no repeated label. */}
+                    <ArrowRight
+                      className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary motion-reduce:transform-none motion-reduce:transition-none"
+                      aria-hidden
+                    />
                   </a>
                 </li>
               ))}
             </ul>
 
             {results.length === 0 ? (
-              <div className="flex min-h-52 flex-col items-center justify-center border-b border-border px-6 text-center">
+              <div className="flex min-h-52 flex-col items-center justify-center px-6 text-center">
                 <CircleHelp className="size-6 text-muted-foreground" aria-hidden />
                 <p className="mt-3 font-medium text-foreground">No matching guidance</p>
                 <p className="mt-1 max-w-sm text-sm text-muted-foreground">
@@ -610,12 +587,13 @@ export default function Docs({
             ) : null}
           </div>
         </div>
-      </section>
+      </Panel>
 
-      <aside
-        aria-label="Other documentation versions"
-        className="flex flex-col gap-3 border-t border-border pt-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+      <Panel
+        title="Other documentation versions"
+        data-testid="docs-other-versions"
       >
+        <div className="flex flex-col gap-3 text-sm sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="font-medium text-foreground">Planning an upgrade or reviewing future work?</p>
           <p className="mt-0.5 text-muted-foreground">
@@ -634,7 +612,7 @@ export default function Docs({
               <ArrowUpRight className="size-3.5" aria-hidden />
             </a>
           ) : (
-            <span className="text-xs text-muted-foreground">
+            <span className="text-sm text-muted-foreground">
               Stable site publishes with the first Stable release
             </span>
           )}
@@ -648,7 +626,8 @@ export default function Docs({
             <ArrowUpRight className="size-3.5" aria-hidden />
           </a>
         </div>
-      </aside>
+        </div>
+      </Panel>
     </PageContainer>
   );
 }

@@ -102,8 +102,11 @@ describe('Users and Account', () => {
   const SRC = path.resolve(__dirname, '../../../..');
   it('link each person to their own audit events by exact actor', () => {
     const users = readFileSync(path.join(SRC, 'soc/pages/Users.tsx'), 'utf8');
-    expect(users).toMatch(/<AuditLogLink\s+opts=\{\{ scope: 'all', actor: u\.username \}\}/);
-    expect(users).toContain('aria-label={`Audit events for ${u.username}`}');
+    // Round 14 (W9a): the link is the row menu's "Audit events" action, an href to the
+    // audit log for that exact actor, offered only with audit:view.
+    expect(users).toContain("href: pageHash('audit', { scope: 'all', actor: u.username })");
+    expect(users).toMatch(/if \(canAudit\) \{\s*actions\.push\(\{\s*id: 'audit',\s*label: 'Audit events'/);
+    expect(users).toContain("const canAudit = hasPermission('audit', 'view');");
     const account = readFileSync(path.join(SRC, 'soc/pages/Account.tsx'), 'utf8');
     expect(account).toMatch(/<AuditLogLink opts=\{\{ scope: 'all', actor: shownUser \}\}/);
     expect(account).toContain('Your recent activity in the audit log');

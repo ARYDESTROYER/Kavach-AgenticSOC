@@ -3579,6 +3579,15 @@ class AppState:
         await self.mutate_prefs(lambda live: live.model_copy(update={"demo": new_demo}))
         self._demo = demo_stack
         self._demo_generation += 1
+        # Round 14: the seeded runs' Done lookup steps collect their read-only results
+        # in the background through the live engine, once the Demo stack is the active
+        # one (reset comes through here too). Never blocks enable.
+        try:
+            from .engine.demo_generator import schedule_demo_runbook_lookups
+
+            schedule_demo_runbook_lookups(self, list(seeded_counter_cases), seed=new_demo.seed)
+        except Exception as exc:  # noqa: BLE001 - seeded lookups never block enable
+            logger.warning("demo runbook lookups not started: %s", exc)
         # Start the live simulator only after the complete stack is publicly visible.
         if new_demo.mode == "live":
             self._demo_sim = DemoSimulator(demo_stack, self.get_prefs, seed=new_demo.seed)

@@ -9,8 +9,8 @@ This page is the single reference for the numbers on **Overview → Cyber Defenc
 **Analytics → Metrics**. On the dashboard, most KPIs carry a short help (`?`) popover
 drawn from these definitions, and when you can use chat that popover ends with **Ask
 about this**, which opens a new chat that asks the question for you. MTTD and Respond
-explain themselves in a tooltip instead. The **Analytics → Metrics** tiles carry no
-help text, so use this page for their definitions. Workspace Chat answers questions
+explain themselves in a tooltip instead. A few **Analytics → Metrics** tiles carry a
+short help tip; this page holds the full definitions. Workspace Chat answers questions
 such as "What does MTTA measure?" from this page and cites the matching section.
 
 Every KPI is advisory. A metric describes stored cases, ingest counters, or the usage
@@ -30,8 +30,10 @@ ledger; none of them feeds the deterministic close or escalate decision.
 - **Exact at any size.** A few figures are exact store-wide counts however many cases
   the store holds, and they match what Workspace Chat reports for the same question:
   the **Open Cases** stock, and the case counts on **Analytics → Metrics** (**Total
-  cases (all time)**, Needs human, Closed, open cases, and the counts by status,
-  verdict, and disposition).
+  cases**, Needs human, Resolved or closed, the active cases beside it, and the counts
+  by status, verdict, and disposition). There **Needs human** is the open cases whose AI
+  verdict is Needs human, the same figure Standup and the dashboards show; a case an
+  analyst has closed is not counted.
 - **Exact up to 20,000 cases in the window.** Every other dashboard figure is computed
   from the cases in its window, up to 20,000 of them. That covers every Overview figure
   for the selected window (Total Cases, Total Critical, Resolved / Closed, Auto Closed,
@@ -88,8 +90,8 @@ Every case that **arrived** in the selected window, including cases an operator 
 under a "declared benign" rule policy. This is the denominator the other window tiles
 are shares of.
 
-On **Analytics → Metrics**, **Total cases (all time)** is a different figure: every
-case in the store, whatever the selected window, counted exactly at any store size. Its
+On **Analytics → Metrics**, **Total cases** is a different figure: every case in the
+store (all time), whatever the selected window, counted exactly at any store size. Its
 caption says "Every case in the store", or names the breakdown that could only be
 counted in part.
 

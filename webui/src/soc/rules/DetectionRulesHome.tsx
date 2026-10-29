@@ -1,29 +1,50 @@
 /**
- * DetectionRulesHome (Round-5 G6 · R2) — the "Detection & rules" HOME.
+ * DetectionRulesHome (Round-5 G6, R2): the "Detection & rules" HOME.
  *
  * This is the Settings section body for `id: 'detection_rules'` (registered under the
- * General group in `settings-sections.ts`). It lists BOTH rule families in one table —
- * detection rules from `Preferences.rule_catalog` and case-automation rules from
- * `Preferences.threshold_automation.rules` — and opens the four-section `RuleEditor`
- * (Define → About → Schedule → Actions) in a Sheet.
+ * General group in `settings-sections.ts`). It lists BOTH rule families in one table
+ * (detection rules from `Preferences.rule_catalog` and case-automation rules from
+ * `Preferences.threshold_automation.rules`) and opens the four-section `RuleEditor`
+ * (Define, About, Schedule, Actions) in a Sheet.
  *
- * ⛔ CONFIG WRITER ONLY (#3): every edit flows form → `./adapter` → the deep-merge
+ * Round 14 (SPEC §4.9.4, uib DR1 to DR5, F11): no explanation box above the table (the
+ * section's help tip says that a rule never sets a case status); the rules sit in one
+ * compact table on a group panel with sentence-case headers; a row opens its editor on
+ * click (the name is the keyboard control); "Test and history" and "Delete rule" live in
+ * the row menu, neutral at rest and red only on intent. Closing the rule editor or the
+ * "Test and history" sheet hands focus back to what opened it (the rule's name, or the
+ * row's menu button; SPEC §3.3). A case-automation rule that
+ * attaches a runbook which is not published (unknown, a draft only or retired) shows
+ * "Needs a runbook", resolved by the same rule the server uses at fire time
+ * (`@/soc/runbooks/shared/legacy`), so the operator sees the skip before it happens.
+ *
+ * CONFIG WRITER ONLY (#3): every edit flows form, `./adapter`, the deep-merge
  * `{prefs, update}` buffer the Settings page owns (which PUTs `/api/settings`). No
  * control here calls `decide()` or sets a case status. Mutations are RBAC-gated on the
- * unified `automation:manage` grant (R9); a read-only viewer (no grant) still SEES the
- * catalog + can open the editor read-only. #9: every rule name/field renders plain.
+ * unified `rules:manage` grant plus `settings:manage` (R9, M2); a read-only viewer still
+ * SEES the catalog and can open the editor read-only. #9: every rule name and field
+ * renders as plain text.
  */
 import * as React from 'react';
-import { AlertTriangle, History, ListTree, Pencil, Plus, Trash2, Workflow, Zap } from 'lucide-react';
+import { History, Plus, Trash2, Workflow } from 'lucide-react';
 
 import type { Preferences } from '@/lib/types';
+import type { RunbookSummary } from '@/lib/types-runbooks';
+import { listRunbookLibrary } from '@/lib/api-runbooks';
 import { cn } from '@/lib/cn';
 
+import { Callout } from '@/design-system/callout';
+import { RowActions, type RowAction } from '@/design-system/row-actions';
+import { StatusDot, type StatusTone } from '@/design-system/status-dot';
 import { useCan } from '@/soc/components/Can';
+import { useIsMobile } from '@/soc/hooks/useMediaQuery';
+import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
+import { DataTable, type DataTableColumn } from '@/soc/components/DataTable';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
+import { SettingsGroup } from '@/soc/pages/settings/primitives';
+import { resolveAutomationRunbook } from '@/soc/runbooks/shared/legacy';
 import { Button } from '@/ui/button';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
 import {
   Sheet,
   SheetContent,
@@ -32,12 +53,11 @@ import {
   SheetDescription,
   SheetFooter,
 } from '@/ui/sheet';
-import { IconButton } from '@/soc/components/IconButton';
 
 import { RuleEditor } from './RuleEditor';
 import type { AutomationRule, RuleCatalogItem, RuleForm, RuleTier } from './types';
 import { RULES_PERM, RULES_READ_PERM } from './types';
-import { RULE_TIER_BY_ID, newRuleForm } from './constants';
+import { newRuleForm } from './constants';
 import {
   anomalyToBaseline,
   baselineToAnomaly,
@@ -47,10 +67,9 @@ import {
   wireToDetectionMatch,
 } from './adapter';
 // Import from the specific lifecycle submodules (NOT the barrel) so the recharts-heavy
-// `RulePreviewPanel` — which the barrel re-exports — is not statically pulled into the
+// `RulePreviewPanel` (which the barrel re-exports) is not statically pulled into the
 // eager Settings/Detection-rules entry graph. The sheet lazy-loads that panel itself.
-import { LifecycleStateChip } from './lifecycle/chips';
-import { RuleLifecycleSheet } from './lifecycle/RuleLifecycleSheet';
+import { RuleLifecycleSheet, type RuleStateChoice } from './lifecycle/RuleLifecycleSheet';
 import type { RuleKind, RuleLifecycleState } from './lifecycle/types';
 
 export interface DetectionRulesHomeProps {
@@ -108,11 +127,54 @@ function buildCatalog(prefs: Preferences): RuleCatalogItem[] {
   return [...detection, ...automation].sort((a, b) => a.priority - b.priority);
 }
 
-const TIER_ICON: Record<RuleTier, typeof Workflow> = {
-  detection_match: Workflow,
-  detection_anomaly: ListTree,
-  case_automation: Zap,
+/**
+ * The rule family in the table's Type column: short words that fit one line (the editor's
+ * type select keeps the longer descriptive labels of `RULE_TIER_BY_ID` in `./constants`).
+ */
+const TYPE_LABEL: Record<RuleTier, string> = {
+  detection_match: 'Match and threshold',
+  detection_anomaly: 'Anomaly baseline',
+  case_automation: 'Case automation',
 };
+
+/**
+ * A rule's state in the table: a quiet dot and its word. A rule has one wire flag, so it
+ * is Enabled or Disabled, both the operator's settled choices (neutral). The words match
+ * the lifecycle sheet's state control.
+ */
+const STATE_DOT: Record<RuleStateChoice, { tone: StatusTone; label: string }> = {
+  enabled: { tone: 'neutral', label: 'Enabled' },
+  disabled: { tone: 'neutral', label: 'Disabled' },
+};
+
+function stateOf(item: RuleCatalogItem): RuleStateChoice {
+  return item.lifecycle === 'disabled' ? 'disabled' : 'enabled';
+}
+
+/** The rule's name button in the table, the row's keyboard control. */
+function ruleNameButton(root: HTMLElement | null, key: string): HTMLElement | null {
+  return root?.querySelector<HTMLElement>(`[data-rule-name-key="${key}"]`) ?? null;
+}
+
+/**
+ * The case-automation rules that attach a runbook the server would skip at fire time
+ * (unknown, a draft only or retired), keyed by catalog row. `library` null means the
+ * library could not be read (or the viewer cannot read runbooks): nothing is flagged
+ * then, except a rule that names no runbook at all, which can never attach one.
+ */
+export function rulesNeedingRunbook(
+  prefs: Preferences,
+  library: readonly RunbookSummary[] | null,
+): Set<string> {
+  const keys = new Set<string>();
+  (prefs.threshold_automation?.rules ?? []).forEach((rule, i) => {
+    if (rule.action !== 'run_playbook') return;
+    if (resolveAutomationRunbook(rule.payload ?? {}, library).status === 'needs_runbook') {
+      keys.add(`auto:${i}`);
+    }
+  });
+  return keys;
+}
 
 /** A single edit session's target (which wire list + index the form maps back to). */
 type EditTarget =
@@ -121,14 +183,14 @@ type EditTarget =
   | { kind: 'automation'; index: number };
 
 export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
-  // The unified `rules` grant (G6 R9 / M2) gates the rules-native actions — the version
-  // ledger, one-click rollback, and the read-only preview all call `routes_rules.py`,
+  // The unified `rules` grant (G6 R9 / M2) gates the rules-native actions (the version
+  // ledger, one-click rollback, and the read-only preview all call `routes_rules.py`),
   // which enforces `rules:read`/`rules:manage`. This surface is REACHED via the `rules`
   // section gate (`settings-sections-meta.ts`, now `rules:read`).
   const canManageRules = useCan(RULES_PERM.resource, RULES_PERM.action);
-  // ⚠ M2 write-path reality: this Settings SECTION persists edits through the shared
+  // M2 write-path reality: this Settings SECTION persists edits through the shared
   // Settings buffer (a deep-merge `PUT /api/settings`), which the backend enforces on
-  // `settings:manage` — NOT the rules-native CRUD endpoints. So a WRITE here needs BOTH
+  // `settings:manage`, NOT the rules-native CRUD endpoints. So a WRITE here needs BOTH
   // the unified `rules:manage` grant AND `settings:manage`. Gating the write affordances
   // on both means a custom role missing either never sees an enabled Save/Delete that
   // would then 403. For every BUILT-IN role `rules`/`settings` derive identically from
@@ -139,6 +201,35 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
   void RULES_READ_PERM;
 
   const catalog = React.useMemo(() => buildCatalog(prefs), [prefs]);
+  // Phone layout of the rules table (name and state stacked, row menu); see `columns`.
+  const compact = useIsMobile();
+
+  // "Needs a runbook": read the runbook library only when a case-automation rule attaches
+  // one and the viewer may read runbooks. A failed read flags nothing (no false warning).
+  const canReadRunbooks = useCan('runbooks', 'read');
+  const attachesRunbook = (prefs.threshold_automation?.rules ?? []).some((r) => r.action === 'run_playbook');
+  const [runbookLibrary, setRunbookLibrary] = React.useState<RunbookSummary[] | null>(null);
+  React.useEffect(() => {
+    if (!attachesRunbook || !canReadRunbooks) return undefined;
+    const controller = new AbortController();
+    listRunbookLibrary({ show_replaced: true }, controller.signal)
+      .then((lib) => setRunbookLibrary(lib.runbooks))
+      .catch(() => {
+        if (!controller.signal.aborted) setRunbookLibrary(null);
+      });
+    return () => controller.abort();
+  }, [attachesRunbook, canReadRunbooks]);
+  const needsRunbook = React.useMemo(
+    () => rulesNeedingRunbook(prefs, canReadRunbooks ? runbookLibrary : null),
+    [prefs, canReadRunbooks, runbookLibrary],
+  );
+
+  // Each sheet and the delete dialog is opened from state (no Radix trigger), so each
+  // remembers what opened it and hands focus back there on close (SPEC §3.3).
+  const rootRef = React.useRef<HTMLDivElement>(null);
+  const editorOpener = useReturnFocus();
+  const lifecycleOpener = useReturnFocus();
+  const deleteOpener = useReturnFocus();
 
   const [open, setOpen] = React.useState(false);
   const [draft, setDraft] = React.useState<RuleForm | null>(null);
@@ -146,14 +237,14 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
   // A validation message surfaced when Save is rejected (e.g. a nameless / condition-less
   // detection rule) so the operator is never left with a silent, dead Save button.
   const [saveError, setSaveError] = React.useState<string | null>(null);
-  // A rule pending a delete confirmation — destructive deletes are gated (parity with the
+  // A rule pending a delete confirmation. Destructive deletes are gated (parity with the
   // confirm-gated Disable in the lifecycle sheet), so a single misclick can't wipe a rule.
   const [confirmDelete, setConfirmDelete] = React.useState<RuleCatalogItem | null>(null);
 
   // The per-rule lifecycle surface (test/preview + version ledger + state). It maps a
   // catalog item to the {kind, ruleId, form, state} the RuleLifecycleSheet needs. A
   // lifecycle STATE change is a config write through the same deep-merge `update`
-  // buffer — never `decide()`; a rollback is a config write on the RB endpoint.
+  // buffer, never `decide()`; a rollback is a config write on the RB endpoint.
   const [lifecycle, setLifecycle] = React.useState<{
     kind: RuleKind;
     ruleId: string;
@@ -163,13 +254,17 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
   } | null>(null);
 
   const startNew = () => {
+    editorOpener.remember();
     setSaveError(null);
     setDraft(newRuleForm('detection_match'));
     setTarget({ kind: 'new' });
     setOpen(true);
   };
 
-  const startEdit = (item: RuleCatalogItem) => {
+  const startEdit = (item: RuleCatalogItem, opener?: HTMLElement | null) => {
+    // Focus returns to the rule's name (the row's keyboard control) unless a caller hands
+    // over another opener ("Tune rule" from the lifecycle sheet passes the row's menu).
+    editorOpener.remember(opener ?? (() => ruleNameButton(rootRef.current, item.key)));
     setSaveError(null);
     // Identify the rule by its source-array INDEX (never a name/id match), so editing one
     // of two same-named rules resolves to exactly the row clicked (#24).
@@ -217,6 +312,9 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
    * lifecycle surface is offered for detection + case-automation rules only.
    */
   const openLifecycle = (item: RuleCatalogItem) => {
+    // Opened from the row menu: the item leaves with the menu, so focus returns to the
+    // row's menu button.
+    lifecycleOpener.remember();
     // Resolve the exact rule by index (#24). `ruleId` stays the wire identity
     // (detection: name; automation: id) the backend version ledger keys on.
     if (item.tier === 'case_automation') {
@@ -244,14 +342,12 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
 
   /**
    * Apply a lifecycle STATE change as a CONFIG write through the deep-merge `update`
-   * buffer — never `decide()`. `enabled`⇄`disabled` flips the wire `enabled` flag;
-   * `shadow` maps to `enabled=true` on the wire today (there is no separate wire flag
-   * yet) but is surfaced distinctly in the UI so an operator can preview safely. This
-   * NEVER sets a case status (#3).
+   * buffer, never `decide()`. `enabled` and `disabled` flip the wire `enabled` flag, the
+   * rule's only state. This NEVER sets a case status (#3).
    */
-  const setLifecycleState = (item: RuleCatalogItem, next: RuleLifecycleState) => {
-    const enabled = next !== 'disabled';
-    // Toggle exactly the indexed row (#24) — never every rule that happens to share a name.
+  const setLifecycleState = (item: RuleCatalogItem, next: RuleStateChoice) => {
+    const enabled = next === 'enabled';
+    // Toggle exactly the indexed row (#24), never every rule that happens to share a name.
     if (item.tier === 'case_automation') {
       const rules = (prefs.threshold_automation?.rules ?? []).map((r, i) =>
         i === item.sourceIndex ? { ...r, enabled } : r,
@@ -307,7 +403,7 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
   };
 
   const removeItem = (item: RuleCatalogItem) => {
-    // Delete exactly the indexed row (#24) — a name filter would wipe BOTH rules that
+    // Delete exactly the indexed row (#24): a name filter would wipe BOTH rules that
     // share a duplicate name.
     if (item.tier === 'case_automation') {
       const rules = (prefs.threshold_automation?.rules ?? []).filter((_, i) => i !== item.sourceIndex);
@@ -318,156 +414,183 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
     }
   };
 
+  const ruleLabel = (item: RuleCatalogItem) => item.name || 'rule';
+
+  const rowActions = (item: RuleCatalogItem): RowAction[] => {
+    const actions: RowAction[] = [];
+    // Anomaly rules have no per-rule catalog entry to version, so no lifecycle surface.
+    if (item.tier !== 'detection_anomaly') {
+      actions.push({ id: 'lifecycle', label: 'Test and history', icon: History, onSelect: () => openLifecycle(item) });
+    }
+    if (canManage) {
+      actions.push({
+        id: 'delete',
+        label: 'Delete rule',
+        icon: Trash2,
+        destructive: true,
+        onSelect: () => {
+          deleteOpener.remember();
+          setConfirmDelete(item);
+        },
+      });
+    }
+    return actions;
+  };
+
+  /** The rule's state, plus "Needs a runbook" when its attach target would be skipped. */
+  const stateCell = (item: RuleCatalogItem) => {
+    const state = STATE_DOT[stateOf(item)];
+    return (
+      <span className="flex min-w-0 flex-col items-start gap-1">
+        <StatusDot tone={state.tone}>{state.label}</StatusDot>
+        {needsRunbook.has(item.key) ? <StatusDot tone="warning">Needs a runbook</StatusDot> : null}
+      </span>
+    );
+  };
+
+  const nameColumn: DataTableColumn<RuleCatalogItem> = {
+    id: 'name',
+    header: 'Name',
+    minWidth: '10rem',
+    text: (item) => item.name || '(unnamed)',
+    // The name is the row's keyboard control; a click anywhere else on the row opens the
+    // same editor (DataTable `onRowClick`). On a phone the state sits under the name.
+    cell: (item) => (
+      <span className="block min-w-0">
+        <button
+          type="button"
+          data-rule-name-key={item.key}
+          onClick={() => startEdit(item)}
+          className={cn(
+            'block max-w-full truncate rounded-sm text-left font-medium text-foreground hover:underline',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            'focus-visible:ring-offset-2 focus-visible:ring-offset-panel',
+          )}
+        >
+          {item.name || <span className="italic text-muted-foreground">(unnamed)</span>}
+        </button>
+        {compact ? <span className="mt-1 block">{stateCell(item)}</span> : null}
+      </span>
+    ),
+    wrap: compact,
+  };
+  const actionsColumn: DataTableColumn<RuleCatalogItem> = {
+    id: 'actions',
+    header: <span className="sr-only">Actions</span>,
+    menuLabel: 'Actions',
+    // 44px row targets on a phone, 32px from 640px (RowActions), plus the cell inset.
+    width: compact ? '4.5rem' : '4rem',
+    align: 'right',
+    cell: (item) => <RowActions actions={rowActions(item)} inline={0} subject={ruleLabel(item)} />,
+  };
+  // Below 768px only the name (with its state under it) and the row menu fit; the type
+  // and priority are in the editor. A fixed table counts every declared width, so the
+  // phone layout drops those columns rather than hiding them with CSS.
+  const columns: DataTableColumn<RuleCatalogItem>[] = compact
+    ? [nameColumn, actionsColumn]
+    : [
+        nameColumn,
+        {
+          id: 'type',
+          header: 'Type',
+          width: '11rem',
+          className: 'text-muted-foreground',
+          cell: (item) => TYPE_LABEL[item.tier],
+        },
+        {
+          id: 'state',
+          header: 'State',
+          width: '10rem',
+          wrap: true,
+          text: (item) => {
+            const state = STATE_DOT[stateOf(item)].label;
+            return needsRunbook.has(item.key) ? `${state}, needs a runbook` : state;
+          },
+          cell: stateCell,
+        },
+        {
+          id: 'priority',
+          header: 'Priority',
+          kind: 'number',
+          align: 'left',
+          width: '5.5rem',
+          className: 'text-muted-foreground',
+          cell: (item) => item.priority,
+        },
+        actionsColumn,
+      ];
+
+  const needsRunbookCount = catalog.filter((item) => needsRunbook.has(item.key)).length;
+  const caption =
+    catalog.length === 0
+      ? undefined
+      : [
+          `${catalog.length} ${catalog.length === 1 ? 'rule' : 'rules'}, lower priority numbers run first`,
+          needsRunbookCount
+            ? `${needsRunbookCount} ${needsRunbookCount === 1 ? 'needs' : 'need'} a runbook`
+            : null,
+        ]
+          .filter(Boolean)
+          .join('. ');
+
   return (
-    <div className="space-y-4">
-      <Alert variant="info">
-        <Workflow className="h-4 w-4" aria-hidden />
-        <AlertTitle>Rules write configuration — never the verdict</AlertTitle>
-        <AlertDescription>
-          Detection rules classify events into candidate cases; case-automation rules react AFTER
-          the deterministic decision. The close/escalate decision is always made by deterministic
-          code (#3) — a rule can recommend, tag, notify, or propose, but never sets a case status.
-        </AlertDescription>
-      </Alert>
-
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-sm text-muted-foreground">
-          {catalog.length} {catalog.length === 1 ? 'rule' : 'rules'}
-        </div>
-        {canManage ? (
-          <Button size="sm" onClick={startNew}>
-            <Plus className="h-4 w-4" aria-hidden />
-            New rule
-          </Button>
-        ) : null}
-      </div>
-
-      {catalog.length === 0 ? (
-        <EmptyState
-          icon={Workflow}
-          compact
-          title="No rules yet"
-          description="Create a detection rule to cluster events into cases, or a case-automation rule to react after triage."
-          action={
-            canManage ? (
-              <Button size="sm" onClick={startNew}>
-                <Plus className="h-4 w-4" aria-hidden />
-                New rule
-              </Button>
-            ) : undefined
+    <div ref={rootRef} className="space-y-4">
+      <SettingsGroup
+        title="Rules"
+        caption={caption}
+        action={
+          canManage ? (
+            <Button size="sm" onClick={startNew}>
+              <Plus aria-hidden />
+              New rule
+            </Button>
+          ) : undefined
+        }
+      >
+        <DataTable<RuleCatalogItem>
+          ariaLabel="Detection and case automation rules"
+          columns={columns}
+          rows={catalog}
+          getRowId={(item) => item.key}
+          surface="panel"
+          onRowClick={(item) => startEdit(item)}
+          showRowAction={false}
+          emptyState={
+            <EmptyState
+              icon={Workflow}
+              compact
+              title="No rules yet"
+              description="Create a detection rule to group events into cases, or a case automation rule to react after triage."
+              action={
+                canManage ? (
+                  <Button size="sm" onClick={startNew}>
+                    <Plus aria-hidden />
+                    New rule
+                  </Button>
+                ) : undefined
+              }
+            />
           }
         />
-      ) : (
-        // On narrow viewports, keep the complete rule name readable while collapsing
-        // secondary Type/Priority columns. The locally scrollable wrapper remains a
-        // last-resort guard for translated or unusually long status labels, but the
-        // normal mobile table now fits without widening the whole Console.
-        <div className="max-w-full overflow-x-auto rounded-md border border-border">
-          <table className="w-full table-fixed text-sm sm:table-auto">
-            <thead>
-              <tr className="border-b border-border bg-muted/50 text-left text-xs text-muted-foreground">
-                <th scope="col" className="px-3 py-2 font-medium">
-                  Name
-                </th>
-                <th scope="col" className="hidden px-3 py-2 font-medium sm:table-cell">
-                  Type
-                </th>
-                <th scope="col" className="w-24 px-3 py-2 font-medium sm:w-auto">
-                  State
-                </th>
-                <th
-                  scope="col"
-                  className="hidden px-3 py-2 font-medium tabular-nums sm:table-cell"
-                >
-                  Priority
-                </th>
-                <th scope="col" className="w-28 px-2 py-2 text-right font-medium sm:w-auto sm:px-3">
-                  <span className="sr-only">Actions</span>
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {catalog.map((item) => {
-                const Icon = TIER_ICON[item.tier];
-                return (
-                  <tr key={item.key} className="border-b border-border last:border-0 hover:bg-muted/40">
-                    <td className="min-w-0 px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => startEdit(item)}
-                        className="block w-full text-left font-medium text-foreground [overflow-wrap:anywhere] hover:underline"
-                      >
-                        {item.name || <span className="italic text-muted-foreground">(unnamed)</span>}
-                      </button>
-                    </td>
-                    <td className="hidden px-3 py-2 sm:table-cell">
-                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Icon className="h-3.5 w-3.5" aria-hidden />
-                        {RULE_TIER_BY_ID[item.tier].label}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <LifecycleStateChip state={item.lifecycle} />
-                    </td>
-                    <td className="hidden px-3 py-2 tabular-nums text-muted-foreground sm:table-cell">
-                      {item.priority}
-                    </td>
-                    <td className="px-2 py-2 sm:px-3">
-                      <div className="flex items-center justify-end gap-1">
-                        {item.tier !== 'detection_anomaly' ? (
-                          <IconButton
-                            label={`Lifecycle & history for ${item.name || 'rule'}`}
-                            size="sm"
-                            variant="ghost"
-                            tooltip={false}
-                            onClick={() => openLifecycle(item)}
-                          >
-                            <History />
-                          </IconButton>
-                        ) : null}
-                        <IconButton
-                          label={`Edit ${item.name || 'rule'}`}
-                          size="sm"
-                          variant="ghost"
-                          tooltip={false}
-                          onClick={() => startEdit(item)}
-                        >
-                          <Pencil />
-                        </IconButton>
-                        {canManage ? (
-                          <IconButton
-                            label={`Delete ${item.name || 'rule'}`}
-                            size="sm"
-                            variant="ghost"
-                            tooltip={false}
-                            className="text-critical-text hover:text-critical-text"
-                            onClick={() => setConfirmDelete(item)}
-                          >
-                            <Trash2 />
-                          </IconButton>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      </SettingsGroup>
 
       <Sheet
         open={open}
         onOpenChange={(v) => (v ? setOpen(true) : (setOpen(false), setDraft(null), setSaveError(null)))}
       >
-        <SheetContent side="right" size="lg" className={cn('flex w-full flex-col sm:max-w-2xl')}>
+        <SheetContent
+          side="right"
+          size="lg"
+          className={cn('flex w-full flex-col sm:max-w-2xl')}
+          onCloseAutoFocus={editorOpener.onCloseAutoFocus}
+        >
           <SheetHeader>
             <SheetTitle>
               {target?.kind === 'new' ? 'New rule' : 'Edit rule'}
             </SheetTitle>
             <SheetDescription>
               Configure the rule across Define, About, Schedule, and Actions. Saving writes
-              configuration only — it never changes a case decision.
+              configuration only. It never changes a case decision.
             </SheetDescription>
           </SheetHeader>
 
@@ -487,11 +610,9 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
           </div>
 
           {saveError ? (
-            <Alert variant="warning" className="mx-6">
-              <AlertTriangle className="h-4 w-4" aria-hidden />
-              <AlertTitle>Can&apos;t save yet</AlertTitle>
-              <AlertDescription>{saveError}</AlertDescription>
-            </Alert>
+            <Callout intent="error" title="Can't save yet" className="mx-6">
+              {saveError}
+            </Callout>
           ) : null}
 
           <SheetFooter>
@@ -503,7 +624,7 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
         </SheetContent>
       </Sheet>
 
-      {/* Destructive-delete gate — parity with the confirm-gated Disable in the lifecycle
+      {/* Destructive-delete gate: parity with the confirm-gated Disable in the lifecycle
           sheet. Config writer only (#3): the confirmed delete flows through `update`. */}
       <ConfirmDialog
         open={confirmDelete !== null}
@@ -511,10 +632,11 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
           if (!o) setConfirmDelete(null);
         }}
         destructive
+        returnFocusRef={deleteOpener.ref}
         title="Delete this rule?"
         description={
           confirmDelete
-            ? `"${confirmDelete.name || 'This rule'}" will be removed from your configuration. This writes configuration only — it never changes a case.`
+            ? `"${confirmDelete.name || 'This rule'}" will be removed from your configuration. This writes configuration only. It never changes a case.`
             : ''
         }
         confirmLabel="Delete rule"
@@ -524,7 +646,7 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
         }}
       />
 
-      {/* Per-rule LIFECYCLE surface — test/preview + version ledger + rollback + state.
+      {/* Per-rule LIFECYCLE surface: test/preview, version ledger, rollback and state.
           Config writer only (#3): a state change flows through `update`; a rollback is a
           config write on the RB endpoint. Never `decide()`, never bills the LLM (#6). */}
       {lifecycle ? (
@@ -543,10 +665,15 @@ export function DetectionRulesHome({ prefs, update }: DetectionRulesHomeProps) {
           canManage={canManage}
           canRollback={canManageRules}
           onLifecycleChange={canManage ? (next) => setLifecycleState(lifecycle.item, next) : undefined}
+          onCloseAutoFocus={lifecycleOpener.onCloseAutoFocus}
           onTune={() => {
             const item = lifecycle.item;
+            // The editor takes over the lifecycle sheet's opener (the row's menu button);
+            // the closing lifecycle sheet then leaves focus to the editor.
+            const opener = lifecycleOpener.ref.current;
+            lifecycleOpener.remember(null);
             setLifecycle(null);
-            startEdit(item);
+            startEdit(item, opener);
           }}
         />
       ) : null}

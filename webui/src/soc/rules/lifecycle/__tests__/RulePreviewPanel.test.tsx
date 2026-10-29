@@ -1,14 +1,14 @@
 /**
- * RulePreviewPanel spec (Round-5 G6 · R5) — the read-only, NO-COST rule preview.
+ * RulePreviewPanel spec (Round-5 G6, R5): the read-only, NO-COST rule preview.
  *
  * THE load-bearing assertion for this wave: running a preview hits ONLY the pure,
- * read-only `api.rules.preview` path — it NEVER calls any LLM / case-mutating path
+ * read-only `api.rules.preview` path: it NEVER calls any LLM / case-mutating path
  * (`chat` / `investigate` / `reinvestigateCase` / `runPlaybook` / `caseAction` /
  * `bulkCases`), so it bills ZERO UsageDoc (#6) and never closes/escalates a case (#3).
  * It also renders the match count + histogram from the pure endpoint's result.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { TooltipProvider } from '@/ui/tooltip';
 
 // Spy every method the panel COULD reach. `rules.preview` is the ONLY one it may call;
@@ -47,6 +47,8 @@ const {
 }));
 
 vi.mock('@/lib/api', () => ({
+  // LoadError formats a failed preview through `errorMessage`, which checks for ApiError.
+  ApiError: class ApiError extends Error {},
   api: {
     rules: { preview: previewSpy, versions: vi.fn(), rollback: vi.fn() },
     triage: { previewDecision: previewDecisionSpy },
@@ -59,7 +61,7 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-import { RulePreviewPanel } from '../RulePreviewPanel';
+import { RulePreviewPanel, isRenderablePreview } from '../RulePreviewPanel';
 import type { RuleForm } from '../../types';
 
 const MATCH_RULE: RuleForm = {
@@ -142,5 +144,92 @@ describe('RulePreviewPanel', () => {
     expect(previewSpy.mock.calls[0][0].match).toEqual([
       { field: 'rule.id', op: 'equals', value: '5710' },
     ]);
+  });
+  it('states the read-only guarantee in a help tip, not a permanent box (Round 14, D26)', async () => {
+    const { container } = renderPanel();
+    expect(container.querySelector('[role="alert"], [data-slot="alert"]')).toBeNull();
+    expect(screen.queryByText(/never runs the AI/i)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'About the preview' }));
+    expect(await screen.findByText(/never runs the AI, never creates a case and never escalates/i)).toBeInTheDocument();
+  });
+
+  it('shows the result on one panel with a sentence-case label and no spinning refresh glyph', async () => {
+    const { container } = renderPanel();
+    const run = screen.getByRole('button', { name: /run preview/i });
+    expect(run.querySelector('.lucide-refresh-cw')).toBeNull();
+    fireEvent.click(run);
+    const result = await screen.findByTestId('rule-preview-result');
+    expect(result.className).toContain('surface-panel');
+    expect(within(result).getByText('Matches over time')).toBeInTheDocument();
+    expect(container.innerHTML).not.toMatch(/uppercase|tracking-wider/);
+    expect(container.textContent ?? '').not.toContain('\u2014');
+  });
+  it('says what Run preview does before the first run, and drops that line once a result shows', async () => {
+    renderPanel();
+    expect(screen.getByTestId('rule-preview-idle')).toHaveTextContent(
+      'Run a preview to count matches over the selected window.',
+    );
+    fireEvent.click(screen.getByRole('button', { name: /run preview/i }));
+    await screen.findByTestId('rule-preview-result');
+    expect(screen.queryByTestId('rule-preview-idle')).toBeNull();
+  });
+
+  it('says the window had no events instead of a rate over zero events', async () => {
+    previewSpy.mockResolvedValueOnce({
+      scanned: 0,
+      matched: 0,
+      match_rate: 0,
+      histogram: [],
+      sample: [],
+      predicates: 1,
+      predicates_evaluated: 1,
+      hard_capped: false,
+    });
+    renderPanel();
+    fireEvent.click(screen.getByRole('button', { name: /run preview/i }));
+    const result = await screen.findByTestId('rule-preview-result');
+    expect(within(result).getByTestId('rule-preview-no-events')).toHaveTextContent(
+      'No events in this window to test against. Try a longer window.',
+    );
+    expect(result.textContent ?? '').not.toMatch(/match rate|events scanned|would not have fired/);
+  });
+
+  it('keeps the no-match sentence for a window that had events but no match', async () => {
+    previewSpy.mockResolvedValueOnce({
+      scanned: 250,
+      matched: 0,
+      match_rate: 0,
+      histogram: [],
+      sample: [],
+      predicates: 1,
+      predicates_evaluated: 1,
+      hard_capped: false,
+    });
+    renderPanel();
+    fireEvent.click(screen.getByRole('button', { name: /run preview/i }));
+    const result = await screen.findByTestId('rule-preview-result');
+    expect(within(result).getByText('No matches in this window, so the rule would not have fired.')).toBeInTheDocument();
+    expect(within(result).getByText('250')).toBeInTheDocument();
+    expect(within(result).queryByTestId('rule-preview-no-events')).toBeNull();
+  });
+
+  it('reports an unreadable preview response as a failed preview instead of crashing', async () => {
+    previewSpy.mockResolvedValueOnce({} as never);
+    renderPanel();
+    fireEvent.click(screen.getByRole('button', { name: /run preview/i }));
+    expect(await screen.findByText('Preview failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('rule-preview-result')).toBeNull();
+  });
+});
+
+describe('isRenderablePreview', () => {
+  it('accepts finite counts with a histogram list and rejects anything else', () => {
+    expect(isRenderablePreview({ matched: 1, scanned: 2, match_rate: 0.5, histogram: [] })).toBe(true);
+    expect(isRenderablePreview({ matched: 1, scanned: 2, match_rate: 0.5 })).toBe(true);
+    expect(isRenderablePreview({})).toBe(false);
+    expect(isRenderablePreview(null)).toBe(false);
+    expect(isRenderablePreview({ matched: 'x', scanned: 2, match_rate: 0.5 })).toBe(false);
+    expect(isRenderablePreview({ matched: 1, scanned: Number.NaN, match_rate: 0.5 })).toBe(false);
+    expect(isRenderablePreview({ matched: 1, scanned: 2, match_rate: 0.5, histogram: 'no' })).toBe(false);
   });
 });

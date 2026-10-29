@@ -66,31 +66,6 @@
       "rule": "arbitrary-radius",
       "file": "soc/pages/casedetail/ClusterFormationDiagram.tsx",
       "max": 2
-    },
-    {
-      "rule": "info-alert",
-      "file": "soc/rules/lifecycle/RuleLifecycleSheet.tsx",
-      "max": 1
-    },
-    {
-      "rule": "uppercase-tracking",
-      "file": "soc/rules/lifecycle/RulePreviewPanel.tsx",
-      "max": 1
-    },
-    {
-      "rule": "spinning-refresh",
-      "file": "soc/rules/lifecycle/RulePreviewPanel.tsx",
-      "max": 1
-    },
-    {
-      "rule": "info-alert",
-      "file": "soc/rules/lifecycle/RulePreviewPanel.tsx",
-      "max": 2
-    },
-    {
-      "rule": "uppercase-tracking",
-      "file": "soc/rules/lifecycle/RuleVersionLedger.tsx",
-      "max": 1
     }
   ]
 }

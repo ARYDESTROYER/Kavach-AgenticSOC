@@ -9,8 +9,10 @@
  * SAME silence that made the original defect invisible.
  *
  * So the reason must be visible wherever `rule_noise` is rendered. This spec pins:
- *   (a) the rule row carries an explicit "Threshold raise inert" marker;
- *   (b) the inspector states the reason and the backend's own explanation as plain text;
+ *   (a) the rule row carries an explicit "Threshold change would not help" marker;
+ *   (b) the inspector states the reason from the ONE reason-code table, as a plain
+ *       sentence; the backend's engineering detail ("configured mode=EVERY ...") is never
+ *       rendered (Round 14, SPEC §5 F12);
  *   (c) a rule with a normal (non-inert) picture shows neither;
  *   (d) an unknown future reason code still renders rather than being dropped.
  */
@@ -70,7 +72,7 @@ vi.mock('@/soc/pages/AgentEffectiveness', () => ({
 }));
 
 import { TooltipProvider } from '@/ui/tooltip';
-import Tuning from '../Tuning';
+import Tuning, { INERT_FALLBACK_DETAIL, INERT_REASONS } from '../Tuning';
 import type { RuleNoise, TuningRecommendationsResponse } from '../Tuning.api';
 
 const INERT_DETAIL =
@@ -175,21 +177,48 @@ describe('Tuning — correlation_n inertness', () => {
     renderTuning();
 
     expect(await screen.findByText('alerts-role-brute-force')).toBeInTheDocument();
-    expect(screen.getByText('Threshold raise inert')).toBeInTheDocument();
+    expect(screen.getByText('Threshold change would not help')).toBeInTheDocument();
     // The "next step" copy explains the structural reason instead of going silent.
     expect(screen.getByText('Correlation threshold cannot help this rule')).toBeInTheDocument();
   });
 
-  it('explains the reason in the rule inspector as plain backend text', async () => {
+  it('explains the reason in the rule inspector as a plain sentence, never the raw backend text (F12)', async () => {
     recsMock.mockResolvedValue(response([NOISY_INERT]));
 
-    renderTuning();
+    const { container } = renderTuning();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Inspect rule alerts-role-brute-force' }));
 
-    expect(await screen.findByText('Correlation threshold is inert')).toBeInTheDocument();
-    expect(screen.getByText('Alerts-role feed forces every alert through')).toBeInTheDocument();
-    expect(screen.getAllByText(INERT_DETAIL).length).toBeGreaterThan(0);
+    expect(await screen.findByText('A threshold change would not help')).toBeInTheDocument();
+    expect(screen.getByText('Alerts feed sends every alert')).toBeInTheDocument();
+    expect(
+      screen.getAllByText(INERT_REASONS.alerts_role_every_override.detail).length,
+    ).toBeGreaterThan(0);
+    // The backend's engineering detail never reaches the screen, nor a mode token.
+    expect(screen.queryAllByText(INERT_DETAIL)).toHaveLength(0);
+    expect(container.textContent).not.toMatch(/mode=EVERY|correlation_n/);
+  });
+
+  it('says in plain words why a mode=EVERY rule cannot be helped by a threshold raise (F12)', async () => {
+    recsMock.mockResolvedValue(
+      response([
+        {
+          ...NOISY_INERT,
+          rule_id: 'every-event-rule',
+          correlation_n_inert_reason: 'correlation_mode_every',
+          correlation_n_inert_detail: 'configured mode=EVERY, which never consults n, so a correlation_n raise would change nothing',
+        },
+      ]),
+    );
+
+    const { container } = renderTuning();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Inspect rule every-event-rule' }));
+    expect(await screen.findByText('Fires on every event')).toBeInTheDocument();
+    expect(
+      screen.getAllByText('This rule fires on every event, so raising its threshold would change nothing.').length,
+    ).toBeGreaterThan(0);
+    expect(container.textContent).not.toMatch(/mode=EVERY|never consults n|correlation_n/);
   });
 
   it('shows no inertness marker for a rule whose threshold raise would work', async () => {
@@ -198,7 +227,7 @@ describe('Tuning — correlation_n inertness', () => {
     renderTuning();
 
     expect(await screen.findByText('events-role-scanner')).toBeInTheDocument();
-    expect(screen.queryByText('Threshold raise inert')).toBeNull();
+    expect(screen.queryByText('Threshold change would not help')).toBeNull();
     expect(screen.queryByText('Correlation threshold cannot help this rule')).toBeNull();
   });
 
@@ -219,13 +248,9 @@ describe('Tuning — correlation_n inertness', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Inspect rule future-shape' }));
 
     await waitFor(() =>
-      expect(screen.getByText('Correlation threshold is inert')).toBeInTheDocument(),
+      expect(screen.getByText('A threshold change would not help')).toBeInTheDocument(),
     );
     expect(screen.getByText('Some new backend reason')).toBeInTheDocument();
-    expect(
-      screen.getAllByText(
-        /A correlation threshold raise would be discarded by the pipeline, so none is proposed\./,
-      ).length,
-    ).toBeGreaterThan(0);
+    expect(screen.getAllByText(INERT_FALLBACK_DETAIL).length).toBeGreaterThan(0);
   });
 });

@@ -1,14 +1,19 @@
 /**
- * Log Sources — the QRadar-style "Log Source Management" surface.
+ * Sources: the systems the agent reads security events from (Round 14 console grammar,
+ * SPEC §4.9.4 and the C7 option 1 "Sources" sheet).
  *
- * The systems the agent reads security events from, presented as a dense, sortable
- * DataTable (was a vertical card stack): a toolbar (faceted filter + search + a live
- * "Log Sources (N)" count + a prominent "+ New Log Source" + a Manage-Columns gear),
- * bulk-select with an Enable / Disable / Remove strip, and per-row Status dot, Last
- * Event, an inline Enabled toggle, and a kebab actions menu (Browse logs · Make
- * primary · Edit · Remove). Status + Last Event are honestly derived from the
- * read-only GET /api/sources/health signal (durable poll cursor for PULL sources,
- * live-tail buffer depth for PUSH receivers).
+ * The Overview's page grammar: a plain header ("Sources", a help tip, the source count
+ * and Refresh beside the title, "Add source" on the right), one KPI strip on a panel
+ * (ingest coverage), then one "Connected sources" panel holding the filter bar (search,
+ * Enabled, Kind and Type, removable chips) and a dense sortable DataTable that bleeds to
+ * the panel edge. The Name column takes the spare width and every other column shrinks
+ * to its content; there is no pager while the list fits one page. Rows carry a Status
+ * dot (coloured only for an exception), Last event, an inline Enabled switch and a row
+ * menu (Browse logs, Make primary, Edit, Remove); bulk select offers Enable, Disable and
+ * Remove. Status and Last event are honestly derived from the read-only
+ * GET /api/sources/health signal (durable poll cursor for PULL sources, live-tail buffer
+ * depth for PUSH receivers). In Demo Mode the sources are fixed, and the header says so
+ * in words instead of showing a disabled button.
  *
  * Add/Edit open the manifest-driven <SourceEditor> in a Dialog (the same form the
  * wizard uses); Browse opens the <SourceLogsSheet>.
@@ -28,16 +33,11 @@ import {
   Telescope,
   Plug,
   Link2,
-  Search,
   X,
-  Filter,
   MoreHorizontal,
   KeyRound,
   Check,
-  Activity,
   ShieldCheck,
-  AlertTriangle,
-  type LucideIcon,
 } from 'lucide-react';
 import type { Navigate } from '@/soc/router';
 import { api } from '@/lib/api';
@@ -48,22 +48,26 @@ import type {
   SourceInstance,
 } from '@/lib/types';
 import { humanizeToken, humanizeAge, formatTimestamp, fmtNumber, DASH } from '@/lib/format';
+import { properName } from '@/lib/proper-names';
 import { cn } from '@/lib/cn';
 import { toast } from 'sonner';
 
+import { Panel, StatusDot, type StatusTone } from '@/design-system';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
-import { FilterBar } from '@/soc/components/FilterBar';
+import { FilterBar, type FilterChip } from '@/soc/components/FilterBar';
+import { KpiStrip } from '@/soc/components/KpiStrip';
+import { KpiTile } from '@/soc/components/KpiTile';
 import { RefreshButton } from '@/soc/components/RefreshButton';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { SourceEditor } from '@/soc/components/SourceEditor';
 import { SourceLogsSheet } from '@/soc/components/SourceLogsSheet';
+import { headingOf, useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { categoryMeta } from '@/soc/components/ConnectorPicker';
 import { Can, useCan } from '@/soc/components/Can';
 import { HelpTip } from '@/soc/components/HelpTip';
-import { IconButton } from '@/soc/components/IconButton';
 import {
   DataTable,
   type DataTableColumn,
@@ -76,7 +80,6 @@ import { useDemo } from '@/soc/demo';
 
 import { Button } from '@/ui/button';
 import { Badge } from '@/ui/badge';
-import { Input } from '@/ui/input';
 import { Switch } from '@/ui/switch';
 import { Alert, AlertTitle, AlertDescription } from '@/ui/alert';
 import {
@@ -93,12 +96,15 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from '@/ui/dropdown-menu';
-import { Popover, PopoverTrigger, PopoverContent } from '@/ui/popover';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select';
 
 /* --------------------------------------------------------------- helpers --- */
 
-/** Stable id for the Log Sources table's per-user column state (Wave 7). */
+/** Stable id for the Sources table's per-user column state (Wave 7). */
 const SOURCES_TABLE_ID = 'sources';
+
+/** A column that shrinks to its content (the Name column takes the spare width). */
+const FIT_COLUMN = 'w-px whitespace-nowrap';
 
 /**
  * Columns hidden by DEFAULT (only until the user customizes this table). The dense
@@ -118,6 +124,10 @@ const SOURCES_DEFAULT_HIDDEN = [
 /** Sentinel "any" value for the single-value facets. */
 const ANY = '__any__';
 const DEMO_MANAGED_REASON = 'Managed by Demo Mode';
+/** The page's explanation, shown in the header help tip (C8: no description line). */
+const PAGE_HELP = 'Connect and manage the systems the agent reads security events from.';
+/** Said in words in the header while Demo Mode owns the source list (no disabled button). */
+const DEMO_FIXED_NOTE = 'Sources are fixed in Demo mode';
 
 type SourceSortId = 'name' | 'type' | 'status' | 'last_event' | 'protocol' | 'created_at';
 
@@ -137,7 +147,7 @@ const EMPTY_FILTERS: SourceFilters = {
 
 /** The display label for a source (never a secret). */
 function sourceLabel(s: SourceInstance, meta?: ConnectorManifest): string {
-  return s.display_name || meta?.display_name || s.source_type;
+  return s.display_name || meta?.display_name || properName(s.source_type);
 }
 
 /** A loose-config string value (Groups etc.), or '' when absent/non-string. */
@@ -148,7 +158,7 @@ function looseString(cfg: SourceInstance['config'], key: string): string {
 
 /** Source-native wire format when declared; otherwise the generic ingest direction. */
 function sourceProtocol(s: SourceInstance): string {
-  return looseString(s.config, 'protocol') || humanizeToken(s.ingest_mode);
+  return looseString(s.config, 'protocol') || properName(s.ingest_mode);
 }
 
 /** A loose-config boolean (Coalescing / Internal), or undefined when absent. */
@@ -159,6 +169,17 @@ function looseBool(cfg: SourceInstance['config'], key: string): boolean | undefi
 
 type StatusKind = 'disabled' | 'ok' | 'idle' | 'silent' | 'error';
 
+/**
+ * The dot tone per status: the healthy states stay quiet (a neutral dot and muted text),
+ * so only a silent or broken source stands out. The status is always in the words too.
+ */
+const STATUS_TONE: Record<StatusKind, StatusTone> = {
+  ok: 'neutral',
+  idle: 'neutral',
+  disabled: 'neutral',
+  silent: 'warning',
+  error: 'critical',
+};
 /**
  * HONEST status derivation, now anchored on the SERVER truth (coverage-observability
  * A5.2) instead of the old pure-client 24h staleness guess:
@@ -233,6 +254,30 @@ export default function Sources(_props: SourcesProps) {
   const [pendingDelete, setPendingDelete] = React.useState<SourceInstance | null>(null);
   const [pendingPrimary, setPendingPrimary] = React.useState<SourceInstance | null>(null);
   const [pendingBulkRemove, setPendingBulkRemove] = React.useState(false);
+  // The editor, the logs sheet and the confirmations open from state (a row menu item or a
+  // button outside their root), so each remembers its opener and hands focus back to it
+  // on close (SPEC §3.3). A row menu item resolves to the row's "Actions for" button.
+  const editorOpener = useReturnFocus();
+  const logsOpener = useReturnFocus();
+  const deleteOpener = useReturnFocus();
+  const primaryOpener = useReturnFocus();
+  const bulkRemoveOpener = useReturnFocus();
+  const clearSelectionFocus = useReturnFocus();
+  // The sources panel. A removal reloads the list after its confirmation has closed and
+  // takes the row's "Actions for" button with it: focus then moves to the next row's
+  // button, else the panel's heading, never to the page body.
+  const listRef = React.useRef<HTMLElement>(null);
+  const rowActionsFallback = React.useMemo(
+    () => ({
+      peers: () => listRef.current?.querySelectorAll('[data-source-row-actions]') ?? [],
+      empty: () => headingOf(listRef.current),
+    }),
+    [],
+  );
+  const openEditor = (next: NonNullable<EditorState>) => {
+    editorOpener.remember();
+    setEditor(next);
+  };
 
   const [filters, setFilters] = React.useState<SourceFilters>(EMPTY_FILTERS);
   const [sort, setSort] = React.useState<SortState>({ id: 'last_event', dir: 'desc' });
@@ -329,6 +374,7 @@ export default function Sources(_props: SourcesProps) {
     try {
       await api.deleteSource(s.id);
       toast.success('Source removed');
+      deleteOpener.expectRemoval();
       await load();
     } catch {
       // Toast-only (see setPrimary): action failures never raise the page LoadError.
@@ -378,7 +424,7 @@ export default function Sources(_props: SourcesProps) {
   );
 
   const typeLabel = React.useCallback(
-    (s: SourceInstance) => connectorFor(s)?.display_name || humanizeToken(s.source_type),
+    (s: SourceInstance) => connectorFor(s)?.display_name || properName(s.source_type),
     [connectorFor],
   );
 
@@ -568,11 +614,13 @@ export default function Sources(_props: SourcesProps) {
     }
     if (failed) toast.warning(`${ok} removed, ${failed} failed`);
     else toast.success(`${ok} source${ok === 1 ? '' : 's'} removed`);
+    // Clearing the selection hides the bulk bar, and its Remove button with it.
+    bulkRemoveOpener.expectRemoval();
     setSelected([]);
     setPendingBulkRemove(false);
     await load();
     setBulkBusy(false);
-  }, [selectedSources, load]);
+  }, [selectedSources, load, bulkRemoveOpener]);
 
   /* ------------------------------------------------------ column state ---- */
 
@@ -588,12 +636,19 @@ export default function Sources(_props: SourcesProps) {
 
   /* ------------------------------------------------------------ columns --- */
 
+  // The Demo note sits beside the module title once; a row is marked only when the list
+  // mixes Demo sources with real ones, where the row itself is the fact a reader needs.
+  const demoRows = sources.some((s) => s.demo === true);
+  const mixedDemo = demoRows && sources.some((s) => s.demo !== true);
+
   const columns: DataTableColumn<SourceInstance>[] = [
     {
       id: 'id',
       header: 'ID',
       menuLabel: 'ID',
-      width: '9rem',
+      kind: 'id',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => (
         <span className="block max-w-[9rem] truncate font-mono text-xs text-muted-foreground" title={s.id}>
           {s.id}
@@ -605,11 +660,16 @@ export default function Sources(_props: SourcesProps) {
       header: 'Name',
       sortable: true,
       lockVisible: true,
+      // The one flexible column: it takes the spare width (C7: every other column
+      // shrinks to its content).
+      className: 'w-full',
+      headerClassName: 'w-full',
+      text: (s) => sourceLabel(s, connectorFor(s)),
       cell: (s) => {
         const meta = connectorFor(s);
         const name = sourceLabel(s, meta);
         const secretCount = s.configured_secrets?.length || 0;
-        const subline = [humanizeToken(s.source_type), humanizeToken(s.ingest_mode)]
+        const subline = [typeLabel(s), properName(s.ingest_mode)]
           .filter((v) => v && v !== DASH)
           .join(' · ');
         return (
@@ -618,19 +678,19 @@ export default function Sources(_props: SourcesProps) {
               {canManage && !s.demo ? (
                 <button
                   type="button"
-                  onClick={() => setEditor({ mode: 'edit', source: s })}
-                  className="max-w-[16rem] truncate rounded-sm text-sm font-semibold text-foreground hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => openEditor({ mode: 'edit', source: s })}
+                  className="max-w-[28rem] truncate rounded-sm text-sm font-semibold text-foreground hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   title={name}
                 >
                   {name}
                 </button>
               ) : (
-                <span className="max-w-[16rem] truncate text-sm font-semibold text-foreground" title={name}>
+                <span className="max-w-[28rem] truncate text-sm font-semibold text-foreground" title={name}>
                   {name}
                 </span>
               )}
               {s.is_primary ? <Badge variant="default">Primary</Badge> : null}
-              {s.demo ? (
+              {s.demo && mixedDemo ? (
                 <Badge variant="warning" title={DEMO_MANAGED_REASON}>
                   Demo
                 </Badge>
@@ -648,7 +708,9 @@ export default function Sources(_props: SourcesProps) {
       id: 'type',
       header: 'Type',
       sortable: true,
-      width: '13rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
+      text: (s) => typeLabel(s),
       cell: (s) => {
         const meta = connectorFor(s);
         const cat = categoryMeta(meta?.category || s.category);
@@ -663,7 +725,7 @@ export default function Sources(_props: SourcesProps) {
             >
               <CatIcon className="h-3.5 w-3.5" aria-hidden />
             </span>
-            <span className="truncate text-sm text-foreground">{typeLabel(s)}</span>
+            <span className="text-sm text-foreground">{typeLabel(s)}</span>
           </span>
         );
       },
@@ -672,29 +734,13 @@ export default function Sources(_props: SourcesProps) {
       id: 'status',
       header: 'Status',
       sortable: true,
-      width: '8rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
+      text: (s) => sourceStatus(s, health[s.id]).label,
       cell: (s) => {
         const h = health[s.id];
         const st = sourceStatus(s, h);
-        const dotCls =
-          st.kind === 'ok'
-            ? 'bg-success'
-            : st.kind === 'error'
-              ? 'bg-critical'
-              : st.kind === 'silent'
-                ? 'bg-warning'
-                : st.kind === 'idle'
-                  ? 'bg-muted-foreground/60'
-                  : 'bg-muted-foreground/40';
-        const textCls =
-          st.kind === 'ok'
-            ? 'text-success-text'
-            : st.kind === 'error'
-              ? 'text-critical-text'
-              : st.kind === 'silent'
-                ? 'text-warning-text'
-                : 'text-muted-foreground';
-        // A connector error string is source-controlled data → plain text only (#9).
+        // A connector error string is source-controlled data: plain text only (#9).
         const title =
           st.kind === 'disabled'
             ? 'Source is disabled'
@@ -703,26 +749,23 @@ export default function Sources(_props: SourcesProps) {
                 ? `Last poll failed: ${h.last_poll_error}`
                 : 'The last poll attempt failed'
               : st.kind === 'silent'
-                ? 'Enabled but no recent events — the source may have stopped reporting'
+                ? 'Enabled but no recent events: the source may have stopped reporting'
                 : st.kind === 'ok'
                   ? `Active${h?.kind ? ` · ${humanizeToken(h.kind)} source` : ''}`
                   : 'Enabled, no events observed yet';
         return (
-          <span
-            className="inline-flex items-center gap-1.5"
-            title={title}
-            data-testid={`source-status-${s.id}`}
-          >
-            <span className={cn('h-2 w-2 shrink-0 rounded-full', dotCls)} aria-hidden />
-            <span className={cn('text-sm font-medium', textCls)}>{st.label}</span>
-          </span>
+          <StatusDot tone={STATUS_TONE[st.kind]} title={title} data-testid={`source-status-${s.id}`}>
+            {st.label}
+          </StatusDot>
         );
       },
     },
     {
       id: 'enabled',
       header: 'Enabled',
-      width: '6.5rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
+      text: (s) => (s.enabled !== false ? 'Enabled' : 'Disabled'),
       cell: (s) => (
         <span className="inline-flex" title={s.demo ? DEMO_MANAGED_REASON : undefined}>
           <Switch
@@ -740,9 +783,11 @@ export default function Sources(_props: SourcesProps) {
     },
     {
       id: 'last_event',
-      header: 'Last Event',
+      header: 'Last event',
       sortable: true,
-      width: '9rem',
+      kind: 'time',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => {
         const h = health[s.id];
         // Prefer the server's wall-clock event watermark (A5.2), then the legacy poll cursor.
@@ -781,17 +826,19 @@ export default function Sources(_props: SourcesProps) {
       id: 'protocol',
       header: 'Protocol',
       sortable: true,
-      width: '8rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => <span className="text-sm text-foreground">{sourceProtocol(s)}</span>,
     },
     {
       id: 'groups',
       header: 'Groups',
-      width: '8rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => {
         const g = looseString(s.config, 'group') || looseString(s.config, 'groups');
         return g ? (
-          <span className="truncate text-sm text-foreground" title={g}>
+          <span className="block max-w-[12rem] truncate text-sm text-foreground" title={g}>
             {g}
           </span>
         ) : (
@@ -801,9 +848,11 @@ export default function Sources(_props: SourcesProps) {
     },
     {
       id: 'created_at',
-      header: 'Creation Date',
+      header: 'Created',
       sortable: true,
-      width: '11rem',
+      kind: 'time',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => (
         <span className="whitespace-nowrap text-sm text-muted-foreground">
           {formatTimestamp(s.created_at)}
@@ -813,7 +862,8 @@ export default function Sources(_props: SourcesProps) {
     {
       id: 'coalescing',
       header: 'Coalescing',
-      width: '7rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => <BoolCell value={looseBool(s.config, 'coalescing')} />,
     },
     {
@@ -823,20 +873,23 @@ export default function Sources(_props: SourcesProps) {
       // its recent events; it is NOT a claim that raw payloads are retained. Same single
       // `can_browse` definition as the row action; absent (older backend) → —.
       header: 'Browsable',
-      width: '8rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => <BoolCell value={s.can_browse} />,
     },
     {
       id: 'internal',
       header: 'Internal',
-      width: '6.5rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       cell: (s) => <BoolCell value={looseBool(s.config, 'internal')} />,
     },
     {
       id: 'actions',
       header: 'Actions',
       align: 'right',
-      width: '4rem',
+      className: FIT_COLUMN,
+      headerClassName: FIT_COLUMN,
       lockVisible: true,
       cell: (s) => (
         <div className="flex justify-end">
@@ -847,6 +900,7 @@ export default function Sources(_props: SourcesProps) {
                 size="icon"
                 className="size-8 text-muted-foreground hover:text-foreground"
                 aria-label={`Actions for ${sourceLabel(s, connectorFor(s))}`}
+                data-source-row-actions=""
               >
                 <MoreHorizontal className="size-4" aria-hidden />
               </Button>
@@ -854,7 +908,12 @@ export default function Sources(_props: SourcesProps) {
             <DropdownMenuContent align="end" className="w-48">
               {canBrowse(s) ? (
                 <>
-                  <DropdownMenuItem onSelect={() => setLogsSource(s)}>
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      logsOpener.remember();
+                      setLogsSource(s);
+                    }}
+                  >
                     <Telescope className="size-4" aria-hidden /> Browse logs
                   </DropdownMenuItem>
                   {(canManage || s.demo) ? <DropdownMenuSeparator /> : null}
@@ -867,17 +926,27 @@ export default function Sources(_props: SourcesProps) {
               ) : canManage ? (
                 <>
                   {!s.is_primary ? (
-                    <DropdownMenuItem onSelect={() => setPendingPrimary(s)}>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        primaryOpener.remember();
+                        setPendingPrimary(s);
+                      }}
+                    >
                       <Star className="size-4" aria-hidden /> Make primary
                     </DropdownMenuItem>
                   ) : null}
-                  <DropdownMenuItem onSelect={() => setEditor({ mode: 'edit', source: s })}>
+                  <DropdownMenuItem onSelect={() => openEditor({ mode: 'edit', source: s })}>
                     <Pencil className="size-4" aria-hidden /> Edit
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
+                  {/* Neutral at rest, red only on hover and keyboard focus and in the
+                      confirm dialog (the RowActions rule, SPEC §4.9.2). */}
                   <DropdownMenuItem
-                    onSelect={() => setPendingDelete(s)}
-                    className="text-critical focus:text-critical"
+                    onSelect={() => {
+                      deleteOpener.remember(undefined, rowActionsFallback);
+                      setPendingDelete(s);
+                    }}
+                    className="focus:bg-critical/10 focus:text-critical-text [&:focus>svg]:text-critical-text"
                   >
                     <Trash2 className="size-4" aria-hidden /> Remove
                   </DropdownMenuItem>
@@ -899,36 +968,69 @@ export default function Sources(_props: SourcesProps) {
   /* ------------------------------------------------------------- render --- */
 
   const firstRun = !loading && !error && sources.length === 0;
+  // No pager while the list fits one page (C7): the footer would only restate the count.
+  const singlePage = filteredSorted.length <= pageSize;
+
+  const typeName = (value: string) => typeOptions.find((t) => t.value === value)?.label ?? properName(value);
+  const chips: FilterChip[] = [
+    ...(filters.enabled !== 'any'
+      ? [{ id: 'enabled', label: `Enabled: ${filters.enabled === 'enabled' ? 'Yes' : 'No'}`, onRemove: () => setFilter('enabled', 'any') }]
+      : []),
+    ...(filters.kind !== 'any'
+      ? [{ id: 'kind', label: `Kind: ${filters.kind === 'pull' ? 'Pull' : 'Push'}`, onRemove: () => setFilter('kind', 'any') }]
+      : []),
+    ...(filters.type !== ANY
+      ? [{ id: 'type', label: `Type: ${typeName(filters.type)}`, onRemove: () => setFilter('type', ANY) }]
+      : []),
+  ];
+
+  const addSourceButton = (
+    <Button onClick={() => openEditor({ mode: 'add' })}>
+      <Plus className="mr-1.5 size-4" aria-hidden /> Add source
+    </Button>
+  );
 
   return (
-    <PageContainer variant="wide" className="space-y-6">
+    <PageContainer variant="wide">
       <PageHeader
-        icon={Database}
-        breadcrumb={[{ label: 'Platform' }, { label: 'Log Sources' }]}
-        title="Log Sources"
-        description="Connect and manage the systems the agent reads security events from."
+        title="Sources"
+        help={PAGE_HELP}
+        controls={
+          !firstRun && !error ? (
+            <>
+              <span className="text-sm tabular-nums text-muted-foreground" data-testid="sources-total">
+                {loading && sources.length === 0
+                  ? 'Loading'
+                  : `${fmtNumber(sources.length)} ${sources.length === 1 ? 'source' : 'sources'}`}
+              </span>
+              <RefreshButton onClick={() => void load()} refreshing={loading} label="Refresh sources" display="icon" />
+            </>
+          ) : undefined
+        }
         actions={
           !firstRun ? (
             <Can resource="sources" action="manage">
-              <Button
-                onClick={() => setEditor({ mode: 'add' })}
-                disabled={demoManaged}
-                title={demoManaged ? DEMO_MANAGED_REASON : undefined}
-              >
-                <Plus className="mr-1.5 size-4" aria-hidden /> New Log Source
-              </Button>
+              {demoManaged ? (
+                // A reason anyone can read, not a disabled button whose reason only a
+                // pointer hover could reach.
+                <span className="text-sm text-muted-foreground" data-testid="sources-demo-fixed">
+                  {DEMO_FIXED_NOTE}
+                </span>
+              ) : (
+                addSourceButton
+              )}
             </Can>
           ) : null
         }
       />
 
       {error ? (
-        <LoadError error={error} title="Something went wrong" onRetry={() => void load()} />
+        <LoadError error={error} title="Could not load sources" onRetry={() => void load()} />
       ) : null}
 
-      {/* Coverage banner — the "am I seeing everything?" rollup (server truth). */}
+      {/* Ingest coverage: the "am I seeing everything?" rollup (server truth). */}
       {!error && sources.length > 0 ? (
-        <CoverageBanner
+        <CoverageStrip
           total={coverageStats.total}
           enabled={coverageStats.enabled}
           silent={coverageStats.silent}
@@ -938,180 +1040,166 @@ export default function Sources(_props: SourcesProps) {
       ) : null}
 
       {error ? null : firstRun ? (
-        <EmptyState
-          icon={Plug}
-          title="Connect your first log source"
-          description="The agent triages security events from the systems you connect — a SIEM/log store (Elasticsearch, OpenSearch, Wazuh) or a push receiver (webhook, syslog, a queue, an object store). Pick a connector and we'll walk you through it, with a (?) guide on every step."
-          action={
-            <Can
-              resource="sources"
-              action="manage"
-              fallback={
-                <p className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <Link2 className="h-3.5 w-3.5" aria-hidden />
-                  Ask a SOC administrator to connect a source.
-                </p>
-              }
-            >
-              <span className="inline-flex items-center gap-1.5">
-                <Button
-                  onClick={() => setEditor({ mode: 'add' })}
-                  disabled={demoManaged}
-                  title={demoManaged ? DEMO_MANAGED_REASON : undefined}
-                >
-                  <Plus className="h-4 w-4" aria-hidden /> New Log Source
-                </Button>
-                <HelpTip
-                  label="How adding a source works"
-                  text="Choose a connector (e.g. Elasticsearch), fill its form — each field has a (?) with setup help — set the index patterns the agent reads and how clusters auto-correlate, then test and save. For Elasticsearch, create a READ-ONLY scoped API key (never the elastic superuser or kibana_system)."
-                />
-              </span>
-            </Can>
-          }
-        />
-      ) : (
-        <>
-          <FilterBar
-            aria-label="Log source filters"
-            className="[&>div:first-child]:min-w-0 [&>div:first-child]:flex-1"
-            meta={(
-              <span data-testid="sources-count">
-                Log Sources ({filteredSorted.length})
-                {activeFilters > 0 ? ` of ${sources.length} total` : ''}
-              </span>
-            )}
-            end={
-              <>
-                <RefreshButton onClick={() => void load()} refreshing={loading} />
-                <ColumnsMenu
-                  columns={columnMenuItems}
-                  state={effectiveColumnState}
-                  onChange={handleColumnState}
-                />
-              </>
-            }
-          >
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button variant="outline" size="sm" aria-label="Filter log sources">
-                  <Filter className="mr-1.5 size-4" aria-hidden />
-                  Filter
-                  {activeFilters > 0 ? (
-                    <span className="ml-1.5 rounded bg-muted px-1.5 text-2xs tabular-nums text-muted-foreground">
-                      {activeFilters}
-                    </span>
-                  ) : null}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-64" align="start">
-                <div className="space-y-3">
-                  <FacetGroup
-                    label="Enabled"
-                    value={filters.enabled}
-                    options={[
-                      ['any', 'All'],
-                      ['enabled', 'Enabled'],
-                      ['disabled', 'Disabled'],
-                    ]}
-                    onChange={(v) => setFilter('enabled', v as SourceFilters['enabled'])}
-                  />
-                  <FacetGroup
-                    label="Kind"
-                    value={filters.kind}
-                    options={[
-                      ['any', 'All'],
-                      ['pull', 'Pull'],
-                      ['push', 'Push'],
-                    ]}
-                    onChange={(v) => setFilter('kind', v as SourceFilters['kind'])}
-                  />
-                  {typeOptions.length ? (
-                    <FacetGroup
-                      label="Type"
-                      value={filters.type}
-                      options={[
-                        [ANY, 'All types'] as [string, string],
-                        ...typeOptions.map((t) => [t.value, t.label] as [string, string]),
-                      ]}
-                      onChange={(v) => setFilter('type', v)}
+        // The same ref as the list panel: removing the last source lands focus here.
+        <Panel as="div" ref={listRef}>
+          <EmptyState
+            icon={Plug}
+            title="Connect your first source"
+            description="The agent triages security events from the systems you connect: a SIEM or log store (Elasticsearch, OpenSearch, Wazuh) or a push receiver (webhook, syslog, a queue, an object store). Pick a connector and the form walks you through it, with a help tip on every field."
+            action={
+              <Can
+                resource="sources"
+                action="manage"
+                fallback={
+                  <p className="inline-flex items-center gap-1.5 text-sm text-muted-foreground">
+                    <Link2 className="h-3.5 w-3.5" aria-hidden />
+                    Ask a SOC administrator to connect a source.
+                  </p>
+                }
+              >
+                {demoManaged ? (
+                  <p className="text-sm text-muted-foreground">{DEMO_FIXED_NOTE}</p>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5">
+                    {addSourceButton}
+                    <HelpTip
+                      label="How adding a source works"
+                      text="Choose a connector (for example Elasticsearch) and fill its form; each field has a help tip. Set the index patterns the agent reads and how clusters correlate, then test and save. For Elasticsearch, create a read-only scoped API key, never the elastic superuser or kibana_system."
                     />
-                  ) : null}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full"
-                    onClick={clearFilters}
-                    disabled={activeFilters === 0}
-                  >
-                    <X className="mr-1.5 size-4" aria-hidden />
-                    Clear filters
-                  </Button>
-                </div>
-              </PopoverContent>
-            </Popover>
+                  </span>
+                )}
+              </Can>
+            }
+          />
+        </Panel>
+      ) : (
+        <Panel
+          ref={listRef}
+          title="Connected sources"
+          padding="none"
+          count={
+            activeFilters > 0
+              ? `${fmtNumber(filteredSorted.length)} of ${fmtNumber(sources.length)} shown`
+              : undefined
+          }
+          caption={
+            demoRows ? (
+              <Badge
+                variant="warning"
+                className="px-1.5 py-0 text-xs font-medium"
+                title="Demo data: these sources are synthetic, not from a real environment"
+              >
+                Demo
+              </Badge>
+            ) : undefined
+          }
+          actions={
+            <ColumnsMenu columns={columnMenuItems} state={effectiveColumnState} onChange={handleColumnState} />
+          }
+          data-testid="sources-panel"
+        >
+          <div className="px-4 pb-3 xl:px-5 3xl:px-6">
+            <FilterBar
+              aria-label="Source filters"
+              search={{
+                value: filters.search,
+                onChange: (value) => setFilter('search', value),
+                label: 'Search sources',
+                placeholder: 'Search name, type or ID',
+              }}
+              filters={[
+                {
+                  id: 'enabled',
+                  label: 'Enabled',
+                  active: filters.enabled !== 'any',
+                  control: ({ placement }) => (
+                    <Select
+                      value={filters.enabled}
+                      onValueChange={(v) => setFilter('enabled', v as SourceFilters['enabled'])}
+                    >
+                      <SelectTrigger aria-label="Enabled" className={placement === 'bar' ? 'h-8 w-36' : 'h-9 w-full'}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="any">Any state</SelectItem>
+                        <SelectItem value="enabled">Enabled</SelectItem>
+                        <SelectItem value="disabled">Disabled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ),
+                },
+                {
+                  id: 'kind',
+                  label: 'Kind',
+                  active: filters.kind !== 'any',
+                  control: ({ placement }) => (
+                    <Select value={filters.kind} onValueChange={(v) => setFilter('kind', v as SourceFilters['kind'])}>
+                      <SelectTrigger aria-label="Kind" className={placement === 'bar' ? 'h-8 w-32' : 'h-9 w-full'}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="any">Any kind</SelectItem>
+                        <SelectItem value="pull">Pull</SelectItem>
+                        <SelectItem value="push">Push</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  ),
+                },
+                {
+                  id: 'type',
+                  label: 'Type',
+                  active: filters.type !== ANY,
+                  control: ({ placement }) => (
+                    <Select value={filters.type} onValueChange={(v) => setFilter('type', v)}>
+                      <SelectTrigger aria-label="Type" className={placement === 'bar' ? 'h-8 w-40' : 'h-9 w-full'}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={ANY}>All types</SelectItem>
+                        {typeOptions.map((t) => (
+                          <SelectItem key={t.value} value={t.value}>
+                            {t.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ),
+                },
+              ]}
+              chips={chips}
+              activeCount={activeFilters}
+              onClearAll={activeFilters > 0 ? clearFilters : undefined}
+            />
+          </div>
 
-            <div className="relative min-w-[16rem] flex-1">
-              <Search
-                className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                aria-hidden
-              />
-              <Input
-                value={filters.search}
-                onChange={(e) => setFilter('search', e.target.value)}
-                placeholder="Search name, type, or ID…"
-                aria-label="Search log sources"
-                className="pl-9 pr-9"
-              />
-              {filters.search ? (
-                <IconButton
-                  label="Clear search"
-                  tooltip={false}
-                  size="sm"
-                  onClick={() => setFilter('search', '')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-sm [&_svg]:size-4"
-                >
-                  <X className="size-4" aria-hidden />
-                </IconButton>
-              ) : null}
-            </div>
-
-          </FilterBar>
-
-          {/* Count line / bulk-action strip. */}
+          {/* Bulk-action strip, on the panel inset above the table it acts on. */}
           {selectedSources.length > 0 ? (
             <div
               role="region"
               aria-label="Bulk actions"
-              className="flex flex-wrap items-center gap-2 border-y border-border/70 py-2"
+              className="flex flex-wrap items-center gap-2 border-t border-border/70 px-4 py-2 xl:px-5 3xl:px-6"
             >
-              <span
-                role="status"
-                aria-live="polite"
-                className="inline-flex items-center rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground"
-              >
+              <span role="status" aria-live="polite" className="text-sm font-medium text-foreground">
                 {selectedSources.length} selected
               </span>
               <Can resource="sources" action="manage">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void bulkSetEnabled(true)}
-                  disabled={bulkBusy}
-                >
+                <Button variant="outline" size="sm" onClick={() => void bulkSetEnabled(true)} disabled={bulkBusy}>
                   <Check className="mr-1.5 size-4" aria-hidden /> Enable
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => void bulkSetEnabled(false)} disabled={bulkBusy}>
+                  <X className="mr-1.5 size-4" aria-hidden /> Disable
                 </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => void bulkSetEnabled(false)}
-                  disabled={bulkBusy}
-                >
-                  <X className="mr-1.5 size-4" aria-hidden /> Disable
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => setPendingBulkRemove(true)}
+                  // Neutral at rest; red only on hover, focus and in the confirm dialog.
+                  className="hover:text-critical-text focus-visible:text-critical-text"
+                  onClick={(event) => {
+                    bulkRemoveOpener.remember(event.currentTarget, {
+                      empty: () => headingOf(listRef.current),
+                    });
+                    setPendingBulkRemove(true);
+                  }}
                   disabled={bulkBusy}
                 >
                   <Trash2 className="mr-1.5 size-4" aria-hidden /> Remove
@@ -1121,44 +1209,51 @@ export default function Sources(_props: SourcesProps) {
                 variant="ghost"
                 size="sm"
                 className="ml-auto"
-                onClick={() => setSelected([])}
+                onClick={(event) => {
+                  // Clearing the selection hides the bar with this button in it.
+                  clearSelectionFocus.remember(event.currentTarget, {
+                    empty: () => headingOf(listRef.current),
+                  });
+                  clearSelectionFocus.expectRemoval();
+                  setSelected([]);
+                }}
                 disabled={bulkBusy}
               >
-                Clear
+                Clear selection
               </Button>
             </div>
           ) : null}
 
           <DataTable<SourceInstance>
-            ariaLabel="Log Sources"
+            ariaLabel="Sources"
+            surface="panel"
             columns={columns}
             columnState={effectiveColumnState}
-            rows={pageRows}
+            rows={singlePage ? filteredSorted : pageRows}
             getRowId={(s) => s.id}
             sort={sort}
             onSortChange={setSort}
-            page={page}
-            pageSize={pageSize}
-            total={filteredSorted.length}
-            onPageChange={setPage}
-            onPageSizeChange={setPageSize}
+            page={singlePage ? undefined : page}
+            pageSize={singlePage ? undefined : pageSize}
+            total={singlePage ? undefined : filteredSorted.length}
+            onPageChange={singlePage ? undefined : setPage}
+            onPageSizeChange={singlePage ? undefined : setPageSize}
             pageSizeOptions={[10, 25, 50, 100]}
             selectable={canManage}
             selected={selected}
             onSelectedChange={setSelected}
             isRowSelectable={(s) => !s.demo}
-            getRowSelectionDisabledReason={(s) =>
-              s.demo ? DEMO_MANAGED_REASON : undefined
-            }
+            getRowSelectionDisabledReason={(s) => (s.demo ? DEMO_MANAGED_REASON : undefined)}
             loading={loading}
             loadingRows={6}
             density="compact"
             empty={
               <EmptyState
                 compact
+                state="no-results"
                 icon={Database}
-                title="No sources match your filters"
-                description="No configured source matches the current search or filters. Clear them to see all sources."
+                title="No sources match these filters"
+                description="Clear the search or the filters to see every source."
                 action={
                   <Button variant="outline" size="sm" onClick={clearFilters}>
                     <X className="mr-1.5 size-4" aria-hidden />
@@ -1168,17 +1263,20 @@ export default function Sources(_props: SourcesProps) {
               />
             }
           />
-        </>
+        </Panel>
       )}
 
       {/* Add / Edit editor (Dialog hosting the dynamic SourceEditor) */}
       <Dialog open={!!editor} onOpenChange={(o) => !o && setEditor(null)}>
-        <DialogContent className="max-h-[90dvh] max-w-2xl overflow-y-auto">
+        <DialogContent
+          className="max-h-[90dvh] max-w-2xl overflow-y-auto"
+          onCloseAutoFocus={editorOpener.onCloseAutoFocus}
+        >
           <DialogHeader>
             <DialogTitle>
               {editor?.mode === 'edit'
-                ? `Edit ${editor.source.display_name || editor.source.source_type}`
-                : 'Add a log source'}
+                ? `Edit ${editor.source.display_name || properName(editor.source.source_type)}`
+                : 'Add a source'}
             </DialogTitle>
             <DialogDescription>
               Configure a system for the agent to read security events from.
@@ -1196,12 +1294,17 @@ export default function Sources(_props: SourcesProps) {
       </Dialog>
 
       {/* Per-source logs sheet */}
-      <SourceLogsSheet source={logsSource} onClose={() => setLogsSource(null)} />
+      <SourceLogsSheet
+        source={logsSource}
+        onClose={() => setLogsSource(null)}
+        onCloseAutoFocus={logsOpener.onCloseAutoFocus}
+      />
 
       {/* Make-primary confirm */}
       <ConfirmDialog
         open={!!pendingPrimary}
         onOpenChange={(o) => !o && setPendingPrimary(null)}
+        returnFocusRef={primaryOpener.ref}
         onConfirm={() => pendingPrimary && void setPrimary(pendingPrimary)}
         title="Make this the primary source?"
         description="The agent reads new events from the primary source."
@@ -1211,7 +1314,7 @@ export default function Sources(_props: SourcesProps) {
           <p className="text-sm text-muted-foreground">
             Switching to{' '}
             <span className="font-medium text-foreground">
-              {pendingPrimary.display_name || pendingPrimary.source_type}
+              {pendingPrimary.display_name || properName(pendingPrimary.source_type)}
             </span>{' '}
             repoints ingestion to it; the current primary becomes a non-primary source (it is
             not deleted).
@@ -1223,6 +1326,7 @@ export default function Sources(_props: SourcesProps) {
       <ConfirmDialog
         open={!!pendingDelete}
         onOpenChange={(o) => !o && setPendingDelete(null)}
+        returnFocusRef={deleteOpener.ref}
         onConfirm={() => pendingDelete && void remove(pendingDelete)}
         destructive
         title="Remove this source?"
@@ -1231,7 +1335,7 @@ export default function Sources(_props: SourcesProps) {
         {pendingDelete ? (
           <p className="text-sm text-muted-foreground">
             <span className="font-medium text-foreground">
-              {pendingDelete.display_name || pendingDelete.source_type}
+              {pendingDelete.display_name || properName(pendingDelete.source_type)}
             </span>{' '}
             will be removed and the agent will stop reading events from it. Existing cases are
             kept; its stored secrets are discarded. This cannot be undone.
@@ -1254,6 +1358,7 @@ export default function Sources(_props: SourcesProps) {
       <ConfirmDialog
         open={pendingBulkRemove}
         onOpenChange={(o) => !o && setPendingBulkRemove(false)}
+        returnFocusRef={bulkRemoveOpener.ref}
         onConfirm={() => void bulkRemove()}
         destructive
         title={`Remove ${selectedSources.length} source${selectedSources.length === 1 ? '' : 's'}?`}
@@ -1273,13 +1378,13 @@ export default function Sources(_props: SourcesProps) {
 /* ------------------------------------------------------------- sub-parts --- */
 
 /**
- * The "am I seeing everything?" coverage banner — the Google SecOps Health-Hub big-number
- * strip. Four honest aggregate signals over the connected sources: how many are reporting,
- * the live event throughput, how many alerts were triaged in the last day, and (loudly, when
- * nonzero) how many sources have gone SILENT. All values are server-derived aggregates /
- * counts rendered as plain text — advisory only (#3), never a secret (#10).
+ * Ingest coverage: the "am I seeing everything?" KPI strip. Four honest aggregate signals
+ * over the connected sources: how many are enabled, the live event throughput, how many
+ * alerts were triaged in the last day, and how many enabled sources have gone silent
+ * (its numeral turns red only above zero, the hero rule). All values are server-derived
+ * aggregates or counts rendered as plain text, advisory only (#3), never a secret (#10).
  */
-function CoverageBanner({
+function CoverageStrip({
   total,
   enabled,
   silent,
@@ -1292,79 +1397,40 @@ function CoverageBanner({
   eventsPerMin: number;
   alertsTriaged: number | null;
 }) {
-  const hasSilent = silent > 0;
   return (
-    <section
-      role="group"
-      aria-label="Ingest coverage"
-      data-testid="coverage-banner"
-      /* One ENABLE + one ROW-START RESET per mutually-exclusive column count (see the
-         note on the same strip in `Cases.tsx`): the unscoped odd reset used to outrank
-         `sm:[&>*]:border-l` at 4 columns and leave cell 3 with no divider. */
-      className="grid grid-cols-2 border-y border-border/70 sm:grid-cols-4 max-sm:[&>*]:border-l max-sm:[&>*:nth-child(2n+1)]:border-l-0 sm:[&>*]:border-l sm:[&>*:nth-child(4n+1)]:border-l-0"
-    >
-      <CoverageStat
+    <KpiStrip label="Ingest coverage" density="compact" data-testid="coverage-banner">
+      <KpiTile
         testId="coverage-sources"
-        icon={Database}
-        label="Sources"
+        label="Sources enabled"
         value={`${fmtNumber(enabled)} of ${fmtNumber(total)}`}
-        sub="enabled"
+        context={enabled === total ? 'all enabled' : `${fmtNumber(total - enabled)} turned off`}
       />
-      <CoverageStat
+      <KpiTile
         testId="coverage-events"
-        icon={Activity}
-        label="Events / min"
+        label="Events per minute"
         value={fmtNumber(Math.round(eventsPerMin))}
-        sub="across enabled sources"
+        context="across enabled sources"
       />
-      <CoverageStat
+      <KpiTile
         testId="coverage-alerts"
-        icon={ShieldCheck}
         label="Alerts triaged"
         value={alertsTriaged == null ? DASH : fmtNumber(alertsTriaged)}
-        sub="last 24h"
+        context="last 24 hours"
       />
-      <CoverageStat
+      <KpiTile
         testId="coverage-silent"
-        icon={AlertTriangle}
-        label="Silent"
+        label="Silent sources"
         value={fmtNumber(silent)}
-        sub={hasSilent ? 'need attention' : 'all reporting'}
-        tone={hasSilent ? 'warning' : 'default'}
+        countTo={silent}
+        // A number the operator reloads: shown as it is, never rolled.
+        roll={false}
+        format={fmtNumber}
+        accent="critical"
+        context={silent > 0 ? 'need attention' : 'all reporting'}
       />
-    </section>
+    </KpiStrip>
   );
 }
-
-/** One big-number cell inside the {@link CoverageBanner}. */
-const CoverageStat: React.FC<{
-  testId: string;
-  icon: LucideIcon;
-  label: string;
-  value: string;
-  sub: string;
-  tone?: 'default' | 'warning';
-}> = ({ testId, icon: Icon, label, value, sub, tone = 'default' }) => (
-  <div className="flex items-start gap-2.5 border-l border-border/70 px-3 py-3 first:border-l-0" data-testid={testId}>
-    <span className={cn('mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center', tone === 'warning' ? 'text-warning-text' : 'text-muted-foreground')}>
-      <Icon className="h-4 w-4" aria-hidden />
-    </span>
-    <div className="min-w-0">
-      <div
-        className={cn(
-          'font-mono text-lg font-semibold leading-none tabular-nums',
-          tone === 'warning' ? 'text-warning-text' : 'text-foreground',
-        )}
-      >
-        {value}
-      </div>
-      <div className="mt-1 text-2xs font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
-      <div className="text-2xs text-muted-foreground/80">{sub}</div>
-    </div>
-  </div>
-);
 
 /** A plain Yes / No / — cell for an optional derived boolean (never fakes data). */
 const BoolCell: React.FC<{ value: boolean | undefined }> = ({ value }) => {
@@ -1375,33 +1441,3 @@ const BoolCell: React.FC<{ value: boolean | undefined }> = ({ value }) => {
     <Badge variant="secondary">No</Badge>
   );
 };
-
-/** A labelled single-select facet group (radio-style buttons) inside the filter popover. */
-const FacetGroup: React.FC<{
-  label: string;
-  value: string;
-  options: Array<[string, string]>;
-  onChange: (value: string) => void;
-}> = ({ label, value, options, onChange }) => (
-  <div>
-    <p className="mb-1.5 text-xs font-medium text-muted-foreground">{label}</p>
-    <div className="flex flex-col gap-0.5" role="group" aria-label={label}>
-      {options.map(([val, lbl]) => (
-        <button
-          key={val}
-          type="button"
-          aria-pressed={value === val}
-          onClick={() => onChange(val)}
-          className={cn(
-            'flex items-center justify-between rounded-md px-2 py-1.5 text-sm transition-colors',
-            'hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            value === val ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground',
-          )}
-        >
-          <span className="truncate">{lbl}</span>
-          {value === val ? <Check className="size-4 shrink-0" aria-hidden /> : null}
-        </button>
-      ))}
-    </div>
-  </div>
-);

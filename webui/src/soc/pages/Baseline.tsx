@@ -1,33 +1,37 @@
 /**
- * Baseline — anomaly-baseline warm-up + coverage overview AND the baseline config
- * editor (Round 4 surface + Round 5 R6 config-editor wiring).
+ * Baseline: anomaly-baseline warm-up and coverage, and the baseline policy editor
+ * (Round 4 surface, Round 5 R6 config-editor wiring, Round 14 console grammar).
  *
  * The top of the page is a read-only view of the per-entity streaming baselines that
- * "improve over time" (online EWMA/EWMV + 168 hour-of-week buckets + t-digest): warm-up
- * progress (n / target) and robust percentiles. Below it, a config editor exposes
- * `Preferences.baseline` (a `BaselineConfig`) through the typed GET/PUT config endpoint
- * (W0-F F5) so an operator can tune the detector.
+ * "improve over time" (online EWMA/EWMV + 168 hour-of-week buckets + t-digest): a
+ * `KpiStrip` of counts and the overall warm-up in a panel. Below it, the policy editor
+ * exposes `Preferences.baseline` (a `BaselineConfig`) through the typed GET/PUT config
+ * endpoint (W0-F F5) so an operator can tune the detector.
  *
- * #3: the baseline is a pure advisory PRODUCER — it ranks/emits candidate signals for
- * the EVENT-detection funnel; it NEVER closes or escalates a case. The config editor is
+ * Round 14 (BL1, BL3): the header is the title "Baseline" with a help tip (which now
+ * carries the advisory note that used to be a permanent callout) and an icon Refresh;
+ * the policy is one panel of rows whose number fields size to their numbers, and the
+ * modified-z threshold is a number field, so its value shows once.
+ *
+ * #3: the baseline is a pure advisory PRODUCER: it ranks/emits candidate signals for
+ * the EVENT-detection funnel and NEVER closes or escalates a case. The config editor is
  * a CONFIG WRITER only: deep-merge PUT, never `decide()`, never bills an LLM (#3/#6).
  * #9: every value renders as plain text via the overview component / labelled fields.
  */
 import * as React from 'react';
-import { Activity, Info, RefreshCw } from 'lucide-react';
+import { Activity } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { api } from '@/lib/api';
-import { LoadingState } from '@/design-system';
+import { LoadingState, Panel } from '@/design-system';
 import { errorMessage } from '@/lib/errorMessage';
 import type { BaselineConfig } from '@/lib/types';
 import { humanizeToken } from '@/lib/format';
+import { cn } from '@/lib/cn';
 
 import { Button } from '@/ui/button';
 import { Switch } from '@/ui/switch';
 import { Label } from '@/ui/label';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/alert';
-import { Separator } from '@/ui/separator';
 import {
   Select,
   SelectContent,
@@ -39,30 +43,35 @@ import {
 import { useNavigateOptional } from '@/soc/router';
 import { PageHeader } from '@/soc/components/PageHeader';
 import { PageContainer } from '@/soc/components/PageContainer';
+import { RefreshButton } from '@/soc/components/RefreshButton';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { ProtectedRoute, Can, useCan } from '@/soc/components/Can';
 import { BaselineStatsOverview } from '@/soc/components/BaselineGauge';
 import { Field } from '@/soc/components/Field';
 import { NumberField } from '@/soc/components/NumberField';
-import { LabeledSlider } from '@/soc/components/LabeledSlider';
-import {
-  SettingsGrid,
-  SettingsCard,
-  StickySaveBar,
-} from '@/soc/components/SettingsGrid';
+import { StickySaveBar } from '@/soc/components/SettingsGrid';
 import { useConfigEditor } from '@/soc/components/rules';
 import { fetchBaselineStats, type BaselineStats } from '@/soc/Baseline.api';
 
-/** Backend defaults (mirror `config.BaselineConfig`). */
+/** Backend defaults (mirror `config.BaselineConfig`: on by default since Round 10). */
 const DEFAULT_BASELINE_CONFIG: Required<BaselineConfig> = {
-  enabled: false,
+  enabled: true,
   half_life_days: 14,
   warmup_multiplier: 3,
   modified_z_threshold: 3.5,
   tdigest_compression: 100,
   seasonality: 'hour_of_week',
 };
+
+/** The page help: what the baseline is, and the advisory boundary (formerly a callout). */
+const PAGE_HELP =
+  'Per-entity streaming baselines that improve over time: warm-up progress and robust ' +
+  'percentiles. The baseline is advisory. A deviation only surfaces a candidate for the ' +
+  'detection funnel; it never closes, escalates or decides a case.';
+
+/** One policy row: label and help on the left, the control on the right (stacks on a phone). */
+const POLICY_ROW = 'flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6';
 
 const SEASONALITIES: BaselineConfig['seasonality'][] = [
   'none',
@@ -117,25 +126,20 @@ export function BaselineInner() {
   }, [cfg]);
 
   return (
-    <PageContainer variant="wide" className="space-y-6">
+    <PageContainer variant="wide">
       <PageHeader
-        icon={Activity}
-        breadcrumb={[{ label: 'Analytics' }, { label: 'Anomaly baseline' }]}
-        title="Anomaly baseline"
-        description="Per-entity streaming baselines that improve over time — warm-up progress and robust percentiles. Advisory only: the baseline ranks candidates for detection; it never closes or escalates a case."
-        actions={
-          <Button
-            variant="outline"
-            size="sm"
-            // Refresh only re-loads the read-only stats; it must NOT reload the config
-            // (that would clobber any unsaved policy edits — the editor has its own
-            // load-on-mount + LoadError retry).
+        title="Baseline"
+        help={PAGE_HELP}
+        controls={
+          // Refresh only re-loads the read-only stats; it must NOT reload the config
+          // (that would clobber any unsaved policy edits; the editor has its own
+          // load-on-mount + LoadError retry).
+          <RefreshButton
             onClick={() => void load()}
-            disabled={loading}
-          >
-            <RefreshCw className="mr-2 h-4 w-4" aria-hidden />
-            Refresh
-          </Button>
+            refreshing={loading}
+            label="Refresh baseline"
+            display="icon"
+          />
         }
       />
 
@@ -150,7 +154,7 @@ export function BaselineInner() {
       ) : error && !stats ? (
         <LoadError
           error={error}
-          title="Baseline unavailable"
+          title="Could not load the baseline"
           fallback="Could not load baseline stats."
           onRetry={() => void load()}
         />
@@ -167,6 +171,7 @@ export function BaselineInner() {
           <BaselineStatsOverview stats={stats} />
         </>
       ) : (
+        <Panel as="div">
         <EmptyState
           icon={Activity}
           title="No baseline data yet"
@@ -175,38 +180,36 @@ export function BaselineInner() {
           // data through the funnel. Enabling the policy alone leaves the warm-up gauge
           // perpetually empty (which reads as "broken"), so spell out both dependencies
           // and point at where the missing half — an events source — is connected.
-          description="The baseline only warms up once it is enabled (in the policy below) AND an events-role feed with detection is sending data — enabling the policy on its own is not enough. Connect an events source, then let detection run to begin warming up."
+          description="The baseline only warms up once it is enabled (in the policy below) and an events-role feed with detection is sending data. Enabling the policy on its own is not enough. Connect an events source, then let detection run to begin warming up."
           action={
             <Button variant="outline" size="sm" onClick={() => navigate('sources')}>
               Connect an events source
             </Button>
           }
         />
+        </Panel>
       )}
 
       {!initialLoading ? (
         <>
-      <Separator />
-
-      {/* ── Config editor (R6) ───────────────────────────────────────────── */}
+      {/* ── Policy editor (R6) ───────────────────────────────────────────── */}
       {cfg.error ? (
         <LoadError
           error={cfg.error}
-          title="Could not load baseline policy"
+          title="Could not load the baseline policy"
           fallback="Could not load the baseline policy."
           onRetry={() => void cfg.reload()}
         />
       ) : (
-        <SettingsGrid>
-          <SettingsCard
-            anchor="baseline-policy"
-            icon={Activity}
-            title="Baseline policy"
-            description="Tune the anomaly detector's warm-up and sensitivity. Default off — an off detector emits no candidates and changes nothing."
-            wide
-          >
+        <Panel
+          id="baseline-policy"
+          title="Baseline policy"
+          caption="On by default. An off detector emits no candidates and changes nothing."
+          className="max-w-[44rem] scroll-mt-24"
+          data-testid="baseline-policy"
+        >
             {cfg.loading ? (
-              // Never show the default-valued form while the persisted policy loads —
+              // Never show the default-valued form while the persisted policy loads;
               // that flashes a misleading "disabled" state, then snaps to the saved
               // values. Use the shared blocking-panel grammar until it resolves.
               <LoadingState
@@ -216,22 +219,14 @@ export function BaselineInner() {
                 shape="panel"
               />
             ) : (
-            <fieldset disabled={!canManage} className="space-y-6">
-              <Alert>
-                <Info className="h-4 w-4" aria-hidden />
-                <AlertTitle>The baseline is advisory</AlertTitle>
-                <AlertDescription>
-                  A deviation only surfaces a candidate for the detection funnel; it
-                  never closes, escalates, or decides a case.
-                </AlertDescription>
-              </Alert>
-
-              <div className="flex items-center justify-between gap-4">
-                <div className="space-y-0.5">
-                  <Label htmlFor="baseline-enabled" className="text-sm font-medium">
+            <fieldset disabled={!canManage} className="divide-y divide-border/70">
+              <legend className="sr-only">Baseline policy</legend>
+              <div className={cn(POLICY_ROW, 'pt-0 sm:items-center')}>
+                <div className="min-w-0 space-y-0.5">
+                  <Label htmlFor="baseline-enabled" className="text-base font-medium">
                     Enable anomaly baseline
                   </Label>
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-sm text-muted-foreground">
                     When on, per-signature sketches warm up and flag deviations as
                     detection candidates.
                   </p>
@@ -243,9 +238,9 @@ export function BaselineInner() {
                 />
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-x-6 gap-y-4 py-4 sm:grid-cols-2">
                 <NumberField
-                  label="Half-life (days)"
+                  label="Half-life"
                   description="EWMA decay half-life. Longer remembers more history."
                   value={draft.half_life_days}
                   min={0.5}
@@ -258,7 +253,7 @@ export function BaselineInner() {
                 />
                 <NumberField
                   label="Warm-up multiplier"
-                  description="Times the seasonal period a bucket must observe before it is WARM (guards a cold series)."
+                  description="Times the seasonal period a bucket must observe before it is warm (guards a cold series)."
                   value={draft.warmup_multiplier}
                   min={1}
                   max={20}
@@ -267,15 +262,15 @@ export function BaselineInner() {
                   disabled={!canManage}
                   onChange={(v) => cfg.update({ warmup_multiplier: v })}
                 />
-                <LabeledSlider
+                <NumberField
                   label="Modified-z threshold"
                   description="The robust deviation bar; a signature above it is anomalous. 3.5 is the conventional default."
                   value={draft.modified_z_threshold}
                   min={0}
                   max={10}
                   step={0.1}
+                  defaultValue={DEFAULT_BASELINE_CONFIG.modified_z_threshold}
                   disabled={!canManage}
-                  formatValue={(v) => v.toFixed(1)}
                   onChange={(v) => cfg.update({ modified_z_threshold: v })}
                 />
                 <NumberField
@@ -301,7 +296,7 @@ export function BaselineInner() {
                         cfg.update({ seasonality: v as BaselineConfig['seasonality'] })
                       }
                     >
-                      <SelectTrigger id={id} aria-describedby={describedBy}>
+                      <SelectTrigger id={id} aria-describedby={describedBy} className="w-48">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
@@ -317,15 +312,14 @@ export function BaselineInner() {
               </div>
 
               {!canManage ? (
-                <p className="text-xs text-muted-foreground">
+                <p className="pt-4 text-sm text-muted-foreground">
                   You have read-only access. Ask a SOC administrator to change the
                   baseline policy.
                 </p>
               ) : null}
             </fieldset>
             )}
-          </SettingsCard>
-        </SettingsGrid>
+        </Panel>
       )}
 
       <Can resource="settings" action="manage">
