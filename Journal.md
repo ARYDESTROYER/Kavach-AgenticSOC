@@ -11701,3 +11701,10 @@
 - Tests: gates agent: tsc 0, eslint 0/0, design gates pass, docs check pass; Vitest 439 related files under the strict wrapper, remaining failures console-map contract (regeneration at WP-GEN) and the repinned label; entry chunk 331,296 B, no W8b or W9a module in the entry.
 - Status: done.
 - Next: r5w2 (W8a, W9b, FX3b) finishing; FX3 leftover package; WP-DOC; WP-GEN.
+
+### 2026-10-29 15:40Z — orchestrator — Round 14 run r5w2-pages (W8a, W9b, FX3b)
+- Context: Round 14 ask 8, Wave D (SPEC §7.6 rows W8a and W9b), plus the FX3b backend fix-up.
+- Did: W8a migrated Metrics, Agent effectiveness, Cost, Analytics host, Health diagnostics and Standup (one header grammar, one KPI strip per page, Runbook usage, captions that follow the figures, zero-filled spend series); W9b migrated Sources, Auto-tuning, Baseline, Knowledge, Memory, Models, Docs, the editors, Detection rules (Needs a runbook badge), the rule lifecycle sheets, Login and Wizard; FX3b aligned the server next step with the Console rule, truthful case-chat run wording, and seeded Demo lookup results. Orchestrator wired the Demo lookup collection into Demo enable with a state-level test, and committed FX2b's held hunks with FX3b. 25, 23 and 9 review findings, confirmed ones fixed and re-reviewed. Commit eaabbd2.
+- Tests: gates agent full backend 11,791 tests, 11,779 passed, 6 failed (5 sandbox env, 1 WP-DOC records), 6 skipped; ruff fatal clean; tsc 0, eslint 0/0, design gates and docs check pass; orchestrator re-ran every demo test (pass) and the lookup, runbooks and parity suites (pass).
+- Status: done.
+- Next: Wave D before/after screenshots; FX3 leftover package; WP-DOC; WP-GEN.
