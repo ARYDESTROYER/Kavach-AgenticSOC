@@ -391,6 +391,18 @@ function BlocksPlaceholder({ blocks }: { blocks: readonly AnswerBlock[] }) {
 /** The per-answer storage hint (SPEC A22): a restored answer compacted to fit storage. */
 export const ANSWER_TRIMMED_HINT = 'Trimmed to fit storage';
 
+/**
+ * The meta row's column when every block of the answer is compact at rest: the reading
+ * column, which takes the whole lane (as `META_COL` does) as soon as a card of the same
+ * turn SHOWS itself wide, a view the person picks after the answer is drawn (a severity
+ * breakdown's "Rules by level" matrix: BlockCard sets `data-block-width="wide"`). The
+ * row's actions then end on that card's right edge again, and what follows the row keeps
+ * the reading measure (SPEC-chat §5.1: the meta row and the blocks it acts on never
+ * disagree). CSS only (`:has()` on this turn's `group/turn`), so the card's view stays its
+ * own state. Literal, so Tailwind's compiler sees it.
+ */
+export const META_FOLLOWS_WIDE = 'group-has-[[data-block-width=wide]]/turn:max-w-none [&>*+*]:max-w-[42rem]';
+
 function MessageView({
   item,
   latest,
@@ -632,7 +644,8 @@ function MessageView({
       </span>
     ) : null;
   // The meta row follows the widest block of its answer (SPEC-chat §5.1): the lane when
-  // one block is wide, else the reading column next to the prose and cards it acts on.
+  // one block is wide, else the reading column next to the prose and cards it acts on,
+  // widening with a card the person switches to a wide view (`META_FOLLOWS_WIDE`).
   const metaWide = !compact && blocks.length > 0 && widestBlock(blocks) === 'wide';
   const suggestions = shownFollowUps.length > 0 || (!running && latest && chips.length > 0);
 
@@ -752,6 +765,9 @@ function MessageView({
             <AnswerBlocks
               blocks={blocks}
               messageId={blocksMessageId}
+              // The saved answer a drill leaves ("Back to answer" reopens this conversation
+              // at this message); a Case Manager answer goes back to its case instead.
+              answerLocation={!compact && conversationId ? { conversationId, messageId: persistedMessageId } : null}
               domId={domId}
               compact={compact}
               // One scope line for the captions several cards repeat (T8).
@@ -772,7 +788,7 @@ function MessageView({
       {longAnswer ? <AnswerEnd ref={endRef} className={READING_COL} /> : null}
 
       {!running && response && !command ? (
-        <div className={cn(metaWide ? META_COL : READING_COL, 'space-y-1.5')}>
+        <div className={cn(metaWide ? META_COL : READING_COL, !metaWide && !compact && META_FOLLOWS_WIDE, 'space-y-1.5')}>
           <MetaRow
             response={response}
             steps={steps}

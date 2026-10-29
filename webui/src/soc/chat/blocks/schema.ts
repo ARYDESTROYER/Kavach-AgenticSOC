@@ -346,6 +346,7 @@ export const LIMITS = {
   case_list: 25,
   timeline: 50,
   entity_facts: 12,
+  entity_fact_items: 5,
   reputation: 12,
   entity_counts: 4,
   related_cases: 5,
@@ -365,6 +366,13 @@ export const LIMITS = {
   stored_series_points: 100,
   stored_query_chars: 1_000,
 } as const;
+
+/**
+ * The values one entity fact may list one by one (`blocks.py` `MAX_ENTITY_FACT_ITEMS`,
+ * Round 14: the rules a case card names), pinned to the server's through the contract's
+ * `limits`; the rest are dropped, the fact's `value` keeps the whole text.
+ */
+export const ENTITY_FACT_ITEMS = LIMITS.entity_fact_items;
 
 /** The same grammars as the backend (source strings pinned by the contract file). */
 export const PATTERN_SOURCES = {
@@ -669,12 +677,34 @@ export interface TimelineBlock extends BlockBase {
   events: TimelineEvent[];
 }
 
+/**
+ * One value of an entity fact (Round 14, SPEC §4.6.5; `blocks.py` `EntityFactItem`): the
+ * value as the fact shows it (untrusted when the fact is) and, when code built one, the
+ * rule sheet it opens. Only a rule ref is kept: any other destination is dropped, and a
+ * model-made block (`ai`) carries none (G5). Without a `drill` the value is plain text.
+ */
+export interface EntityFactItem {
+  value: string;
+  drill?: RuleRef;
+}
+/**
+ * A labelled fact on an entity card. `value` is the whole fact as text (what the exports
+ * and earlier answers read); `items`, when present, are the same values one by one so
+ * each can be linked (today a case card's Rules fact: each rule opens its rule sheet over
+ * the case's own window). An answer saved before Round 14 has no `items`.
+ */
+export interface EntityFact {
+  label: string;
+  value: string;
+  untrusted: boolean;
+  items?: EntityFactItem[];
+}
 export interface EntityBlock extends BlockBase {
   type: 'entity';
   entity: { kind: EntityKind; value: string };
   risk?: number | null;
   verdict?: VerdictKey;
-  facts: Array<{ label: string; value: string; untrusted: boolean }>;
+  facts: EntityFact[];
   reputation: Array<{ provider: string; verdict: ReputationVerdict; score?: number | null; detail?: string }>;
   counts: KpiItem[];
   related_cases: Array<{ case_id: string; case_number?: string; title: string; severity?: SeverityKey }>;
@@ -1521,6 +1551,29 @@ function parseTimeline(raw: Obj, base: Base): TimelineBlock {
   return { ...base, truncated, type: 'timeline', events };
 }
 
+/**
+ * An entity fact's values one by one (Round 14, `blocks.py` `EntityFact.items`): at most
+ * {@link ENTITY_FACT_ITEMS}, each a display-safe value and, when it is a valid rule ref,
+ * its rule sheet. An invalid or non-rule destination leaves the value as plain text; an
+ * `ai` block keeps no destination (G5). A value that would show nothing is named by its
+ * rule, or dropped when it has none. `undefined` when no value remains, so the fact falls
+ * back to its `value` text (an answer saved before Round 14 has no items).
+ */
+function entityFactItems(raw: unknown, provenance: BlockProvenance): EntityFactItem[] | undefined {
+  const { items } = keepValid(
+    raw,
+    (it): EntityFactItem => {
+      if (!isObj(it)) fail('model_type');
+      const drill = provenance === 'ai' ? null : parseRuleRef(it.drill);
+      const value = text(it.value, LIMITS.detail_chars, 'value') || (drill ? displayText(drill.opts.rule, LIMITS.detail_chars) : '');
+      if (!value) fail('string_too_short:value');
+      return drill ? { value, drill } : { value };
+    },
+    ENTITY_FACT_ITEMS,
+  );
+  return items.length ? items : undefined;
+}
+
 function parseEntity(raw: Obj, base: Base): EntityBlock {
   if (!isObj(raw.entity)) fail('missing:entity');
   const kind = enumOr(raw.entity.kind, ENTITY_KINDS, null) ?? fail('literal_error:kind');
@@ -1529,11 +1582,14 @@ function parseEntity(raw: Obj, base: Base): EntityBlock {
     raw.facts,
     (f) => {
       if (!isObj(f)) fail('model_type');
-      return {
+      const out: EntityFact = {
         label: text(f.label, LIMITS.label, 'label'),
         value: text(f.value, LIMITS.detail_chars, 'value'),
         untrusted: f.untrusted === true,
       };
+      const items = entityFactItems(f.items, base.provenance);
+      if (items) out.items = items;
+      return out;
     },
     LIMITS.entity_facts,
   );

@@ -24,9 +24,9 @@ import * as React from 'react';
 import { Keyboard, ScrollText } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { ApiError, request } from '@/lib/api';
+import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { listAuditPage } from '@/lib/api-audit';
+import { getAuditRecord, listAuditPage } from '@/lib/api-audit';
 import type { AuditPage, AuditRecord, AuditRetention } from '@/lib/types-audit';
 import { Callout, LoadingState, Panel } from '@/design-system';
 import { Button } from '@/ui/button';
@@ -404,10 +404,7 @@ function AuditLog({ onNavigate }: AuditProps) {
     const controller = new AbortController();
     setFetched({ id, record: null, notFound: false, failed: false, loading: true });
     const { cursor: _cursor, order: _order, limit: _limit, ...filters } = pageQuery(view, local, order);
-    void request<AuditRecord>('GET', `audit/records/${encodeURIComponent(id)}`, {
-      query: filters as Record<string, unknown>,
-      signal: controller.signal,
-    })
+    void getAuditRecord(id, filters, controller.signal)
       .then((record) => {
         if (!controller.signal.aborted) setFetched({ id, record, notFound: false, failed: false, loading: false });
       })

@@ -1160,7 +1160,9 @@ def test_case_chat_still_searches_a_named_value(question: str, expected: tuple[s
     ("Show logs for that host", "fallback"),
     ("Show logs for that user", "fallback"),
     ("Search logs for attacker IP", "fallback"),
-    ("Check the logs for anything suspicious", "fallback"),
+    # Round 14: "anything suspicious" is a survey of the detection rules that fired
+    # (log_stats by rule), still with no value searched for.
+    ("Check the logs for anything suspicious", "suspicious"),
     ("Can you search logs for a user?", "fallback"),
     # The other intents these phrasings had before explicit log search keep them.
     ("Show logs for the escalated cases", "cases"),

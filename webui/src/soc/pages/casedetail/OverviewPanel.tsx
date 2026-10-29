@@ -575,18 +575,34 @@ const RelatedCrossSource: React.FC<{ c: Case; onNavigate?: Navigate; flat?: bool
 
 /* ----------------------------------------------- threshold automation (F10) */
 
+type AutomationMeta = { label: string; icon: React.ComponentType<{ className?: string }>; tone: ScoreTone };
+
 /** Map an automation action verb → label + icon + tone. */
-const AUTOMATION_META: Record<
-  string,
-  { label: string; icon: React.ComponentType<{ className?: string }>; tone: ScoreTone }
-> = {
+const AUTOMATION_META: Record<string, AutomationMeta> = {
   tag: { label: 'Tagged', icon: Tag, tone: 'info' },
   recommend: { label: 'Recommendation', icon: Info, tone: 'medium' },
   notify: { label: 'Notified', icon: Bell, tone: 'info' },
-  // A stored action from before Round 14 keeps its token; the label is Console-authored.
+  // A record from before Round 14 keeps its token; the label is Console-authored.
   run_playbook: { label: 'Runbook automation (before Round 14)', icon: BookOpen, tone: 'low' },
   request_approval: { label: 'Proposed (needs approval)', icon: Lock, tone: 'high' },
 };
+
+/** What an "Attach a runbook" action records (`engine/threshold_automation.py`). */
+const ATTACH_RUNBOOK_DETAIL = /^attach_runbook=(.*) attached=(True|False)$/s;
+
+/**
+ * The badge of a `run_playbook` record (the stored token, kept by the naming contract).
+ * Since Round 14 the action is the rule editor's "Attach a runbook" and records whether it
+ * attached one; a record from before Round 14 keeps its legacy name (SPEC §3.1).
+ */
+function automationMeta(action: string, detail: unknown): AutomationMeta | undefined {
+  if (action !== 'run_playbook') return AUTOMATION_META[action];
+  const attach = typeof detail === 'string' ? ATTACH_RUNBOOK_DETAIL.exec(detail) : null;
+  if (!attach) return AUTOMATION_META.run_playbook;
+  return attach[2] === 'True'
+    ? { label: 'Runbook attached', icon: BookOpen, tone: 'low' }
+    : { label: 'Runbook not attached', icon: BookOpen, tone: 'info' };
+}
 
 /**
  * Shows the SAFE actions threshold automation applied to this case (F10). Renders
@@ -605,12 +621,13 @@ const AutomationApplied: React.FC<{ c: Case; flat?: boolean }> = ({ c, flat = fa
       <SectionHeading icon={Zap}>Automation applied</SectionHeading>
       <p className="mb-3 text-xs text-muted-foreground">
         Threshold-automation actions taken after the deterministic decision. These are
-        non-binding: automation can tag, recommend, notify, queue a re-investigation, or draft a
-        proposal, but it never changes the lifecycle status or auto-closes a case.
+        non-binding: automation can tag, recommend, notify, attach a runbook, queue a
+        re-investigation, or draft a proposal, but it never changes the lifecycle status or
+        auto-closes a case.
       </p>
       <ul className="space-y-2">
         {actions.map((a, i) => {
-          const meta = AUTOMATION_META[String(a.action || '')] || {
+          const meta = automationMeta(String(a.action || ''), a.detail) || {
             label: humanizeToken(String(a.action || 'Action')),
             icon: Zap,
             tone: 'info' as ScoreTone,

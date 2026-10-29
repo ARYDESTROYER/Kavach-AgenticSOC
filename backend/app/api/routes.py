@@ -3922,8 +3922,8 @@ async def auth_me(
         expired = auth.expired_session_claims(token)
         if expired is not None:
             # A token this server signed whose own lifetime ran out: the session
-            # ended at its absolute limit (for a remembered sign-in, the policy
-            # duration — "signed out after 24 hours").
+            # ended at its absolute limit. The reason is reported (with the lifetime
+            # for API readers); the Console never states how long the session lasted.
             try:
                 lifetime = int(expired.get("exp", 0)) - int(expired.get("iat", 0))
             except (TypeError, ValueError):

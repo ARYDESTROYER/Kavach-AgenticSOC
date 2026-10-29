@@ -557,15 +557,8 @@ export const FEATURE_GROUPS: { id: NavGroupId; label: string }[] = [
 const Home = React.lazy(() => import('./pages/Home'));
 // The Dashboards library and its boards read `board` from the router (`useRoute`).
 const Dashboards = React.lazy(() => import('./pages/Dashboards'));
-/**
- * Cases takes `initialRule` from the route (SPEC §4.6.6). The page declares the prop when
- * its Rule filter lands (WP-W6b); until then the route already passes it, and the type
- * below states the route contract so the two can land in either order.
- */
-type CasesRouteProps = CasesProps & { initialRule?: string };
-const Cases = React.lazy(() => import('./pages/Cases')) as React.LazyExoticComponent<
-  React.ComponentType<CasesRouteProps>
->;
+// Cases takes its initial filters from the route, `initialRule` among them (SPEC §4.6.6).
+const Cases: React.LazyExoticComponent<React.ComponentType<CasesProps>> = React.lazy(() => import('./pages/Cases'));
 const CaseManager = React.lazy(() => import('./pages/CaseManager'));
 const Workspace = React.lazy(() => import('./pages/Workspace'));
 const Analytics = React.lazy(() => import('./pages/Analytics'));

@@ -1376,7 +1376,12 @@ async def reindex_runbook(
     state: AppState = Depends(get_state),
     _=Depends(require_permission("runbooks", "manage")),
 ) -> dict[str, Any]:
-    """Reproject one runbook in the retrieval index (kept from the earlier API)."""
+    """Reproject one runbook in the retrieval index (kept from the earlier API).
+
+    A built-in id is admitted and reprojected like an operator one: the runbook corpus
+    holds every Published version, the built-ins included (SPEC §4.10.18), so the
+    built-in's live chunks are written again, or removed when a Published operator
+    copy replaces it. An unknown id is ``404 runbook_not_found`` before any work."""
     if builtin_runbook(runbook_id) is None:
         await _require_record(state, runbook_id)
     result = await state.rag.reindex_runbooks({runbook_id})

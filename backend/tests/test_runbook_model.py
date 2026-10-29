@@ -1939,31 +1939,52 @@ def test_a_definition_accepted_without_a_version_exports_and_imports_at_any_vers
 # --------------------------------------------------------------------------- #
 # run_playbook automation targets (SPEC §4.10.16)
 # --------------------------------------------------------------------------- #
-def test_automation_resolves_a_retired_bundled_playbook_before_the_id_map() -> None:
-    # Before Round 14 a bundled playbook always won an id collision, so a rule naming
-    # brute_force_login ran the bundled procedure; the operator document with that id
-    # never ran and the migration made it the Draft brute_force_login-imported.
-    migrated = {"brute_force_login": "brute_force_login-imported", "my_procedure": "my_procedure",
-                "malware": "malware-imported"}
+def test_automation_resolves_through_the_id_map_before_the_bundled_map() -> None:
+    """SPEC §4.10.16: ``runbook_id``, else ``playbook_id`` through the migration's id
+    map, else through ``LEGACY_BUNDLED_RUNBOOK_MAP``: one order, the one
+    ``ThresholdAutomation`` uses."""
     resolve = RM.resolve_automation_runbook_id
-    assert resolve({"playbook_id": "brute_force_login"}, migrated) == "brute-force-password-spray"
-    for legacy in sorted(RM.LEGACY_BUNDLED_PLAYBOOK_IDS):
-        assert resolve({"playbook_id": legacy}, {legacy: f"{legacy}-imported"}) == RM.LEGACY_BUNDLED_RUNBOOK_MAP[legacy]
-    # Any other id goes through the migrated playbooks first: that playbook ran.
+    # An operator procedure through the migrated ids.
+    migrated = {"my_procedure": "my_procedure", "malware": "malware-imported"}
     assert resolve({"playbook_id": "my_procedure"}, migrated) == "my_procedure"
+    # The id map comes first for every id, a retired reference runbook id included.
     assert resolve({"playbook_id": "malware"}, migrated) == "malware-imported"
-    # A retired reference runbook id with no migrated playbook falls back to the map,
-    # also before the migration has run.
-    assert resolve({"playbook_id": "malware"}) == "malware-endpoint"
+    # A retired bundled playbook id is in the map only when a configured folder's
+    # file held it, the procedure the rule ran: the map wins for it too.
+    for legacy in sorted(RM.LEGACY_BUNDLED_PLAYBOOK_IDS):
+        assert resolve({"playbook_id": legacy}, {legacy: f"{legacy}-imported"}) == f"{legacy}-imported"
+    # With no migrated entry the built-in that merged it is the target, also before
+    # the migration has run.
+    for legacy in sorted(RM.LEGACY_BUNDLED_RUNBOOK_MAP):
+        assert resolve({"playbook_id": legacy}, {}) == RM.LEGACY_BUNDLED_RUNBOOK_MAP[legacy]
+        assert resolve({"playbook_id": legacy}) == RM.LEGACY_BUNDLED_RUNBOOK_MAP[legacy]
     assert resolve({"playbook_id": "port_scan"}, {}) == "scanning-reconnaissance"
     # The rule editor's runbook_id always wins.
-    assert resolve({"runbook_id": "my-runbook", "playbook_id": "brute_force_login"}, migrated) == "my-runbook"
+    assert resolve({"runbook_id": "my-runbook", "playbook_id": "brute_force_login"},
+                   {"brute_force_login": "brute_force_login-imported"}) == "my-runbook"
     # Nothing resolvable.
     assert resolve({"playbook_id": "unknown"}, migrated) is None
     assert resolve({}, migrated) is None and resolve(None) is None and resolve({"playbook_id": 3}) is None
     assert resolve({"playbook_id": "x"}, ["not", "a", "map"]) is None
     assert resolve({"playbook_id": "x"}, {"x": " "}) is None
+    assert resolve({"playbook_id": "port_scan"}, {"port_scan": "  "}) == "scanning-reconnaissance"
     assert resolve({"runbook_id": "  ", "playbook_id": " port_scan "}) == "scanning-reconnaissance"
+
+
+def test_a_shadowed_copy_of_a_bundled_playbook_never_wins_through_the_real_id_map() -> None:
+    """Before Round 14 a bundled playbook always won an id collision, so a rule naming
+    ``brute_force_login`` ran the bundled procedure, and the stored operator document
+    with that id (migrated to the Draft ``brute_force_login-imported``) never ran.
+    ``migrated_procedure_ids`` leaves that document out, so the id-map-first order
+    still resolves to the built-in; a configured folder's file with the id did run,
+    and is kept."""
+    from app.engine.runbook_migration import migrated_procedure_ids
+
+    resolve = RM.resolve_automation_runbook_id
+    stored_copy = migrated_procedure_ids({"id_map": {"playbooks:brute_force_login": "brute_force_login-imported"}})
+    assert resolve({"playbook_id": "brute_force_login"}, stored_copy) == "brute-force-password-spray"
+    folder_file = migrated_procedure_ids({"id_map": {"playbook_dir:brute_force_login": "brute_force_login-dir"}})
+    assert resolve({"playbook_id": "brute_force_login"}, folder_file) == "brute_force_login-dir"
 
 
 def test_the_retired_bundled_playbook_ids() -> None:

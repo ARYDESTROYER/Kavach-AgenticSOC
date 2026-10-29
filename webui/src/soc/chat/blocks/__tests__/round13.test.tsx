@@ -518,7 +518,7 @@ describe('case references (T14)', () => {
 });
 
 describe('status history words (T14)', () => {
-  it('reads "Open → Escalated" and a known reason as a sentence, plain text', () => {
+  it('reads an answer saved before Round 14 in the same words a newer one stores, plain text', () => {
     const block = parseBlock({
       id: 'sh',
       type: 'timeline',
@@ -533,14 +533,69 @@ describe('status history words (T14)', () => {
     });
     render(<AnswerBlocks blocks={[block]} messageId="m1" />);
     const timeline = screen.getByTestId('block-timeline');
-    const first = within(timeline).getByText('Open → Escalated');
+    // One vocabulary (SPEC §4.6.3): never "Open → Escalated" beside a newer "Open to Escalated".
+    const first = within(timeline).getByText('Open to Escalated');
     expect(first).not.toHaveClass('font-mono');
+    expect(timeline).not.toHaveTextContent('→');
     expect(within(timeline).getByTestId('timeline-reason')).toHaveTextContent(
-      'By the system: True positive sent to a person because true-positive auto-close is off.',
+      /^Automatic close of a confirmed threat is off \(by the system\)$/,
     );
     // An analyst's own reason stays exactly as written, in the untrusted box.
     expect(within(timeline).getByText('by alice: confirmed with the owner')).toBeInTheDocument();
     expect(timeline).not.toHaveTextContent('open -> escalated');
+  });
+
+  it('reads the server words of a newer answer (Round 14) as plain text, never as code', () => {
+    const block = parseBlock({
+      id: 'sh14',
+      type: 'timeline',
+      provenance: 'code',
+      artifact_kind: 'timeline',
+      title: 'Status history',
+      untrusted: true,
+      events: [
+        { at: '2026-10-17T10:00:00Z', label: 'Open to Escalated', detail: 'Automatic close of a confirmed threat is off (by the system)', kind: 'action' },
+        { at: '2026-10-17T10:30:00Z', label: 'Created as New', detail: 'By the AI agent', kind: 'action' },
+        { at: '2026-10-17T11:00:00Z', label: 'Escalated to Resolved', detail: 'confirmed with the owner (by alice)', kind: 'action' },
+      ],
+    });
+    render(<AnswerBlocks blocks={[block]} messageId="m1" />);
+    const timeline = screen.getByTestId('block-timeline');
+    expect(within(timeline).getByText('Open to Escalated')).not.toHaveClass('font-mono');
+    expect(within(timeline).getByText('Escalated to Resolved')).not.toHaveClass('font-mono');
+    const reasons = within(timeline).getAllByTestId('timeline-reason').map((el) => el.textContent);
+    expect(reasons).toEqual(['Automatic close of a confirmed threat is off (by the system)', 'By the AI agent']);
+    // An analyst's own reason (and a person's name) stays untrusted, in the code box.
+    const own = within(timeline).getByText('confirmed with the owner (by alice)');
+    expect(own.closest('pre')).not.toBeNull();
+  });
+
+  it('reads a detail as an engine reason only on a status move, never on another timeline', () => {
+    // An audit timeline (`chat_tools/ops.py`): "<action> by <actor>" over an untrusted
+    // result summary. A summary that copies an engine template word for word is still
+    // source text, so it stays fenced as written, never shown as Console prose.
+    const template =
+      'Closed automatically as a false positive: confidence 0.99 at or above 0.8, risk 1 at or below 20; objection window 30 minutes (by the AI agent)';
+    const block = parseBlock({
+      id: 'audit',
+      type: 'timeline',
+      provenance: 'code',
+      artifact_kind: 'timeline',
+      title: 'Audit timeline',
+      untrusted: true,
+      events: [
+        { at: '2026-10-17T10:00:00Z', label: 'decision by agent', detail: template, kind: 'action' },
+        { at: '2026-10-17T10:05:00Z', label: 'triage by system', detail: 'by system: True positive routed to human: tp auto-close disabled.', kind: 'action' },
+      ],
+    });
+    render(<AnswerBlocks blocks={[block]} messageId="m1" />);
+    const timeline = screen.getByTestId('block-timeline');
+    expect(within(timeline).queryByTestId('timeline-reason')).toBeNull();
+    const fenced = within(timeline).getByText(template);
+    expect(fenced.closest('pre')).not.toBeNull();
+    expect(within(timeline).getByText('by system: True positive routed to human: tp auto-close disabled.').closest('pre')).not.toBeNull();
+    // The labels stay as written, in the untrusted mono face.
+    expect(within(timeline).getByText(/decision by agent/)).toHaveClass('font-mono');
   });
 });
 

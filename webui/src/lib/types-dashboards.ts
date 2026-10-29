@@ -3,8 +3,9 @@
  * is erased at compile time, so importing this module costs the entry bundle nothing.
  *
  * Mirrors `backend/app/models.py` (`MetricsBreakdown*`, `DashboardLayout.default_window`
- * and `derived_from`, the `UserPrefs.misc` list keys). Keep the two in sync; the
- * generated `api-types.gen.ts` is the final authority once WP-B1 reconciles them.
+ * and `derived_from`, the `UserPrefs.misc` list keys). The generated
+ * `api-types.gen.ts` is the authority for every model the OpenAPI schema describes,
+ * and a contract test pins these mirrors to it; `types.ts` re-exports every name here.
  * Every key (a rule id, a source name, a technique name) is untrusted text the
  * Console renders as plain text (#9).
  */

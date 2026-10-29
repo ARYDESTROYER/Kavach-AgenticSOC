@@ -143,6 +143,9 @@ export function seenLine(
   return parts.length ? parts.join(' · ') : null;
 }
 
+/** An absolute window shorter than this names its times as well as its days. */
+const SHORT_WINDOW_MS = 48 * 3_600_000;
+
 /** A readable label for a window that is not one of the presets. */
 export function windowLabel(range: RuleSheetWindow): string {
   if (range.label) return range.label;
@@ -154,10 +157,32 @@ export function windowLabel(range: RuleSheetWindow): string {
     const unit = { m: 'minute', h: 'hour', d: 'day', w: 'week' }[relative[2] as 'm' | 'h' | 'd' | 'w'];
     return `Last ${fmtNumber(n)} ${unit}${n === 1 ? '' : 's'}`;
   }
+  // A window of minutes or hours (a case's own window) names its times, so the picker
+  // says which minutes are counted: "Oct 29, 12:14 to 12:17 UTC", "Oct 28 22:10 to Oct 29
+  // 01:05 UTC". A longer one names its days.
+  const start = utcDate(range.from);
+  const end = range.to === 'now' ? null : utcDate(range.to);
+  if (start && end && end.getTime() >= start.getTime() && end.getTime() - start.getTime() < SHORT_WINDOW_MS) {
+    const sameDay = start.toISOString().slice(0, 10) === end.toISOString().slice(0, 10);
+    return sameDay
+      ? `${utcDay(range.from)}, ${utcClock(start)} to ${utcClock(end)} UTC`
+      : `${utcDayTime(range.from)} to ${utcDayTime(range.to)} UTC`;
+  }
   const from = utcDay(range.from);
   const to = range.to === 'now' ? 'now' : utcDay(range.to);
   if (from && to) return `${from} to ${to}`;
   return 'Custom window';
+}
+
+/**
+ * The window's label everywhere in the sheet (the picker, the Alerts tile, the polite
+ * line): a relative window takes the server's label; an absolute one (a case's own
+ * window, opened from a case card) keeps the picker's, so one header never shows the same
+ * window in two date formats.
+ */
+export function shownWindowLabel(serverLabel: string | null | undefined, range: TimeRange): string {
+  if (!/^now\b/.test(range.from)) return range.label;
+  return serverLabel || range.label;
 }
 
 /** The sheet's starting window: the opener's, else the last 3 days. */
@@ -248,6 +273,90 @@ export function windowAnnouncement(summary: RuleSummary | null, failed: boolean,
 /** The Logs view with an exact "Rule is" filter over the sheet's window. */
 export function ruleLogsHref(rule: string, from: string, to: string, sourceId?: string): string {
   return pageHash('logs', { rule, from, to, ...(sourceId ? { sourceId } : {}) });
+}
+
+/** The longest window the Logs page reads (its `MAX_WINDOW_MS`): 90 days. */
+export const LOGS_MAX_DAYS = 90;
+const DAY_MS = 86_400_000;
+const REL_UNIT_MS: Record<string, number> = { m: 60_000, h: 3_600_000, d: DAY_MS, w: 7 * DAY_MS, M: 30 * DAY_MS, y: 365 * DAY_MS };
+
+/** Epoch ms of a window bound (`now`, `now-<n><unit>`, ISO-8601), else null. */
+function windowBoundMs(value: string, now: number): number | null {
+  if (value === 'now') return now;
+  const rel = /^now-(\d{1,5})([mhdwMy])$/.exec(value);
+  if (rel) return now - Number(rel[1]) * REL_UNIT_MS[rel[2]];
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * How much of the sheet's window the main action opens in Logs:
+ *  - `window`: all of it (it fits the 90 days Logs reads);
+ *  - `last_90_days`: its last 90 days;
+ *  - `to_last_alert`: the 90 days up to the rule's last alert, when that alert is older
+ *    than the last 90 days (those would hold nothing from the rule);
+ *  - `from_start_to_last_alert`: the window's start up to the rule's last alert, when that
+ *    is shorter than 90 days.
+ */
+export type LogsReach = 'window' | 'last_90_days' | 'to_last_alert' | 'from_start_to_last_alert';
+
+export interface LogsWindow {
+  from: string;
+  to: string;
+  reach: LogsReach;
+}
+
+/**
+ * The window the main action opens Logs on: the sheet's own window when it fits the 90
+ * days Logs reads, else the last 90 days of it, so the action never opens a view Logs
+ * would refuse and never names a count of alerts Logs cannot show. When the rule's last
+ * alert (`lastSeen`, read from the sheet's own figures) is older than those 90 days, the
+ * view ends one minute after that alert instead, so it never opens on a view that can
+ * only be empty under a tile counting the rule's alerts.
+ */
+export function logsWindow(from: string, to: string, now: number = Date.now(), lastSeen: string | null = null): LogsWindow {
+  const start = windowBoundMs(from, now);
+  const end = windowBoundMs(to, now);
+  if (start === null || end === null || end - start <= LOGS_MAX_DAYS * DAY_MS) return { from, to, reach: 'window' };
+  const lastStart = end - LOGS_MAX_DAYS * DAY_MS;
+  const last = lastSeen ? Date.parse(lastSeen) : NaN;
+  if (Number.isFinite(last) && last >= start && last < lastStart) {
+    const until = last + 60_000;
+    const since = Math.max(start, until - LOGS_MAX_DAYS * DAY_MS);
+    return {
+      from: new Date(since).toISOString(),
+      to: new Date(until).toISOString(),
+      reach: since > start ? 'to_last_alert' : 'from_start_to_last_alert',
+    };
+  }
+  return { from: to === 'now' ? `now-${LOGS_MAX_DAYS}d` : new Date(lastStart).toISOString(), to, reach: 'last_90_days' };
+}
+
+/**
+ * The main action's label and, when Logs opens on less than the sheet's window, the one
+ * line under it that says why. A count is named only for the whole window (`exact`).
+ */
+export function logsActionCopy(reach: LogsReach, exact: number | null): { label: string; note: string | null } {
+  const limit = `Logs reads at most ${LOGS_MAX_DAYS} days at a time`;
+  switch (reach) {
+    case 'last_90_days':
+      return {
+        label: `Open the last ${LOGS_MAX_DAYS} days in Logs`,
+        note: `${limit}, so it opens on the last ${LOGS_MAX_DAYS} days of this window.`,
+      };
+    case 'to_last_alert':
+      return {
+        label: `Open ${LOGS_MAX_DAYS} days up to the last alert in Logs`,
+        note: `${limit}, so it opens on the ${LOGS_MAX_DAYS} days up to this rule's last alert.`,
+      };
+    case 'from_start_to_last_alert':
+      return {
+        label: 'Open up to the last alert in Logs',
+        note: `${limit}, so it opens on this window up to this rule's last alert.`,
+      };
+    default:
+      return { label: openInLogsLabel(exact), note: null };
+  }
 }
 
 const LEVEL_LABEL: Record<SeverityLevel, string> = {
@@ -866,8 +975,8 @@ export function RuleSheet({ id, request, open, onOpenChange, returnFocusTo }: Ru
     // Only the answer read for this window, never the last one still on screen.
     if (summary.loading || summary.answered !== summaryKey) return;
     setAnnounceFor(null);
-    setAnnouncement(windowAnnouncement(summary.data, summary.error !== null, summary.data?.window.label || range.label));
-  }, [announceFor, rangeKey, summary.loading, summary.answered, summary.data, summary.error, summaryKey, range.label]);
+    setAnnouncement(windowAnnouncement(summary.data, summary.error !== null, shownWindowLabel(summary.data?.window.label, range)));
+  }, [announceFor, rangeKey, summary.loading, summary.answered, summary.data, summary.error, summaryKey, range]);
 
   /**
    * Set when the sheet closes to go somewhere (an action or a case link), with the hash it
@@ -903,10 +1012,16 @@ export function RuleSheet({ id, request, open, onOpenChange, returnFocusTo }: Ru
   const cases = data?.cases ?? null;
   const resolvedFrom = data?.window.from || range.from;
   const resolvedTo = data?.window.to || range.to;
-  const label = data?.window.label || range.label;
+  const label = shownWindowLabel(data?.window.label, range);
   const inWindow = windowPhrase(label);
   const exact = exactAlertCount(data);
-  const logsHref = safeRouteHref(ruleLogsHref(rule, resolvedFrom, resolvedTo, sourceId));
+  // Logs reads at most 90 days: a longer window opens on its last 90 days (or the 90 days
+  // up to the rule's last alert when that is older), with no count and a line saying why.
+  const lastSeen = alerts && alerts.status !== 'forbidden' ? alerts.last_seen ?? null : null;
+  const logsRange = logsWindow(resolvedFrom, resolvedTo, Date.now(), lastSeen);
+  const logsCopy = logsActionCopy(logsRange.reach, exact);
+  const logsNoteId = `${id}-logs-clamped`;
+  const logsHref = safeRouteHref(ruleLogsHref(rule, logsRange.from, logsRange.to, sourceId));
   const casesHref = safeRouteHref(pageHash('cases', { rule }));
   const askValue = askEntityValue('rule', rule);
   const canAsk = askValue !== null && can('cases', 'read');
@@ -1130,11 +1245,20 @@ export function RuleSheet({ id, request, open, onOpenChange, returnFocusTo }: Ru
                     href={logsHref}
                     onClick={(event) => navigateFromSheet(event, logsHref)}
                     className={cn(buttonVariants({ variant: 'default' }), 'gap-1.5')}
+                    aria-describedby={logsCopy.note ? logsNoteId : undefined}
                     data-testid="rule-open-logs"
                   >
                     <ListFilter aria-hidden />
-                    {openInLogsLabel(exact)}
+                    {logsCopy.label}
                   </a>
+                ) : null}
+                {showLogs && logsHref && logsCopy.note ? (
+                  // Why the view is shorter than the window: directly under the Logs action
+                  // on a phone (the actions stack), under the whole row from `sm`, and the
+                  // action's own description for assistive tech.
+                  <p id={logsNoteId} className="text-xs text-muted-foreground sm:order-last sm:basis-full" data-testid="rule-logs-clamped">
+                    {logsCopy.note}
+                  </p>
                 ) : null}
                 {cases?.status === 'ok' && caseCount !== null && caseCount > 0 && casesHref ? (
                   <a

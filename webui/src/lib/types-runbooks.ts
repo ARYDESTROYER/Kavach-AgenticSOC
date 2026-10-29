@@ -2,10 +2,11 @@
  * Round 14 runbook contracts (SPEC §4.10). Type-only: zero runtime bytes.
  *
  * Mirrors `backend/app/models.py` (the runbook model of §4.10.2, the runs of
- * §4.10.7, the responses of §4.10.15a and the request bodies of §4.10.15). New code
- * imports runbook types from this module only; the legacy `Runbook*` and `Playbook*`
- * declarations in `types.ts` belong to the old pages until WP-B1 retires them, so the
- * shared names (`RunbookDetail`) never collide.
+ * §4.10.7, the responses of §4.10.15a and the request bodies of §4.10.15). The
+ * generated `api-types.gen.ts` is the authority for the field names, optionality and
+ * vocabularies of every model the OpenAPI schema describes, and a contract test pins
+ * these mirrors to it. `types.ts` re-exports every name here (the pre-Round 14
+ * `Runbook*` and `Playbook*` shapes are gone).
  *
  * Runbook text is trusted only once Published; everything a run records (notes,
  * lookup results, AI drafts) is plain data the Console renders as text (#9). A
@@ -298,6 +299,24 @@ export interface StepState {
 }
 
 export type RunAttachedBy = 'rule' | 'fallback' | 'person' | 'suggestion';
+
+/**
+ * Why a runbook did or did not guide an investigation (`RunbookGuidance.status` in
+ * `backend/app/agents/investigator.py`, read back through the case rationale):
+ * `matched` (tier 1 to 3), `fallback` (the Generic incident runbook, tier 0),
+ * `no_match`, `guidance_off` (investigator guidance turned off), `runbooks_off`,
+ * `library_unavailable` (fail closed), `selection_failed` and `over_budget` (the
+ * winner's guidance is over the 3,000 character budget, so it was not used).
+ */
+export type RunbookGuidanceStatus =
+  | 'matched'
+  | 'fallback'
+  | 'no_match'
+  | 'guidance_off'
+  | 'runbooks_off'
+  | 'library_unavailable'
+  | 'selection_failed'
+  | 'over_budget';
 
 export type RunStatus = 'active' | 'completed' | 'abandoned';
 
@@ -684,6 +703,33 @@ export interface RunbookStepsOpenDetail {
   steps: RunbookStepsOpen[];
 }
 
+/**
+ * The body of `409 runbook_conflict` (`{"detail": RunbookConflictDetail}`). It answers
+ * two different things, told apart by `exists`:
+ *
+ * - A stale write: the runbook, run or step changed since the person read it (a stale
+ *   `expected_revision`), or a version's text changed after it was reviewed. `revision`
+ *   (a library runbook or a run) or `step_revision` (one step) is the current revision,
+ *   and `latest` the current state where the server can read it for this viewer (a
+ *   `RunbookDetail` on the library routes, a `RunbookRunUpdate` on the case routes). Show
+ *   it and keep the person's own edits; never retry the write unseen.
+ * - On create and import, an id that is already taken: `exists: true`. This is not a
+ *   stale write: ask for another id. `latest` (and `revision`) then describe the runbook
+ *   that holds the id, when this viewer may read it.
+ */
+export interface RunbookConflictDetail {
+  code: 'runbook_conflict';
+  message: string;
+  /** The current revision of the runbook or run. */
+  revision?: number;
+  /** The current revision of the one step that changed (the step routes). */
+  step_revision?: number;
+  /** The current state, when the server could read it for this viewer. */
+  latest?: RunbookDetail | RunbookRunUpdate;
+  /** True when a create or import named an id that is already taken. */
+  exists?: boolean;
+}
+
 /** SSE `case.runbook` frame: progress only, to holders of `runbooks:read` and `cases:read`. */
 export interface CaseRunbookFrame {
   case_id: string;
@@ -774,26 +820,70 @@ export interface RunbookLookupTestBody {
   case_id: string;
 }
 
-/** Error codes of the runbook API (§4.10.15), for the page states. */
+/**
+ * Every error code the runbook API answers (§4.10.15 and the routes as built), for the
+ * page states. The library and case routes answer `{"detail": {"code", "message",
+ * ...}}`; `runbooks_moved` (an old-shape write, `410`) puts `code` beside a string
+ * `detail` instead. Read both through one helper, never by matching the message.
+ */
 export type RunbookErrorCode =
+  /** 404: the runbook does not exist or the caller cannot see it. */
   | 'runbook_not_found'
+  /** 404: that version does not exist or is a draft the caller cannot see. */
   | 'runbook_version_not_found'
   | 'run_not_found'
   | 'step_not_found'
+  /** 404 on the case routes: the case does not exist. */
+  | 'case_not_found'
+  /**
+   * 409, two forms (see {@link RunbookConflictDetail}): the runbook, run or step changed
+   * since it was read (a stale `expected_revision`, or a version whose text changed after
+   * review), or, on create and import, the id is already taken (`exists: true`).
+   */
   | 'runbook_conflict'
+  /** 422 with `issues[]`. */
   | 'runbook_invalid'
+  /** 422 with `length` and `budget`: the investigator guidance is over 3,000 characters. */
   | 'runbook_prompt_budget'
+  /** 409: built-ins are read-only (duplicate one instead). */
   | 'runbook_readonly'
+  /** 409: an illegal transition, or a run write while runbooks are off. */
   | 'runbook_state'
+  /** 409: a library or run document reached a size limit (`limit` names which). */
   | 'runbook_limit'
+  /** 409: at most 5 runs per case. */
   | 'run_limit'
+  /** 409: the step cannot take that change in its current state. */
   | 'step_state'
+  /** 403: the approver must differ from the author (or the recorder). */
   | 'runbook_distinct_approver'
+  /** 403: the caller does not hold the step's approval role. */
   | 'runbook_approval_role'
+  /** 409: AI drafts or suggestions are turned off in Settings. */
   | 'runbook_ai_disabled'
+  /** 429: the day's AI budget is used up; nothing changed. */
+  | 'runbook_ai_budget'
+  /** 504: the AI call ran past its time; nothing changed. */
+  | 'runbook_ai_timeout'
+  /** 503: no AI model is available; nothing changed. */
+  | 'runbook_ai_unavailable'
+  /** 502: the AI answered without usable text; nothing changed. */
+  | 'runbook_ai_invalid'
+  /** 422: the id is reserved or belongs to a built-in. */
   | 'runbook_id_reserved'
+  /** 409: the library is read-only in Demo Mode. */
   | 'runbook_demo_readonly'
+  /** 409 on a case close sent with `require_open_steps_reason` (see {@link RunbookStepsOpenDetail}). */
   | 'runbook_steps_open'
+  /** 410: an old-shape write (`/api/playbooks*`, `{id, content}` bodies, run-playbook). */
   | 'runbooks_moved'
+  /** 409: runbook figures are hidden while row-level data scope is on. */
+  | 'runbook_scope_unsupported'
+  /** 400: `window` is not a window the metrics endpoint understands. */
+  | 'runbook_window_invalid'
+  /** 413: a request body over the library's size bound. */
+  | 'runbook_body_too_large'
+  /** 503: the lookup could not run (its source failed, it ran past its time, or another lookup on the run is still running). */
   | 'lookup_unavailable'
+  /** 503: the runbook store could not be read or written. */
   | 'runbook_store_unavailable';

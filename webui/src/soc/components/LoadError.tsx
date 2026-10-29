@@ -1,10 +1,11 @@
 /**
  * LoadError — the ONE reusable "this surface failed to load" panel.
  *
- * Round-5 W0-B B5: promotes the inline `LoadError` at `pages/Catalog.tsx` into a shared
- * component so every page that fetches data shows the same destructive alert + Retry
- * affordance instead of re-rolling the markup. The Codemod wave (CM6) migrates the ~25
- * hand-rolled copies onto this.
+ * Round-5 W0-B B5: promotes the inline `LoadError` of the old catalog page (since Round 14
+ * the Runbooks library, `pages/Runbooks.tsx`, and `pages/Personas.tsx`, both of which use
+ * this component) into a shared component so every page that fetches data shows the same
+ * destructive alert + Retry affordance instead of re-rolling the markup. The Codemod wave
+ * (CM6) migrates the ~25 hand-rolled copies onto this.
  *
  * The `error` is coerced through `errorMessage()` (built on `ApiError`) and rendered as
  * PLAIN text (#9) — the backend `detail` can carry operator-/log-derived strings, so it

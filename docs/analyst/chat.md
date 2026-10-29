@@ -551,11 +551,14 @@ followed by a short form of its ID (the full ID is in its tooltip). Verdicts, st
 and kinds read in words, such as "True positive", "Open · awaiting analyst", and "IP".
 A case card's status history reads each move and its reason in words, such as "Open to
 Escalated" with "Automatic close of a confirmed threat is off (by the system)"; a reason
-an analyst wrote stays as written. An answer saved by an earlier version keeps that
-version's wording for the same moves, such as "Open → Escalated". An answer saved before
-a case had a number shows a short form of its ID, with the full ID in its tooltip, and
-still links to the case. A case card's **Rules** fact lists the case's rules as text; to
-open a rule's picture, use the case's detection rules in Case Manager.
+an analyst wrote stays as written. An answer saved by an earlier version reads in the same
+words. A detail on any other timeline, such as an audit timeline's result, is shown as
+written even when it reads like a status reason. An answer saved before a case had a
+number shows a short form of its ID, with the full ID in its tooltip, and still links to
+the case. A case card's **Rules** fact names each of the case's rules (up to five), and
+each opens its [rule sheet](#rules-in-an-answer) over the case's own window, with "From
+CASE-000214" in the sheet's header. A rule that cannot be carried exactly, and every rule
+in an answer saved before this version, is plain text.
 
 Figures in an answer's text read the way its blocks show them, so one figure never
 appears in two forms: a rate is a whole percent from 10% up ("78%"), with one decimal
@@ -637,7 +640,8 @@ Every rule name in an answer opens that rule's picture, the rule sheet:
 - a rule row in a table: select the name, or anywhere on the row;
 - a rule bar in a chart: click it, or move to it with the arrow keys and press Enter
   (the tooltip says "See this rule's alerts and cases");
-- a rule in a [severity breakdown](#severity-breakdowns).
+- a rule in a [severity breakdown](#severity-breakdowns);
+- a rule in a case card's **Rules** fact (over the case's own window).
 
 It is the same sheet every rule name in the Console opens: the Case Manager facts, a Logs
 row's details, Auto-tuning, Precedent by rule in health diagnostics, the Cyber Defence
@@ -647,10 +651,12 @@ sheet; Esc closes it and puts focus back on the rule you clicked. While it is op
 row or bar you opened it from stays marked, and the keys you type stay in the sheet.
 
 - **Header.** The rule as written, where you opened it ("From your answer", "From
-  CASE-000214", "From Logs"), the window (the answer's window, or the last 3 days) and the
-  source when the sheet is filtered to one. When you pick another window, a screen reader
-  hears what it now shows once the figures arrive, for example "Last 7 days: 381 alerts
-  from this rule."
+  CASE-000214", "From Logs"), the window (the answer's or the case's window, or the last 3
+  days) and the source when the sheet is filtered to one. A window of minutes or hours,
+  such as a case's own window, names its times in UTC, such as "Oct 29, 12:14 to 12:17
+  UTC", and the Alerts figure reads the same label. When you pick another window, a
+  screen reader hears what it now shows once the figures arrive, for example "Last 7
+  days: 381 alerts from this rule."
 - **Key figures.** Alerts in the window, with "≥" and "At least this many" when part of
   the count could not be counted exactly (the note under the chart says why). Cases,
   Still open ("of N cases") and Analyst outcome count every case the rule ever opened, all
@@ -662,7 +668,13 @@ row or bar you opened it from stays marked, and the keys you type stay in the sh
   outcome. Under the figures: when the rule was last and first seen, in UTC.
 - **Actions.** **Open all N in Logs** opens Logs filtered to exactly this rule over the
   same window; the number appears only when the count is exact, otherwise the button
-  reads **Open in Logs**. **Show the N cases** opens the Cases list filtered to the rule.
+  reads **Open in Logs**. Logs reads at most 90 days at a time, so over a longer window
+  the button reads **Open the last 90 days in Logs**, with no number. When the rule's
+  last alert is older than those 90 days, it reads **Open 90 days up to the last alert in
+  Logs** (or **Open up to the last alert in Logs** when the window starts less than 90
+  days before that alert), so Logs never opens on a view without the rule's alerts. A
+  line under the button says why, and a screen reader hears it with the button. **Show
+  the N cases** opens the Cases list filtered to the rule.
   **Ask AI about this rule** starts a new chat with the rule as the question's subject, an
   ordinary chat question metered like any other. It appears when the rule is a single
   identifier, such as `ssh_bruteforce`; a rule name with spaces, such as "Web scanner user

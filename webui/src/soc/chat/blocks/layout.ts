@@ -30,7 +30,8 @@ const COMPACT_CHART_KINDS: ReadonlySet<ChartKind> = new Set<ChartKind>(['hbar', 
 
 /**
  * A block's width in the lane, from its type and size (SPEC-chat §5.1): `kpi_group` with
- * at most 4 figures, `entity`, `case_list`, `mitre`, a `table` of at most 3 columns and a
+ * at most 4 figures, `entity`, `case_list`, `mitre`, a `table` of at most 3 columns (and
+ * any severity breakdown table, Round 14) and a
  * categorical `chart` (`hbar`, `bar`, `donut`, `funnel` over categories) of at most 12
  * categories are compact; everything else is wide. The bare prose blocks (`markdown`,
  * `callout`) are capped to the reading column by the lane itself and read as compact.
@@ -46,6 +47,9 @@ export function blockWidth(block: AnswerBlock): BlockWidth {
     case 'kpi_group':
       return block.items.length <= COMPACT_KPI_ITEMS ? 'compact' : 'wide';
     case 'table':
+      // A severity breakdown (Round 14, SPEC §4.7.3) reads in the reading column whatever
+      // its column count; its rules-by-level matrix takes the wide lane (BlockCard).
+      if (block.severity) return 'compact';
       return block.columns.length <= COMPACT_TABLE_COLUMNS ? 'compact' : 'wide';
     case 'chart':
       return block.x.kind === 'category' &&

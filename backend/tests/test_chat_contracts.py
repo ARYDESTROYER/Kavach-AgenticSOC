@@ -1119,6 +1119,8 @@ def test_answer_blocks_contract_parity() -> None:
         "tz": B.TZ_PATTERN,
     }
     assert limits["section_blocks"] == B.MAX_SECTION_BLOCKS == B.MAX_BLOCKS_PER_MESSAGE + 1
+    # Round 14: the values one entity fact lists one by one (a case card's rules).
+    assert limits["entity_fact_items"] == B.MAX_ENTITY_FACT_ITEMS
     # The webui test runs the SAME examples through parseTimestamp().
     examples = c["timestamp_examples"]
     assert [v for v in examples["valid"] if B.parse_timestamp(v) is None] == []

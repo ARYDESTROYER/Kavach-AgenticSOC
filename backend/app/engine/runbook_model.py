@@ -275,15 +275,13 @@ GENERIC_INCIDENT_RUNBOOK_ID = "generic-incident"
 #: ``payload.playbook_id``, see :func:`resolve_automation_runbook_id`), to show
 #: ``Case.playbook_id`` and stored chat references, and by the migration's shadow rule.
 #:
-#: Precedence for automation: a ``payload.playbook_id`` that one of the 9 retired
-#: bundled PLAYBOOKS held (:data:`LEGACY_BUNDLED_PLAYBOOK_IDS`) resolves through this
-#: map BEFORE the migration's id map. Before Round 14 a bundled playbook always won an
-#: id collision (``app/playbooks/durable.py``, ``shadowed_by_bundled``), so such a rule
-#: ran the bundled procedure, and an operator document with that id never ran; the
-#: migration turns that document into a Draft (``<id>-imported``), and resolving the
-#: rule through the id map would skip it. The 9 retired reference runbook ids were
-#: never playbooks, so a ``run_playbook`` rule naming one ran the operator playbook of
-#: that id: the id map comes first for them, as for any other id.
+#: Precedence for automation (SPEC §4.10.16): the migration's id map first, then this
+#: map. The id map a rule resolves through (``runbook_migration.migrated_procedure_ids``)
+#: holds a retired bundled PLAYBOOK id (:data:`LEGACY_BUNDLED_PLAYBOOK_IDS`) only when a
+#: configured procedure folder's file held it, which is the procedure a rule naming the
+#: id ran before Round 14. An operator document with such an id never ran (a bundled
+#: playbook always won the collision, ``shadowed_by_bundled``), so the id map leaves it
+#: out and the rule resolves here, to the built-in that merged the bundled playbook.
 LEGACY_BUNDLED_RUNBOOK_MAP: dict[str, str] = {
     # Retired bundled procedures (backend/playbooks/*.md).
     "brute_force_login": "brute-force-password-spray",
@@ -325,8 +323,7 @@ def resolve_legacy_runbook_id(legacy_id: Any) -> str | None:
     ``None`` when the id is not one of the 18 legacy bundled ids.
 
     For an automation rule, call :func:`resolve_automation_runbook_id`, which applies
-    this map before the migration's id map for the ids the retired bundled playbooks
-    held, and after it for every other id."""
+    the migration's id map first and this map after it."""
     if not isinstance(legacy_id, str):
         return None
     return LEGACY_BUNDLED_RUNBOOK_MAP.get(legacy_id.strip())
@@ -335,26 +332,26 @@ def resolve_legacy_runbook_id(legacy_id: Any) -> str | None:
 def resolve_automation_runbook_id(payload: Any, migrated_playbooks: Any = None) -> str | None:
     """The runbook a ``run_playbook`` automation rule attaches, resolved at fire time
     from its stored ``payload`` (SPEC §4.10.16; stored Preferences are never
-    rewritten), or ``None`` when the rule names nothing this can resolve.
+    rewritten), or ``None`` when the rule names nothing this can resolve. The one
+    resolution order: ``ThresholdAutomation`` calls this and repeats none of it.
 
-    ``migrated_playbooks`` maps a legacy operator playbook id to the id the migration
-    gave it. The caller builds it from the migration marker's ``id_map`` (SPEC
-    §4.10.17 step 6): the entries of the namespaces a ``run_playbook`` rule could run
-    before Round 14 (the operator playbooks and the playbook directory), keyed by the
-    bare legacy id; never the reference runbooks, which were not playbooks. It is
-    empty or ``None`` before the migration has run.
+    ``migrated_playbooks`` maps a legacy procedure id to the id the migration gave it.
+    The caller builds it from the migration marker's ``id_map`` with
+    ``runbook_migration.migrated_procedure_ids`` (SPEC §4.10.17 step 6): the procedure
+    sources a ``run_playbook`` rule could run before Round 14 (the configured folder,
+    then the stored documents), keyed by the bare legacy id; never the reference
+    runbooks, which were not procedures, and never a stored copy of a retired bundled
+    playbook, which never ran. It is empty or ``None`` before the migration has run.
 
-    In order:
+    In order (SPEC §4.10.16):
 
     1. ``payload.runbook_id`` (what the rule editor's "Attach a runbook" writes);
-    2. a ``payload.playbook_id`` that a retired bundled playbook held
-       (:data:`LEGACY_BUNDLED_PLAYBOOK_IDS`) through :data:`LEGACY_BUNDLED_RUNBOOK_MAP`:
-       the rule ran that bundled playbook before the upgrade, never the operator
-       document the migration turned into a shadowed Draft;
-    3. ``payload.playbook_id`` through ``migrated_playbooks`` (operator documents);
-    4. ``payload.playbook_id`` through :data:`LEGACY_BUNDLED_RUNBOOK_MAP` (a retired
-       reference runbook id), for a rule that fires before the migration or names no
-       migrated document.
+    2. ``payload.playbook_id`` through ``migrated_playbooks``: the procedure the rule
+       ran, as migrated (a retired bundled id is there only when a configured
+       folder's file held it, which is what the rule ran);
+    3. ``payload.playbook_id`` through :data:`LEGACY_BUNDLED_RUNBOOK_MAP`: the built-in
+       that merged a retired bundled playbook or reference runbook, for a rule that
+       fires before the migration or names no migrated procedure.
 
     The caller then checks the target: a runbook that is unknown, a Draft or retired is
     skipped with ``run.attach_skipped``. Pure: it reads only its arguments."""
@@ -367,8 +364,6 @@ def resolve_automation_runbook_id(payload: Any, migrated_playbooks: Any = None) 
     if not isinstance(playbook_id, str) or not playbook_id.strip():
         return None
     playbook_id = playbook_id.strip()
-    if playbook_id in LEGACY_BUNDLED_PLAYBOOK_IDS:
-        return LEGACY_BUNDLED_RUNBOOK_MAP[playbook_id]
     migrated = migrated_playbooks.get(playbook_id) if hasattr(migrated_playbooks, "get") else None
     if isinstance(migrated, str) and migrated.strip():
         return migrated.strip()

@@ -3,9 +3,10 @@
  * the editor and the case Runbook tab, never by an entry module (§3.4). Every call
  * goes through the shared request helper (401, step-up and error contract).
  *
- * The legacy `api.getRunbooks`, `api.getPlaybooks` and their writes in `api.ts` serve
- * the old pages until WP-B1 retires them; old-shape writes answer
- * `410 runbooks_moved` once the new routes land.
+ * These are the only runbook calls in the Console (the pre-Round 14 `api.getRunbooks`,
+ * `api.getPlaybooks` and their writes are gone). The server still answers the old read
+ * shapes for API clients for one release (`GET /api/playbooks`, `?shape=v1`), and an
+ * old-shape write answers `410 runbooks_moved`.
  */
 import { requestResponse, request, type BlobDownload } from './api';
 import type {
@@ -80,9 +81,15 @@ export function saveRunbookDraft(runbookId: string, body: RunbookDraftBody): Pro
   return request<RunbookDetail>('PUT', `runbooks/${id(runbookId)}/draft`, { body });
 }
 
-/** `DELETE /api/runbooks/{id}/draft`: a never-published runbook disappears. */
-export function discardRunbookDraft(runbookId: string): Promise<RunbookDiscardResult> {
-  return request<RunbookDiscardResult>('DELETE', `runbooks/${id(runbookId)}/draft`);
+/**
+ * `DELETE /api/runbooks/{id}/draft`: a never-published runbook disappears. Pass the
+ * detail's `revision` as `expectedRevision` so a draft someone else changed since it
+ * was opened is never discarded unseen (`409 runbook_conflict`).
+ */
+export function discardRunbookDraft(runbookId: string, expectedRevision?: number): Promise<RunbookDiscardResult> {
+  return request<RunbookDiscardResult>('DELETE', `runbooks/${id(runbookId)}/draft`, {
+    query: { expected_revision: expectedRevision },
+  });
 }
 
 /** `POST /api/runbooks/{id}/duplicate`: a built-in or operator runbook to a new draft. */
@@ -148,9 +155,29 @@ export function importRunbook(source: string): Promise<RunbookDetail> {
   return request<RunbookDetail>('POST', 'runbooks/import', { body: { source } });
 }
 
-/** `GET /api/runbooks/{id}/export`: the `text/markdown` attachment. */
-export async function exportRunbookMarkdown(runbookId: string, signal?: AbortSignal): Promise<BlobDownload> {
-  const res = await requestResponse('GET', `runbooks/${id(runbookId)}/export`, { signal });
+/**
+ * `GET /api/runbooks/{id}/export`: the `text/markdown` attachment of the version the
+ * caller would open (the live one, or the draft for an editor). The export is recorded
+ * in the audit log before the file is sent (`503 audit_unavailable` refuses it).
+ */
+export function exportRunbookMarkdown(runbookId: string, signal?: AbortSignal): Promise<BlobDownload> {
+  return exportRunbookVersionMarkdown(runbookId, undefined, signal);
+}
+
+/**
+ * `GET /api/runbooks/{id}/export?version=n`: one exact version as Markdown, for
+ * example the version a case's run pinned. A version the caller cannot see answers
+ * `404 runbook_version_not_found`; without `version` it is {@link exportRunbookMarkdown}.
+ */
+export async function exportRunbookVersionMarkdown(
+  runbookId: string,
+  version?: number,
+  signal?: AbortSignal,
+): Promise<BlobDownload> {
+  const res = await requestResponse('GET', `runbooks/${id(runbookId)}/export`, {
+    query: { version },
+    signal,
+  });
   return {
     blob: await res.blob(),
     contentDisposition: res.headers.get('content-disposition'),
@@ -258,16 +285,23 @@ export function abandonRunbookRun(caseId: string, runId: string, reason: string)
 /** The server reads at most this many cases per progress request. */
 export const RUNBOOK_PROGRESS_BATCH = 100;
 
+/** The longest case id the progress request accepts (an id becomes part of a store key). */
+export const RUNBOOK_PROGRESS_CASE_ID_MAX = 128;
+
 /**
  * `POST /api/runbooks/progress` (`cases:read`): progress per case. The server takes at
  * most 100 ids per request, so a longer list is sent in batches of 100, one after
- * another, and merged. A case with no run is absent from the map.
+ * another, and merged. A case with no run is absent from the map. An id the server
+ * would refuse (empty, or longer than 128 characters) cannot hold a run, so it is left
+ * out rather than failing the whole batch with a `422`.
  */
 export async function getRunbookProgress(
   caseIds: string[],
   signal?: AbortSignal,
 ): Promise<RunbookProgressMap> {
-  const unique = Array.from(new Set(caseIds));
+  const unique = Array.from(
+    new Set(caseIds.filter((caseId) => caseId.length > 0 && caseId.length <= RUNBOOK_PROGRESS_CASE_ID_MAX)),
+  );
   const merged: RunbookProgressMap = {};
   for (let start = 0; start < unique.length; start += RUNBOOK_PROGRESS_BATCH) {
     const batch = unique.slice(start, start + RUNBOOK_PROGRESS_BATCH);

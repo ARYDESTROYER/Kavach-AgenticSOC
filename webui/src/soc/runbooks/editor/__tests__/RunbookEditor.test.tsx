@@ -584,6 +584,37 @@ describe('edits made while a write runs', () => {
   });
 });
 
+describe('discarding a draft', () => {
+  async function confirmDiscard() {
+    await screen.findByRole('heading', { level: 1 });
+    fireEvent.keyDown(screen.getByRole('button', { name: 'More actions' }), { key: 'Enter' });
+    fireEvent.click(within(await screen.findByRole('menu')).getByRole('menuitem', { name: 'Discard draft' }));
+    const dialog = await screen.findByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard draft' }));
+  }
+
+  it('binds the discard to the revision on screen', async () => {
+    mocks.discardRunbookDraft.mockResolvedValue({ id: 'my-runbook', removed: false, detail: makeDetail({ draft: null, revision: 8 }) });
+    renderEditor();
+    await confirmDiscard();
+    await waitFor(() => expect(mocks.discardRunbookDraft).toHaveBeenCalledWith('my-runbook', 7));
+  });
+
+  it('discards nothing when someone else changed the draft, and shows their version', async () => {
+    const message = 'Someone else changed this runbook. Reload it to see their changes.';
+    const latest = makeDetail({ revision: 9 });
+    mocks.discardRunbookDraft.mockRejectedValue(
+      new ApiError(409, message, { detail: { code: 'runbook_conflict', message, revision: 9, latest } }),
+    );
+    const { onBackToLibrary } = renderEditor();
+    await confirmDiscard();
+    expect(await screen.findByRole('button', { name: 'Reload' })).toBeInTheDocument();
+    expect(mocks.discardRunbookDraft).toHaveBeenCalledWith('my-runbook', 7);
+    expect(onBackToLibrary).not.toHaveBeenCalled();
+    expect(screen.queryByText('Draft discarded.')).toBeNull();
+  });
+});
+
 describe('a new runbook whose id is taken', () => {
   it('shows the server message on the Id field, keeps the form and offers no Reload', async () => {
     const message = "A runbook with the id 'phishing-triage' already exists. Choose another id.";

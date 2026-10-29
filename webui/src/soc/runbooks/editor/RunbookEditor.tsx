@@ -959,7 +959,9 @@ export function RunbookEditor({
   const discard = () =>
     run('discard', async () => {
       try {
-        const result = await discardRunbookDraft(runbookId);
+        // Bound to the revision on screen: a draft someone else changed since is never
+        // discarded unseen (409 runbook_conflict shows their version instead).
+        const result = await discardRunbookDraft(runbookId, detail?.revision);
         setDiscardOpen(false);
         if (result.removed || !result.detail) {
           toast.success('Draft discarded.');

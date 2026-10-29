@@ -56,16 +56,7 @@ const TITLE_SOURCES: Partial<Record<PageId, string[]>> = {
 const EXEMPT_HOSTS: readonly PageId[] = ['chat', 'inbox'];
 
 /** Pages still titled differently, with the package that renames them (§4.9.4). */
-const PENDING: Partial<Record<PageId, string>> = {
-  case_manager: 'WP-W8b (the Case Manager frame gains its page header)',
-  runbooks: 'WP-W7a (the Runbooks library, titled "Runbooks")',
-  metrics: 'WP-W8a (Analytics pages titled by their destination)',
-  effectiveness: 'WP-W8a',
-  cost: 'WP-W8a',
-  models: 'WP-W9b ("Models & LLMs" becomes "Models")',
-  baseline: 'WP-W9b ("Anomaly baseline" becomes "Baseline")',
-  sources: 'WP-W9b ("Log Sources" becomes "Sources")',
-};
+const PENDING: Partial<Record<PageId, string>> = {};
 
 /** Every page a visible navigation element opens, except group rows and redirects. */
 function destinationPages(): PageId[] {

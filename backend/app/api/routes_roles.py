@@ -130,8 +130,8 @@ def _validate_custom_role(body: CustomRoleBody | RolePreviewBody) -> CustomRole:
     ``runbooks:publish``, a deny of it denies both. A body is current vocabulary, so a
     ``runbooks:manage`` grant here does NOT imply ``publish`` (that once-only rule is
     for maps stored before Round 14), and a ``runbooks`` entry in the body is
-    authoritative: a ``playbooks`` key echoed beside it (the matrix editor still shows
-    that row) never widens it back, so a narrowing sticks."""
+    authoritative: a ``playbooks`` key echoed beside it (an older client's body) never
+    widens it back, so a narrowing sticks."""
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="custom role name is required")

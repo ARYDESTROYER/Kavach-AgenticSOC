@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from ...config import ChatAgentConfig
 from ...constants import ActionType
 from ...models import ChatToolInfo
 from .base import ChatTool, ChatToolContext, Grant, ToolOutcome, render_tool_signatures
@@ -72,6 +73,10 @@ _RESERVED_KWARGS = frozenset({"self", "ctx"})
 #: The per-call budget of a tool that scans a whole population (``timeout_s`` on the
 #: tool class, SPEC P0-4): never below the configured ``tool_timeout_s``. Stop cancels.
 DEFAULT_AGGREGATE_TIMEOUT_S = 600.0
+#: The lookup timeout when the preferences carry none (no ``chat_agent`` block, or a
+#: value that is not a positive number): the configuration's own default (45 s since
+#: Round 14 tripled it, SPEC §4.2.1), never a second copy of the figure.
+DEFAULT_TOOL_TIMEOUT_S = float(ChatAgentConfig.model_fields["tool_timeout_s"].default)
 _AUDIT_SUMMARY_CHARS = 900
 
 _CATALOGUE: tuple[ChatTool, ...] | None = None
@@ -324,9 +329,7 @@ class ChatToolbox:
 
         clean = _clean_input(inp)
         refused = _refused_names(inp)
-        limit = float(timeout_s) if timeout_s else float(
-            getattr(getattr(self.ctx.prefs, "chat_agent", None), "tool_timeout_s", 15) or 15
-        )
+        limit = float(timeout_s) if timeout_s else configured_tool_timeout(self.ctx)
         limit = max(limit, _tool_budget(tool, self.ctx))
         if refused:
             # An input name a tool cannot take (``ctx``, a non-string key) is refused
@@ -524,6 +527,16 @@ def _refused_names(inp: Any) -> list[Any]:
     if not isinstance(inp, dict):
         return []
     return [k for k in inp if not isinstance(k, str) or k in _RESERVED_KWARGS]
+
+
+def configured_tool_timeout(ctx: Any) -> float:
+    """``chat_agent.tool_timeout_s`` from the caller's preferences, else
+    :data:`DEFAULT_TOOL_TIMEOUT_S` (missing preferences, a missing block or a value that
+    is not a positive number)."""
+    configured = getattr(getattr(getattr(ctx, "prefs", None), "chat_agent", None), "tool_timeout_s", None)
+    if isinstance(configured, (int, float)) and not isinstance(configured, bool) and configured > 0:
+        return float(configured)
+    return DEFAULT_TOOL_TIMEOUT_S
 
 
 def _tool_budget(tool: ChatTool, ctx: ChatToolContext) -> float:

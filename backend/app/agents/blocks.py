@@ -107,6 +107,7 @@ MAX_TREND_POINTS = 60
 MAX_CASE_LIST = 25
 MAX_TIMELINE = 50
 MAX_ENTITY_FACTS = 12
+MAX_ENTITY_FACT_ITEMS = 5             # the values one entity fact names (Round 14: a case's rules)
 MAX_REPUTATION = 12
 MAX_ENTITY_COUNTS = 4
 MAX_RELATED_CASES = 5
@@ -1524,10 +1525,46 @@ class EntityRef(_Strict):
     value: _text_type(MAX_VALUE_CHARS)
 
 
+class EntityFactItem(_Strict):
+    """One value of an entity fact with the destination it opens (Round 14 SPEC §4.6.5:
+    each rule of the case card's "Rules" fact opens its rule sheet over the case's own
+    window). ``value`` is shown as the fact shows it (untrusted when the fact is);
+    ``drill`` is a ``rule`` page ref built by code from the exact value, kept only when
+    it names a rule (any other destination is dropped) and never on an ``ai`` block
+    (G5). A value with no ``drill`` is plain text."""
+
+    value: _text_type(MAX_DETAIL_CHARS)
+    drill: OptNavRef = None
+
+    @field_validator("drill")
+    @classmethod
+    def _rule_page_only(cls, ref: InternalRef | None) -> InternalRef | None:
+        if ref is None or ref.page != RULE_PAGE or ref.opts is None or ref.opts.rule is None:
+            return None
+        return ref
+
+
+_ENTITY_FACT_ITEM = TypeAdapter(EntityFactItem)
+
+
 class EntityFact(_Strict):
+    """A labelled fact on an entity card. ``value`` is the whole fact as text (what
+    exporters and earlier clients read); ``items``, when present, are the same values
+    one by one so a client can link each (at most :data:`MAX_ENTITY_FACT_ITEMS`)."""
+
     label: Label
     value: _text_type(MAX_DETAIL_CHARS)
     untrusted: bool = False
+    items: list[EntityFactItem] | None = Field(default=None, max_length=MAX_ENTITY_FACT_ITEMS)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _repair(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "items" in data:
+            data = dict(data)
+            items, _clipped = _filter_valid(_ENTITY_FACT_ITEM, data.get("items"), MAX_ENTITY_FACT_ITEMS)
+            data["items"] = items or None
+        return data
 
 
 class ReputationRow(_Strict):
@@ -1587,6 +1624,14 @@ class EntityBlock(_BlockBase):
                 data[name] = items
                 if clipped:
                     data["truncated"] = True
+            if _enum_or(data.get("provenance"), PROVENANCES, "ai") == "ai":
+                # Navigation targets are never model-made (G5): a fact value of an
+                # ``ai`` card stays plain text.
+                data["facts"] = [
+                    f.model_copy(update={"items": [i.model_copy(update={"drill": None}) for i in f.items]})
+                    if f.items else f
+                    for f in data["facts"]
+                ]
         return data
 
 

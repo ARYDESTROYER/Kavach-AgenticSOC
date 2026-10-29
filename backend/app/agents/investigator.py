@@ -10,7 +10,6 @@ spend (Section 6.3 #4). ANY failure returns NEEDS_HUMAN — never a dropped aler
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping
@@ -43,7 +42,6 @@ from .formatter import Formatter
 from .personas import AgentPersona
 from .prompts import (
     build_investigator_system,
-    fence,
     fence_block,
     render_cluster,
     tool_defs_text,

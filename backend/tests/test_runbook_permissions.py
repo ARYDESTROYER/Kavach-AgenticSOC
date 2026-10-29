@@ -691,9 +691,10 @@ def test_role_bodies_map_the_retired_vocabulary(roles_client) -> None:
 
 
 def test_a_role_update_echoing_the_playbooks_key_keeps_a_runbooks_narrowing(roles_client) -> None:
-    """The matrix editor still shows a ``playbooks`` row, so an update body echoes
-    the stored grants with ``runbooks`` narrowed: the narrowing sticks, in the stored
-    role and in the effective permission."""
+    """A role created with the legacy ``playbooks`` alias stores it as ``runbooks``
+    (publish included, E8). An update body that echoes the stored grants with
+    ``runbooks`` narrowed keeps the narrowing, in the stored role and in the effective
+    permission: an alias never widens it back."""
     client = roles_client
     created = client.post("/api/roles", json={
         "name": "echo_role", "inherits": [], "grants": {"playbooks": ["read", "run", "manage"]},

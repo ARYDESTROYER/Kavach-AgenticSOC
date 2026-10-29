@@ -60,9 +60,13 @@ import {
   bucketWords,
   exactAlertCount,
   initialRuleWindow,
+  LOGS_MAX_DAYS,
+  logsActionCopy,
+  logsWindow,
   openInLogsLabel,
   ruleLogsHref,
   seenLine,
+  shownWindowLabel,
   tuningChangeText,
   windowAnnouncement,
   windowLabel,
@@ -126,6 +130,29 @@ describe('rule sheet helpers', () => {
     expect(windowLabel({ from: 'x', to: 'y', label: 'From the answer' })).toBe('From the answer');
   });
 
+  it('names the times of a window of minutes or hours (a case window), in UTC', () => {
+    // Three minutes on one day: the day once, then both times.
+    expect(windowLabel({ from: '2026-10-29T12:14:13.079000+00:00', to: '2026-10-29T12:17:14.079000+00:00' })).toMatch(
+      /^Oct 29(, 2026)?, 12:14 to 12:17 UTC$/,
+    );
+    // Across midnight: each bound with its day.
+    expect(windowLabel({ from: '2026-10-28T22:10:00Z', to: '2026-10-29T01:05:00Z' })).toMatch(
+      /^Oct 28(, 2026)? 22:10 to Oct 29(, 2026)? 01:05 UTC$/,
+    );
+    // Two days or more: the days alone, as before.
+    expect(windowLabel({ from: '2026-10-27T00:00:00Z', to: '2026-10-29T00:00:00Z' })).toMatch(/^Oct 27(, 2026)? to Oct 29(, 2026)?$/);
+    // An offset is read as the instant it names.
+    expect(windowLabel({ from: '2026-10-29T14:14:00+02:00', to: '2026-10-29T14:20:00+02:00' })).toMatch(/^Oct 29(, 2026)?, 12:14 to 12:20 UTC$/);
+  });
+
+  it('keeps one label for a window across the sheet: the server\'s for a relative one, the picker\'s for an absolute one', () => {
+    const relative = { from: 'now-7d', to: 'now', label: 'Last 7 days' };
+    expect(shownWindowLabel('Last 7 days (to 06:12 UTC)', relative)).toBe('Last 7 days (to 06:12 UTC)');
+    expect(shownWindowLabel('', relative)).toBe('Last 7 days');
+    const absolute = initialRuleWindow({ from: '2026-10-29T12:14:13Z', to: '2026-10-29T12:17:14Z' });
+    expect(shownWindowLabel('29 Oct 2026 12:14 to 29 Oct 2026 12:17', absolute)).toBe(absolute.label);
+  });
+
   it('words a window inside a sentence and a bucket width', () => {
     expect(windowPhrase('Last 3 days')).toBe('in the last 3 days');
     // A count of one reads as the unit alone, never "in the last 1 hour".
@@ -179,6 +206,69 @@ describe('rule sheet helpers', () => {
       sourceId: 'src-1',
     });
     expect(hashRoute(ruleLogsHref(rule, 'now-3d', 'now'))?.opts).not.toHaveProperty('sourceId');
+  });
+
+  it('opens Logs on the last 90 days of a longer window, never a link Logs would refuse', () => {
+    const now = Date.UTC(2026, 9, 25, 6, 0);
+    // Within 90 days: the sheet's own window.
+    expect(logsWindow('now-30d', 'now', now)).toEqual({ from: 'now-30d', to: 'now', reach: 'window' });
+    expect(logsWindow('2026-08-01T00:00:00Z', '2026-10-25T00:00:00Z', now).reach).toBe('window');
+    // An answer over the last 6 months: the last 90 days of it.
+    expect(logsWindow('2026-04-25T06:00:00Z', 'now', now)).toEqual({ from: 'now-90d', to: 'now', reach: 'last_90_days' });
+    expect(logsWindow('2026-01-01T00:00:00Z', '2026-10-01T00:00:00Z', now)).toEqual({
+      from: '2026-07-03T00:00:00.000Z',
+      to: '2026-10-01T00:00:00Z',
+      reach: 'last_90_days',
+    });
+    // A last alert inside those 90 days changes nothing.
+    expect(logsWindow('2026-04-25T06:00:00Z', 'now', now, '2026-10-20T08:00:00Z').reach).toBe('last_90_days');
+  });
+
+  it('ends the Logs view at the rule\'s last alert when it is older than the last 90 days', () => {
+    const now = Date.UTC(2026, 9, 25, 6, 0);
+    // Twelve months, last alert 120 days ago: the 90 days up to one minute after it.
+    const lastSeen = new Date(now - 120 * 86_400_000).toISOString();
+    const until = Date.parse(lastSeen) + 60_000;
+    const range = logsWindow('now-365d', 'now', now, lastSeen);
+    expect(range).toEqual({
+      from: new Date(until - 90 * 86_400_000).toISOString(),
+      to: new Date(until).toISOString(),
+      reach: 'to_last_alert',
+    });
+    const href = ruleLogsHref(RULE, range.from, range.to);
+    expect(hashRoute(href)?.opts).toMatchObject({ rule: RULE, from: range.from, to: range.to });
+    // Six months, last alert 120 days ago: the window's start up to one minute after it
+    // (less than 90 days, so nothing before the window is ever opened).
+    expect(logsWindow('now-180d', 'now', now, lastSeen)).toEqual({
+      from: new Date(now - 180 * 86_400_000).toISOString(),
+      to: new Date(until).toISOString(),
+      reach: 'from_start_to_last_alert',
+    });
+    // Last alert early in the window: from the window's start, never before it.
+    const early = logsWindow('2026-04-25T06:00:00Z', 'now', now, '2026-05-10T09:30:00Z');
+    expect(early).toEqual({ from: '2026-04-25T06:00:00.000Z', to: '2026-05-10T09:31:00.000Z', reach: 'from_start_to_last_alert' });
+    // A last alert outside the window, or one that cannot be read, keeps the last 90 days.
+    expect(logsWindow('2026-04-25T06:00:00Z', 'now', now, '2026-01-01T00:00:00Z').reach).toBe('last_90_days');
+    expect(logsWindow('2026-04-25T06:00:00Z', 'now', now, 'yesterday').reach).toBe('last_90_days');
+    expect(logsWindow('2026-04-25T06:00:00Z', 'now', now, null).reach).toBe('last_90_days');
+  });
+
+  it('words the main action and its reason for each reach', () => {
+    expect(logsActionCopy('window', 381)).toEqual({ label: 'Open all 381 in Logs', note: null });
+    expect(logsActionCopy('window', null)).toEqual({ label: 'Open in Logs', note: null });
+    // Never a count once Logs opens on less than the sheet's window.
+    expect(logsActionCopy('last_90_days', 381)).toEqual({
+      label: 'Open the last 90 days in Logs',
+      note: 'Logs reads at most 90 days at a time, so it opens on the last 90 days of this window.',
+    });
+    expect(logsActionCopy('to_last_alert', 381)).toEqual({
+      label: 'Open 90 days up to the last alert in Logs',
+      note: "Logs reads at most 90 days at a time, so it opens on the 90 days up to this rule's last alert.",
+    });
+    expect(logsActionCopy('from_start_to_last_alert', 381)).toEqual({
+      label: 'Open up to the last alert in Logs',
+      note: "Logs reads at most 90 days at a time, so it opens on this window up to this rule's last alert.",
+    });
   });
 
   it('stacks the series by named level, Critical first, leaving out levels without an alert', () => {
@@ -331,6 +421,76 @@ describe('the rule sheet', () => {
     });
     // Filtered to one source: its name shows in the header.
     expect(within(dialog).getByText('Splunk Enterprise Security (HEC)', { selector: 'div' })).toBeInTheDocument();
+  });
+
+  it('opens the last 90 days in Logs, with no count and a one-line reason, over a longer window', async () => {
+    const base = summaryFixture();
+    const { dialog } = await openSheet(
+      summaryFixture({ window: { label: 'Custom', from: '2026-01-01T00:00:00+00:00', to: '2026-10-01T00:00:00+00:00' } }),
+    );
+    // The count is exact, yet it is not named: Logs shows only the last 90 days of it.
+    expect(exactAlertCount(base)).toBe(381);
+    const logs = within(dialog).getByTestId('rule-open-logs');
+    expect(logs).toHaveTextContent(/^Open the last 90 days in Logs$/);
+    expect(hashRoute(logs.getAttribute('href') ?? '')).toEqual({
+      page: 'logs',
+      opts: { rule: RULE, from: '2026-07-03T00:00:00.000Z', to: '2026-10-01T00:00:00+00:00' },
+    });
+    const note = within(dialog).getByTestId('rule-logs-clamped');
+    expect(note).toHaveTextContent('Logs reads at most 90 days at a time, so it opens on the last 90 days of this window.');
+    // The reason is the action's own description, and sits right after it: under the Logs
+    // button on a phone (the actions stack), under the whole row from `sm`.
+    expect(logs).toHaveAccessibleDescription('Logs reads at most 90 days at a time, so it opens on the last 90 days of this window.');
+    expect(logs.nextElementSibling).toBe(note);
+    expect(note).toHaveClass('sm:order-last', 'sm:basis-full');
+  });
+
+  it('opens the 90 days up to the last alert when the rule has been quiet for the last 90', async () => {
+    const base = summaryFixture();
+    const { dialog } = await openSheet(
+      summaryFixture({
+        window: { label: 'Custom', from: '2026-01-01T00:00:00+00:00', to: '2026-10-01T00:00:00+00:00' },
+        alerts: { ...base.alerts, first_seen: '2026-02-01T00:00:00+00:00', last_seen: '2026-05-31T10:00:00+00:00' },
+      }),
+    );
+    const logs = within(dialog).getByTestId('rule-open-logs');
+    expect(logs).toHaveTextContent(/^Open 90 days up to the last alert in Logs$/);
+    expect(hashRoute(logs.getAttribute('href') ?? '')).toEqual({
+      page: 'logs',
+      opts: { rule: RULE, from: '2026-03-02T10:01:00.000Z', to: '2026-05-31T10:01:00.000Z' },
+    });
+    expect(logs).toHaveAccessibleDescription(
+      "Logs reads at most 90 days at a time, so it opens on the 90 days up to this rule's last alert.",
+    );
+    // Logs opens that view as it is.
+    const { parseLogsDeepLink } = await import('@/soc/pages/UnifiedLogs');
+    const parsed = parseLogsDeepLink({ rule: RULE, from: '2026-03-02T10:01:00.000Z', to: '2026-05-31T10:01:00.000Z' });
+    expect(parsed).toMatchObject({ from: '2026-03-02T10:01:00.000Z', to: '2026-05-31T10:01:00.000Z' });
+    expect(parsed).not.toHaveProperty('requestedFrom');
+  });
+
+  it('says nothing about 90 days when the window fits', async () => {
+    const { dialog } = await openSheet();
+    expect(within(dialog).queryByTestId('rule-logs-clamped')).toBeNull();
+    const logs = within(dialog).getByTestId('rule-open-logs');
+    expect(logs).toHaveTextContent('Open all 381 in Logs');
+    expect(logs).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('clamps exactly as the Logs page does, so the view it opens is the view Logs shows', async () => {
+    const { MAX_WINDOW_DAYS, parseLogsDeepLink } = await import('@/soc/pages/UnifiedLogs');
+    expect(LOGS_MAX_DAYS).toBe(MAX_WINDOW_DAYS);
+    const now = Date.UTC(2026, 9, 25, 6, 0);
+    for (const [from, to] of [
+      ['2026-04-25T06:00:00Z', 'now'],
+      ['2026-01-01T00:00:00Z', '2026-10-01T00:00:00Z'],
+      ['now-30d', 'now'],
+    ]) {
+      const range = logsWindow(from, to, now);
+      // Logs keeps the opened window as it is: nothing is clamped a second time.
+      expect(parseLogsDeepLink({ rule: RULE, from: range.from, to: range.to }, now)?.from).toBe(range.from);
+      expect(parseLogsDeepLink({ rule: RULE, from, to }, now)?.from).toBe(range.from);
+    }
   });
 
   it('closes, then goes through the router, for a plain click on an action', async () => {
@@ -786,6 +946,22 @@ describe('the rule sheet', () => {
       { rule: RULE, window: '2026-10-22T00:00:00Z..2026-10-25T00:00:00Z' },
       expect.any(AbortSignal),
     );
+  });
+
+  it('shows a case window of minutes in one format, with its times, in the picker and the Alerts tile', async () => {
+    const window = { from: '2026-10-29T12:14:13.079000+00:00', to: '2026-10-29T12:17:14.079000+00:00' };
+    const { dialog } = await openSheet(
+      summaryFixture({ window: { label: '29 Oct 2026 12:14 to 29 Oct 2026 12:17', ...window } }),
+      { window, origin: 'CASE-000044' },
+    );
+    const label = windowLabel(window);
+    expect(label).toMatch(/^Oct 29(, 2026)?, 12:14 to 12:17 UTC$/);
+    expect(within(dialog).getByRole('button', { name: `Time range: ${label}` })).toBeInTheDocument();
+    // The tile reads the picker's label, never the server's day-first form beside it.
+    const tile = within(dialog).getByTestId('kpi-rule-alerts');
+    expect(tile).toHaveTextContent(`in ${label}`);
+    expect(dialog).not.toHaveTextContent('29 Oct 2026');
+    expect(dialog).toHaveAccessibleDescription('From CASE-000044');
   });
 
   it('reads Demo figures again when Demo Mode is entered, and ignores a failed status read', async () => {

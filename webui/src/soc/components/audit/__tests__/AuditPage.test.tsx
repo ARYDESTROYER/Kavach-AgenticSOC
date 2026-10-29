@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   list: vi.fn(),
   count: vi.fn(),
   submit: vi.fn(),
+  record: vi.fn(),
   request: vi.fn(),
   jobsGet: vi.fn(),
   artifact: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('@/lib/api-audit', () => ({
   AUDIT_COUNT_CAP: 100_001,
   listAuditPage: h.list,
   countAudit: h.count,
+  getAuditRecord: h.record,
   submitAuditExport: h.submit,
 }));
 vi.mock('@/lib/api', () => {
@@ -117,6 +119,7 @@ beforeEach(() => {
   h.count.mockReset();
   h.submit.mockReset();
   h.request.mockReset();
+  h.record.mockReset();
   h.copy.mockClear();
   Object.values(h.toast).forEach((f) => f.mockReset());
   h.authEnabled = false;
@@ -867,36 +870,39 @@ describe('Audit log: the grid and the inspector', () => {
   });
 
   it('reads a deep-linked record the list does not hold, with the page filters', async () => {
-    h.request.mockResolvedValue(rec({ record_id: 'sql:42', event_label: 'Signed in', action: 'auth.login' }));
+    h.record.mockResolvedValue(rec({ record_id: 'sql:42', event_label: 'Signed in', action: 'auth.login' }));
     renderAudit('#/audit?scope=people&from=now-7d&record=sql%3A42');
     expect(await screen.findByRole('region', { name: 'Signed in' })).toBeInTheDocument();
-    expect(h.request).toHaveBeenCalledWith(
-      'GET',
-      'audit/records/sql%3A42',
-      expect.objectContaining({ query: expect.objectContaining({ scope: 'people', from: 'now-7d' }) }),
+    // Through the reconciled client, with the page filters (D8) and a signal it can abort.
+    expect(h.record).toHaveBeenCalledWith(
+      'sql:42',
+      expect.objectContaining({ scope: 'people', from: 'now-7d' }),
+      expect.any(AbortSignal),
     );
+    expect(h.record.mock.calls[0][1]).not.toHaveProperty('cursor');
+    expect(h.request).not.toHaveBeenCalled();
   });
 
   it('reads a deep-linked record again when a Refresh aborts the first read', async () => {
     const user = userEvent.setup();
     const first = deferred<ReturnType<typeof rec>>();
-    h.request
+    h.record
       .mockImplementationOnce(() => first.promise)
       .mockResolvedValue(rec({ record_id: 'sql:42', event_label: 'Signed in', action: 'auth.login' }));
     renderAudit('#/audit?scope=people&from=now-7d&record=sql%3A42');
-    await waitFor(() => expect(h.request).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(h.record).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole('button', { name: 'Refresh the audit log' }));
     await waitFor(() => expect(h.list).toHaveBeenCalledTimes(2));
     // The aborted read answers late: ignored, and no placeholder keeps the sheet loading.
     first.resolve(rec({ record_id: 'sql:42', event_label: 'Stale answer' }));
     expect(await screen.findByRole('region', { name: 'Signed in' })).toBeInTheDocument();
-    expect(h.request).toHaveBeenCalledTimes(2);
+    expect(h.record).toHaveBeenCalledTimes(2);
     expect(screen.queryByText('Loading the record.')).toBeNull();
   });
 
   it('offers Retry when a deep-linked record cannot be read', async () => {
     const user = userEvent.setup();
-    h.request
+    h.record
       .mockRejectedValueOnce(new ApiError(503, 'unavailable'))
       .mockResolvedValue(rec({ record_id: 'sql:42', event_label: 'Signed in', action: 'auth.login' }));
     renderAudit('#/audit?scope=people&from=now-7d&record=sql%3A42');
@@ -904,12 +910,12 @@ describe('Audit log: the grid and the inspector', () => {
     expect(within(region).getByText('The record could not be loaded.')).toBeInTheDocument();
     await user.click(within(region).getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('region', { name: 'Signed in' })).toBeInTheDocument();
-    expect(h.request).toHaveBeenCalledTimes(2);
+    expect(h.record).toHaveBeenCalledTimes(2);
   });
 
   it('says so when a deep-linked record is not in the current store', async () => {
     const user = userEvent.setup();
-    h.request.mockRejectedValue(new ApiError(404, 'missing', { detail: { code: 'audit_record_not_found' } }));
+    h.record.mockRejectedValue(new ApiError(404, 'missing', { detail: { code: 'audit_record_not_found' } }));
     renderAudit('#/audit?scope=people&from=now-7d&record=mem%3A999');
     const region = await screen.findByRole('region', { name: 'Record not found' });
     expect(within(region).getByText('This record is not in the current store.')).toBeInTheDocument();

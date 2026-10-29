@@ -709,11 +709,11 @@ class JobRunner:
         async def run(case_id: str) -> None:
             # ``via="bulk"`` (Round 14, D34): a bulk close never fails an item for open
             # runbook steps, and each ``case.closed_with_open_steps`` row records
-            # ``via: "bulk"``. Its ``reason`` is the job's ``open_steps_reason`` param,
-            # forwarded through ``CaseAction`` above, only when the submit contract
-            # (``CaseLifecycleParams`` in ``api/routes_jobs.py``) declares that field;
-            # otherwise the row's reason is null. The action path also runs the runbook
-            # re-evaluation hook for each case.
+            # ``via: "bulk"``. Its reason is the job's cleaned ``open_steps_reason``
+            # param (``CaseLifecycleParams`` in ``api/routes_jobs.py``, at most 500
+            # characters), forwarded through ``CaseAction`` above, or null when none was
+            # given. The action path also runs the runbook re-evaluation hook for each
+            # case.
             await _perform_case_action(
                 case_id, body, job.actor, self.state, batch_id=batch_id, via="bulk"
             )

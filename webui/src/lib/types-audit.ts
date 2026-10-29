@@ -2,9 +2,12 @@
  * Round 14 audit log contracts (SPEC §4.5). Type-only: zero runtime bytes.
  *
  * Mirrors `backend/app/models.py` (`AuditClient`, `AuditTarget`, `AuditChange`,
- * `AuditRecord`, `AuditPage`, `AuditCount`). New code imports these names from this
- * module; the legacy `AuditRecord`, `AuditResponse` and `AuditQuery` in `types.ts`
- * stay for the old `api.audit.list` until WP-B1 retires them, so nothing collides.
+ * `AuditRecord`, `AuditPage`, `AuditCount`) and the audit export job params of
+ * `backend/app/api/routes_jobs.py`. The generated `api-types.gen.ts` is the authority
+ * for every model the OpenAPI schema describes, and a contract test pins these mirrors
+ * to it. `types.ts` re-exports every name here (the pre-Round 14 `AuditRecord`,
+ * `AuditResponse` and `AuditQuery` and the old `api.audit.list` are gone; the reads
+ * live in `api-audit.ts`).
  *
  * Every value is system-, operator- or log-derived and renders as plain text (#9);
  * `prompt_excerpt` and `tool_output_summary` carry fenced untrusted log data and
@@ -177,47 +180,97 @@ export interface AuditFilters {
 }
 
 /**
- * Query of `GET /api/audit` (Round 14 shape). Absent `scope` keeps the legacy
- * behaviour (all rows, default 100); the page always sends it (default 50). `limit`
- * is clamped to 1 to 200 by the server, never rejected. `from` and `to` take the
- * page's window or absolute ISO 8601 instants.
+ * The filters every audit read shares (`GET /api/audit`, `/count` and
+ * `/records/{record_id}`). Absent `scope` keeps the legacy behaviour (every row).
+ * `from` and `to` take the page's window (`now-7d`, `now-1d/d`) or absolute ISO 8601
+ * instants; a bad value answers `422 audit_invalid_time`, any other bad filter
+ * `422 audit_invalid_filter`.
  */
-export interface AuditPageQuery extends AuditFilters {
+export interface AuditFilterQuery extends AuditFilters {
   scope?: AuditScope;
   q?: string;
   from?: string;
   to?: string;
+}
+
+/**
+ * Query of `GET /api/audit` (Round 14 shape). Without `scope` the server reads 100
+ * rows a page; the page always sends it (default 50). `limit` is clamped to 1 to 200
+ * by the server, never rejected.
+ */
+export interface AuditPageQuery extends AuditFilterQuery {
   order?: 'desc' | 'asc';
   limit?: number;
   cursor?: string;
 }
 
 /** Query of `GET /api/audit/count` (the same filters plus a cap of at most 100,001). */
-export interface AuditCountQuery extends Omit<AuditPageQuery, 'cursor' | 'limit' | 'order'> {
+export interface AuditCountQuery extends AuditFilterQuery {
   cap?: number;
 }
+
+/**
+ * Query of `GET /api/audit/records/{record_id}`. The filters never narrow the answer:
+ * the page sends its current ones so opening a row it lists joins the list read's one
+ * `audit_view` row (D8); an open without them is recorded by the record's id.
+ */
+export type AuditRecordQuery = AuditFilterQuery;
 
 /** Export file formats (D7): one plain file, never a ZIP. */
 export type AuditExportFormat = 'csv' | 'jsonl';
 
 /**
  * Params of the `audit_export` job (`POST /api/jobs`, gate `audit:export`, fresh
- * sign-in). `from` and `to` are the absolute UTC instants the export dialog showed;
- * the job re-checks the count and refuses more than 100,000 rows.
+ * sign-in; mirrors `AuditExportParams` in `backend/app/api/routes_jobs.py`, a strict
+ * model: an unknown key answers `422`). `from` and `to` are the absolute ISO 8601
+ * instants, with a zone, that the export dialog showed and counted; the job re-checks
+ * the count and refuses more than 100,000 rows. Exports are always oldest first, so
+ * `order` accepts only `asc` (the default); never forward the list's own order.
  */
 export interface AuditExportJobParams {
   format: AuditExportFormat;
   filters: AuditFilters;
+  /** At most the search box's length; blank is absent. */
   q?: string;
-  order: 'asc' | 'desc';
+  order?: 'asc';
   scope: AuditScope;
   from: string;
   to: string;
 }
 
-/** Error codes of the audit read and export API, for the page states. */
+/** Error codes the audit read and export API answers (`{"detail": {"code", "message"}}`). */
 export type AuditErrorCode =
+  /** 404: not in the current store (also an id that does not parse, or a Demo row with Demo Mode off). */
   | 'audit_record_not_found'
+  /** 409: "Load more" on a read that was closed; reload from the top. */
   | 'audit_cursor_expired'
+  /** 400: a cursor this server did not issue. */
+  | 'audit_cursor_invalid'
+  /** 422: a filter value the API refuses (also `order: 'desc'` on an export). */
+  | 'audit_invalid_filter'
+  /** 422: `from` or `to` is not a time the API understands. */
+  | 'audit_invalid_time'
+  /** 503: the audit log could not be read, counted or written. */
   | 'audit_unavailable'
-  | 'audit_export_too_large';
+  /** 422: more than 100,000 events match; nothing was exported. */
+  | 'audit_export_too_large'
+  /** 422: the store cannot count the matching events exactly; nothing was exported. */
+  | 'audit_export_unverifiable'
+  /** 409: exports are not available in Demo Mode. */
+  | 'audit_export_demo_mode'
+  /** 429: this person already has an audit export queued or running. */
+  | 'job_busy';
+
+/**
+ * Codes a failed `audit_export` job reports as the start of its failure reason
+ * (`"<code>: <message>"`); the message after the colon is plain copy to show.
+ */
+export type AuditExportFailureCode =
+  | 'audit_export_failed'
+  | 'audit_export_too_large'
+  | 'audit_export_unverifiable'
+  | 'audit_export_incomplete'
+  | 'audit_export_expired'
+  | 'audit_export_no_space'
+  | 'audit_export_denied'
+  | 'audit_unavailable';

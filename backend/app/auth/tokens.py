@@ -74,8 +74,9 @@ def decode(token: str, secret: str, *, verify_exp: bool = True) -> dict[str, Any
 
     ``verify_exp=False`` skips ONLY the expiry comparison (the signature and every
     structural check still apply, and ``exp`` must still be present). It exists so
-    the server can explain an ended session (``/auth/me`` "signed out after 24
-    hours"); a caller must never treat such claims as an authenticated principal.
+    the server can explain an ended session (``/auth/me`` reports that it ended at
+    its absolute limit; the Console never states how long the session lasted); a
+    caller must never treat such claims as an authenticated principal.
     """
     if not isinstance(token, str):
         raise TokenError("token must be a string")

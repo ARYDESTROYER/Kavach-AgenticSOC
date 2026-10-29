@@ -315,6 +315,7 @@
     "case_list": 25,
     "timeline": 50,
     "entity_facts": 12,
+    "entity_fact_items": 5,
     "reputation": 12,
     "entity_counts": 4,
     "related_cases": 5,

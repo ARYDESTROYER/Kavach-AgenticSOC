@@ -12,8 +12,9 @@
  *   disclosure per level listing its rules with rule sheets and Logs links, "Split by"
  *   Source swapping the Top column without a request, the matrix in the wide lane, the
  *   narrow card dropping Trend and Top, and print drawing the plain table;
- * - the case entity card: the number, the status in words, and its Rules fact as written
- *   (display text, never split into rule links);
+ * - the case entity card: the number, the status in words, and the Rules fact of an answer
+ *   saved before its rules were listed one by one, as written (display text, never split
+ *   into rule links; the listed form is pinned in `round14-entity-rules.test.tsx`);
  * - no rule value is ever markup.
  */
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -585,9 +586,10 @@ describe('the case entity card (F7)', () => {
     ['two rules the server joined', `${SSH}, web_scan`],
     ['a rule whose own name holds a comma', 'Multiple failed logins, then success'],
     ['a list the server clamped', 'a, b…'],
-  ])('shows the Rules fact as written, never split into rule links (%s)', (_name, value) => {
+  ])('shows an older Rules fact (no items) as written, never split into rule links (%s)', (_name, value) => {
     // The fact is display text (joined, cleaned and clamped by the server), so no part of
-    // it is an exact rule value a drill may be built from (SPEC §4.6.3).
+    // it is an exact rule value a drill may be built from (SPEC §4.6.3): only the rules the
+    // server lists one by one, each with its own ref, become links.
     show(caseCard([{ label: 'Rules', value, untrusted: true }]));
     const card = screen.getByTestId('block-entity');
     expect(within(card).queryByRole('button', { name: /^Open rule / })).toBeNull();

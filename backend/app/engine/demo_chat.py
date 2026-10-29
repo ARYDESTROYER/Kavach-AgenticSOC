@@ -3590,6 +3590,23 @@ def _investigation_subject(q: str, low: str, view: PromptView, ask: Callable[...
     return None if shown.intent in _UNMAPPED_INTENTS else shown
 
 
+#: "Any suspicious activity in the last 3 days?", "anything suspicious today?",
+#: "suspicious events this week" (Round 14): a survey of what the detection rules
+#: flagged, answered from the logs by rule (``log_stats``), as a live model answers it.
+#: "Any suspicious cases?" stays a case question; a named value stays a hunt.
+_SUSPICIOUS_RE = re.compile(
+    r"\b(?:any(?:thing)?|something|anything else)\s+suspicious\b"
+    r"|\bsuspicious\s+(?:activit(?:y|ies)|events?|behaviou?rs?|alerts?|detections?|traffic)\b")
+#: A case outcome ("closed as false positive", "auto-closed", "escalated", "true
+#: positives"): a question about what happened to cases, never a survey of the rules.
+_SUSPICIOUS_OUTCOME_RE = re.compile(
+    r"\b(?:auto[- ]?clos\w*|closed|close|false[- ]positives?|true[- ]positives?|escalat\w*|resolved)\b")
+#: "across all sources", "from every source": the scope of a suspicious-activity survey,
+#: not the source-health subject ("Any suspicious sources?" still is).
+_ALL_SOURCES_SCOPE_RE = re.compile(
+    r"\b(?:across|from|in|over|on)\s+(?:all|every|each|any)\s+(?:(?:of\s+)?(?:the|our)\s+)?(?:log\s+)?sources?\b")
+
+
 def classify(question: str, view: PromptView | None = None) -> Ask:
     """The intent of ``question`` (deterministic regex rules; order matters)."""
     view = view or PromptView()
@@ -3911,6 +3928,13 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     if re.search(r"\bhunt\w*\b|\bpivot\b", low):
         found = _keyword(low)
         return ask("pivot", keyword=found[0] if found else None, topic=found[1] if found else "")
+    # "Any suspicious activity in the last 3 days?" (Round 14) is a survey of the rules
+    # that fired. It is answered only after every rule below that names its own subject
+    # (an investigation, ATT&CK, sources, campaigns, the audit trail, automation), so
+    # "Any suspicious campaigns?" stays a campaigns question; a case outcome ("closed as
+    # false positive", "auto-closed", "escalated") stays a case question.
+    suspicious = bool(_SUSPICIOUS_RE.search(low)) and not _CASE_SUBJECT_RE.search(low) and (
+        not view.case_scoped) and not _SUSPICIOUS_OUTCOME_RE.search(low)
     if re.search(r"\binvestigat\w*\b|\b(newest|latest|most recent)\b.*\bcase\b|\bwhy (?:was|is|did)\b.*\bcase\b",
                  low):
         named = None if view.case_scoped else _investigation_subject(q, low, view, ask)
@@ -3921,7 +3945,9 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
         return ask("metric", metric="mitre_coverage")
     if re.search(r"\b(att&ck|mitre|tactics?|techniques?)\b", low) and not base["group"]:
         return ask("mitre")
-    if re.search(r"\b(silent|sources?|ingest\w*|connectors?|feeds?|coverage)\b", low) and not re.search(
+    # A survey "across all sources" names its scope, not the source-health subject.
+    source_text = _ALL_SOURCES_SCOPE_RE.sub(" ", low) if suspicious else low
+    if re.search(r"\b(silent|sources?|ingest\w*|connectors?|feeds?|coverage)\b", source_text) and not re.search(
             r"\bsource[- ]?(?:ips?|address(?:es)?)\b", low) and not (_CASE_SUBJECT_RE.search(low) and base["group"]):
         # "top source IPs" is a log question (handled by the top-N rule below).
         return ask("sources")
@@ -3936,6 +3962,25 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
     ) if re.search(pattern, low)), None)
     if automation:
         return ask("automation", metric=automation)
+    if suspicious:
+        # The detection rules that fired, with each rule's sheet one click away, and the
+        # events over time. One that names a host, user or IP is about that entity; one
+        # that names a breakdown ("by severity") gets that breakdown.
+        entity = _deep_entity(q)
+        if entity is not None:
+            return ask("deep", entity=entity)
+        named = _group_field(low)
+        if named and named not in ("rule", "rule_name"):
+            return ask("top", field=named)
+        # "Which hosts had suspicious activity?", "Any suspicious users?": the entity
+        # kind the question names, counted by that field (the top-N answer). The fields
+        # are tried in the top-N rule's order below (IPs, rules, users, hosts), so a
+        # question that names the rules ("Which rules flagged suspicious activity on
+        # hosts?") stays the survey.
+        noun = next((f for words, f in _GROUP_FIELDS if re.search(rf"\b{words}\b", low)), None)
+        if noun in ("host", "user", "ip"):
+            return ask("top", field=noun)
+        return ask("suspicious", field="rule")
     entity_cases = _ENTITY_CASES_RE.search(low)
     if entity_cases and not help_like:
         word = (entity_cases.group(1) or entity_cases.group(2) or "user").split()[0].rstrip("s")
@@ -6316,6 +6361,12 @@ def _posture_calls(v: PromptView, a: Ask) -> list[Call]:
     ]
 
 
+def _suspicious_calls(v: PromptView, a: Ask) -> list[Call]:
+    """The detection rules that fired in the window (the last 24 hours unless one is
+    named or selected), counted per rule over time (Round 14)."""
+    return [Call("log_stats", {"group_by": ["rule"], "top_n": 10, **_log_window(a, v, default=24)})]
+
+
 def _top_calls(v: PromptView, a: Ask) -> list[Call]:
     inp: dict[str, Any] = {"group_by": [a.field or "host"], "top_n": _top_n(a.lowered),
                            **_log_window(a, v, default=168)}
@@ -6352,6 +6403,7 @@ def _plan_mitre(view: PromptView, ask: Ask, done: int) -> list[Call]:
 
 _SIMPLE_PLANS: dict[str, Callable[[PromptView, Ask], list[Call]]] = {
     "posture": _posture_calls,
+    "suspicious": _suspicious_calls,
     "shift": lambda v, a: [
         Call("shift_report", _win_args("shift_report", a, v)),
         Call("soc_metrics", {"kind": "posture", **_metric_window(a, v)}),
@@ -6472,7 +6524,8 @@ _PLANS: dict[str, Callable[[PromptView, Ask, int], list[Call]]] = {
 _INTENT_TOOLS: dict[str, tuple[str, ...]] = {
     "posture": ("soc_metrics",), "shift": ("shift_report",), "noise": ("soc_metrics",),
     "metric": ("soc_metrics",), "cost": ("cost_usage",), "brute": ("log_stats", "search_cases"),
-    "top": ("log_stats",), "tp": ("search_cases",), "hunt": ("lookup_indicator", "search_logs", "search_cases"),
+    "top": ("log_stats",), "suspicious": ("log_stats",), "tp": ("search_cases",),
+    "hunt": ("lookup_indicator", "search_logs", "search_cases"),
     "pivot": ("search_cases", "get_case", "lookup_indicator", "search_logs"),
     "case": ("get_case", "explain_decision"), "mitre": ("mitre_lookup",), "sources": ("source_health",),
     "campaigns": ("list_campaigns",), "audit": ("audit_search",), "automation": ("automation_status",),
@@ -8134,6 +8187,7 @@ _FOLLOW_UP_ORDER: dict[str, tuple[str, ...]] = {
     "cost": ("cost_compare", "cost_month", "posture", "noise"),
     "brute": ("pivot", "mitre", "by_user"),
     "top": ("by_user", "case", "sources"),
+    "suspicious": ("by_user", "case", "sources"),
     "logs": ("by_user", "week", "top", "sources"),
     "log_count": ("by_user", "week", "top", "sources"),
     "regroup": ("as_table", "case", "posture"),
@@ -8607,6 +8661,7 @@ _INTENT_SUBJECTS = {
     "mitre": "ATT&CK", "audit": "Audit trail", "deep": "Investigation", "case": "Case", "hunt": "IOC",
     "pivot": "Hunt", "sources": "Source health", "campaigns": "Campaigns", "knowledge": "Knowledge",
     "automation": "Automation", "rate": "Detection rates", "entity_cases": "Cases by entity",
+    "suspicious": "Suspicious activity",
 }
 
 
@@ -9063,6 +9118,30 @@ def _final_top(view: PromptView, ask: Ask, intent: str = "top") -> Final | None:
         _block(stats, "categories", view="table" if fld == "severity" else "hbar", title=title),
         _block_titled(stats, "comparison", view="grouped_bar"),
     ), follow_ups=_follow_ups(view, intent, charts=True, field=fld))
+
+
+#: What a rule's count is (and is not), under a suspicious-activity answer.
+_SUSPICIOUS_NOTE = ("Each row counts a detection rule's hits, not confirmed threats: open a rule to see its alerts "
+                    "over time, the cases it raised and how analysts graded them.")
+
+
+def _final_suspicious(view: PromptView, ask: Ask) -> Final | None:
+    """"Any suspicious activity in the last 3 days?" (Round 14): the detection rules
+    that fired, as a table whose rows open each rule's sheet over the answer's window,
+    and the events over time. The same shape a live model gives this question; the
+    builders are the rule answer's (``_final_top``)."""
+    stats = view.ok("log_stats")
+    if stats is None:
+        return None
+    total = _num(stats.obs.get("total")) or 0
+    if not total:
+        return Final(body=[_no_log_events(stats.obs, "")],
+                     follow_ups=_follow_ups(view, "suspicious", skip=("by_user",)))
+    window = _window(stats.obs).split(" (")[0]
+    return Final(body=[_say_log_stats(stats), _SUSPICIOUS_NOTE], blocks=_keep(
+        _block(stats, "categories", view="table", title=f"Top detection rules ({window})"),
+        _block(stats, "series", title="Events over time"),
+    ), follow_ups=_follow_ups(view, "suspicious", charts=True, field="rule"))
 
 
 def _log_subject(ask: Ask) -> str:
@@ -13310,6 +13389,8 @@ _CHIPS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
                ("Show the AI spend by role {in_window}", ("cost_usage",))),
     "top": (("Which cases involve the top {dimension} {in_window}?", ("search_cases",)),
             ("Which rules fired most {in_window}?", ("log_stats",))),
+    "suspicious": (("Show alerts by severity {in_window}", ("log_stats",)),
+                   ("Which cases were escalated {in_window}?", ("search_cases",))),
     "logs": (("Show these events by host {in_window}", ("log_stats",)),),
     "brute": (("Which cases involve the top source IP {in_window}?", ("search_cases",)),
               ("Show the failed sign-ins by user {in_window}", ("log_stats",))),
@@ -13488,7 +13569,7 @@ _INTENT_TITLES: dict[str, str] = {
     "rate": "True-positive rate", "entity_cases": "Cases by entity", "audit": "Audit trail",
     "automation": "Automation status", "knowledge": "Runbooks and guidance", "fallback": "Getting started",
     "runbook": "Case runbook",
-    "top": "Top log activity", "metric": "SOC metrics",
+    "top": "Top log activity", "metric": "SOC metrics", "suspicious": "Suspicious activity",
     # Round 13 (T6): every intent a first question can reach has a title, the starter
     # intents typed in words too ("Which cases are past their SLA?").
     "technique_cases": "ATT&CK technique cases", "source_cases": "Cases from a log source",
@@ -14189,6 +14270,7 @@ def _final_source_cases(view: PromptView, ask: Ask) -> Final | None:
 _FINALS: dict[str, Callable[[PromptView, Ask], Final | None]] = {
     "posture": _final_posture, "noise": _final_noise, "metric": _final_metric, "shift": _final_shift,
     "cost": _final_cost, "top": _final_top, "brute": _final_brute, "tp": _final_tp, "case": _final_case,
+    "suspicious": _final_suspicious,
     "logs": _final_logs, "log_count": _final_log_count,
     "hunt": _final_hunt, "pivot": _final_pivot, "mitre": _final_mitre, "sources": _final_sources,
     "campaigns": _final_campaigns, "cases": _final_cases, "help": _final_help,

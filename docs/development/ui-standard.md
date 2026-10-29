@@ -865,9 +865,9 @@ row per tool call or framed parallel batch, each with a leading 16 px status ico
 check with an sr-only "Done"; the status word is written only for Failed, Timed out,
 Denied, Skipped and Stopped), the engine label, a muted "· 61 ms", parameter chips in
 product words (verdicts, statuses, kinds and transitions through the shared label maps,
-"Open → Escalated"; known reason codes as sentences, unknown codes as written; a chip over
-several sources reads "3 sources" as a disclosure whose names element has an id per
-lookup), the summary, rows/basis/coverage, **Inspect** on the right, and the exact query
+"Open to Escalated"; known reason codes in the server's words, unknown codes as written; a
+chip over several sources reads "3 sources" as a disclosure whose names element has an id
+per lookup), the summary, rows/basis/coverage, **Inspect** on the right, and the exact query
 behind a collapsed disclosure rendered as untrusted code. Engine values are never shown
 raw: a case reads by its number (mono) then title, the internal id in its tooltip. Model
 steps add no rows except the step the turn is waiting on and a failed call; their tokens

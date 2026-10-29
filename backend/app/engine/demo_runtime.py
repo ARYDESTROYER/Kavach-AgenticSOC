@@ -150,6 +150,22 @@ def demo_builtin_catalog() -> tuple[Any, ...]:
     return overlay_demo_runbooks(builtin_runbook_catalog())
 
 
+class ReadOnlyRunbookLibrary:
+    """The REAL runbook library as Demo chat reads it (D45): its Published catalog and
+    nothing else. Demo chat's ``list_runbooks`` then lists the runbooks the Demo
+    pipeline matches and attaches (the same Published library, SPEC §3.5), never the
+    built-ins alone. The store refuses every write while Demo Mode is on
+    (``409 runbook_demo_readonly``); this view has no write to call in the first place."""
+
+    __slots__ = ("_library",)
+
+    def __init__(self, library: Any) -> None:
+        self._library = library
+
+    async def published_catalog(self) -> Any:
+        return await self._library.published_catalog()
+
+
 class _DemoCaseStore(CaseStore):
     """A CaseStore over the throwaway demo ES that TAGS every saved case ``demo`` and
     asserts isolation (a write-guard, #4). Cases produced by the demo pipeline get the
@@ -425,8 +441,10 @@ class DemoStack:
 
         * no third-party enrichment (``lookup_indicator`` returns its labelled
           synthetic result) and no budget gate (demo spend is simulated);
-        * no tenant secrets status and no tenant runbook/playbook/rule-version
-          catalogues (the tools report the bundled catalogue instead);
+        * no tenant secrets status and no tenant playbook or rule-version catalogues;
+        * the runbook library is the REAL one, read only (:class:`ReadOnlyRunbookLibrary`,
+          D45): the Demo pipeline matches its Published runbooks, so ``list_runbooks``
+          lists the same ones (the built-ins alone only when no library is wired);
         * case clusters rebuilt from the DEMO log surface, never the tenant one."""
         from .case_cluster import bind_cluster_for_case
 
@@ -434,7 +452,7 @@ class DemoStack:
             "enrich": None,
             "budget_gate": None,
             "secrets_status": None,
-            "runbooks": None,
+            "runbooks": self._chat_runbook_library(),
             "playbooks": None,
             "rule_versions": None,
             "cluster_for_case": bind_cluster_for_case(
@@ -442,6 +460,19 @@ class DemoStack:
                 query_source_for=query_source_for,
             ),
         }
+
+    def _chat_runbook_library(self) -> ReadOnlyRunbookLibrary | None:
+        """The real library behind a read-only view, or None when no library is wired
+        (or the provider fails): ``list_runbooks`` then says it lists the built-ins."""
+        provider = self._runbook_library
+        try:
+            library = provider() if callable(provider) else None
+        except Exception as exc:  # noqa: BLE001 - chat still lists the built-ins
+            logger.info("demo chat: the runbook library is not available: %s", exc)
+            return None
+        if not callable(getattr(library, "published_catalog", None)):
+            return None
+        return ReadOnlyRunbookLibrary(library)
 
     def _demo_prefs(self) -> Preferences:
         """Prefs the demo pipeline runs under: the live prefs but with a SANDBOXED

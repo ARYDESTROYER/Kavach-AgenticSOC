@@ -1375,7 +1375,8 @@ class LogStatsTool(ChatTool):
     requires: ClassVar[tuple[tuple[str, str], ...]] = (("sources", "read"),)
     data_source: ClassVar[str] = "Connected log sources"
     # An aggregate (all-time and year-long counts, compared periods): the long budget
-    # of SPEC P0-4, never the 15 s browse budget. Stop still cancels it at once.
+    # of SPEC P0-4, never the shorter per-lookup budget (``chat_agent.tool_timeout_s``).
+    # Stop still cancels it at once.
     timeout_s: ClassVar[float] = AGGREGATE_TOOL_TIMEOUT_S
     signature: ClassVar[str] = (
         "log_stats(group_by?=[rule] (<=3 of ip|user|host|rule|rule_name|severity|action), top_n?=10 (<=50), "

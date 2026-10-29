@@ -610,7 +610,14 @@ describe('KPI_STRIP_BINDINGS', () => {
 // --------------------------------------------------------------------------- //
 // Zero first-paint bytes (§3.4)
 // --------------------------------------------------------------------------- //
-const TYPE_ONLY_MODULES = ['lib/types-audit.ts', 'lib/types-dashboards.ts', 'lib/types-rules.ts', 'lib/types-runbooks.ts'];
+const TYPE_ONLY_MODULES = [
+  'lib/types-audit.ts',
+  'lib/types-dashboards.ts',
+  'lib/types-rules.ts',
+  'lib/types-runbooks.ts',
+  // B1: the compile-time pins of the mirrors to the generated contract.
+  'lib/types-contract-pins.ts',
+];
 
 const LAZY_ONLY_MODULES = [
   'lib/api-audit.ts',

@@ -293,13 +293,60 @@ export interface paths {
         };
         /**
          * List Audit
-         * @description Bounded, READ-ONLY list of the append-only audit records for the admin audit
-         *     viewer (W7c). Gated on ``audit:view`` (the auditor/admin grant). Reads the audit
-         *     repository's ``records(...)`` (#2 — never mutates; the index has no update/delete
-         *     path). NEWEST first, hard-capped. All text is returned verbatim for the UI to
-         *     render as PLAIN (#9 — audit rows carry fenced UNTRUSTED log excerpts).
+         * @description One page of audit records with an honest total (SPEC §4.5.5). Read-only (#2).
          */
         get: operations["list_audit_api_audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit/count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count Audit
+         * @description Exact up to ``cap``, then ``relation: "gte"`` (SPEC §4.5.5). The export dialog
+         *     asks before it offers an export, and the export job asks again before it reads.
+         *
+         *     A count is a search of the audit log, so it is recorded like one (D8): with the
+         *     page's own filters it joins the list read's ``audit_view`` row.
+         */
+        get: operations["count_audit_api_audit_count_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/audit/records/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Audit Record
+         * @description One record by its E12 id, or ``404 audit_record_not_found`` (also for an id
+         *     that does not parse, and for a Demo record while Demo Mode is off).
+         *
+         *     The filter parameters are optional and never narrow the answer: the page sends
+         *     its current filters so an open of one of the rows they list counts toward the list
+         *     read's ``audit_view`` row (D8; J and K through the list add nothing). A record those
+         *     filters would not list, or an open without filters, is recorded on its own, by its
+         *     id, once per record per five minutes.
+         */
+        get: operations["get_audit_record_api_audit_records__record_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -384,6 +431,13 @@ export interface paths {
          *     where every call 401s. A session-store outage keeps trusting the JWT (as every
          *     protected route does). A live session carries an additive ``session`` summary
          *     ``{remember, expires_at, idle_expires_at}``.
+         *
+         *     Round 14 (SPEC §4.4.5, D16): a signed-in answer also carries ``object_scoped``,
+         *     true when row-level (object) data scope applies to the viewer's case reads (the
+         *     rule the chat starters use, ``chat_starters.object_scoped``, failing closed), so
+         *     the Console hides case-derived dashboard panels instead of showing aggregates the
+         *     viewer could not read row by row. With sign-in off the answer is unchanged (no
+         *     viewer role, so no row scope: an absent ``object_scoped`` reads as false).
          */
         get: operations["auth_me_api_auth_me_get"];
         put?: never;
@@ -686,7 +740,13 @@ export interface paths {
          * @description Update the ``baseline`` policy, DEEP-MERGING only the keys the caller sent onto
          *     the live config (mirrors the ``PUT /api/settings`` contract). Additive + validated
          *     by the Pydantic model; never touches ``decide()`` (#3) — the baseline is a pure
-         *     advisory producer. Audited (#2).
+         *     advisory producer.
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The baseline policy follows the active
+         *     execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+         *     to the Demo audit (SPEC §3.5).
          */
         put: operations["put_baseline_config_api_baseline_config_put"];
         post?: never;
@@ -765,7 +825,12 @@ export interface paths {
          *     the Pydantic model; #6 is untouched (this only toggles routing — the batch service
          *     still writes exactly one UsageDoc per resolved call). Never touches ``decide()`` (#3).
          *     During Demo Mode the edit remains in the throwaway sandbox; off demo it persists
-         *     normally. Audited (#2).
+         *     normally.
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The row sits beside the config it describes:
+         *     the Demo audit for a Demo-only change, the real audit log otherwise (SPEC §3.5).
          */
         put: operations["put_batch_config_api_batch_config_put"];
         post?: never;
@@ -842,7 +907,13 @@ export interface paths {
         };
         /** Get Budget */
         get: operations["get_budget_api_budget_get"];
-        /** Put Budget */
+        /**
+         * Put Budget
+         * @description Replace the cost-budget ceiling config. Audited before it is saved (#2, Round 14
+         *     SPEC §3.6): a ``settings.updated`` row naming every changed field is appended first,
+         *     and a failed append answers ``503 audit_unavailable`` with nothing saved. The budget
+         *     is real tenant state, so the row always goes to the real audit log (SPEC §3.5).
+         */
         put: operations["put_budget_api_budget_put"];
         post?: never;
         delete?: never;
@@ -911,7 +982,13 @@ export interface paths {
          *     the live config (mirrors the ``PUT /api/settings`` contract). Additive + validated
          *     by the Pydantic model; a campaign is ADVISORY — nothing here calls ``decide()`` (#3)
          *     or touches a ``cluster_signature`` (#4). Admin-gated (a tenant-wide clustering-policy
-         *     change is an operator action, matching the recorrelate route). Audited (#2).
+         *     change is an operator action, matching the recorrelate route).
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The campaign policy follows the active
+         *     execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+         *     to the Demo audit (SPEC §3.5).
          */
         put: operations["put_campaign_config_api_campaigns_config_put"];
         post?: never;
@@ -939,8 +1016,21 @@ export interface paths {
          *     UPSERTS the result into ``campaign_store`` (idempotent — same members → same id),
          *     and returns them. It NEVER investigates a case, calls an LLM (#6), touches a
          *     ``cluster_signature`` (#4), or calls ``decide()`` (#3) — a case's status is
-         *     untouched. Admin-gated (a tenant-wide manual re-correlate is an operator action);
-         *     audited (#2). NEVER raises — a store glitch degrades to an empty result.
+         *     untouched. Admin-gated (a tenant-wide manual re-correlate is an operator action).
+         *
+         *     Audited before the new set is stored (#2, Round 14 SPEC §3.6): the pass is a read,
+         *     then a ``campaign.recorrelated`` row is appended, then the set replaces the stored
+         *     one. A failed append answers ``503 audit_unavailable`` and the stored set is
+         *     unchanged; a failed store write appends ``campaign.recorrelate_failed`` and answers
+         *     ``503``. The campaign store follows the active execution stack, so in Demo Mode the
+         *     row goes to the Demo audit (SPEC §3.5).
+         *
+         *     The pass, its row and the store it replaces belong to one execution stack, bound
+         *     before the pass reads anything: campaigns built from Demo cases never replace the
+         *     real set, nor real campaigns the sandbox's. When Demo Mode is turned on or off while
+         *     the pass runs, nothing is recorded or stored; when it moves after the row, the store
+         *     write is refused and paired with its failure row. Either way the request answers
+         *     ``409 demo_mode_changed``.
          */
         post: operations["recorrelate_campaigns_api_campaigns_recorrelate_post"];
         delete?: never;
@@ -998,6 +1088,15 @@ export interface paths {
          *     they would be emitted as nulls to every legacy caller, and declaring the extended
          *     envelope as a second response model splits the shared ``Case`` component into
          *     validation and serialisation variants, which changes every generated case type.
+         *
+         *     Round 14 (SPEC §4.6.1): ``rule`` keeps the cases whose ``rule_ids`` hold that exact
+         *     value (as stored: never trimmed or case-folded; 1 to 256 characters on one line), the
+         *     population the rule sheet's "Show the N cases" opens and its case count measures.
+         *     ``closed_by`` keeps terminal cases closed by ``agent``, ``analyst``,
+         *     ``analyst_policy`` or ``system`` (the exact-aggregation engine's values, and only
+         *     those; ``system`` also covers older rows with no recorded decider). Both are answered
+         *     by the exact queue scan and echoed as ``rule_applied`` / ``closed_by_applied``; any
+         *     other value is a 400. The free-text ``q`` now also matches a case's rule values.
          */
         get: operations["list_cases_api_cases_get"];
         put?: never;
@@ -1350,15 +1449,228 @@ export interface paths {
         put?: never;
         /**
          * Case Run Playbook
-         * @description Manually run a chosen playbook on a case (F10) — CONTEXT-ONLY, #3-safe.
-         *
-         *     Re-investigates the case through the SHARED pipeline with ``playbook_id`` FORCED
-         *     as the injected TRUSTED operator procedure. The playbook can only RECOMMEND; the
-         *     deterministic close/escalate decision in the Case Manager is untouched (#3). 404
-         *     if the case or playbook is unknown; 400 (NEUTRAL) when no events remain to rebuild
-         *     the cluster. Returns the updated Case. Gated by ``playbooks:run``.
+         * @deprecated
+         * @description Retired (Round 14 SPEC §4.10.16): ``410 runbooks_moved``. Start a runbook on a
+         *     case with ``POST /api/cases/{case_id}/runbooks``; re-investigate with ``POST
+         *     /api/cases/{case_id}/reinvestigate``.
          */
         post: operations["case_run_playbook_api_cases__case_id__run_playbook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Case Runbooks
+         * @description The case's runs with every lookup result redacted for this viewer.
+         */
+        get: operations["get_case_runbooks_api_cases__case_id__runbooks_get"];
+        put?: never;
+        /**
+         * Attach Case Runbook
+         * @description Start a Published runbook on the case. An existing run of it answers ``200``
+         *     with ``already_attached`` (#4).
+         */
+        post: operations["attach_case_runbook_api_cases__case_id__runbooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Runbook Candidates
+         * @description The Start runbook picker: the AI's last suggestion to this person, the best
+         *     match with its explanation, other matches, the fallback, then every other
+         *     Published runbook.
+         */
+        get: operations["get_runbook_candidates_api_cases__case_id__runbooks_candidates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Case Runbook
+         * @description Ask the AI which Published runbook fits (one gateway call; never attaches).
+         *     ``dry_run=true`` returns the estimate (its cost only to a holder of ``models:read``).
+         */
+        post: operations["suggest_case_runbook_api_cases__case_id__runbooks_suggest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/abandon": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Abandon Runbook Run
+         * @description Abandon the run with a reason. It stays readable; the case is not changed (#3).
+         */
+        post: operations["abandon_runbook_run_api_cases__case_id__runbooks__run_id__abandon_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Runbook Step
+         * @description Status, assignee, note, reason, a decision, a recorded action or an evidence
+         *     link. ``expected_revision`` is the STEP's revision; a stale one is ``409``.
+         */
+        patch: operations["update_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__patch"];
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Decide Runbook Approval
+         * @description Approve or reject a recorded action waiting for approval. Needs the step's
+         *     ``approval_role``; the person who recorded the action can never approve it.
+         */
+        post: operations["decide_runbook_approval_api_cases__case_id__runbooks__run_id__steps__step_id__approval_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Draft Runbook Step
+         * @description "Draft note" on a Check step: one gateway call; the draft is stored as "AI
+         *     draft" until a person confirms it. ``dry_run=true`` returns the estimate.
+         */
+        post: operations["draft_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__draft_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/draft/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Runbook Step Draft
+         * @description The draft as the person edited it becomes the step's note and the step is Done.
+         *     When the step changed after the draft was made (a note written since, for one),
+         *     the answer is ``409 runbook_conflict`` with the latest run and nothing changes.
+         */
+        post: operations["confirm_runbook_step_draft_api_cases__case_id__runbooks__run_id__steps__step_id__draft_confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}/lookup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run Runbook Lookup
+         * @description Run the step's lookup now (read-only), replacing its previous result. Needs
+         *     the grant the lookup's tool needs (§4.10.8); a lookup that cannot run is ``503
+         *     lookup_unavailable`` and replaces nothing.
+         */
+        post: operations["run_runbook_lookup_api_cases__case_id__runbooks__run_id__steps__step_id__lookup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cases/{case_id}/runbooks/{run_id}/switch-version": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Switch Runbook Run Version
+         * @description Move the run to the Published version, keeping each step whose id exists in
+         *     both versions.
+         */
+        post: operations["switch_runbook_run_version_api_cases__case_id__runbooks__run_id__switch_version_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2210,7 +2522,10 @@ export interface paths {
          * Create Dashboard
          * @description Create one dashboard for the caller (id minted if absent). Allowlist-validates
          *     every widget type, clamps coords, validates the name, and enforces the per-user cap
-         *     (#9/#10). Returns the stored dashboard.
+         *     (#9/#10). A new id that is reserved (``new``, ``builtin:*``, ``u:*``) is refused with
+         *     ``400 dashboard_id_reserved``; replacing an already stored board keeps working
+         *     whatever its id. ``default_window`` and ``derived_from`` are validated strictly and
+         *     stored as sent. Returns the stored dashboard.
          */
         post: operations["create_dashboard_api_dashboards_post"];
         delete?: never;
@@ -2254,7 +2569,8 @@ export interface paths {
          * @description Replace the dashboard at ``dashboard_id`` (the PATH id is authoritative and
          *     overrides any id in the body). Allowlist-validates widget types + clamps coords +
          *     validates the name (#9). Creating-by-PUT is allowed but still honours the per-user
-         *     cap when the id is new.
+         *     cap when the id is new, and is refused for a reserved id (``400
+         *     dashboard_id_reserved``); updating a board stored under a reserved id is allowed.
          */
         put: operations["update_dashboard_api_dashboards__dashboard_id__put"];
         post?: never;
@@ -2806,7 +3122,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Add Custom Model */
+        /**
+         * Add Custom Model
+         * @description Register (or update) a self-hosted OpenAI-compatible model. Audited before it is
+         *     saved (#2, Round 14 SPEC §3.6): a ``model.added`` (or ``model.updated``) row with
+         *     the model's settings is appended first; an endpoint key is recorded by name only,
+         *     as a secret (#10). A failed append answers ``503 audit_unavailable`` with nothing
+         *     saved.
+         */
         post: operations["add_custom_model_api_llm_models_custom_post"];
         delete?: never;
         options?: never;
@@ -2824,7 +3147,11 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Remove Custom Model */
+        /**
+         * Remove Custom Model
+         * @description Remove a registered self-hosted model. Audited before it is removed (#2, Round
+         *     14 SPEC §3.6); an unknown model changes nothing and writes no row.
+         */
         delete: operations["remove_custom_model_api_llm_models_custom__model_id__delete"];
         options?: never;
         head?: never;
@@ -2856,10 +3183,20 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Llm Model Pricing */
+        /**
+         * Llm Model Pricing
+         * @description Set an operator price override for one model. Audited before it is saved (#2,
+         *     Round 14 SPEC §3.6): a ``model.pricing_updated`` row with the old and new rates is
+         *     appended first, and a failed append answers ``503 audit_unavailable`` with nothing
+         *     saved.
+         */
         put: operations["llm_model_pricing_api_llm_models__model_id__pricing_put"];
         post?: never;
-        /** Llm Model Pricing Delete */
+        /**
+         * Llm Model Pricing Delete
+         * @description Clear one model's price override. Audited before it is removed (#2, Round 14
+         *     SPEC §3.6); a model without an override changes nothing and writes no row.
+         */
         delete: operations["llm_model_pricing_delete_api_llm_models__model_id__pricing_delete"];
         options?: never;
         head?: never;
@@ -2955,6 +3292,26 @@ export interface paths {
          *     with any single source being cut — so scoping to one source, or running a
          *     single-source deployment, reports exactly what ``GET /sources/{id}/logs`` reports
          *     for that same read.
+         *
+         *     Round 14 (SPEC §4.6.1) adds three EXACT filters, each bound as a structured filter
+         *     value and never as query text: ``rule`` (an equality match against any rule identity
+         *     of an event: its rule field, rule name field or classified suite rule; 1 to 256
+         *     characters on one line), ``severity`` (exactly one named level: ``info``, ``low``,
+         *     ``medium``, ``high`` or ``critical``) and ``severity_gte`` (that level or above).
+         *     A level is projected through EACH source's own severity ceiling before it is
+         *     compared, so a 0 to 15 and a 0 to 100 source agree on what "High" means. Pull
+         *     sources compile the filters into their own query (exact); a push source's
+         *     live-tail ring is filtered here over the whole ring and, while a filter is active,
+         *     also kept to an explicit ``from``/``to`` (``now``, ``now-3d``, an ISO-8601 instant),
+         *     as a pull search and the rule summary are, so its rows and its "at least" total
+         *     describe the window the page names (``query`` still does not apply to a ring, and
+         *     ``mode`` stays ``"buffer"``). While any of them is active the envelope echoes
+         *     ``filters: {rule, severity, severity_gte}`` (``null`` = that one not filtered), so a
+         *     client can tell the filter was applied (an older backend ignores the parameters and
+         *     echoes nothing), and each per-source status carries ``exact``: ``false`` when that
+         *     source could only be filtered after a bounded read, so its rows are "at least"
+         *     these. A request with none of them is answered exactly as before, key for key. An
+         *     invalid value is a 400.
          */
         get: operations["unified_logs_api_logs_get"];
         put?: never;
@@ -3171,6 +3528,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/metrics/breakdown": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics Breakdown
+         * @description Exact case or usage counts by one field (``by``) or two (``by`` then ``then``) over
+         *     a window, optionally bucketed by time (SPEC §4.4.2).
+         *
+         *     ``kind=cases`` hands one ``CaseAggregateSpec`` (window, group_by, bucket, top_n,
+         *     filters; metrics ``count``, ``open_now`` and the two named families) to
+         *     ``engine.case_aggregate.aggregate_cases``, the engine the chat's ``case_stats`` uses,
+         *     over the case store this caller reads (the Demo store while Demo Mode is on), with
+         *     the same prefs and operator timezone, so the dashboards and chat agree on every
+         *     number. The two families are never mixed: AI verdicts (``verdicted = verdict_tp +
+         *     verdict_fp + verdict_needs_human``) and the analyst outcome (``count = analyst_tp +
+         *     analyst_fp + analyst_ungraded``; analyst-policy closes are never graded). In an
+         *     un-bucketed row ``open_now`` is the window-exempt open stock: the open cases matching
+         *     the row whenever they were created, so it can exceed the row's windowed ``count``; in
+         *     a bucketed row it is the open part of that bucket's cohort. ``window_label`` is the
+         *     window as a caption start in sentence case ("Last 7 days (since 20 Oct 2026)"); a
+         *     relative window of days, weeks, months or years counts whole local periods exactly
+         *     as chat does, and an hours window (``now-168h``) is the rolling span the other
+         *     ``window_hours`` metrics count, labelled as a board names it ("Last 7 days (since 21
+         *     Oct 2026, 12:00)"). ``multi_valued`` is true for ``rule``, ``mitre_tactic``
+         *     and ``mitre_technique``: a case counts once in each of its values, so rows never sum
+         *     to ``total``. ``exact`` false (``partial`` true, with ``partial_reason``) marks lower
+         *     bounds; a zero is never invented for a figure that was not measured. Cases with no
+         *     readable creation date are disclosed in ``missing_created`` (``missing_in_total``
+         *     says whether ``total`` holds them), and with buckets cut by ``top`` each bucket's
+         *     ``other_count`` holds its share of ``other``.
+         *
+         *     ``kind=usage`` aggregates the usage ledger (``engine.case_aggregate.aggregate_usage``,
+         *     metrics ``calls`` and ``cost_usd``, ranked by spend) and is gated on ``cost:view``.
+         *
+         *     One answer per question is shared for a few seconds and a question being read is
+         *     joined, never read twice; at most two reads run at once, a read gets a bounded time,
+         *     an answer holds at most 5,000 group rows and the shared answers 20,000 in all. Every read
+         *     folds the cases of the window, because the analyst outcome family needs the case
+         *     model; the fold reads only the stored fields its metrics and groups need.
+         *
+         *     Errors: ``400 breakdown_bad_param`` (an unknown value, ``then`` equal to ``by``, a
+         *     case-only parameter with ``kind=usage``, an empty ``filter_rule``, a ``top`` that is
+         *     not a whole number from 1 to 50, a window it cannot read, too many buckets, or
+         *     ``top`` times the buckets over 5,000 rows); ``403`` without the grant; ``409
+         *     breakdown_scope_unsupported`` for a case breakdown while row-level data scope applies
+         *     to the caller (aggregates do not honour row scope yet, SPEC D16); ``503
+         *     breakdown_unavailable`` when the store could not be read at all or the read ran past
+         *     its time (nothing was measured, so no figure is returned). A read: no audit row, no
+         *     model call (#6), aggregates only (#7); nothing here is read by
+         *     ``case_manager.decide()`` (#3).
+         */
+        get: operations["metrics_breakdown_api_metrics_breakdown_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/metrics/noise-reduction": {
         parameters: {
             query?: never;
@@ -3192,6 +3613,19 @@ export interface paths {
          *     lower bound and ``store_total``/``fetched`` say by how much). When the counters are still warming
          *     up (``counters.available: false``) the ingested/clustered totals are ``null`` and the
          *     headline ``reduction.overall_pct`` is a DASH, so the UI degrades to a case-only funnel.
+         *
+         *     ``events_per_min`` (Round 14, SPEC §4.4.3, the detection board's "Events per minute")
+         *     is the mean raw alerts per minute over the whole hours the counters summed
+         *     (:func:`_events_per_min`), rounded to 0.01. When the counters began inside the
+         *     window (``counters.incomplete``, a fresh install, a Demo) the hour they began in is
+         *     left out, because it can hold a backfilled burst (a cold-start lookback, the Demo's
+         *     history written at once): the rate then covers the hours after it. ``null`` while
+         *     ``counters.available`` is false or less than five minutes are measured, never a
+         *     made-up 0 and never a burst read as a rate. ``events_per_min_since`` is the ISO
+         *     start of the span the rate covers (``null`` with no rate) and
+         *     ``events_per_min_reason`` a plain sentence saying why the rate is not measured or,
+         *     when the counters began inside the window, that it covers only the time since the
+         *     end of the hour they began in (``null`` when the rate covers the whole window).
          *
          *     DETERMINISTIC + advisory: nothing here is read by ``case_manager.decide()`` (#3); every
          *     band name is plain framework data the UI renders escaped.
@@ -3426,6 +3860,13 @@ export interface paths {
          * @description Set/clear one notification channel's secret field (notifications:manage). The value
          *     goes to the SECRET tier (in memory), NEVER to Preferences; only a configured-
          *     boolean is returned. Also stamps the channel's ``configured_secrets`` (names only).
+         *
+         *     Round 14 (SPEC §3.6): audited before the credential changes. A
+         *     ``notification.secrets_updated`` row naming the field (never its value, #10) is
+         *     appended first; a failed append answers ``503 audit_unavailable`` and the
+         *     credential is unchanged. The configured field NAMES are saved first and the
+         *     credential changes in memory only after that save succeeds, so a failed save leaves
+         *     the credential as it was and its failure row ("Not applied") is true.
          */
         post: operations["set_notification_channel_secret_api_notifications_channels__channel_id__secret_post"];
         delete?: never;
@@ -3671,16 +4112,18 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Playbooks */
+        /**
+         * Playbooks
+         * @deprecated
+         * @description Deprecated alias: every Published runbook in the old procedure list shape. Use
+         *     ``GET /api/runbooks``.
+         */
         get: operations["playbooks_api_playbooks_get"];
         put?: never;
         /**
          * Playbooks Create
-         * @description Create an operator Markdown file, atomically reload it, and audit the change.
-         *
-         *     The front-matter id must equal ``body.id``.  IDs are slug/path constrained and
-         *     a create never overwrites any existing file or bundled playbook.  Playbook text
-         *     remains recommendation-only context; this endpoint never touches ``decide()``.
+         * @deprecated
+         * @description Retired write: ``410 runbooks_moved``. Create a runbook with ``POST /api/runbooks``.
          */
         post: operations["playbooks_create_api_playbooks_post"];
         delete?: never;
@@ -3698,7 +4141,10 @@ export interface paths {
         };
         /**
          * Playbooks Coverage
-         * @description Coverage over the stored case population, paged without a 200-row cap.
+         * @deprecated
+         * @description Deprecated alias: which runbook each stored case would match (the fallback does
+         *     not count as coverage), over at most 20,000 cases. Use ``GET /api/runbooks/metrics``
+         *     for runbook coverage.
          */
         get: operations["playbooks_coverage_api_playbooks_coverage_get"];
         put?: never;
@@ -3720,7 +4166,9 @@ export interface paths {
         put?: never;
         /**
          * Playbooks Dry Run
-         * @description Explain exact match and no-match reasons without running an investigation.
+         * @deprecated
+         * @description Retired: ``410 runbooks_moved``. Preview matching with ``POST
+         *     /api/runbooks/match-preview``.
          */
         post: operations["playbooks_dry_run_api_playbooks_dry_run_post"];
         delete?: never;
@@ -3740,8 +4188,8 @@ export interface paths {
         put?: never;
         /**
          * Playbooks Reload
-         * @description Hot-reload playbooks from disk (atomic; a broken file never replaces a good
-         *     live set). Returns the load summary.
+         * @deprecated
+         * @description Retired write: ``410 runbooks_moved``. The runbook library needs no reload.
          */
         post: operations["playbooks_reload_api_playbooks_reload_post"];
         delete?: never;
@@ -3759,7 +4207,9 @@ export interface paths {
         };
         /**
          * Playbook Selection
-         * @description Why a given case selected the playbook it did (from the audit trail).
+         * @deprecated
+         * @description Deprecated alias: the runbook on a case and why it was attached (the first run
+         *     that is not abandoned). Use ``GET /api/cases/{case_id}/runbooks``.
          */
         get: operations["playbook_selection_api_playbooks_selection__case_id__get"];
         put?: never;
@@ -3779,12 +4229,18 @@ export interface paths {
         };
         /**
          * Playbook Detail
-         * @description Open one playbook as plain UTF-8 Markdown plus parsed catalog metadata.
+         * @deprecated
+         * @description Deprecated alias: one Published runbook in the old procedure detail shape,
+         *     ``content`` and ``body`` exported as Markdown. A retired bundled procedure id
+         *     answers with the runbook that replaced it; an unknown id answers the old ``404``
+         *     (``{"detail": "playbook not found"}``). Use ``GET /api/runbooks/{id}``.
          */
         get: operations["playbook_detail_api_playbooks__playbook_id__get"];
         /**
          * Playbook Update
-         * @description Atomically update an operator playbook. Bundled playbooks are read-only.
+         * @deprecated
+         * @description Retired write: ``410 runbooks_moved``. Edit a draft with ``PUT
+         *     /api/runbooks/{id}/draft``.
          */
         put: operations["playbook_update_api_playbooks__playbook_id__put"];
         post?: never;
@@ -4619,6 +5075,11 @@ export interface paths {
          *     current effective matrix (built-ins + operator overrides + stored custom roles).
          *     Returns ``allowed`` plus the role's resolved actions on that resource so the UI can
          *     explain WHY.
+         *
+         *     Round 14 (SPEC §3.7): the retired ``playbooks`` resource is still an accepted
+         *     alias of ``runbooks`` in every grant layer, so a question about it is answered for
+         *     its ``runbooks`` meaning (``alias_of`` names the resource that was evaluated), never
+         *     a silent "denied" for a resource the server no longer lists.
          */
         get: operations["simulate_permission_api_roles_simulate_get"];
         put?: never;
@@ -4763,7 +5224,9 @@ export interface paths {
          *
          *     HITL-SAFE by construction (#3): a case-automation rule can only
          *     ``tag``/``recommend``/``notify``/``run_playbook``/``request_approval`` — the engine
-         *     enforces it NEVER sets a case ``status``/``disposition``. Bug #6: a
+         *     enforces it NEVER sets a case ``status``/``disposition``. ``run_playbook`` attaches
+         *     the runbook named by ``payload.runbook_id`` (or a legacy ``payload.playbook_id``,
+         *     resolved at fire time; Round 14). Bug #6: a
          *     ``conditions.verdict`` that is not a real :class:`Verdict` is REJECTED here (400).
          *     Config-writer only. Audited + versioned (#2).
          */
@@ -4922,6 +5385,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/rules/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Rule Summary
+         * @description One detection rule's picture for the rule sheet (see the module docstring).
+         */
+        get: operations["rule_summary_api_rules_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/rules/{kind}/{rule_id}/rollback/{version_id}": {
         parameters: {
             query?: never;
@@ -4977,11 +5460,128 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Runbooks */
+        /**
+         * List Runbooks
+         * @description The runbook library: every built-in and operator runbook the caller may see.
+         *     ``runs_30d`` is null without ``cases:read``. ``shape=v1`` answers the old shape
+         *     (Published runbooks only) with deprecation headers.
+         */
         get: operations["list_runbooks_api_runbooks_get"];
         put?: never;
-        /** Create Runbook */
+        /**
+         * Create Runbook
+         * @description Create a runbook as a version 1 Draft from ``{definition}`` or ``{source}``.
+         *     The old write shape (``{id, content}``) answers ``410 runbooks_moved``, whatever
+         *     else the body carries.
+         */
         post: operations["create_runbook_api_runbooks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Runbook
+         * @description Import Markdown (SPEC §4.10.13). It always lands as a new Draft (#9): a
+         *     clashing id is renamed, and every problem is kept as an import note. Imported
+         *     content is due for review at once (D38).
+         */
+        post: operations["import_runbook_api_runbooks_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/lookup-test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Lookup Test
+         * @description Run a draft lookup against one case, read-only: nothing is stored and nothing
+         *     is audited (a read). The same bounds and 45-second limit as a run's lookup.
+         */
+        post: operations["lookup_test_api_runbooks_lookup_test_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/match-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Match Preview Route
+         * @description Which of the last 500 cases of the last 30 days a definition (or a stored
+         *     runbook, by ``id``) would get. Nothing is attached and no metric changes.
+         */
+        post: operations["match_preview_route_api_runbooks_match_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Runbook Metrics
+         * @description Runs, completion times, skipped steps, coverage of human-handled cases, rules
+         *     with no runbook and the with and without cohorts (a comparison, not a cause). Each
+         *     figure states its population; ``partial`` marks lower bounds.
+         */
+        get: operations["runbook_metrics_api_runbooks_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Runbook Progress
+         * @description Progress per case (every run not abandoned, summed). A case with no run, or
+         *     whose runs cannot be read, is absent from the answer.
+         */
+        post: operations["runbook_progress_api_runbooks_progress_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5000,12 +5600,33 @@ export interface paths {
         /**
          * Reindex Runbooks
          * @deprecated
-         * @description Deprecated request-bound full reconciliation compatibility route.
-         *
-         *     New operator workflows submit ``runbook_reindex`` through ``POST /api/jobs`` so
-         *     the full reconciliation survives navigation and has a durable result.
+         * @description Deprecated request-bound full reconciliation of the runbook retrieval
+         *     projection, kept as it was. New workflows submit ``runbook_reindex`` through
+         *     ``POST /api/jobs`` so the full reconciliation survives navigation.
          */
         post: operations["reindex_runbooks_api_runbooks_reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate Runbook Route
+         * @description Every issue of a definition or Markdown source and the investigator guidance
+         *     length against its budget. Nothing is written. A built-in's own bundled text is
+         *     checked as a built-in (its Source view is not told its id is taken).
+         */
+        post: operations["validate_runbook_route_api_runbooks_validate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5019,13 +5640,122 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Runbook */
+        /**
+         * Get Runbook
+         * @description One runbook: its summary, live version, version list and (to a holder of
+         *     ``runbooks:manage`` or ``runbooks:publish``) its draft and in-review versions.
+         */
         get: operations["get_runbook_api_runbooks__runbook_id__get"];
-        /** Update Runbook */
-        put: operations["update_runbook_api_runbooks__runbook_id__put"];
+        /**
+         * Update Runbook Old Shape
+         * @deprecated
+         * @description Retired old-shape write: answers ``410 runbooks_moved`` (E14). Edit the draft
+         *     with ``PUT /api/runbooks/{id}/draft``.
+         */
+        put: operations["update_runbook_old_shape_api_runbooks__runbook_id__put"];
         post?: never;
-        /** Delete Runbook */
-        delete: operations["delete_runbook_api_runbooks__runbook_id__delete"];
+        /**
+         * Delete Runbook Old Shape
+         * @deprecated
+         * @description Retired old-shape write: answers ``410 runbooks_moved`` (E14). Discard a draft
+         *     with ``DELETE /api/runbooks/{id}/draft``; retire a published runbook with
+         *     ``POST /api/runbooks/{id}/retire``.
+         */
+        delete: operations["delete_runbook_old_shape_api_runbooks__runbook_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Save Runbook Draft
+         * @description Save the draft. Editing a Published runbook creates the next version as a
+         *     draft (D39); editing a version in review takes it back to draft. A draft may hold
+         *     content problems (the editor lists them); its id and size must be valid. A stale
+         *     ``expected_revision`` answers ``409 runbook_conflict`` with the latest.
+         */
+        put: operations["save_runbook_draft_api_runbooks__runbook_id__draft_put"];
+        post?: never;
+        /**
+         * Discard Runbook Draft
+         * @description Discard the draft (or the version in review). A runbook that was never
+         *     published disappears; published history is never deleted.
+         */
+        delete: operations["discard_runbook_draft_api_runbooks__runbook_id__draft_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Duplicate Runbook
+         * @description Copy a built-in or operator runbook into a new draft (``<id>-custom``). A
+         *     built-in's copy replaces the built-in once it is Published.
+         */
+        post: operations["duplicate_runbook_api_runbooks__runbook_id__duplicate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Runbook
+         * @description One version as a ``text/markdown`` attachment (SPEC §4.10.13). Every export is
+         *     recorded in the audit log before the file is sent; a failed append refuses it
+         *     (``503 audit_unavailable``).
+         */
+        get: operations["export_runbook_api_runbooks__runbook_id__export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish Runbook
+         * @description Make a draft or in-review version live: it becomes trusted investigator
+         *     guidance and starts matching cases. The body names the revision (and the
+         *     version's content hash) the publisher reviewed, so text changed since is never
+         *     published unseen (``409 runbook_conflict``). Fresh sign-in is not required.
+         */
+        post: operations["publish_runbook_api_runbooks__runbook_id__publish_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -5040,8 +5770,160 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Reindex Runbook */
+        /**
+         * Reindex Runbook
+         * @description Reproject one runbook in the retrieval index (kept from the earlier API).
+         *
+         *     A built-in id is admitted and reprojected like an operator one: the runbook corpus
+         *     holds every Published version, the built-ins included (SPEC §4.10.18), so the
+         *     built-in's live chunks are written again, or removed when a Published operator
+         *     copy replaces it. An unknown id is ``404 runbook_not_found`` before any work.
+         */
         post: operations["reindex_runbook_api_runbooks__runbook_id__reindex_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Runbook
+         * @description Send a version in review back to draft with a reason (required: a missing or
+         *     blank one answers ``422 runbook_invalid`` before any audit row).
+         */
+        post: operations["reject_runbook_api_runbooks__runbook_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Runbook
+         * @description Republish the last live version of a retired runbook.
+         */
+        post: operations["restore_runbook_api_runbooks__runbook_id__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire Runbook
+         * @description Retire the live version: the runbook stops matching and stops guiding the
+         *     investigator; runs that use it keep working.
+         */
+        post: operations["retire_runbook_api_runbooks__runbook_id__retire_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/reviewed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Runbook Reviewed
+         * @description Mark reviewed: records the reviewer and the time without a new version; the
+         *     next review falls due ``review_every_days`` from now.
+         */
+        post: operations["mark_runbook_reviewed_api_runbooks__runbook_id__reviewed_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit Runbook
+         * @description Send a valid draft for review.
+         */
+        post: operations["submit_runbook_api_runbooks__runbook_id__submit_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Runbook Version
+         * @description One version with its Markdown source. A draft or in-review version is
+         *     ``404 runbook_version_not_found`` without ``manage`` or ``publish``.
+         */
+        get: operations["get_runbook_version_api_runbooks__runbook_id__versions__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runbooks/{runbook_id}/versions/{version}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Runbook Version
+         * @description A new draft from an earlier version (its text is checked again at publish).
+         */
+        post: operations["restore_runbook_version_api_runbooks__runbook_id__versions__version__restore_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5304,8 +6186,10 @@ export interface paths {
          *
          *     On success it hashes the (policy-checked) password via PBKDF2-SHA256, creates the
          *     ``super_admin`` (``must_change_password=False`` — the operator just chose it),
-         *     refreshes the auth view, clears the demo-seed hint, and audits the bootstrap (#2).
-         *     The password is NEVER echoed — the response carries booleans + the username only.
+         *     refreshes the auth view and clears the demo-seed hint. The bootstrap is audited
+         *     BEFORE the account exists (#2, Round 14 SPEC §3.6): with the audit log unavailable
+         *     the answer is ``503 audit_unavailable`` and no account is created. The password is
+         *     NEVER echoed: the response carries booleans and the username only.
          */
         post: operations["setup_account_api_setup_account_post"];
         delete?: never;
@@ -5575,7 +6459,8 @@ export interface paths {
          * @description Set/clear a source's secret fields (e.g. a webhook token, a Splunk key).
          *
          *     Values go to the secret tier (in memory), NEVER to the persisted config; only
-         *     the configured field NAMES are recorded on the SourceInstance (#10).
+         *     the configured field NAMES are recorded on the SourceInstance (#10). Round 14
+         *     (SPEC §3.6): audited before the credentials change, naming the fields only.
          */
         post: operations["set_source_secrets_api_sources__source_id__secrets_post"];
         delete?: never;
@@ -6009,7 +6894,13 @@ export interface paths {
         /**
          * Put Tuning Config
          * @description Update the ``threshold_tuning`` policy. Additive + validated by the Pydantic
-         *     model; never touches ``decide()`` (#3). Audited (#2).
+         *     model; never touches ``decide()`` (#3).
+         *
+         *     Audited before it is saved (#2, Round 14 SPEC §3.6): a ``settings.updated`` row
+         *     naming every changed field is appended first, and a failed append answers ``503
+         *     audit_unavailable`` with nothing saved. The tuning policy follows the active
+         *     execution stack, so in Demo Mode the edit stays in the Demo sandbox and its row goes
+         *     to the Demo audit (SPEC §3.5).
          */
         put: operations["put_tuning_config_api_tuning_config_put"];
         post?: never;
@@ -6087,6 +6978,13 @@ export interface paths {
          *
          *     404 when no proposal exists for ``rule_id`` (the rule isn't noisy / cleared the
          *     bar) so the caller gets an honest signal rather than a silent no-op.
+         *
+         *     One execution stack (:class:`app.audit.settings_write.ExecutionStack`): the
+         *     settings, cases and ledger it reads, the approval queue and ledger it writes, the
+         *     settings it changes and the audit log of its rows are the real ones or the Demo
+         *     sandbox's, never a mix. When Demo Mode is turned on or off while it runs it answers
+         *     ``409 demo_mode_changed``: with no row when nothing was attempted yet, and with no
+         *     threshold changed in either stack once its row is appended.
          */
         post: operations["apply_tuning_api_tuning__rule_id__apply_post"];
         delete?: never;
@@ -6112,6 +7010,10 @@ export interface paths {
          *     the ``"<source_id>:<feed_id>"`` feed key for a ``severity_floor`` raise. Restores
          *     the record's ``before`` via the SAME config-writers the apply used (never a case /
          *     verdict / signature). 404 when there is no active record for the key.
+         *
+         *     Bound to one execution stack like the apply: the ledger it reads and marks, the
+         *     settings it restores and the audit log of its rows. When Demo Mode is turned on or
+         *     off while it runs it answers ``409 demo_mode_changed`` and restores nothing.
          */
         post: operations["rollback_tuning_api_tuning__rule_id__rollback_post"];
         delete?: never;
@@ -6360,6 +7262,41 @@ export interface components {
             /** Sample */
             sample?: Record<string, never>;
         };
+        /**
+         * AppliesWhen
+         * @description When a runbook applies to a case. Every present criterion is any-of; all
+         *     present criteria must match. ``always`` marks only the Generic incident fallback
+         *     (the lowest specificity). Limits (checked by ``validate_runbook``): ``rule_ids``
+         *     at most 50 values of 1 to 256 characters; ``mitre`` at most 50 ``T####`` or
+         *     ``T####.###`` ids (a parent matches its sub-techniques); ``sources`` at most 20
+         *     source ids or ``type:<SourceType>``; ``statuses`` at most 10 ``CaseStatus``
+         *     values; ``any_tags`` at most 20 tags of at most 64 characters.
+         */
+        AppliesWhen: {
+            /**
+             * Always
+             * @default false
+             */
+            always: boolean;
+            /** Any Tags */
+            any_tags?: string[];
+            /** Entity Types */
+            entity_types?: ("ip" | "host" | "user" | "domain" | "hash" | "url" | "email" | "process" | "file")[];
+            /** Min Event Count */
+            min_event_count?: number | null;
+            /** Mitre */
+            mitre?: string[];
+            /** Rule Ids */
+            rule_ids?: string[];
+            /** Severity At Least */
+            severity_at_least?: ("critical" | "high" | "medium" | "low" | "info") | null;
+            /** Sources */
+            sources?: string[];
+            /** Statuses */
+            statuses?: string[];
+            /** Verdicts */
+            verdicts?: ("TRUE_POSITIVE" | "FALSE_POSITIVE" | "NEEDS_HUMAN")[];
+        };
         /** AssignBody */
         AssignBody: {
             /**
@@ -6374,18 +7311,257 @@ export interface components {
             assignee: string;
         };
         /**
-         * AuditListResponse
-         * @description The audit-viewer envelope. ``records`` are append-only audit rows returned
-         *     verbatim (fenced UNTRUSTED excerpts rendered PLAIN by the UI, #9).
+         * AuditChange
+         * @description One changed field in a settings, user, role, rule or runbook write (SPEC
+         *     §4.5.3). A secret is written as ``{field, before: None, after: None, secret:
+         *     True}``; a URL is reduced to scheme and host by the writer, which sets ``secret``
+         *     when anything was removed. A value that is not text is stored as canonical JSON
+         *     text (:func:`_audit_change_text`); ``before`` and ``after`` are cut to 500
+         *     characters.
          */
-        AuditListResponse: {
+        AuditChange: {
+            /** After */
+            after?: string | null;
+            /** Before */
+            before?: string | null;
+            /** Field */
+            field: string;
+            /**
+             * Secret
+             * @default false
+             */
+            secret: boolean;
+        };
+        /**
+         * AuditClient
+         * @description Where a request-driven audit row came from (SPEC §4.5.3, personal data, D9).
+         *
+         *     ``ip`` is believed from a forwarded header only when the socket peer is a named
+         *     trusted proxy, and then only the rightmost entry (``ip_source="trusted_proxy"``);
+         *     otherwise it is the socket peer (``ip_source="peer"``) whatever the caller sent.
+         *     ``ip`` is always a parsed address or ``None`` (:func:`normalise_audit_ip`): it is
+         *     mapped as Elasticsearch type ``ip``, which refuses the whole row for ``""`` or a
+         *     non-address such as a Unix-socket peer. ``peer`` keeps the raw socket address as
+         *     text. ``forwarded_for`` keeps the raw header as untrusted text, never used to
+         *     filter or group. Values are bounded on write.
+         */
+        AuditClient: {
+            /** Forwarded For */
+            forwarded_for?: string | null;
+            /** Ip */
+            ip?: string | null;
+            /**
+             * Ip Source
+             * @default peer
+             * @enum {string}
+             */
+            ip_source: "peer" | "trusted_proxy";
+            /**
+             * Peer
+             * @default
+             */
+            peer: string;
+            /**
+             * User Agent
+             * @default
+             */
+            user_agent: string;
+        };
+        /**
+         * AuditCount
+         * @description ``GET /api/audit/count``: exact up to the requested cap, then ``gte``.
+         */
+        AuditCount: {
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /**
+             * Relation
+             * @default eq
+             * @enum {string}
+             */
+            relation: "eq" | "gte";
+        };
+        /**
+         * AuditPage
+         * @description ``GET /api/audit`` (SPEC §4.5.10). ``records`` and ``total`` keep the old
+         *     ``AuditListResponse`` keys so existing clients keep working. ``total`` is exact
+         *     when ``total_relation`` is ``eq`` and a lower bound when it is ``gte``.
+         *     ``run_totals`` gives, for every ``run_id`` on this page, the run's event count
+         *     under the same filters, so a group split across pages says "6 of 10 steps".
+         */
+        AuditPage: {
+            /** Next Cursor */
+            next_cursor?: string | null;
             /** Records */
-            records?: Record<string, never>[];
+            records?: components["schemas"]["AuditRecord"][];
+            retention?: components["schemas"]["AuditRetention"];
+            /** Run Totals */
+            run_totals?: {
+                [key: string]: number;
+            };
             /**
              * Total
              * @default 0
              */
             total: number;
+            /**
+             * Total Relation
+             * @default eq
+             * @enum {string}
+             */
+            total_relation: "eq" | "gte";
+        };
+        /**
+         * AuditRecord
+         * @description One audit row as the read API returns it (SPEC §4.5.10): the stored
+         *     :class:`AuditDoc` fields, the Round 14 fields when the row carries them (absent on
+         *     legacy rows, never shown empty) and the read-time projections.
+         *
+         *     Read leniently: a stored row is never rejected because a value drifted. An
+         *     unknown ``action_type`` keeps its token (it is categorised as System, never
+         *     hidden); an invalid Round 14 value is dropped as not recorded. ``outcome`` and
+         *     ``actor_type`` may be derived for a legacy row, which ``*_derived`` says.
+         *     ``category`` and ``event_label`` come from ``audit/event_categories.json``. Every
+         *     value renders as plain text (#9); ``prompt_excerpt`` and ``tool_output_summary``
+         *     carry fenced untrusted log data.
+         */
+        AuditRecord: {
+            /** Action */
+            action?: string | null;
+            /**
+             * Action Type
+             * @default
+             */
+            action_type: string;
+            /**
+             * Actor
+             * @default
+             */
+            actor: string;
+            /** Actor Role */
+            actor_role?: string | null;
+            /** Actor Type */
+            actor_type?: ("human" | "agent" | "system" | "service") | null;
+            /**
+             * Actor Type Derived
+             * @default false
+             */
+            actor_type_derived: boolean;
+            /** App Version */
+            app_version?: string | null;
+            /** Build Sha */
+            build_sha?: string | null;
+            /** Case Id */
+            case_id?: string | null;
+            /**
+             * Category
+             * @default system
+             * @enum {string}
+             */
+            category: "access" | "config" | "case_work" | "agent" | "system";
+            /** Changes */
+            changes?: components["schemas"]["AuditChange"][] | null;
+            client?: components["schemas"]["AuditClient"] | null;
+            /**
+             * Demo
+             * @default false
+             */
+            demo: boolean;
+            /** Event Id */
+            event_id?: string | null;
+            /**
+             * Event Label
+             * @default
+             */
+            event_label: string;
+            /** Model */
+            model?: string | null;
+            /** Outcome */
+            outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
+            /**
+             * Outcome Derived
+             * @default false
+             */
+            outcome_derived: boolean;
+            /** Prompt Excerpt */
+            prompt_excerpt?: string | null;
+            /** Query Text */
+            query_text?: string | null;
+            /** Record Id */
+            record_id: string;
+            /** Request Id */
+            request_id?: string | null;
+            /** Result Summary */
+            result_summary?: string | null;
+            /** Run Id */
+            run_id?: string | null;
+            /** Session Ref */
+            session_ref?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /**
+             * Surface
+             * @default
+             */
+            surface: string;
+            target?: components["schemas"]["AuditTarget"] | null;
+            /** Tool Input */
+            tool_input?: unknown;
+            /** Tool Name */
+            tool_name?: string | null;
+            /** Tool Output Summary */
+            tool_output_summary?: string | null;
+            /** Truncated Fields */
+            truncated_fields?: string[];
+            /**
+             * Ts
+             * @default
+             */
+            ts: string;
+        };
+        /**
+         * AuditRetention
+         * @description How long the deployment keeps the audit log, for the page's scope line. A
+         *     volatile store keeps it in memory only (lost on restart).
+         */
+        AuditRetention: {
+            /** Hot Days */
+            hot_days?: number | null;
+            /**
+             * Volatile
+             * @default false
+             */
+            volatile: boolean;
+            /** Warm Days */
+            warm_days?: number | null;
+        };
+        /**
+         * AuditTarget
+         * @description What an audit row acted on: ``{type, id, label, revision}`` (SPEC §4.5.3,
+         *     §3.6). ``label`` is the human name at the time (a case number, a dashboard name)
+         *     and is plain data. ``revision`` is the store revision the write creates, written
+         *     by ``audited_write`` on the action row BEFORE the store write: if the process
+         *     stops between the two, a reader can see that the named revision never existed
+         *     (the documented crash limit). ``None`` for targets without a revision.
+         */
+        AuditTarget: {
+            /** Id */
+            id: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Revision */
+            revision?: number | null;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "case" | "user" | "role" | "source" | "setting" | "job" | "rule" | "runbook" | "dashboard" | "export";
         };
         /**
          * AutoClosePolicy
@@ -6626,6 +7802,11 @@ export interface components {
              * @default
              */
             note: string;
+            /**
+             * Why the case closes with required runbook steps open
+             * @description 1 to 500 characters; audited on case.closed_with_open_steps.
+             */
+            open_steps_reason?: string | null;
             /** Priority */
             priority?: string | null;
             /**
@@ -6633,6 +7814,12 @@ export interface components {
              * @default
              */
             reason: string;
+            /**
+             * Refuse the close when required runbook steps are open and no reason is given
+             * @description The Console sets it to show its close dialog; the default never blocks a close.
+             * @default false
+             */
+            require_open_steps_reason: boolean;
             /** Resolution */
             resolution?: string | null;
             /** Status */
@@ -6777,6 +7964,10 @@ export interface components {
             risk_score: number;
             /** Rule Ids */
             rule_ids?: string[];
+            /** Runbook Id */
+            runbook_id?: string | null;
+            /** Runbook Version */
+            runbook_version?: number | null;
             /** Severity Band */
             severity_band?: string | null;
             /** Severity Source */
@@ -6855,6 +8046,11 @@ export interface components {
              * @default
              */
             note: string;
+            /**
+             * Why the case closes with required runbook steps open
+             * @description 1 to 500 characters; audited on case.closed_with_open_steps.
+             */
+            open_steps_reason?: string | null;
             /** Priority */
             priority?: string | null;
             /**
@@ -6862,6 +8058,12 @@ export interface components {
              * @default
              */
             reason: string;
+            /**
+             * Refuse the close when required runbook steps are open and no reason is given
+             * @description The Console sets it to show its close dialog; the default never blocks a close.
+             * @default false
+             */
+            require_open_steps_reason: boolean;
             /** Resolution */
             resolution?: string | null;
             /** Status */
@@ -6967,6 +8169,32 @@ export interface components {
             window_total_exact?: boolean | null;
         };
         /**
+         * CaseRunbooks
+         * @description ``GET /api/cases/{case_id}/runbooks`` (SPEC §4.10.15a): the case's runs with
+         *     evidence redacted per viewer by the lookup grants, progress per run, the newer
+         *     published version per run, the free-form case tasks ("Other tasks") and the case
+         *     document's CAS revision.
+         */
+        CaseRunbooks: {
+            /** Newer Versions */
+            newer_versions?: {
+                [key: string]: number;
+            };
+            /** Other Tasks */
+            other_tasks?: components["schemas"]["CaseTask"][];
+            /** Progress */
+            progress?: {
+                [key: string]: components["schemas"]["RunbookProgress"];
+            };
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Runs */
+            runs?: components["schemas"]["RunbookRun"][];
+        };
+        /**
          * CaseStatus
          * @description Lifecycle of a case (Section 7.1). DECISION is deterministic code.
          *
@@ -6981,6 +8209,42 @@ export interface components {
          * @enum {string}
          */
         CaseStatus: "new" | "open" | "needs_human" | "investigating" | "escalated" | "on_hold" | "resolved" | "closed";
+        /**
+         * CaseTask
+         * @description One checklist item / task on a case (Round 3 collaboration). ``status`` tracks
+         *     open→done; ``order`` keeps a stable manual ordering; ``logs`` is an append-only
+         *     note trail ``[{ts, by, note}]``. ``title``/``logs`` are plain data (#9).
+         */
+        CaseTask: {
+            /** Assignee */
+            assignee?: string | null;
+            /**
+             * Case Id
+             * @default
+             */
+            case_id: string;
+            /** Created At */
+            created_at?: string;
+            /** Id */
+            id?: string;
+            /** Logs */
+            logs?: Record<string, never>[];
+            /**
+             * Order
+             * @default 0
+             */
+            order: number;
+            /**
+             * Status
+             * @default open
+             */
+            status: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
         /** ChangePasswordBody */
         ChangePasswordBody: {
             /** Current Password */
@@ -8371,23 +9635,13 @@ export interface components {
             };
         };
         /**
-         * DashboardLayout
-         * @description One named custom dashboard (Round 5 / G7). A user owns a set of these keyed
-         *     by ``id`` on :attr:`UserPrefs.dashboards`. Persisted backend-agnostically as
-         *     part of the per-user prefs KV document — NO new index/table/migration.
-         *
-         *     ``widgets`` is the default (single-breakpoint) placement; ``layouts`` optionally
-         *     carries a per-breakpoint override map (``{"lg": [...], "md": [...], ...}`` — the
-         *     RGL responsive shape) so a dashboard can reflow at different widths. ``columns``
-         *     is the grid column count (12 by default). ``schema_version`` is stamped from day
-         *     one so a future migration can evolve the widget shape without a data reset (a
-         *     lower/absent version is upgraded on read by the client/store, never blocks load).
-         *
-         *     ``name`` is UNTRUSTED user input — rendered as PLAIN text/SVG by the UI, never
-         *     ``dangerouslySetInnerHTML`` and never a prompt instruction (#9). A dashboard is
-         *     ADVISORY presentation state only; it never feeds ``case_manager.decide()`` (#3).
+         * DashboardLayoutIn
+         * @description The create and update request body of a personal board (``POST
+         *     /api/dashboards``, ``PUT /api/dashboards/{id}``): :class:`DashboardLayout` with the
+         *     Round 14 fields validated strictly, so a bad ``default_window`` or
+         *     ``derived_from`` is refused at the write boundary instead of being dropped.
          */
-        DashboardLayout: {
+        DashboardLayoutIn: {
             /**
              * Columns
              * @default 12
@@ -8395,6 +9649,10 @@ export interface components {
             columns: number;
             /** Created At */
             created_at?: string;
+            /** Default Window */
+            default_window?: ("now-24h" | "now-7d" | "now-30d" | "now-90d") | null;
+            /** Derived From */
+            derived_from?: string | null;
             /** Id */
             id?: string;
             /** Layouts */
@@ -8532,6 +9790,19 @@ export interface components {
          * @enum {string}
          */
         DecisionBy: "agent" | "analyst" | "system" | "analyst_policy";
+        /**
+         * DecisionOption
+         * @description One option of a Decision step. ``marks_not_applicable`` names later step ids
+         *     this option skips (only steps still To do).
+         */
+        DecisionOption: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Marks Not Applicable */
+            marks_not_applicable?: string[];
+        };
         /** DemoEnableBody */
         DemoEnableBody: {
             /** Alert Interval Seconds */
@@ -8843,7 +10114,7 @@ export interface components {
          * @description Registered server-owned long-operation kinds.
          * @enum {string}
          */
-        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "rag_rebuild" | "tiered_reset" | "storage_lifecycle_apply" | "replay_experiment";
+        JobKind: "case_reinvestigate" | "case_lifecycle" | "case_assign" | "case_tag" | "data_export_archive" | "data_export_segment" | "precedent_bootstrap" | "runbook_reindex" | "rag_import" | "rag_rebuild" | "tiered_reset" | "storage_lifecycle_apply" | "replay_experiment" | "audit_export";
         /** JobListResponse */
         JobListResponse: {
             /** Jobs */
@@ -8968,6 +10239,259 @@ export interface components {
             /** Username */
             username: string;
         };
+        /**
+         * LookupResult
+         * @description The stored result of one lookup run (SPEC §4.10.7, §4.10.8). Every value is
+         *     untrusted plain text (#9). ``params`` are the resolved values; ``ran_by`` is
+         *     ``agentic_soc`` for a background ``on_attach`` run or the person who pressed Run.
+         *     ``table`` is ``{columns <= 6, rows <= 20, cells <= 200 chars}``: an ``aggregate``
+         *     table holds counts per key; a ``rows`` table holds raw ``log_search`` rows,
+         *     shown to people only and reduced by code to a row count and top values before
+         *     any prompt (#7). ``window_clamped`` says ``window_to`` was cut to ``ran_at``.
+         */
+        LookupResult: {
+            /** Count */
+            count?: number | null;
+            /**
+             * Count Relation
+             * @default eq
+             * @enum {string}
+             */
+            count_relation: "eq" | "gte";
+            /** Facts */
+            facts?: {
+                [key: string]: string;
+            }[];
+            /** Params */
+            params?: {
+                [key: string]: string;
+            };
+            /**
+             * Ran At
+             * @default
+             */
+            ran_at: string;
+            /**
+             * Ran By
+             * @default
+             */
+            ran_by: string;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "empty" | "partial" | "error" | "not_applicable";
+            /** Table */
+            table?: Record<string, never> | null;
+            /** Table Kind */
+            table_kind?: ("aggregate" | "rows") | null;
+            /** Tool */
+            tool: string;
+            /**
+             * Window Clamped
+             * @default false
+             */
+            window_clamped: boolean;
+            /**
+             * Window From
+             * @default
+             */
+            window_from: string;
+            /**
+             * Window To
+             * @default
+             */
+            window_to: string;
+        };
+        /**
+         * LookupTemplate
+         * @description A declarative, read-only lookup a Lookup step runs (SPEC §4.10.8). ``filter``
+         *     maps a field (validated against the evidence-fields grammar) to a literal or one
+         *     ``{{template value}}``, at most 8 entries; ``group_by`` (``log_stats`` only) at
+         *     most 2 fields; ``indicator`` (``enrich`` only) one template value. The window
+         *     spans at most 30 days; ``log_search`` returns at most 20 rows.
+         */
+        LookupTemplate: {
+            /** Filter */
+            filter?: {
+                [key: string]: string;
+            };
+            /** Group By */
+            group_by?: string[];
+            /** Indicator */
+            indicator?: string | null;
+            /**
+             * Limit
+             * @default 20
+             */
+            limit: number;
+            /**
+             * Run
+             * @default on_attach
+             * @enum {string}
+             */
+            run: "on_attach" | "on_demand";
+            /**
+             * Tool
+             * @enum {string}
+             */
+            tool: "log_stats" | "log_search" | "enrich" | "related_cases" | "campaign" | "mitre";
+            /**
+             * Window
+             * @default case_first_seen-1h..case_last_seen+1h
+             */
+            window: string;
+        };
+        /**
+         * MatchExplanation
+         * @description Why a runbook was chosen (SPEC §4.10.4). ``tier`` is 3 (rule matched), 2
+         *     (technique matched, the runbook names no rules), 1 (other criteria only) or 0 (the
+         *     fallback). ``tie`` says a tie survived to the id rule.
+         */
+        MatchExplanation: {
+            /** Matched */
+            matched?: components["schemas"]["MatchedCriterion"][];
+            /** Missed */
+            missed?: components["schemas"]["MissedCriterion"][];
+            /**
+             * Tie
+             * @default false
+             */
+            tie: boolean;
+            /** Tier */
+            tier: number;
+        };
+        /**
+         * MatchPreview
+         * @description ``POST /api/runbooks/match-preview`` (SPEC §4.10.15a): which of the last 500
+         *     cases in 30 days the definition would get. Nothing is attached and no metric
+         *     changes. ``truncated`` says a list was cut at 50; ``counts`` are always exact.
+         */
+        MatchPreview: {
+            /** Another Wins */
+            another_wins?: components["schemas"]["MatchPreviewOther"][];
+            /**
+             * Considered
+             * @default 0
+             */
+            considered: number;
+            counts?: components["schemas"]["MatchPreviewCounts"];
+            /** Gets It */
+            gets_it?: components["schemas"]["MatchPreviewCase"][];
+            /** Near Misses */
+            near_misses?: components["schemas"]["MatchPreviewNearMiss"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /**
+             * Window Label
+             * @default
+             */
+            window_label: string;
+        };
+        /**
+         * MatchPreviewCase
+         * @description A case the previewed runbook would get, with why.
+         */
+        MatchPreviewCase: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            explanation?: components["schemas"]["MatchExplanation"] | null;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * MatchPreviewCounts
+         * @description Exact group sizes; each list above holds at most 50.
+         */
+        MatchPreviewCounts: {
+            /**
+             * Another Wins
+             * @default 0
+             */
+            another_wins: number;
+            /**
+             * Gets It
+             * @default 0
+             */
+            gets_it: number;
+            /**
+             * Near Misses
+             * @default 0
+             */
+            near_misses: number;
+        };
+        /**
+         * MatchPreviewNearMiss
+         * @description A case that nearly matched, with the criteria that failed.
+         */
+        MatchPreviewNearMiss: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /** Failed */
+            failed?: components["schemas"]["MissedCriterion"][];
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * MatchPreviewOther
+         * @description A case another runbook would win, naming the winner.
+         */
+        MatchPreviewOther: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Winner Id */
+            winner_id: string;
+            /**
+             * Winner Title
+             * @default
+             */
+            winner_title: string;
+        };
+        /**
+         * MatchedCriterion
+         * @description A criterion that matched, and the case value that matched it.
+         */
+        MatchedCriterion: {
+            /**
+             * Criterion
+             * @enum {string}
+             */
+            criterion: "rule_ids" | "mitre" | "entity_types" | "severity_at_least" | "sources" | "verdicts" | "statuses" | "any_tags" | "min_event_count" | "always";
+            /** Value */
+            value?: string | number | string[] | null;
+        };
         /** MemoryCreate */
         MemoryCreate: {
             /**
@@ -9042,6 +10566,163 @@ export interface components {
             /** Text */
             text?: string | null;
         };
+        /**
+         * MetricsBreakdown
+         * @description ``GET /api/metrics/breakdown`` (SPEC §4.4.2): exact case or usage counts by one
+         *     or two fields over a window, from the same engine as the chat's ``case_stats``,
+         *     so dashboards and chat agree on every number. ``exact`` is false and ``partial``
+         *     true when a store failure cut the scan (the figures are then lower bounds, said
+         *     so by the widget). ``multi_valued`` warns that rows do not sum to ``total``.
+         *     ``missing_created`` counts the matching records with no readable creation time
+         *     (cases) or timestamp (usage), never silently dropped; ``missing_in_total`` says
+         *     whether ``total`` holds them (all time: yes, in the "no date" bucket; a bounded
+         *     window cannot place them).
+         */
+        MetricsBreakdown: {
+            /** Bucket */
+            bucket?: ("hour" | "day" | "week") | null;
+            /** Buckets */
+            buckets?: components["schemas"]["MetricsBreakdownBucket"][];
+            /**
+             * By
+             * @enum {string}
+             */
+            by: "rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier";
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Groups */
+            groups?: components["schemas"]["MetricsBreakdownGroup"][];
+            /**
+             * Kind
+             * @default cases
+             * @enum {string}
+             */
+            kind: "cases" | "usage";
+            /**
+             * Missing Created
+             * @default 0
+             */
+            missing_created: number;
+            /**
+             * Missing In Total
+             * @default true
+             */
+            missing_in_total: boolean;
+            /**
+             * Multi Valued
+             * @default false
+             */
+            multi_valued: boolean;
+            other?: components["schemas"]["MetricsBreakdownOther"] | null;
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Partial Reason */
+            partial_reason?: string | null;
+            /** Status Group */
+            status_group?: ("open" | "closed") | null;
+            /** Then */
+            then?: ("rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier") | null;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /** Window From */
+            window_from?: string | null;
+            /**
+             * Window Label
+             * @default
+             */
+            window_label: string;
+            /** Window To */
+            window_to?: string | null;
+        };
+        /**
+         * MetricsBreakdownBucket
+         * @description One zero-filled calendar bucket of a bucketed breakdown, in order. When ``top``
+         *     cut groups, ``other_count`` is this bucket's share of ``other`` (``count``, or
+         *     ``calls`` for usage), so the bucket's listed groups plus it are the bucket's total;
+         *     ``None`` when nothing was cut.
+         */
+        MetricsBreakdownBucket: {
+            /**
+             * In Progress
+             * @default false
+             */
+            in_progress: boolean;
+            /** Label */
+            label: string;
+            /** Other Count */
+            other_count?: number | null;
+        };
+        /**
+         * MetricsBreakdownGroup
+         * @description One row of a breakdown. ``key`` is the ``by`` value (``None`` is the empty
+         *     group, for example the unassigned cases); ``then_key`` the ``then`` value;
+         *     ``bucket`` the zero-filled calendar bucket label. Keys are untrusted plain
+         *     strings (rule ids, source names, technique names). Case metrics are filled for
+         *     ``kind=cases`` and ``None`` for ``kind=usage``; ``calls`` and ``cost_usd`` the
+         *     other way round (for usage ``count`` equals ``calls``).
+         */
+        MetricsBreakdownGroup: {
+            /** Analyst Fp */
+            analyst_fp?: number | null;
+            /** Analyst Tp */
+            analyst_tp?: number | null;
+            /** Analyst Ungraded */
+            analyst_ungraded?: number | null;
+            /** Bucket */
+            bucket?: string | null;
+            /** Calls */
+            calls?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /** Key */
+            key?: string | null;
+            /** Open Now */
+            open_now?: number | null;
+            /** Then Key */
+            then_key?: string | null;
+            /** Verdict Fp */
+            verdict_fp?: number | null;
+            /** Verdict Needs Human */
+            verdict_needs_human?: number | null;
+            /** Verdict Tp */
+            verdict_tp?: number | null;
+            /** Verdicted */
+            verdicted?: number | null;
+        };
+        /**
+         * MetricsBreakdownOther
+         * @description The exact remainder past ``top``: how many records and how many groups.
+         */
+        MetricsBreakdownOther: {
+            /** Calls */
+            calls?: number | null;
+            /** Cost Usd */
+            cost_usd?: number | null;
+            /**
+             * Count
+             * @default 0
+             */
+            count: number;
+            /**
+             * Groups
+             * @default 0
+             */
+            groups: number;
+        };
         /** MfaCodeBody */
         MfaCodeBody: {
             /** Code */
@@ -9065,6 +10746,21 @@ export interface components {
             code: string;
             /** Pending Token */
             pending_token: string;
+        };
+        /**
+         * MissedCriterion
+         * @description A criterion that failed: what the runbook expects and what the case has.
+         */
+        MissedCriterion: {
+            /** Actual */
+            actual?: string | number | string[] | null;
+            /**
+             * Criterion
+             * @enum {string}
+             */
+            criterion: "rule_ids" | "mitre" | "entity_types" | "severity_at_least" | "sources" | "verdicts" | "statuses" | "any_tags" | "min_event_count" | "always";
+            /** Expected */
+            expected?: string | number | string[] | null;
         };
         /**
          * ModelConfig
@@ -9231,41 +10927,6 @@ export interface components {
              * @enum {string}
              */
             type: "ping";
-        };
-        /**
-         * PlaybookCreateRequest
-         * @description Create one operator-owned Markdown playbook.
-         */
-        PlaybookCreateRequest: {
-            /** Content */
-            content: string;
-            /** Id */
-            id: string;
-        };
-        /**
-         * PlaybookDryRunRequest
-         * @description Synthetic cluster attributes for deterministic procedure diagnostics.
-         */
-        PlaybookDryRunRequest: {
-            /** @default rule */
-            entity_type: components["schemas"]["EntityType"];
-            /**
-             * Event Count
-             * @default 1
-             */
-            event_count: number;
-            /** Rule Ids */
-            rule_ids?: string[];
-        };
-        /**
-         * PlaybookUpdateRequest
-         * @description Replace one operator-owned Markdown playbook; the id remains immutable.
-         */
-        PlaybookUpdateRequest: {
-            /** Content */
-            content: string;
-            /** Expected Revision */
-            expected_revision?: number | null;
         };
         /**
          * PrecedentBootstrapRequest
@@ -9999,6 +11660,53 @@ export interface components {
             name: string;
         };
         /**
+         * RuleCaseOutcomes
+         * @description The analyst-outcome family only (analyst-policy closes excluded); the AI
+         *     verdict family is never labelled as an analyst outcome.
+         */
+        RuleCaseOutcomes: {
+            /**
+             * Analyst Fp
+             * @default 0
+             */
+            analyst_fp: number;
+            /**
+             * Analyst Tp
+             * @default 0
+             */
+            analyst_tp: number;
+            /**
+             * Analyst Ungraded
+             * @default 0
+             */
+            analyst_ungraded: number;
+        };
+        /**
+         * RuleCaseRow
+         * @description One of the newest cases from the rule (at most 5), named by case number.
+         */
+        RuleCaseRow: {
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Verdict */
+            verdict?: string | null;
+        };
+        /**
          * RuleDefinition
          * @description A config-driven, pre-baked-but-editable detection rule (C3-1).
          *
@@ -10083,6 +11791,264 @@ export interface components {
             lookback_seconds?: number | null;
         };
         /**
+         * RuleSeverityPoint
+         * @description One time bucket of a rule's alerts, counted per named level.
+         */
+        RuleSeverityPoint: {
+            /**
+             * Critical
+             * @default 0
+             */
+            critical: number;
+            /**
+             * High
+             * @default 0
+             */
+            high: number;
+            /**
+             * Info
+             * @default 0
+             */
+            info: number;
+            /**
+             * Low
+             * @default 0
+             */
+            low: number;
+            /**
+             * Medium
+             * @default 0
+             */
+            medium: number;
+            /** T */
+            t: string;
+        };
+        /**
+         * RuleSeveritySeries
+         * @description Alerts over time by named level. ``bucket`` is the bucket width ("12h").
+         */
+        RuleSeveritySeries: {
+            /**
+             * Bucket
+             * @default
+             */
+            bucket: string;
+            /** Levels */
+            levels?: ("info" | "low" | "medium" | "high" | "critical")[];
+            /** Points */
+            points?: components["schemas"]["RuleSeverityPoint"][];
+        };
+        /**
+         * RuleSuiteDefinition
+         * @description The summary of a suite detection rule (``Preferences.rule_catalog``).
+         */
+        RuleSuiteDefinition: {
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Mitre */
+            mitre?: string[];
+            /** Name */
+            name: string;
+            /** Priority */
+            priority?: number | null;
+        };
+        /**
+         * RuleSummary
+         * @description ``GET /api/rules/summary`` (SPEC §4.6.2): one rule's picture. Each section
+         *     checks its own grant and carries its own status, so the rule sheet degrades per
+         *     section. No model call (#6) and no raw rows (#7): the latest alerts come from
+         *     ``GET /api/logs?rule=``. The rule value and every IP, host and title are
+         *     untrusted plain strings (#9).
+         */
+        RuleSummary: {
+            alerts?: components["schemas"]["RuleSummaryAlerts"];
+            analyst_policy?: components["schemas"]["RuleSummaryAnalystPolicy"];
+            cases?: components["schemas"]["RuleSummaryCases"];
+            definition?: components["schemas"]["RuleSummaryDefinition"];
+            /** Rule */
+            rule: string;
+            top_source_ips?: components["schemas"]["RuleSummaryTopList"];
+            top_targets?: components["schemas"]["RuleSummaryTopList"];
+            tuning?: components["schemas"]["RuleSummaryTuning"];
+            window?: components["schemas"]["RuleSummaryWindow"];
+        };
+        /**
+         * RuleSummaryAlerts
+         * @description The alert figures. ``count_relation`` is ``gte`` when any source was sampled;
+         *     the Console then never names the count in "Open all N in Logs".
+         */
+        RuleSummaryAlerts: {
+            /** Count */
+            count?: number | null;
+            /**
+             * Count Relation
+             * @default eq
+             * @enum {string}
+             */
+            count_relation: "eq" | "gte";
+            /** First Seen */
+            first_seen?: string | null;
+            /** Last Seen */
+            last_seen?: string | null;
+            /** Reason */
+            reason?: string | null;
+            series?: components["schemas"]["RuleSeveritySeries"] | null;
+            /** Sources */
+            sources?: components["schemas"]["RuleSummarySource"][];
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryAnalystPolicy
+         * @description The operator's "declared benign" policy for the rule, or ``None``.
+         */
+        RuleSummaryAnalystPolicy: {
+            /** Policy */
+            policy?: Record<string, never> | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryCases
+         * @description Cases whose ``rule_ids`` hold the rule, exact through ``case_aggregate``.
+         */
+        RuleSummaryCases: {
+            /** Count */
+            count?: number | null;
+            /** Latest */
+            latest?: components["schemas"]["RuleCaseRow"][];
+            /** Open Now */
+            open_now?: number | null;
+            outcomes?: components["schemas"]["RuleCaseOutcomes"] | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryDefinition
+         * @description Where the rule is defined: ``suite`` with its summary, or ``source`` meaning
+         *     "Defined in the source SIEM" (no settings link).
+         */
+        RuleSummaryDefinition: {
+            /** Kind */
+            kind?: ("suite" | "source") | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+            suite_rule?: components["schemas"]["RuleSuiteDefinition"] | null;
+        };
+        /**
+         * RuleSummarySource
+         * @description A source that contributed to the alert figures, and whether it could filter
+         *     on the rule exactly (``False``: counted from a bounded newest-N sample).
+         */
+        RuleSummarySource: {
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Id */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+        };
+        /**
+         * RuleSummaryTopList
+         * @description A bounded top list (at most 10 rows); ``exact`` false when sampled.
+         */
+        RuleSummaryTopList: {
+            /**
+             * Exact
+             * @default true
+             */
+            exact: boolean;
+            /** Reason */
+            reason?: string | null;
+            /** Rows */
+            rows?: components["schemas"]["RuleTopRow"][];
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+        };
+        /**
+         * RuleSummaryTuning
+         * @description The rule's threshold-tuning state (needs ``automation:read``).
+         */
+        RuleSummaryTuning: {
+            /** Last Tuned */
+            last_tuned?: string | null;
+            /** Proposed Change */
+            proposed_change?: Record<string, never> | null;
+            /** Reason */
+            reason?: string | null;
+            /** Samples */
+            samples?: number | null;
+            /**
+             * Status
+             * @default ok
+             * @enum {string}
+             */
+            status: "ok" | "forbidden" | "unsupported" | "unavailable";
+            /** Wilson Lower Bound */
+            wilson_lower_bound?: number | null;
+        };
+        /**
+         * RuleSummaryWindow
+         * @description The window a rule summary measured: ``{label, from, to}`` (ISO UTC).
+         */
+        RuleSummaryWindow: {
+            /**
+             * From
+             * @default
+             */
+            from: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * To
+             * @default
+             */
+            to: string;
+        };
+        /**
          * RuleSuppression
          * @description Optional per-detection-rule alert-storm suppression metadata (G6 R5).
          *
@@ -10113,41 +12079,981 @@ export interface components {
             window_seconds?: number | null;
         };
         /**
-         * RunPlaybookRequest
-         * @description Manually RUN a specific playbook on a case (F10). ``playbook_id`` selects the
-         *     playbook to FORCE-inject as TRUSTED operator procedure for a re-investigation.
+         * RuleTopRow
+         * @description One row of a top list (an IP, a host or a user) with its count. Untrusted.
          */
-        RunPlaybookRequest: {
+        RuleTopRow: {
             /**
-             * Analyst
-             * @default analyst
+             * Count
+             * @default 0
              */
-            analyst: string;
-            /** Playbook Id */
-            playbook_id: string;
+            count: number;
+            /** Kind */
+            kind?: string | null;
+            /** Value */
+            value: string;
         };
-        /** RunbookCreateRequest */
-        RunbookCreateRequest: {
+        /**
+         * RunAbandonBody
+         * @description ``POST .../runbooks/{run_id}/abandon``.
+         */
+        RunAbandonBody: {
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * RunSwitchVersionBody
+         * @description ``POST .../runbooks/{run_id}/switch-version``.
+         */
+        RunSwitchVersionBody: {
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookAppliesTo
+         * @description The first rule and technique chips of a library row; ``more`` counts the rest.
+         */
+        RunbookAppliesTo: {
+            /** Mitre */
+            mitre?: string[];
             /**
-             * Content
-             * @default
+             * More
+             * @default 0
              */
-            content: string;
+            more: number;
+            /** Rule Ids */
+            rule_ids?: string[];
+        };
+        /**
+         * RunbookAttachBody
+         * @description ``POST /api/cases/{case_id}/runbooks``: attach one runbook by hand.
+         */
+        RunbookAttachBody: {
+            /** Note */
+            note?: string | null;
+            /** Runbook Id */
+            runbook_id: string;
+        };
+        /**
+         * RunbookAttachResult
+         * @description ``POST /api/cases/{case_id}/runbooks``: the new run, or ``already_attached``
+         *     (idempotent per case and runbook, #4).
+         */
+        RunbookAttachResult: {
             /**
-             * Id
-             * @default
+             * Already Attached
+             * @default false
              */
+            already_attached: boolean;
+            progress?: components["schemas"]["RunbookProgress"] | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            run?: components["schemas"]["RunbookRun"] | null;
+        };
+        /**
+         * RunbookCandidate
+         * @description One entry of the Start runbook picker (``GET .../runbooks/candidates``).
+         */
+        RunbookCandidate: {
+            explanation?: components["schemas"]["MatchExplanation"] | null;
+            /**
+             * Group
+             * @enum {string}
+             */
+            group: "best" | "other" | "fallback" | "all" | "suggested";
+            /** Id */
             id: string;
-        };
-        /** RunbookUpdateRequest */
-        RunbookUpdateRequest: {
             /**
-             * Content
+             * Origin
+             * @enum {string}
+             */
+            origin: "builtin" | "operator" | "imported";
+            /** Phases */
+            phases?: ("triage" | "investigate" | "contain" | "eradicate" | "recover" | "close")[];
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Summary
              * @default
              */
-            content: string;
+            summary: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookCandidates
+         * @description The Start runbook picker list, best match first.
+         */
+        RunbookCandidates: {
+            /** Candidates */
+            candidates?: components["schemas"]["RunbookCandidate"][];
+        };
+        /**
+         * RunbookDefinition
+         * @description A runbook's canonical definition (SPEC §4.10.2). It has no ``version`` field:
+         *     a version is metadata of the stored document (``RunbookVersionDoc.version``) and
+         *     of a built-in's front matter. ``phases`` is ordered, 1 to 6, each used by at least
+         *     one step; ``steps`` holds 1 to 40. ``references`` are https links only, at most
+         *     10. ``review_every_days`` defaults to 180 (E6).
+         */
+        RunbookDefinition: {
+            applies_when?: components["schemas"]["AppliesWhen"];
+            /** Id */
+            id: string;
+            /** Mitre */
+            mitre?: string[];
+            /** Owner */
+            owner?: string | null;
+            /** Phases */
+            phases?: ("triage" | "investigate" | "contain" | "eradicate" | "recover" | "close")[];
+            /**
+             * Prerequisites
+             * @default
+             */
+            prerequisites: string;
+            /**
+             * Priority
+             * @default 50
+             */
+            priority: number;
+            /** References */
+            references?: string[];
+            /** Retrieval Queries */
+            retrieval_queries?: string[];
+            /**
+             * Review Every Days
+             * @default 180
+             */
+            review_every_days: number;
+            /** Steps */
+            steps?: components["schemas"]["RunbookStep"][];
+            /** Summary */
+            summary: string;
+            /** Title */
+            title: string;
+            /**
+             * Use When
+             * @default
+             */
+            use_when: string;
+        };
+        /**
+         * RunbookDetail
+         * @description ``GET /api/runbooks/{id}`` (SPEC §4.10.15a). ``draft`` and ``in_review`` are
+         *     present only to a holder of ``runbooks:manage`` or ``runbooks:publish``.
+         *     ``open_runs_by_version`` maps a version to the active runs pinned to it.
+         *     ``revision`` is the library document's CAS revision, sent back as
+         *     ``expected_revision``.
+         */
+        RunbookDetail: {
+            draft?: components["schemas"]["RunbookVersionDoc"] | null;
+            in_review?: components["schemas"]["RunbookVersionDoc"] | null;
+            live?: components["schemas"]["RunbookVersionDoc"] | null;
+            /** Open Runs By Version */
+            open_runs_by_version?: {
+                [key: string]: number;
+            };
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            summary: components["schemas"]["RunbookSummary"];
+            /** Versions */
+            versions?: components["schemas"]["RunbookVersionListItem"][];
+        };
+        /**
+         * RunbookDiscardResult
+         * @description ``DELETE /api/runbooks/{id}/draft``: the runbook after its draft is gone, or
+         *     ``removed`` when it was never published (it disappears).
+         */
+        RunbookDiscardResult: {
+            detail?: components["schemas"]["RunbookDetail"] | null;
+            /** Id */
+            id: string;
+            /**
+             * Removed
+             * @default false
+             */
+            removed: boolean;
+        };
+        /**
+         * RunbookDraftBody
+         * @description ``PUT /api/runbooks/{id}/draft``: the new draft and the revision it edits.
+         */
+        RunbookDraftBody: {
+            definition?: components["schemas"]["RunbookDefinition"] | null;
             /** Expected Revision */
             expected_revision: number;
+            /** Source */
+            source?: string | null;
+        };
+        /**
+         * RunbookIssue
+         * @description One validation problem: where (``steps[3].lookup.filter``), a stable code and
+         *     a plain sentence naming the fix.
+         */
+        RunbookIssue: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+        };
+        /**
+         * RunbookLibrary
+         * @description ``GET /api/runbooks`` (the new shape): built-ins and operator runbooks. There
+         *     is no empty library: the 12 built-ins are always listed.
+         */
+        RunbookLibrary: {
+            migration?: components["schemas"]["RunbookMigrationNotice"] | null;
+            /** Runbooks */
+            runbooks?: components["schemas"]["RunbookSummary"][];
+        };
+        /**
+         * RunbookLookupTestBody
+         * @description ``POST /api/runbooks/lookup-test``: run a draft lookup against one case,
+         *     read-only, storing nothing.
+         */
+        RunbookLookupTestBody: {
+            /** Case Id */
+            case_id: string;
+            lookup: components["schemas"]["LookupTemplate"];
+        };
+        /**
+         * RunbookMetrics
+         * @description ``GET /api/runbooks/metrics`` (SPEC §4.10.15a). ``partial`` is true when a
+         *     ledger month document reached its cap inside the window. Every figure states its
+         *     population and none claims a runbook caused a time change.
+         */
+        RunbookMetrics: {
+            cohorts?: components["schemas"]["RunbookMetricsCohorts"];
+            coverage?: components["schemas"]["RunbookMetricsCoverage"];
+            /**
+             * Partial
+             * @default false
+             */
+            partial: boolean;
+            /** Per Phase */
+            per_phase?: components["schemas"]["RunbookMetricsPhaseRow"][];
+            /** Per Runbook */
+            per_runbook?: components["schemas"]["RunbookMetricsRunbookRow"][];
+            /** Per Step */
+            per_step?: components["schemas"]["RunbookMetricsStepRow"][];
+            /** Recent Runs */
+            recent_runs?: components["schemas"]["RunbookMetricsRecentRun"][];
+            /** Rules Without Runbook */
+            rules_without_runbook?: components["schemas"]["RunbookMetricsRuleGap"][];
+            /**
+             * Window Label
+             * @default
+             */
+            window_label: string;
+        };
+        /**
+         * RunbookMetricsCohort
+         * @description One response-time cohort: its size and median time to resolve.
+         */
+        RunbookMetricsCohort: {
+            /**
+             * Cases
+             * @default 0
+             */
+            cases: number;
+            /** Mttr P50 Minutes */
+            mttr_p50_minutes?: number | null;
+        };
+        /**
+         * RunbookMetricsCohorts
+         * @description Cases with and without a completed run. A comparison, never a cause.
+         */
+        RunbookMetricsCohorts: {
+            /**
+             * Note
+             * @default comparison, not cause
+             * @constant
+             */
+            note: "comparison, not cause";
+            with_completed_run?: components["schemas"]["RunbookMetricsCohort"];
+            without?: components["schemas"]["RunbookMetricsCohort"];
+        };
+        /**
+         * RunbookMetricsCoverage
+         * @description Human-handled cases in the window, and how many had a run.
+         */
+        RunbookMetricsCoverage: {
+            /**
+             * Cases With Run
+             * @default 0
+             */
+            cases_with_run: number;
+            /**
+             * Human Handled Cases
+             * @default 0
+             */
+            human_handled_cases: number;
+        };
+        /**
+         * RunbookMetricsPhaseRow
+         * @description The median time to finish one phase of one runbook.
+         */
+        RunbookMetricsPhaseRow: {
+            /** Median Minutes */
+            median_minutes?: number | null;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "triage" | "investigate" | "contain" | "eradicate" | "recover" | "close";
+            /** Runbook Id */
+            runbook_id: string;
+        };
+        /**
+         * RunbookMetricsRecentRun
+         * @description One of the most recent runs, for the library's Recent runs panel.
+         */
+        RunbookMetricsRecentRun: {
+            /**
+             * Attached Actor
+             * @default
+             */
+            attached_actor: string;
+            /** Case Id */
+            case_id: string;
+            /**
+             * Case Number
+             * @default
+             */
+            case_number: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Duration Minutes */
+            duration_minutes?: number | null;
+            /** Run Id */
+            run_id: string;
+            /** Runbook Id */
+            runbook_id: string;
+            /**
+             * Started At
+             * @default
+             */
+            started_at: string;
+            /**
+             * Status
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "completed" | "abandoned";
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Version */
+            version?: number | null;
+        };
+        /**
+         * RunbookMetricsRuleGap
+         * @description A rule seen in the window that no Published runbook matches. Untrusted.
+         */
+        RunbookMetricsRuleGap: {
+            /**
+             * Cases
+             * @default 0
+             */
+            cases: number;
+            /** Rule */
+            rule: string;
+        };
+        /**
+         * RunbookMetricsRunbookRow
+         * @description Runs started, completed and abandoned for one runbook in the window.
+         */
+        RunbookMetricsRunbookRow: {
+            /**
+             * Abandoned
+             * @default 0
+             */
+            abandoned: number;
+            /**
+             * Completed
+             * @default 0
+             */
+            completed: number;
+            /** Id */
+            id: string;
+            /** Median Minutes To Complete */
+            median_minutes_to_complete?: number | null;
+            /**
+             * Started
+             * @default 0
+             */
+            started: number;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * RunbookMetricsStepRow
+         * @description The median time and the skip count of one step.
+         */
+        RunbookMetricsStepRow: {
+            /** Median Minutes */
+            median_minutes?: number | null;
+            /** Runbook Id */
+            runbook_id: string;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+            /** Step Id */
+            step_id: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+        };
+        /**
+         * RunbookMigratedFrom
+         * @description The legacy document a migrated runbook came from (SPEC §4.10.17).
+         */
+        RunbookMigratedFrom: {
+            /** Id */
+            id: string;
+            /** Namespace */
+            namespace: string;
+            /** Revision */
+            revision?: number | null;
+        };
+        /**
+         * RunbookMigrationNotice
+         * @description The one-shot migration's counts (from its marker, §4.10.17), for the Runbooks
+         *     page's dismissible intro: "Your 10 procedures from the previous version are now
+         *     runbooks. 9 are published and due for review; 1 is a draft with problems to fix."
+         *     ``None`` on the library response when nothing was migrated.
+         */
+        RunbookMigrationNotice: {
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Draft
+             * @default 0
+             */
+            draft: number;
+            /**
+             * Published
+             * @default 0
+             */
+            published: number;
+            /**
+             * Skipped
+             * @default 0
+             */
+            skipped: number;
+        };
+        /**
+         * RunbookProgress
+         * @description Progress derived on read from a run (never stored). ``done`` counts only Done
+         *     steps; Not applicable is counted on its own and never as done. The chip reads
+         *     "4/11", "5/9 · 1 blocked" or "4/11 · 1 waiting".
+         */
+        RunbookProgress: {
+            /**
+             * Blocked
+             * @default 0
+             */
+            blocked: number;
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Not Applicable
+             * @default 0
+             */
+            not_applicable: number;
+            /**
+             * Required Open
+             * @default 0
+             */
+            required_open: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Waiting
+             * @default 0
+             */
+            waiting: number;
+        };
+        /**
+         * RunbookProgressBody
+         * @description ``POST /api/runbooks/progress``: progress for up to 100 cases at once, each id
+         *     1 to 128 characters (an id becomes part of a store key).
+         */
+        RunbookProgressBody: {
+            /** Case Ids */
+            case_ids?: string[];
+        };
+        /**
+         * RunbookPublishBody
+         * @description ``POST /api/runbooks/{id}/publish`` (SPEC §4.10.15): the version and the
+         *     library revision the publisher reviewed, both required. Publishing is the one
+         *     transition that makes runbook text trusted investigator guidance (#9), and drafts
+         *     are edited in place, so a publish is bound to exactly what was reviewed: a stale
+         *     ``expected_revision`` answers ``409 runbook_conflict`` with the latest state.
+         *     ``content_hash`` (the reviewed version's ``RunbookVersionDoc.content_hash``) also
+         *     binds it across a discard and re-create, where a new library document can repeat
+         *     an old revision number; when given, a different stored hash is ``409
+         *     runbook_conflict`` too. The Console always sends it.
+         */
+        RunbookPublishBody: {
+            /** Content Hash */
+            content_hash?: string | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookRef
+         * @description A pinned reference to one version of a runbook (``derived_from``).
+         */
+        RunbookRef: {
+            /** Id */
+            id: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookRejectBody
+         * @description ``POST /api/runbooks/{id}/reject``: back to draft with a reason.
+         */
+        RunbookRejectBody: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** Reason */
+            reason: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookReviewNote
+         * @description A reviewer's note on a version (a rejection reason, a review comment).
+         */
+        RunbookReviewNote: {
+            /** At */
+            at: string;
+            /** By */
+            by: string;
+            /** Text */
+            text: string;
+        };
+        /**
+         * RunbookRevisionBody
+         * @description ``retire``, ``restore``, ``reviewed``, ``duplicate`` and ``versions/{n}/restore``:
+         *     the revision the action is based on (optional for the idempotent ones).
+         */
+        RunbookRevisionBody: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+        };
+        /**
+         * RunbookRun
+         * @description One runbook run on one case (SPEC §4.10.7). A run pins its version: the
+         *     ``snapshot`` lets it render without the catalog, and "Switch to v5" is an
+         *     explicit, audited step. ``attached_reason`` is the match explanation
+         *     (:class:`MatchExplanation`) or ``{by: <user>, note}``. Completing or abandoning a
+         *     run never changes the case (#3); one run per case and runbook (#4).
+         */
+        RunbookRun: {
+            /** Abandoned Reason */
+            abandoned_reason?: string | null;
+            /**
+             * Attached Actor
+             * @default
+             */
+            attached_actor: string;
+            /**
+             * Attached At
+             * @default
+             */
+            attached_at: string;
+            /**
+             * Attached By
+             * @enum {string}
+             */
+            attached_by: "rule" | "fallback" | "person" | "suggestion";
+            /** Attached Reason */
+            attached_reason?: Record<string, never>;
+            /** Case Id */
+            case_id: string;
+            /** Completed At */
+            completed_at?: string | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Run Id */
+            run_id: string;
+            /** Runbook Id */
+            runbook_id: string;
+            snapshot: components["schemas"]["RunbookDefinition"];
+            /**
+             * Status
+             * @default active
+             * @enum {string}
+             */
+            status: "active" | "completed" | "abandoned";
+            /** Steps */
+            steps?: {
+                [key: string]: components["schemas"]["StepState"];
+            };
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookRunUpdate
+         * @description The result of any write to one run: a step update, a lookup, an approval, an AI
+         *     draft or its confirmation, a version switch or an abandon. ``revision`` is the case
+         *     document's CAS revision after the write.
+         */
+        RunbookRunUpdate: {
+            progress: components["schemas"]["RunbookProgress"];
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            run: components["schemas"]["RunbookRun"];
+        };
+        /**
+         * RunbookSourceBody
+         * @description ``POST /api/runbooks`` (create a draft), ``/validate``, ``/import`` and
+         *     ``/match-preview``: a definition, or Markdown source, or (match preview only) an
+         *     existing runbook id.
+         *
+         *     ``content`` is the old write shape's key, accepted only so the route can tell
+         *     ``{id, content}`` apart after validation: any request that sets it (``"content" in
+         *     model_fields_set``) answers ``410 runbooks_moved``, because an old-shape write
+         *     cannot be honoured without making unreviewed text trusted (#9, E14).
+         */
+        RunbookSourceBody: {
+            /**
+             * Content
+             * @description Legacy key of the old write shape; any value answers 410 runbooks_moved.
+             */
+            content?: unknown;
+            definition?: components["schemas"]["RunbookDefinition"] | null;
+            /** Id */
+            id?: string | null;
+            /** Source */
+            source?: string | null;
+        };
+        /**
+         * RunbookStep
+         * @description One step (SPEC §4.10.2, §4.10.3). ``id`` is a slug unique in the runbook and
+         *     stable across versions. Checks are written as questions. ``instructions`` is
+         *     restricted Markdown for people (never part of the investigator prompt);
+         *     ``focus``, ``escalate_if`` and ``benign_if`` are what the investigator reads.
+         *     ``lookup`` is required on Lookup steps and absent elsewhere; ``options`` holds 2
+         *     to 6 options on Decision steps. ``approval_role`` is honoured only when step
+         *     approvals are on; ``target_minutes`` is shown, never enforced.
+         */
+        RunbookStep: {
+            /** Approval Role */
+            approval_role?: string | null;
+            /** Benign If */
+            benign_if?: string | null;
+            /** D3Fend */
+            d3fend?: string | null;
+            /** Escalate If */
+            escalate_if?: string | null;
+            /**
+             * Evidence
+             * @default none
+             * @enum {string}
+             */
+            evidence: "none" | "note" | "note_or_attachment";
+            /** Focus */
+            focus?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "check" | "lookup" | "decision" | "action" | "record";
+            lookup?: components["schemas"]["LookupTemplate"] | null;
+            /** Options */
+            options?: components["schemas"]["DecisionOption"][];
+            /** Owner Role */
+            owner_role?: string | null;
+            /**
+             * Phase
+             * @enum {string}
+             */
+            phase: "triage" | "investigate" | "contain" | "eradicate" | "recover" | "close";
+            /** React */
+            react?: string | null;
+            /**
+             * Required
+             * @default true
+             */
+            required: boolean;
+            /** Target Minutes */
+            target_minutes?: number | null;
+            /** Title */
+            title: string;
+        };
+        /**
+         * RunbookStepDraftResult
+         * @description ``POST .../steps/{step_id}/draft``: the run with the step's new AI draft
+         *     (labelled "AI draft" until a person confirms it), or with ``dry_run=true`` only
+         *     the estimate of the one gateway call (#6).
+         */
+        RunbookStepDraftResult: {
+            estimate?: components["schemas"]["ReportSummaryEstimate"] | null;
+            update?: components["schemas"]["RunbookRunUpdate"] | null;
+        };
+        /**
+         * RunbookStepUpdate
+         * @description ``PATCH /api/cases/{case_id}/runbooks/{run_id}/steps/{step_id}``. A stale
+         *     ``expected_revision`` is never retried (``409 runbook_conflict``). ``assignee``
+         *     sent as ``null`` clears the assignment; an absent key leaves it (the route reads
+         *     ``model_fields_set``).
+         */
+        RunbookStepUpdate: {
+            action_record?: components["schemas"]["StepActionRecordInput"] | null;
+            /** Assignee */
+            assignee?: string | null;
+            decision?: components["schemas"]["StepDecisionInput"] | null;
+            evidence_link?: components["schemas"]["StepEvidenceLinkInput"] | null;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Note */
+            note?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /** Status */
+            status?: ("todo" | "in_progress" | "done" | "not_applicable" | "blocked") | null;
+        };
+        /**
+         * RunbookSuggestion
+         * @description ``POST /api/cases/{case_id}/runbooks/suggest``: the AI's suggestion, which a
+         *     person must select (it is never attached), or with ``dry_run=true`` only the
+         *     estimate of the one gateway call (#6).
+         */
+        RunbookSuggestion: {
+            candidate?: components["schemas"]["RunbookCandidate"] | null;
+            estimate?: components["schemas"]["ReportSummaryEstimate"] | null;
+        };
+        /**
+         * RunbookSummary
+         * @description One library row (SPEC §4.10.15a). ``state`` is the most advanced visible
+         *     state. ``runs_30d`` is ``None`` without ``cases:read``. ``review_due_at`` is
+         *     ``last_reviewed_at + review_every_days``; imported content is due at once (D38).
+         *     ``replaced_by`` names the Published operator copy that stopped a built-in
+         *     matching. Titles and summaries are plain text.
+         */
+        RunbookSummary: {
+            applies_to?: components["schemas"]["RunbookAppliesTo"];
+            derived_from?: components["schemas"]["RunbookRef"] | null;
+            /** Draft Version */
+            draft_version?: number | null;
+            /** Id */
+            id: string;
+            /** In Review Version */
+            in_review_version?: number | null;
+            /** Last Reviewed At */
+            last_reviewed_at?: string | null;
+            /** Last Reviewed By */
+            last_reviewed_by?: string | null;
+            /** Live Version */
+            live_version?: number | null;
+            migrated_from?: components["schemas"]["RunbookMigratedFrom"] | null;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "builtin" | "operator" | "imported";
+            /** Owner */
+            owner?: string | null;
+            /** Phases */
+            phases?: ("triage" | "investigate" | "contain" | "eradicate" | "recover" | "close")[];
+            /** Replaced By */
+            replaced_by?: string | null;
+            /** Replaces */
+            replaces?: string | null;
+            /**
+             * Retired
+             * @default false
+             */
+            retired: boolean;
+            /** Review Due At */
+            review_due_at?: string | null;
+            /** Runs 30D */
+            runs_30d?: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "draft" | "in_review" | "published" | "retired";
+            /**
+             * Step Count
+             * @default 0
+             */
+            step_count: number;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Updated By */
+            updated_by?: string | null;
+        };
+        /**
+         * RunbookValidation
+         * @description ``POST /api/runbooks/validate``: the issues and the investigator guidance
+         *     length against its budget. Nothing is written.
+         */
+        RunbookValidation: {
+            /** Issues */
+            issues?: components["schemas"]["RunbookIssue"][];
+            /**
+             * Prompt Budget
+             * @default 0
+             */
+            prompt_budget: number;
+            /**
+             * Prompt Chars
+             * @default 0
+             */
+            prompt_chars: number;
+        };
+        /**
+         * RunbookVersionBody
+         * @description ``POST /api/runbooks/{id}/submit``: the version sent for review. Publishing
+         *     takes :class:`RunbookPublishBody`, which requires the revision.
+         */
+        RunbookVersionBody: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookVersionDoc
+         * @description One immutable version (SPEC §4.10.5, §4.10.15a). ``content_hash`` is the
+         *     SHA-256 of the canonical definition; ``source`` its Markdown; ``prompt_chars`` the
+         *     investigator rendering's length (the budget is 3,000, E10).
+         */
+        RunbookVersionDoc: {
+            /**
+             * Author
+             * @default
+             */
+            author: string;
+            /**
+             * Content Hash
+             * @default
+             */
+            content_hash: string;
+            /**
+             * Created At
+             * @default
+             */
+            created_at: string;
+            definition: components["schemas"]["RunbookDefinition"];
+            /** Import Notes */
+            import_notes?: string[];
+            /**
+             * Prompt Chars
+             * @default 0
+             */
+            prompt_chars: number;
+            /** Published At */
+            published_at?: string | null;
+            /** Published By */
+            published_by?: string | null;
+            /** Retired At */
+            retired_at?: string | null;
+            /** Retired By */
+            retired_by?: string | null;
+            /** Review Notes */
+            review_notes?: components["schemas"]["RunbookReviewNote"][];
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "draft" | "in_review" | "published" | "superseded" | "retired";
+            /** Submitted At */
+            submitted_at?: string | null;
+            /** Submitted By */
+            submitted_by?: string | null;
+            /** Superseded At */
+            superseded_at?: string | null;
+            /** Version */
+            version: number;
+        };
+        /**
+         * RunbookVersionListItem
+         * @description One row of a runbook's version history.
+         */
+        RunbookVersionListItem: {
+            /** Published At */
+            published_at?: string | null;
+            /** Published By */
+            published_by?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "draft" | "in_review" | "published" | "superseded" | "retired";
+            /** Version */
+            version: number;
         };
         /** SSOProviderSecretBody */
         SSOProviderSecretBody: {
@@ -10416,6 +13322,53 @@ export interface components {
              */
             to_status: string;
         };
+        /**
+         * StepActionRecordInput
+         * @description What a person recorded on an Action or Record step.
+         */
+        StepActionRecordInput: {
+            /**
+             * Outcome
+             * @default
+             */
+            outcome: string;
+            /** Performed At */
+            performed_at?: string | null;
+            /**
+             * Where
+             * @default
+             */
+            where: string;
+        };
+        /**
+         * StepApprovalBody
+         * @description ``POST .../steps/{step_id}/approval``: the recorder can never approve.
+         */
+        StepApprovalBody: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approve" | "reject";
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * StepDecisionInput
+         * @description The option a person picked on a Decision step.
+         */
+        StepDecisionInput: {
+            /** Option Id */
+            option_id: string;
+        };
+        /**
+         * StepDraftConfirmBody
+         * @description ``POST .../steps/{step_id}/draft/confirm``: the draft as the person edited it.
+         */
+        StepDraftConfirmBody: {
+            /** Text */
+            text: string;
+        };
         /** StepEndEvent */
         StepEndEvent: {
             step: components["schemas"]["ChatStep"];
@@ -10424,6 +13377,45 @@ export interface components {
              * @enum {string}
              */
             type: "step.end";
+        };
+        /**
+         * StepEvidence
+         * @description One piece of evidence on a step: a stored lookup result, an https link or a
+         *     ticket reference (``url`` at most 500, ``label`` at most 120 characters).
+         *
+         *     ``url`` is https only (:func:`https_url`). A stored value that is not a safe https
+         *     link reads as ``None`` (the label still shows), so a row written before this rule,
+         *     or by hand, can never reach a viewer as a ``javascript:`` or ``data:`` link.
+         */
+        StepEvidence: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "lookup_result" | "link" | "ticket";
+            /** Label */
+            label?: string | null;
+            lookup?: components["schemas"]["LookupResult"] | null;
+            /** Url */
+            url?: string | null;
+        };
+        /**
+         * StepEvidenceLinkInput
+         * @description An https link or ticket reference attached as evidence. ``url`` must be an
+         *     absolute https link (:func:`https_url`; ``javascript:``, ``data:``, ``http:`` and
+         *     relative links are refused with a 422).
+         */
+        StepEvidenceLinkInput: {
+            /**
+             * Kind
+             * @default link
+             * @enum {string}
+             */
+            kind: "link" | "ticket";
+            /** Label */
+            label?: string | null;
+            /** Url */
+            url?: string | null;
         };
         /**
          * StepProgressEvent
@@ -10490,6 +13482,56 @@ export interface components {
             };
             /** Tool */
             tool?: string | null;
+        };
+        /**
+         * StepState
+         * @description The live state of one step in a run. ``note`` is plain text (at most 4,000);
+         *     ``reason`` (1 to 500) is required for ``not_applicable`` and ``blocked``.
+         *
+         *     The dict-valued fields have fixed shapes (the TypeScript mirror types them):
+         *     ``decision`` ``{option_id, label, by, at}``; ``action_record`` ``{performed_by,
+         *     performed_at, where, outcome}``; ``approval`` ``{required_role, status:
+         *     pending|approved|rejected, by, at, reason}``; ``ai_draft`` ``{text <= 2,000,
+         *     created_at, model, usage_id, confirmed}``. An AI draft is never part of the case
+         *     until a person confirms it, and the AI never sets a status (§4.10.10).
+         */
+        StepState: {
+            /** Action Record */
+            action_record?: Record<string, never> | null;
+            /** Ai Draft */
+            ai_draft?: Record<string, never> | null;
+            /** Approval */
+            approval?: Record<string, never> | null;
+            /** Assignee */
+            assignee?: string | null;
+            /** Completed At */
+            completed_at?: string | null;
+            /** Completed By */
+            completed_by?: string | null;
+            /** Decision */
+            decision?: Record<string, never> | null;
+            /** Evidence */
+            evidence?: components["schemas"]["StepEvidence"][];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @default todo
+             * @enum {string}
+             */
+            status: "todo" | "in_progress" | "done" | "not_applicable" | "blocked";
         };
         /**
          * StepUsage
@@ -12052,14 +15094,37 @@ export interface operations {
     list_audit_api_audit_get: {
         parameters: {
             query?: {
-                actor?: string | null;
+                /** @description next_cursor of the previous page */
+                cursor?: string | null;
+                order?: "desc" | "asc";
+                /** @description 1 to 200, larger values clamped; absent or 0 is 100 without 'scope', 50 with it */
+                limit?: number | null;
+                /** @description people, agent or all; absent reads every row */
+                scope?: ("people" | "agent" | "all") | null;
+                /** @description search: event name, actor, target and the summaries */
+                q?: string | null;
+                /** @description exact action_type (unchanged meaning) */
                 action?: string | null;
+                /** @description structured action (auth.login), category id or event family */
+                event?: string | null;
+                /** @description exact actor (unchanged meaning) */
+                actor?: string | null;
+                /** @description actor contains, case-insensitive */
+                actor_contains?: string | null;
+                actor_kind?: ("human" | "agent" | "system" | "service") | null;
+                /** @description success, failure, denied, partial, or unknown (Not recorded: no outcome recorded and none derived, or a recorded unknown) */
+                outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
                 surface?: string | null;
                 case_id?: string | null;
                 source_id?: string | null;
+                /** @description target id */
+                target?: string | null;
+                /** @description client IP address */
+                ip?: string | null;
+                /** @description start: now-7d, now-1d/d, an ISO 8601 time, a date or epoch milliseconds */
                 from?: string | null;
+                /** @description end, in the same forms as 'from' */
                 to?: string | null;
-                limit?: number;
             };
             header?: never;
             path?: never;
@@ -12073,7 +15138,123 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AuditListResponse"];
+                    "application/json": components["schemas"]["AuditPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    count_audit_api_audit_count_get: {
+        parameters: {
+            query?: {
+                /** @description exact up to this many (1 to 100,001; absent or 0 is 100,001) */
+                cap?: number | null;
+                /** @description people, agent or all; absent reads every row */
+                scope?: ("people" | "agent" | "all") | null;
+                /** @description search: event name, actor, target and the summaries */
+                q?: string | null;
+                /** @description exact action_type (unchanged meaning) */
+                action?: string | null;
+                /** @description structured action (auth.login), category id or event family */
+                event?: string | null;
+                /** @description exact actor (unchanged meaning) */
+                actor?: string | null;
+                /** @description actor contains, case-insensitive */
+                actor_contains?: string | null;
+                actor_kind?: ("human" | "agent" | "system" | "service") | null;
+                /** @description success, failure, denied, partial, or unknown (Not recorded: no outcome recorded and none derived, or a recorded unknown) */
+                outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
+                surface?: string | null;
+                case_id?: string | null;
+                source_id?: string | null;
+                /** @description target id */
+                target?: string | null;
+                /** @description client IP address */
+                ip?: string | null;
+                /** @description start: now-7d, now-1d/d, an ISO 8601 time, a date or epoch milliseconds */
+                from?: string | null;
+                /** @description end, in the same forms as 'from' */
+                to?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditCount"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_audit_record_api_audit_records__record_id__get: {
+        parameters: {
+            query?: {
+                /** @description people, agent or all; absent reads every row */
+                scope?: ("people" | "agent" | "all") | null;
+                /** @description search: event name, actor, target and the summaries */
+                q?: string | null;
+                /** @description exact action_type (unchanged meaning) */
+                action?: string | null;
+                /** @description structured action (auth.login), category id or event family */
+                event?: string | null;
+                /** @description exact actor (unchanged meaning) */
+                actor?: string | null;
+                /** @description actor contains, case-insensitive */
+                actor_contains?: string | null;
+                actor_kind?: ("human" | "agent" | "system" | "service") | null;
+                /** @description success, failure, denied, partial, or unknown (Not recorded: no outcome recorded and none derived, or a recorded unknown) */
+                outcome?: ("success" | "failure" | "denied" | "partial" | "unknown") | null;
+                surface?: string | null;
+                case_id?: string | null;
+                source_id?: string | null;
+                /** @description target id */
+                target?: string | null;
+                /** @description client IP address */
+                ip?: string | null;
+                /** @description start: now-7d, now-1d/d, an ISO 8601 time, a date or epoch milliseconds */
+                from?: string | null;
+                /** @description end, in the same forms as 'from' */
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuditRecord"];
                 };
             };
             /** @description Validation Error */
@@ -13051,6 +16232,8 @@ export interface operations {
                 assignee?: string | null;
                 severity?: string | null;
                 verdict?: string | null;
+                rule?: string | null;
+                closed_by?: string | null;
             };
             header?: never;
             path?: never;
@@ -13551,9 +16734,173 @@ export interface operations {
             };
             cookie?: never;
         };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_case_runbooks_api_cases__case_id__runbooks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaseRunbooks"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attach_case_runbook_api_cases__case_id__runbooks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RunPlaybookRequest"];
+                "application/json": components["schemas"]["RunbookAttachBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookAttachResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_runbook_candidates_api_cases__case_id__runbooks_candidates_get: {
+        parameters: {
+            query?: {
+                q?: string | null;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookCandidates"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggest_case_runbook_api_cases__case_id__runbooks_suggest_post: {
+        parameters: {
+            query?: {
+                dry_run?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookSuggestion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    abandon_runbook_run_api_cases__case_id__runbooks__run_id__abandon_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunAbandonBody"];
             };
         };
         responses: {
@@ -13563,7 +16910,222 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookStepUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_runbook_approval_api_cases__case_id__runbooks__run_id__steps__step_id__approval_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepApprovalBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    draft_runbook_step_api_cases__case_id__runbooks__run_id__steps__step_id__draft_post: {
+        parameters: {
+            query?: {
+                dry_run?: boolean;
+            };
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookStepDraftResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_runbook_step_draft_api_cases__case_id__runbooks__run_id__steps__step_id__draft_confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StepDraftConfirmBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_runbook_lookup_api_cases__case_id__runbooks__run_id__steps__step_id__lookup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+                step_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    switch_runbook_run_version_api_cases__case_id__runbooks__run_id__switch_version_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                case_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunSwitchVersionBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookRunUpdate"];
                 };
             };
             /** @description Validation Error */
@@ -14914,7 +18476,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DashboardLayout"];
+                "application/json": components["schemas"]["DashboardLayoutIn"];
             };
         };
         responses: {
@@ -14969,7 +18531,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["DashboardLayout"];
+                "application/json": components["schemas"]["DashboardLayoutIn"];
             };
         };
         responses: {
@@ -15633,14 +19195,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Verified ZIP artifact */
+            /** @description The verified artifact: a ZIP for a data export, a CSV or JSON Lines file for an audit export. Every download is audited first. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": unknown;
+                    "application/x-ndjson": string;
                     "application/zip": string;
+                    "text/csv": string;
                 };
             };
             /** @description Validation Error */
@@ -15651,6 +19215,13 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+            /** @description audit_unavailable: the download could not be audited */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -15930,6 +19501,9 @@ export interface operations {
                 to?: string | null;
                 source_id?: string | null;
                 per_source_timeout?: number;
+                rule?: string | null;
+                severity?: string | null;
+                severity_gte?: string | null;
             };
             header?: never;
             path?: never;
@@ -16236,6 +19810,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_breakdown_api_metrics_breakdown_get: {
+        parameters: {
+            query: {
+                /** @description The grouping. kind=cases: rule, source, severity, status, verdict, closed_by, assignee, mitre_tactic, mitre_technique. kind=usage: surface, role, model, provider, service_tier. */
+                by: "rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier";
+                /** @description cases (gate metrics:view) or usage (gate cost:view). */
+                kind?: "cases" | "usage";
+                /** @description An optional second grouping from the same set, not equal to by (an exact cross-tab). */
+                then?: "rule" | "source" | "severity" | "status" | "verdict" | "closed_by" | "assignee" | "mitre_tactic" | "mitre_technique" | "surface" | "role" | "model" | "provider" | "service_tier";
+                /** @description The Round 12 window grammar: all, now-24h, now-7d, now-30d, calendar tokens (this_month, last_week, ...), period literals or ranges (A..B), resolved in the operator timezone. A relative window of days, weeks, months or years spans whole periods, the last in progress, exactly as chat counts it. */
+                window?: string;
+                /** @description Optional zero-filled time buckets over the window. */
+                bucket?: "hour" | "day" | "week";
+                /** @description Groups kept, 1 to 50; the rest is one exact other row. */
+                top?: number;
+                /** @description kind=cases only: count only cases carrying this exact rule value, matched as stored (1 to 256 printable characters, case sensitive, spaces included). */
+                filter_rule?: string | null;
+                /** @description kind=cases only: open (the open stock; with window=all for open-now figures) or closed (closed or resolved cases). */
+                status_group?: "open" | "closed";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MetricsBreakdown"];
                 };
             };
             /** @description Validation Error */
@@ -16848,28 +20468,15 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PlaybookCreateRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": unknown;
                 };
             };
         };
@@ -16901,28 +20508,15 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PlaybookDryRunRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": unknown;
                 };
             };
         };
@@ -16937,12 +20531,12 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": unknown;
                 };
             };
         };
@@ -17018,19 +20612,15 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PlaybookUpdateRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -18707,6 +22297,42 @@ export interface operations {
             };
         };
     };
+    rule_summary_api_rules_summary_get: {
+        parameters: {
+            query: {
+                /** @description The exact rule value as shown (rule id or name), 1 to 256 characters. */
+                rule: string;
+                /** @description Round 12 window grammar; default now-3d. */
+                window?: string | null;
+                /** @description Restrict the alert sections to one source. */
+                source_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuleSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     rollback_rule_api_rules__kind___rule_id__rollback__version_id__post: {
         parameters: {
             query?: never;
@@ -18774,7 +22400,16 @@ export interface operations {
     };
     list_runbooks_api_runbooks_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Search the id, title, summary and rule chips. */
+                q?: string;
+                state?: ("draft" | "in_review" | "published" | "retired") | null;
+                origin?: ("builtin" | "operator" | "imported") | null;
+                /** @description Also list built-ins a Published copy replaces. */
+                show_replaced?: boolean;
+                /** @description v1: the old runbook shape, for one release. */
+                shape?: "v1" | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -18787,7 +22422,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookLibrary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -18801,7 +22445,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RunbookCreateRequest"];
+                "application/json": components["schemas"]["RunbookSourceBody"];
             };
         };
         responses: {
@@ -18811,7 +22455,172 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_runbook_api_runbooks_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookSourceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lookup_test_api_runbooks_lookup_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookLookupTestBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LookupResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    match_preview_route_api_runbooks_match_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookSourceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MatchPreview"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runbook_metrics_api_runbooks_metrics_get: {
+        parameters: {
+            query?: {
+                window?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookMetrics"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    runbook_progress_api_runbooks_progress_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookProgressBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: components["schemas"]["RunbookProgress"];
+                    };
                 };
             };
             /** @description Validation Error */
@@ -18845,9 +22654,45 @@ export interface operations {
             };
         };
     };
-    get_runbook_api_runbooks__runbook_id__get: {
+    validate_runbook_route_api_runbooks_validate_post: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookSourceBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookValidation"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_runbook_api_runbooks__runbook_id__get: {
+        parameters: {
+            query?: {
+                /** @description v1: the old runbook shape, for one release. */
+                shape?: "v1" | null;
+            };
             header?: never;
             path: {
                 runbook_id: string;
@@ -18862,7 +22707,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */
@@ -18876,7 +22721,69 @@ export interface operations {
             };
         };
     };
-    update_runbook_api_runbooks__runbook_id__put: {
+    update_runbook_old_shape_api_runbooks__runbook_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_runbook_old_shape_api_runbooks__runbook_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_runbook_draft_api_runbooks__runbook_id__draft_put: {
         parameters: {
             query?: never;
             header?: never;
@@ -18887,7 +22794,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RunbookUpdateRequest"];
+                "application/json": components["schemas"]["RunbookDraftBody"];
             };
         };
         responses: {
@@ -18897,7 +22804,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */
@@ -18911,10 +22818,10 @@ export interface operations {
             };
         };
     };
-    delete_runbook_api_runbooks__runbook_id__delete: {
+    discard_runbook_draft_api_runbooks__runbook_id__draft_delete: {
         parameters: {
-            query: {
-                expected_revision: number;
+            query?: {
+                expected_revision?: number | null;
             };
             header?: never;
             path: {
@@ -18930,7 +22837,111 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": Record<string, never>;
+                    "application/json": components["schemas"]["RunbookDiscardResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    duplicate_runbook_api_runbooks__runbook_id__duplicate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_runbook_api_runbooks__runbook_id__export_get: {
+        parameters: {
+            query?: {
+                /** @description Default: the version the caller would open. */
+                version?: number | null;
+            };
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/markdown": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publish_runbook_api_runbooks__runbook_id__publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookPublishBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */
@@ -18962,6 +22973,249 @@ export interface operations {
                 };
                 content: {
                     "application/json": Record<string, never>;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_runbook_api_runbooks__runbook_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookRejectBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_runbook_api_runbooks__runbook_id__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retire_runbook_api_runbooks__runbook_id__retire_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_runbook_reviewed_api_runbooks__runbook_id__reviewed_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_runbook_api_runbooks__runbook_id__submit_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunbookVersionBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_runbook_version_api_runbooks__runbook_id__versions__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookVersionDoc"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_runbook_version_api_runbooks__runbook_id__versions__version__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runbook_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RunbookRevisionBody"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunbookDetail"];
                 };
             };
             /** @description Validation Error */

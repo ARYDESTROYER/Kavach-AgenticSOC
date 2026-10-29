@@ -4,11 +4,11 @@
  * paint (§3.4). Every call goes through the shared request helper, which keeps the
  * 401, step-up re-authentication and error contract of every other call.
  *
- * The legacy `api.audit.list` keeps its signature for existing callers; new code uses
- * these functions and the types in `types-audit.ts`.
+ * These are the only audit log reads in the Console (the pre-Round 14 `api.audit.list`
+ * is gone). `GET /api/audit` still answers the old query shapes for API clients.
  */
 import { request } from './api';
-import type { BackgroundJob } from './types';
+import type { BackgroundJob, BackgroundJobSubmit } from './types';
 import type {
   AuditCount,
   AuditCountQuery,
@@ -16,6 +16,7 @@ import type {
   AuditPage,
   AuditPageQuery,
   AuditRecord,
+  AuditRecordQuery,
 } from './types-audit';
 
 /** Largest count the export dialog asks for: one past the 100,000-row export ceiling. */
@@ -42,9 +43,20 @@ export function countAudit(query: AuditCountQuery, signal?: AbortSignal): Promis
   });
 }
 
-/** `GET /api/audit/records/{record_id}`; `404 audit_record_not_found` when it is not in the store. */
-export function getAuditRecord(recordId: string, signal?: AbortSignal): Promise<AuditRecord> {
-  return request<AuditRecord>('GET', `audit/records/${encodeURIComponent(recordId)}`, { signal });
+/**
+ * `GET /api/audit/records/{record_id}`; `404 audit_record_not_found` when it is not in
+ * the store. Pass the page's current filters as `query` so opening a row the list
+ * shows joins the list read's one `audit_view` row (D8); they never narrow the answer.
+ */
+export function getAuditRecord(
+  recordId: string,
+  query: AuditRecordQuery = {},
+  signal?: AbortSignal,
+): Promise<AuditRecord> {
+  return request<AuditRecord>('GET', `audit/records/${encodeURIComponent(recordId)}`, {
+    query: query as unknown as Record<string, unknown>,
+    signal,
+  });
 }
 
 /**
@@ -57,11 +69,10 @@ export function submitAuditExport(
   params: AuditExportJobParams,
   idempotencyKey: string,
 ): Promise<BackgroundJob> {
-  return request<BackgroundJob>('POST', 'jobs', {
-    body: {
-      kind: 'audit_export',
-      idempotency_key: idempotencyKey,
-      params: params as unknown as Record<string, unknown>,
-    },
-  });
+  const body: BackgroundJobSubmit<'audit_export'> = {
+    kind: 'audit_export',
+    idempotency_key: idempotencyKey,
+    params,
+  };
+  return request<BackgroundJob>('POST', 'jobs', { body });
 }

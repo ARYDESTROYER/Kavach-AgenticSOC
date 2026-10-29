@@ -636,8 +636,8 @@ class SearchKnowledgeTool(ChatTool):
         operator runbook, with what each applies to and its state. Drafts, versions in
         review and retired runbooks are not listed (the Runbooks page shows them to
         the people who may see them). ``list_playbooks`` is an alias: the retired
-        procedures are runbooks now. Without a readable library (Demo Mode, a build
-        that wires none) the built-ins are listed and the observation says so."""
+        procedures are runbooks now. Without a readable library (a build that wires
+        none) the built-ins are listed and the observation says so."""
         from ...engine.runbook_model import applies_to, load_builtin_runbooks
 
         library = getattr(ctx, "runbooks", None)

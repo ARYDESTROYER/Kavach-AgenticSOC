@@ -353,6 +353,13 @@ LOGS = [
     G("Show alerts by severity for the last 3 days", tools=("log_stats",),
       params=(P("log_stats", group_by="severity", time_from="now-3d"),),
       contains=("by severity, **",), absent=("`30.0`", "`10.0`")),
+    # The operator's open question, verbatim: the detection rules that fired (a table
+    # whose rows open each rule) and the events over time, never a case list.
+    G("Any suspicious activity in last 3 days ?", tools=("log_stats",), max_lookups=1,
+      params=(P("log_stats", group_by="rule", time_from="now-3d"),),
+      forbid=(P("search_cases"), P("app_help")), contains=("by rule, ", "not confirmed threats")),
+    G("Anything suspicious today?", tools=("log_stats",), max_lookups=1,
+      params=(P("log_stats", group_by="rule", window="today"),)),
     G("Show me the logs for today", tools=("search_logs",), params=(P("search_logs", window="today", contains=None),)),
 ]
 
@@ -1109,6 +1116,7 @@ def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> Non
                      "Last 90 days or whatever reports you can",
                      "What are the top detection rules this week?",
                      "Show alerts by severity for the last 3 days",
+                     "Any suspicious activity in last 3 days ?",
                      ("The amount of total cases right now that are open, when were they all opened ? Segregate "
                       "month wise pls thanks")):
         assert verbatim in questions
@@ -1500,8 +1508,34 @@ def _check(g: G, response: dict[str, Any], client: TestClient | None = None) -> 
         assert client is not None
         for fig in g.figures:
             n = _store_count(client, _figure_window(fig, g, steps), fig.filters)
-            expected = fig.text.format(n=f"{n:,}")
+            expected = _figure_text(fig.text, n)
             assert expected in answer or (n == 0 and fig.zero in answer), (expected, n, context)
+
+
+_FIGURE_NOUN = re.compile(r"^((?: [a-z]+)*) cases\b")
+
+
+def test_a_figure_of_one_case_reads_in_the_singular() -> None:
+    assert _figure_text("**{n} cases**", 1) == "**1 case**"
+    assert _figure_text("**{n} cases**", 0) == "**0 cases**"
+    assert _figure_text("**{n} cases**", 1_204) == "**1,204 cases**"
+    assert _figure_text("**{n} cases are open right now**", 1) == "**1 case is open right now**"
+    assert _figure_text("**{n} open cases** were opened more than 7 days ago", 1) == (
+        "**1 open case** was opened more than 7 days ago")
+    assert _figure_text("of {n} closed cases", 1) == "of 1 closed case"
+    assert _figure_text("were false positives: {n} of", 1) == "were false positives: 1 of"
+
+
+def _figure_text(text: str, n: int) -> str:
+    """``text`` with ``{n}`` filled in, as the answer states it: a count of one takes
+    the singular noun and verb after it ("**1 case**", "**1 case is open right now**",
+    "**1 open case** was opened ..."), as the planner's ``_plural`` does, so a figure
+    check never depends on the day's store holding more than one matching case. Only
+    the words after the count change ("were false positives: 1 of 5" keeps its verb)."""
+    head, sep, tail = text.partition("{n}")
+    if sep and n == 1:
+        tail = _FIGURE_NOUN.sub(r"\1 case", tail).replace(" are ", " is ").replace(" were ", " was ")
+    return (head + sep + tail).format(n=f"{n:,}")
 
 
 def _figure_window(fig: Fig, g: G, steps: list[dict[str, Any]]) -> Any:
@@ -1639,6 +1673,19 @@ def test_the_operator_rule_and_severity_answers_open_their_detail(client: TestCl
     assert "30.0" not in json.dumps(table["rows"])
     # The Demo sources count exactly (every event fits the newest 200): no sample stated.
     assert payload["sample"]["exact"] is True and "sampled" not in (table.get("caption") or "")
+
+    # "Any suspicious activity in last 3 days ?": the rules as a table whose every row
+    # opens that rule's sheet over the answer's window, then the events over time.
+    suspicious = _stream(client, "Any suspicious activity in last 3 days ?")
+    kinds = [(b.get("artifact_kind"), b["type"]) for b in suspicious["blocks"]]
+    assert kinds == [("categories", "table"), ("series", "chart")], kinds
+    rules_table, series = suspicious["blocks"]
+    assert rules_table["title"] == "Top detection rules (last 3 days)" and series["title"] == "Events over time"
+    rows = [row[0] for row in rules_table["rows"]]
+    assert rows and len(rules_table["drill"]) == len(rows)
+    for label, ref in zip(rows, rules_table["drill"]):
+        assert ref["page"] == "rule" and ref["opts"]["rule"] == label
+        assert {"from", "to"} <= set(ref["opts"])
 
 
 # --------------------------------------------------------------------------- #

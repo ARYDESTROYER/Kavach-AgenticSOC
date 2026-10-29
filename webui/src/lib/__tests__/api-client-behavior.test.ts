@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { api, ApiError, setReauthHandler } from '../api';
+import { listRunbookLibrary } from '../api-runbooks';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -327,87 +328,58 @@ describe('supervised system-update request authority', () => {
   });
 });
 
-describe('Runbooks rolling-upgrade response compatibility', () => {
+describe('Runbooks after Round 14: one library client, no legacy normalisation', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('normalises the original read-only catalog shape into safe bundled rows', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue(
-        jsonResponse(200, {
-          enabled: true,
-          runbooks: [
-            {
-              id: 'legacy_reference',
-              title: 'Legacy reference',
-              summary: 'Served by a worker that predates managed Runbooks.',
-              persona: 'general',
-              applies_to_rules: ['legacy_rule'],
-              applies_to_techniques: ['T1059'],
-            },
-          ],
-        }),
-      ),
-    );
+  it('reads the library in the Round 14 shape exactly as the server sent it', async () => {
+    // The pre-Round 14 catalog shape (`enabled`, `count`, `source_type`, the authoring
+    // standard) was normalised by `api.getRunbooks`. That call is retired: the library is
+    // read through `listRunbookLibrary`, which never asks for `shape=v1` and never
+    // invents fields, so a stale server shape is visible instead of being papered over.
+    const library = {
+      runbooks: [
+        {
+          id: 'brute_force_login',
+          title: 'Brute force and password spray',
+          origin: 'builtin',
+          state: 'published',
+          live_version: 1,
+        },
+      ],
+      migration: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, library));
+    vi.stubGlobal('fetch', fetchMock);
 
-    const result = await api.getRunbooks();
+    const result = await listRunbookLibrary();
 
-    expect(result.retrieval_enabled).toBe(true);
-    expect(result.count).toBe(1);
-    expect(result.runbooks[0]).toMatchObject({
-      source_type: 'bundled',
-      protected: true,
-      editable: false,
-      applies_to_entities: [],
-      keywords: [],
-      index_status: 'unknown',
-    });
-    expect(result.authoring_standard).toBeUndefined();
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/runbooks');
+    expect(result).toEqual(library);
+    const client = api as unknown as Record<string, unknown>;
+    for (const retired of ['getRunbooks', 'getRunbook', 'createRunbook', 'updateRunbook', 'deleteRunbook']) {
+      expect(client[retired], retired).toBeUndefined();
+    }
   });
 
-  it('preserves the backend-owned Runbook authoring standard', async () => {
-    const standard = {
-      version: 1,
-      body_max_characters: 1800,
-      retrieval_descriptor_max_characters: 1200,
-      document_max_bytes: 131072,
-      section_min_characters: 12,
-      reserved_ids: ['index', 'readme', 'reindex'],
-      character_count: 'Unicode characters after newline normalization and outer trimming',
-      metadata_limits: {
-        title_max_characters: 120,
-        summary_max_characters: 280,
-        persona_max_characters: 48,
-        list_max_items: 12,
-        list_item_max_characters: 64,
-      },
-      required_manifest_fields: ['id', 'title', 'summary'],
-      optional_manifest_fields: ['persona'],
-      required_body_labels: ['SIGNAL', 'EVIDENCE REQUIRED'],
-      optional_body_labels: ['LIMITATIONS'],
-      investigation_steps: 'Sequential one-line numbered steps: 1., 2., 3.',
-      allowed_metadata_format: 'Concise plain text only',
-      allowed_body_format: 'Plain sentences and sequential numbered steps only',
-      prohibited_metadata_format: ['Markdown headings or table pipes'],
-      prohibited_body_format: ['Markdown headings', 'tables'],
-    };
+  it('surfaces an old-shape write as 410 runbooks_moved with the server sentence', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        jsonResponse(200, {
-          enabled: true,
-          retrieval_enabled: true,
-          authoring_standard: standard,
-          count: 0,
-          runbooks: [],
+        jsonResponse(410, {
+          detail: 'Runbooks moved: write them through the runbook library.',
+          code: 'runbooks_moved',
+          see: '/api/runbooks',
         }),
       ),
     );
 
-    const result = await api.getRunbooks();
+    const error = await api.post('runbooks', { id: 'old', content: '# Old' }).catch((e: unknown) => e);
 
-    expect(result.authoring_standard).toEqual(standard);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(410);
+    expect((error as ApiError).message).toBe('Runbooks moved: write them through the runbook library.');
+    expect((error as ApiError).body).toMatchObject({ code: 'runbooks_moved' });
   });
 });

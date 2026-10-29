@@ -275,6 +275,20 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     that lists ATT&CK ids ("T1021, T1048", optionally followed by "and K more") renders one
     `InlineCode` chip per id, each on one line, in a wrapping row; a single id stays one
     chip.
+36. **Entity fact items: a case card's rules one by one (Round 14 SPEC §4.6.5; amends the
+    §5.3 `entity` facts).** An `entity` fact may carry
+    `items?: Array<{ value: string; drill?: InternalRef }>` beside its `value`, at most 5
+    (`limits.entity_fact_items`, `blocks.py` `MAX_ENTITY_FACT_ITEMS`; the rest are
+    dropped). The fact's `value` stays the whole fact as text, which downloads and earlier
+    clients read; each item's `value` (at most 500 characters) is one of the values in
+    it, untrusted when the fact is. `drill` is only ever a `rule` page ref (the
+    exact rule plus the case's own window, `chat_tools/cases.py` `case_rule_window`),
+    built by code from the stored value: any other destination is dropped, a value that
+    cannot be carried exactly has none, and an `ai` block keeps none (G5). The server
+    sends `items` on a case card's **Rules** fact, where each rule opens the rule sheet
+    over that window with the card's case number as its origin ("From CASE-000214"). An
+    item with no `drill` is plain text, and an answer saved before Round 14 has no `items`
+    and shows `value` as written.
 
 ---
 

@@ -14,13 +14,12 @@ import type {
   AccountProfileBody,
   ActivityResponse,
   AgentImprovementEvidence,
-  AuditQuery,
-  AuditResponse,
   AuthMe,
   AutoClosePolicy,
   BaselineConfig,
   BatchConfig,
   BackgroundJob,
+  BackgroundJobKind,
   BackgroundJobsResponse,
   BackgroundJobSubmit,
   Branding,
@@ -28,6 +27,7 @@ import type {
   CampaignConfig,
   Case,
   CaseActionInput,
+  CaseClosedBy,
   CaseIdPreview,
   CaseRationale,
   CasesResponse,
@@ -70,12 +70,6 @@ import type {
   NotifyCaseResult,
   OrgCustomization,
   PersonasResponse,
-  PlaybookDetail,
-  PlaybookDryRunInput,
-  PlaybookDryRunResponse,
-  PlaybookCoverageResponse,
-  PlaybookMutationResponse,
-  PlaybooksResponse,
   Preferences,
   AutomationRule,
   CorrelationRule,
@@ -90,12 +84,6 @@ import type {
   RagStats,
   ReauthResult,
   RolesResponse,
-  Runbook,
-  RunbookDeleteResponse,
-  RunbookDetail,
-  RunbookIndexResult,
-  RunbookMutationResponse,
-  RunbooksResponse,
   UpstreamReleasesResponse,
   SessionsResponse,
   ScanNotifications,
@@ -745,69 +733,6 @@ async function requestBlob(
   };
 }
 
-/**
- * Runbooks gained first-class management metadata after the original read-only
- * catalog shipped. Normalise responses here so a rolling frontend/backend upgrade
- * cannot crash the Intelligence page while an older worker still returns the
- * smaller catalog shape. The defaults deliberately keep legacy documents bundled
- * and immutable; they never manufacture operator write authority.
- */
-function normalizeRunbook<T extends Runbook>(value: T): T {
-  const raw = value as unknown as Partial<Runbook> & Record<string, unknown>;
-  const strings = (candidate: unknown): string[] =>
-    Array.isArray(candidate)
-      ? candidate.filter((item): item is string => typeof item === 'string')
-      : [];
-  const sourceType = raw.source_type === 'operator' ? 'operator' : 'bundled';
-  const protectedRunbook =
-    typeof raw.protected === 'boolean' ? raw.protected : sourceType !== 'operator';
-
-  return {
-    ...value,
-    title: typeof raw.title === 'string' ? raw.title : String(raw.id || ''),
-    summary: typeof raw.summary === 'string' ? raw.summary : '',
-    persona: typeof raw.persona === 'string' ? raw.persona : '',
-    applies_to_rules: strings(raw.applies_to_rules),
-    applies_to_techniques: strings(raw.applies_to_techniques),
-    applies_to_entities: strings(raw.applies_to_entities),
-    keywords: strings(raw.keywords),
-    source_type: sourceType,
-    protected: protectedRunbook,
-    editable:
-      typeof raw.editable === 'boolean'
-        ? raw.editable && !protectedRunbook
-        : sourceType === 'operator' && !protectedRunbook,
-    revision: raw.revision ?? 1,
-    created_at: typeof raw.created_at === 'string' ? raw.created_at : null,
-    updated_at: typeof raw.updated_at === 'string' ? raw.updated_at : null,
-    index_status: typeof raw.index_status === 'string' ? raw.index_status : 'unknown',
-    indexed_revision: raw.indexed_revision ?? null,
-    last_indexed_at:
-      typeof raw.last_indexed_at === 'string' ? raw.last_indexed_at : null,
-    index_error: typeof raw.index_error === 'string' ? raw.index_error : null,
-  } as T;
-}
-
-function normalizeRunbooksResponse(value: RunbooksResponse): RunbooksResponse {
-  const raw = value as unknown as Partial<RunbooksResponse> & Record<string, unknown>;
-  const runbooks = Array.isArray(raw.runbooks)
-    ? raw.runbooks.map((runbook) => normalizeRunbook(runbook as Runbook))
-    : [];
-  const enabled = raw.enabled !== false;
-  const authoringStandard =
-    raw.authoring_standard && typeof raw.authoring_standard === 'object'
-      ? raw.authoring_standard
-      : undefined;
-  return {
-    enabled,
-    retrieval_enabled:
-      typeof raw.retrieval_enabled === 'boolean' ? raw.retrieval_enabled : enabled,
-    authoring_standard: authoringStandard,
-    count: typeof raw.count === 'number' ? raw.count : runbooks.length,
-    runbooks,
-  };
-}
-
 /** Generic verbs, for ad-hoc/endpoints not yet wrapped in a typed method. */
 export const api = {
   get: <T = unknown>(path: string, query?: Record<string, unknown>, signal?: AbortSignal) =>
@@ -833,7 +758,8 @@ export const api = {
   // ---- Durable background jobs ---------------------------------------- //
   // Ordinary application work, distinct from the separately hardened updater.
   jobs: {
-    submit: (input: BackgroundJobSubmit) =>
+    // A literal `kind` with a mirrored params model is checked against it (types.ts).
+    submit: <K extends BackgroundJobKind>(input: BackgroundJobSubmit<K>) =>
       request<BackgroundJob>('POST', 'jobs', { body: input }),
     list: (query?: { limit?: number; offset?: number }, signal?: AbortSignal) =>
       request<BackgroundJobsResponse>('GET', 'jobs', { query, signal }),
@@ -1070,14 +996,6 @@ export const api = {
       request<NotifyCaseResult>('POST', `cases/${encodeURIComponent(caseId)}/notify`, {
         body: channelId ? { channel_id: channelId } : {},
       }),
-    // playbooks:run — CONTEXT-ONLY re-investigation with `playbookId` forced as the
-    // injected (recommend-only) operator procedure. The deterministic close/escalate
-    // decision is unchanged — decide() re-runs with the new context. Returns the
-    // updated Case (verdict/rationale may change; status is never set by the run).
-    runPlaybook: (caseId: string, playbookId: string) =>
-      request<Case>('POST', `cases/${encodeURIComponent(caseId)}/run-playbook`, {
-        body: { playbook_id: playbookId },
-      }),
     // cases:read — the assembled threat-context panel (IOC reputation, MITRE
     // techniques, related cases, asset context, evidence). Fail-open per section.
     threatContext: (caseId: string) =>
@@ -1100,16 +1018,7 @@ export const api = {
   search: (q: string, limit?: number) =>
     request<SearchResult>('GET', 'search', { query: { q, limit } }),
 
-  // ---- Audit-log viewer (W7c) — read-only over the append-only audit (#2) - //
-  // Gated by audit:view server-side (admin/auditor/soc_manager). Filters are
-  // ANDed; the `action`/`from`/`to` params map to the audit `action_type`/ts
-  // bounds. Every field is rendered PLAIN (#9). No write/update/delete path exists.
-  audit: {
-    list: (params?: AuditQuery) =>
-      request<AuditResponse>('GET', 'audit', {
-        query: params as Record<string, unknown> | undefined,
-      }),
-  },
+  // ---- Audit log: read through the lazy `api-audit.ts` (Round 14), never here. //
 
   // ---- Threat-intel knowledge import (F11) ----------------------------- //
   // rag:manage — ingest a threat-intel document into the RAG corpus as
@@ -1119,60 +1028,12 @@ export const api = {
       request<RagImportResult>('POST', 'threat-context/import', { body: input }),
   },
 
-  // ---- Personas + playbooks --------------------------------------------- //
+  // ---- Personas --------------------------------------------------------- //
+  // Runbooks (the one procedure feature since Round 14) live in the lazy
+  // `api-runbooks.ts`; the retired playbook and pre-Round 14 runbook calls are gone.
   getPersonas: () => request<PersonasResponse>('GET', 'personas'),
-  getPlaybooks: () => request<PlaybooksResponse>('GET', 'playbooks'),
-  getPlaybook: (playbookId: string) =>
-    request<PlaybookDetail>('GET', `playbooks/${encodeURIComponent(playbookId)}`),
-  getPlaybookCoverage: () =>
-    request<PlaybookCoverageResponse>('GET', 'playbooks/coverage'),
-  dryRunPlaybookSelection: (input: PlaybookDryRunInput) =>
-    request<PlaybookDryRunResponse>('POST', 'playbooks/dry-run', { body: input }),
   getSchedulerHealth: () =>
     request<SchedulerHealthResponse>('GET', 'schedulers/health'),
-  createPlaybook: (input: { id: string; content: string }) =>
-    request<PlaybookMutationResponse>('POST', 'playbooks', { body: input }),
-  updatePlaybook: (playbookId: string, content: string, expectedRevision: number) =>
-    request<PlaybookMutationResponse>('PUT', `playbooks/${encodeURIComponent(playbookId)}`, {
-      body: { content, expected_revision: expectedRevision },
-    }),
-
-  // ---- Runbooks ------------------------------------------------------- //
-  // Trusted RAG reference knowledge. Unlike playbooks, runbooks are never
-  // selected as executable procedures and never influence deterministic case
-  // authority. Bundled documents remain readable but immutable.
-  getRunbooks: () =>
-    request<RunbooksResponse>('GET', 'runbooks').then(normalizeRunbooksResponse),
-  getRunbook: (runbookId: string) =>
-    request<RunbookDetail>('GET', `runbooks/${encodeURIComponent(runbookId)}`).then(
-      normalizeRunbook,
-    ),
-  createRunbook: (input: { id: string; content: string }) =>
-    request<RunbookMutationResponse>('POST', 'runbooks', { body: input }).then((result) => ({
-      ...result,
-      runbook: normalizeRunbook(result.runbook),
-    })),
-  updateRunbook: (
-    runbookId: string,
-    content: string,
-    expectedRevision: string | number,
-  ) =>
-    request<RunbookMutationResponse>('PUT', `runbooks/${encodeURIComponent(runbookId)}`, {
-      body: { content, expected_revision: expectedRevision },
-    }).then((result) => ({
-      ...result,
-      runbook: normalizeRunbook(result.runbook),
-    })),
-  deleteRunbook: (runbookId: string, expectedRevision: string | number) =>
-    request<RunbookDeleteResponse>('DELETE', `runbooks/${encodeURIComponent(runbookId)}`, {
-      query: { expected_revision: expectedRevision },
-    }),
-  reindexRunbooks: () => request<RunbookIndexResult>('POST', 'runbooks/reindex'),
-  reindexRunbook: (runbookId: string) =>
-    request<RunbookIndexResult>(
-      'POST',
-      `runbooks/${encodeURIComponent(runbookId)}/reindex`,
-    ),
 
   // ---- Health + setup --------------------------------------------------- //
   health: (options?: { signal?: AbortSignal; cache?: RequestCache }) =>
@@ -1479,13 +1340,15 @@ export const api = {
     ),
 
   // ---- Analytics surfaces ---------------------------------------------- //
-  // Round 14 (SPEC §4.6.1): `rule` is an exact match on `Case.rule_ids`; `closed_by`
-  // filters terminal cases by who closed them, in the engine's `CASE_FILTER_FIELDS`
-  // vocabulary (`case_aggregate.closed_by`); the `#/scans` redirect uses `agent`.
+  // Round 14 (SPEC §4.6.1): `rule` is an exact match on `Case.rule_ids` (sent as is,
+  // 1 to 256 characters on one line); `closed_by` filters terminal cases by who closed
+  // them, in the engine's `case_aggregate.closed_by` vocabulary (any other value is a
+  // 400); the `#/scans` redirect uses `agent`. Both are echoed as `rule_applied` and
+  // `closed_by_applied`.
   listCases: (
     query?: Record<string, unknown> & {
       rule?: string;
-      closed_by?: 'agent' | 'analyst' | 'analyst_policy' | 'system';
+      closed_by?: CaseClosedBy;
     },
   ) => request<CasesResponse>('GET', 'cases', { query }),
   getCase: (caseId: string) =>

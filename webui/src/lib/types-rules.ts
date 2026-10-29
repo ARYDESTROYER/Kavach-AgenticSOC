@@ -5,7 +5,9 @@
  * so the rule sheet degrades per section ("You do not have access to cases."). The
  * rule value and every IP, host, user and title are untrusted text rendered plain
  * (#9). The summary carries no raw log rows (#7): the sheet's latest alerts come
- * from `GET /api/logs?rule=` and are shown to the person only.
+ * from `GET /api/logs?rule=` and are shown to the person only. The generated
+ * `api-types.gen.ts` is the authority for these models, and a contract test pins this
+ * mirror to it; `types.ts` re-exports every name here.
  */
 
 export type SeverityLevel = 'info' | 'low' | 'medium' | 'high' | 'critical';

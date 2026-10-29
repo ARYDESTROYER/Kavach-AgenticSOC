@@ -426,15 +426,12 @@ class ThresholdAutomation:
             logger.debug("automation notify failed for %s: %s", case.case_id, exc)
 
     async def _resolve_runbook(self, payload: Mapping[str, Any]) -> str | None:
-        """The runbook a ``run_playbook`` rule names, resolved now (SPEC §4.10.16):
-        ``payload.runbook_id``, else ``payload.playbook_id`` through the migration's
-        id map, else through the retired bundled ids. ``None`` when it names nothing
-        that resolves (the attach step then records the skip). Never raises.
-
-        The migration's map comes first for a ``playbook_id``: it holds a retired
-        bundled id only when a configured procedure folder's file held it
-        (``runbook_migration.migrated_procedure_ids``), and that file, not the bundled
-        procedure, is what a rule naming the id ran before Round 14."""
+        """The runbook a ``run_playbook`` rule names, resolved now (SPEC §4.10.16) by
+        :func:`runbook_model.resolve_automation_runbook_id`, the one resolution order:
+        ``payload.runbook_id``, else ``payload.playbook_id`` through the migration's id
+        map, else through the retired bundled ids. This reads the id map and passes it
+        on; it orders nothing itself. ``None`` when the rule names nothing that resolves
+        (the attach step then records the skip). Never raises."""
         from .runbook_model import resolve_automation_runbook_id
 
         migrated: Mapping[str, str] = {}
@@ -445,11 +442,6 @@ class ThresholdAutomation:
                 logger.info("automation: the runbook migration map could not be read: %s", exc)
                 migrated = {}
         try:
-            if not _payload_text(payload, "runbook_id"):
-                playbook_id = _payload_text(payload, "playbook_id")
-                target = migrated.get(playbook_id) if playbook_id and hasattr(migrated, "get") else None
-                if isinstance(target, str) and target.strip():
-                    return target.strip()
             return resolve_automation_runbook_id(payload, migrated)
         except Exception as exc:  # noqa: BLE001 - a malformed payload attaches nothing
             logger.debug("automation runbook resolution failed: %s", exc)
