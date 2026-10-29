@@ -28,17 +28,26 @@
 import * as React from 'react';
 
 import { cn } from '@/lib/cn';
+import type { AnswerLocation } from '@/soc/answer-origin';
 
 import { BlockBoundary } from './BlockBoundary';
 import { BlockCard } from './BlockCard';
 import { BlocksContext, domSafe, leafAnchorKey, useRouterNavigate, type BlocksContextValue } from './context';
 import { blockGroups, blockWidth, sharedScope } from './layout';
-import type { AnswerBlock, InternalRef } from './schema';
+import type { AnswerBlock } from './schema';
 
 export interface AnswerBlocksProps {
   blocks: AnswerBlock[];
   /** The assistant message these blocks belong to (data attribute only; never a DOM id). */
   messageId: string;
+  /**
+   * The SAVED answer these blocks belong to: its conversation and its saved message id
+   * (never a client-side key). A drill that leaves the answer (a rule sheet's actions, an
+   * "Open in Logs") remembers it, so the destination's "Back to answer" reopens this
+   * conversation at this message. Omitted, a Chat answer offers a way back only while the
+   * location names its conversation.
+   */
+  answerLocation?: AnswerLocation | null;
   /** Case Manager embed density. */
   compact?: boolean;
   /** Block ids already in the conversation's report ("In report ✓"). */
@@ -49,8 +58,11 @@ export interface AnswerBlocksProps {
   canAddToReport?: boolean;
   /** Why adding is refused (a full report): the toggles stay, `aria-disabled` with it. */
   addDisabledReason?: string | null;
-  /** Navigation for validated refs; defaults to the shell router. */
-  onNavigate?: (ref: InternalRef) => void;
+  /**
+   * Navigation for validated drill targets; defaults to the shell router. A rule ref
+   * (Round 14) is opened as the rule sheet by its block card and never reaches it.
+   */
+  onNavigate?: BlocksContextValue['navigate'];
   /** Renderer for `markdown` blocks (WP-I's ChatMarkdown); a safe built-in otherwise. */
   renderMarkdown?: (text: string) => React.ReactNode;
   /** The exact query a lookup step ran (`ChatStep.query`), enabling "Copy query". */
@@ -96,6 +108,7 @@ export function citationOwnerKey(blocks: readonly AnswerBlock[]): string | undef
 export function AnswerBlocks({
   blocks,
   messageId,
+  answerLocation = null,
   compact = false,
   inReport,
   onAddToReport,
@@ -115,9 +128,19 @@ export function AnswerBlocks({
   const navigate = onNavigate ?? routerNavigate;
   const list = React.useMemo(() => (Array.isArray(blocks) ? blocks : []), [blocks]);
   const citationOwner = citationOwnerKey(list);
+  const answerConversation = answerLocation?.conversationId ?? null;
+  const answerMessage = answerLocation?.messageId ?? null;
   const ctx = React.useMemo<BlocksContextValue>(
-    () => ({ navigate, compact, domId: prefix, renderMarkdown, queryForStep, citationOwner: citationOwner ?? '' }),
-    [navigate, compact, prefix, renderMarkdown, queryForStep, citationOwner],
+    () => ({
+      navigate,
+      compact,
+      domId: prefix,
+      renderMarkdown,
+      queryForStep,
+      citationOwner: citationOwner ?? '',
+      answer: answerConversation ? { conversationId: answerConversation, messageId: answerMessage } : undefined,
+    }),
+    [navigate, compact, prefix, renderMarkdown, queryForStep, citationOwner, answerConversation, answerMessage],
   );
   const scope = React.useMemo(() => (shareCaptions && !compact ? sharedScope(list) : null), [compact, list, shareCaptions]);
   if (!list.length) return null;

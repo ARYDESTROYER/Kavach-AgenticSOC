@@ -29,8 +29,17 @@
  * button: a printed page cannot open a dialog. Its headers are plain text (a sortable
  * header is a button, and a printed sort control means nothing), a case id is plain
  * mono text instead of a link, and long text is never clamped (Round 12 WP-REP R6).
+ *
+ * Round 14 (SPEC §4.6.3, §4.6.5): a row may carry a destination built by the server from
+ * a validated value. A rule row names its rule as a `RuleLink` (the label cell opens the
+ * rule sheet; the row stays marked while its sheet is open); a row with a route (a Logs
+ * view of a severity level) gets one "Open in Logs" link at its end. A click anywhere on
+ * the row does what its link does (the link itself is the keyboard and screen reader
+ * target, so there is no second row button). A row's `trend` is a sparkline after the
+ * label. Print shows the plain cells, with no links.
  */
 import * as React from 'react';
+import { ListFilter } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { Button } from '@/ui/button';
@@ -39,11 +48,15 @@ import { InlineCode } from '@/soc/components/CodeBlock';
 import { DataTable, type DataTableColumn, type SortState } from '@/soc/components/DataTable';
 import { RiskBadge, SeverityBadge, StatusBadge, VerdictBadge } from '@/soc/components/badges';
 import { isSafeCaseId } from '@/soc/case-result-route';
+import { navLabel } from '@/soc/nav';
 
 import { softBreakLongTokens as keepShortTokens } from '../../starters/soft-breaks';
-import { CaseHoverArm, CaseLink, shortCaseId, type CaseLinkFacts } from '../context';
+import { CaseHoverArm, CaseLink, RefIconLink, shortCaseId, type CaseLinkFacts } from '../context';
 import { formatUtc, formatValue } from '../format';
+import { AnswerRuleLink, RuleDrillScope } from '../rule-drill';
 import type { Cell, TableBlock, TableColumn } from '../schema';
+import { isRuleRef } from '../schema';
+import { RowTrend } from './RowTrend';
 import { TABLE_SCROLL_FADE, useTableScrollEdges } from '../scroll-edges';
 import { CASE_STATUS_KEYS, PATTERN_SOURCES, SEVERITY_KEYS, VERDICT_KEYS } from '../schema';
 
@@ -254,6 +267,25 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
   const shown = staticMode ? order : paged ? order.slice((page - 1) * pageSize, page * pageSize) : order.slice(0, INLINE_ROWS);
   const hasCase = cols.some((i) => block.columns[i].type === 'case');
 
+  // Round 14: each row's destination (never in print: paper has no links) and trend.
+  const drill = staticMode ? undefined : block.drill;
+  const ruleAt = (row: number) => {
+    const ref = drill?.[row];
+    return isRuleRef(ref) ? ref : null;
+  };
+  const routeAt = (row: number) => {
+    const ref = drill?.[row];
+    return ref && !isRuleRef(ref) ? ref : null;
+  };
+  const hasRoutes = Boolean(drill?.some((r) => r !== null && !isRuleRef(r)));
+  const labelColumn = cols[0];
+  // The element a row's click hands over to: its rule link, else its "Open in" link.
+  const rowTargets = React.useRef(new Map<number, HTMLElement>());
+  const targetRef = (row: number) => (el: HTMLElement | null) => {
+    if (el) rowTargets.current.set(row, el);
+    else rowTargets.current.delete(row);
+  };
+
   const columns: Array<DataTableColumn<number>> = cols.map((i) => {
     const col = block.columns[i];
     const numeric = col.type === 'number' || col.type === 'risk';
@@ -265,17 +297,74 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
       sortable: !staticMode,
       align: col.align ?? (numeric ? 'right' : 'left'),
       className: 'align-top text-sm',
-      cell: (row: number) => (
-        <TypedCell
-          value={block.rows[row][i] ?? null}
-          column={col}
-          untrusted={columnUntrusted(col, block)}
-          staticMode={staticMode}
-          caseRef={caseRefs?.[row]}
-        />
-      ),
+      cell: (row: number) => {
+        const value = block.rows[row][i] ?? null;
+        const rule = i === labelColumn ? ruleAt(row) : null;
+        if (rule && typeof value === 'string' && value) {
+          // The rule's name opens its sheet (the display-safe label, the exact value in the ref).
+          return (
+            <span ref={targetRef(row)} className="contents" data-row-target="">
+              <AnswerRuleLink target={rule} className="text-xs">
+                {value}
+              </AnswerRuleLink>
+            </span>
+          );
+        }
+        return (
+          <TypedCell
+            value={value}
+            column={col}
+            untrusted={columnUntrusted(col, block)}
+            staticMode={staticMode}
+            caseRef={caseRefs?.[row]}
+          />
+        );
+      },
     };
   });
+  // Print and exports draw the one plain table (SPEC §4.7.3): the CSV, Word and Excel
+  // files carry no trend column, so the printed table carries none either.
+  if (!staticMode && block.trend?.some((t) => t !== null)) {
+    // The trend reads beside the name it belongs to: right after the label column.
+    columns.splice(Math.min(1, columns.length), 0, {
+      id: 'trend',
+      header: 'Trend',
+      menuLabel: 'Trend',
+      sortable: false,
+      align: 'left',
+      className: 'align-top',
+      cell: (row: number) => {
+        const points = block.trend?.[row];
+        return points ? <RowTrend points={points} /> : <span className="sr-only">No trend</span>;
+      },
+    });
+  }
+  if (hasRoutes) {
+    columns.push({
+      id: 'open',
+      header: <span className="sr-only">Open</span>,
+      menuLabel: 'Open',
+      sortable: false,
+      align: 'right',
+      className: 'w-14 align-top sm:w-12',
+      cell: (row: number) => {
+        const ref = routeAt(row);
+        if (!ref) return null;
+        const label = `Open in ${navLabel(ref.page)}: ${String(block.rows[row][labelColumn] ?? '')}`;
+        return (
+          <span ref={ruleAt(row) ? undefined : targetRef(row)} className="contents" data-row-target="">
+            <RefIconLink refValue={ref} label={label} icon={<ListFilter aria-hidden />} />
+          </span>
+        );
+      },
+    });
+  }
+  const linked = Boolean(drill?.some((r) => r !== null));
+  const onRowClick = linked
+    ? (row: number) => {
+        rowTargets.current.get(row)?.querySelector<HTMLElement>('button, a')?.click();
+      }
+    : undefined;
 
   if (cols.length === 0) {
     return <p className="text-sm text-muted-foreground">No values to show.</p>;
@@ -294,6 +383,9 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
       density="compact"
       ariaLabel={title}
       empty="No rows"
+      onRowClick={onRowClick}
+      // The rule or "Open in" link in the row is its named control (no second button).
+      showRowAction={false}
       {...(paged
         ? {
             page,
@@ -311,7 +403,20 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
   );
 
   return (
-    <div ref={rootRef} className={cn('min-w-0', !staticMode && TABLE_SCROLL_FADE)} data-testid="block-table" data-static={staticMode || undefined}>
+    <div
+      ref={rootRef}
+      className={cn(
+        'min-w-0',
+        !staticMode && TABLE_SCROLL_FADE,
+        // The row whose rule sheet is open stays marked (the RuleLink's own opened tint).
+        '[&_tr:has([data-rule-link][aria-current=true])]:bg-primary/10',
+        // Only a row with something to open looks clickable: a value the server could not
+        // link (a `null` drill) is plain, never a pointer that does nothing.
+        '[&_tbody_tr:not(:has([data-row-target]))]:cursor-auto',
+      )}
+      data-testid="block-table"
+      data-static={staticMode || undefined}
+    >
       {hasCase && !staticMode ? <CaseHoverArm>{table}</CaseHoverArm> : table}
       {!paged && !staticMode && order.length > INLINE_ROWS ? (
         <div className="mt-1.5 flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -332,7 +437,10 @@ export function TableView({ block, title, paged: pagedProp = false, staticMode =
                 {order.length} rows{block.truncated ? ' (the source returned more; this is the bounded set)' : ''}.
               </DialogDescription>
             </DialogHeader>
-            <TableView block={block} title={title} paged caseRefs={caseRefs} />
+            {/* The dialog is a modal layer: a rule opened in it opens over it. */}
+            <RuleDrillScope layer>
+              <TableView block={block} title={title} paged caseRefs={caseRefs} />
+            </RuleDrillScope>
           </DialogContent>
         </Dialog>
       ) : null}

@@ -548,7 +548,14 @@ caption, because a block can travel alone.
 
 Cases are named by their case number and title. A case without a number shows its title
 followed by a short form of its ID (the full ID is in its tooltip). Verdicts, statuses,
-and kinds read in words, such as "True positive", "Open → Escalated", and "IP".
+and kinds read in words, such as "True positive", "Open · awaiting analyst", and "IP".
+A case card's status history reads each move and its reason in words, such as "Open to
+Escalated" with "Automatic close of a confirmed threat is off (by the system)"; a reason
+an analyst wrote stays as written. An answer saved by an earlier version keeps that
+version's wording for the same moves, such as "Open → Escalated". An answer saved before
+a case had a number shows a short form of its ID, with the full ID in its tooltip, and
+still links to the case. A case card's **Rules** fact lists the case's rules as text; to
+open a rule's picture, use the case's detection rules in Case Manager.
 
 Figures in an answer's text read the way its blocks show them, so one figure never
 appears in two forms: a rate is a whole percent from 10% up ("78%"), with one decimal
@@ -599,7 +606,7 @@ point at or tab into the block, and stays while the block is in the report. The 
 | Add to report | Adds the block to this conversation's report, or removes it (also beside the menu, see above) |
 | Expand | Opens the block in a wide view |
 | Full width | Lets the block use the whole conversation width (offered when there is room to gain) |
-| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. |
+| Show as | Switches to another view of the same numbers, such as bars as a donut. Only views that tell the truth are offered: a donut or stacked bar appears only when the parts add up to a whole. A severity breakdown also offers **Rules by level** when a rule falls in two or more levels (see [Severity breakdowns](#severity-breakdowns)). |
 | Series | Shows or hides each line of a chart whose lines are labelled at their ends |
 | Show table / Show chart | Flips between the chart and its data |
 | Copy data | Copies the rows as tab-separated text. Indicators are defanged by default (`hxxp`, `[.]`), and the menu has a toggle. |
@@ -622,6 +629,147 @@ still a figure and is shown, and a duration of zero reads in its unit, such as "
 a duration measured in minutes or hours that is under one second reads "< 1 min". You
 can also ask for a different view in words, such as "show that as a donut" or "now by
 host": the assistant reuses the earlier lookup or its stored result.
+
+### Rules in an answer
+
+Every rule name in an answer opens that rule's picture, the rule sheet:
+
+- a rule row in a table: select the name, or anywhere on the row;
+- a rule bar in a chart: click it, or move to it with the arrow keys and press Enter
+  (the tooltip says "See this rule's alerts and cases");
+- a rule in a [severity breakdown](#severity-breakdowns).
+
+It is the same sheet every rule name in the Console opens: the Case Manager facts, a Logs
+row's details, Auto-tuning, Precedent by rule in health diagnostics, the Cyber Defence
+Center's top signatures and the dashboard rule widgets. Rule names that open it carry a
+dotted underline at rest, solid on hover and focus. Opening another rule replaces the
+sheet; Esc closes it and puts focus back on the rule you clicked. While it is open, the
+row or bar you opened it from stays marked, and the keys you type stay in the sheet.
+
+- **Header.** The rule as written, where you opened it ("From your answer", "From
+  CASE-000214", "From Logs"), the window (the answer's window, or the last 3 days) and the
+  source when the sheet is filtered to one. When you pick another window, a screen reader
+  hears what it now shows once the figures arrive, for example "Last 7 days: 381 alerts
+  from this rule."
+- **Key figures.** Alerts in the window, with "≥" and "At least this many" when part of
+  the count could not be counted exactly (the note under the chart says why). Cases,
+  Still open ("of N cases") and Analyst outcome count every case the rule ever opened, all
+  time, the same cases **Show the N cases** lists. Still open appears once the rule has
+  opened a case; before that, Cases reads 0 and Analyst outcome says "no cases from this
+  rule". Analyst outcome counts only what an analyst decided: confirmed, benign, and not
+  graded (cases no analyst classified, including cases closed by an analyst policy or
+  closed without a classification). The AI verdict is never counted as an analyst
+  outcome. Under the figures: when the rule was last and first seen, in UTC.
+- **Actions.** **Open all N in Logs** opens Logs filtered to exactly this rule over the
+  same window; the number appears only when the count is exact, otherwise the button
+  reads **Open in Logs**. **Show the N cases** opens the Cases list filtered to the rule.
+  **Ask AI about this rule** starts a new chat with the rule as the question's subject, an
+  ordinary chat question metered like any other. It appears when the rule is a single
+  identifier, such as `ssh_bruteforce`; a rule name with spaces, such as "Web scanner user
+  agent detected", has no Ask AI yet. Following an action closes the sheet.
+- **Sections**, each with its own access line ("You do not have access to log sources.",
+  "... to cases.", "... to detection rules.", "... to tuning."):
+    - **Alerts over time by severity**, captioned "exact", "sampled" (drawn from each
+      source's newest 200 events) or "not exact" (a source did not answer, or a store
+      answered in part), with the reason underneath;
+    - **Top source IPs** and **Top targets**, with the same captions;
+    - **Latest alerts**: the newest 5, shown to you only and never sent to the assistant;
+    - **Cases from this rule**: the newest 5, by case number, with status and the AI
+      verdict;
+    - **About this rule**: defined in the source SIEM, or "A suite rule, <name>, enabled"
+      (or disabled) with **Rule settings**; its tuning state ("False-positive rate at
+      least N%, from N analyst-graded cases", or "No analyst-graded cases yet"); and its
+      analyst policy.
+
+When no source holds an alert from the rule in the window, the sheet says so once,
+naming where it looked ("in the log sources the Console can search"), and leaves out the
+alert lists. When no log source can be read at all it says that instead and offers no
+Logs view. The sheet stays open while the page behind it refreshes; in Logs the live tail
+pauses while it is open and resumes when you close it. If the rule view itself cannot be
+loaded (an older tab after an update, or offline), the sheet says "The rule view could
+not be loaded. Reload the page to try again." with a **Reload page** button, and the page
+behind it is kept.
+
+A block the model wrote never links, and a rule name the server could not validate is
+plain text.
+
+### Logs and Cases opened from an answer
+
+**Open all N in Logs**, a severity level's Logs view and a rule's Logs link open the Logs
+page with exact filters, shown as removable chips:
+
+- **Rule is** `<rule>`: the rule exactly as written, spaces and any letters kept. While it
+  is set, the Rule column is left out, because every row has that rule.
+- **Severity is High**, or **Severity High or above**.
+
+Above the table, Logs states how many events matched across your sources over the window
+it read, such as "381 events · last 3 days" (after you pick another range, the new one),
+or "At least 1,000 events · last 3 days" when a source could only be filtered after
+reading its newest events (a live-tail buffer) or did not answer. It never counts the rows
+on screen, and a screen reader hears each new count. Beside it, which sources applied the
+filter exactly: "Sources: all 5 that support browsing", or, for example, "Sources: 4 of 5
+applied the filter exactly; filtered after a bounded read: Syslog lab". Removing a chip
+keeps the rest of the view and reads again. Removing the last chip keeps the link's window
+and source, so the view still reads that window, and focus moves to **Browse all logs**; a
+link that carried only filters returns to the plain browser, with focus in its search box.
+**Browse all logs** drops the link and puts focus in the search box. Logs reads at most 90 days at a time: a
+link over a longer window, such as a rule from an answer about the last 6 months, keeps
+its filters and shows the last 90 days of that window, and a line under the window says
+so. Opened from an answer, the header offers **Back to answer**, which returns to that
+answer in its conversation (**Back to the case** from a case's chat), for that one view:
+reached from the answer itself or through an action in its rule sheet. It stays while you
+remove chips there. Opening a rule sheet and closing it again does not count, and once you
+move on to another page, or open another link from Logs itself, it is no longer offered.
+
+**Show the N cases** opens Cases with the **Rule** filter set. The list then holds every
+case of that rule, read from the server, not only the newest cases loaded, so the count
+beside the title, the summary tiles and their tooltips cover that rule's cases ("30 from
+this rule"). A rule with no cases reads "No cases from this rule", with **All rules** to
+go back to every case. **Filter by rule** lists the rules of the cases loaded so far;
+choose **All rules** to clear it. Choosing or clearing a rule keeps your other filters,
+such as **Assignee**: when none of the rule's cases match them, the list reads "No cases
+match your filters", and the cases you filtered for come back with **All rules**. A saved
+view keeps the rule.
+
+### Severity breakdowns
+
+A question such as "Show alerts by severity for the last 3 days" answers with a severity
+breakdown: a table of the five named levels in a fixed order (Critical, High, Medium, Low,
+Info), zeros included.
+
+| Column | What it shows |
+|---|---|
+| Severity | The level, with the raw source values it holds, such as "High (73, 8)"; its help tip names each source's scale ("73 on a 0 to 100 scale and 8 on a 0 to 10 scale") |
+| Events (or Cases) | How many fell in the level |
+| Share | Its share of the events counted, to one decimal, such as "0.0%" |
+| Trend | A small line over the window; dots when there are fewer than five points |
+| Top rules | Up to three rule names with their counts, each opening the rule sheet, then "+7 more rules" |
+
+- **One ladder for every source.** Each event's raw severity is read on its own source's
+  scale before sources are merged, so a Wazuh 0 to 15, a QRadar 0 to 10 and a 0 to 100
+  source land in the same five levels. The footnote says so.
+- **Open a level** with the chevron in its first cell (a button: Enter or Space). The
+  opened row lists the level's rules (up to 20, then "+N more rules"), each with its count,
+  its rule sheet and a Logs view of that rule at that level, then the level's own Logs
+  view.
+- **Split by**, in the block header when the answer carries more than one split (on a
+  phone or in the Case Manager column, in the block's `⋯` menu, so the title keeps the
+  full width): None, Rule or Source. Source swaps the Top column for the top sources, and
+  an opened level then lists its sources. **Host** is listed but not available ("Ask
+  again to add it"). Switching never looks anything up again and never calls the model.
+- **Rules by level.** When a rule falls in two or more levels, **Show as** in the block's
+  `⋯` menu offers a matrix: rules down the side, levels across. In an events breakdown
+  each count opens those events in Logs; a cases breakdown's counts are plain numbers.
+  **Split by** is not offered with the matrix. It takes the wide lane; on a phone it shows
+  as the levels table.
+- **Honest counts.** When the levels do not cover every event, the caption says so, for
+  example "1,000 of 2,500 events sampled, newest 200 per source", and says both when some
+  sources were counted exactly and others sampled. Shares are then of the events counted.
+- On a narrow card (a phone, the Case Manager column) Trend and Top rules drop; open a
+  level to see its rules. On a phone, a level with more raw values than its line can hold
+  wraps them inside its badge, and the help tip stays beside it.
+- Reports, print and the exports (CSV, Word, Excel) carry the plain table: each level
+  with its raw values, its count, its share and its top rules.
 
 ### Sources, citations, and console links
 

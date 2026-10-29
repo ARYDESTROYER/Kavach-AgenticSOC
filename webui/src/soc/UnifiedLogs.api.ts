@@ -67,6 +67,22 @@ export interface UnifiedLogSourceStatus {
    * older backend and when no such filter was asked for.
    */
   exact?: boolean;
+  /**
+   * Round 14: how many events in this source matched the filter (`null`: not known), and
+   * whether that is exact (`eq`) or a floor (`gte`). Only with a rule or severity filter.
+   */
+  total?: number | null;
+  total_relation?: 'eq' | 'gte';
+}
+
+/**
+ * Round 14 (SPEC §4.6.1): how many events matched a rule or severity filter across the
+ * sources read: exact (`eq`) or a floor (`gte`, "at least"). The rows are capped at
+ * `limit`, so a page states this figure, never a sum of `sources[].count`.
+ */
+export interface UnifiedLogsMatched {
+  count: number;
+  relation: 'eq' | 'gte';
 }
 
 /** A named severity level (the one ladder, after each source's own scale). */
@@ -99,6 +115,8 @@ export interface UnifiedLogsResponse {
   truncated?: boolean;
   /** Round 14: the rule and severity filters the server applied (absent on an older backend). */
   filters?: UnifiedLogsFilters;
+  /** Round 14: the events the filter matched (only with a rule or severity filter). */
+  matched?: UnifiedLogsMatched;
 }
 
 /** Query params for `GET /api/logs` (all optional; the backend hard-caps limit). */

@@ -258,6 +258,36 @@ export const NAV_STATUSES = [
 /** The only block types the model may author (provenance `ai` without a caption). */
 export const AI_AUTHORED_TYPES: readonly BlockType[] = ['callout', 'markdown', 'report'];
 
+/*
+ * Round 14 (SPEC §4.6.3, §4.7.2; contract `drill`): drill targets and the severity
+ * breakdown. A tool builds each `drill` ref by code from a validated value; `rule` is a
+ * ref PAGE the client resolves to the rule sheet, never a route. Pinned by the contract
+ * file (`drill.rule_page`, `drill.keys`, `drill.limits`, `drill.severity_*`).
+ */
+/** The ref page the client opens as the rule sheet (never a route, never a `PageId`). */
+export const RULE_PAGE = 'rule';
+/** The opts a drill ref may add to the Round 12 ref grammar. */
+export const DRILL_KEYS = ['rule', 'severity'] as const;
+/** The second dimensions a severity breakdown may carry ("Split by"). */
+export const SEVERITY_SPLIT_KEYS = ['rule', 'source'] as const;
+export type SeveritySplitKey = (typeof SEVERITY_SPLIT_KEYS)[number];
+/** What a severity breakdown counts. */
+export const SEVERITY_SUBJECTS = ['events', 'cases'] as const;
+export type SeveritySubject = (typeof SEVERITY_SUBJECTS)[number];
+/** The drill and severity bounds (`blocks.py` `MAX_ROW_TREND_POINTS` and the rest). */
+export const DRILL_LIMITS = {
+  /** A table row's (or a level's) trend sparkline: its newest points. */
+  row_trend_points: 24,
+  /** A rule value in a ref (the router's "Rule is"). */
+  rule_chars: 256,
+  /** Rules listed per level; `rules_total` counts every rule the level holds. */
+  severity_rules: 20,
+  /** Distinct raw source values a level names ("High (73, 8)"). */
+  severity_raw_values: 5,
+  /** Keys per level in a split, the rest summed in `other`. */
+  severity_split_top: 5,
+} as const;
+
 /**
  * SPEC §7.3: artifact kind → the views the client may switch between without a model
  * call. The first entry of each row is the default view. `donut` only while the
@@ -393,8 +423,33 @@ export interface InternalRef {
     to?: string;
     /** Logs: the one source the data came from (absent = every browsable source). */
     sourceId?: string;
+    /**
+     * Logs and Cases (Round 14, SPEC §4.6.6): the exact detection rule ("Rule is"), kept
+     * byte for byte. On Logs `severity` is a named level ("Severity is High").
+     */
+    rule?: string;
   };
 }
+/**
+ * Round 14 (SPEC §4.6.3): a rule drill. `page: "rule"` is not a route: the client opens
+ * the rule sheet for `opts.rule` over `opts.from`/`opts.to` (and `opts.sourceId` when the
+ * answer read one source). A separate type from {@link InternalRef}, whose `page` is
+ * always a routable page, so a rule ref never reaches the router (`useRouterNavigate`
+ * ignores one) or an `href` (`RefLink` takes only an `InternalRef`); a block card opens it
+ * as the rule sheet instead.
+ */
+export interface RuleRef {
+  page: typeof RULE_PAGE;
+  opts: {
+    /** The exact rule value events carry (untrusted, never trimmed). */
+    rule: string;
+    from?: string;
+    to?: string;
+    sourceId?: string;
+  };
+}
+/** Any drill target: a route (Logs, Cases) or the rule sheet. */
+export type DrillRef = InternalRef | RuleRef;
 /** A same-origin Help Center page, e.g. `/docs/0.1/analyst/chat/#sources`. */
 export interface DocRef {
   doc: string;
@@ -478,7 +533,11 @@ export interface ChartBlock extends BlockBase {
   series: ChartSeries[];
   reference?: ChartReference;
   last_in_progress: boolean;
-  drill?: Array<InternalRef | null>;
+  /**
+   * Each category's in-app destination, aligned with `x.values`: a route, or (Round 14,
+   * SPEC §4.6.3) a rule ref the card opens as the rule sheet.
+   */
+  drill?: Array<DrillRef | null>;
   /**
    * Round 12 (P0-8): the coarser calendar buckets the client may re-bin this time series
    * into by summing — additive units of a complete calendar series only, and only units
@@ -510,6 +569,72 @@ export interface TableBlock extends BlockBase {
   columns: TableColumn[];
   rows: Cell[][];
   sort?: { key: string; dir: 'asc' | 'desc' };
+  /**
+   * Round 14 (SPEC §4.6.3): each row's destination, aligned with `rows`: the rule sheet of
+   * a rule row, or a route (Logs filtered to a severity level).
+   */
+  drill?: Array<DrillRef | null>;
+  /** Each row's counts over the window (a sparkline, newest last), aligned with `rows`. */
+  trend?: Array<Array<number | null> | null>;
+  /**
+   * Round 14 (SPEC §4.7.2): the named levels behind a severity breakdown table. The rows
+   * stay the plain table (reports, print, exports); the client renders the breakdown from
+   * this payload when it is present.
+   */
+  severity?: SeverityBreakdown;
+}
+
+/** One raw source value a level holds, on its source's own scale (73 of 100, 8 of 10). */
+export interface SeverityRawValue {
+  value: number;
+  scale_max: number;
+}
+/** A rule (or a split key) inside one level, with its count and its destination. */
+export interface SeverityKeyCount {
+  /** Display text (untrusted, source-derived). */
+  key: string;
+  count: number;
+  /** The rule sheet (a rule), or a Logs view (a source in a split). */
+  drill?: DrillRef;
+}
+/** One named level of a breakdown (all five are always present, zeros included). */
+export interface SeverityLevelData {
+  level: SeverityKey;
+  count: number;
+  /** Share of the counted events, one decimal; `null` when not stated. */
+  share: number | null;
+  raw_values: SeverityRawValue[];
+  trend?: Array<number | null>;
+  /** Up to `DRILL_LIMITS.severity_rules` rules, ranked by count. */
+  rules: SeverityKeyCount[];
+  /** Every rule the level holds (never fewer than `rules`). */
+  rules_total: number;
+  /** The level's own view (Logs "Severity is High", or the Cases list). */
+  drill?: InternalRef;
+}
+/** One level of a split: its top keys and the rest as `other` (a count). */
+export interface SeveritySplitLevel {
+  top: SeverityKeyCount[];
+  other: number;
+}
+/** What the levels cover (SPEC §4.7.2 honesty). */
+export interface SeveritySample {
+  counted: number;
+  /** `null`: the total is not known. */
+  total: number | null;
+  per_source_cap: number | null;
+  exact: boolean;
+  sources_exact: number;
+  sources_sampled: number;
+}
+export interface SeverityBreakdown {
+  subject: SeveritySubject;
+  /** The five levels in fixed order: Critical, High, Medium, Low, Info. */
+  levels: SeverityLevelData[];
+  splits: Partial<Record<SeveritySplitKey, Partial<Record<SeverityKey, SeveritySplitLevel>>>>;
+  sample?: SeveritySample;
+  /** How many rules were seen in two or more levels (the matrix view needs one). */
+  multi_level_rules: number;
 }
 
 export interface CaseListItem {
@@ -832,6 +957,7 @@ const NAV_OPT_KEYS = [
   'from',
   'to',
   'sourceId',
+  'rule',
 ] as const;
 /*
  * The Logs deep-link grammar, EXACTLY the router's `DEEP_LINK_KEYS.logs` (soc/router.tsx;
@@ -843,12 +969,24 @@ const NAV_OPT_KEYS = [
 const LOG_QUERY_RE = /^[^\p{C}\u2028\u2029]{1,512}$/u;
 const NAV_TIME_RE = /^(now(-\d{1,5}[mhdw])?|\d{4}-\d\d-\d\d[\dTt:.Zz+-]{0,24})$/;
 const NAV_ID_RE = /^[\w.:-]{1,128}$/;
-const LOG_OPT_RE: Readonly<Record<'logQuery' | 'from' | 'to' | 'sourceId', RegExp>> = {
+/**
+ * A rule value (Round 14, the router's "Rule is" and `blocks.NavRefOpts.rule`): 1 to 256
+ * code points on one line with no control, format, unassigned, private-use or separator
+ * character. Kept byte for byte, never trimmed: it is the exact value to match.
+ */
+const RULE_VALUE_RE = /^[^\p{C}\u2028\u2029]{1,256}$/u;
+const LOG_OPT_RE: Readonly<Record<'logQuery' | 'from' | 'to' | 'sourceId' | 'rule', RegExp>> = {
   logQuery: LOG_QUERY_RE,
   from: NAV_TIME_RE,
   to: NAV_TIME_RE,
   sourceId: NAV_ID_RE,
+  rule: RULE_VALUE_RE,
 };
+
+/** Whether `value` is a rule value a ref may carry (see {@link RULE_VALUE_RE}). */
+export function isDrillRuleValue(value: unknown): value is string {
+  return typeof value === 'string' && RULE_VALUE_RE.test(value);
+}
 
 /** A valid in-app ref (router guards), else null. Unknown opts invalidate the ref. */
 export function parseInternalRef(raw: unknown): InternalRef | null {
@@ -872,7 +1010,7 @@ export function parseInternalRef(raw: unknown): InternalRef | null {
     } else if (key === 'window') {
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 720) return null;
       opts.window = value;
-    } else if (key === 'logQuery' || key === 'from' || key === 'to' || key === 'sourceId') {
+    } else if (key === 'logQuery' || key === 'from' || key === 'to' || key === 'sourceId' || key === 'rule') {
       if (typeof value !== 'string' || !LOG_OPT_RE[key].test(value)) return null;
       opts[key] = value;
     } else {
@@ -881,6 +1019,58 @@ export function parseInternalRef(raw: unknown): InternalRef | null {
     }
   }
   return Object.keys(opts).length ? { page: raw.page, opts } : { page: raw.page };
+}
+
+/** The opts a rule ref may carry (the rule sheet's target), with their grammars. */
+const RULE_REF_OPTS: Readonly<Record<keyof RuleRef['opts'], RegExp>> = {
+  rule: RULE_VALUE_RE,
+  from: NAV_TIME_RE,
+  to: NAV_TIME_RE,
+  sourceId: NAV_ID_RE,
+};
+
+/**
+ * A valid rule ref (`{page: "rule", opts: {rule, from?, to?, sourceId?}}`), else null.
+ * The rule is required; an unknown or malformed opt invalidates the whole ref, like
+ * {@link parseInternalRef}.
+ */
+export function parseRuleRef(raw: unknown): RuleRef | null {
+  if (!isObj(raw) || raw.page !== RULE_PAGE || !isObj(raw.opts)) return null;
+  if (Object.keys(raw).some((k) => k !== 'page' && k !== 'opts')) return null;
+  const opts: Partial<RuleRef['opts']> = {};
+  for (const [key, value] of Object.entries(raw.opts)) {
+    if (value === null || value === undefined) continue;
+    if (!Object.prototype.hasOwnProperty.call(RULE_REF_OPTS, key)) return null;
+    if (typeof value !== 'string' || !RULE_REF_OPTS[key as keyof RuleRef['opts']].test(value)) return null;
+    opts[key as keyof RuleRef['opts']] = value;
+  }
+  if (!opts.rule) return null;
+  return { page: RULE_PAGE, opts: { ...opts, rule: opts.rule } };
+}
+
+/** A drill target: a rule ref for `page: "rule"`, otherwise a routable ref; else null. */
+export function parseDrillRef(raw: unknown): DrillRef | null {
+  return isObj(raw) && raw.page === RULE_PAGE ? parseRuleRef(raw) : parseInternalRef(raw);
+}
+
+export const isRuleRef = (ref: DrillRef | null | undefined): ref is RuleRef => !!ref && ref.page === RULE_PAGE;
+
+/**
+ * A list of drill refs aligned with `width` positions from `start` (each invalid entry
+ * `null`, the list padded with `null`), or `undefined` when no position has one. A
+ * model-made block (`ai`) carries no destination (G5).
+ */
+function drillList(raw: unknown, start: number, width: number, provenance: BlockProvenance): Array<DrillRef | null> | undefined {
+  if (!Array.isArray(raw) || provenance === 'ai') return undefined;
+  const refs = raw.slice(start, start + width).map(parseDrillRef);
+  while (refs.length < width) refs.push(null);
+  return refs.some((r) => r !== null) ? refs : undefined;
+}
+
+/** A trend sparkline: its newest {@link DRILL_LIMITS.row_trend_points} points, each a finite number or null. */
+function trendPoints(raw: unknown): Array<number | null> | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  return raw.slice(-DRILL_LIMITS.row_trend_points).map(finiteOrNull);
 }
 
 /** A valid Help Center ref (`/docs/<major.minor>/…`), else null. */
@@ -1042,13 +1232,10 @@ function parseChart(raw: Obj, base: Base): ChartBlock {
     return fail('union_tag_invalid:reference');
   })(raw.reference);
   if (reference) block.reference = reference;
-  if (Array.isArray(raw.drill)) {
-    const drill = raw.drill.slice(start, stop).map((d) => parseInternalRef(d));
-    if (drill.some((d) => d !== null)) {
-      while (drill.length < width) drill.push(null);
-      block.drill = drill;
-    }
-  }
+  // Each category's destination, aligned with the kept values: a route or (Round 14) a
+  // rule sheet. Never on a model-made block (G5).
+  const drill = drillList(raw.drill, start, width, base.provenance);
+  if (drill) block.drill = drill;
   return block;
 }
 
@@ -1124,7 +1311,148 @@ function parseTable(raw: Obj, base: Base): TableBlock {
   if (isObj(raw.sort) && typeof raw.sort.key === 'string' && seen.has(raw.sort.key)) {
     block.sort = { key: raw.sort.key, dir: raw.sort.dir === 'asc' ? 'asc' : 'desc' };
   }
+  // Round 14 (SPEC §4.6.3): each row's destination and trend, aligned with the rows kept
+  // (cut to them, padded with null, dropped when no row has one), as the backend repairs
+  // them. Built by code from validated refs; a model-made block carries none (G5).
+  const drill = drillList(raw.drill, 0, rows.length, base.provenance);
+  if (drill) block.drill = drill;
+  if (Array.isArray(raw.trend)) {
+    const trend = raw.trend.slice(0, rows.length).map(trendPoints);
+    while (trend.length < rows.length) trend.push(null);
+    if (trend.some((t) => t !== null)) block.trend = trend;
+  }
+  const severity = lenient(parseSeverityBreakdown)(raw.severity);
+  if (severity) block.severity = base.provenance === 'ai' ? withoutSeverityDrills(severity) : severity;
   return block;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Round 14 (SPEC §4.7.2): the severity breakdown a table block may carry.     */
+/* Every count is a number a tool counted (G5); every rule, source and raw     */
+/* value is source-derived and untrusted (G7, #9); every drill a validated ref. */
+/* -------------------------------------------------------------------------- */
+const SEVERITY_KEY_CHARS = LIMITS.category_chars;
+
+/** A count: a non-negative integer, anything else 0 (the backend `Count`). */
+function countOrZero(value: unknown): number {
+  return nonNegIntOrNull(value) ?? 0;
+}
+
+/** A share of 0 to 100, one decimal; anything else is not stated (`null`). */
+function shareOrNull(value: unknown): number | null {
+  const n = finiteOrNull(value);
+  return n === null || n < 0 || n > 100 ? null : Math.round(n * 10) / 10;
+}
+
+function parseSeverityRaw(raw: unknown): SeverityRawValue {
+  if (!isObj(raw)) fail('model_type');
+  return { value: finiteRequired(raw.value, 'value'), scale_max: finiteRequired(raw.scale_max, 'scale_max') };
+}
+
+/** A rule or split key with its count and destination; a blank key names nothing. */
+function parseSeverityKeyCount(raw: unknown): SeverityKeyCount {
+  if (!isObj(raw)) fail('model_type');
+  const key = text(raw.key, SEVERITY_KEY_CHARS, 'key');
+  if (!key.trim()) fail('string_too_short:key');
+  const out: SeverityKeyCount = { key, count: countOrZero(raw.count) };
+  const drill = parseDrillRef(raw.drill);
+  if (drill) out.drill = drill;
+  return out;
+}
+
+function parseSeverityLevel(level: SeverityKey, raw: Obj | undefined): SeverityLevelData {
+  const r = raw ?? {};
+  const rules = keepValid(r.rules, parseSeverityKeyCount, DRILL_LIMITS.severity_rules).items;
+  const out: SeverityLevelData = {
+    level,
+    count: countOrZero(r.count),
+    share: shareOrNull(r.share),
+    raw_values: keepValid(r.raw_values, parseSeverityRaw, DRILL_LIMITS.severity_raw_values).items,
+    rules,
+    // Never below the rules listed.
+    rules_total: Math.max(countOrZero(r.rules_total), rules.length),
+  };
+  const trend = trendPoints(r.trend);
+  if (trend) out.trend = trend;
+  const drill = parseInternalRef(r.drill);
+  if (drill) out.drill = drill;
+  return out;
+}
+
+function parseSeveritySplitLevel(raw: unknown): SeveritySplitLevel {
+  if (!isObj(raw)) fail('model_type');
+  return {
+    top: keepValid(raw.top, parseSeverityKeyCount, DRILL_LIMITS.severity_split_top).items,
+    other: countOrZero(raw.other),
+  };
+}
+
+function parseSeveritySample(raw: unknown): SeveritySample {
+  if (!isObj(raw)) fail('model_type');
+  return {
+    counted: countOrZero(raw.counted),
+    total: nonNegIntOrNull(raw.total),
+    per_source_cap: nonNegIntOrNull(raw.per_source_cap),
+    exact: raw.exact === true,
+    sources_exact: countOrZero(raw.sources_exact),
+    sources_sampled: countOrZero(raw.sources_sampled),
+  };
+}
+
+/**
+ * A severity breakdown (the backend `SeverityBreakdown`): all five levels in the fixed
+ * order (the first entry of each level kept, a missing level a zero, an unknown one
+ * dropped); a split keeps only known names and levels, an invalid level dropped alone.
+ */
+export function parseSeverityBreakdown(raw: unknown): SeverityBreakdown {
+  if (!isObj(raw)) fail('model_type');
+  const byLevel = new Map<SeverityKey, Obj>();
+  for (const item of Array.isArray(raw.levels) ? raw.levels : []) {
+    if (!isObj(item)) continue;
+    const key = enumOr(item.level, SEVERITY_KEYS, null);
+    if (key !== null && !byLevel.has(key)) byLevel.set(key, item);
+  }
+  const splits: SeverityBreakdown['splits'] = {};
+  if (isObj(raw.splits)) {
+    for (const [name, perLevel] of Object.entries(raw.splits)) {
+      if (!has(SEVERITY_SPLIT_KEYS, name) || !isObj(perLevel)) continue;
+      const kept: Partial<Record<SeverityKey, SeveritySplitLevel>> = {};
+      for (const [level, entry] of Object.entries(perLevel)) {
+        const key = enumOr(level, SEVERITY_KEYS, null);
+        if (key === null || kept[key]) continue;
+        const parsed = lenient(parseSeveritySplitLevel)(entry);
+        if (parsed) kept[key] = parsed;
+      }
+      if (Object.keys(kept).length) splits[name] = kept;
+    }
+  }
+  const out: SeverityBreakdown = {
+    subject: enumOr(raw.subject, SEVERITY_SUBJECTS, 'events' as const),
+    levels: SEVERITY_KEYS.map((level) => parseSeverityLevel(level, byLevel.get(level))),
+    splits,
+    multi_level_rules: countOrZero(raw.multi_level_rules),
+  };
+  const sample = lenient(parseSeveritySample)(raw.sample);
+  if (sample) out.sample = sample;
+  return out;
+}
+
+/** The breakdown with every destination removed (a model-made block links nowhere, G5). */
+function withoutSeverityDrills(severity: SeverityBreakdown): SeverityBreakdown {
+  const strip = (k: SeverityKeyCount): SeverityKeyCount => ({ key: k.key, count: k.count });
+  const splits: SeverityBreakdown['splits'] = {};
+  for (const name of SEVERITY_SPLIT_KEYS) {
+    const per = severity.splits[name];
+    if (!per) continue;
+    splits[name] = Object.fromEntries(
+      Object.entries(per).map(([level, entry]) => [level, { top: entry.top.map(strip), other: entry.other }]),
+    );
+  }
+  return {
+    ...severity,
+    levels: severity.levels.map(({ drill: _drill, ...level }) => ({ ...level, rules: level.rules.map(strip) })),
+    splits,
+  };
 }
 
 /** A case's display number is short product text ("CASE-0042"). */

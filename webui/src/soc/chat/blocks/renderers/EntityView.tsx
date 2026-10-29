@@ -10,6 +10,15 @@
  * tags), when it stays mono. Sans text values (facts, provider names such as
  * "demo-synthetic", notes) set proportional numerals, whose hyphen is not set wide
  * (PW4-8); dates and scores keep tabular ones.
+ *
+ * A case's entity card (Round 14, F7, SPEC §4.6.3) names the case by its number; an
+ * answer saved before that, whose Case fact holds the internal id, shows it the Case
+ * Manager queue's way (middle-ellipsised, mono, muted, the whole id in its tooltip and for
+ * assistive tech) as a link to the case, never the bare 32-character id. Its Status fact
+ * is in the Console's words (the StatusBadge's, `display.ts` `caseStatusWord`). Its Rules
+ * fact is display text the server joined and clamped ("a, b, c…"), so it is shown as
+ * written and never split into rule links: a rule drill is built by code from the exact
+ * value only (SPEC §4.6.3), and this text no longer holds the exact values.
  */
 import * as React from 'react';
 import { Check, Copy, Search } from 'lucide-react';
@@ -24,8 +33,11 @@ import { SeverityBadge, VerdictBadge } from '@/soc/components/badges';
 import { SEMANTIC_ICON } from '@/soc/components/palette';
 import { isPageId } from '@/soc/nav';
 
-import { CaseHoverArm, CaseLink, CaseRefText, RefLink } from '../context';
+import { isSafeCaseId } from '@/soc/case-result-route';
+
+import { CaseHoverArm, CaseLink, CaseRefText, RefLink, shortCaseId } from '../context';
 import { formatUtc } from '../format';
+import { caseStatusWord } from '../../display';
 import { ENTITY_KIND_LABEL, REPUTATION_LABEL, entityFacts } from '../labels';
 import type { EntityBlock, ReputationVerdict } from '../schema';
 import { KpiGroupView } from './KpiGroupView';
@@ -79,6 +91,34 @@ export interface EntityViewProps {
   staticMode?: boolean;
 }
 
+/** An internal case id (`case-95928c…`), as a stored answer's Case fact may hold it. */
+const INTERNAL_CASE_ID_RE = /^case-[0-9a-f]{8,}$/i;
+
+/**
+ * One fact's value. Product values are prose; a fact the server marked attacker-derived is
+ * mono (G7). Two facts of a case card read better than their stored text (F7): a legacy
+ * internal id in Case and a raw status key in Status. Everything else, the Rules fact
+ * included, is shown exactly as written.
+ */
+function FactValue({ fact, staticMode }: { fact: EntityBlock['facts'][number]; staticMode: boolean }) {
+  const label = fact.label.trim().toLowerCase();
+  const value = fact.value;
+  if (label === 'case' && INTERNAL_CASE_ID_RE.test(value.trim()) && isSafeCaseId(value.trim())) {
+    const id = value.trim();
+    const short = shortCaseId(id);
+    const text = (
+      <span className="whitespace-nowrap font-mono text-xs text-muted-foreground" title={id} data-case-ref="id">
+        <span aria-hidden>{short}</span>
+        <span className="sr-only">{id}</span>
+      </span>
+    );
+    return staticMode ? text : <CaseLink facts={{ case_id: id }}>{text}</CaseLink>;
+  }
+  const status = label === 'status' && !fact.untrusted ? caseStatusWord(value) : null;
+  if (status) return <span className="text-foreground proportional-nums">{status}</span>;
+  return <span className={cn(fact.untrusted ? 'font-mono text-xs' : 'text-foreground proportional-nums')}>{value}</span>;
+}
+
 export function EntityView({ block, idPrefix, framed = false, countsFramed = false, staticMode = false }: EntityViewProps) {
   const rawId = React.useId();
   const valueId = `ent-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -129,7 +169,9 @@ export function EntityView({ block, idPrefix, framed = false, countsFramed = fal
                   {/* Mono only for a fact the server marked attacker-derived (G7); product
                       values ("1 of 1 answered") are prose (browser-QA D7). The indicator
                       itself is already InlineCode above. */}
-                  <dd className={cn('min-w-0 break-words', f.untrusted ? 'font-mono text-xs' : 'text-foreground proportional-nums')}>{f.value}</dd>
+                  <dd className="min-w-0 break-words">
+                    <FactValue fact={f} staticMode={staticMode} />
+                  </dd>
                 </React.Fragment>
               ))}
             </dl>

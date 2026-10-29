@@ -43,8 +43,10 @@ import { cn } from '@/lib/cn';
 import { logRowKeys, pruneExpandedKeys } from '@/lib/log-row-keys';
 import {
   fetchUnifiedLogs,
+  type LogSeverityLevel,
   type UnifiedLogRow,
   type UnifiedLogSourceStatus,
+  type UnifiedLogsResponse,
 } from '@/soc/UnifiedLogs.api';
 
 import {
@@ -255,6 +257,31 @@ export interface UnifiedLogsBodyProps {
   header?: React.ReactNode;
   /** Every successful read's per-source status (a host names a linked source with it). */
   onSources?: (sources: UnifiedLogSourceStatus[]) => void;
+  /*
+   * Round 14 (SPEC §4.6.6): exact filters the server applies (`GET /api/logs` `rule`,
+   * `severity`, `severity_gte`), bound as structured filters, never as search text. The
+   * Logs page passes them from a deep link ("Rule is", "Severity is High").
+   */
+  /** Exactly this rule value (kept byte for byte). */
+  rule?: string;
+  /** Exactly this named level. */
+  severity?: LogSeverityLevel;
+  /** This named level or above. */
+  severityGte?: LogSeverityLevel;
+  /** Leave the rule column out (a "Rule is" filter fixes it). */
+  hideRuleColumn?: boolean;
+  /**
+   * Every successful read's whole response (the page states `matched` from it), with how
+   * the window that read used reads ("last 3 days", "Last 24 hours"), since the time-range
+   * control can change it after the link opened.
+   */
+  onResult?: (res: UnifiedLogsResponse, read: { windowLabel: string }) => void;
+  /**
+   * Focus the search box when the browser mounts. The Logs page sets it when the last
+   * filter chip of a link is removed: the linked header goes away with the chip, so focus
+   * lands on the browser's first control rather than on the page body.
+   */
+  autoFocusSearch?: boolean;
 }
 
 /** Why Live tail is off while a linked query's fixed past window is selected. */
@@ -316,8 +343,19 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
   sourceId,
   header = null,
   onSources,
+  rule,
+  severity,
+  severityGte,
+  hideRuleColumn = false,
+  onResult,
+  autoFocusSearch = false,
 }) => {
   const [query, setQuery] = React.useState(initialQuery);
+  const searchRef = React.useRef<HTMLInputElement>(null);
+  const [focusSearchOnMount] = React.useState(autoFocusSearch);
+  React.useEffect(() => {
+    if (focusSearchOnMount) searchRef.current?.focus();
+  }, [focusSearchOnMount]);
   // The COMMITTED search term the fetch actually uses. Kept separate from the live
   // `query` input so typing does not refetch/skeleton-flash on every keystroke — the
   // search is manual (Enter / Refresh), matching the button contract below.
@@ -334,6 +372,9 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
   const liveTail = liveTailPref && !liveTailBlocked;
   const onSourcesRef = React.useRef(onSources);
   onSourcesRef.current = onSources;
+  const onResultRef = React.useRef(onResult);
+  onResultRef.current = onResult;
+  const filtered = Boolean(rule || severity || severityGte);
 
   const [rows, setRows] = React.useState<UnifiedLogRow[]>([]);
   const keys = React.useMemo(() => logRowKeys(rows), [rows]);
@@ -367,12 +408,20 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
           from: linkedWindow ? (linkedWindow.from ?? undefined) : start || undefined,
           to: linkedWindow ? (linkedWindow.to ?? (linkedWindow.from ? 'now' : undefined)) : 'now',
           ...(sourceId ? { source_id: sourceId } : {}),
+          ...(rule ? { rule } : {}),
+          ...(severity ? { severity } : {}),
+          ...(severityGte ? { severity_gte: severityGte } : {}),
         });
         if (seq !== seqRef.current) return; // superseded by a newer request
         const logs = res.logs || [];
         setRows(logs);
         setSources(res.sources || []);
         onSourcesRef.current?.(res.sources || []);
+        onResultRef.current?.(res, {
+          windowLabel: linkedWindow
+            ? linkedWindow.label
+            : (TIME_RANGES.find((r) => r.value === start)?.label ?? start),
+        });
         setPartial(Boolean(res.partial));
         setCount(typeof res.count === 'number' ? res.count : logs.length);
         setAppliedLimit(typeof res.limit === 'number' ? res.limit : ROW_LIMIT);
@@ -387,7 +436,7 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
         if (showSkeleton && seq === seqRef.current) setLoading(false);
       }
     },
-    [submittedQuery, start, linkedWindow, sourceId],
+    [submittedQuery, start, linkedWindow, sourceId, rule, severity, severityGte],
   );
 
   // Manual search: commit the live input. If the term is unchanged the load effect
@@ -454,6 +503,7 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
             aria-hidden
           />
           <Input
+            ref={searchRef}
             className="h-9 pl-9"
             placeholder="Search message, rule, host across all sources…"
             aria-label="Search log events"
@@ -571,10 +621,12 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
               description={
                 sources.length === 0
                   ? 'No browse-capable sources are enabled. Configure a source to see its logs here.'
-                  : linkedWindow
-                    ? // A link reopened later may point at events the source no longer keeps.
-                      'No log events matched this window across your sources. Older events may have aged out of the source since this link was made.'
-                    : 'No log events matched this window across your sources.'
+                  : filtered
+                    ? 'No log events matched these filters in this window across your sources.'
+                    : linkedWindow
+                      ? // A link reopened later may point at events the source no longer keeps.
+                        'No log events matched this window across your sources. Older events may have aged out of the source since this link was made.'
+                      : 'No log events matched this window across your sources.'
               }
             />
           ) : (
@@ -587,7 +639,7 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
                     <TableHead className="w-[170px]">Timestamp</TableHead>
                     <TableHead className="w-[150px]">Source</TableHead>
                     <TableHead className="w-[130px]">source.ip</TableHead>
-                    <TableHead className="w-[160px]">Module / rule</TableHead>
+                    {hideRuleColumn ? null : <TableHead className="w-[160px]">Module / rule</TableHead>}
                     <TableHead className="w-[90px]">Severity</TableHead>
                     <TableHead>Message</TableHead>
                     <TableHead className="w-[56px] text-right">Raw</TableHead>
@@ -624,13 +676,15 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
                               <span className="text-muted-foreground">{DASH}</span>
                             )}
                           </TableCell>
-                          <TableCell className="text-sm">
-                            {r.rule ? (
-                              <span className="break-all">{r.rule}</span>
-                            ) : (
-                              <span className="text-muted-foreground">{DASH}</span>
-                            )}
-                          </TableCell>
+                          {hideRuleColumn ? null : (
+                            <TableCell className="text-sm">
+                              {r.rule ? (
+                                <span className="break-all">{r.rule}</span>
+                              ) : (
+                                <span className="text-muted-foreground">{DASH}</span>
+                              )}
+                            </TableCell>
+                          )}
                           <TableCell>
                             <SeverityBadge severity={r.severity} showValue />
                           </TableCell>
@@ -666,7 +720,7 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
                         </TableRow>
                         {isOpen ? (
                           <TableRow id={`ulog-raw-${key}`}>
-                            <TableCell colSpan={7} className="bg-muted/30 p-2">
+                            <TableCell colSpan={hideRuleColumn ? 6 : 7} className="bg-muted/30 p-2">
                               {/* The detail stays in the visible part of the table's scroll
                                   area: on a phone the table scrolls sideways and the row is
                                   expanded from its far-right Raw button, so a full-width

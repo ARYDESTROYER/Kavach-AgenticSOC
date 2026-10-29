@@ -355,6 +355,12 @@ interface CaseFilters {
   timeRange: TimeRange;
   /** Show only cases linked across sources (F6 — related_case_ids / cross-source group). */
   relatedOnly: boolean;
+  /**
+   * Round 14 (SPEC §4.6.6): only cases from exactly this detection rule ('' = any rule).
+   * The list is then read from the server with `rule`, so every case of the rule is
+   * counted, not only those among the newest loaded.
+   */
+  rule: string;
 }
 
 const EMPTY_FILTERS: CaseFilters = {
@@ -366,7 +372,21 @@ const EMPTY_FILTERS: CaseFilters = {
   assignee: ANY,
   timeRange: 'all',
   relatedOnly: false,
+  rule: '',
 };
+
+/** A rule filter value: the exact rule, 1 to 256 characters, no control or format characters. */
+const RULE_FILTER_RE = /^[^\p{C}\u2028\u2029]{1,256}$/u;
+
+/** A usable rule filter value, kept exactly (never trimmed: it is matched as written). */
+function ruleFilterValue(value: unknown): string {
+  return typeof value === 'string' && RULE_FILTER_RE.test(value) && value.trim() ? value : '';
+}
+
+/** The most rule names the Rule filter offers (the rules of the cases loaded so far). */
+const RULE_OPTION_LIMIT = 200;
+/** The Rule filter's "All rules" choice; a rule is chosen by its index (never collides with a value). */
+const ALL_RULES = 'all';
 
 /** Whether a case participates in a cross-source group (F6). */
 function isCrossSourceLinked(c: Case): boolean {
@@ -434,6 +454,30 @@ function healFilters(f: CaseFilters, facets: Facets): CaseFilters {
   return next;
 }
 
+/**
+ * The values the Status, Disposition and Assignee controls offer (Round 14): the facets of
+ * the cases loaded now, those of the last read across every rule (`catalog`, so choosing a
+ * rule never takes away a value the person could pick before), and each value chosen now,
+ * so a control always shows its own filter even when no loaded case carries it.
+ */
+function facetOptions(facets: Facets, catalog: Facets | null, f: CaseFilters): Facets {
+  const merged = (now: string[], before: string[] | undefined, chosen: string | null) =>
+    sortedUniq([...now, ...(before ?? []), ...(chosen ? [chosen] : [])]);
+  return {
+    statuses: merged(
+      facets.statuses,
+      catalog?.statuses,
+      f.status !== ANY && !STATUS_SENTINELS.has(f.status) ? f.status : null,
+    ),
+    dispositions: merged(facets.dispositions, catalog?.dispositions, f.disposition !== ANY ? f.disposition : null),
+    assignees: merged(
+      facets.assignees,
+      catalog?.assignees,
+      f.assignee !== ANY && f.assignee !== UNASSIGNED ? f.assignee : null,
+    ),
+  };
+}
+
 function applyFilters(cases: Case[], f: CaseFilters): Case[] {
   const q = f.search.trim().toLowerCase();
   const now = Date.now();
@@ -458,6 +502,8 @@ function applyFilters(cases: Case[], f: CaseFilters): Case[] {
       return false;
     }
     if (f.relatedOnly && !isCrossSourceLinked(c)) return false;
+    // Exact, as the server filtered it: one of the case's rule values, byte for byte.
+    if (f.rule && !caseRules(c).includes(f.rule)) return false;
 
     if (f.severity !== ANY) {
       if (caseSeverityBand(c) !== f.severity) return false;
@@ -508,7 +554,58 @@ function countActiveFilters(f: CaseFilters): number {
     (f.noiseOutcome !== ANY ? 1 : 0) +
     (f.assignee !== ANY ? 1 : 0) +
     (f.timeRange !== 'all' ? 1 : 0) +
-    (f.relatedOnly ? 1 : 0)
+    (f.relatedOnly ? 1 : 0) +
+    (f.rule ? 1 : 0)
+  );
+}
+
+/**
+ * The Rule filter (Round 14, SPEC §4.6.6): "All rules", or exactly one rule. It offers the
+ * rules of the cases loaded so far plus the one a link chose. Rule values are untrusted
+ * source text (#9): plain text in mono, never markup; an option is chosen by its index,
+ * so no rule value can collide with "All rules".
+ */
+function RuleFilterSelect({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (rule: string) => void;
+}) {
+  const rules = React.useMemo(
+    () => (value && !options.includes(value) ? [value, ...options] : options),
+    [value, options],
+  );
+  const selected = value ? rules.indexOf(value) : -1;
+  return (
+    <Select
+      value={selected >= 0 ? `r:${selected}` : ALL_RULES}
+      onValueChange={(v) => {
+        if (v === ALL_RULES) onChange('');
+        else {
+          const rule = rules[Number(v.slice(2))];
+          if (rule !== undefined) onChange(rule);
+        }
+      }}
+    >
+      <SelectTrigger
+        className="h-8 w-full min-w-0 text-xs 2xl:w-[13rem]"
+        aria-label="Filter by rule"
+        title={value || undefined}
+      >
+        <SelectValue placeholder="Rule" />
+      </SelectTrigger>
+      <SelectContent className="max-w-[min(32rem,90vw)]">
+        <SelectItem value={ALL_RULES}>All rules</SelectItem>
+        {rules.map((rule, index) => (
+          <SelectItem key={rule} value={`r:${index}`}>
+            <span className="block truncate font-mono">{rule}</span>
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -525,6 +622,7 @@ function filtersToView(f: CaseFilters): Record<string, unknown> {
     assignee: f.assignee,
     timeRange: f.timeRange,
     relatedOnly: f.relatedOnly,
+    rule: f.rule,
   };
 }
 
@@ -547,6 +645,7 @@ function viewToFilters(raw: Record<string, unknown> | undefined): CaseFilters {
     assignee: str(r.assignee, ANY),
     timeRange: (['all', '1h', '24h', '7d', '30d'].includes(tr) ? tr : 'all') as TimeRange,
     relatedOnly: r.relatedOnly === true,
+    rule: ruleFilterValue(r.rule),
   };
 }
 
@@ -615,6 +714,11 @@ export interface CasesProps {
   initialNoiseOutcome?: NoiseOutcomeFilter;
   /** Seed the selected dashboard metrics window (hours) into the Cases horizon. */
   initialWindowHours?: number;
+  /**
+   * Round 14 (SPEC §4.6.6): seed the Rule filter (the rule sheet's "Show the N cases", a
+   * `#/cases?rule=` link). The exact rule value; an invalid one is ignored.
+   */
+  initialRule?: string;
 }
 
 /** Severity-band values the Cases severity filter (and the #38 drill-through) accepts. */
@@ -794,6 +898,7 @@ export default function Cases({
   initialSeverity: initialSeverityProp,
   initialNoiseOutcome: initialNoiseOutcomeProp,
   initialWindowHours: initialWindowHoursProp,
+  initialRule: initialRuleProp,
 }: CasesProps) {
   const route = useRoute();
   // Bulk changes run as durable jobs, which the server refuses in Demo Mode.
@@ -816,6 +921,7 @@ export default function Cases({
       : undefined;
   const initialWindowHours = initialWindowHoursProp ?? route.opts?.window;
   const initialTimeRange = timeRangeFromWindowHours(initialWindowHours);
+  const initialRule = ruleFilterValue(initialRuleProp ?? route.opts?.rule) || undefined;
 
   // Pervasive customization (Wave 7): terminology labels + saved views + per-table
   // column state, all keyed to the caller (the 'default' bucket when auth is off).
@@ -847,6 +953,7 @@ export default function Cases({
     if (initialSeverity) f = { ...f, severity: initialSeverity };
     if (initialNoiseOutcome) f = { ...f, noiseOutcome: initialNoiseOutcome };
     if (initialTimeRange) f = { ...f, timeRange: initialTimeRange };
+    if (initialRule) f = { ...f, rule: initialRule };
     return f;
   });
   const [sort, setSort] = React.useState<SortState>({ id: 'updated_at', dir: 'desc' });
@@ -889,13 +996,44 @@ export default function Cases({
     needsHuman: number | null;
   } | null>(null);
 
+  // The Rule filter is applied by the server (every case of the rule, not only the newest
+  // loaded); the other filters narrow the loaded list here.
+  const serverRule = filters.rule;
+  // The rules the Rule filter offers: every rule seen on the cases loaded so far.
+  const [ruleOptions, setRuleOptions] = React.useState<string[]>([]);
+  const loadSeq = React.useRef(0);
+  // The rule the lifecycle tiles' server totals were read for ('' = every rule). A changed
+  // rule clears them at once, so the tiles never show another rule's figures (or every
+  // case's) while the new reads run.
+  const countsRule = React.useRef('');
+  // The rule the loaded list was read for ('' = every rule): the badge, the tiles and the
+  // empty state say what the figures cover from it, never from a read still in flight.
+  const [loadedRule, setLoadedRule] = React.useState('');
+  // The Status, Disposition and Assignee values of the last read across every rule. A
+  // rule's own read is narrower, so the controls keep offering these while one is chosen.
+  const [catalogFacets, setCatalogFacets] = React.useState<Facets | null>(null);
   const load = React.useCallback(async () => {
+    const seq = ++loadSeq.current;
+    if (countsRule.current !== serverRule) {
+      countsRule.current = serverRule;
+      setServerCounts(null);
+    }
     setLoading(true);
     setError(null);
+    const ruleQuery = serverRule ? { rule: serverRule } : {};
     try {
-      const res = await api.listCases({ limit: LIST_LIMIT });
+      const res = await api.listCases({ limit: LIST_LIMIT, ...ruleQuery });
+      // A newer read (another rule chosen meanwhile) wins.
+      if (seq !== loadSeq.current) return;
       setCases(res.cases);
       setTotal(res.total);
+      setLoadedRule(serverRule);
+      if (!serverRule) setCatalogFacets(buildFacets(res.cases));
+      setRuleOptions((prev) => {
+        const seen = new Set(prev);
+        for (const c of res.cases) for (const r of caseRules(c)) if (ruleFilterValue(r)) seen.add(r);
+        return seen.size === prev.length ? prev : sortedUniq(seen).slice(0, RULE_OPTION_LIMIT);
+      });
       if (res.total > res.cases.length) {
         // Best effort, never blocking the list: a failed count falls back to the
         // loaded-slice count, labelled as such. Needs human is the SAME rule as
@@ -905,7 +1043,7 @@ export default function Cases({
         // assignees. The union is |status| + |active ∧ verdict| − |status ∧ verdict|
         // (a needs_human status is always active), so each case counts once.
         const count = (query: Record<string, string | number>) =>
-          api.listCases({ ...query, limit: 1 }).then((r) => (typeof r.total === 'number' ? r.total : null), () => null);
+          api.listCases({ ...query, ...ruleQuery, limit: 1 }).then((r) => (typeof r.total === 'number' ? r.total : null), () => null);
         void Promise.all([
           count({ status_group: 'active' }),
           count({ status_group: 'terminal' }),
@@ -913,6 +1051,8 @@ export default function Cases({
           count({ status_group: 'active', verdict: 'NEEDS_HUMAN' }),
           count({ status: 'needs_human', verdict: 'NEEDS_HUMAN' }),
         ]).then(([active, terminal, byStatus, byVerdict, both]) => {
+          // A newer read (another rule chosen, or a refresh) owns the tiles now.
+          if (seq !== loadSeq.current) return;
           const needsHuman =
             byStatus !== null && byVerdict !== null && both !== null
               ? Math.max(0, byStatus + byVerdict - both)
@@ -923,15 +1063,20 @@ export default function Cases({
         setServerCounts(null);
       }
     } catch (e) {
-      setError(e);
+      if (seq === loadSeq.current) setError(e);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
-  }, []);
+  }, [serverRule]);
 
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  // A rule drill (the rule sheet's "Show the N cases") can change `initialRule` while mounted.
+  React.useEffect(() => {
+    if (initialRule) setFilters((f) => ({ ...f, rule: initialRule }));
+  }, [initialRule]);
 
   // A drill-through can change `initialStatus` while mounted; reseed the filter.
   React.useEffect(() => {
@@ -993,13 +1138,22 @@ export default function Cases({
   }, [openInCaseManager, route.page, routeCaseId]);
 
   const facets = React.useMemo(() => buildFacets(cases), [cases]);
+  // What the facet controls offer: never fewer values because a rule is chosen, and
+  // always the value each one filters by.
+  const controlFacets = React.useMemo(
+    () => facetOptions(facets, loadedRule ? catalogFacets : null, filters),
+    [facets, loadedRule, catalogFacets, filters],
+  );
 
   // Self-heal selected facet values when the loaded rows change.
   React.useEffect(() => {
     // Do not erase a deep-linked assignee while the first case page is still loading
-    // and the facet catalog is necessarily empty.
-    if (!loading) setFilters((f) => healFilters(f, facets));
-  }, [facets, loading]);
+    // and the facet catalog is necessarily empty. Heal only against a read across every
+    // rule (Round 14): a rule's own read holds only that rule's cases, so a value none of
+    // them carries is a filter with no results there, never a value to throw away (the
+    // person's Assignee, say, comes back with its cases when the rule is cleared).
+    if (!loading && !loadedRule) setFilters((f) => healFilters(f, facets));
+  }, [facets, loading, loadedRule]);
 
   const filtered = React.useMemo(() => applyFilters(cases, filters), [cases, filters]);
 
@@ -1027,7 +1181,9 @@ export default function Cases({
   // Header pill counts over the full LOADED set (`cases`), NOT the filtered view, so
   // (a) they stay a stable triage snapshot that doesn't collapse to 0 when a status
   // filter is applied, and (b) their basis matches the "N loaded" the Total pill shows
-  // when truncated — never read as a fraction of the server total.
+  // when truncated, never read as a fraction of the server total. The one exception is
+  // the Rule filter (Round 14): the server reads only that rule's cases, so every figure
+  // covers them, and the badge, tooltips and empty state say "from this rule".
   const counts = React.useMemo(() => {
     let active = 0;
     let terminal = 0;
@@ -1044,10 +1200,12 @@ export default function Cases({
   }, [cases]);
 
   const truncated = total > cases.length;
+  // " from the rule <value>" when the loaded list is one rule's cases (plain text, #9).
+  const ruleScope = loadedRule ? ` from the rule ${loadedRule}` : '';
   // Tooltip clarifying that the Active/Needs-human/severity pills count the LOADED set.
   const loadedScopeTitle = truncated
-    ? `Among the ${cases.length.toLocaleString()} loaded cases (of ${total.toLocaleString()})`
-    : `Among ${cases.length.toLocaleString()} case${cases.length === 1 ? '' : 's'}`;
+    ? `Among the ${cases.length.toLocaleString()} loaded cases${ruleScope} (of ${total.toLocaleString()})`
+    : `Among ${cases.length.toLocaleString()} case${cases.length === 1 ? '' : 's'}${ruleScope}`;
   // A truncated list: the lifecycle tiles show the exact server total (with how many of
   // them the loaded list can show); the severity tiles count the loaded slice and say so.
   const loadedNote = truncated ? `of ${cases.length.toLocaleString()} loaded` : undefined;
@@ -1061,7 +1219,7 @@ export default function Cases({
           count: server,
           note: `${loadedCount.toLocaleString()} loaded`,
           title:
-            `${server.toLocaleString()} ${server === 1 ? noun[0] : noun[1]} in total; ` +
+            `${server.toLocaleString()} ${server === 1 ? noun[0] : noun[1]}${ruleScope} in total; ` +
             `${loadedCount.toLocaleString()} of them ${loadedCount === 1 ? 'is' : 'are'} among the ` +
             `${cases.length.toLocaleString()} loaded cases this list filters`,
         }
@@ -1526,14 +1684,16 @@ export default function Cases({
             data-testid="cases-count-total"
             title={
               truncated
-                ? `${cases.length.toLocaleString()} of ${total.toLocaleString()} cases loaded`
-                : undefined
+                ? `${cases.length.toLocaleString()} of ${total.toLocaleString()} cases${ruleScope} loaded`
+                : loadedRule
+                  ? `${total.toLocaleString()} case${total === 1 ? '' : 's'}${ruleScope}`
+                  : undefined
             }
             className="inline-flex items-center rounded-[4px] border border-border bg-surface px-2 py-0.5 text-xs font-medium tabular-nums text-muted-foreground"
           >
             {truncated
-              ? `${cases.length.toLocaleString()} / ${total.toLocaleString()}`
-              : `${total.toLocaleString()} total`}
+              ? `${cases.length.toLocaleString()} / ${total.toLocaleString()}${loadedRule ? ' from this rule' : ''}`
+              : `${total.toLocaleString()} ${loadedRule ? 'from this rule' : 'total'}`}
           </span>
         }
       />
@@ -1726,7 +1886,7 @@ export default function Cases({
               <SelectItem value={ACTIVE}>Active cases</SelectItem>
               <SelectItem value={TERMINAL}>Terminal (resolved or closed)</SelectItem>
               <SelectItem value={NEEDS_HUMAN}>Needs human</SelectItem>
-              {facets.statuses.filter((s) => s !== 'needs_human').map((s) => (
+              {controlFacets.statuses.filter((s) => s !== 'needs_human').map((s) => (
                 <SelectItem key={s} value={s}>
                   {s === 'needs_human' ? 'Open · awaiting analyst' : humanizeToken(s)}
                 </SelectItem>
@@ -1752,7 +1912,7 @@ export default function Cases({
             </SelectContent>
           </Select>
 
-          {facets.dispositions.length ? (
+          {controlFacets.dispositions.length ? (
             <Select
               value={filters.disposition}
               onValueChange={(v) => setFilter('disposition', v)}
@@ -1762,7 +1922,7 @@ export default function Cases({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={ANY}>All dispositions</SelectItem>
-                {facets.dispositions.map((d) => (
+                {controlFacets.dispositions.map((d) => (
                   <SelectItem key={d} value={d}>
                     {humanizeToken(d)}
                   </SelectItem>
@@ -1785,6 +1945,12 @@ export default function Cases({
             </SelectContent>
           </Select>
 
+          <RuleFilterSelect
+            value={filters.rule}
+            options={ruleOptions}
+            onChange={(rule) => setFilter('rule', rule)}
+          />
+
           <Select value={filters.assignee} onValueChange={(v) => setFilter('assignee', v)}>
             <SelectTrigger className="h-8 w-full rounded-[4px] text-xs 2xl:w-[11rem]" aria-label="Filter by assignee">
               <SelectValue placeholder="Assignee" />
@@ -1792,7 +1958,7 @@ export default function Cases({
             <SelectContent>
               <SelectItem value={ANY}>All assignees</SelectItem>
               <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-              {facets.assignees.map((a) => (
+              {controlFacets.assignees.map((a) => (
                 <SelectItem key={a} value={a}>
                   {a}
                 </SelectItem>
@@ -1892,6 +2058,7 @@ export default function Cases({
         <Alert>
           <AlertTitle>
             Showing the first {cases.length.toLocaleString()} of {total.toLocaleString()} cases
+            {loadedRule ? ' from this rule' : ''}
           </AlertTitle>
           <AlertDescription>
             Only the most recent {cases.length.toLocaleString()} cases are loaded for fast
@@ -1952,14 +2119,22 @@ export default function Cases({
           <EmptyState
             compact
             icon={Briefcase}
-            title={cases.length === 0 ? 'No cases yet' : 'No cases match your filters'}
+            // A rule that matches nothing is a filter with no results, not an empty console.
+            title={cases.length === 0 ? (loadedRule ? 'No cases from this rule' : 'No cases yet') : 'No cases match your filters'}
             description={
               cases.length === 0
-                ? 'Run an investigation or enable background scans to start triaging.'
+                ? loadedRule
+                  ? 'No case in the store came from this rule. Choose All rules to see every case.'
+                  : 'Run an investigation or enable background scans to start triaging.'
                 : 'No loaded cases match the current filters. Clear them to see all cases.'
             }
             action={
-              cases.length > 0 ? (
+              cases.length === 0 && loadedRule ? (
+                <Button variant="outline" size="sm" onClick={() => setFilter('rule', '')}>
+                  <X className="mr-1.5 size-4" aria-hidden />
+                  All rules
+                </Button>
+              ) : cases.length > 0 ? (
                 <Button variant="outline" size="sm" onClick={clearAll}>
                   <X className="mr-1.5 size-4" aria-hidden />
                   Clear filters

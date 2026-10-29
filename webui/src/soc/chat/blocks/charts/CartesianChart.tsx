@@ -45,11 +45,10 @@ import * as React from 'react';
 
 import { cn } from '@/lib/cn';
 import { focusRing } from '@/lib/ui-recipes';
-import { navLabel } from '@/soc/nav';
 import { token } from '@/soc/components/palette';
 import { useAnnouncer } from '@/soc/components/announcer';
 
-import { useBlocks } from '../context';
+import { drillLabel, useBlocks } from '../context';
 import {
   IN_PROGRESS_SUFFIX,
   axisZone,
@@ -66,6 +65,7 @@ import {
   xTickLabel,
 } from '../format';
 import type { ChartBlock } from '../schema';
+import { isRuleRef } from '../schema';
 import { ChartControlsContext, usePublishChartView } from './export-context';
 import { HatchPattern, MARK_FORCED, ChartShell, useSvgId } from './ChartShell';
 import type { AnchorRect } from './ChartTooltipPortal';
@@ -321,7 +321,8 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     summarize,
     onActivate: (c) => {
       const ref = drillAt(c.i);
-      if (ref) navigate(ref);
+      // A rule ref opens the rule sheet (the card's provider); focus comes back to the plot.
+      if (ref) navigate(ref, navRef.current?.plotRef.current);
     },
     disabled: staticMode,
     onRange: zoomable ? applyZoom : undefined,
@@ -370,7 +371,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     }
     clickAnchor.current = { view: viewId, i: active.i };
     const ref = drillAt(active.i);
-    if (ref) navigate(ref);
+    if (ref) navigate(ref, nav.plotRef.current);
   };
   const selection: [number, number] | null = drag ? [Math.min(drag.from, drag.to), Math.max(drag.from, drag.to)] : nav.range;
 
@@ -600,7 +601,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     }
     if (block.last_in_progress && i === lastIdx) notes.push('In progress: this period is still filling.');
     const ref = drillAt(i);
-    if (ref) notes.push(`Open in ${navLabel(ref.page)} ›`);
+    if (ref) notes.push(`${drillLabel(ref)} ›`);
     tooltip = (
       <TooltipBody
         heading={
@@ -620,7 +621,7 @@ export function CartesianChart({ block: full, title, height, staticMode = false 
     'Use the left and right arrow keys to read each position' +
     (secondary ? ', up and down to pick a series' : '') +
     '; Home and End jump to the first and last. ' +
-    (block.drill ? 'Enter opens the linked page. ' : '') +
+    (block.drill ? (block.drill.some(isRuleRef) ? "Enter opens the rule's alerts and cases. " : 'Enter opens the linked page. ') : '') +
     (zoomable ? 'To zoom, hold Shift with the left or right arrow key to select a range, then press Enter. ' : '') +
     'A data table follows the chart.';
 

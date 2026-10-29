@@ -77,7 +77,9 @@ describe('columns (bar)', () => {
     fireEvent.keyDown(plot, { key: 'Home' });
     expect(tooltip('chart-bar')).toHaveTextContent('Open in Cases ›');
     fireEvent.keyDown(plot, { key: 'Enter' });
-    expect(nav).toHaveBeenCalledWith({ page: 'cases', opts: { severity: 'critical' } });
+    // Round 14: the plot is handed over as the opener (focus comes back to it when a rule
+    // sheet it opened closes).
+    expect(nav).toHaveBeenCalledWith({ page: 'cases', opts: { severity: 'critical' } }, plot);
   });
 
   it('opens the tooltip on hover over a slot', () => {

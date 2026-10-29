@@ -16,6 +16,7 @@ export const CAPABILITY_LABELS: Readonly<Record<string, string>> = {
   search_logs: 'Search logs',
   log_stats: 'Count log events',
   search_cases: 'Search cases',
+  case_stats: 'Count cases',
   get_case: 'Read a case',
   shift_report: 'Build the shift snapshot',
   list_campaigns: 'List campaigns',
@@ -65,6 +66,10 @@ export function isKindGated(tool: Pick<ChatToolInfo, 'requires' | 'kind_requires
  * to read sources") with the `resource:action` code beside it, muted, so an administrator
  * can still grant it. Known grants have hand-written phrases; any other one reads
  * "<action> <resource>" with underscores as spaces.
+ *
+ * Round 14 (SPEC §3.7, §4.10.1): runbooks are the one name for procedures. The retired
+ * `playbooks:*` grants are still accepted (the server maps them to `runbooks:*`), so a
+ * stored one reads as the runbook ability it now grants, never by the retired word.
  */
 export const PERMISSION_PHRASES: Readonly<Record<string, string>> = {
   'cases:read': 'read cases',
@@ -72,10 +77,16 @@ export const PERMISSION_PHRASES: Readonly<Record<string, string>> = {
   'metrics:view': 'view metrics',
   'cost:view': 'view costs',
   'audit:view': 'view the audit trail',
+  'audit:export': 'export the audit log',
   'enrichment:read': 'read threat intel',
   'rag:read': 'read the knowledge base',
   'runbooks:read': 'read runbooks',
-  'playbooks:read': 'read playbooks',
+  'runbooks:run': 'run runbooks',
+  'runbooks:manage': 'manage runbooks',
+  'runbooks:publish': 'publish runbooks',
+  'playbooks:read': 'read runbooks',
+  'playbooks:run': 'run runbooks',
+  'playbooks:manage': 'manage runbooks',
   'memory:read': 'read memory',
   'automation:read': 'read automation',
   'settings:read': 'read settings',
