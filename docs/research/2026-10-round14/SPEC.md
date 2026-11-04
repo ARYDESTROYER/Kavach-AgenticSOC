@@ -3490,10 +3490,11 @@ built" pointer.
 
 ### 11.1 Contract resolutions
 
-- **Entry bundle.** Package R rebased the first-paint baseline once (§3.4, E11):
-  `PRE_REVAMP_ENTRY_BYTES = 377_070` (377,070 B) in
-  `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged +1,024 B budget
-  over it and the unchanged 400,000 B ceiling. Every figure is the entry chunk on disk after
+- **Entry bundle.** The first-paint baseline is now `PRE_REVAMP_ENTRY_BYTES = 336_216`
+  (336,216 B) in `webui/src/soc/__tests__/bundle-first-paint.test.ts`, with the unchanged
+  +1,024 B budget over it and the unchanged 400,000 B ceiling. Package R raised it once
+  (§3.4, E11) to 377,070 B, and WP-GEN lowered it to the measured merged entry so the bytes
+  the round saved cannot be spent silently (both steps are below). Every figure is the entry chunk on disk after
   `vite build`, attributed to source files through the source map. The spec commit and WP-0
   (`07a0a8f`) measure 371,876 B (WP-0 added no entry bytes). WP-0, W1, W2a, W2b and W3 took
   the entry to 384,789 B, 12,762 B over the old budget. Package R first moved what first
@@ -3546,11 +3547,18 @@ built" pointer.
   progress glyph), `Login.tsx` +50 B (W9b), `NotificationBell.tsx` -16 B and `ThemeModePill.tsx`
   -3 B (FX3wa), and -221 B of unmapped build glue and attribution drift on files whose source did
   not change (unmapped -111 B, `main.tsx` -72 B, `sonner` -32 B, `AppShell.tsx` -9 B, others
-  +3 B); this list sums exactly to 334,286 B (both builds' source maps). WP-GEN measures the merged
-  tree (FX4w changes Login and Wizard again), decides whether to lower `PRE_REVAMP_ENTRY_BYTES` to
-  the measured entry (the 400,000 B ceiling never moves), and records the decision and the final
-  figure in §11.4; if it rebases, it updates this item and the value the Round 12 records test
-  reads.
+  +3 B); this list sums exactly to 334,286 B (both builds' source maps). That figure is the
+  r6w-fix gate build, taken before the run's last fixes: the committed tree `537f5a6` measures
+  334,998 B. WP-GEN measured the merged tree (`76b3cce`, 3,515 modules) at **336,216 B**, +1,218 B
+  over `537f5a6`, per file: `pages/Wizard.tsx` +958 B (FX4w, the first-run steps), `nav-store.ts`
+  +239 B and `nav.ts` +47 B (FX4w, the docked rail's stored trail), `useDeploymentUpgrade.ts`
+  -17 B, `Login.tsx` -5 B (FX4w), `AppShell.tsx` -2 B and `NotificationBell.tsx` -2 B; this list
+  sums exactly to 336,216 B (both builds' source maps). **Decision: WP-GEN lowered
+  `PRE_REVAMP_ENTRY_BYTES` from 377,070 B to the measured 336,216 B** (a downward ratchet, not
+  the upward second rebase this item forbids), so the 40,854 B the round moved out of first
+  paint stays out and the next first-paint addition is measured against the shipped entry,
+  inside the same +1,024 B budget; the 400,000 B ceiling does not move. §11.4 records the final
+  gates.
 
 #### Console grammar, navigation and pages (W2a, W2b, W3, W4a, W8a, W8b, W9a, W9b, FX3wa, FX3wb, FX3wc)
 

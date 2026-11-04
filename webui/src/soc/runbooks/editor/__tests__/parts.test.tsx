@@ -20,7 +20,7 @@ import { issueLine } from '../IssuesSummary';
 import { MatchResults } from '../MatchPanel';
 import { DETAILS_ID, Outline } from '../Outline';
 import { StepForm } from '../StepForm';
-import { makeBuiltinDetail, makeDefinition, makeDetail, makeVersion } from './fixtures';
+import { makeBuiltinDetail, makeDefinition, makeDetail, makeSummary, makeVersion } from './fixtures';
 
 const NOW = Date.parse('2026-10-29T12:00:00Z');
 
@@ -30,7 +30,8 @@ function wrap(node: React.ReactNode) {
 
 describe('governance strip', () => {
   it('marks the current stage and says who wrote it, what is live and who stays on it', () => {
-    const detail = makeDetail();
+    // The review date is stated here because the strip is read against the fixed NOW.
+    const detail = makeDetail({ summary: makeSummary({ review_due_at: '2026-11-02T00:00:00Z' }) });
     wrap(<GovernanceStrip detail={detail} username="asha" isNew={false} dirty={false} now={NOW} />);
     const current = screen.getByText('Draft').closest('[aria-current]');
     expect(current).toHaveAttribute('aria-current', 'step');

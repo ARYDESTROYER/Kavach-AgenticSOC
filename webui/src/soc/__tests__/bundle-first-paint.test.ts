@@ -146,8 +146,16 @@ const HINT = 'no dist/ build present — run `vite build` first (CI/integrator d
  * measured at 377,232 B: nav-rail-loader.ts +156 (a failed load is retried on a later
  * interaction after a pause, never on every pointer move) and NavSidebar.tsx +6 (a
  * grouped icon registers in a layout effect, before the replayed first interaction).
+ *
+ * Lowered at the Round 14 close (WP-GEN, the same SPEC item) from 377,070 B to the merged
+ * entry, 336,216 B at 76b3cce: later packages moved 40,854 B out of first paint (the
+ * first-run wizard's SourceEditor became lazy, retired client methods were removed), and a
+ * baseline left at 377,070 B would let that much growth pass unseen. Per file over the
+ * committed r6w-fix tree 537f5a6 (334,998 B): Wizard.tsx +958, nav-store.ts +239, nav.ts
+ * +47, useDeploymentUpgrade.ts -17, Login.tsx -5, AppShell.tsx -2, NotificationBell.tsx -2.
+ * The +1,024 B budget and the 400,000 B ceiling are unchanged.
  */
-const PRE_REVAMP_ENTRY_BYTES = 377_070;
+const PRE_REVAMP_ENTRY_BYTES = 336_216;
 const REVAMP_ENTRY_BUDGET_BYTES = 1_024;
 
 function readHtml(): string {
@@ -219,8 +227,8 @@ describe.skipIf(!HAS_DIST && !REQUIRE_DIST)('first-paint bundle graph', () => {
     const m = html.match(/src="\/assets\/(index-[^"]+\.js)"/);
     if (!m) throw new Error('could not find the entry chunk in dist/index.html');
     const bytes = fs.statSync(path.join(DIST, 'assets', m[1])).size;
-    // Hard ceiling below the 537 777-byte regression. After the Round 14 rebase the entry
-    // chunk is ~377 kB, so the headroom is ~23 kB; the recorded-baseline test below still
+    // Hard ceiling below the 537 777-byte regression. At the Round 14 close the entry
+    // chunk is ~336 kB, so the headroom is ~64 kB; the recorded-baseline test below still
     // caps any growth at 1 kB. Keep the figure current when it moves.
     expect(bytes).toBeLessThan(400_000);
   });
