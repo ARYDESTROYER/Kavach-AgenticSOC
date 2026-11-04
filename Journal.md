@@ -11729,3 +11729,10 @@
 - Tests: gates agent tsc (one pin fixed by the regeneration), eslint 0/0, design gates pass; orchestrator after the patches and regeneration: tsc 0, check:types no drift, 55 related Vitest files 722 passed, backend audit export and Round 14 contract tests pass, eslint clean on touched files.
 - Status: done.
 - Next: WP-DOC (two parts in parallel), then WP-GEN.
+
+### 2026-11-04 14:00Z — orchestrator — Round 14 run r7-docs (DOCA, DOCB, FX4w)
+- Context: WP-DOC (SPEC §9) in two parts plus the last web leftovers. The first attempt stopped on the account's spend limit after the implement stages; the operator asked to try again and the run resumed from cache.
+- Did: DOCA rewrote the Help Center, reference, operations and development docs as built (approvals page moved with a stub, runbook vocabulary, api/permissions/configuration, upgrade notes); DOCB wrote SPEC §11 As built, the earlier-spec amendments, AGENTS.md, HANDOFF, README, ROADMAP and the CHANGELOG Round 14 entry; FX4w migrated stored nav open groups, fixed the Analytics fallback for viewers without metrics:view, removed dead layout code, adopted the busy confirm dialog, and cleared the last guard backlog items. 20, 16 and 11 review findings, confirmed ones fixed and re-reviewed. Commit 9a44309.
+- Tests: gates agent: tsc 0, eslint 0/0, design gates pass; Vitest 446 related files, 6,356 passed, 1 skipped, 3 failed (two need the console-map regeneration, one date-dependent runbooks fixture); docs checks (check_docs 84 pages, check_version, mkdocs strict, docs bundle, CI contract) pass; backend docs and records tests 1,334 passed; entry chunk 336,216 B (budget 378,094 B).
+- Status: done.
+- Next: WP-GEN: regenerate console map, knowledge corpus and docs bundle; fix the test pins that follow (golden Appearance label, off-topic T1110 probe, runbooks fixture date); full gates; baseline records; PR into Testing.
