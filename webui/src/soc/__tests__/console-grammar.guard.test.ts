@@ -17,7 +17,8 @@
  *                          nested cards
  *   spinning-refresh       `<RefreshCw>` with `animate-spin` outside `RefreshButton`
  *   section-shell-rail     `<SectionShell rail>` (in-section anchor rails are gone)
- *   raw-number-input       `type="number"` outside `NumberField`
+ *   raw-number-input       `type="number"` outside `NumberField` (a chart axis whose
+ *                          `type="number"` names its scale is not an input)
  *   info-alert             `<Alert variant="info">` in a page file (D26: a help tip, or a
  *                          `Callout` for a live condition)
  *   critical-icon-button   an icon button painted `text-critical` at rest outside a
@@ -331,6 +332,19 @@ function tinyTextCount(code: string): number {
   return n;
 }
 
+/** `type="number"` (or `type={'number'}`): the attribute a raw number input carries. */
+const NUMBER_TYPE = /\btype=(?:["']number["']|\{\s*["']number["']\s*\})/g;
+/**
+ * Chart axes (Recharts) take `type="number"` as the scale of a value axis: a chart axis,
+ * not a form field. The rule is about inputs ("never a raw `type="number"` input",
+ * ui-standard), so an axis's own top-level `type` is not counted.
+ */
+const CHART_AXES = ['XAxis', 'YAxis', 'ZAxis'] as const;
+function rawNumberInputs(code: string): number {
+  const axes = CHART_AXES.flatMap((name) => tags(code, name)).reduce((sum, tag) => sum + count(tag.flat, NUMBER_TYPE), 0);
+  return count(code, NUMBER_TYPE) - axes;
+}
+
 /** Elements that ARE a panel (a tinted module), and cards that must never sit inside one. */
 const PANEL_ELEMENTS = ['Panel', 'ChartCard', 'KpiStrip'] as const;
 function cardStarts(code: string): number[] {
@@ -390,7 +404,7 @@ const CHECKS: Record<Exclude<Rule, 'prototype-leftover'>, { files: () => string[
   },
   'raw-number-input': {
     files: () => PRODUCT_FILES.filter((rel) => rel !== 'soc/components/NumberField.tsx'),
-    count: (rel) => count(lexed(rel).code, /\btype=(?:["']number["']|\{\s*["']number["']\s*\})/g),
+    count: (rel) => rawNumberInputs(lexed(rel).code),
   },
   'info-alert': {
     files: () => PAGE_FILES,
@@ -594,6 +608,21 @@ describe('console grammar guard: the detectors themselves', () => {
     // Counted once where panels nest, and never beside a panel.
     expect(cardsInPanels(lex('<Panel><ChartCard title="x"><Card>a</Card></ChartCard></Panel>').code)).toBe(1);
     expect(cardsInPanels(lex('<ChartCard title="x">a</ChartCard><StatCard label="b" value="2" />').code)).toBe(0);
+  });
+
+  it('counts a raw number input, not a chart axis whose type names its scale', () => {
+    const code = lex(
+      [
+        '<input type="number" min={0} />',
+        "<Input type={'number'} value={n} />",
+        '<XAxis type="number" hide />',
+        '<YAxis type="category" dataKey="label" />',
+        "<ZAxis type='number' range={[60, 400]} />",
+      ].join('\n'),
+    ).code;
+    expect(rawNumberInputs(code)).toBe(2);
+    // An input passed as an axis prop is still an input.
+    expect(rawNumberInputs(lex('<XAxis tick={<input type="number" />} />').code)).toBe(1);
   });
 
   it('flags every arbitrary text size below 11px, in px, rem or em', () => {

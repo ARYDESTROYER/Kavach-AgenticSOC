@@ -1,6 +1,6 @@
 # TROUBLESHOOTING.md — Agentic SOC
 
-A consolidated symptom → likely cause → fix → confirm playbook spanning deploy,
+A consolidated symptom → likely cause → fix → confirm guide spanning deploy,
 runtime, and usage of the **vendor-agnostic** suite. Each entry tells you how to
 **confirm** the fix.
 
@@ -529,7 +529,7 @@ you added. That is the direct check — the rows the agent sees are the rows you
 
 > **Two things that will NOT confirm it.** The Investigation trace shows the audited
 > prompt *excerpt*, which is truncated at 1,000 characters and begins with the
-> memory/playbook/precedent blocks, so it usually ends before the sample events —
+> memory, runbook and precedent blocks, so it usually ends before the sample events;
 > its absence there proves nothing. And a free-text `contains` query is an analysed
 > *term* match, not a substring scan: it matches a word in an analysed field
 > (`message`, `event.original`) but matches an exact-value `keyword` field only
@@ -607,6 +607,15 @@ read-only mode`.
 `curl -X PUT .../api/settings -d '{"read_only_settings_mode": false}'`.
 
 **How to confirm.** `GET /api/settings` returns `"read_only": false`.
+
+**Symptom: a save answers `503 audit_unavailable`.** Since Round 14 every settings, user,
+role, source, runbook and dashboard change, and every job file download, writes its
+audit row first; when the row cannot be written, nothing changes. Check the audit
+store's health and the management key's write rights. On an Elasticsearch state backend
+upgraded from an earlier build, apply the shipped audit template and roll the audit
+write index (`docs/operations/upgrades.md`, "Applying the Round 14 audit template"):
+until then a date-like value in an audit row can map a field as a date and later rows
+are refused.
 
 ---
 

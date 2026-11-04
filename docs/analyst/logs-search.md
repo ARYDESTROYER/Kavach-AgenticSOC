@@ -18,11 +18,55 @@ includes `source_id` and source name so identical-looking events remain attribut
 - Push, queue, and object-store receivers show their recent in-process browse buffer.
 - A source timeout or read error is returned as a per-source failure; successful
   sources still render.
-- The result is capped at 200 rows per source and 200 merged rows.
+- The result is capped at 200 rows per source and 200 merged rows (the page asks for
+  150).
 
-Filter by free text and a from/to time range. The displayed row normalizes timestamp,
-source and destination IP, user, host, rule, severity, and message while preserving a
-raw payload view for provenance.
+The page header holds the time range and Refresh. The time-range pill offers the last
+15 minutes, 1 hour, 4 hours, 24 hours or 7 days, and a refresh choice of **Off** or
+**Live** (a live tail that reads again every 10 seconds). Below it, filter by free text.
+
+The events sit on one panel titled with what it holds, for example "Latest 150 events"
+with "from 3 sources" (or "from 2 of 3 sources" when one did not answer) beside it. The
+table reads newest first:
+
+- **Time (UTC)** shows each event's time of day; the date is a group row above the
+  events of that day, shown once when the day changes.
+- **Source** shows the source's short name (its configured name without a trailing
+  part in brackets, so "Splunk Enterprise Security (HEC)" reads "Splunk Enterprise
+  Security"); the full name is the cell's tooltip.
+- **Rule** is a link: pressing it opens the rule's sheet (see below).
+- **Severity** shows the named level only (Info, Low, Medium, High or Critical); the
+  tooltip gives the raw score and the scale it was read on ("Score 12 on a 0 to 16
+  scale"), because each source declares its own severity scale.
+- The message, and a row's expansion into its source and destination IP, user, host
+  and the raw payload, kept for provenance.
+
+On a phone the events are a list rather than a table.
+
+## A rule's sheet
+
+Pressing a rule anywhere in the Console (a log row, a case's facts, Auto-tuning, the
+Cyber Defence Center's top signatures, a dashboard rule widget) opens the same rule
+sheet, on the last 3 days unless it was opened from a page with its own window. A strip
+at the top counts the rule's alerts in the window (exact, or a floor when a source could
+not count all of its data) and, for every case the rule ever opened, the cases, how many
+are still open and the analyst outcome. Below it are alerts over time by severity, the
+top source IPs and targets, the latest alerts, the cases, and the rule's facts (where it
+is defined, its tuning and any "declared benign" policy). Each part checks its own
+permission, so a missing permission hides one part, never the sheet, and the sheet never
+states a zero it did not count. Opening it calls no model. **Open all N in Logs** opens
+this page filtered to that rule (the number only when the count is exact), **Show the N
+cases** opens those cases, and **Ask AI about this rule** asks chat about it.
+
+## Exact filters
+
+Opened from a rule's sheet or a chat answer, the page can carry exact filters the server
+applies: "Rule is" (the exact rule value), "Severity is High" (one named level) and
+"Severity High or above". Each is a removable chip. While "Rule is" is set the Rule
+column is left out, and the event count above the table is the server's matched count
+("381 events · last 3 days", or "At least 1,000 events" when a source could not count
+exactly), never a sum of the rows shown. A linked window longer than 90 days keeps every
+filter and reads the last 90 days of that window, and the header says so.
 
 !!! warning "Recent push logs are not an archive"
 

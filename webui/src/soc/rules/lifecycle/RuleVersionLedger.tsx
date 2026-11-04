@@ -31,6 +31,7 @@ import { StatusDot, type StatusTone } from '@/design-system/status-dot';
 import { EmptyState } from '@/soc/components/EmptyState';
 import { LoadError } from '@/soc/components/LoadError';
 import { ConfirmDialog } from '@/soc/components/ConfirmDialog';
+import { useAnnouncer } from '@/soc/components/announcer';
 import { useAsync } from '@/soc/hooks/useAsync';
 import { useReturnFocus } from '@/soc/hooks/useReturnFocus';
 import { cn } from '@/lib/cn';
@@ -91,30 +92,39 @@ export function RuleVersionLedger({
   const [confirmVersion, setConfirmVersion] = React.useState<RuleVersion | null>(null);
   // The restore confirm opens from a row's Restore button, not a Radix trigger: focus goes
   // back to that button when it closes. The row is keyed by version id, so its button is
-  // still there after a restore reloads the list; a version the list no longer has falls
-  // back to the list itself (SPEC §3.3).
+  // still there when the ledger has reloaded after a restore; a version the list no longer
+  // has falls back to the list itself (SPEC §3.3).
   const restoreOpener = useReturnFocus();
   const listRef = React.useRef<HTMLOListElement>(null);
   const [rolling, setRolling] = React.useState(false);
   const [rollbackError, setRollbackError] = React.useState<unknown>(null);
+  const announce = useAnnouncer();
 
+  // An async confirm (ConfirmDialog `busy`): the dialog stays open, its Restore busy, until
+  // the restore is written, then closes and the ledger reloads outside it, so a slow read
+  // never holds the dialog open. A failed restore keeps it open with the error, so Restore
+  // tries again and Cancel leaves the live config as it is.
   const doRollback = React.useCallback(
     async (version: RuleVersion) => {
       setRolling(true);
       setRollbackError(null);
+      let restoredFrom: string;
       try {
-        const res = await rollbackRule(kind, ruleId, version.id);
-        setConfirmVersion(null);
-        setSelectedId(null);
-        await reload();
-        onRolledBack?.(res.restored_from);
+        restoredFrom = (await rollbackRule(kind, ruleId, version.id)).restored_from;
       } catch (e) {
         setRollbackError(e);
-      } finally {
         setRolling(false);
+        return;
       }
+      setRolling(false);
+      setSelectedId(null);
+      setConfirmVersion(null);
+      // The dialog closing says nothing by itself: focus just returns to Restore.
+      announce('Version restored. It is now the live rule config.');
+      onRolledBack?.(restoredFrom);
+      void reload();
     },
-    [kind, ruleId, reload, onRolledBack],
+    [kind, ruleId, reload, onRolledBack, announce],
   );
 
   if (loading && versions.length === 0) {
@@ -152,11 +162,14 @@ export function RuleVersionLedger({
 
   return (
     <div className="space-y-3">
-      {rollbackError ? (
+      {error ? (
+        // The ledger has versions to show but the latest read failed (after a restore, say):
+        // the list may be behind the live config until it reloads.
         <LoadError
-          error={rollbackError}
-          title="Rollback failed"
-          fallback="Could not restore that version."
+          error={error}
+          title="Couldn't refresh version history"
+          fallback="The list may not show the latest versions."
+          onRetry={() => void reload()}
         />
       ) : null}
 
@@ -217,16 +230,12 @@ export function RuleVersionLedger({
                     size="sm"
                     variant="outline"
                     onClick={(event) => {
-                      if (rolling) return;
                       restoreOpener.remember(event.currentTarget, {
                         empty: () => listRef.current,
                       });
+                      setRollbackError(null);
                       setConfirmVersion(v);
                     }}
-                    // Busy, not disabled, while a restore runs: the confirm closes at once
-                    // and hands focus back to this button, which a disabled button refuses.
-                    aria-disabled={rolling || undefined}
-                    className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                   >
                     <RotateCcw className="h-4 w-4" aria-hidden />
                     Restore this version
@@ -256,8 +265,11 @@ export function RuleVersionLedger({
       <ConfirmDialog
         open={confirmVersion !== null}
         onOpenChange={(o) => {
-          if (!o) setConfirmVersion(null);
+          if (o) return;
+          setConfirmVersion(null);
+          setRollbackError(null);
         }}
+        busy={rolling}
         returnFocusRef={restoreOpener.ref}
         title="Restore this version?"
         description={
@@ -273,7 +285,15 @@ export function RuleVersionLedger({
         onConfirm={() => {
           if (confirmVersion) void doRollback(confirmVersion);
         }}
-      />
+      >
+        {rollbackError ? (
+          <LoadError
+            error={rollbackError}
+            title="Couldn't restore this version"
+            fallback="The live rule config was not changed."
+          />
+        ) : null}
+      </ConfirmDialog>
     </div>
   );
 }

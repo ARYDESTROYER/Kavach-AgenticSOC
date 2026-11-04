@@ -3,7 +3,7 @@
 Operating **Agentic SOC** after it is deployed. This is the
 day-2 companion to [`DEPLOY.md`](../DEPLOY.md) (cold deploy),
 [`docs/USAGE.md`](USAGE.md) (how to use the surfaces),
-[`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md) (symptom → fix playbook), and
+[`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md) (symptom → fix guide), and
 [`SECURITY.md`](../SECURITY.md) (posture).
 
 The suite is **vendor-agnostic**. It owns its **own state** in one of three

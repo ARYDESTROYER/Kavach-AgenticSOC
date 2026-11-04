@@ -68,7 +68,7 @@ cooperative and may wait for the next checkpoint; it does not undo completed ite
 
 After an abrupt backend stop, allow the five-minute lease to expire before treating a
 running record as orphaned. Recovery retries only repeat-safe ambiguous work; unsafe
-state-changing items fail closed. Operate one backend replica—CAS job claims do not make
+state-changing items fail closed. Operate one backend replica: CAS job claims do not make
 the wider process-local application active-active.
 
 Submission/retry and cancel do not return a successful `202`, and a terminal Inbox/SSE
@@ -100,6 +100,31 @@ If factory reset reports or leaves a privacy-boundary failure, the fenced/degrad
 is intentional. Ordinary work remains blocked. Restore the failing dependency, perform
 fresh authorization, and submit only another factory-reset attempt; do not try a cases,
 sources, or unrelated Job as a way around the fence.
+
+## Changes fail with "audit_unavailable"
+
+Since Round 14 a settings save, a user, role, source, runbook or dashboard change and a
+job file download write their audit row before the change takes effect. When that row
+cannot be written, nothing changes and the request answers `503 audit_unavailable`.
+Sign-ins and sign-outs are never blocked this way.
+
+- Check the audit store first: the state backend's health, its free space and the
+  management key's write rights to the `tlsoc-agent-*` indices.
+- On an Elasticsearch state backend upgraded from an earlier build, check that the
+  Round 14 audit template was applied and the audit write index rolled. Until then a
+  date-like value in an audit row can map a field as a date, and later rows with
+  ordinary text there are refused. The backend logs a warning naming the step on every
+  start. The warning keeps appearing after the step is done, and on deployments first
+  created by Round 14 from their second start on, because the backend cannot read the
+  mapping to check. The warning alone does not mean the step failed, so do not roll the
+  index again because of it. To confirm the step, check that
+  `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`, and
+  that the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`)
+  shows it too in its mapping. See
+  [Applying the Round 14 audit template](upgrades.md#applying-the-round-14-audit-template).
+- While the audit log cannot be written, `POST /api/setup/secrets` still applies the
+  management connection keys (`es_mgmt_api_key`, `es_url`, `es_ca_cert`), so a broken
+  audit connection stays repairable.
 
 ## UI is blank or stale
 
@@ -140,8 +165,10 @@ retrieval projection re-tags it.
 The Console health pill reads **Degraded** with "Knowledge corpus empty", or auto-close
 has fallen to zero while alert volume held steady.
 
-An empty corpus means every investigation runs with no runbook, ATT&CK or precedent
-context, so cases route to a human however confident the model is. Check
+An empty corpus means every investigation runs with no retrieved runbook passages,
+ATT&CK or precedent context, so cases route to a human however confident the model is.
+The matched runbook's guidance still reaches the investigator: it is read from the
+runbook library, not from the corpus. Check
 **Analytics → Agent effectiveness** (Agent health), or `GET /api/diagnostics/health`, which reports
 the corpus size, the last projection outcome, any refused projection, and the
 reconciliation between corpus documents and the qualifying case history.
@@ -159,24 +186,24 @@ Work through it in this order:
    a restart.
 3. **Rebuild explicitly** if the corpus is genuinely empty and the provider is healthy:
    submit a `rag_rebuild` background job (requires `rag:manage`). It is idempotent and
-   safe on a healthy deployment — it either converges on the same corpus or refuses and
+   safe on a healthy deployment: it either converges on the same corpus or refuses and
    leaves the existing one intact. See [background jobs](background-jobs.md).
 
-A reconciliation warning — *"the corpus holds N analyst-confirmed precedent documents
-but the case history qualifies M records"* — is the early warning for this failure. The
+A reconciliation warning (*"the corpus holds N analyst-confirmed precedent documents
+but the case history qualifies M records"*) is the early warning for this failure. The
 corpus is a projection of the case history, so a large divergence means the projection
 broke, not that the history is small. Note that `N` is expected to be smaller than `M`
 whenever `M` exceeds the precedent window size; only a large shortfall is reported.
 
 If a rebuild legitimately produces a much smaller corpus (you disabled sources on
 purpose), lower `rag.min_projection_retention`, or set it to `0` to disable the ratio
-guard. A projection reaching **zero** is refused regardless — that is never a
+guard. A projection reaching **zero** is refused regardless; that is never a
 legitimate rebuild of a non-empty corpus, and no setting changes that.
 
 Narrowing `precedent.window.size` to drop unwanted precedent is a shrink like any other
-and can therefore trip the same ratio floor. When the refusal is attributable to that —
-the precedent source shrank to within the new window while every other knowledge source
-held steady — health reports it as a refused **window reduction** rather than as a corpus
+and can therefore trip the same ratio floor. When the refusal is attributable to that
+(the precedent source shrank to within the new window while every other knowledge source
+held steady), health reports it as a refused **window reduction** rather than as a corpus
 loss. Nothing was destroyed and the model provider is not implicated; lower
 `rag.min_projection_retention` to let the intended reduction through.
 
@@ -187,7 +214,7 @@ A rebuild that succeeds proves only that a projection completed. The retention g
 one of them passes it cleanly.
 
 Read **`GET /api/diagnostics/precedent-composition`** before and after any rebuild. It
-costs nothing — no embedding calls, no writes — and reports what the corpus holds beside
+costs nothing (no embedding calls, no writes) and reports what the corpus holds beside
 what a rebuild would produce, cross-tabulating the analyst-confirmed outcome against the
 model's own verdict. Counts per outcome alone are the trap: a corpus that is entirely
 "false positive" reads as a clean benign baseline even while every one of those records
@@ -195,7 +222,7 @@ also says the agent escalated it.
 
 If the report shows the qualifying **pool** is skewed the same way the selected window is,
 rebuilding cannot help: the projection selects the newest qualifying cases, so it will
-re-select the same records. Fix the ground truth instead — see
+re-select the same records. Fix the ground truth instead; see
 [excluding a precedent record](../intelligence/knowledge-memory.md#excluding-a-precedent-record)
 for how to evict individual records so they stay evicted, and check the admission
 concentration in the same report to see whether one bulk analyst action bought most of

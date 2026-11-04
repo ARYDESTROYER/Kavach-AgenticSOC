@@ -304,7 +304,7 @@ ordinary helper-process, Docker-daemon, or host restart. A failure that prevents
 and all of its containers from running, or destroys Docker metadata/storage, remains a
 manual host recovery event.
 
-After deployment, open **Documentation** from the navigation rail and confirm it
+After deployment, open **Help Center** from the navigation rail and confirm it
 stays on the deployment origin at `/docs/0.1/`. Installed help is part of the web
 artifact and should remain available in an isolated network; public Stable and
 Development documentation are secondary references.

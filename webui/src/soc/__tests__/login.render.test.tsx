@@ -333,6 +333,10 @@ describe('Login — four-mode render', () => {
     expect(group).toBeInTheDocument();
     const cells = screen.getAllByLabelText(/Authentication code digit/);
     expect(cells).toHaveLength(6);
+    // One vocabulary with the two-factor setup cards ("Verify and sign in", "Verify and
+    // turn on"): the submit says "and", never an ampersand (Round 14).
+    expect(screen.getByRole('button', { name: 'Verify and continue' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Verify &/ })).toBeNull();
   });
 
   it('transitions to CHANGE-PASSWORD mode after a must_change login', async () => {

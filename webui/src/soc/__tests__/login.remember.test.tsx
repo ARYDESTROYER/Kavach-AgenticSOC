@@ -590,7 +590,7 @@ describe('Login — Remember me', () => {
     expect(window.localStorage.getItem(REMEMBER_ACK_KEY)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Use a recovery code' }));
     fireEvent.change(screen.getByLabelText('Recovery code'), { target: { value: 'aaaa-bbbb' } });
-    fireEvent.click(screen.getByRole('button', { name: /Verify/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and continue' }));
     await waitFor(() => expect(onAuthenticated).toHaveBeenCalled());
     expect(mfaVerifyMock).toHaveBeenCalledWith('pending', 'aaaa-bbbb');
     await waitFor(() => expect(window.localStorage.getItem(REMEMBERED_USERNAME_KEY)).toBe('alice'));

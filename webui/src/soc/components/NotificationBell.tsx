@@ -400,9 +400,10 @@ export function NotificationBell({
           <Bell className="h-4 w-4" aria-hidden />
           {unread > 0 ? (
             <span
+              // 11 px (`text-2xs`), the type floor, like the jobs badge beside it.
               className={cn(
                 'absolute -right-0.5 -top-0.5 flex min-w-[15px] items-center justify-center rounded-full',
-                'border border-surface bg-critical px-[3px] text-[9px] font-semibold leading-none text-critical-foreground',
+                'border border-surface bg-critical px-[3px] text-2xs font-semibold leading-none text-critical-foreground',
                 'h-[15px]',
               )}
               aria-hidden

@@ -13,7 +13,9 @@
  * the preference cascade hydrates, and every change writes both the mirror and
  * `PUT /api/prefs/user` (best effort). A key the viewer changed before hydration finished
  * is not overwritten by the (older) server value: that change was also sent to the
- * server, so a later device load reconciles to it anyway.
+ * server, so a later device load reconciles to it anyway. Open-group ids an earlier
+ * release stored (`metrics` for the Analytics group) are read in today's ids and the
+ * migrated list is written back to both copies.
  *
  * Entry-safe and dependency-light: this module ships in the first-paint chunk.
  */
@@ -28,6 +30,29 @@ const LS_OPEN_GROUPS = 'soc.nav.openGroups';
 /** UserPrefs.misc keys the server mirror writes and reads (Round 3). */
 const MISC_COLLAPSED = 'nav_collapsed';
 const MISC_OPEN_GROUPS = 'nav_open_groups';
+
+/**
+ * Group ids an earlier release stored for a group that now has another id. Round 14
+ * gave the Analytics group its own id (`analytics`, finding 20); before that the group
+ * WAS the Metrics page, so a viewer who had it open stored `metrics`. A stored list is
+ * read through this map, de-duplicated, and the migrated list is written back, so an
+ * open Analytics group stays open across the upgrade.
+ */
+const LEGACY_GROUP_IDS: ReadonlyMap<string, string> = new Map([['metrics', 'analytics']]);
+
+/**
+ * The stored open-group list in today's ids: strings only, legacy ids mapped, duplicates
+ * dropped (first one wins). `changed` says whether the result differs from what was
+ * stored, so a caller writes it back only when there is something to migrate.
+ */
+function migrateGroups(stored: readonly unknown[]): { list: string[]; changed: boolean } {
+  const list = [
+    ...new Set(
+      stored.filter((id): id is string => typeof id === 'string').map((id) => LEGACY_GROUP_IDS.get(id) ?? id),
+    ),
+  ];
+  return { list, changed: JSON.stringify(list) !== JSON.stringify(stored) };
+}
 
 /**
  * One extra breadcrumb segment: a link to `page` (with `opts`), or, last, the current
@@ -77,7 +102,10 @@ function writeLocal(key: string, value: string): void {
 function readGroups(): Set<string> {
   try {
     const parsed: unknown = JSON.parse(readLocal(LS_OPEN_GROUPS) ?? '[]');
-    return new Set(Array.isArray(parsed) ? parsed.filter((g): g is string => typeof g === 'string') : []);
+    const { list, changed } = migrateGroups(Array.isArray(parsed) ? parsed : []);
+    // The mirror is rewritten in today's ids; the server copy migrates in `reconcile`.
+    if (changed) writeLocal(LS_OPEN_GROUPS, JSON.stringify(list));
+    return new Set(list);
   } catch {
     return new Set();
   }
@@ -111,9 +139,14 @@ function update(patch: Partial<NavState>): void {
   listeners.forEach((listener) => listener());
 }
 
+/** Write `UserPrefs.misc` keys to the server (best effort). */
+function putMisc(patch: Record<string, unknown>): void {
+  void api.prefs.putUser({ misc: patch }).catch(() => undefined);
+}
+
 function persist(patch: Record<string, unknown>): void {
   for (const key of Object.keys(patch)) touched.add(key);
-  void api.prefs.putUser({ misc: patch }).catch(() => undefined);
+  putMisc(patch);
 }
 
 function commitGroups(next: Set<string>): void {
@@ -185,9 +218,13 @@ export const navStore = {
     }
     const groups = misc[MISC_OPEN_GROUPS];
     if (!touched.has(MISC_OPEN_GROUPS) && Array.isArray(groups)) {
-      const list = groups.filter((g): g is string => typeof g === 'string');
+      const { list, changed } = migrateGroups(groups);
       patch.openGroups = new Set(list);
       writeLocal(LS_OPEN_GROUPS, JSON.stringify(list));
+      // The store owns this key: a list stored in an earlier release's ids is migrated
+      // on the server once, so every other device reads today's ids too. The viewer did
+      // not change anything, so the key is not marked as touched.
+      if (changed) putMisc({ [MISC_OPEN_GROUPS]: list });
     }
     update(patch);
   },

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import { describe, expect, it } from 'vitest';
@@ -155,6 +155,39 @@ describe('ComparisonMetric', () => {
   });
 });
 
+describe('ComparisonMetric type (Round 14, SPEC §3.1)', () => {
+  const MONO = /(^|\s)font-mono(\s|$)/;
+
+  it.each(['standalone', 'integrated'] as const)(
+    'sets the prior and sample figures in the body face with tabular figures, never truncated (%s)',
+    (variant) => {
+      render(
+        <ComparisonMetric
+          label="Agreement rate"
+          value="92%"
+          prior="84%"
+          sample={{ count: 1248, label: 'graded cases' }}
+          status="sufficient"
+          statusReason="Every graded case in the window counts."
+          variant={variant}
+        />,
+      );
+      const prior = screen.getByText('84%');
+      expect(prior.className).not.toMatch(MONO);
+      expect(prior).toHaveClass('tabular-nums', 'whitespace-nowrap');
+      expect(prior).not.toHaveClass('truncate');
+      const sample = screen.getByText(`${(1248).toLocaleString()} graded cases`);
+      expect(sample.className).not.toMatch(MONO);
+      expect(sample).toHaveClass('tabular-nums', 'text-xs');
+      expect(sample).not.toHaveClass('truncate');
+      // Stat context is 12 px or larger (ui-standard: 11 px is for badges, ticks and times).
+      expect(screen.getByText('Every graded case in the window counts.')).toHaveClass('text-xs');
+      const region = screen.getByRole('region', { name: 'Agreement rate comparison metric' });
+      expect(region.innerHTML).not.toMatch(/font-mono|text-2xs/);
+    },
+  );
+});
+
 describe('MetricDefinition', () => {
   it('opens a persistent Radix surface by keyboard and exposes every definition field', async () => {
     const user = userEvent.setup();
@@ -169,6 +202,15 @@ describe('MetricDefinition', () => {
     });
     expect(surface).toBeInTheDocument();
     expect(screen.getByText(DEFINITION.formula)).toBeInTheDocument();
+    // Sentence-case labels in the body face: no tracked capitals, nothing below 12 px.
+    const labels = ['Metric definition', 'Formula', 'Numerator', 'Denominator', 'Eligibility', 'Caveats'];
+    for (const label of labels) {
+      const node = within(surface).getByText(label);
+      expect(node.className, label).not.toMatch(/uppercase|tracking-|text-2xs/);
+      expect(node).toHaveClass('text-xs', 'font-medium');
+    }
+    // The formula is the one code-like value, so it alone keeps the identifier face.
+    expect(within(surface).getByText(DEFINITION.formula)).toHaveClass('font-mono', 'text-xs');
     expect(screen.getByText(DEFINITION.numerator)).toBeInTheDocument();
     expect(screen.getByText(DEFINITION.denominator)).toBeInTheDocument();
     expect(screen.getByText(DEFINITION.eligibility)).toBeInTheDocument();
@@ -190,5 +232,18 @@ describe('MetricDefinition', () => {
       await screen.findByRole('dialog', { name: 'Agreement rate metric definition' }),
     ).toBeInTheDocument();
     expect(await axe(document.body)).toHaveNoViolations();
+  });
+
+  it('keeps a phone gutter and scrolls instead of running past the screen', async () => {
+    const user = userEvent.setup();
+    render(<MetricDefinition metric="Agreement rate" {...DEFINITION} />);
+
+    await user.click(screen.getByRole('button', { name: 'How Agreement rate is measured' }));
+    const surface = await screen.findByRole('dialog', { name: 'Agreement rate metric definition' });
+    // Never taller than the room Radix measures beside the trigger (minus the 16 px
+    // collision padding): a long definition scrolls inside the popover.
+    expect(surface).toHaveClass('max-h-[var(--radix-popover-content-available-height)]', 'overflow-y-auto');
+    // Never wider than the screen less a 16 px gutter on each side.
+    expect(surface).toHaveClass('w-[min(24rem,calc(100vw-2rem))]');
   });
 });

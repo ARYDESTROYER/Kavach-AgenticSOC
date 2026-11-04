@@ -149,7 +149,7 @@ curl --fail http://localhost:8080/api/health/build-info
   unavailable dependency returns HTTP `503`.
 - **Build info** reports version and build identity without exposing secrets.
 
-Open **Documentation** from the bottom of the Console rail and verify it opens the
+Open **Help Center** from the bottom of the Console rail and verify it opens the
 same-origin `/docs/0.1/` Help Center. This installed guide is the operator authority
 for the running build; public Stable/Development material is secondary.
 

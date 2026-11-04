@@ -30,7 +30,7 @@ RBAC; enabling authentication alone does not create role separation.
 | `soc_manager` | Full operational and administrative management |
 | `analyst_tier2` | Full case investigation and closure, with read access to administration |
 | `analyst_tier1` | Case triage, assignment, comments, and read-only supporting context |
-| `responder` | Tier-1 case access plus playbook execution and proposal approval |
+| `responder` | Tier-1 case access, working runbooks on cases, and proposal approval |
 | `auditor` | Read/view-only product access, including the append-only audit log |
 
 The names describe defaults, not organizational job titles. Notably, the built-in
@@ -38,22 +38,72 @@ The names describe defaults, not organizational job titles. Notably, the built-i
 
 ## Case and operational grants
 
-`*` means every action defined for that resource. `—` means no default grant.
+`*` means every action defined for that resource. "None" means no default grant.
 
 | Resource | Actions | `super_admin` | `soc_manager` | `analyst_tier2` | `analyst_tier1` | `responder` | `auditor` |
 |---|---|---|---|---|---|---|---|
 | `cases` | `read`, `write`, `close`, `assign`, `comment`, `reinvestigate` | `*` | `*` | all six | `read`, `write`, `assign`, `comment` | `read`, `write`, `assign`, `comment` | `read` |
 | `sources` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |
-| `users` | `manage` | `*` | `manage` | — | — | — | — |
+| `users` | `manage` | `*` | `manage` | None | None | None | None |
 | `proposals` | `read`, `approve` | `*` | `*` | `read` | `read` | `read`, `approve` | `read` |
-| `playbooks` | `read`, `run`, `manage` | `*` | `*` | `read`, `run` | `read` | `read`, `run` | `read` |
-| `runbooks` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |
+| `runbooks` | `read`, `run`, `manage`, `publish` | `*` | `*` | `read`, `run` | `read`, `run` | `read`, `run` | `read` |
 | `rag` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |
 | `memory` | `read`, `manage` | `*` | `*` | `read` | `read` | `read` | `read` |
 | `cost` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |
 | `metrics` | `view` | `*` | `view` | `view` | `view` | `view` | `view` |
-| `audit` | `view` | `*` | `view` | — | — | — | `view` |
-| `data_export` | `export` | `*` | `export` | — | — | — | — |
+| `audit` | `view`, `export` | `*` | `view`, `export` | None | None | None | `view`, `export` |
+| `data_export` | `export` | `*` | `export` | None | None | None | None |
+| `system_updates` | `read`, `apply`, `rollback` | `*` | `read` | None | None | None | None |
+
+Installing or rolling back a system update is additionally limited by the API to the
+built-in `super_admin` with a fresh sign-in, whatever a custom role grants.
+
+## Runbooks
+
+| Action | Allows |
+|---|---|
+| `runbooks:read` | Seeing the runbook library, a runbook's versions and history, and the runbooks on a case |
+| `runbooks:run` | Working a case's runbook: attaching one, updating steps, recording decisions and actions, running lookups, asking the AI for a draft, and abandoning or switching a run |
+| `runbooks:manage` | Writing drafts, duplicating, importing, sending for review, retiring, restoring a version as a draft, and rebuilding the runbook search index |
+| `runbooks:publish` | Publishing a version, sending a version in review back to draft, restoring a retired runbook and marking a runbook reviewed |
+
+Publishing is the only step that lets runbook text reach the investigator as trusted
+guidance, which is why it is a grant of its own. When separate approval is on in the
+Runbooks settings, nobody who wrote or edited a version may publish it, whatever their
+grants. A lookup inside a runbook also needs the lookup's own grant (for example
+`sources:read` for a log lookup); a viewer without it sees the step but not the result.
+See [Runbooks](../intelligence/runbooks.md).
+
+### Grants stored before Round 14
+
+Earlier versions had a separate `playbooks` resource. A stored grant or deny that still
+names it keeps working, in every layer (the role overrides, the additive resource layer,
+the denies and every custom role), and is read as its `runbooks` meaning:
+
+| Stored | Read as |
+|---|---|
+| `playbooks:read` | `runbooks:read` |
+| `playbooks:run` | `runbooks:run` |
+| `playbooks:manage` | `runbooks:manage` and `runbooks:publish` |
+| `playbooks:*` | `runbooks:*` |
+| a deny of `playbooks:manage` | a deny of `runbooks:manage` and `runbooks:publish` |
+
+On the first load after the upgrade, a stored layer that granted `runbooks:manage` also
+gains `runbooks:publish`, and a stored deny of `runbooks:manage` also denies
+`runbooks:publish`, so no role silently loses the ability to make runbook text trusted and
+none silently gains it. The map is then stamped (`rbac_grants_version: 2`), so an
+administrator who later removes `runbooks:publish` keeps that choice. After that, a
+`runbooks` entry is authoritative and a `playbooks` key kept beside it changes nothing.
+The `playbooks` resource is no longer in the role editor or in
+`GET /api/account/permissions`; `GET /api/roles/simulate` answers a question that names it
+for its `runbooks` meaning and says so in `alias_of`.
+
+## Audit log
+
+`audit:view` opens and searches the audit log. `audit:export` writes a CSV or JSON Lines
+file of the rows the person can read, so it needs `audit:view` as well; both are checked
+again at every page of the export and at download. An export also asks for a fresh
+sign-in and is not available in Demo Mode. See [Audit log](../administration/audit-log.md).
 
 ## Settings and narrow administration grants
 
@@ -74,6 +124,11 @@ mirror each role's `settings` grant:
 | `super_admin`, `soc_manager` | `*` (`read` and `manage`) |
 | `analyst_tier2`, `analyst_tier1`, `responder`, `auditor` | `read` |
 
+**Discounted inference** (the Flex and Batch policy) is part of Settings and saves with
+the other preferences, so changing it needs `settings:manage`. Before Round 14 it was on
+the Jobs page and saved with `models:manage`; every built-in role holds both grants or
+neither, so only a custom role that held one without the other sees a difference.
+
 The API can still combine these resources with a case/source permission where the
 operation acts on both domains. Always test the exact route with the role rather than
 inferring access solely from whether a navigation item is visible.
@@ -87,10 +142,11 @@ so a role sees the same data through chat as through the console:
 | Lookup | Grant |
 |---|---|
 | Log search and log statistics, source health | `sources:read` |
-| Cases, exact case counts and breakdowns, case decisions, the shift report, campaigns | `cases:read` |
+| Cases, exact case counts and breakdowns, case decisions, the shift report, campaigns | `cases:read` (a case's runbook progress also needs `runbooks:read`) |
 | Metrics (posture, trends, noise funnel, timing, coverage) | `metrics:view` |
 | Indicator reputation | `enrichment:read` |
 | Knowledge corpus search | `rag:read` |
+| Runbook library (published runbooks only) | `runbooks:read` |
 | AI cost and usage | `cost:view` |
 | Audit log | `audit:view` |
 | Automation status | `rules:read`, `automation:read`, `settings:read`, or `proposals:read`, per kind |

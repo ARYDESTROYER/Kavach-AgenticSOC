@@ -7,7 +7,7 @@
  * surfaces its real message instead of a generic fallback.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 
 import { TraceTimeline } from '../TraceTimeline';
 import { ApiError } from '@/lib/api';
@@ -31,5 +31,41 @@ describe('TraceTimeline — error state (shared LoadError)', () => {
     expect(screen.getByText('timeline index unavailable')).toBeInTheDocument();
     // No Retry button when onRetry is omitted (LoadError contract).
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull();
+  });
+});
+
+describe('TraceTimeline: the decision step labels (Round 14, SPEC §3.1)', () => {
+  it('names the policy clause and each decision fact in sentence case at 12 px', () => {
+    const decision = {
+      id: 'span-9',
+      case_id: 'case-1',
+      step_index: 9,
+      kind: 'decision' as const,
+      name: 'decide',
+      ts: '2026-10-28T10:00:00Z',
+      latency_ms: null,
+      cost: null,
+      tokens: null,
+      trusted: true,
+      summary: 'Closed as a false positive under the auto-close policy.',
+      payload_ref: {
+        deterministic: true,
+        verdict: 'false_positive',
+        confidence: 0.94,
+        risk_score: 18,
+        decision_status: 'auto_closed',
+        policy_clause: { verdict_class: 'false_positive', auto_closable: true, min_confidence: 0.9, max_risk_score: 40 },
+      },
+    };
+    const { container } = render(
+      <TraceTimeline data={{ case_id: 'case-1', spans: [decision], total: 1, totals: { cost: 0, tokens: 0 } }} />,
+    );
+    const step = screen.getByTestId('trace-decision-step');
+    for (const label of ['Policy clause evaluated', 'Verdict', 'Confidence', 'Risk score', 'Result']) {
+      const node = within(step).getByText(label);
+      expect(node, label).toHaveClass('text-xs', 'font-medium');
+      expect(node.className, label).not.toMatch(/uppercase|tracking-|text-\[/);
+    }
+    expect(container.innerHTML).not.toMatch(/text-\[(?:0?\.\d+rem|\d+px)\]/);
   });
 });

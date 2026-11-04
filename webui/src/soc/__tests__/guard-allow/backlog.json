@@ -1,26 +1,5 @@
 {
   "package": "backlog",
   "note": "Files no Round 14 package owns (recorded by W2a when the guard landed). Each entry is exact and only ever goes down. The orchestrator assigns each file to a package (SPEC 7.1), which then moves the entry into its own file and empties it; this file is empty before WP-GEN.",
-  "entries": [
-    {
-      "rule": "tiny-text",
-      "file": "soc/components/CaseTriageHeader.tsx",
-      "max": 5
-    },
-    {
-      "rule": "tiny-text",
-      "file": "soc/components/NotificationBell.tsx",
-      "max": 1
-    },
-    {
-      "rule": "tiny-text",
-      "file": "soc/components/TraceTimeline.tsx",
-      "max": 2
-    },
-    {
-      "rule": "raw-number-input",
-      "file": "soc/components/charts.tsx",
-      "max": 1
-    }
-  ]
+  "entries": []
 }

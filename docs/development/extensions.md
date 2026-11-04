@@ -1,6 +1,6 @@
 ---
 title: Extension points
-description: Add connectors, enrichment providers, notification channels, LLM providers, tools, routes, playbooks, and stores to Agentic SOC 0.1.
+description: Add connectors, enrichment providers, notification channels, LLM providers, tools, routes, runbooks, and stores to Agentic SOC 0.1.
 ---
 
 # Extension points
@@ -114,28 +114,32 @@ helper for read-modify-write behavior. If a new repository is necessary, define 
 interface first and implement equivalent behavior for every supported state profile
 or make the compatibility restriction explicit.
 
-## Playbooks and runbooks
+## Runbooks
 
-Playbooks are Markdown plus a validated manifest. Selection is deterministic by match,
-priority, version, and ID; hot reload validates before replacing the live registry.
-Playbook guidance can recommend tools, RAG queries, escalation conditions, or verdict
-bias, but cannot close/escalate a case or bypass approval.
+Runbooks are content, not executable code: phased procedures of Check, Lookup, Decision,
+Action and Record steps, defined by `engine/runbook_model.py` and written in the
+Markdown format described in [Runbooks](../intelligence/runbooks.md). They recommend and
+record; they never close or escalate a case, and nothing in the runbook modules may call
+or change `case_manager.decide()` or the auto-close policy.
 
-The supported runtime editor manages only operator-owned UTF-8 `*.md` files under the
-configured playbook directory. Keep IDs slug-bound and identical to front matter; do
-not add an arbitrary path/file API. Writes must remain bounded, contained, atomic,
-reload-validated, and audited. The packaged default procedures are protected reference
-content. Extend the explicit bundled-file set when shipping a new protected procedure;
-files in an operator override directory remain operator-owned.
+- **Built-in runbooks** are package data under `backend/app/runbooks/library/` (12 files),
+  read only and versioned by the release. To ship a new one, add its Markdown file there,
+  keep its investigator guidance within the 3,000-character budget (a test checks each
+  bundled runbook), and give it an Applies when that does not shadow an existing one.
+- **Operator runbooks** live in the `runbook_library` key-value namespace and are written
+  only through the library API (`/api/runbooks*`), which validates, records every change
+  in the audit log before it is saved, and keeps Draft, In review, Published and Retired
+  versions. Do not add another write path: only Published text may reach the
+  investigator or the knowledge index as trusted context.
+- **Lookups** run read-only tools with case values passed as parameters, never written
+  into query text. A new lookup tool needs a read-only implementation, a grant in
+  `LOOKUP_TOOL_GRANTS`, bounded results, and untrusted-data rendering.
+- **Matching** is deterministic and free (`engine/runbook_match.py`); it never calls a
+  model.
 
-Runbooks and allowlisted system knowledge are content, not executable code. New and
-edited operator Runbooks use the strict plain-text, 1,800-character guidance contract
-and separately bounded 1,200-character retrieval descriptor described in
-[Runbooks](../intelligence/runbooks.md); do not introduce an alternate editor or
-ingestion path that bypasses its manifest, structure, formatting, aggregate metadata
-budget, or actionable-error validation. Existing content remains readable and
-reindexable until an operator edits it to comply. Keep operator-imported material in
-the untrusted RAG path.
+The earlier procedure modules and their stores are gone; a guard test fails if any
+module imports them again (see [Testing](testing.md#round-14-guards)). Operator-imported
+knowledge documents stay on the untrusted retrieval path.
 
 ## Extension acceptance checklist
 

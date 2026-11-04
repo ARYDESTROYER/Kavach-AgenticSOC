@@ -116,9 +116,9 @@ values stay write-only appears only under sections that hold preferences or secr
   Flex preference for compatible alert investigations, its standard fallback, and the
   optional asynchronous Batch queue. Anyone who can read models can open it. It saves
   with the rest of Settings, so changing it needs the settings management permission;
-  on the Jobs page it saved on its own and needed model management. The built-in roles
-  hold both permissions together, so only a custom role that holds one without the
-  other notices. Without settings management the section is read-only. The usage ledger
+  on the Jobs page it saved on its own and needed model management. Every built-in
+  role holds both permissions or neither, so only a custom role that holds one without
+  the other notices. Without settings management the section is read-only. The usage ledger
   records the tier each call actually used, and neither path changes a verdict or a case
   decision.
 - **Integrations → Runbooks** holds every runbook setting: whether runbooks are on, a
@@ -133,10 +133,11 @@ values stay write-only appears only under sections that hold preferences or secr
   here. See [Runbooks](../intelligence/runbooks.md).
 - **General → Data scope** starts with **Connected sources**, one row that shows how
   many sources are enabled ("5 of 5 enabled") and opens the Sources page.
-- **Account → Security & two-factor** shows **Two-factor authentication** with its
-  state (On or Off) and, under it in the same panel, the button that starts or ends
-  enrollment. **Profile** shows the same state with a **Turn on** (or **Manage**) button
-  that opens this section.
+- **Account → Security & two-factor** is one row, **Two-factor authentication**, with
+  its state (On or Off) and a **Turn on** (or **Turn off**) button; the enrollment or
+  turn-off steps open under the row and **Cancel** closes them. The last enrollment step
+  is **Verify and turn on**. **Profile** shows the same state with a **Turn on** (or
+  **Manage**) button that opens this section.
 - **General → SLA, priority & suppression** shows one row per priority in one panel,
   each with its respond and resolve minutes and a plain reading (for example "P1
   Critical: respond within 15 minutes, resolve within 4 hours"), followed by the clock

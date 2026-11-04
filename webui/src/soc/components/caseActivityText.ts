@@ -259,23 +259,31 @@ function legacySelectionReason(reason: string): string {
   return '';
 }
 
-/** The read-only lookups a runbook step runs, by their tool token. */
+/**
+ * The read-only lookups a runbook step runs, by their tool token: the labels the server
+ * writes (`runbook_lookup.TOOL_RULES`), so a row written before the server worded its own
+ * summary reads the same as one written after.
+ */
 const LOOKUP_TOOLS: Readonly<Record<string, string>> = {
   log_stats: 'Log statistics',
   log_search: 'Log search',
   enrich: 'Enrichment',
   related_cases: 'Related cases',
   campaign: 'Campaign',
-  mitre: 'MITRE ATT&CK',
+  mitre: 'ATT&CK technique',
 };
 
-/** What a lookup's result status says, after the lookup's name. */
+/**
+ * What a lookup's result status says, after the lookup's name: the server's own wording
+ * (`runbook_runs.lookup_evidence_summary`), which a row written today already carries. An
+ * older row has no reason to add, so its sentence ends at the status.
+ */
 const LOOKUP_STATUS: Readonly<Record<string, string>> = {
   ok: 'lookup collected evidence',
-  empty: 'lookup found nothing',
-  partial: 'lookup returned partial results',
-  error: 'lookup failed',
-  not_applicable: 'lookup did not apply to this case',
+  partial: 'lookup collected partial evidence',
+  empty: 'lookup found no matching records',
+  not_applicable: 'lookup was not applicable',
+  error: 'lookup could not run',
 };
 
 /**
@@ -350,8 +358,10 @@ export function activityText(item: ActivityInput): ActivityText {
     }
   }
 
-  // A runbook lookup's result row: `Lookup <tool> collected evidence (<status>).`, written
-  // for every status, so the sentence follows the status (a failed lookup collected none).
+  // A runbook lookup's result row as the server first wrote it, for every status:
+  // `Lookup <tool> collected evidence (<status>).` It reads as the sentence the server
+  // writes today ("Log statistics lookup found no matching records."), which follows the
+  // status (a lookup that could not run collected none) and is shown as it is.
   m = /^Lookup (\w+) collected evidence \((\w+)\)\.$/.exec(raw);
   if (m && LOOKUP_STATUS[m[2]]) {
     const name = LOOKUP_TOOLS[m[1]] ?? humanizeToken(m[1]);

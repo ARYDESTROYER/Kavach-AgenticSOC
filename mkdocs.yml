@@ -134,7 +134,8 @@ nav:
           - Overview: automation/index.md
           - Detection rules: automation/rules.md
           - Tuning and baselines: automation/tuning-baselines.md
-          - Playbooks and approvals: automation/playbooks-approvals.md
+          - Approvals: automation/approvals.md
+          - Page moved (approvals and runbooks): automation/playbooks-approvals.md
       - Threat intelligence:
           - Knowledge and memory: intelligence/knowledge-memory.md
           - Runbooks: intelligence/runbooks.md

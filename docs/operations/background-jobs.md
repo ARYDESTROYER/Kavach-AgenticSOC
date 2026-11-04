@@ -21,8 +21,9 @@ The current job registry covers:
 
 - Case Manager bulk reinvestigation, lifecycle changes, assignment, and tagging;
 - Data export archive and full server-side segment collection;
+- audit log exports to CSV or JSON Lines (`audit_export`);
 - resolved-case precedent bootstrap;
-- Runbook retrieval reindex;
+- runbook knowledge-index rebuild (`runbook_reindex`);
 - bounded Knowledge imports;
 - knowledge-corpus rebuild (`rag_rebuild`);
 - cases, sources, and factory reset;
@@ -51,6 +52,24 @@ policy GET/PUT and preview remain direct operations.
 The application updater is **not** part of this registry. It retains its separate,
 hardened supervisor-owned job and receipt protocol under `/api/system-updates/*`.
 Application background jobs neither replace nor relax that update boundary.
+
+### Exporting the audit log
+
+`audit_export` writes one plain CSV or JSON Lines file of the audit rows the Audit log
+page shows for the same scope, search, filters and time range, oldest first. It needs
+`audit:export` and `audit:view` (both checked again at every page of the read and at
+download) and a fresh sign-in, and it runs only while that fresh authority lasts. One
+export per person runs at a time; one file holds at most 100,000 events. It never reads
+past the moment it was submitted, so its own request row is never in the file.
+
+Audit exports are refused in Demo Mode (`409 audit_export_demo_mode`): durable jobs never
+run in Demo Mode, and a JSON Lines file could not label Demo rows without changing them.
+A failure or a cancel keeps nothing partial, and a failed job's reason starts with a code
+such as `audit_export_too_large` or `audit_export_no_space`. Progress counts events, the
+Inbox line reads like "1,284 events exported", and a finished job offers **Open audit
+log** (in Jobs, the Inbox and its notice), which opens the audit log on the scope, range
+and filters it was exported from. See
+[Audit log](../administration/audit-log.md#exporting).
 
 ### Replaying frozen fixtures
 
@@ -86,7 +105,7 @@ reported statistic does NOT prove, is in
 
 ### Rebuilding the knowledge corpus
 
-`rag_rebuild` reprojects the whole enabled knowledge corpus. It takes no parameters —
+`rag_rebuild` reprojects the whole enabled knowledge corpus. It takes no parameters:
 the failure it recovers from is "the corpus is gone and nothing will bring it back",
 and asking an operator to first work out which sources are missing would reintroduce
 exactly the diagnosis step that makes this expensive. It requires `rag:manage`.
@@ -99,7 +118,7 @@ refused and the existing corpus is left untouched. A refused rebuild finishes as
 never read as done.
 
 Use it when health reports an empty corpus or a refused projection. If the rebuild is
-refused, fix the underlying cause first — most often the embedding provider — because
+refused, fix the underlying cause first (most often the embedding provider), because
 the product deliberately refuses to persist chunks embedded in a degraded fallback
 space. See [troubleshooting](troubleshooting.md).
 
@@ -134,9 +153,15 @@ job entries are protected from ordinary bounded-ring eviction.
 Application job rows are self-scoped by the server. Listing, detail, cancellation, and
 artifact access require the exact live actor/account generation plus `inapp:read`.
 Admission enforces the operation-specific grants, and execution rechecks those grants.
-Data export, reset, and storage apply also require fresh authentication. Losing required
+Data export, audit export, reset, and storage apply also require fresh authentication. Losing required
 authority while work is running fails the job closed at a checkpoint; it does not turn
 the worker into a detached privilege.
+
+Submitting an audit export, a data export or a reset is recorded first, with who asked
+and from where (`audit.export_requested`, `export.requested`, `reset.requested`); if that
+row cannot be written the job is not created (`503 audit_unavailable`). Every row of one
+such job, including each download, names the job as its target, so the audit log's
+**All events for this target** shows who asked, what the job did and each download.
 
 Job submission and lifecycle transitions are append-only audited before they become
 externally successful or visible. Submission/retry and cancellation do not return their
@@ -213,6 +238,13 @@ file path or arbitrary artifact URL.
 Data export archive and segment jobs each produce one server-managed ZIP. Segment mode follows
 the selected scope cursors on the server and packages the numbered JSON envelopes into
 that single ZIP, so the browser is not responsible for collecting a sequence of files.
+An audit export produces one plain `.csv` or `.ndjson` file, never a ZIP.
+
+Every download of every job's file is recorded in the audit log before the first byte
+is sent, after the ownership, grant and integrity checks: "Audit export downloaded" for
+an audit export and "Job file downloaded" for any other kind, always in the real audit
+log, Demo Mode included. If that row cannot be written the download answers `503
+audit_unavailable` and sends nothing; a refused download writes no row.
 
 Artifact storage has a separate persistence and retention boundary:
 
@@ -222,7 +254,8 @@ Artifact storage has a separate persistence and retention boundary:
 - the legacy merge profile overrides it with `/var/lib/agentic-soc/jobs` on a
   persistent named volume;
 - the artifact root is private (`0700`) and files are private (`0600`);
-- IDs and filenames are server-generated, and only ZIP artifacts are admitted;
+- IDs and filenames are server-generated, and only the job's own file type is admitted
+  (a ZIP for a data export, CSV or JSON Lines for an audit export);
 - size and SHA-256 are verified on every download;
 - at most the newest 50 attached artifacts are retained; older job records can remain
   after their artifact metadata and file are pruned; and
@@ -307,7 +340,7 @@ with the same intent key if admission was ambiguous; submit a new intent only wh
 previous result is conclusive.
 
 Terminal jobs compact large inputs and per-item maps. The retained record is designed
-for status, counts, bounded failures, result navigation, and audit correlation—not as a
+for status, counts, bounded failures, result navigation, and audit correlation, not as a
 copy of every submitted document or case ID.
 
 ## Troubleshooting checklist

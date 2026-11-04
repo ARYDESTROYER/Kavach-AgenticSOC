@@ -7,7 +7,7 @@
  *   - Remember me and how long a sign-in lasts → Security & access › Single sign-on &
  *     policy (the Session policy editor) and Account › Sessions & activity (Remembered
  *     badges, Expires column);
- *   - Reduce transparency → Account › Appearance & customization;
+ *   - Reduce transparency → Account › Appearance;
  *   - chat limits (Unlimited / Bounded) and the daily chat spending limit → General ›
  *     Chat assistant.
  * The prompt library is not a Settings section (it lives in the chat composer), so no

@@ -126,4 +126,4 @@ diagnostics panel names the rules where confirmation is not helping; see
 [Analytics](../analyst/analytics.md).
 
 See [Tuning and baselines](tuning-baselines.md) for generated recommendations and
-[Approvals](playbooks-approvals.md) for actions requiring review.
+[Approvals](approvals.md) for actions requiring review.

@@ -2342,3 +2342,58 @@ report, Add to case…, Ask again); below 30rem the row keeps "4 lookups · 6.2 
 pair and ⋯, which then also holds Copy answer, Usage details and Sources, so no figure is
 ever cut. The live run-log header puts "Working · 3 lookups" on the left and "1.2k tokens ·
 $0.002" on the right (the live cost is kept, Round 12 D5).
+
+**A69: Drill targets on table rows and chart labels (amends §7.2 and §7.3 and §10.7; Round 14
+SPEC §4.6.3).** A `table` block may carry `drill` and `trend`, each aligned with its rows (`null`:
+that row has none), and a `chart` block may carry `drill` aligned with its x axis (labels). A drill
+is an `InternalRef` built by code from a validated value, never by a model: an `ai` block keeps
+none (G5), an invalid ref is dropped on its own and never sinks the block, and a list whose every
+entry failed is no list at all. `NavRefOpts` gains `rule` (1 to 256 characters matching the
+router's `^[^\p{C}\u2028\u2029]{1,256}$`, kept byte for byte and never trimmed) on the `rule` page
+and on Logs and Cases; `drill.keys` (`answer-blocks.contract.json`) lists it with the existing
+`severity` key (one of the five named levels), which a drill now also carries on Logs, and a
+case-subject severity level drills to Cases with `severity` and, for a trailing window the Cases
+list offers, its `window`; an invalid opt invalidates the whole ref (`nav_drill_examples`). A row trend holds at most 24 points, newest last. Clicking a rule row or
+bar opens the rule sheet; Logs opened from an answer shows "Back to answer", which returns to the
+exact answer (conversation and message) when the answer sits in a saved conversation.
+
+**A70: The `rule` page reference (amends §3.5 console links and §10.7; Round 14 SPEC §4.6.3 and
+§4.6.4).** `{page: "rule", opts: {rule, from, to, sourceId?}}` is a page id the client resolves to
+the rule sheet, never a route, so a stored answer cannot navigate anywhere else with it. Tools build
+it through `chat_tools.common.rule_drill(rule, window, source_id)`, with the window as absolute UTC
+instants (`NAV_TIME_PATTERN`), and leave it out when the value cannot be carried exactly. The sheet
+opened from an answer says "From your answer" and uses that window. A chat rule filter matches what
+the Logs page's "Rule is" chip matches (the rule field, the rule name field and the suite rule
+classification).
+
+**A71: The severity kind of the categories artifact (amends §5.3 `log_stats` and §7.3; Round 14
+SPEC §4.7.2).** A `categories` artifact may carry `kind: "severity"` with `levels` (all five named
+levels in fixed order, zeros included, each with `count`, `share`, `raw_values` on each source's
+own scale, `trend`, up to 20 `rules` ranked by count with `rules_total` counting all, and a Logs
+`drill`), `splits` (by `rule` and by `source`: per level the top 5 keys and an `other` count),
+`sample` (`counted`, `total`, `per_source_cap`, `exact`, `sources_exact`, `sources_sampled`),
+`basis_caption`, `subject` (`events` or `cases`) and `multi_level_rules`. It materialises as a
+`table` block whose rows are the plain named-level table (reports, print and exports) and whose
+`severity` payload the client renders as the breakdown view (BLOCKS amendment 38). A push source's
+live-tail ring is read on the canonical 0 to 100 scale. An answer stored before Round 14 has no
+`kind` and keeps rendering as before.
+
+**A72: Case entity wording (amends §5.3 `get_case` and the entity block; Round 14 SPEC §5 F7).** A
+case entity names the case by its number (else its title), never its internal id; its status and
+status history read in plain words ("New to Open · awaiting analyst"; `needs_human` reads "Open ·
+awaiting analyst"), with the engine's reason sentences worded from a closed vocabulary; a related
+case that no longer exists reads "Related case, not found". The Rules fact carries `items`, one per
+rule with a `rule` drill over the case's own window (BLOCKS amendment 36). Answers saved before
+Round 14 keep their stored words.
+
+**A73: The run summary in `get_case` and the runbook list (amends §5.3; Round 14 SPEC §4.10.18).**
+`get_case` gains a `runbook` section, included by default and gated by `runbooks:read`: per run its
+title, version, progress ("4/11 · 1 blocked"), next step (null when every required step is done or
+the rest wait for approval), where the run stands ("All required steps are done.", "The remaining
+required steps wait for approval.", ...), the open required steps and the steps waiting for
+approval. No lookup result is included, so no log row reaches the model (#7). The case's rationale
+projects the runbook id and version that guided its latest investigation, never the selection
+reason or explanation, which quote log-derived values (#9). `search_knowledge` `list_runbooks`
+reads the library's Published catalog; `list_playbooks`, `playbooks` and `runbooks` are accepted
+aliases that return the same rows with an alias sentence. Case Manager chat reads the same section
+for the open case, so it follows the same next-step rule as the Runbook tab.

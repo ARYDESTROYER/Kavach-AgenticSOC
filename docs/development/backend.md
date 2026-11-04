@@ -112,7 +112,7 @@ Call a model only through `llm/gateway.py`. The gateway is the one place that re
 usage and cost. Prompt content derived from sources, users, cases, or arbitrary
 knowledge must use the shared untrusted-data fencing helpers.
 
-Do not allow an agent, tool, playbook, notification, or preview endpoint to write a
+Do not allow an agent, tool, runbook, notification, or preview endpoint to write a
 final case decision. `engine/case_manager.py` remains the authority. Provider, source,
 tool, or parsing failures must preserve a case and route to human review.
 

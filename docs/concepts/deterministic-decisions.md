@@ -24,8 +24,9 @@ verdict + confidence + deterministic risk score + operator auto-close policy
 ```
 
 The policy result sets the case state and records a plain-language rationale. Model
-text, a playbook, a notification, and a case-automation rule cannot directly set the
-result.
+text, a runbook, a notification, and a case-automation rule cannot directly set the
+result. Runbooks never decide: a runbook guides the investigator and the analyst, and
+recording a runbook decision step never changes the verdict or the case state.
 
 ## Auto-close policy
 
@@ -65,7 +66,7 @@ single case always overrides it.
 
 Four properties keep it honest:
 
-- the case stays visible, audited, and reopenable — nothing is dropped before a case
+- the case stays visible, audited, and reopenable: nothing is dropped before a case
   exists, which is what a suppression rule does instead;
 - every detection on the cluster must be declared, so a cluster that also fired an
   undeclared detection is still investigated normally; and
@@ -73,7 +74,7 @@ Four properties keep it honest:
   analyst-confirmed outcome, so it can neither flatter the agent nor become training
   evidence for the automation it replaces; and
 - it never overrides a person. A case an analyst has acted on, or one the agent has
-  already investigated, is left alone — a statement about a detection does not overrule a
+  already investigated, is left alone; a statement about a detection does not overrule a
   decision about a case.
 
 This path runs before a verdict exists. It does not change, read, or extend the
@@ -87,8 +88,8 @@ many analyst-confirmed benign and malicious outcomes exist for the **exact** det
 rule set under investigation.
 
 It is evidence, not authority. The verdict still comes from the model and the policy
-above still decides the outcome. It requires the rule identity to match — a
-high-similarity match from a different rule never qualifies — an unanimous confirmed
+above still decides the outcome. It requires the rule identity to match (a
+high-similarity match from a different rule never qualifies), an unanimous confirmed
 history, a minimum confirmed count, and at least one matching precedent actually
 retrieved for the case. The agent's own unreviewed auto-closes are never promotable. What
 was promoted, or why it was not, is recorded on the case.
@@ -110,10 +111,11 @@ After the deterministic decision and case save, approved automation can:
 - record recommendations;
 - send notifications;
 - request human approval; or
-- queue an allowed playbook run.
+- attach a Published runbook to the case.
 
-It cannot change the close/escalate truth table. A playbook is investigation context,
-not policy.
+It cannot change the close/escalate truth table. A runbook is guidance and a checklist,
+not policy. Automatic closes never read runbook steps, and closing a case by hand with
+required steps open asks for a reason but is never blocked.
 
 ## Failure behavior
 

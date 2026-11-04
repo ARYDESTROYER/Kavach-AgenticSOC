@@ -6,12 +6,34 @@
 > source of truth for *where we are*, *how to run it*, *what's done*, and *what's next*.
 > Everything in here is verified against the repo as of the date below — not from memory.
 
-- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-10-18
-- **Round 13, chat (newest, 2026-10):** dynamic $0 suggested questions, anchored
-  follow-ups, conversation titles from the first answer and a neater chat, on
-  `claude/round12` and heading to `Testing` by a new pull request. What was built, the
-  accepted deviations and the known limitations are in §10 "As built" of
-  [`docs/research/2026-10-round13/SPEC-chat.md`](research/2026-10-round13/SPEC-chat.md).
+- **Repo:** `ARYDESTROYER/Agentic-Kibana`  ·  **Integration target:** `Testing`  ·  **Date:** 2026-10-29
+- **Round 14 (newest, 2026-10):** nine operator asks on `claude/round14`, heading to `Testing`
+  by a pull request. The automatic sign-out notice no longer states how long the session
+  lasted. The Audit log (`#/audit`) is server-paged with three scopes
+  (People and settings, Agent activity, All), search and filters in the URL, a record inspector
+  that shows what changed, and an audited CSV or JSON Lines export (new `audit:export`, fresh
+  sign-in, refused in Demo Mode); every new audit row records its outcome, actor type, action,
+  client, session, target, changes and request id, and new writes are audited before they are
+  visible. The **Overview** entry in the navigation opens the **Dashboards library**: the Cyber
+  Defence Center (marked Default, still the landing page at `#/overview`), three built-in boards
+  (SOC operations, Detection and data health, Executive summary) and the viewer's own boards.
+  The Overview's two band headers are gone. Chat's Timeouts and capacity defaults are tripled.
+  Every detection rule name opens one **rule sheet** (alerts over time, top sources and targets,
+  latest alerts and cases, "Open all N in Logs"), Logs and Cases take an exact rule filter, and
+  severity breakdowns use named levels with their top rules and Split by. The navigation is a
+  docked rail whose icons never move, every page uses the Overview's panels and header, and
+  Settings is grouped. Playbooks and runbooks are now **one Runbooks feature**: phased
+  procedures with five step kinds, deterministic matching with a reason, a per-case run with a
+  Next step card, governed versions (Draft, In review, Published, Retired) under the new
+  `runbooks:run` and `runbooks:publish`, 12 built-ins, and a one-shot audited migration of
+  stored playbooks and runbooks; only Published text reaches the investigator. `decide()` is
+  untouched. What shipped, every contract resolution and the known limitations are in §11
+  "As built" of [`docs/research/2026-10-round14/SPEC.md`](research/2026-10-round14/SPEC.md);
+  the upgrade notes are in `docs/operations/upgrades.md` and `DEPLOY.md`.
+- **Round 13, chat (2026-10):** dynamic $0 suggested questions, anchored follow-ups,
+  conversation titles from the first answer and a neater chat, merged into `Testing` through
+  PR #132. What was built, the accepted deviations and the known limitations are in §10 "As
+  built" of [`docs/research/2026-10-round13/SPEC-chat.md`](research/2026-10-round13/SPEC-chat.md).
 - **Round 12 (2026-10):** chat without limits, the chat working indicator, Remember me,
   report downloads, and the Overview and Case Manager redesigns, merged into `Testing` as
   `db8d935` (PR #131). What shipped, the decisions taken during implementation, and the
@@ -171,19 +193,21 @@
 - **Dashboard integrity contract:** Overview posture values are keyed to the selected
   range/comparison, superseded requests abort, response windows are validated, and old
   posture data is hidden during a range transition. The AI-verdict FP rate (called
-  False Positive Rate before Round 12), Resolved / Closed and Auto Closed therefore
+  False Positive Rate before Round 12), Resolved or closed and Auto-closed therefore
   cannot repaint from an older request. Full Agent health now
-  lives above **Analytics → Effectiveness** and follows its 24h/7d/30d range; Overview
-  consumes the same reducer but renders only a degradation warning, with a stable
-  `#/metrics?tab=effectiveness` drill-through. Healthy/unauthorized states cost no
+  lives on **Analytics → Agent effectiveness** (`#/effectiveness`) and follows its
+  24h/7d/30d range; Overview consumes the same reducer but renders only a degradation
+  warning, with a stable `#/effectiveness` drill-through (the older
+  `#/metrics?tab=effectiveness` link still redirects there). Healthy/unauthorized states cost no
   Overview space, while unknown evidence stays distinct from healthy.
 - **Current Console contract:** the shared rail and route-loading states follow
   `docs/development/ui-standard.md`; `webui/src/design-system/` now exposes the one
   centered loading grammar, original source marks, and a serializable catalog for
-  future tooling (not a shipped MCP server). Automated Scans is a hidden compatibility route,
-  the targeted Workspace job is **Entity investigation**, Settings uses the flat
-  searchable command-center frame, and the bottom Documentation utility opens the
-  same-origin, version-matched Help Center at `/docs/<major.minor>/`. Installed docs
+  future tooling (not a shipped MCP server). The Automated scans page is retired
+  (`#/scans` redirects to Case Manager filtered to cases the AI agent closed), the targeted
+  Workspace job is **Entity investigation**, Settings is grouped panels (Account, General,
+  Integrations, Security & access, Organization) with search, and the bottom **Help Center**
+  utility opens the same-origin, version-matched Help Center at `/docs/<major.minor>/`. Installed docs
   are authoritative for that build; Latest Stable/GitHub are secondary upgrade or
   source views, and Development remains preview-only. First run uses the same flat
   Console grammar in a responsive four-stage setup workspace: **Workspace → Data
@@ -197,16 +221,15 @@
   an unsent draft per visited thread, refreshes history on focus, treats history access
   failures as failures rather than an empty account, and marks bounded history as
   incomplete when older material has been removed.
-- **Intelligence** now exposes five direct jobs: **Knowledge corpus**, **Reference
-  runbooks**, **Operator memory**, **Response playbooks**, and **Agent personas**.
-  Analysts can
-  search and open protected bundled references, while authorized managers can create,
-  edit, delete, and reindex durable operator Markdown. Full guidance is chunked into
-  stable per-runbook RAG documents, optimistic revisions reject stale writes, and
-  targeted reconciliation preserves imported knowledge, MITRE guidance, suppression
-  guidance, and resolved-case memory. Runbooks remain reference knowledge only;
-  Playbooks are the separate selected procedure layer and deterministic case policy is
-  still the sole close/escalate authority.
+- **Intelligence** exposes **Knowledge corpus**, **Runbooks**, **Operator memory** and
+  **Agent personas**. Since Round 14 Runbooks is the one procedure feature (it replaces the
+  Reference runbooks page at `#/runbooks`, and the retired Response playbooks links
+  `#/playbooks` and `#/catalog` redirect to it): 12 read-only built-ins
+  (`backend/app/runbooks/library/`) and governed operator runbooks in the `runbook_library`
+  KV store, edited in a structured outline with a Markdown source view, matched to cases by
+  code with a stated reason, run per case as a checklist (`runbook_runs`), and projected into
+  retrieval from Published versions only. A runbook can recommend; deterministic case policy
+  is still the sole close/escalate authority.
 - **Intelligence evidence contract:** the threshold tuner observes by default but
   learns only from independently analyst-confirmed outcomes and sends eligible writes
   to Approvals by default; confirmed-evidence auto-apply is an explicit opt-in and
@@ -214,8 +237,9 @@
   fenced until an authorized human approves it. Resolved-case RAG excludes inferred
   model-only/auto-close outcomes, RAG source toggles reconcile their managed projections,
   and embedding changes validate capability/dimension before replacing a vector space.
-  Operator Playbooks are durable strict-CAS StateStore records layered over immutable
-  bundled procedures, with deterministic dry-run and bounded coverage reporting.
+  Operator runbooks are strict-CAS KV records with Draft, In review, Published and Retired
+  versions over the immutable built-ins; edits create a Draft, and only Published text is
+  trusted by the AI.
   `/api/schedulers/health` reports process-local worker state. Telemetry-source advice
   accepts only versioned query/tool evidence—never merely an absent connector—and the
   current release reports capture unavailable until that controlled producer exists.
@@ -236,8 +260,8 @@
   opened row hands the exact case to the canonical Case Manager detail workspace;
   its desktop split is accessible and persisted. Case Manager Overview now
   conditionally summarizes the latest investigation run's actual inputs—operator
-  memory consulted, RAG knowledge and runbook references retrieved, a playbook only
-  when injected/consulted, and an immutable deterministic platform threshold-tuning
+  memory consulted, RAG knowledge and runbook references retrieved, the runbook that
+  guided the run (a playbook on cases investigated before Round 14), and an immutable deterministic platform threshold-tuning
   snapshot—with details in Investigation. It never infers provenance from current
   feature settings, never calls threshold tuning model fine-tuning, and leaves final
   close/escalate routing to deterministic case policy. Overview defaults to
@@ -246,8 +270,9 @@
   Threat Context exposes a redacted persisted cluster-formation explanation. Demo
   Mode has five sources including Entra ID. The API also provides audited,
   permission-gated portable analysis export with actor/scope/snapshot-bound signed
-  continuations; its Intelligence scope carries exact catalog counts, sanitized
-  operator runbook/playbook source, and safe bundled references. It also provides
+  continuations; its Intelligence scope carries exact catalog counts, the runbook library
+  with every operator version, the read-only legacy procedure groups, and safe bundled
+  references (manifest schema 2). It also provides
   guarded default-preference OpenAI
   Flex for supported live case/alert work, with truthful standard fallback. Fresh
   workspaces now assign the bundled OpenAI model ID `gpt-5.6-luna` to router, investigator,
@@ -282,7 +307,7 @@
   document), anchored follow-ups (`agents/chat_followups.py`) and conversation titles
   from the first answer; see `docs/research/2026-10-round13/SPEC-chat.md` §10 for what was
   built and what is deferred. **Analytics → Agent effectiveness** (reload-safe at
-  `#/metrics?tab=effectiveness`) renders the additive
+  `#/effectiveness`; the older `#/metrics?tab=effectiveness` link redirects there) renders the additive
   `GET /api/metrics/agent-improvement` report. It compares the last seven complete UTC days with the
   preceding 28 using weighted analyst-reported agreement, material correction rate,
   and human review turnaround, while exposing two-sided cohort coverage, truncation,
@@ -294,8 +319,8 @@
   also requires the separate review-turnaround domain to improve. Auto-tuning reuses
   this contract in a dedicated **Outcomes** tab beside its default **Operations** and
   **Policy & history** workspaces; its separate `metrics:view` load cannot block
-  tuning controls, and **View full evidence** opens the canonical Analytics
-  effectiveness tab. The Outcomes view plots one selected metric at a time and keeps
+  tuning controls, and **View full evidence** opens **Analytics → Agent effectiveness**
+  (`#/effectiveness`). The Outcomes view plots one selected metric at a time and keeps
   tuning changes in a non-causal disclosure. The report now also carries a separate
   outcome layer: recorded case-linked AI processing cost; observed case-open-to-close
   elapsed-time difference between agent-terminal and human-terminal cohorts (not active
@@ -435,7 +460,8 @@ backend/app/
                    `data_export:export`) + routes_storage (desired own-state lifecycle
                    and pure capability preview; direct apply returns 410 and canonical
                    fresh-auth Elasticsearch apply is a Job)
-                   + routes_runbooks (durable runbook catalog/reconciliation) +
+                   + routes_runbooks (Round 14: the governed runbook library, versions,
+                   publish, import, validation, match preview and metrics) +
                    routes_releases (public source discovery) + routes_schedulers
                    (read-only threshold/campaign/Batch cadence-loop health plus
                    event-driven baseline-producer health) + routes_telemetry (query-backed telemetry
@@ -466,8 +492,11 @@ backend/app/
                    12: full-text per-exchange documents, archive pages, the running
                    conversation summary, no message removal) · chat_feedback (Round 12:
                    per-user answer ratings) ·
-                   cases/usage/config/cursor · proposals · runbooks · playbooks
-                   (strict-CAS durable operator catalogs) · sql/ (SQLite/Postgres) +
+                   cases/usage/config/cursor · proposals · runbook_library ·
+                   runbook_runs (Round 14: operator runbook versions and the migration
+                   marker; per-case runs and the monthly run ledger; KV only) ·
+                   legacy_procedures (read-only decoder of the retired `playbooks` and
+                   `runbooks` namespaces) · sql/ (SQLite/Postgres) +
                    Round-3: case_thread/case_activity/case_tasks · inbox · notif_prefs ·
                    custom_roles · price_overlay · shift_handoff +
                    Round-4: tuning · campaigns (full-set active reconciliation + durable
@@ -495,7 +524,9 @@ backend/app/
                    metrics (+ Round-3 posture + evidence-qualified case-level knowledge-reference
                    coverage; unavailable lifetime history/truncation stay null,
                    not-measured cases stay out of the denominator) · mitre_coverage ·
-                   shift_report · priority ·
+                   shift_report · priority · Round 14 runbooks: runbook_model ·
+                   runbook_match · runbook_lookup (pure) · runbook_catalog ·
+                   runbook_runs · runbook_migration ·
                    budget (BudgetGate) · threshold_automation · threat_context · mitre · demo_generator/runtime +
                    Round-4: threshold_tuner (nightly deterministic observer, default ON;
                    analyst-confirmed evidence only and review-first writes) · campaigns
@@ -536,13 +567,14 @@ webui/src/
                    Security promoted to top-level), Account, Sessions, Users, Security, Audit,
                    Workspace(Chat with searchable desktop history rail/mobile Sheet,
                    durable per-user transcripts, and one docked composer + Entity
-                   investigation), Analytics(Operational+Performance+Posture+
-                   Effectiveness+Cost), Jobs (personal application jobs + permission-
-                   scoped related LLM Batch and scheduler projections),
-                   Home(Overview+Standup), Intelligence(Knowledge corpus+Reference
-                   runbooks+Operator memory+Response playbooks+Agent personas),
-                   Docs + a hidden legacy Scans compatibility route + Round-3 Models,
-                   Roles, Inbox, ...
+                   investigation), Analytics(Metrics: Operational+Performance+Posture;
+                   Agent effectiveness and Cost pages), Jobs (personal application jobs +
+                   permission-scoped related LLM Batch and scheduler projections),
+                   Overview group (Cyber Defence Center + the Round 14 Dashboards library
+                   and boards + Standup), Intelligence(Knowledge corpus+Runbooks+Operator
+                   memory+Agent personas; runbooks/** holds the editor, the run and the
+                   shared pieces), Audit (Round 14: scopes, inspector, export), Help
+                   Center + Round-3 Models, Roles, Inbox, ... (the Scans page is gone)
   soc/pages/settings/  Round-5 — one file per Settings section (general/security/models/detection/
                    cases/automation/enrichment/knowledge/keys/standup/storage/advanced/...) driven by
                    settings-sections.ts (the registry) — replaces the old god-file
@@ -559,7 +591,9 @@ webui/src/
   soc/components/  RiskGauge, QRCode, CommandPalette, SavedViewsBar, DataTable, NotificationsEditor,
                    SourceEditor (feeds), DemoIndicator, badges, charts, HelpTip + Round-3 NavSidebar,
                    NotificationBell, GlassSurface, SettingsGrid/Card, theme-tokens resolver,
-                   MitreHeatmap/BurnDownChart, CaseThread, EnrichmentProvidersEditor, BrandingEditor +
+                   MitreHeatmap, CaseThread, EnrichmentProvidersEditor, BrandingEditor +
+                   Round 14 RuleLink/RuleSheet, KpiStrip, Panel/SectionTitle/ListRow/RowActions/
+                   StatusDot/Callout (`@/design-system`) +
                    Round-5 ~15 shared primitives (Field, SegmentedControl, ConfirmDialog, NumberField,
                    LabeledSlider, SecretField, TagInput, IconButton, PageContainer, TimeRangePicker,
                    DashboardGroup, collapsible, typography) + shared ComparisonMetric/
@@ -574,7 +608,7 @@ webui/src/
 
 Full text in `AGENTS.md` §5. The ones that bite hardest:
 - **#3 — the deterministic decision.** `engine/case_manager.py` `decide()`/`apply()` decision logic
-  is **byte-identical** and is the ONLY producer of CLOSED/auto-close. No LLM, playbook, automation,
+  is **byte-identical** and is the ONLY producer of CLOSED/auto-close. No LLM, runbook, automation,
   bulk action, or demo path may set a case's status/disposition outside `apply()` or the
   human analyst action path. There is a guard test (`test_wave6_decide_guard` / the bulk + automation
   tests) that fails if `decide()` changes or is bypassed. **Keep it byte-identical.**
@@ -905,6 +939,9 @@ hunting/query builder, case linking/merge, and an integrations marketplace.
 | Round-7 design + what-shipped (Security Command Center + Noise-Reduction funnel) | `docs/research/2026-07-round7/` |
 | Round-8 what-shipped (UI cleanup + glitch fixes) | `docs/research/2026-07-round8/` |
 | Round-9 / 9b / 9c what-shipped | **no `docs/research/` folder** (done efficiency-first) — see `Journal.md`'s 2026-07-05/2026-07-06 entries + §5 above |
+| Round 12 design + as built (chat without limits, Overview, Case Manager) | `docs/research/2026-10-round12/SPEC.md` §7 |
+| Round 13 chat design + as built (starters, follow-ups, titles) | `docs/research/2026-10-round13/SPEC-chat.md` §10 |
+| Round 14 design + as built (dashboards library, audit log, rule sheet, Runbooks, console grammar) | `docs/research/2026-10-round14/SPEC.md` §11 |
 | Audit findings + dispositions | `docs/research/2026-06-round2/ROUND2_AUDIT.md` · `docs/research/2026-07-round5/AUDIT_FINDINGS.md` |
 | What's next | `ROADMAP.md` · `ROUND2_BEST_OF_BEST.md` |
 

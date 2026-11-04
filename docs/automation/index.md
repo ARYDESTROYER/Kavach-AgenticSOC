@@ -23,8 +23,10 @@ Fresh v0.1 preferences enable:
 - realtime updates; and
 - the case-automation engine with an empty rule set.
 
-Batch inference is off by default. Notifications, playbook-running automation, and
-case-automation rules are operator choices rather than hidden defaults.
+Batch inference is off by default. Notifications and case-automation rules (including
+rules that attach a runbook) are operator choices rather than hidden defaults. Attaching
+the matching runbook to cases that need a person is on by default; a runbook is a
+checklist and never decides a case.
 
 ## Admission, spend, and caps
 
@@ -41,7 +43,7 @@ provider-side budgets remain necessary.
 ## The decision boundary
 
 Automation can correlate, prioritize, enrich, investigate, tag, recommend, notify,
-run a playbook re-investigation, or create an approval proposal. Automatic case
+attach a runbook, or create an approval proposal. Automatic case
 closure is produced only by the deterministic case manager:
 
 - false-positive auto-close is policy-gated;
@@ -58,4 +60,4 @@ The named autopilot profile adjusts the risk floor, daily budget, and per-tick c
 together. Review all three effective values before changing profiles.
 
 Next: [Detection and rules](rules.md), [Tuning and baselines](tuning-baselines.md),
-and [Playbooks and approvals](playbooks-approvals.md).
+[Approvals](approvals.md), and [Runbooks](../intelligence/runbooks.md).

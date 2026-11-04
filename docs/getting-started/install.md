@@ -119,7 +119,7 @@ curl --fail http://localhost:8080/api/health/build-info
 - **Ready** confirms the configured application-state store can serve requests.
 - **Build info** reports the product version and build metadata without secrets.
 
-Open **Documentation** from the bottom of the Console rail and confirm the browser
+Open **Help Center** from the bottom of the Console rail and confirm the browser
 stays on this deployment at `/docs/0.1/`. That bundled Help Center matches the
 installed application and remains usable without access to GitHub or the public docs
 site.

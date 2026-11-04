@@ -18,7 +18,7 @@ and previewing future work.
 | **Latest Stable** | Documentation built from the latest immutable release tag on the verified `main` source for the supported release line | Upgrade evaluation, current supported guidance, and comparison with an older installation |
 | **Development** | Documentation source integrated on `Testing` but not yet promoted and tagged | Preview and review only; never assume it describes the installed application |
 
-Open **Documentation** from the bottom of the application navigation to enter the
+Open **Help Center** from the bottom of the application navigation to enter the
 installed Help Center. GitHub remains the source/edit location and an escape hatch
 for newer material; it is not the primary product-help destination.
 

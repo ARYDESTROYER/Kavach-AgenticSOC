@@ -58,15 +58,16 @@ schema, protocol, identity, privilege, or frozen-base change.
   correlation or model use.
 - **Explainable investigation:** the Case Manager keeps source facts, agent findings,
   risk factors, provenance, timeline, threat context, collaboration, and chat together.
-- **Deterministic control:** code—not a model, prompt, runbook, or playbook—owns the
-  final close/escalate decision.
+- **Deterministic control:** code, not a model, a prompt or a runbook, owns the final close
+  or escalate decision.
 - **Measured AI spend:** every model call crosses one gateway and produces a usage and
   cost record. Fresh workspaces use OpenAI GPT-5.6 Luna for completion roles; models
   and providers remain configurable.
-- **Operational intelligence:** runbooks, playbooks, enrichment, operator memory,
-  knowledge retrieval, MITRE ATT&CK context, campaigns, baselines, and auto-tuning.
-- **Built for teams:** RBAC, MFA, SSO, sessions, notifications, case collaboration,
-  audit history, saved views, and per-user chat history.
+- **Operational intelligence:** governed runbooks run as per-case checklists, enrichment,
+  operator memory, knowledge retrieval, MITRE ATT&CK context, campaigns, baselines, and
+  auto-tuning.
+- **Built for teams:** RBAC, MFA, SSO, sessions, notifications, case collaboration, a
+  searchable audit log with an audited export, saved views, and per-user chat history.
 - **Read-only Workspace Chat:** ask across logs, cases, metrics, threat intelligence,
   and the product itself; watch each lookup run, read cited answers with charts, track
   tokens and cost live, and collect results into exportable reports.
@@ -81,11 +82,23 @@ schema, protocol, identity, privilege, or frozen-base change.
   live dashboards, Cases, Case Manager, Analytics, Intelligence, Settings, and bundled
   documentation.
 - **Window-safe operations:** Overview rejects stale posture responses after a range
-  change; full Agent health lives in range-aware Analytics Effectiveness, while Overview
-  shows only a positive degradation warning.
+  change; full Agent health lives in range-aware **Analytics → Agent effectiveness**, while
+  Overview shows only a positive degradation warning.
 - **Supervised Stable updates:** after one bootstrap, the reference PostgreSQL Compose
   deployment can apply a compatible signed, digest-pinned release from the Console with
   verified backup, durable progress, readiness checks, and automatic in-flight rollback.
+
+**In the current development round (Round 14, on its way to `Testing`):** the Overview item
+in the navigation opens a Dashboards library with four built-in boards (the Cyber Defence Center,
+still the landing page, plus SOC operations, Detection and data health, and Executive summary) and
+your own boards; the Audit log is a page you can search, open record by record and export as CSV
+or JSON Lines; clicking any detection rule opens one rule sheet with its alerts, top sources and
+targets, latest alerts and cases, and opens Logs or Cases filtered to exactly that rule; severity
+breakdowns use named levels and show the rules behind each; playbooks and runbooks are merged into
+one Runbooks feature with phased, governed procedures that attach to cases as checklists with a
+Next step card; and every page now follows the Overview's panels and header beside a docked
+navigation rail. Code still makes every close or escalate decision. The details and the upgrade
+notes are in [CHANGELOG.md](CHANGELOG.md) and the [upgrade contract](docs/operations/upgrades.md).
 
 ## Safety model
 
@@ -276,6 +289,8 @@ matches the application version.
 | Use the product | [Help Center](docs/index.md) |
 | Evaluate quickly | [Quickstart](docs/getting-started/quickstart.md) |
 | Operate cases | [Case Manager guide](docs/analyst/case-manager.md) |
+| Read the dashboards | [Dashboards](docs/analyst/dashboards.md) |
+| Review who changed what | [Audit log](docs/administration/audit-log.md) |
 | Monitor long-running work | [Background jobs](docs/operations/background-jobs.md) |
 | Author intelligence | [Runbooks](docs/intelligence/runbooks.md) |
 | Deploy and operate | [Deployment](docs/operations/deployment.md) |

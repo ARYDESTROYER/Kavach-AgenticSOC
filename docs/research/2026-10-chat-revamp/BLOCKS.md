@@ -289,6 +289,38 @@ Where the two disagree, the **v2 amendments** below win, then `SPEC.md`, then th
     over that window with the card's case number as its origin ("From CASE-000214"). An
     item with no `drill` is plain text, and an answer saved before Round 14 has no `items`
     and shows `value` as written.
+37. **Drill targets and trends in tables and charts (Round 14 SPEC §4.6.3; amends §5.3 `table`
+    and `chart`).** A `table` may carry `drill?: Array<InternalRef | null>` and
+    `trend?: Array<number[] | null>`, aligned with `rows`; a `chart` may carry
+    `drill?: Array<InternalRef | null>` aligned with its x axis. A drill is built by code (only
+    `rule` page refs, Logs refs with the `rule` or `severity` key, and, for a case-subject
+    severity level, a Cases ref with `severity` and a list window), an `ai` block keeps none
+    (G5), and the client never builds one from cell text. A row with a drill renders its rule as a
+    `RuleLink` (dotted underline at rest, solid on hover and focus) that opens the rule sheet; a
+    bar with a drill opens the same sheet. A row trend (at most 24 points, newest last) is a
+    sparkline in a Trend column right after the label column, on screen only: downloads and print
+    carry no trend column. Sorting and clipping keep each row's drill and trend its own. A block
+    title shows a native tooltip only when it is cut off (F6).
+38. **The severity breakdown view (Round 14 SPEC §4.7.2 and §4.7.3; amends §5.3 `table`).** A
+    `table` block may carry `severity`: the five named levels in fixed order (Critical, High,
+    Medium, Low, Info), zeros included, each with its count, its share (one decimal), the raw
+    values it holds on each source's own scale ("High (73, 8)"), a trend, up to 20 rules ranked by
+    count with `rules_total`, and a Logs drill; `splits` by rule and by source (per level the top
+    5 keys and an Other count); `sample` (what was counted, the per-source cap, how many sources
+    counted exactly or were sampled); `subject` (`events` or `cases`); and `multi_level_rules`.
+    The client renders it as a table: Severity (badge with a help tip naming each source's
+    scale), Events, Share, Trend and Top rules (up to 3 `RuleLink`s with counts, then "+N more
+    rules"); the first cell's disclosure button opens a row that lists the level's rules, each
+    with its count, a `RuleLink` and an "Open in Logs" button, then "+N more rules" with the
+    level's own Logs view. "Split by" (None, Rule, Source) appears only when the server returned
+    more than one split; a rules-by-level matrix is offered only when a rule falls in two or more
+    levels (`multi_level_rules` above 0), and a phone gets the table instead, with Split by in the
+    card's menu. The caption names what was sampled ("1,000 of 2,500 events sampled, newest 200 per
+    source") only when the levels do not cover the stated total. The levels table is compact (the
+    42rem reading column); only the matrix takes the wide lane. An invalid payload is dropped and
+    the rows render as a plain table; a stored severity table switched to a chart and back keeps
+    its counts and level drills but not its per-level rules (chart blocks carry no severity
+    payload).
 
 ---
 

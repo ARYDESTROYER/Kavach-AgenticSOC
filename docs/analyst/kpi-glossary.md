@@ -19,7 +19,7 @@ ledger; none of them feeds the deterministic close or escalate decision.
 ## How to read a KPI
 
 - **Window.** Most tiles count cases that **arrived** in the selected time window,
-  keyed on case-arrival time. Open Cases and the Active Risk Index are exceptions: they
+  keyed on case-arrival time. Open cases and the Active Risk Index are exceptions: they
   measure the queue as it is right now.
 - **Not measured.** An em dash (`—`) means the value was not measured, for example
   because no case carries the timestamp a timing metric needs. It is never a zero.
@@ -29,14 +29,14 @@ ledger; none of them feeds the deterministic close or escalate decision.
   covered, because a partial ratio would look like a fact.
 - **Exact at any size.** A few figures are exact store-wide counts however many cases
   the store holds, and they match what Workspace Chat reports for the same question:
-  the **Open Cases** stock, and the case counts on **Analytics → Metrics** (**Total
+  the **Open cases** stock, and the case counts on **Analytics → Metrics** (**Total
   cases**, Needs human, Resolved or closed, the active cases beside it, and the counts
   by status, verdict, and disposition). There **Needs human** is the open cases whose AI
   verdict is Needs human, the same figure Standup and the dashboards show; a case an
   analyst has closed is not counted.
 - **Exact up to 20,000 cases in the window.** Every other dashboard figure is computed
   from the cases in its window, up to 20,000 of them. That covers every Overview figure
-  for the selected window (Total Cases, Total Critical, Resolved / Closed, Auto Closed,
+  for the selected window (Total cases, Total critical, Resolved or closed, Auto-closed,
   the AI-verdict FP rate, and the rollups below them) and the heavier rollups behind
   the dashboards (timing, verdict mix, ATT&CK coverage, auto-close health, agent
   improvement, and similar). When a window holds more than 20,000 cases, typically
@@ -84,7 +84,7 @@ it never closes or escalates a case on its own. It is not the model's confidence
 
 ## Case volume KPIs
 
-### Total Cases
+### Total cases {#total-cases}
 
 Every case that **arrived** in the selected window, including cases an operator closed
 under a "declared benign" rule policy. This is the denominator the other window tiles
@@ -95,14 +95,14 @@ store (all time), whatever the selected window, counted exactly at any store siz
 caption says "Every case in the store", or names the breakdown that could only be
 counted in part.
 
-### Total Critical
+### Total critical {#total-critical}
 
 Cases in the top severity band of the window's arrivals, counted on the server from the
 severity roll-up over the window rather than from the rows the page loaded (up to
 20,000 cases; see [How to read a KPI](#how-to-read-a-kpi)). The band is the top band the
 severity ladder declares, which is not always called "Critical".
 
-### Open Cases
+### Open cases {#open-cases}
 
 The cases that are open **right now**, whenever they arrived: `new`, `open`,
 `needs_human`, `investigating`, `escalated`, and `on_hold`. It is a stock, not a flow,
@@ -129,16 +129,16 @@ person. A model verdict, a disposition derived from it, or a close without a rec
 classification never counts as confirmed. The two figures are different judgements of
 the same cases, so they need not match.
 
-### Resolved / Closed
+### Resolved or closed {#resolved-closed}
 
 Cases from the window that reached a terminal state (`resolved` or `closed`),
 including the ones closed under a "declared benign" rule policy. The drill-down names
 who closed them: the agent, an analyst, system routing, or that policy.
 
-### Auto Closed
+### Auto-closed {#auto-closed}
 
-The cases from the window that the agent closed automatically. **Auto Closed is a
-subset of Resolved / Closed, not an independent total**: agent closes, human closes,
+The cases from the window that the agent closed automatically. **Auto-closed is a
+subset of Resolved or closed, not an independent total**: agent closes, human closes,
 and system closes add up to the terminal cases exactly. It is counted over the
 agent-worked population only, so "declared benign" policy closes are excluded, and its
 share is stated as a percentage of agent-worked closes. An automatic close always comes

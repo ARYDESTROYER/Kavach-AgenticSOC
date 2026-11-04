@@ -139,9 +139,9 @@ The full **Agent health** diagnostic panel no longer occupies the Overview layou
 When every readable signal is healthy, or the operator cannot read either diagnostic
 source, Overview renders no health panel at all. A positively detected precedent-corpus,
 migration, or auto-close degradation produces one compact warning strip. Its
-**View effectiveness** action opens the shareable
-`#/metrics?tab=effectiveness` route, where the complete evidence follows the same
-selected Analytics window. Unknown or unmeasured evidence remains visible there but
+**View effectiveness** action opens **Analytics → Agent effectiveness**
+(`#/effectiveness`; the older `#/metrics?tab=effectiveness` link still redirects
+there), where the complete evidence follows the same selected Analytics window. Unknown or unmeasured evidence remains visible there but
 is not promoted into a false Overview incident.
 
 The primary Open and Resolved controls drill directly into the matching case scope.
@@ -198,9 +198,12 @@ Case drill-down requires `cases:read`; source health requires `sources:read`.
 
 ## Custom views
 
-Open **Overview → Dashboards** to use or clone a role-oriented dashboard. A custom
-dashboard is personal presentation state: changing its name, widgets, or layout does
-not alter detection, risk, or case decisions.
+Open **Overview → Dashboards** (or press the **Overview** row itself) for the
+Dashboards library: the built-in boards (this Cyber Defence Center, SOC operations,
+Detection and data health, and Executive summary) and your own. Duplicate a built-in to
+customise it. A custom dashboard is personal presentation state: changing its name,
+widgets, or layout does not alter detection, risk, or case decisions. See
+[Dashboards](dashboards.md).
 
 The v0.1 widget catalog includes:
 

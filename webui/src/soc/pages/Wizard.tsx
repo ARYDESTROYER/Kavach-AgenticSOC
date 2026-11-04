@@ -910,28 +910,70 @@ function SourcesStep({
   const [adding, setAdding] = React.useState(false);
   const [editing, setEditing] = React.useState<SourceInstance | null>(null);
   const [error, setError] = React.useState<unknown>(null);
+  // Make primary in flight on this row (its Remove waits for it: see the row's Remove).
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = React.useState<SourceInstance | null>(null);
+  // The remove confirmation is an async confirm (ConfirmDialog `busy`): it stays open while
+  // the source is deleted and closes once the delete is done; a failed delete stays in it.
+  const [removing, setRemoving] = React.useState(false);
+  const [removeError, setRemoveError] = React.useState<unknown>(null);
+  // A removal that went through while the list read after it failed: the page says the
+  // source is gone and offers to reload the list.
+  const [removedListError, setRemovedListError] = React.useState<unknown>(null);
+  // Sources the server has confirmed removed, against the list they were removed from.
+  // Their rows leave with the dialog instead of when the list reloads (or never, if that
+  // read fails), so the list never offers a source that is gone. The next list replaces it.
+  const [removed, setRemoved] = React.useState<{
+    from: SourceInstance[];
+    ids: ReadonlySet<string>;
+  } | null>(null);
+  const sourcesRef = React.useRef(sources);
+  sourcesRef.current = sources;
+  // Says a removal worked: the dialog closes and focus moves on, which says nothing itself.
+  const [removedNote, setRemovedNote] = React.useState('');
   // The remove confirmation opens from a row's Remove button. Cancel hands focus back to
-  // it; a removal takes the row away once the list reloads, and focus then moves to the
+  // it; a removal takes the row away as the dialog closes, and focus then moves to the
   // next row's Remove, else the list heading (SPEC §3.3).
   const removeOpener = useReturnFocus();
   const listRef = React.useRef<HTMLDivElement>(null);
   const editorOpen = adding || Boolean(editing);
-  const enabledSourceCount = sources.filter((source) => source.enabled !== false).length;
-  const disabledSourceCount = sources.length - enabledSourceCount;
+  const listed = React.useMemo(
+    () =>
+      removed && removed.from === sources
+        ? sources.filter((source) => !removed.ids.has(source.id))
+        : sources,
+    [removed, sources],
+  );
+  const enabledSourceCount = listed.filter((source) => source.enabled !== false).length;
+  const disabledSourceCount = listed.length - enabledSourceCount;
 
   React.useEffect(() => {
     onEditorStateChange(editorOpen);
     return () => onEditorStateChange(false);
   }, [editorOpen, onEditorStateChange]);
 
+  // Read the list again. A read that works answers any earlier list error.
+  const refreshList = async () => {
+    await onChanged();
+    setRemovedListError(null);
+  };
+
+  /** Retry the list read from an error panel: it clears when the list loads. */
+  const retryList = async (show: (nextError: unknown) => void) => {
+    try {
+      await refreshList();
+      show(null);
+    } catch (nextError) {
+      show(nextError);
+    }
+  };
+
   const reload = async () => {
     setAdding(false);
     setEditing(null);
     setError(null);
     try {
-      await onChanged();
+      await refreshList();
     } catch (nextError) {
       setError(nextError);
     }
@@ -950,7 +992,7 @@ function SourcesStep({
         ingest_mode: source.ingest_mode ?? null,
         config: (source.config as Record<string, unknown>) || {},
       });
-      await onChanged();
+      await refreshList();
     } catch (nextError) {
       setError(nextError);
     } finally {
@@ -959,16 +1001,36 @@ function SourcesStep({
   };
 
   const remove = async (source: SourceInstance) => {
-    setBusyId(source.id);
+    setRemoving(true);
+    setRemoveError(null);
     setError(null);
     try {
       await api.deleteSource(source.id);
-      removeOpener.expectRemoval();
-      await onChanged();
     } catch (nextError) {
-      setError(nextError);
-    } finally {
-      setBusyId(null);
+      // Nothing was removed: the confirmation stays open with the reason, so Remove
+      // source tries again and Cancel keeps the source.
+      setRemoveError(nextError);
+      setRemoving(false);
+      return;
+    }
+    // The delete is done, so the confirmation closes now and the row leaves with it; the
+    // list then reloads outside the dialog, which a slow read cannot hold open.
+    // `expectRemoval` is the backstop for a row that leaves only when the list reloads (a
+    // list read from before the delete lands after it and still holds the row): focus that
+    // fell to the page body then moves to the next row's Remove, else the list heading.
+    removeOpener.expectRemoval();
+    const from = sourcesRef.current;
+    setRemoved((previous) => ({
+      from,
+      ids: new Set([...(previous && previous.from === from ? previous.ids : []), source.id]),
+    }));
+    setRemovedNote(`${source.display_name || properName(source.source_type)} removed.`);
+    setRemoving(false);
+    setPendingDelete(null);
+    try {
+      await refreshList();
+    } catch (nextError) {
+      setRemovedListError(nextError);
     }
   };
 
@@ -990,13 +1052,30 @@ function SourcesStep({
         </p>
       ) : null}
 
+      {/* An explicit aria-live keeps this line exposed while the confirmation's exit
+          animation runs: the modal's aria-hidden pass spares only [aria-live] nodes. */}
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {removedNote}
+      </p>
+
+      {removedListError ? (
+        <LoadError
+          error={removedListError}
+          title="The source was removed, but the list didn’t refresh"
+          fallback="Reload the list to see the current sources."
+          retryLabel="Reload list"
+          className="mb-6"
+          onRetry={() => void retryList(setRemovedListError)}
+        />
+      ) : null}
+
       {error ? (
         <LoadError
           error={error}
           title="Couldn’t update data sources"
           fallback="The source change was not applied."
           className="mb-6"
-          onRetry={() => void onChanged()}
+          onRetry={() => void retryList(setError)}
         />
       ) : null}
 
@@ -1018,7 +1097,7 @@ function SourcesStep({
           <div className="flex flex-wrap items-center justify-between gap-3 pb-4">
             <div>
               <h2 className="text-base font-semibold text-foreground">
-                {sources.length
+                {listed.length
                   ? `${enabledSourceCount} enabled${
                       disabledSourceCount ? ` · ${disabledSourceCount} disabled` : ''
                     }`
@@ -1033,9 +1112,9 @@ function SourcesStep({
             </Button>
           </div>
 
-          {sources.length ? (
+          {listed.length ? (
             <div className="divide-y divide-border border-y border-border">
-              {sources.map((source) => {
+              {listed.map((source) => {
                 const manifest = connectors.find(
                   (connector) => connector.source_type === source.source_type,
                 );
@@ -1091,15 +1170,19 @@ function SourcesStep({
                         // Neutral at rest; red only on hover, focus and in the confirm dialog.
                         className="hover:text-critical-text focus-visible:text-critical-text aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
                         onClick={(event) => {
+                          // Make primary on this row writes the whole source, and that write
+                          // creates a source that is missing: a removal racing it could be
+                          // undone. Remove waits for it; the open dialog covers the removal.
                           if (busyId === source.id) return;
                           removeOpener.remember(event.currentTarget, {
                             peers: () => listRef.current?.querySelectorAll('[data-wizard-source-remove]') ?? [],
                             empty: () => headingOf(listRef.current),
                           });
+                          setRemoveError(null);
                           setPendingDelete(source);
                         }}
-                        // Busy, not disabled, while the removal runs: the confirmation hands
-                        // focus back here, which a disabled button would refuse.
+                        // Busy, not disabled, like the confirm's buttons: it stays in the tab
+                        // order while Make primary runs.
                         aria-disabled={busyId === source.id || undefined}
                         data-wizard-source-remove=""
                       >
@@ -1142,7 +1225,7 @@ function SourcesStep({
             <SourceEditor
               connectors={connectors}
               existing={editing || undefined}
-              defaultPrimary={sources.length === 0}
+              defaultPrimary={listed.length === 0}
               onSaved={() => void reload()}
               onCancel={() => void reload()}
             />
@@ -1153,8 +1236,11 @@ function SourcesStep({
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         onOpenChange={(open) => {
-          if (!open) setPendingDelete(null);
+          if (open) return;
+          setPendingDelete(null);
+          setRemoveError(null);
         }}
+        busy={removing}
         title="Remove this source?"
         returnFocusRef={removeOpener.ref}
         description={
@@ -1165,13 +1251,19 @@ function SourcesStep({
             : ''
         }
         destructive
-        confirmLabel="Remove source"
+        confirmLabel={removing ? 'Removing source' : 'Remove source'}
         onConfirm={() => {
-          const source = pendingDelete;
-          setPendingDelete(null);
-          if (source) void remove(source);
+          if (pendingDelete) void remove(pendingDelete);
         }}
-      />
+      >
+        {removeError ? (
+          <LoadError
+            error={removeError}
+            title="Couldn’t remove the source"
+            fallback="The source was not removed."
+          />
+        ) : null}
+      </ConfirmDialog>
     </div>
   );
 }

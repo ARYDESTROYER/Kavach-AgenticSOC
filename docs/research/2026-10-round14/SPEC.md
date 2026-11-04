@@ -432,6 +432,9 @@ Every new or touched store, its Demo behaviour, and the audit sink of each write
 | Cases, case tasks, case activity | Demo-swapped, as today | Demo store | the Demo audit |
 | Audit reads (`audit_view`), audit export (`audit.export_*`), job artifact downloads (`job.artifact_downloaded`), sign-ins, settings, users and roles | real | real | **always `control_audit`**, whatever the Demo state |
 
+As built (§11.1): audit exports are refused in Demo Mode (`409 audit_export_demo_mode`); audit
+reads and downloads stay real and audited in `control_audit`.
+
 Rule for every writer: a change to real state writes to `control_audit`; a change to Demo state
 writes to the Demo audit (`state.audit` is the Demo audit while Demo Mode is on, `state.py`, so
 writers of real state name `state.control_audit` explicitly). A test per new writer asserts the
@@ -848,7 +851,7 @@ server field named here on the Demo dataset and a fixture; a field marked "new" 
 | operations · Closed | posture `quality.terminal_cases` (window W) | Cases created in the window that are now closed or resolved | `metrics:view` |
 | detection · Sources reporting | `GET /api/sources/health`: enabled rows whose last event is inside W | Enabled sources that sent at least one event in the window | `sources:read` |
 | detection · Silent sources | `GET /api/sources/health`: enabled rows flagged silent | Enabled sources the silent-source detector flags | `sources:read` |
-| detection · Events per minute | `GET /api/metrics/noise-reduction` `events_per_min_from_ticks` | Mean events per minute over the window, from the poller's tallies | `metrics:view` |
+| detection · Events per minute | `GET /api/metrics/noise-reduction` `events_per_min` (with `events_per_min_since` and `events_per_min_reason`; named `events_per_min_from_ticks` in the first draft, §11.1) | Mean events per minute over the measured part of the window, from the poller's tallies | `metrics:view` |
 | detection · Alerts ingested | noise-reduction first stage count | Raw alerts counted in the window | `metrics:view` |
 | detection · Alert reduction | noise-reduction `reduction` | Share of raw alerts that did not become a case | `metrics:view` |
 | detection · Techniques seen | `GET /api/mitre/coverage`: techniques with at least one case in W | ATT&CK techniques on at least one case in the window (never "detection coverage") | `metrics:view` |
@@ -1282,7 +1285,8 @@ both. Demo rows carry `record_id` prefix `demo:` and a "Demo" badge (D11).
   count, the shown range, the file name and the job all use those instants. "Export 1,284 events?"
   with the scope, range ("18 Oct 15:10 to 25 Oct 15:10 UTC"), filters including the search text
   ("None added" when none), order ("oldest first"), format and file name
-  (`agentic-soc-audit_2026-10-18T151000Z_2026-10-25T151000Z.csv`, with `<wbr>` after each underscore),
+  (`agentic-soc-audit_2026-10-18T151000Z_2026-10-25T151000Z.csv`, with `<wbr>` after each underscore;
+  as built a range that ends now ends at the last whole second, §11.1),
   and two notes: "You will be asked to sign in again." and "This export is recorded in the audit
   log." The count comes from `GET /api/audit/count?...&cap=100001` (§4.5.5). Over 100,000 events
   (D7) the count reads "More than 100,000 events" (never an "About N" without an exact count), the
@@ -1409,7 +1413,8 @@ total}` keys stay present in `AuditPage` (`records`, `total`), so existing clien
   source `exact: bool` (false when a source could only be filtered after a bounded read).
 - `GET /api/cases` (`routes.py:5701`, `cases:read`) gains `rule` (exact on `Case.rule_ids`) and
   `closed_by` (`agent` \| `human` \| `analyst_policy`, the existing `CASE_FILTER_FIELDS` key, used by
-  the `#/scans` redirect, D27), and the queue search haystack includes rule values
+  the `#/scans` redirect, D27; as built the engine's `agent`, `analyst`, `analyst_policy` and
+  `system`, §11.1), and the queue search haystack includes rule values
   (`:5447-5456`).
 - Chat may now attach "Open in Logs" to rule-filtered answers: `rule` leaves
   `LOGS_UNEXPRESSIBLE_FILTERS` (`chat_tools/common.py:746`, rationale `:789-818` updated).
@@ -1503,7 +1508,7 @@ Response `RuleSummary` (new model, mirrored in `types.ts`):
   `TimeRangePicker` (default from the opener), and source chips when filtered.
 - Key figures on one tinted strip (the Overview KPI grammar): Alerts ("381" or "at least 1,000"),
   Cases from this rule, Still open, Analyst outcome ("1 confirmed" over "1 benign · 1 waiting for
-  an analyst", read only from `cases.outcomes` `analyst_*`), plus "Last seen 14:02 UTC · first
+  an analyst", read only from `cases.outcomes` `analyst_*`; as built "not graded", §11.1), plus "Last seen 14:02 UTC · first
   seen Oct 22" under the strip.
 - Primary action: "Open all 381 in Logs" (filled button) opens `#/logs?rule=<value>&from=<iso>&to=<iso>`
   plus `sourceId=<id>` when the sheet is filtered to one source (the Logs page with an exact "Rule
@@ -1855,7 +1860,8 @@ Specific contracts carried from the prototypes ([P-C7]):
   percentages are shares of the total; "Knowledge base and memory" on the strip grammar; "MITRE"
   spelled correctly.
 - Jobs: "Discounted inference" moves to Settings, Models (D30), leaving one line on Jobs
-  ("Discounted inference settings moved to Settings, Models." with a link) for one release.
+  ("Discounted inference settings moved to Settings, Models." with a link) for one release. As
+  built Settings has no Models group: the section sits in General after Models (§11.1).
 - Approvals and Case activity: case numbers and plain words instead of "demo-hitl-..." and
   "(verdict=NEEDS_HUMAN, risk=62.0)" or "rule=... action=..." payloads.
 - Scans (D27): `#/scans` redirects to `#/case_manager` with the agent-closed filter; `Scans.tsx`
@@ -1909,11 +1915,13 @@ Specific contracts carried from the prototypes ([P-C7]):
   (D26); warnings that describe a live condition stay as `Callout warning`.
 - New sections (W9a, in `settings-sections-meta.ts` and `settings-sections.ts`): "Runbooks" (id
   `runbooks`, Intelligence group, every key of §4.10.19) and "Discounted inference" (id
-  `discounted-inference`, Models group, moved from Jobs, D30). The Jobs page line links to
+  `discounted-inference`, Models group, moved from Jobs, D30; as built Runbooks sits in
+  Integrations and Discounted inference in General, §11.1). The Jobs page line links to
   `#/settings?s=discounted-inference` (the existing `settingsSectionHash` form).
 - Measured targets ([P-C9]): first control at 367 px (Chat assistant) and 473 px (Data scope) at
   1440, switch-to-label distance at most 465 px at 1440 and 1920, zero label overlaps at 390;
-  verified by the live QA harness and recorded (§8.3, §11.4).
+  verified by the live QA harness and recorded (§8.3, §11.4). (As built: the switch distance
+  measured 467 to 527 px, a failed target recorded in §11.1 "Settings switch distance".)
 
 ### 4.10 Ask 9: one Runbooks feature, rebuilt (C10 B, C11 A)
 
@@ -2136,7 +2144,7 @@ loaded once and cached, never stored. Free-form Case tasks keep `CaseTaskStore`
 (`stores/case_tasks.py`, unchanged storage) and render inside the Runbook tab as "Other tasks"
 (D36, E7). Factory reset clears both new namespaces (the factory tier already wipes the whole KV
 surface, `engine/reset.py:243-272`); the cases tier also clears `runbook_runs` (runs belong to
-cases); the sources tier keeps both. The legacy namespaces `playbooks` and `runbooks` are read-only
+cases), and so does the sources tier, a superset of the cases tier; both keep the library. The legacy namespaces `playbooks` and `runbooks` are read-only
 for one release (§4.10.16), read only through `backend/app/stores/legacy_procedures.py` (new, A7a:
 a read-only decoder of both legacy namespaces using a raw KV `list_strict()` and the existing
 decode rules, with no write method), which the migration and the legacy export groups use, so A8c
@@ -2351,7 +2359,7 @@ Owned by `webui/src/soc/pages/casedetail/RunbookPanel.tsx` (new, lazy) and its p
 - **Other tasks** under the phases: today's case tasks with "Added by" provenance and "Add task".
 - **Empty state** (no run): "No runbook is attached to this case." with "Start runbook" (filled,
   centred) and the line "Rules with no runbook are listed on the Runbooks page."; the header Start
-  runbook button is outline.
+  runbook button is outline (as built: no header button, Start runbook is in Take action, §11.1).
 - **Start runbook picker** (a dialog with a searchable list): the best match pre-selected with its
   explanation, then "Other matches", then "Fallback" (Generic incident), then "All published
   runbooks"; the list fades at its bottom edge when it scrolls; a preview pane of the selected
@@ -3420,8 +3428,9 @@ instead of playbooks; the guard test.
   - Runbooks: playbooks and runbooks are merged into one Runbooks feature: phased procedures with
     five step kinds, deterministic matching with a reason, a per-case checklist with a Next step
     card, Draft, In review, Published and Retired versions, and a library of 12 built-in runbooks.
-    Stored operator playbooks and runbooks are converted once at startup. /api/playbooks answers
-    410 for one release. Automation rules that ran a playbook now attach a runbook.
+    Stored operator playbooks and runbooks are converted once at startup. For one release, the
+    /api/playbooks reads stay as deprecated aliases, and its writes answer 410 (E14). Automation
+    rules that ran a playbook now attach a runbook.
   - Console: a docked navigation rail that never moves its icons, the Overview's panels and header
     on every page, grouped Settings, and many smaller fixes.
   - Chat: Timeouts and capacity defaults tripled (stored values that equal the old defaults move
@@ -3456,13 +3465,28 @@ any kind (the suite never acts on another system); the Low severity hue change i
 the gates (§3.1); removal of the legacy namespaces, the read aliases and the `410` routes (next
 release); a browser test lane in CI (geometry stays a live-harness check this round, §8.1).
 
+As built:
+
+- **The Low severity hue is unchanged.** `--low` stays the blue it was (`theme.css`), because
+  `webui/src/soc/chat/report/export/report-tokens.ts` mirrors the theme's Low values for report
+  exports and no package owned both files (W2a). It goes to ROADMAP with the mirror named.
+- **A real shadow mode for detection and case automation rules.** The Console offers Enabled and
+  Disabled only (W9b removed the shadow choice); a shadow rule needs a wire flag on the rule
+  definition and the automation rules and pipeline support that evaluates without creating cases
+  or acting. The `shadow` lifecycle chip and type in `rules/lifecycle/chips.tsx` and
+  `rules/types.ts` are now unreachable and stay until that work lands.
+- Every follow-up the packages found and did not build is listed in §11.3 and in ROADMAP section
+  I ("Round 14 deferred items").
+
 ---
 
 ## 11. As built
 
-Left empty on purpose. WP-DOC and WP-GEN record here, per package: contract resolutions, any
-deviation from this spec with its reason, measured results (bundle bytes, screenshot folders,
-timings), known limitations and the verification record.
+Recorded by WP-DOC part B on 2026-10-29 from the package reports, the hand-off notes, the run
+records and the code as built (commits `07a0a8f` to `537f5a6` on `claude/round14`). WP-GEN adds the
+final verification figures in §11.4. Where this section and §1 to §9 disagree, this section
+describes what shipped; the places in §3 to §4 that this section supersedes carry a short "As
+built" pointer.
 
 ### 11.1 Contract resolutions
 
@@ -3505,6 +3529,362 @@ timings), known limitations and the verification record.
   remains of the 1,024 B; going over is a finding for the orchestrator, never a second
   rebase. The Round 12 SPEC §7.3 "Entry bundle" item points
   here, and `backend/tests/test_docs_round12_records.py` reads this item.
+  Measurements after the rebase (no second rebase was made): the entry grew to 378,012 B (82 B
+  under the budget) by run r4w-web, then fell to 328,442 B at run r5a-fix and measured
+  334,286 B at run r6w-fix (`build-r6w-fix`, 43,808 B under the budget). Per file, from
+  378,012 B to 334,286 B: W9b loads the first-run wizard's `SourceEditor` lazily
+  (`SourceEditor.tsx` -36,364 B, with `ConnectorPicker.tsx` -3,672 B, `ui/select.tsx` -2,447 B,
+  `HelpTip.tsx` -1,576 B, `lib/connectors.ts` -1,132 B, `ui/accordion.tsx` -969 B,
+  `ui/slider.tsx` -948 B, `ui/switch.tsx` -702 B and `ui/textarea.tsx` -487 B leaving the entry
+  with it), B1 and FX3wc removed the retired client methods (`lib/api.ts` -2,576 B), and the
+  later pages added `hooks/useReturnFocus.ts` +2,137 B (W9b, FX3wb), `MfaSetupCard.tsx` +1,169 B
+  (FX3wb, the one two-factor row), `Wizard.tsx` +1,141 B (W9b, FX3wb), `router.tsx` +587 B
+  (FX3wa, the Metrics tab keys and redirects), `lib/proper-names.ts` +552 B (W9b),
+  `registry.tsx` +510 B, `jobs/jobs.ts` +508 B (FX3wc, the audit export destination),
+  `ConfirmDialog.tsx` +389 B (FX3wb, `busy`), `auth.tsx` +155 B and `lib/session-events.ts`
+  +122 B (FX3wa, the sign-out range reset), `SystemUpdateControl.tsx` +67 B (FX3wb, the update
+  progress glyph), `Login.tsx` +50 B (W9b), `NotificationBell.tsx` -16 B and `ThemeModePill.tsx`
+  -3 B (FX3wa), and -221 B of unmapped build glue and attribution drift on files whose source did
+  not change (unmapped -111 B, `main.tsx` -72 B, `sonner` -32 B, `AppShell.tsx` -9 B, others
+  +3 B); this list sums exactly to 334,286 B (both builds' source maps). WP-GEN measures the merged
+  tree (FX4w changes Login and Wizard again), decides whether to lower `PRE_REVAMP_ENTRY_BYTES` to
+  the measured entry (the 400,000 B ceiling never moves), and records the decision and the final
+  figure in §11.4; if it rebases, it updates this item and the value the Round 12 records test
+  reads.
+
+#### Console grammar, navigation and pages (W2a, W2b, W3, W4a, W8a, W8b, W9a, W9b, FX3wa, FX3wb, FX3wc)
+
+- **Settings groups and where the two new sections sit (W9a, supersedes §4.9.4 and §4.9.6).**
+  Settings has five groups: Account, General, Integrations, Security & access and Organization;
+  there is no Models or Intelligence group (none existed in the approved prototype either).
+  "Discounted inference" (id `discounted-inference`) sits in General right after Models, and
+  "Runbooks" (id `runbooks`) sits in Integrations after Knowledge and threat context. The Jobs
+  page line reads "Discounted inference settings moved to Settings, General, Discounted
+  inference." and links to `#/settings?s=discounted-inference`. The Discounted inference policy
+  saves with the rest of Settings and needs `settings:manage`.
+- **The two-factor row (W9a, FX3wb, §4.9.6).** Account, Security and two-factor shows one row,
+  "Two-factor authentication", with its state (On or Off) and a "Turn on" or "Turn off" button;
+  the enrollment or turn-off steps open under the row and Cancel closes them. `MfaSetupCard`
+  gained a controlled start for this, its final button reads "Verify and turn on", and Login reads
+  "Verify and continue" (FX4w) for one vocabulary.
+- **Settings switch distance (W9a, §4.9.6, a failed target).** At 1440 px the switch-to-label
+  distance measured 467 px on Chat assistant ("Daily chat spending limit"), 527 px on Data scope and
+  516 px on Standup, against the 465 px target. The approved prototype measured 465, 526 and 515 px
+  for the same rows, so the target matched only the prototype's chat row. Under §8.3 this is a
+  finding for W9a, not a softened target: WP-GEN re-measures at 1440 and 1920 and records the
+  values in §11.4, and the orchestrator decides with the operator whether to fix the layout or
+  amend the target.
+- **Cases keeps the Outcome column (W8b, deviation from §4.9.4).** The §4.9.4 default columns
+  leave Outcome out, but the approved C7 prototype shows it and Round 12 D15 makes the analyst
+  classification the case headline, so Cases keeps it. To fit beside a 280 px title at 1,440 px,
+  an AI auto-close reads "Auto-closed" in the cell with "Auto-closed as false positive" in its
+  tooltip and accessible name. Widths as built: case id 7.5rem, severity 6.5rem, status 11.75rem,
+  outcome 9.25rem, assignee 7.5rem, updated 5.5rem, actions 4rem; at 1,280 px the table scrolls
+  with its edge fade. The selection checkboxes read "Select CASE-000048" and the header box
+  "Select all cases on this page" (`DataTable` `getRowLabel`, FX3wc).
+- **Analytics group id and Metrics deep links (FX3wa).** The Analytics navigation group has its
+  own id, `analytics`, targeting Metrics, so on `#/metrics` the current-page mark lands on the
+  Metrics child and the breadcrumb matches the page title. `#/metrics?tab=performance` and
+  `tab=posture` are deep links that survive a reload; `#/metrics?tab=effectiveness` and
+  `tab=cost` redirect (replace) to `#/effectiveness` and `#/cost`, the pages those tabs became.
+  An open-group list stored before the rename still names `metrics`; FX4w maps it to `analytics`
+  in `nav-store.ts`, and a viewer without `metrics:view` gets the first Analytics child they can
+  open instead of a Metrics page that fails.
+- **Confirm dialogs with asynchronous work (FX3wb, FX4w).** `ConfirmDialog` takes `busy`: the
+  confirm button stays focused with `aria-disabled` while the work runs, a second press does
+  nothing, and the caller closes the dialog on success. The Wizard's Remove and the rule version
+  ledger's Restore use it (FX4w).
+- **Saved reports cap wording (FX3wb, deviation from the W8b task text).** The server refuses a
+  new report at `MAX_REPORTS_PER_USER = 100` and lists every report a person has, so "Newest 100
+  shown" would be untrue. The library sits on a panel and, only at the limit, its caption reads
+  "Limit of 100 reached. Delete a report to save a new one." The report reader's header facts
+  line shows the item count; the template and updated time stay in the document's own meta line,
+  which is part of the printed and PDF document.
+- **Help tips instead of descriptions (W2a, C8).** `PageHeader` renders a routed page's
+  description inside its "About <title>" help tip, so a sentence that used to sit under a title
+  is only in the DOM once the tip is opened.
+- **Board badge order (W4b).** `PageHeader` has no badge slot, so a board's "Built-in" or "Yours"
+  badge renders first in the controls slot, after the help tip, not right after the title as §2.2
+  item 10 and §4.4.5 put it.
+- **Overview window captions (W4a, §4.3).** Rows sit one panel gutter apart (16, 20 and 24 px,
+  the same as inside a row); each module names its window in a 13 px caption beside its 15 px
+  title; one header stamp shows the oldest slice on screen, with a UTC tooltip. The Human vs AI
+  card keeps its window in its footer.
+
+#### Dashboards and metrics (A2, W4c, W4b)
+
+- **Breakdown metrics are read by a fold (A2, §4.4.2).** `GET /api/metrics/breakdown` computes
+  every metric by reading each case in the window under a projected read, with no store
+  push-down, because the analyst-outcome family needs the case model. It is bounded by a cache
+  shared for 5 seconds, two read slots, a 60-second timeout, at most 5,000 rows per answer
+  (beyond it `400 breakdown_bad_param` with advice) and at most 20,000 cached rows in total. An
+  unreadable store answers `503 breakdown_unavailable`.
+- **Breakdown windows (A2, W4c).** The breakdown aligns day, week and month tokens to whole
+  periods in the operator time zone, for chat parity (`now-7d` keeps chat's whole-day meaning).
+  Boards therefore send hour tokens (`now-24h`, `now-168h`, `now-720h`, `now-2160h`) so a
+  breakdown cell counts the same rolling population as the posture cells, and for an hour token
+  `window_label` reads like the board preset with its start ("Last 7 days (since 21 Oct 2026,
+  12:00)", the zone named when it is not UTC). The response carries no time zone field, so a
+  board caption cannot say "times in <zone>" yet.
+- **Additive breakdown fields (A2, WP-0).** `MetricsBreakdown` gains `missing_created` (cases with
+  no creation time) and `missing_in_total`, and `MetricsBreakdownBucket` gains `other_count`; Other
+  rows are reported once in `other`, not per bucket.
+- **Events per minute (A2, supersedes the §4.4.3 field name).** The field is `events_per_min` on
+  `GET /api/metrics/noise-reduction` (the mean raw alerts per minute over the whole hours the
+  counters summed inside the window, leaving out the hour the counters began in when they began
+  inside it, because that hour can hold a backfilled burst; rounded to 0.01, null while the
+  counters are not available or cover less than 5 minutes), with `events_per_min_since` (the start
+  of the span the rate covers) and `events_per_min_reason` (why there is no rate, or that it covers
+  only the hours after the counters began). Spend per case
+  uses the investigation surfaces `investigate` and `automated_scan`.
+- **KPI binding refinements (WP-0, A2, W4c).** Alert reduction is one minus cases divided by
+  ingested (the `stage_reduction` source) and is case-derived, and the Overview and a board share
+  one rule (`components/alert-reduction.ts`). Unassigned and the usage spend query use `top: 50`.
+  The bindings carry `availableField` and `partialWhen`; `KPI_PROVIDER_ENDPOINTS` defines the
+  `coverage` key as the windowed `/api/mitre/coverage`. "SLA breached" reads
+  `sla_aging.totals.breached`. "Closed" leaves analyst-policy closes out.
+- **Comparison placement (W4c, refinement of §4.4.4).** The comparison chip on strip and Response
+  timing cells holds only the signed change; "vs prior 24h" leads the cell's context line ("vs
+  prior 24h · last 24 hours"), because beside the chip it wrapped under the numeral.
+- **Row-level scope on boards (W4c, §4.4.5, D16).** Scope is read per viewer (`username|role`)
+  from `GET /api/auth/me` `object_scoped` on mount and on every refresh. A failed first read
+  confirms nothing: case-derived panels fetch nothing and say "Your data access could not be
+  confirmed." with Retry, never "Hidden while row-level scope is on."; a failed re-read keeps the
+  confirmed answer. A `409 breakdown_scope_unsupported` hides every case panel at once.
+- **Provider states (W4c, §4.4.3).** A failed read's error stays through a re-read until a read
+  succeeds; `overdue` is set when a read runs past one refresh interval (60 s when the host sets
+  none); a refresh joins a read already running instead of aborting it. The slow-read note reads
+  "Refresh is taking longer than usual. Showing figures loaded at 14:02." Retry stays mounted
+  with `aria-disabled` and `aria-busy` while it reads again. Widgets size to their content in view
+  mode (F3).
+- **Library and board details (W4b).** The builder lays out a draft the way the edit grid would
+  (`compactVertically`), so view mode shows the compacted layout. The library reads `/auth/me` for
+  `object_scoped` itself. Hiding a built-in writes `misc.dashboards_hidden` through
+  `PUT /api/prefs/user` with an Undo toast. Unknown-board and new-draft routes are replaced with
+  `history.replaceState` plus a synthetic `hashchange`. Outcomes over time on the Executive summary
+  uses the AI-verdict family; the Detection and data health board has comparison off. Built-in and
+  landing card purposes may take three lines (`line-clamp-3`, full text in `title`); personal
+  card details keep two. Personal boards keep panels the role cannot read and show "No access"
+  (only built-in duplicates drop them, §4.4.1). At 24 personal boards "New dashboard" is disabled
+  and a `board=new` link shows the limit with Save disabled. Every rule name on a board shares one
+  rule sheet (`WidgetGrid` is one `RuleSheetHost`), and Top detection rules opens it on the
+  breakdown's own bounds.
+
+#### Audit log (A4a, A4b-1, A4b-2, A5, W5, FX1, FX3wc)
+
+- **Record ids (WP-0, amends E12).** Elasticsearch ids carry a base64url segment of the stored
+  `_id` (`es:<index>:<base64url>`), SQL ids are signed (keyed rows can be negative), and every id
+  is built and parsed only by `models.encode_audit_record_id` and `decode_audit_record_id`. The
+  router accepts `^(demo:)?(es:[a-z0-9._+-]{1,255}:[A-Za-z0-9_-]{2,683}|sql:-?[1-9][0-9]{0,18}|mem:[0-9]{1,12})$`
+  (at most 947 characters).
+- **Record fields (WP-0, A4b-1, §4.5.3).** `client.ip` is a parsed address or null, never an
+  empty string; `target` gains `revision`; `changes` values that are not text are stored as
+  canonical JSON text. The client is the rightmost `X-Forwarded-For` entry that is not itself a
+  trusted proxy, reading at most the last 32 entries, and only when the peer is in
+  `TRUSTED_PROXIES` (default `tlsoc-webui`; a host name that does not resolve yet is retried
+  within seconds); `forwarded_for` keeps the tail of a long header (256 characters). Every
+  response, a 500 included, carries `X-Request-ID`.
+- **What `changes` withholds (A4b-1, A4b-2).** Secret-looking names and values are withheld on
+  both sides of a change (plurals and flat lists included; `configured_secrets` and `entity_keys`
+  stay readable as names); a URL or webhook value keeps only its scheme and host, and a malformed
+  one only its host; self-hosted model endpoints are recorded as scheme, host and port.
+  Dashboard rows record one change per widget.
+- **Scope is a partition (A4a, refines §4.5.1).** People and settings is every row whose actor
+  is a person or a service, plus every Access, Configuration or Case work row whoever made it;
+  Agent activity is exactly the Agent pipeline and System rows no person made. So an agent's
+  `run.attached`, `run.attach_skipped` or `step.ai_drafted` and the system's `runbook.migrated`
+  read in People and settings; only `runbook.selected` (Agent pipeline) groups with its
+  investigation. A row's scope is therefore stable across the upgrade.
+- **Pipeline decision rows are system rows (A4b-1).** Rows from `case_manager`,
+  `analyst_policy` and the poller carry `actor_type: "system"` (#3: code decides), so the audit
+  log's "AI agent" actor facet does not include them.
+- **Identity events are best effort with a signal (A4b-1, deviation from E16 for these rows).**
+  Sign-in, sign-out, MFA challenge and failure, re-authentication and session events never
+  block on the audit log: a row that cannot be written is logged at error level and counted
+  (`audit.identity.dropped_count()`, `audit_identity_dropped`). Account changes (password, MFA on
+  and off, users, roles, settings, SSO provisioning) stay audit-first.
+- **Settings writes can conflict (A4b-1, A4b-2).** Settings saves are audit-first with a
+  compare-and-swap on the recorded change set; a racing save of a recorded field writes
+  `settings.update_failed` and retries from a fresh read, 3 times in all, then answers
+  `409 settings_conflict`. Each retry's action row carries `tool_input` `{"attempt": n, "of": 3}`.
+  A save made while Demo Mode is turned on or off answers `409 demo_mode_changed` and nothing
+  crosses between the sandbox and the real settings.
+- **The audit store repair exception (A4b-1, deviation from E16).** During an audit outage on
+  `STATE_BACKEND=elasticsearch`, `POST /api/setup/secrets` applies exactly `es_mgmt_api_key`,
+  `es_url` and `es_ca_cert` (the management connection that holds the audit log) before their
+  row, so a broken audit store key stays repairable; every other key in the request is an
+  ordinary audited change (`503 audit_unavailable`, not applied). Each use is logged at error
+  level with the key names and `applied_before_audit=true`. The read-only log key `es_api_key` is
+  not in the exception (#1).
+- **Pairing an action with its failure (W5, §3.6).** The inspector pairs an action row with the
+  failure row that follows it by request id plus actor, resource, target and, when both rows
+  record one, session. There is no server-minted pairing key; see §11.3.
+- **System update rows (A4b-2).** Each update request (`update.<op>_requested`, `_accepted`,
+  `_rejected`) records who asked from where, with an event id that includes a digest of the
+  request context, so a retry as a new request appends its own pair; the supervisor's terminal
+  rows stay byte-identical to 0.1.13 because every build replays them.
+- **Job rows name the job (A5, FX1).** Submitting a reset or a data export job is recorded first
+  (`reset.requested`, `export.requested`) with who asked and from where; a record that cannot be
+  written means no job is created (`503 audit_unavailable`). Every row of a reset, a data export
+  or an audit export job names the job as its target (a data export as `{type: export, id: <job
+  id>, label: "Application data: ..."}`), so "All events for this target" lists the request, the
+  worker's rows and each download; worker rows carry no request fields. The direct
+  `/api/admin/export*` routes keep the scope target.
+- **Audit export in Demo Mode (A5, deviation from the §3.5 table).** Audit exports are refused in
+  Demo Mode with `409 audit_export_demo_mode`, because durable jobs never run in Demo Mode and
+  JSON Lines could not label Demo rows without changing them. The Export menu is disabled with
+  "Audit exports are not available in Demo Mode."; reads and downloads stay real and audited in
+  `control_audit`.
+- **One row per download (A5, §4.5.6).** A download writes exactly one row:
+  `audit.export_downloaded` for an audit export, `job.artifact_downloaded` for every other kind.
+- **Audit export range and destination (FX3wc, refines §4.5.6).** A range that ends now ends at
+  the last whole second (the example "18 Oct 15:10 to 25 Oct 15:10 UTC" reads "... to 25 Oct
+  15:09 UTC" and the file name ends `151000Z` at the start and `150959Z` at the end), and the
+  dialog's own "Audit log viewed" row is not in the file, so the dialog count, the CSV and the job
+  agree. Exports are always oldest first (`order=desc` is `422 audit_invalid_filter`). A finished
+  audit export opens the audit log at the scope and filters it was made from: the server writes
+  that view into the job result, and the Jobs page and the Inbox open it through a link named
+  "Open audit log"; a waited export shows one notice, not two.
+- **Read API bounds (A4a).** `limit` is 1 to 200 per call (100 by default without `scope`, 50
+  with it); `total` is exact, or "at least" past 10,000 on Elasticsearch. The old exact
+  parameters (`actor`, `action`, `surface`, `case_id`, `source_id`) take at most 512 characters,
+  `from` and `to` at most 64 (`422 audit_invalid_time`), and a non-ASCII cursor is
+  `400 audit_cursor_invalid`. `outcome=unknown` means "Not recorded": a recorded `unknown`, or a
+  legacy row that recorded no outcome and derives none. `409 audit_cursor_expired` carries a
+  cause-specific message (open too long, closed to make room, Demo Mode switched). Free text folds
+  case by store (ASCII on SQLite, Unicode on PostgreSQL and Elasticsearch) and Elasticsearch
+  matches whole words in the analysed summaries.
+- **The Elasticsearch audit mapping on upgrade (A4a, option b in effect).** The shipped audit
+  template sets `date_detection: false`. An upgraded deployment's existing write index keeps the
+  old dynamic mapping until the operator applies the shipped template and rolls the write index
+  (`es.indices.AUDIT_UPGRADE_STEP`); bootstrap still never remaps an existing index on a real
+  cluster and logs a warning naming the step on every start after the first, because it cannot
+  tell whether the step was done; the warning does not stop once the step is done. The additive
+  `extend_audit_mapping` path runs only through clients that implement the three mapping calls
+  (the in-memory store does; `RealESClient` does not yet). See §11.3 and the upgrade notes.
+- **Audit event labels (FX1, A4a, A4b-1, A4b-2).** `audit/event_categories.json` names every
+  Round 14 action exactly, including `runbook.migration_completed` "Runbook conversion finished",
+  `runbook.migration_skipped` "Runbook not converted", `runbook.migrate_failed` "Runbook
+  conversion not applied", `runbook.migration_complete_failed` "Runbook conversion summary not
+  saved", `runbook.reindexed` "Runbook search index rebuild", `campaign.recorrelated` "Campaigns
+  rebuilt", and the failure row of every runbook, run and step write that is audited first, each
+  in its action row's category; the Console mirror (`components/audit/events.ts`) is held to it
+  entry for entry. Restoring a version as a draft is recorded as `runbook.draft_updated`;
+  `runbook.restored` means only un-retire.
+
+#### Rules, Logs and severity (A6a, A6b, W6a, W6b, FX2b, FX2w)
+
+- **Closed by values (A6a, supersedes §4.6.1).** `GET /api/cases` `closed_by` takes the engine's
+  values `agent`, `analyst`, `analyst_policy` and `system` (case-folded); any other value,
+  `human` included, answers 400 naming the four. The applied value is echoed as
+  `closed_by_applied`, and the Case Manager `closedBy` key and the `#/scans` redirect (`agent`)
+  use the same values.
+- **Filtered Logs counts (A6a, §4.6.1).** With `rule`, `severity` or `severity_gte`,
+  `GET /api/logs` returns `matched: {count, relation: "eq" | "gte"}` beside `filters`, and each
+  `sources[]` item carries `exact`, `total` and `total_relation`. Logs states its count from
+  `matched`, never by summing rows, and `matched.count` equals the rule sheet's alert count for
+  the same rule and window. A search that a store answered in part (a failed shard or a
+  timeout), an IGNORE feed pattern an `_index` wildcard cannot express, or a row the native
+  clause matched that the rule identity does not, makes the count "at least". Without a filter
+  the envelope is unchanged.
+- **The rule summary's cases are all time (A6a, W6a, §4.6.2).** `GET /api/rules/summary` `cases`
+  counts every case the rule ever opened, whatever `window` is (the population "Show the N cases"
+  opens), and is reused for up to 15 seconds per rule. The sheet captions those tiles "All time",
+  and leaves Still open out when the rule has opened no case.
+- **Status and count exactness are separate (A6a, refines §4.6.2).** `alerts.status` describes the
+  chart and the top lists; whether the count is exact is `count_relation` plus `sources[].exact`.
+  `unsupported` can come with `count_relation: "eq"` (a source whose count is exact while its
+  chart is a sample). "Open all N in Logs" names its number only when `count_relation` is `eq`;
+  a sheet window longer than 90 days offers "Open the last 90 days in Logs" with no number.
+- **Rule sheet wording (W6a, refines §4.6.4).** Analyst outcome reads "1 confirmed" over "1 benign
+  · 1 not graded", never "waiting for an analyst": `analyst_ungraded` also counts analyst-policy
+  closes and cases closed without a classification. The tuner fact says "analyst-graded". The
+  chart caption reads "exact", "sampled" or "not exact", with the reason under the chart; an
+  alerts floor reads "At least this many". With no readable source, Alerts over time says why and
+  the alert lists and the Logs action are left out.
+- **Rule sheet lifetime and focus (W6a).** A `RuleLink` renders its own sheet unless a
+  `RuleSheetHost` above it provides one; surfaces that refresh on their own (the Cyber Defence
+  Center's top signatures, the Logs body, Auto-tuning, health diagnostics, the Case Manager facts
+  rail, every board) give their links one host, so the sheet closes only on a user close. Logs'
+  live tail pauses while the sheet is open. Focus returns to the opener, else the same rule's link
+  in the host, else the dialog the opener sat in, else `#socMain`. A newly chosen window is
+  announced once its answer lands. After a confirmed Demo switch the sheet shows its loading state
+  until the new identity's answer lands. A failed chunk load shows a small "could not be loaded"
+  sheet with Reload page.
+- **Ask AI about a rule (W6a).** "Ask AI about this rule" is offered only for a value the Round 12
+  `rule` entity grammar takes (one identifier token); a rule name with spaces or another script
+  opens the sheet without Ask AI. The sheet never prefills free text with a rule value (#9).
+- **Severity levels (A6b, refines §4.7.2).** A level carries up to 20 rules ranked by count
+  (`limits.severity_rules`), and `rules_total` counts all of them; an opened row lists those, then
+  "+N more rules" with the level's own Logs view. A split lists its top 5 keys and an Other count.
+  A push source's live-tail ring is read on the canonical 0 to 100 scale (its declared ceiling was
+  applied once on ingest).
+- **Case card wording and rule links (A6b, FX2b, FX2w, F7).** A chat case entity names the case
+  by number (else title), says status history in plain words (`needs_human` reads "Open ·
+  awaiting analyst"), and names a missing related case "Related case, not found". Its Rules fact
+  carries `items` (at most 5), each with a `rule` drill over the case's own window: from the
+  earliest of its first member event, its triggering window start and its creation, to the latest
+  of its triggering window end, its newest merged batch and its creation (never `updated_at`), at
+  least one minute (BLOCKS amendment 36).
+- **Chat rule filters (A6b).** A chat rule filter matches what the Logs page's "Rule is" chip
+  matches (the rule field, the rule name field and the suite rule classification). A severity
+  level links to the Cases list only for all time or a trailing window the list itself offers (1
+  hour, 24 hours, 7 days or 30 days, `CASES_LIST_WINDOW_HOURS`), never for a calendar period, and
+  only when no filter but the level narrowed the count, because the Cases page takes only those
+  windows and would otherwise open a list wider than the figure.
+
+#### Runbooks (A3, A7a, A7b, A7c, A8a, A8b, A8c, FX1, FX2b, FX3b, FX3b2, W7a, W7b)
+
+- **Lookup field names (A3, refines §4.10.8).** Seven logical names (`ip`, `user`, `host`, `rule`,
+  `rule_name`, `severity`, `action`) mean the source's mapped field; any other name is a physical
+  path read as written. `ip`, `user`, `host` and `rule` take their own case value or a literal of
+  their kind; `rule_name`, `severity` and `action` a literal only. Built-ins use logical names
+  wherever a mapping exists. The §4.10.13 example's `source.ip` and `user.name` stay valid but are
+  no longer the recommended form.
+- **Built-in matching (A3, deviation from §4.10.14).** A built-in's `applies_when` holds its
+  `rule_ids` (the union of the legacy files it merged) and `entity_types`; its ATT&CK techniques
+  sit in the top-level `mitre` (coverage), not in `applies_when.mitre`, because strict AND would
+  make attachment depend on the AI's technique labels. The malware runbook's "Other hosts with the
+  same hash" is a `log_stats` lookup (by host, 7 days), not "related cases", because cases are
+  never keyed by a hash. `related_cases` and campaign filters take only `ip`, `user` and `host`.
+- **Pending facts (A3, refines §4.10.13).** A criterion whose case fact is not known yet (before
+  the investigation: the verdict, status, tags and usually the techniques) is tolerated only
+  behind a `rule_ids` match; without one, a pending criterion blocks the match. Once every fact
+  is known (attachment, D43) every present criterion must match.
+- **Validation bounds (A3).** An operator or imported runbook may not take a built-in id
+  (`422 runbook_id_reserved`); an entity type no case carries is refused; validation stops after
+  200 issues plus one "There are more problems; fix these first.", a source over 64 KiB is refused
+  unread, and a malformed front-matter version is ignored with an issue on import.
+- **Automation targets (A3, A8b, FX2b, FX3wc, §4.10.16).** A `run_playbook` rule's target resolves
+  at fire time, in one order: `payload.runbook_id`; then `payload.playbook_id` through the
+  migration's id map (`runbook_migration.migrated_procedure_ids`: the configured folder, then the
+  stored documents, never the reference runbooks); then the static `LEGACY_BUNDLED_RUNBOOK_MAP`.
+  `runbook_model.resolve_automation_runbook_id` is the one implementation, and the Console's
+  `resolveAutomationRunbook` follows it using `RunbookLibrary.migrated_procedures`. An unknown,
+  Draft or retired target, runbooks turned off, or a case that does not need a person writes
+  `run.attach_skipped`; the detail reads `attach_runbook=<id> attached=<bool>`.
+- **Migration by meaning (A7a, refines §4.10.17).** Beside a hard criterion, techniques become
+  coverage and tags or keywords are left out, because AND would stop the runbook matching; a
+  condition that cannot be kept and would widen the match forces a Draft with a note, and `rule`
+  removes the entity condition only when listed with `ip`, `user` and `host`. Converted `any_tags`
+  and keywords become `applies_when.any_tags` and so require the tag (an import note says so). A
+  declared count below 1 is kept as "matched every case". Stored procedures next to a configured
+  `Preferences.playbooks.dir` land as Drafts, because only the folder was ever read. The shadow
+  rule applies per kind: only an id a bundled document of the same kind owned becomes a "never
+  used" Draft; any other collision is renamed `-imported` and keeps its validated state.
+- **Migration rows (A7a, refines §4.10.17 step 5).** Every first start writes one
+  `runbook.migration_completed` summary row, with zero counts on a fresh install, plus one
+  `runbook.migrated` row per converted document; later starts read the marker and write nothing.
+  A runs key longer than 128 characters is `case:~<sha256 of case_id>`. The 512 KiB lookup
+  evidence budget counts kept tables only. The sources reset tier, a superset of the cases tier,
+  also clears runs; both keep the library.
+- **Grant vocabulary (A7a, A8c, §3.7).** In the current vocabulary a present `runbooks` grant or
+  deny wins over the `playbooks` alias, which is mapped only when `runbooks` is absent; maps stored
+  before Round 14 union both on their first load. The legacy publish rule applies only to a block
+  that has every persisted key and no `rbac_grants_version`. A request that names the alias is
+  resolved by `policy.resolve_runbook_alias`, and `GET /api/roles/simulate` answers it for its
+  `runbooks` meaning with `alias_of: "runbooks"`. The Console mirror sets in
+  `test_round14_contracts.py` are exact ratchets.
 - **Retired procedure stores (A8c, §4.10.6, §4.10.16).** `backend/app/stores/runbooks.py`,
   the write-capable store of the retired reference runbooks, is deleted together with
   `stores/playbooks.py`: after the removals its only users were the deleted
@@ -3520,6 +3900,9 @@ timings), known limitations and the verification record.
   request that still names the alias (`playbooks:read`, `run` or `manage`) is resolved by
   `policy.resolve_runbook_alias`; `GET /api/roles/simulate` answers it for its `runbooks`
   meaning and says so in `alias_of: "runbooks"` (`null` for a current resource).
+- **Removal guards (A8c).** The removal tests judge a module removed by its source files, so a
+  stale ignored `__pycache__` counts as removed; the retired-resource scan covers every backend
+  and Console gate form (`ctx.has`, `view.allows`, `useCan`, `ProtectedRoute`, resource objects).
 - **Run id on run engine rows (A8c, §4.5.3).** `run_id` stays the investigation
   pipeline's: only rows the pipeline writes through its run-stamped audit carry it. The run
   engine's `run.attached` row after an investigation (actor `runbook_selector`, actor type
@@ -3537,12 +3920,342 @@ timings), known limitations and the verification record.
   back into the wheel). The wheel (this test) and the image (the CI image lane) carry the 12
   files of `backend/app/runbooks/library/` and none of the removed playbook and runbook
   modules.
+- **Library API details (A7b, refines §4.10.5 and §4.10.15).** Publishing takes
+  `RunbookPublishBody {version, expected_revision (required), content_hash?}`; any mismatch is
+  `409 runbook_conflict`. With `runbooks.require_distinct_approver` on, the publisher must be none
+  of the version's writers (every person who saved its text, recorded on the stored runbook as
+  `version_editors`), not only its last editor; the 403 reads "You wrote or edited this version,
+  so another person with publish rights must publish it." A draft save equal to the working or
+  live text is a no-op (same revision, no row). A blank reject reason is `422 runbook_invalid`
+  (path `reason`). An import is due for review at once. A JSON body with the `content` key
+  answers `410 runbooks_moved` on `POST /api/runbooks`, `/import`, `/validate` and
+  `/match-preview` from the raw body. Three more codes: `409 runbook_scope_unsupported` (metrics
+  and match preview under row-level scope), `400 runbook_window_invalid` and `413
+  runbook_body_too_large` (any body over 512 KiB). Readers see `updated_at`/`updated_by` as the
+  published record (the later of the live version's publication and the last review), on the new
+  shape and on `?shape=v1`. Evidence links are https only.
+- **Case runs (A7c, refines §4.10.4, §4.10.7, §4.10.8, §4.10.15).** Attachments are one at a time
+  per case in a process; a write that no longer applies when the store writes is answered
+  `already_attached` with a `run.attach_failed` (`no_change`) row, and automatic attachment
+  re-checks the tier rule at write time. A run a person chose or accepted counts as tier 3.
+  Attachable statuses: open, needs_human, investigating, escalated and on_hold (never new
+  candidates, resolved or closed cases, or an automatic close in its objection window). A step
+  PATCH's `expected_revision` is the step's own `StepState.revision`; a stale one is
+  `409 runbook_conflict` with `latest` and `step_revision`. A run completes when every required
+  step is Done or Not applicable; an optional step waiting for approval never keeps it active.
+  `run.started` is written once, on the first change that starts a step. A step waiting for
+  approval cannot be marked Not applicable; reopening withdraws the recorded action and the
+  approval. A recorded action's `performed_at` may be at most 5 minutes in the future and is
+  stored in UTC. Step rows carry before and after `changes` for every field that moved.
+- **Lookups (A7c).** One 45-second deadline per lookup includes loading the case's member events;
+  background `on_attach` lookups run at most 4 runs at once per process (2 lookups each) with at
+  most 500 waiting, and work started on one stack is dropped when Demo Mode switches. "Distinct
+  X" reads "at least N" when a source returned a full page of top buckets, was sampled or did not
+  answer. A lookup result the viewer may not see reads Not applicable with the access sentence.
+  An unreadable campaign registry is a lookup error. Summaries are plain per status: "collected
+  evidence", "collected partial evidence", "found no matching records" with the reason, "was not
+  applicable", "could not run" (FX3b2).
+- **AI help on runs (A7c, FX1, FX2b).** A draft reads only the lookup results the asking person
+  may see; Confirm answers `409 runbook_conflict` when the step changed after the draft was made.
+  The suggestion is remembered per person. Extra codes: `429 runbook_ai_budget`, `504
+  runbook_ai_timeout`, `503 runbook_ai_unavailable`, `502 runbook_ai_invalid`, `404
+  case_not_found` on every case runbook route, `409 runbook_state` ("Runbooks are turned off in
+  Settings.") on every run write, `503 lookup_unavailable`. In Demo Mode the provider answers both
+  calls through `runbook_runs.demo_runbook_ai_answer` (a suggestion "Demo suggestion: the first
+  published runbook in the library that is not attached yet.", a draft starting "Demo draft:"
+  with counts per lookup), and each call ledgers one `runbook` usage row with `pricing_source`
+  `zero`.
+- **Close reason (A7c, FX1).** "Mark duplicate" is decided from the request (a terminal action
+  whose disposition is `duplicate`): no prompt and the row note "Duplicate". A request that is
+  invalid on its own is answered 400 before the open-steps check. A `case_lifecycle` job accepts
+  `open_steps_reason` (1 to 500 characters, whitespace collapsed, recorded on each
+  `case.closed_with_open_steps` row with `via: "bulk"`) and refuses `require_open_steps_reason`
+  with 422, so a bulk close never fails an item for open steps.
+- **Next step and progress (A7c, FX3b).** The server's next step skips steps waiting for approval
+  and is null when no required step is left to act on (the Console's rule), and case chat's
+  `get_case` runbook section says where each run stands ("All required steps are done.", "The
+  remaining required steps wait for approval.", and so on) with the steps waiting for approval.
+  `POST /api/runbooks/progress` sums every run that is not abandoned; a case without one is
+  absent. `case.runbook` frames go on the new SSE topic `runbooks`, served only to holders of
+  both `runbooks:read` and `cases:read`, with `{case_id, run_id, progress, revision}`.
+- **Start runbook placement (W7b, deviation from §4.10.11).** There is no header Start runbook
+  button: at 1440 px the case header already holds Close case, Escalate, Take action and Share, so
+  Start runbook is an item in the Take action menu (shown with `runbooks:read`, `runbooks:run` and
+  runbooks enabled) and the filled button in the Runbook tab's empty state.
+- **Kept aliases (A7c).** `GET /api/playbooks`, `/api/playbooks/{id}`, `/coverage` and
+  `/selection` answer from the library with Deprecation headers (an unknown id keeps the old
+  `404 {"detail": "playbook not found"}`); every old write, dry run and reload, and
+  `POST /api/cases/{id}/run-playbook`, answer `410 {code: "runbooks_moved", detail, see:
+  "/api/runbooks"}`. No DELETE route was ever there, so none is added.
+- **Runbooks in the agent path (A8a).** When nothing else matches, `generic-incident` is both the
+  investigator's guidance and the attachment (`runbooks.fallback` switches it off). After the
+  decision is saved, the matching runbook attaches to cases that need a person (trigger
+  `investigation`); auto-closed cases and cases in an objection window get none. The cheap router
+  never sees the runbook. An over-budget rendering or an unreadable library sends no runbook and
+  records why. Provenance: `Case.runbook_id` and `runbook_version` (only when the investigator
+  consulted it), the `runbook.selected` decision row and `procedure_provenance.runbook`. A real
+  case whose investigation finishes while Demo Mode is on is attached when Demo Mode ends.
+  Re-investigation keeps the case's tags so matching can read them.
+- **Demo runbooks (A8a, A8b, FX3b, FX3b2).** The Demo pipeline and attachment read the real
+  library read-only through an overlay that maps the Demo storyline and seeded telemetry rules
+  (including `demo_insider_staging`, `osquery_process_event`, `web_access` and the Entra sign-in)
+  onto built-ins, so every storyline gets its own runbook at tier 3. Seeded cases use rules the
+  Demo sources raise, with their member rows held by the sources, so a seeded case's rule sheet
+  shows its alerts; seeded runs carry bounded lookup results and step rows. Demo chat lists the
+  read-only library.
+- **Retrieval (A8b; resolutions (a) to (i)).** (a) The retriever never serves a `runbook` chunk
+  that lacks the projection's document id shape and a runbook trust class, permanently, not only
+  until `projection_completed_at`. (b) Projection documents are `runbook-library:<id>:v<n>-<hash12>`,
+  one chunk per phase (instructions are not chunked), at most one phase per runbook in a result,
+  with the candidate pool widened by k times 5. (c) The corpus is on only when
+  `runbooks.enabled`, `runbooks.rag_corpus` and the `rag.use_runbooks` mirror are all set; off
+  sweeps the legacy documents and indexes nothing. (d) The `list_runbooks` observation has a
+  `runbooks` key (no `playbooks` key); the playbook aliases add an alias sentence. (e) The
+  automation detail reads `attach_runbook=<id> attached=<bool>`; the bound attacher attaches
+  nothing to a real case while Demo Mode is on. (f) The case Markdown says "Runbook: <id> v<n>",
+  "<legacy id> (recorded before Round 14)" or "none". (g) The palette's stale catalog entry is
+  removed (`#/catalog` redirects to Runbooks). (h) A replay report adds `runbooks
+  {fingerprint, count}` from a frozen Published catalog, and an unreadable library refuses the
+  replay before any spend. (i) Demo seed step times are scaled to fit between attachment and
+  close (or now). Also: a fresh store with no legacy runbook documents skips the projection's
+  embedding call; a library-less RAG service holds operator runbook documents and refuses an
+  explicit reindex; `POST /api/runbooks/{bundled id}/reindex` reprojects that built-in (FX2b).
+- **Export and metrics (A8b).** The data export manifest is schema 2 with the runbook groups;
+  `case_runbook_runs` is listed with `rows_dropped` (run documents are not exported as rows).
+  `GET /api/metrics` carries `runbook_usage`; `playbook_usage` is deprecated.
+
+#### API contract changes beyond §4 (B1, FX3b2)
+
+- **Generated contract.** B1 regenerated `webui/openapi.json` and `api-types.gen.ts`, removed the
+  retired `Playbook*`, `Runbook*` and `AuditRecord` client types and methods from `types.ts` and
+  `api.ts` (re-exported from the new type modules), and pinned the hand mirrors with compile-time
+  key and enum checks (`types-contract-pins.ts`).
+- **`NotificationProvidersResponse.channel_types` is `list[str]` (FX3b2).** It was declared as a
+  list of objects while `notifications.channel.channel_types()` returns type ids, so
+  `GET /api/notifications/providers` answered 500; it now returns `["email", "slack", ...]`.
+- **`RunbookLibrary.migrated_procedures` (FX3b2).** `GET /api/runbooks` adds
+  `migrated_procedures: {legacy id: runbook id}` (the migration marker's map for the procedure
+  sources; empty before the migration or when the marker cannot be read), filtered to runbooks
+  the viewer can see; the Console's automation target display reads it.
 
 ### 11.2 Per package
 
+- **WP-0** (`07a0a8f`): every new model and field, constants, the new permissions (with
+  `playbooks` still present), type-only web mirrors, lazy client modules and the KPI binding
+  table; 205 backend and 39 web contract tests; 121 BEFORE shots of the base build. Two reviews
+  found 22 issues (record ids, IP values, strict dashboard reads, publish without a revision,
+  non-https evidence links, request sizes), all fixed.
+- **W2a, W2b, W3, W4a** (`63e6138`): `Panel`, `SectionTitle`, `KpiStrip`, the strip `KpiTile`,
+  `ChartCard`, the title-and-controls `PageHeader`, page rhythm, underline tabs, the sheet close fix
+  (F1), proportional body figures (F2), duration and case label formatters and the console grammar
+  guard (W2a); table, filter bar, time range, refresh, number field, field layouts, list row, row
+  actions, status dot, callout and the Settings primitives (W2b); the docked rail with a stable
+  morph, flyouts with hover intent, one toggle, the registry with `target`, the Round 14 deep-link
+  keys and redirects (W3); the Overview without band headers (W4a). 90 review findings.
+- **R** (`02a173f`): the one entry rebase with per-file deltas (§11.1 "Entry bundle").
+- **A1, A2, A3, A4a, W1, A4b-1, A4b-2, A5, A6a** (`bad2438`): tripled chat Timeouts and capacity
+  defaults with `chat_limits_version` 2 and the report summary wait capped at 280 s (A1); the
+  breakdown endpoint, reserved dashboard ids and the KPI bindings (A2); the pure runbook core and
+  the 12-runbook library (A3); the audit read API, `audited_write` and the event table (A4a);
+  request ids, client and session fields and before/after changes on every writer (A4b-1,
+  A4b-2); the audit export job with formula defusal and download auditing (A5); rule and closed-by
+  filters and the rule summary (A6a); the sign-out notice without a duration (W1). 94 review
+  findings.
+- **A6b, A7a, A7b, A7c** (`56e0a88`): chat rule and severity drill targets with named levels
+  (A6b); the runbook stores, config, permissions with the alias mapping and the one-shot migration
+  (A7a); the governed library API (A7b); runs on a case, lookups, approvals, AI help and the close
+  reason (A7c). 52 review findings.
+- **W5, W6a, W4c, W4b** (`7030276`): the rebuilt Audit page with the inspector and the export
+  dialog (W5); `RuleLink` and the rule sheet (W6a); dashboard widget data with the honesty rules
+  (W4c); the Dashboards library and the three built-in boards (W4b). 77 review findings.
+- **W6b** (`023d145`): rule drill-downs in chat, the severity breakdown view with Split by, and
+  the Logs and Cases rule filters. 27 review findings.
+- **FX1, A8a, A8b, A8c** (`7083fb2`): three legacy tests rewritten, `open_steps_reason` on bulk
+  close jobs, Demo runbook AI answers and the runbook audit labels (FX1); runbooks in the
+  investigator prompt and attachment after investigation (A8a); retrieval, chat, replay, metrics,
+  export and automation on the library (A8b); the playbook engine, the old runbook service and
+  stores and the bundled playbook Markdown removed, with packaging, CI and RBAC (A8c). The
+  orchestrator applied the A8c hand-off series.
+- **W7a, W7b** (`9451c24`): the Runbooks library and the structured editor with Preview and
+  Markdown Source, Personas split out, "Attach a runbook" in the rule editor (W7a); the Runbook
+  tab with phases and the Next step card, the facts rail section, the queue chip and the close
+  reason dialogs (W7b).
+- **FX2b, FX2w, B1** (`9bc4e5e`): the Demo suspicious-activity plan, case card rule links, the
+  tripled tool timeout fallback, the automation resolver order and the Demo chat library (FX2b);
+  the W6b patches applied, entity rule links and small copy fixes (FX2w); the regenerated API
+  contract and client (B1).
+- **W8b, W9a** (`5f4f5a5`): Cases, Logs, the Case Manager frame with the Closed by filter that
+  replaces the Scans page, Case activity in plain sentences, Campaigns, Reports, Inbox, Jobs,
+  Approvals, Entity investigation and Workspace (W8b); Settings as grouped panels with the
+  Runbooks and Discounted inference sections and the embedded account and security pages (W9a).
+- **W8a, W9b, FX3b** (`eaabbd2`): Metrics, Agent effectiveness, Cost, the Analytics host, Health
+  diagnostics and Standup (W8a); Sources, Auto-tuning, Baseline, Knowledge, Memory, Models, Help
+  Center, the editors, Detection rules with the "Needs a runbook" badge, the rule lifecycle
+  sheets, Login and Wizard, with the wizard's source editor loaded lazily (W9b); the server next
+  step rule and seeded Demo lookup results (FX3b).
+- **FX3b2** (`9bce472`): Demo case rules that match Demo logs, plain lookup summaries, the Demo
+  chat run summary and runbook list routing, the notification providers fix and
+  `migrated_procedures`.
+- **FX3wa, FX3wb, FX3wc** (`537f5a6`): Metrics deep links and redirects, the Analytics group id,
+  Agent effectiveness outcome panels, health labels and chart figures (FX3wa); the Saved reports
+  library, DataTable row labels, the one two-factor row, rule builders, copy and confirm dialog
+  `busy` (FX3wb); the B1 hand-off patches, the automation target order with
+  `migrated_procedures`, runbook client cleanups, the Scans client removal and the audit export
+  range and destination (FX3wc). The orchestrator regenerated the API contract.
+- **DOCA, DOCB, FX4w** (this change, before WP-GEN): the Help Center, reference, operations and
+  development pages (DOCA); these records, the earlier-spec amendments, AGENTS, HANDOFF, README,
+  ROADMAP and CHANGELOG (DOCB); the last web leftovers (FX4w: the stored `metrics` group id, the
+  Analytics row target without `metrics:view`, `ConfirmDialog busy` adoption, the Login label,
+  `ComparisonMetric` figures, Case activity lookup wording and the guard backlog).
+
 ### 11.3 Known limitations
 
+Runbooks and Demo Mode:
+
+- **The deferred real-case attach is process-local (A8a).** A real case whose investigation
+  finishes while Demo Mode is on waits in an in-process list until Demo Mode ends; a restart
+  while Demo Mode is on loses the list, and such a case is attached at its next status, tag or
+  verdict change. While Demo Mode is on, a real case's `run_playbook` rule writes
+  `run.attach_skipped` to the real audit and is not deferred.
+- **Re-investigation rebuilds the case (pre-existing, A8a).** The pipeline rebuilds the whole
+  Case on a re-investigation and keeps only its tags (which runbook matching needs); assignee,
+  comments, status history, acknowledgement, an analyst disposition, campaign and related cases
+  are not carried over. It needs a deliberate contract because those fields drive metrics and
+  grading.
+- **Capability seed cases keep Demo-only rule ids (FX3b2).** `demo_noisy_scanner` and
+  `demo_impossible_travel` cases have no matching log rows, so their rule sheets show no alerts.
+- **The data exfiltration storyline has no seeded Demo run (FX3b2).**
+- **Other tasks have no author field (W7b).** `CaseTask` has no `created_by`, so the Runbook tab's
+  Other tasks reads the author from the `task_added` activity row.
+- **No real shadow mode for rules (W9b, §10).**
+- **Readers do not see retire and restore times (A7b).** A reader's `updated_at` is the later of
+  the live version's publication and the last review; an exact last public change needs the
+  library index row to carry it.
+- **Co-editors learn at Publish (A7b).** Separation of duties covers every writer of a version,
+  but the API exposes only the version's last author, so a co-editor gets
+  `403 runbook_distinct_approver` only after pressing Publish.
+- **A downgrade save can repeat the once-only grant rules (A7a).** A grant block without its stamp
+  that names only read and manage cannot be told apart from a pre-Round 14 block, so the
+  once-only publish rule runs on it again.
+- **A hidden migrated Draft shows as an attachment target (FX3wc).** `migrated_procedures` is
+  filtered to what the viewer can see, so for a viewer without `runbooks:manage` or
+  `runbooks:publish` a retired bundled id whose migrated runbook is a hidden Draft falls through to
+  the built-in map: the Console says the rule attaches while the server skips it.
+- **The migration acceptance fixture has no known exceptions** (`KNOWN_FIXTURE_EXCEPTIONS` in
+  `test_runbook_migration.py` is empty).
+
+Audit log:
+
+- **The export count trusts the browser clock (FX3wc).** The dialog's range ends at the browser's
+  last whole second, so a browser clock ahead of the server's, or Elasticsearch refresh lag on the
+  last second's rows, can move a row across the count. A server-side anchor (count at submission,
+  or an as-of instant on the count call) is a follow-up.
+- **Quick views are an interim set (W5).** The read API's `event` filter takes one value, so the
+  quick views are Sign-in failed, Access denied, User events, Settings events and Configuration and
+  data, each named for exactly what it matches; the spec's Failed sign-ins, User and role changes,
+  Settings changes and Exports and resets wait for a `qv.<id>` or multi-value event filter.
+- **Related links (W5).** "Sign-ins by <actor> in the 30 days before this event" stands in for
+  "The sign-in that started this session" until the read API filters by `session_ref`.
+- **The list shows the internal case id (W5).** Audit records carry no case number yet.
+- **Facets and URL keys (W5).** The Actor menu's counts are counts of the rows already loaded;
+  there is no `build` filter; source, surface, actor kind and order are not deep-link keys.
+- **Pairing uses a caller-chosen request id (A4a, A4b-1, W5).** A client may choose
+  `X-Request-ID`, and a settings save that loses a race writes action, failure and action under
+  one id; the reader also matches actor, resource, target and session, and a server-minted write
+  id on both rows of a pair would make it exact.
+- **Upgraded Elasticsearch audit indices keep date detection (A4a).** Until the operator applies
+  the shipped audit template and rolls the write index, a date-like value in a Round 14 row can map
+  a field as a date and later audit-first writes answer `503 audit_unavailable` (the upgrade notes
+  carry the step; bootstrap logs it on every start).
+- **Dropped row counters are not in diagnostics.** `audit_view_dropped` and
+  `audit_identity_dropped` are counted in process but not shown by
+  `/api/diagnostics/health`; the error log is the signal.
+- **Legacy lazy session row.** First-seen session registration in `api/deps.py` still writes the
+  legacy `session_register` row without the Round 14 fields.
+- **Some failure rows cannot be written.** The dashboard, price overlay and custom model stores
+  write through `kv_mutate`, which never raises, so `dashboard.*_failed`,
+  `model.pricing_update_failed` and `model.add_failed` rows cannot appear for a failed save.
+- **Only `url` and webhook names are reduced.** A value under another `*_url` name saved through
+  `PUT /api/settings` (a model `base_url`) is recorded in full in `changes`.
+- **A crash between the action row and the write** leaves an action row whose target revision
+  was never written (§3.6, documented in the audit log page).
+
+Rules, Logs and severity:
+
+- **Ask AI only for single-identifier rules (W6a).** Widening the Round 12 `rule` entity grammar
+  (spaces, other scripts, still fenced) would offer it for every rule.
+- **IGNORE feeds named by a data stream or alias (A6a).** They are muted on filtered reads but not
+  by the unfiltered browse's after-the-fact drop, which matches only the concrete backing index.
+- **Push noise counters band on the declared ceiling (A6a).** The ingest noise counters project a
+  push event's already-canonical severity through the source's declared ceiling a second time.
+- **Severity in charts (A6b).** Chart blocks carry no severity payload, so switching a severity
+  table to a chart and back gives the plain named-level table without per-level rules.
+- **Logs severity scale (W8b).** `GET /api/logs` does not return each source's `scale_max`;
+  the Logs sheet reads it from `GET /api/sources`.
+
+Dashboards and pages:
+
+- **Board charts show the chat zoom hint**, a 24-hour board draws daily buckets as two narrow
+  bars, and the board refresh control shows no busy state (W4c, W4b).
+- **Browser Back cannot be paused (W4b).** Unsaved board edits are lost on Back or Forward; reload
+  and close are covered by `beforeunload`, and in-app links ask first.
+- **Auto-tuning shows rule ids only (W9b).** The tuning API carries only `rule_id`, so a rule
+  display name in Inter with the id beneath needs a backend field.
+- **Case activity summaries (FX3b2).** Older engine writers (threshold automation, pipeline
+  decision rows, router, investigator, formatter, feedback) record raw summaries that the Console
+  words; recording plain summaries at the source is a follow-up.
+- **Top bar marks (W3).** The notification bell's health mark is still a small amber badge and the
+  Demo mode pill is amber; §4.8.1 asks for a dot and a neutral pill.
+- **Inbox result actions are buttons that navigate (FX3wc).** §3.3 asks for links.
+- **Overview top signatures group by case title (W6a)**, as before Round 14.
+
 ### 11.4 Verification record
+
+Package and run gates, from the Journal and each run's gate report (each run's gate agent on the
+shared tree):
+
+- WP-0: backend 8,984 passed, 4 skipped, 6 failed (five sandbox-only network and environment
+  tests, one records test that waited for WP-DOC); tsc, lint and design gates clean; entry
+  371,876 B.
+- r2b-web (W2a, W3, W2b, W4a): tsc 0, lint 0/0, design gates, 221 web test files (the console map
+  waited for regeneration); entry 384,789 B before package R.
+- r2a-backend: backend 10,861 passed, 6 skipped; the failures were five sandbox-only network and
+  environment tests, one records test that waited for WP-DOC, and two fixed by the applied patches
+  (rechecked green); ruff fatal clean; `check_docs`, `check_version` and `check_ci_contract` green;
+  web 446 test files.
+- r3b-backend: backend 11,390 passed, 6 skipped; two failures fixed by the gate, nine legacy tests
+  rewritten in the next run, one records test that waited for WP-DOC, five sandbox-only. r3w-web:
+  350 web test files; entry 377,678 B.
+- W6b: 466 web test files, 5,796 of 5,797 passed (the one failure owned by W9b, fixed later);
+  entry 378,012 B.
+- r4b-backend: backend 11,629 passed, 10 failed before the A8c series (five sandbox-only, one
+  date-dependent golden question, one records test, three fixed by the series), targeted suites
+  green after it.
+  r4w-web: Vitest 2,354 passed and 3,033 passed in the dependent files; MkDocs strict build clean.
+- r5a-fix: backend 11,788 tests, 11,776 passed, 6 skipped, 6 failed (five sandbox environment,
+  one records test); OpenAPI and generated types byte-identical to a fresh dump; entry 328,442 B.
+- r5w1-pages: 439 related web test files; entry 331,296 B. r5w2-pages: backend 11,791 tests,
+  11,779 passed, 6 failed (five sandbox environment, one records test), 6 skipped.
+- r6b-fix: backend 11,900 tests, 11,888 passed, 6 skipped, 6 failed (five sandbox environment,
+  one records test, which this change fixes).
+- r6w-fix: Vitest under the strict wrapper over 539 files (5,506 and 1,625 passed; the console map
+  waited for regeneration); tsc 0 after the orchestrator regenerated the contract; eslint 0/0;
+  design gates; entry 334,286 B.
+- Live checks: 27 Wave D before and after composites (`SP/r14/progress/r6-pages/`) with no page
+  errors and no horizontal overflow; the Wave C composites for the Overview, navigation, headers,
+  Audit, Dashboards, the rule sheet and runbooks were sent to the operator.
+
+- W7b live check (Demo 8730/5730): Confirm on CASE-000044 (a Demo AI draft) at y 525 (1440 by
+  900), 697 with its bottom at 729 (390 by 844) and 469 (1920 by 1080), inside the 567 and 768
+  targets; Mark done on a pending-lookup step (CASE-000046) at 583, 725 and 501 (the §4.10.11
+  target is Confirm's, not Mark done's; Run lookup sits at about 490 at 1440); 12 to 15 Tab stops
+  in the Runbook tab (limit 19); no horizontal overflow and no page errors.
+
+**Final gates on the merged tree (TO BE FILLED BY WP-GEN):** backend `pytest` count, ruff fatal,
+web `test:strict` count and files, tsc, lint, design gates, `check:types`, full build, the final
+entry chunk and the rebase decision (§11.1 "Entry bundle"), `docs:check`, `check_docs`,
+`build_app_knowledge --check`, `check_ci_contract`, `check_version`, the geometry and timing
+checks of §8.3 with their measured values, and the final screenshot folders.
 
 ---
 

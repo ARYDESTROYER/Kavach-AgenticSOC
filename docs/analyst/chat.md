@@ -1107,15 +1107,17 @@ and cannot start a second one; a failed export says why and offers **Retry**.
 
 ### The Reports library
 
-Open **Triage → Workspace → Reports** to see every report you own, with its template,
+Open **Triage → Workspace → Reports** to see every report you own on one **Saved
+reports** panel, with its template,
 item count, source conversation (blank for a report saved by an earlier version until
 you next change it), and last update. Search by title or template, and open,
 rename, export, or delete any report; an open report shows the same document view as
 the exports, with **Download PDF** and a link back to its source conversation. A report
 made from an infographic Brief keeps its infographic layout.
 
-A report holds up to **60 items**, and you can keep up to **100 reports**; at that limit,
-delete one to start another. Reports are never removed automatically (deleting your
+A report holds up to **60 items**, and you can keep up to **100 reports**; at that limit
+the panel says "Limit of 100 reached. Delete a report to save a new one.", and deleting
+one lets you start another. Reports are never removed automatically (deleting your
 user account removes them, with your conversations and ratings), and a report
 survives the deletion of its conversation: its source link then reads "Conversation no
 longer available". Reports are visible only to the user who created them, every change
@@ -1323,12 +1325,12 @@ period, so no two demo cases share a number; each number keeps its case's own da
 turning Demo Mode off and on again, or resetting it, gives each case the same number
 again. A case you name by its internal id is answered by its number, with the id you
 used beside it once. A detection rule is written the same way everywhere in an answer: its
-id exactly as written (for example `demo_impossible_travel`), as the case list shows it. Demo answers cover the same ground as a live model, including any time window, breakdowns,
+id exactly as written (for example `LP-ES-RISK-1004`), as the case list shows it. Demo answers cover the same ground as a live model, including any time window, breakdowns,
 comparisons, reports, and clarifying questions. A question that asks to investigate or
 look into a named host, user, email address, IP address, domain or file hash
 ("Investigate the activity of user pnair in the last 3 days") is about that entity over
 the window it names. "Investigate" with a detection rule ("Investigate rule
-demo_impossible_travel") counts that rule's cases by verdict; with a log source
+LP-ES-RISK-1004") counts that rule's cases by verdict; with a log source
 ("Investigate source Wazuh") it shows the source's newest events and says if it is
 silent or disabled; with an attack type ("Investigate ransomware") it runs the hunt; and
 with records Demo can list ("Investigate the false positives from yesterday") it lists
@@ -1343,7 +1345,7 @@ demo conversation's name carries one
 detail that tells it apart from similar ones where there is one: the case number (first,
 so a narrow history list still shows it), the ATT&CK technique, the period, the breakdown
 or the console page a product question is about, such as "CASE-000045 needs a person",
-"CASE-000005 identity_signin case", "Cases by severity, last 7 days" or "Sources help".
+"CASE-000039 LP-ES-RISK-1006 case", "Cases by severity, last 7 days" or "Sources help".
 A name can carry a detection rule id exactly as written, but only one that the
 suggestion rules accept and that does not look like an address, domain or file hash. It
 never repeats any other value from your logs or cases, such as an address, a host or

@@ -45,7 +45,7 @@ The LLM produces a verdict recommendation. The pure case-manager decision functi
 evaluates that verdict, confidence, risk score, and operator policy. `NEEDS_HUMAN`
 cannot auto-close. True-positive auto-close is off by default, while false-positive
 auto-close is bounded by configured confidence/risk thresholds and an objection
-window. Playbooks, automation, memory, notifications, and preview endpoints cannot
+window. Runbooks, automation, memory, notifications, and preview endpoints cannot
 bypass the case manager.
 
 See [Deterministic decisions](../concepts/deterministic-decisions.md).
@@ -120,7 +120,7 @@ the client flow or providing the exchange at the trusted proxy/application layer
 Provider, source, SSO, notification, database, and signing credentials belong in the
 deployment secret store. Runtime values entered in the Console are memory-only unless
 also supplied at boot. API reads expose only configured status. Never put a secret in
-an organization preference, connector non-secret `config`, a playbook, a model prompt,
+an organization preference, connector non-secret `config`, a runbook, a model prompt,
 or source telemetry.
 
 Local passwords use PBKDF2 hashes. JWTs use HS256 with an operator-supplied stable

@@ -10,13 +10,15 @@
  * working unchanged. This is a non-breaking migration behind existing exports; new
  * features register in `registry.ts`, not here.
  *
- * Round-2 W4 page consolidation (still true): the rail is grouped into ≤5–6 top-level
- * groups (Overview / Triage / Intelligence / Analytics / Notifications / Platform —
+ * Round-2 W4 page consolidation (still true): the rail is grouped into six top-level
+ * groups (Overview, Triage, Intelligence, Analytics, Notifications and Platform, within
  * Miller's 7±2) and a batch of near-duplicate pages live as tabbed sub-views of a host
  * page rather than as standalone rail items:
  *
- *   - `chat`         (Workspace)    hosts Chat | Investigate.
- *   - `metrics`      (Analytics)    hosts Metrics | Cost | Models | Baseline | Batch.
+ *   - `chat`         (Workspace)    hosts Chat | Entity investigation | Reports.
+ *   - `analytics`    (Analytics)    groups Metrics | Agent effectiveness | Cost | Models |
+ *                                   Baseline | Jobs; pressing the row opens Metrics (its
+ *                                   `target`), or the first page the viewer can see.
  *   - `overview`     (Overview)     groups Cyber Defence Center | Dashboards | Standup;
  *                                   pressing the row opens Dashboards (Round 14 `target`).
  *   - `intelligence` (Intelligence) hosts Knowledge | Runbooks | Memory | Personas.
@@ -216,11 +218,15 @@ export function navDest(node: { id: PageId; target?: PageId }): PageId {
 
 /**
  * The page a top-level row opens when pressed (Round 14, SPEC §2.2 item 2): its `target`
- * when that page is reachable for this viewer, else the row's own id. "Reachable" uses
- * the one visibility authority: the child that opens the target (or, for a target that is
- * not a child, the target's own registry entry) must pass {@link navVisible}. So the
- * Overview row opens the Dashboards library for a viewer with `metrics:view` and the
- * Cyber Defence Center for everyone else.
+ * when that page is reachable for this viewer, else the page of its first child the viewer
+ * can see, and the row's own id only when no child is visible. "Reachable" uses the one
+ * visibility authority: the child that opens the target (or, for a target that is not a
+ * child, the target's own registry entry) must pass {@link navVisible}. So the Overview
+ * row opens the Dashboards library for a viewer with `metrics:view` and the Cyber Defence
+ * Center (its first child) for everyone else, and the Analytics row opens Metrics for a
+ * viewer with `metrics:view` and Cost for everyone else. The row's own id is never the
+ * fallback while a child is visible: for a group whose id redirects to its target
+ * (`#/analytics` to `#/metrics`) that would open the page the viewer cannot read.
  */
 export function navTarget(
   item: { id: PageId; target?: PageId; children?: NavChild[] },
@@ -228,9 +234,12 @@ export function navTarget(
 ): PageId {
   const target = item.target;
   if (!target || target === item.id) return item.id;
-  const child = (item.children ?? []).find((c) => navDest(c) === target);
+  const children = item.children ?? [];
+  const child = children.find((c) => navDest(c) === target);
   const gate = child ?? FEATURES.find((f) => f.id === target);
-  return gate && navVisible(gate, has) ? target : item.id;
+  if (gate && navVisible(gate, has)) return target;
+  const first = children.find((c) => navVisible(c, has));
+  return first ? navDest(first) : item.id;
 }
 
 /**

@@ -55,7 +55,9 @@ mean the infrastructure, GPU, network, or upstream proxy is free.
 
 ## Discounted inference
 
-Open **Analytics → Jobs** to configure two independent paths. Neither changes
+Open **Settings → General → Discounted inference** to configure two independent paths.
+The section saves with the other settings, so changing it needs `settings:manage`
+(before Round 14 it was on the Jobs page and needed `models:manage`). Neither changes
 the prompt, model verdict, deterministic close/escalate authority, or requirement for
 one usage-ledger row per resolved call.
 

@@ -34,10 +34,11 @@ A subsystem that is impaired while the state store is fine is reported separatel
 Current codes are `rag_corpus_empty`, `rag_projection_refused`,
 `llm_provider_unauthenticated`, `llm_provider_quota_exhausted`, and
 `llm_provider_unavailable`. `degraded` is a genuine product-level alarm: an empty
-knowledge corpus means every investigation runs without runbook, ATT&CK, or precedent
-context, and auto-close cannot fire. Alert on it.
+knowledge corpus means every investigation runs with no retrieved runbook passages, ATT&CK
+or precedent context (the matched runbook's guidance still reaches the investigator from
+the runbook library), and auto-close cannot fire. Alert on it.
 
-This endpoint is **unauthenticated**, so it deliberately publishes codes only — never
+This endpoint is **unauthenticated**, so it deliberately publishes codes only, never
 corpus counts, source names, provider names, or detection posture. The
 `settings:read`-gated `/api/diagnostics/health` carries that detail, including the
 corpus-versus-source-history reconciliation and the last projection outcome. Both are
@@ -68,8 +69,9 @@ Upstream logs remain in their source systems and require their own retention/bac
 records in its selected supported safe scopes into one verified server-assembled ZIP,
 using either the archive or internal segmented walk,
 but it is a support/analysis artifact, not a whole-application
-backup. Its Knowledge scope preserves sanitized authoritative operator runbook and
-playbook documents plus safe bundled manifests/references, but it omits credentials,
+backup. Its Knowledge scope preserves sanitized operator runbooks (and, for one release,
+the stored documents of the two retired procedure lists, as they were stored) plus safe
+bundled runbook metadata, but it omits credentials,
 users/sessions, chat history, chat reports, collaboration state, raw upstream logs, and raw knowledge chunks,
 and has no matching import/restore endpoint. The ZIP manifest proves that the server
 emitted each scope's starting count and verified the prepared artifact, not that the

@@ -43,7 +43,7 @@ preferences layer user choices over organization defaults. Saved views may be cr
 updated, deleted, and cloned; they are not a security boundary and never grant access
 to data the user otherwise cannot read.
 
-**Reduce transparency**, under **Settings → Account → Appearance & customization**,
+**Reduce transparency**, under **Settings → Account → Appearance**,
 shows the top bar and sticky toolbars as solid surfaces instead of frosted glass.
 **System** follows the device's Reduce transparency setting where the browser reports
 it; Safari and Firefox do not pass that setting on, so choose **On** to apply it there.

@@ -9950,9 +9950,8 @@ def _change_reference(ref: Reference, question: str) -> tuple[Reference, bool]:
     """The part of ``ref`` about a change request, and whether that is all of it: the
     sections about it, and the console pages a kept section links to or whose label or
     console-map keywords name the object ("Analytics › Jobs" for "Kill the export job",
-    "Appearance & customization" for "Change the theme to dark"; never "Overview ›
-    Standup" for "Create a case"). The verb alone keeps no page: "change" or "turn"
-    is in many keywords."""
+    "Appearance" for "Change the theme to dark"; never "Overview › Standup" for "Create
+    a case"). The verb alone keeps no page: "change" or "turn" is in many keywords."""
     terms = _change_terms(question)
     cited = [s for s in ref.sections if s.ref]
     sections = [s for s in ref.sections if _about_change(s, terms)]

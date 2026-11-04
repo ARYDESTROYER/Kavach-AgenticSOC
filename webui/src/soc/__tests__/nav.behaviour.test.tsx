@@ -341,6 +341,27 @@ describe('the Overview row and its group (SPEC §2.2, E13)', () => {
     expect(screen.queryByTestId('nav-dashboards')).toBeNull();
   });
 
+  it('opens the first visible Analytics page (Cost) for a viewer without metrics:view', () => {
+    // `#/analytics` redirects to Metrics, whose GET /api/metrics this viewer cannot read,
+    // so the row's own id is no fallback while one of its pages is visible.
+    grant = (resource, action) => !(resource === 'metrics' && action === 'view');
+    const { onNavigate } = setup({ page: 'cases', open: ['analytics'] });
+    const row = screen.getByTestId('nav-analytics');
+    expect(row).toHaveAttribute('href', '#/cost');
+    act(() => fireEvent.click(row));
+    expect(onNavigate).toHaveBeenCalledWith('cost');
+    const pages = within(document.getElementById('nav-group-analytics') as HTMLElement).getAllByRole('link');
+    expect(pages.map((link) => link.textContent)).toEqual(['Cost', 'Models', 'Baseline', 'Jobs']);
+  });
+
+  it('opens Metrics from the Analytics row for a viewer with metrics:view', () => {
+    const { onNavigate } = setup({ page: 'cases' });
+    const row = screen.getByTestId('nav-analytics');
+    expect(row).toHaveAttribute('href', '#/metrics');
+    act(() => fireEvent.click(row));
+    expect(onNavigate).toHaveBeenCalledWith('metrics');
+  });
+
   it('lists Cyber Defence Center, Dashboards and Standup, the first opening the landing page', () => {
     const { onNavigate } = setup({ page: 'cases', open: ['overview'] });
     const pages = within(document.getElementById('nav-group-overview') as HTMLElement).getAllByRole('link');

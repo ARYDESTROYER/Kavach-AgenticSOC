@@ -11,7 +11,7 @@ must use these primitives; existing pages migrate toward them as they are touche
 
 ## Migration contract
 
-The shared shell, navigation rail, route-loading fallback, in-app Documentation
+The shared shell, navigation rail, route-loading fallback, in-app Help Center
 index, Case Manager, Settings frame, and Entity investigation workflow are the
 current reference surfaces. Other routes remain supported while they move to this
 grammar incrementally; a page is not called migrated merely because the shell around
@@ -55,8 +55,9 @@ scale the layout. Dense inside, generous between: `1` (4px) inside chips and men
 insets, `2`–`3` (8–12px) between related controls and for row padding, `4`–`5`
 (16–20px) for instrument and pane insets (a grouped dashboard panel grows to `6`, 24px,
 from 1920px), `6` (24px) for column gutters (between grouped panels the gutter matches
-the panel padding: 16, 20, then 24px), `8`–`10` (32–40px) between bands (a grouped
-dashboard's bands sit 48px apart from 1920px), and otherwise `12` (48px) only for sparse
+the panel padding: 16, 20, then 24px), `8`–`10` (32–40px) between bands on a page that
+still lays out its own bands (on a page of panels, modules sit one panel gutter apart: see
+Page anatomy), and otherwise `12` (48px) only for sparse
 identity screens. The container sets rhythm with `gap-*`/`space-y-*`; children never add
 sibling margins, and a run of siblings that needs a different rhythm gets its own group
 container. One 16–24px rail per pane; never stack page, pane, and panel padding.
@@ -211,7 +212,7 @@ reducedMotion="user"`), CSS overlays swap their scale/slide keyframes for a 150m
 opacity-only cross-fade, and press scale is dropped. `prefers-reduced-transparency`
 (and `data-transparency="reduced"` on `<html>`, the in-app override for browsers that
 never report it): every material and the top bar become solid. The override is the
-per-user Settings → Appearance & customization → "Reduce transparency" choice
+per-user Settings → Account → Appearance → "Reduce transparency" choice
 (System / On), stored in `UserPrefs.misc.transparency`, mirrored on the device in
 `soc.transparency` and stamped before first paint by `index.html`
 (`design-system/transparency.ts`); Safari never reports the media query and Firefox
@@ -474,6 +475,46 @@ digits, the unit and the steppers need more room, and 12rem when there is no max
 A field the reader only tabs through commits nothing, so a stored value is never
 rewritten by focus alone.
 
+## Activity and audit logs
+
+Round 14 (SPEC §4.5, operator choice C1 A): every record of who did what reads the same
+way, whether it is the Audit log page or a case's activity.
+
+**The list.** An audit list is one keyboard grid on one full-bleed panel, newest first,
+with a single roving tab stop: Up and Down move, J and K move and open the record (focus
+stays on the row), Enter opens it (focus moves to the inspector title), Home and End jump,
+and moving past the last loaded row loads the next page. The columns read Time, Outcome,
+Event, Actor, Target and Summary; Outcome is the second column so it stays in view beside
+an open inspector, a phone shows Time, Outcome and Event, and Target folds away below
+1280px. Every column is one line (`table-layout: fixed`): a long value truncates with its
+full text in its title, and nothing scrolls sideways. A scope line under the controls says
+what the list holds ("Showing 1 to 50 of 1,284 events · last 7 days · times in UTC ·
+newest first", "at least" when the store can only bound the total). "Load more" at the
+foot pages through one fixed snapshot, so the total does not move under it. Agent activity
+folds each investigation into one row whose steps show and hide in place.
+
+**The inspector.** Opening a record shows it in a 560px sheet from the right. From 1280px
+it is non-modal, a labelled region beside the live list (clicking another row swaps the
+record); below 1280px it is a modal dialog with a focus trap; below 640px it fills the
+screen. Its sections are divider-led, never nested cards: **Who**, **What changed**,
+**Details**, **Raw record**, **Record** and **Related**. A field an older row does not
+carry is left out, never shown empty. Escape or Close hands focus back to the row last
+shown. The record's address is part of the URL (`record=`), so a link opens the same
+record; opening and paging records replaces the hash, so J and K never flood the history.
+
+**Values.** Every value is a plain text node (#9): the prompt excerpt and tool output sit
+in code blocks labelled as untrusted log data, stored data is shown verbatim, and a secret
+is never shown, only that it changed. Times are UTC by default with a per-viewer local
+option. A filter change is a navigation, so Back returns to the previous view.
+
+**Case activity.** A case's activity (`CaseActivityFeed`) is a timeline, not a log
+viewer: each row reads as one plain sentence, with internal actor tokens shown as names
+("Case manager") and `key=value` summaries rewritten as words, and the recorded text one
+click away under **Details**, exactly as the audit log holds it (#2). One in-module
+`SegmentedControl` ("Show activity by": All, Human, AI, System) filters it. A running
+investigation adds transient step rows above the persisted timeline; they are narration,
+never a record, and nothing is decided from them (#3).
+
 ## Empty-state semantics
 
 Use the shared `EmptyState` with an explicit `state` whenever a Console surface has
@@ -601,8 +642,9 @@ provenance. Project the **latest run only** and render applicable inputs conditi
 
 - approved operator **memory consulted**;
 - indexed **RAG knowledge retrieved**;
-- **runbook references retrieved** through RAG, separate from playbooks;
-- a **playbook actually injected and consulted**, never merely selected; and
+- **runbook passages retrieved** through RAG, separate from the matched runbook;
+- the **matched Published runbook actually given to the investigator**, never merely
+  selected; and
 - an immutable **platform threshold-tuning snapshot** for a correlation threshold or
   severity floor that this case traversed.
 
@@ -1160,7 +1202,13 @@ own page instead.
 
 - Primary navigation contains distinct operator jobs, not alternate reports over the
   same objects. Legacy destinations may stay hidden and routable for bookmarks during a
-  transition.
+  transition. The retired ones redirect through the router's `PAGE_REDIRECTS`:
+  `#/dashboard` to `#/overview`, `#/analytics` to `#/metrics`, `#/playbooks` and
+  `#/catalog` to `#/runbooks`, and `#/scans` (the Automated scans page, removed in
+  Round 14) to Case Manager filtered to cases the agent closed. The retired Metrics tabs
+  `#/metrics?tab=effectiveness` and `?tab=cost` open the Agent effectiveness and Cost
+  pages, while the Metrics tabs that remain are deep-linkable (`#/metrics?tab=performance`,
+  `?tab=posture`).
 - **One name per page.** The page title is the label of the navigation element that is
   current for it (the child that opens it, else the row), so "Sources", "Baseline",
   "Models" and "Help Center" are the same words in the rail, the palette and the page
@@ -1424,17 +1472,25 @@ A strip on the canvas is followed by the next band after the normal band gap; it
 bottom rule closes the strip, and the band below draws no second rule against it. The
 primary dashboard's strip sits on its own grouped panel instead (see "Dashboard bands").
 
-**Dashboard bands.** The primary dashboard is a sequence of TITLED bands whose modules sit
-on **grouped panels**, so where one module ends and the next begins reads at a glance,
-without a line or a box edge. Every module (each instrument, the KPI strip, and the Deeper
-analytics header and, open, its timing strip and instruments) sits on its own soft tinted
-panel: the `.surface-panel` recipe in `theme.css`, the `--panel` fill (a step deeper than the
-canvas in light, a step lighter in dark), a 14px `rounded-xl` corner, no border and no resting
-shadow. Band and sub-band titles stay outside the panels, on the canvas; module titles sit
-inside them. Panel padding and the gutters between panels grow together: 16px, 20px from
-1280px, 24px from 1920px. The bands sit 40px under the KPI strip and 40px apart (48px from
-1920px), and the Deeper analytics header sits 40px under the last band (the strip, the
-bands and the fold are one group with that rhythm). Never nest a panel in a panel, and never
+**Dashboard bands: modules on grouped panels, one gutter apart, no section titles.** The
+primary dashboard is the KPI strip, two rows of modules and the Deeper analytics fold, with
+no band or row titles (Round 14, operator choice C3 B: the "Alert flow" and "Cases and
+response" headers are gone). Every module sits on its own **grouped panel**, so where one
+module ends and the next begins reads at a glance, without a line or a box edge: each
+instrument, the KPI strip, and the Deeper analytics header and, open, its timing strip and
+instruments sit on the soft tinted `.surface-panel` recipe in `theme.css` (the `--panel`
+fill, a step deeper than the canvas in light, a step lighter in dark), a 14px `rounded-xl`
+corner, no border and no resting shadow. Every module title sits inside its panel and names
+the window it reads after the title ("last 24 hours", "open now"), since no band caption
+names it for a row any more. Panel padding, the gutters between panels in a row and the gap
+between rows are one value that grows with the screen: 16px, 20px from 1280px, 24px from
+1920px (`PANEL_PADDING` and `PANEL_GAP` from `@/design-system`). The KPI strip, the flow row
+(the noise reduction flow and Human vs AI), the cases row (case state, response time, latest
+cases) and the Deeper analytics header are one group with that gap, set by the group's own
+flex `gap`, never by sibling margins; the page's own 32px rhythm (40px from 1920px) only
+spaces the masthead from that group. Each row is a plain `div` with a `data-band` hook
+(`flow`, `cases`) for tests and the print rules; it is not a landmark. The page outline is
+the `h1` and one `h2` per module in reading order. Never nest a panel in a panel, and never
 add a border, a resting shadow or a lattice of hairlines between modules: the panels do the
 separating. Two modules that share one panel (the two case snapshots) are split by one thin
 hairline centred in the gap between them. The first KPI tile of each strip row (the page's
@@ -1463,12 +1519,12 @@ reduced motion change nothing. On paper a panel prints as its fill. The dashbar 
 rest and takes the Console material once content scrolls under it, so the top of the page
 shows two surface levels, canvas and panel.
 
-Modules in one band row share one height (`items-stretch`, modules `h-full flex flex-col`),
+Modules in one row share one height (`items-stretch`, modules `h-full flex flex-col`),
 and a list fills its share of that height (a queue shows as many rows as fit, within a floor
 and a cap) instead of driving the row taller. The floor is set in rem, so a larger browser
 text size grows it with the rows, and a wider screen never shows fewer rows than a narrower
 one. A module with spare height spreads it between its parts rather than pooling it at the
-bottom (the response pair). From 1920px the queue holds eight rows: its band becomes two rows
+bottom (the response pair). From 1920px the queue holds eight rows: its row becomes two rows
 (the snapshots over the response pair on the left, the queue spanning both on the right, the
 rail at `4xl`) and the snapshot rings grow to 192px, so the modules, not blank space, take the
 height the queue sets. On paper the queue is laid out in flow and kept on one page with its
@@ -1476,25 +1532,31 @@ header. Modules side by side that share a structure (two snapshots) share their 
 (`grid-rows-subgrid`), so a caption that wraps in one moves both donuts and both footnotes
 together. The dashbar pins from `sm` up; on a phone it scrolls away with the page. Above
 1920px a dashboard widens by COLUMN COUNT, not by stretching: `wide` width, rising to 2400px
-at `4xl` (≥2200px), where bands share one track template with a 460px rail. A secondary fold
+at `4xl` (≥2200px), where both rows share one track template with a 460px rail. A secondary fold
 is ONE disclosure, with no nested panels or collapsibles, whose open/closed choice is
 remembered and whose collapsed header states what it holds. That summary wraps (beside the
 title from `md`, under it below) and never truncates; a long item label in it is capped so
 the count after it stays visible, and the whole sentence is the header's tooltip.
 
-Dashboard type ladder: page title 30px at `2xl` (the `4xl` step; 24px below); band titles 15px semibold
-with a 13px muted caption; instrument titles 14px; KPI numerals fluid (24 → 44px);
+Dashboard type ladder: page title 30px at `2xl` (the `4xl` step; 24px below); no band titles
+(a sub-band title inside the Deeper analytics fold is 15px semibold); instrument titles 14px
+with a 13px muted caption naming the window; KPI numerals fluid (24 → 44px);
 instrument numerals 24–28px; lists, legends and stage labels 13–14px; metadata 12px (mono
 only for identifiers); 11px only for chart ticks, badges and timestamps. Section titles are
 sentence case; tracked uppercase is not used for titles or for labels on the dashboard.
-Band headers may carry a quiet right-hand freshness stamp ("Updated 2m ago") — slices load
-independently, so each band states its own. A figure that repeats on the page (a cohort
+The page header carries ONE quiet right-hand freshness stamp ("Updated 2m ago"). Slices load
+independently, so the stamp is the OLDEST of the slices the visible modules read (the case
+list and metric totals, the flow while its panel shows it, the posture rollup); it never
+claims a freshness one of them does not have, and a slice whose modules are hidden is left
+out. Pressing it opens a popover (click, tap, Enter or Space; a tooltip would never open on
+touch) that names the slices it covers and the oldest one's time in UTC ("Oldest of cases,
+flow and response data: 14:02:31 UTC"); a screen reader hears the same with the stamp. A figure that repeats on the page (a cohort
 count beside a stock, a tile beside the instrument that partitions it) gets a distinct label
 and a quiet cross-reference line, never a second identical label.
 
 Every instrument describes ONE population: a donut's centre, its legend and any row beside
 it count the same cases over the same span, and a centre labelled "AI verdicts" counts only
-verdicted cases. Where a band mixes spans (a fold holding window figures, store-wide all-time
+verdicted cases. Where a fold mixes spans (window figures, store-wide all-time
 counts and live coverage), each instrument's caption names its span ("last 24 hours", "all
 time", "right now"), and a row that drills through opens a list over that same span — an
 all-time count opens the list without a window. A tally over a bounded case page says so on
@@ -1517,7 +1579,7 @@ at 1440 × 900). What the rows ARE stays on screen — the rows-read sentence wi
 bound", the completeness badge, any range narrowing — while the long explanation of how
 they were read sits behind one "About these rows" disclosure. A whole-window partition beside
 the stats lays its label · value pairs out two per row, so it never makes the stats column
-taller than the trend (Resolved / Closed keeps ten rows at 1440 × 900). Below `sm` the
+taller than the trend (Resolved or closed keeps ten rows at 1440 × 900). Below `sm` the
 dialog's actions sit under its title; below `md` the switcher, the filters and the evidence
 scroll as one body, so a phone never shows three fixed bands over a sliver of rows. When the
 dialog closes and focus returns to its tile, the tile's hover trend refuses a FOCUS-driven

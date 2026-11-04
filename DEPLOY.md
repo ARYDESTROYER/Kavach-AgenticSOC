@@ -189,6 +189,15 @@ In `deploy/docker-compose.agnostic.yml` specifically:
 
 So in Mode A you only ever edit `TLSOC_*` in `.env`; the compose file translates.
 
+One backend setting has no `TLSOC_*` mapping: `TRUSTED_PROXIES` (Round 14), the proxies
+whose `X-Forwarded-For` the audit log believes when it records a client address. Its
+default, `tlsoc-webui`, is the bundled Web UI service, so the agnostic stack needs
+nothing (Mode B runs the Web UI separately; see §7.1). If another proxy or a load
+balancer fronts the Web UI, set `TRUSTED_PROXIES=tlsoc-webui,<your proxy>` in a Compose
+override's `environment:` block (the base Compose file is frozen by the updater
+protocol). Uvicorn's own
+`FORWARDED_ALLOW_IPS` only affects its scheme handling, not the audit log.
+
 ### 3.3 Bring it up
 
 From the **repo root**:
@@ -609,15 +618,85 @@ Before rolling back, ask users with more than 50 conversations to export the ext
 conversations they want to keep (history row menu → **Export**) and delete them, so
 the older build has nothing to evict.
 
-**Chat without limits, Remember me and exact dashboards (current build).** No database
-migration, index or table is added; everything below lives in existing KV namespaces
-and preference documents.
+**Round 14 (current build).** Still version `0.1.13`; no database migration, index or
+table is added. The full list is in `docs/operations/upgrades.md` ("Round 14 changes").
+
+- **Audit index on Elasticsearch (required step).** New audit rows carry structured
+  fields. On an Elasticsearch state backend upgraded from an earlier build, **before**
+  starting the Round 14 backend, apply `deploy/mappings/tlsoc-agent-audit.template.json`
+  as the index template `tlsoc-agent-audit-template`
+  (`PUT _index_template/tlsoc-agent-audit-template`), then roll the audit write index
+  (`POST tlsoc-agent-audit/_rollover`); the commands are in
+  `docs/operations/upgrades.md`. The shipped Elasticsearch client cannot read or extend
+  index mappings, so bootstrap changes nothing here (it never remaps an existing index)
+  and logs a warning naming the step on every start. The warning keeps appearing after
+  the step is done, and on deployments first created by Round 14 from their second start
+  on, because the backend cannot read the mapping to check. To confirm the step, check
+  that `GET _index_template/tlsoc-agent-audit-template` shows `date_detection: false`
+  and that the write index behind `tlsoc-agent-audit` (`GET _alias/tlsoc-agent-audit`)
+  shows it too in its mapping. Until the step is done, a date-like value in a new audit
+  row can map a field as a date, and later audit-first writes answer
+  `503 audit_unavailable`. If Storage & retention is active on this Elasticsearch
+  backend, the shipped template has no lifecycle settings: after the Round 14 backend
+  starts, apply Storage & retention again (**Settings → Organization → Storage &
+  retention**, **Apply supported lifecycle**). That puts the policy back on the audit
+  template and on every audit index, including the one the rollover created. To keep
+  the policy through the step instead, add the stored template's two
+  `index.lifecycle.*` settings to a copy of the shipped file before the PUT (shown in
+  `docs/operations/upgrades.md`). A deployment whose audit index was first created by
+  Round 14 or later needs nothing.
+- **Audit before visible.** Settings saves (`PUT /api/settings` and the curated settings
+  routes), user, role, source, runbook and dashboard changes, and every job file
+  download now write their audit row first; when the audit log cannot be written the
+  change is not made and the request answers `503 audit_unavailable`. Sign-ins and
+  sessions are never blocked. Watch audit-store health accordingly.
+- **`TRUSTED_PROXIES`.** The audit log records each request's client address, read from
+  `X-Forwarded-For` only when the request came from a proxy named here (host names, IPs
+  or CIDR ranges; default `tlsoc-webui`, the bundled Web UI, so the agnostic stack needs
+  no change). On the ELK attachment (§7), which runs the Web UI separately, set it to the
+  Web UI's service name or address unless that runs as `tlsoc-webui` on the backend's
+  network; otherwise client addresses are recorded as the Web UI's. Behind another proxy
+  or load balancer, add it through a Compose override. The rightmost forwarded entry that is not itself a trusted proxy is recorded
+  (at most the last 32 entries are read; a long raw header is kept by its tail). A name
+  that does not resolve yet is retried within seconds.
+- **Chat limits version 2.** The "Timeouts and capacity" defaults are tripled (12
+  lookups at once, 45 s per lookup, 900 s stall timeout, 12 questions per user, 48 per
+  backend); stored values that still equal the Round 12 defaults move once, chosen
+  values stay. The report summary wait stays capped at 280 s, below the Web UI proxy's
+  300 s.
+- **Runbook migration.** At the first start every stored procedure and reference
+  runbook is converted once into a runbook (system actor `runbook_migration`, audited):
+  valid ones are Published, marked Imported and due for review; invalid ones, ones
+  that were never used (shadowed by a bundled id of their kind, or stored beside a
+  configured procedure folder) and ones whose match would widen are Drafts. The
+  knowledge index is then rebuilt from Published runbooks only, and until that finishes
+  no earlier runbook text is served as trusted. The legacy documents are never written,
+  so a rollback finds them as they were.
+- **RBAC aliases.** Stored `playbooks:*` grants and denies keep working in every layer
+  and are read as `runbooks:*` (`manage` also gives or denies the new `publish`, once).
+- **HTTP.** `GET /api/playbooks*` and `?shape=v1` on `/api/runbooks` stay as read aliases
+  for one release; old-shape writes and `POST /api/cases/{id}/run-playbook` answer
+  `410 runbooks_moved`.
+- **Automation.** A rule stored with `run_playbook` now attaches the runbook its target
+  became instead of re-investigating; an unknown, Draft or retired target is skipped and
+  audited as `run.attach_skipped`.
+- **Rollback.** An image-only rollback reads the untouched legacy procedures, the
+  stored `playbooks` grants and `run_playbook` rules as before; runbooks, runs and the
+  new audit fields stay in the store unused. Chat limits that Round 14 saved keep the
+  45 s lookup timeout, the 900 s stall timeout and the backend-wide 48, and read lookups
+  at once and questions per user as 8 and 10 (the earlier build's maximums); set them by
+  hand if other values are wanted.
+
+**Chat without limits, Remember me and exact dashboards (Round 12, same candidate).** No
+database migration, index or table is added; everything below lives in existing KV
+namespaces and preference documents.
 
 - **Chat limits migrate once.** A stored `chat_agent` block moves to
   `limits_mode: unlimited` on first read unless an operator had changed a per-question
   limit (then it stays `bounded` with those values); the old defaults of
   `model_step_timeout_s` (30 → 300, Unlimited only) and the questions-at-once bounds
-  (2 → 4 per user, 8 → 16 per backend) move to the new ones. Review **Settings → General
+  (2 → 4 per user, 8 → 16 per backend) move to the Round 12 values, which Round 14 then
+  triples (see above). Review **Settings → General
   → Chat assistant** after upgrading.
 - **Chat is outside the AI budget, daily and monthly.** Chat calls are still ledgered
   (one usage row each) but neither blocked by nor counted toward `budget.daily_usd` or
@@ -702,6 +781,12 @@ resolves (the merge block expects `./agentic-kibana/backend`), then **copy the
   `.env`-driven — they assume a container named `elasticsearch` and a CA mounted at
   that exact path. If your topology differs, edit those three lines directly in the
   block rather than looking for a `TLSOC_*` override.
+
+The block has no Web UI service and sets no `TRUSTED_PROXIES`, and the audit log believes
+`X-Forwarded-For` only from `tlsoc-webui` by default. Run the separate Web UI as a service
+named `tlsoc-webui` on the same network, or add
+`TRUSTED_PROXIES=<the Web UI's service name or address>` to the block's `environment:`;
+otherwise every audit row records the Web UI's address as the client.
 
 ### 7.2 Two scoped Elasticsearch API keys (NEVER the superuser)
 

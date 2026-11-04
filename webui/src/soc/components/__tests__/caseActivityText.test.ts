@@ -181,22 +181,45 @@ describe('activityText', () => {
 });
 
 describe('runbook lookups and steps (runbook_runs.py)', () => {
-  it.each([
-    ['Lookup log_stats collected evidence (ok).', 'Log statistics lookup collected evidence.'],
-    ['Lookup log_search collected evidence (partial).', 'Log search lookup returned partial results.'],
-    ['Lookup enrich collected evidence (not_applicable).', 'Enrichment lookup did not apply to this case.'],
-    ['Lookup related_cases collected evidence (empty).', 'Related cases lookup found nothing.'],
-    ['Lookup campaign collected evidence (error).', 'Campaign lookup failed.'],
-    ['Lookup mitre collected evidence (ok).', 'MITRE ATT&CK lookup collected evidence.'],
-  ])('says what the lookup found, by its status: %s', (summary, text) => {
+  /**
+   * Each status in the server's words (`runbook_runs.lookup_evidence_summary`, the labels
+   * of `runbook_lookup.TOOL_RULES`): a row written before the server worded its summary
+   * (`Lookup <tool> collected evidence (<status>).`) reads exactly as a row written today.
+   */
+  const LOOKUPS: Array<[tool: string, status: string, today: string]> = [
+    ['log_stats', 'ok', 'Log statistics lookup collected evidence.'],
+    ['log_search', 'partial', 'Log search lookup collected partial evidence.'],
+    ['enrich', 'not_applicable', 'Enrichment lookup was not applicable.'],
+    ['related_cases', 'empty', 'Related cases lookup found no matching records.'],
+    ['campaign', 'error', 'Campaign lookup could not run.'],
+    ['mitre', 'ok', 'ATT&CK technique lookup collected evidence.'],
+  ];
+
+  it.each(LOOKUPS)('reads an older %s row (%s) in the words the server writes today', (tool, status, today) => {
+    const summary = `Lookup ${tool} collected evidence (${status}).`;
     const out = activityText(row(summary, 'tool_call', 'dsingh'));
-    expect(out.text).toBe(text);
+    expect(out.text).toBe(today);
     // The stored text stays under Details, exactly as recorded.
     expect(out.recorded).toBe(summary);
     expect(out.text).not.toMatch(/_|\(ok\)/);
   });
 
-  it('never claims a failed lookup collected evidence', () => {
+  it.each(LOOKUPS)("shows today's %s row (%s) as written, with nothing under Details", (_tool, _status, today) => {
+    expect(activityText(row(today, 'tool_call', 'dsingh'))).toEqual({ text: today, recorded: null });
+  });
+
+  it("keeps the reason today's server adds after the status", () => {
+    for (const summary of [
+      'Enrichment lookup found no matching records. No enrichment provider is set up for this kind of value.',
+      'ATT&CK technique lookup found no matching records. This case has no ATT&CK technique yet.',
+      'Enrichment lookup was not applicable. Enrichment is turned off in Settings.',
+      'Campaign lookup could not run. Campaigns could not be read.',
+    ]) {
+      expect(activityText(row(summary, 'tool_call', 'system'))).toEqual({ text: summary, recorded: null });
+    }
+  });
+
+  it('never claims a lookup that could not run collected evidence', () => {
     expect(activityText(row('Lookup enrich collected evidence (error).')).text).not.toMatch(/collected/);
   });
 

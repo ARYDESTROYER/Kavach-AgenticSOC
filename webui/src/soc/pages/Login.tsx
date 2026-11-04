@@ -1199,7 +1199,7 @@ export default function Login({ onAuthenticated }: LoginProps) {
                   </div>
                   <Button type="submit" className="h-12 w-full" disabled={busy || mfaCode.trim().length === 0}>
                     {busy ? <Loader2 className="animate-spin" aria-hidden /> : <ShieldCheck aria-hidden />}
-                    {busy ? 'Verifying…' : 'Verify & continue'}
+                    {busy ? 'Verifying…' : 'Verify and continue'}
                   </Button>
                   <div className="flex items-center justify-between text-xs">
                     <Button

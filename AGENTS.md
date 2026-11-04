@@ -57,6 +57,22 @@ those strings only when the exact literal is operationally required; never prese
 the compatibility namespace as a product or brand. Do not rename a wire identifier
 as part of a branding edit, and do not mint new compatibility-prefixed identifiers.
 
+**The retired word `playbook` (Round 14):** playbooks and runbooks are one feature, **Runbooks**,
+and Console-authored copy never says "playbook". The word survives only in these accepted wire
+identifiers, kept verbatim for compatibility and never renamed: `Case.playbook_id`; the automation
+action literal `run_playbook` with `payload.playbook_id` (the rule editor's "Attach a runbook" still
+writes them, beside `payload.runbook_id`); the permission aliases `playbooks:read`, `playbooks:run`
+and `playbooks:manage` (mapped onto `runbooks:*` in every grant and deny layer on load); the read
+aliases `GET /api/playbooks*` for one release (writes and `POST /api/cases/{id}/run-playbook`
+answer `410 runbooks_moved`); the audit actors `playbook_selector` and `run_playbook` and
+`ActionType.PLAYBOOK`; the chat kind `list_playbooks` and the stored page ref `playbooks`; the
+replay field `playbooks_enabled`; the marker tag `<pb>` and the token `end_playbook`; the read-only
+legacy KV namespaces `playbooks` and `runbooks`; the config keys `playbooks.enabled` (mapped onto
+`runbooks.investigator_guidance`), `playbooks.dir` (read once by the migration) and
+`playbooks.llm_select` (accepted on load and dropped); and the deprecated metric field
+`playbook_usage`. Stored data (audit rows, transcripts, notes, runbook text) is shown
+verbatim. Do not mint new `playbook` identifiers.
+
 The original upstream pipeline (when attached, we do NOT modify it):
 ```
 rsyslog (omkafka) → Kafka → foss-soc-engine → Logstash → Elasticsearch (all-logs-*) → Kibana
@@ -157,7 +173,16 @@ backend/app/
                      caps.max_concurrent + chat_agent (chat loop bounds +
                      indicator-lookup policy + Round 13 `dynamic_starters` [live-data
                      suggested questions, default on]; repaired/clamped on load, never
-                     rejected; curated editor Settings → General → Chat assistant)
+                     rejected; curated editor Settings → General → Chat assistant;
+                     Round 14 tripled the Timeouts and capacity defaults through
+                     `chat_limits_version` 2) + runbooks (Round 14 `RunbookConfig`:
+                     enabled, auto_attach, fallback, investigator_guidance, rag_corpus,
+                     AI suggest and step drafts, distinct approver, step approvals,
+                     review cadence; the retired `playbooks.*` and `rag.use_runbooks`
+                     keys are accepted on load: mapped by meaning, read once by
+                     the migration, or dropped when they had no effect) +
+                     `Secrets.trusted_proxies` (Round 14 `TRUSTED_PROXIES`: the only
+                     peers whose forwarded header names the audit client address)
                      + BrandingConfig.login_*
                      bounded plain-text white-label [validator rejects any `<`, #9];
                      AutomationRule → CaseAutomationRule (alias kept, wire key
@@ -491,8 +516,10 @@ backend/app/
                      `data_export:export`, with bounded cases/audit/usage pages (and the
                      documented KV-catalog materialization limit), ES PIT consistency,
                      actor/scope/snapshot-bound signed cursors, explicit weaker-backend
-                     semantics, and Intelligence catalog export with sanitized operator
-                     runbook/playbook source plus safe bundled refs; direct archive and
+                     semantics, and Intelligence catalog export (manifest schema 2 since
+                     Round 14: the runbook library with every operator version, the
+                     read-only legacy procedure groups, safe bundled refs, and
+                     `case_runbook_runs` listed with `rows_dropped`); direct archive and
                      segment are executable OpenAPI-deprecated compatibility primitives,
                      while Console/user workflows submit Jobs]
                      + routes_storage
@@ -503,10 +530,16 @@ backend/app/
                      (never a fixture body — it is unfenced raw log data, #9) +
                      `DELETE /api/replay/fixtures`; running a replay is the
                      `replay_experiment` Job, never an endpoint];
-                     routes_runbooks [dedicated `runbooks:read/manage` bundled/operator
-                     catalog CRUD + targeted/full RAG reconciliation; direct full-catalog
-                     reindex is executable but OpenAPI-deprecated, targeted remains
-                     direct] · routes_releases
+                     routes_runbooks [Round 14: the governed runbook library under
+                     `runbooks:read`, `runbooks:manage` and `runbooks:publish`: list (new
+                     shape; `?shape=v1` is a one-release read alias), detail, versions,
+                     Markdown export, draft save and discard, duplicate, submit,
+                     revision-checked publish (optional distinct approver), reject,
+                     retire, restore, reviewed, version restore as a draft, import,
+                     validate, match preview (changes nothing), metrics; old-shape writes
+                     answer `410 runbooks_moved`; audit-first, `409 runbook_demo_readonly`
+                     in Demo Mode; targeted reindex stays direct and the full-catalog
+                     reindex is executable but OpenAPI-deprecated] · routes_releases
                      [public Stable/Testing source discovery only] · routes_schedulers
                      [read-only threshold-tuner/campaign/Batch cadence-loop health plus
                      event-driven `baseline_producer` `on_ingest` health] ·
@@ -525,8 +558,8 @@ backend/app/
                      while legacy/unselected rows remain list-only] ·
                      routes_chat [`POST /api/chat/stream` NDJSON, `GET /api/chat/context`,
                      `POST /api/chat/turns/{id}/cancel`, `GET /api/chat/topics/{id}`; the
-                     PROCESS-LOCAL turn registry + per-user/global concurrency (4/16,
-                     429 `chat_busy`); Round 12: `GET /api/chat/turns/active`, the bounded
+                     PROCESS-LOCAL turn registry + per-user/global concurrency (12/48
+                     since Round 14, was 4/16; 429 `chat_busy`); Round 12: `GET /api/chat/turns/active`, the bounded
                      per-turn event ring + `GET /api/chat/turns/{id}/events?after=`
                      rejoin, owner-only `chat.turn` SSE frames, lease heartbeat,
                      `POST /api/chat/turns/{id}/seen` (an outcome shown on one console:
@@ -574,8 +607,9 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      Rules home + polymorphic editor + condition builder] · dashboard/*
                      [custom-dashboard builder/grid/widget registry, LAZY react-grid-layout] ·
                      hooks/*; pages/* incl. Users/Security/Approvals/Knowledge/Memory + Round-3
-                     Models/Roles/Inbox + Analytics tabs (Operational/Performance/Posture/
-                     Effectiveness/Cost) + Jobs (personal durable application work,
+                     Models/Roles/Inbox + Analytics (Metrics tabs Operational/Performance/
+                     Posture, deep-linkable; Agent effectiveness and Cost are their own
+                     pages since Round 14) + Jobs (personal durable application work,
                      related permission-scoped LLM Batch rows with bounded new-job Inbox
                      audience/outbox projection, list-only scheduler health;
                      global SSE observer + polling fallback + deduplicated terminal toasts;
@@ -603,12 +637,20 @@ webui/               PRIMARY surface: standalone Vite+React+TS+Tailwind+shadcn/R
                      [Round 13: useChatStarters, StartScreen, StarterCard, CatchUpLine,
                      ThreadCatchUp, CategoryPills, CaseStarterChips, greeting]) +
                      Docs (same-origin, version-matched Help Center discovery hub) +
-                     Round-5 Dashboards.tsx + settings/* data-driven section files [was a
+                     Round 14: Dashboards.tsx (the Dashboards library and boards:
+                     dashboard/Library, BoardView, builtins.ts with the four built-ins) ·
+                     Audit.tsx + components/audit/** (scopes, inspector side sheet, export
+                     dialog on the audit_export job) · RuleLink + RuleSheet (one rule sheet
+                     from every rule name) · Runbooks.tsx + runbooks/** (editor/, run/,
+                     shared/) + Personas.tsx + casedetail/RunbookPanel (the Runbook tab and
+                     the Next step card); the Scans page is gone (`#/scans` redirects to
+                     Case Manager's Closed by the AI agent filter) +
+                     settings/* data-driven section files grouped into five panels [was a
                      2673-line god-file, now a section registry; includes Organization
                      Storage & retention capability/status/preview/apply]; components/* incl. Can RBAC
                      guard, MfaSetupCard, QRCode, NotificationsEditor, RiskGauge, palette +
                      Round-3 NavSidebar, NotificationBell, GlassSurface, SettingsGrid/Card,
-                     theme-tokens resolver, MitreHeatmap/BurnDownChart, TraceTimeline,
+                     theme-tokens resolver, MitreHeatmap, TraceTimeline,
                      CaseThread, EnrichmentProvidersEditor, BrandingEditor + ~15 Round-5
                      shared primitives Field/SegmentedControl/ConfirmDialog/NumberField/
                      LabeledSlider/SecretField/TagInput/IconButton/PageContainer/
@@ -636,12 +678,13 @@ docs/                USAGE.md · TROUBLESHOOTING.md · ENVIRONMENT.md · VIGIL_S
 2. Every agent action audited, append-only (`tlsoc-agent-audit-*`).
 3. Verdict from the LLM; **the close/escalate decision is made by deterministic
    code against the operator-configured `AutoClosePolicy`** — never by raw LLM
-   output and never by playbook text (`engine/case_manager.py`, `decide()` is a pure
+   output and never by runbook text (`engine/case_manager.py`, `decide()` is a pure
    fn over `(verdict, confidence, risk_score, policy)`). Auto-close is a tunable,
    per-verdict-class policy (enable/min-confidence/max-risk/objection-window):
    FALSE_POSITIVE on above a bar by default; **TRUE_POSITIVE auto-close is an
    explicit opt-in, OFF by default**; **NEEDS_HUMAN never auto-closes (code-enforced,
-   not policy-tunable)**. A playbook can recommend but can never change this policy.
+   not policy-tunable)**. A runbook can recommend but can never change this policy; runbook
+   runs and the open-steps close reason are human workflow that automatic closes never read.
 4. Durable polling cursor (no skip / no dup); cases idempotent by cluster
    signature (`engine/poller.py`, `engine/signatures.py`).
 5. ONE chat engine, two entry points (`agents/chat.py`). Workspace history is a
@@ -930,10 +973,14 @@ cp .env.example .env   # set TLSOC_PG_PASSWORD + at least one LLM key
 
 ## 10. Current status & roadmap
 
-**Round 13 (chat) is the newest work** (dynamic $0 starters, anchored follow-ups,
-conversation titles from the first answer, a neater chat). It is built on branch
-`claude/round12` and heads to `Testing` through a new pull request; see the Round 13 bullet
-in the round summary below and `docs/research/2026-10-round13/SPEC-chat.md`. Round 12
+**Round 14 is the newest work** (one console grammar, a Dashboards library, an audit log you
+can use, rule drill-down and one Runbooks feature that replaces playbooks). It is built on
+branch `claude/round14` (from `1cf20a7`, after Round 13 merged into `Testing`) and heads to
+`Testing` through a pull request; see the Round 14 bullet in the round summary below and
+`docs/research/2026-10-round14/SPEC.md`, whose §11 "As built" records what shipped, the
+contract resolutions and the known limitations. Round 13 (chat: dynamic $0 starters, anchored
+follow-ups, conversation titles from the first answer, a neater chat) merged into `Testing`
+through PR #132; see its bullet below and `docs/research/2026-10-round13/SPEC-chat.md`. Round 12
 (chat without limits, the working indicator, Remember me, report downloads, the Overview
 and Case Manager redesigns) merged into `Testing` as `db8d935` (PR #131); see its bullet
 below and `docs/research/2026-10-round12/SPEC.md`.
@@ -992,6 +1039,13 @@ digest reads, and canonical runtime acceptance pass. Version 0.1.13 changes no s
 identity, process privilege, or frozen-base bytes. Repository-level branch
 protection, required-check, and `github-pages` environment policy remain administrator
 controls and must be verified independently of source changes.
+
+**Round 14 baseline (TO BE FILLED BY WP-GEN):** backend pytest passed/skipped, webui Vitest
+passed/skipped/files, the entry chunk against `PRE_REVAMP_ENTRY_BYTES` (rebased to 377,070 B by
+package R; WP-GEN records whether it rebases again, Round 14 SPEC §11.1 "Entry bundle"), eslint and
+the design gates. Until WP-GEN fills this line, the latest recorded full backend run is 11,900
+tests (11,888 passed, 6 skipped, 6 failed: five sandbox-only environment tests and the records
+test this documentation pass fixes; Journal, run r6b-fix), and the snapshot below is Round 13's.
 
 **Current baseline (2026-10-23, Round 13 chat, closing gates):** backend **8,674 pytest** passed, 4 skipped (0 failures);
 webui **5,425 Vitest** specs passed, 1 skipped (the dist-required case outside the build lane) / 520 files
@@ -1194,7 +1248,7 @@ a retelling — do not re-derive round detail from here.
   design foundations. `decide()` untouched (#3); every new call still one gateway call
   and one UsageDoc (#6). Records: `docs/research/2026-10-round12/SPEC.md` (decisions +
   "As built"), chat-revamp SPEC amendments A39+, and the Round 12 `Journal.md` entries.
-- **Round 13, chat** (2026-10-17→, same branch, PR to `Testing`): the operator asked for a
+- **Round 13, chat** (2026-10-17→23, same branch, merged into `Testing` through PR #132): the operator asked for a
   neater chat and dynamic suggestions. **Dynamic $0 starters** computed by code from the
   suite's own state under each viewer's grants (`engine/chat_starters.py`,
   `agents/chat_starter_text.py`, `GET /api/chat/starters`, `POST /api/chat/starters/events`,
@@ -1210,6 +1264,27 @@ a retelling — do not re-derive round detail from here.
   rail; Demo answers every starter and chip. `decide()` untouched (#3). Records:
   `docs/research/2026-10-round13/SPEC-chat.md` (§10 "As built"), chat-revamp SPEC
   amendments A64 to A68, BLOCKS amendments 32 and 33, and the Round 13 `Journal.md` entries.
+- **Round 14** (2026-10-25→29, branch `claude/round14`, PR to `Testing`): nine operator asks.
+  The automatic sign-out notice no longer states the session length; the Audit log is a
+  server-paged page with three scopes, search, an inspector side sheet and an audited CSV or
+  JSON Lines export (`audit:export`, fresh sign-in; `routes_audit`, new record fields, request
+  ids and before/after `changes` on every writer, audit before visible); the Overview entry
+  opens a **Dashboards library** (the Cyber Defence Center, marked Default and still the
+  landing page, plus SOC operations, Detection and data health and Executive summary, and the
+  viewer's own boards; `GET /api/metrics/breakdown`); the Overview's two band headers are
+  gone; the chat Timeouts and capacity defaults are tripled (`chat_limits_version` 2); every
+  rule name opens one **rule sheet** (`RuleLink`, `GET /api/rules/summary`, "Open all in
+  Logs"), and Logs and Cases take an exact rule filter; severity breakdowns use named levels
+  with top rules and Split by; a docked navigation rail and the Overview's panels and header on
+  every page, grouped Settings; and playbooks and runbooks are merged into **one Runbooks
+  feature** (phased procedures with five step kinds, deterministic matching with a reason, a
+  per-case run with a Next step card, Draft, In review, Published and Retired versions, 12
+  built-ins, a one-shot audited migration, `runbooks:run` and `runbooks:publish`, the
+  investigator reads only Published text; `/api/playbooks*` reads stay as aliases for one
+  release and writes answer 410). `decide()` untouched (#3); every new model call goes through
+  the gateway (#6); storage is KV only (#12). Records: `docs/research/2026-10-round14/SPEC.md`
+  (§11 "As built"), chat-revamp SPEC amendments A69 to A73, BLOCKS amendments 36 to 38, and the
+  Round 14 `Journal.md` entries.
 
 **Auth is DEFAULT OFF** (`Secrets.auth_enabled`) so the no-auth profile and the
 offline test suite keep working unchanged; `TLSOC_AUTH_ENABLED=true` turns on the

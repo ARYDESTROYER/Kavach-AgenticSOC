@@ -12,21 +12,37 @@
  *    source by its proper name (QRadar);
  *  - every confirmation hands focus back to what opened it when cancelled (SPEC §3.3):
  *    the row's Remove, the navigation control, the checked workspace mode; a confirmed
- *    removal moves focus to the next row's Remove, else the list heading, never the body.
+ *    removal moves focus to the next row's Remove, else the list heading, never the body;
+ *  - the remove confirmation is an async confirm (ConfirmDialog `busy`): it stays open
+ *    while the source is deleted, its button keeps focus and a second press does nothing,
+ *    it closes as soon as the delete is done (the row leaves with it and the list reloads
+ *    outside it), and a failed delete stays in it to retry;
+ *  - a removal is announced, and a list that does not reload after it says the source was
+ *    removed and offers to reload;
+ *  - a row's Remove waits while that row's Make primary runs (that write would re-create a
+ *    removed source).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-const { listConnectorsMock, listSourcesMock, deleteSourceMock, demoStatusMock, authMeMock, rolesGetMock } =
-  vi.hoisted(() => ({
-    listConnectorsMock: vi.fn(),
-    listSourcesMock: vi.fn(),
-    deleteSourceMock: vi.fn(),
-    demoStatusMock: vi.fn(),
-    authMeMock: vi.fn(),
-    rolesGetMock: vi.fn(),
-  }));
+const {
+  listConnectorsMock,
+  listSourcesMock,
+  deleteSourceMock,
+  upsertSourceMock,
+  demoStatusMock,
+  authMeMock,
+  rolesGetMock,
+} = vi.hoisted(() => ({
+  listConnectorsMock: vi.fn(),
+  listSourcesMock: vi.fn(),
+  deleteSourceMock: vi.fn(),
+  upsertSourceMock: vi.fn(),
+  demoStatusMock: vi.fn(),
+  authMeMock: vi.fn(),
+  rolesGetMock: vi.fn(),
+}));
 
 vi.mock('@/lib/api', () => {
   const ok = (v: unknown) => vi.fn().mockResolvedValue(v);
@@ -39,6 +55,7 @@ vi.mock('@/lib/api', () => {
       listConnectors: listConnectorsMock,
       listSources: listSourcesMock,
       deleteSource: deleteSourceMock,
+      upsertSource: upsertSourceMock,
       getSettings: ok({ prefs: {} }),
       putSettings: ok({ ok: true }),
       completeSetup: ok({ ok: true }),
@@ -189,6 +206,7 @@ describe('Wizard confirmations hand focus back (SPEC §3.3)', () => {
     listConnectorsMock.mockReset().mockResolvedValue({ connectors: [CONNECTOR] });
     listSourcesMock.mockReset().mockResolvedValue({ sources: [] });
     deleteSourceMock.mockReset().mockResolvedValue({ ok: true });
+    upsertSourceMock.mockReset().mockResolvedValue({ ok: true });
     demoStatusMock.mockReset().mockResolvedValue({ mode: 'off', active: false });
     authMeMock.mockReset().mockResolvedValue({ auth_enabled: false, authenticated: true, user: null });
     rolesGetMock
@@ -226,6 +244,178 @@ describe('Wizard confirmations hand focus back (SPEC §3.3)', () => {
     const heading = await screen.findByRole('heading', { level: 2, name: 'No sources configured' });
     await waitFor(() => expect(document.activeElement).toBe(heading));
     expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('keeps the remove confirmation open and busy while the source is deleted', async () => {
+    listSourcesMock.mockResolvedValue({ sources: [SOURCE, SECOND] });
+    const { user } = await openDataSources();
+    const [first] = await screen.findAllByRole('button', { name: 'Remove' });
+    // At rest the row's Remove is not busy: the open dialog covers the removal itself.
+    expect(first).not.toHaveAttribute('aria-disabled');
+    let finish!: () => void;
+    deleteSourceMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve({ ok: true });
+        }),
+    );
+    listSourcesMock.mockResolvedValue({ sources: [SECOND] });
+    await user.click(first);
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Remove source' }));
+
+    // Busy, not disabled: the confirm keeps focus and names its state.
+    const busy = await within(dialog).findByRole('button', { name: 'Removing source' });
+    expect(busy).toHaveAttribute('aria-disabled', 'true');
+    expect(busy).toHaveAttribute('aria-busy', 'true');
+    expect(busy).not.toBeDisabled();
+    expect(document.activeElement).toBe(busy);
+    // A second press, Cancel and Escape do nothing while the removal runs.
+    await user.click(busy);
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await user.keyboard('{Escape}');
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    expect(deleteSourceMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(deleteSourceMock).toHaveBeenCalledTimes(1);
+    const [next] = screen.getAllByRole('button', { name: 'Remove' });
+    await waitFor(() => expect(document.activeElement).toBe(next));
+  });
+
+  it('closes the confirmation once the delete is done, without waiting for the list to reload', async () => {
+    listSourcesMock.mockResolvedValue({ sources: [SOURCE, SECOND] });
+    const { user } = await openDataSources();
+    const [first] = await screen.findAllByRole('button', { name: 'Remove' });
+    let listed!: () => void;
+    listSourcesMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          listed = () => resolve({ sources: [SECOND] });
+        }),
+    );
+    await user.click(first);
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Remove source' }));
+
+    // The delete is done and the list read is still out: the dialog has closed, the row
+    // left with it, and focus moved to the next row's Remove.
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(deleteSourceMock).toHaveBeenCalledWith('src-1');
+    expect(screen.queryByText('Edge webhook')).toBeNull();
+    const remaining = screen.getAllByRole('button', { name: 'Remove' });
+    expect(remaining).toHaveLength(1);
+    await waitFor(() => expect(document.activeElement).toBe(remaining[0]));
+    expect(screen.getByRole('heading', { level: 2, name: '1 enabled' })).toBeInTheDocument();
+    // A screen reader hears that it worked, not just the next button's name.
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('Edge webhook removed.');
+    // The explicit aria-live is load-bearing: while the dialog's exit animation runs, the
+    // Radix modal keeps the rest of the page aria-hidden, and its hideOthers pass leaves
+    // only [aria-live] nodes exposed. A bare role="status" would be hidden when the text
+    // lands and would show up with its text already set, so nothing would be announced.
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveAttribute('aria-atomic', 'true');
+
+    await act(async () => listed());
+    expect(screen.getByText('Branch syslog')).toBeInTheDocument();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove' }));
+  });
+
+  it('says the source was removed when the list does not reload after it, and reloads on request', async () => {
+    listSourcesMock.mockResolvedValue({ sources: [SOURCE, SECOND] });
+    const { user } = await openDataSources();
+    const [first] = await screen.findAllByRole('button', { name: 'Remove' });
+    listSourcesMock.mockRejectedValueOnce(new Error('Network error'));
+    await user.click(first);
+    await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Remove source' }));
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(
+      await screen.findByText('The source was removed, but the list didn’t refresh'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Network error')).toBeInTheDocument();
+    // Never the generic "not applied" panel: the removal did happen.
+    expect(screen.queryByText('Couldn’t update data sources')).toBeNull();
+    // The removed source is not offered again, so Remove cannot run into a 404.
+    expect(screen.queryByText('Edge webhook')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Remove' })).toHaveLength(1);
+
+    listSourcesMock.mockResolvedValueOnce({ sources: [SECOND] });
+    await user.click(screen.getByRole('button', { name: 'Reload list' }));
+    await waitFor(() =>
+      expect(screen.queryByText('The source was removed, but the list didn’t refresh')).toBeNull(),
+    );
+    expect(screen.getByText('Branch syslog')).toBeInTheDocument();
+    expect(screen.queryByText('Edge webhook')).toBeNull();
+    expect(deleteSourceMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not offer a row's Remove while that row's Make primary is running", async () => {
+    const PULL = { ...SOURCE, id: 'src-3', display_name: 'Lake pull', ingest_mode: 'pull', is_primary: false };
+    listSourcesMock.mockResolvedValue({ sources: [PULL, SECOND] });
+    const { user } = await openDataSources();
+    let primaryDone!: () => void;
+    upsertSourceMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          primaryDone = () => resolve({ ok: true });
+        }),
+    );
+    await user.click(await screen.findByRole('button', { name: 'Make primary' }));
+    const [pullRemove, otherRemove] = screen.getAllByRole('button', { name: 'Remove' });
+    // Busy, not disabled: it keeps its place in the tab order.
+    expect(pullRemove).toHaveAttribute('aria-disabled', 'true');
+    expect(pullRemove).not.toBeDisabled();
+    expect(otherRemove).not.toHaveAttribute('aria-disabled');
+
+    await user.click(pullRemove);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(deleteSourceMock).not.toHaveBeenCalled();
+
+    // Once Make primary has finished, Remove opens its confirmation again.
+    listSourcesMock.mockResolvedValue({ sources: [{ ...PULL, is_primary: true }, SECOND] });
+    await act(async () => primaryDone());
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Make primary' })).toBeNull());
+    const [ready] = screen.getAllByRole('button', { name: 'Remove' });
+    expect(ready).not.toHaveAttribute('aria-disabled');
+    await user.click(ready);
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument();
+    expect(deleteSourceMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a failed removal in the confirmation, retries it, and keeps the source on Cancel', async () => {
+    listSourcesMock.mockResolvedValue({ sources: [SOURCE, SECOND] });
+    const { user } = await openDataSources();
+    const [first] = await screen.findAllByRole('button', { name: 'Remove' });
+    deleteSourceMock.mockRejectedValueOnce(new Error('The source is in use by a running job.'));
+    await user.click(first);
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Remove source' }));
+
+    expect(await within(dialog).findByText('Couldn’t remove the source')).toBeInTheDocument();
+    expect(within(dialog).getByText('The source is in use by a running job.')).toBeInTheDocument();
+    // The page shows no second copy of the error behind the dialog.
+    expect(screen.getAllByText('The source is in use by a running job.')).toHaveLength(1);
+    const retry = within(dialog).getByRole('button', { name: 'Remove source' });
+    expect(retry).not.toHaveAttribute('aria-disabled');
+
+    // Remove source tries again; a second failure, then Cancel keeps the source.
+    deleteSourceMock.mockRejectedValueOnce(new Error('Still in use.'));
+    await user.click(retry);
+    expect(await within(dialog).findByText('Still in use.')).toBeInTheDocument();
+    expect(deleteSourceMock).toHaveBeenCalledTimes(2);
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(screen.queryByText('Still in use.')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Remove' })).toHaveLength(2);
+    await waitFor(() => expect(document.activeElement).toBe(first));
+
+    // Opening the confirmation again starts clean.
+    await user.click(first);
+    const again = await screen.findByRole('alertdialog');
+    expect(within(again).queryByText('Couldn’t remove the source')).toBeNull();
   });
 
   it('returns focus to the navigation control when discarding a draft is cancelled', async () => {

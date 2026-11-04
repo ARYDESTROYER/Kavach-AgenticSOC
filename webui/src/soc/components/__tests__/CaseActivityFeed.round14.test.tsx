@@ -97,7 +97,8 @@ describe('CaseActivityFeed in plain words', () => {
     await user.click(within(row).getByText('Details'));
     expect(within(row).getByTestId('activity-recorded')).toHaveTextContent(legacy);
 
-    expect(screen.getByText('Enrichment lookup did not apply to this case.')).toBeInTheDocument();
+    // An older lookup row reads in the server's words today (runbook_runs.lookup_evidence_summary).
+    expect(screen.getByText('Enrichment lookup was not applicable.')).toBeInTheDocument();
   });
 
   it('never prints a key=value payload as the row text', () => {

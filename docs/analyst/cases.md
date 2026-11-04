@@ -17,17 +17,33 @@ internal case ID, title, entity, rule, source, or tag. Narrow the table by statu
 disposition, severity, assignee, time, or cross-source relationship. Saved views and
 column choices are personal preferences; they do not change the underlying case.
 
-The summary tiles above the table count the whole store, not only the loaded rows:
-**Active**, **Terminal**, **Needs human**, and the severity bands. **Needs human**
-counts open cases that need a person: an active case whose status is needs human or
-whose AI verdict is Needs human. A closed case is never counted there, whatever the AI
-said. When a count cannot be read, the tile falls back to the loaded rows and says so.
+The table sits on one **Case queue** panel. It opens on the columns a triage pass reads:
+**Case ID**, **Title**, **Severity**, **Status**, **Outcome**, **Assignee** and
+**Updated**. Confidence, Verdict, Risk, Entity, Category, Urgency, Alerts and Enrichments
+are one click away in the **Columns** menu, and once you change the columns your choice
+is kept. The search, three primary filters and **More filters** sit above the table, and
+an active filter shows as a removable chip. When the list holds Demo cases, one **Demo**
+badge beside the panel title says so (its tooltip: the cases are synthetic). A **Rule**
+filter shows the cases one rule opened, which is where a rule sheet's **Show the N
+cases** lands. On a phone the table becomes a list of cases, 50 at a time, the summary
+strip is two columns, and every filter (and your saved views) is in one **Filters**
+sheet.
+
+The summary strip above the table counts the whole store, not only the loaded rows:
+**Active**, **Resolved or closed**, **Needs human**, and the severity bands. Active,
+Resolved or closed and each severity band show their share of the loaded cases under them;
+Needs human reads "awaiting an analyst". Pressing a tile filters the table to it.
+**Needs human** counts open cases that need a person: an active case whose status is
+needs human or whose AI verdict is Needs human. A closed case is never counted there,
+whatever the AI said. When a count cannot be read, the tile falls back to the loaded rows
+and says so.
 
 The **Outcome** column shows each case's outcome of record: the analyst's
 classification once a person has classified the case (for example **False positive**,
 marked as the analyst's), **Declared benign** for an operator rule-policy close,
-**Auto-closed** for an automatic close, and otherwise the AI verdict, attributed to the
-AI (for example "AI: Needs human"). The column follows the same rule as the case header
+**Auto-closed** for an automatic close (the short label; the verdict it closed on, such
+as "Auto-closed as false positive", is its tooltip), and otherwise the AI verdict,
+attributed to the AI (for example "AI: Needs human"). The column follows the same rule as the case header
 in Case Manager; see [The outcome of a case](case-manager.md#the-outcome-of-a-case).
 Entity values in the table offer **Ask AI**, which opens a Workspace chat about that
 value.
@@ -41,8 +57,10 @@ dedicated [Case Manager guide](case-manager.md) for exact selection, resize,
 permission, and failure semantics.
 
 Selecting rows opens bulk actions. Closing or resolving cases, from the bulk bar or with
-a row's one-click close, opens a dialog that requires a disposition, so every closed
-case records what it was. Bulk changes are unavailable in Demo Mode. Long-running Case
+a row's one-click **Close** (shown only on an open row, and only with `cases:close`),
+opens a dialog that requires a disposition, so every closed case records what it was.
+When a case's runbook still has required steps open, the dialog also asks why; the close
+is never blocked (see [Runbooks](../intelligence/runbooks.md)). Bulk changes are unavailable in Demo Mode. Long-running Case
 Manager operations snapshot the
 selected case IDs and submit one server-owned background job. The dialog closes after
 `202 Accepted`; work continues across navigation or reload and reports progress in
@@ -96,11 +114,11 @@ sheet with another copy of the same controls.
   Case Manager only, the final stage marker pulses.
 - **Investigation**: AI assessment, pinned deterministic decision, and the full
   tool/reasoning trace.
-- **Threat**: indicator reputation, ATT&CK context, related cases, and the persisted
+- **Threat context**: indicator reputation, ATT&CK context, related cases, and the persisted
   redacted Input alerts → Correlation cluster → Opened case explanation. Focus or
   hover its nodes for source counts, grouping, threshold/window, status, and verdict;
   raw identifiers and payloads are excluded.
-- **Collab**: discussion, reactions, and activity. The case's tasks are in the
+- **Collaboration**: discussion, reactions, and activity. The case's tasks are in the
   Runbook tab under **Other tasks**.
 - **Chat**: case-scoped questions using the shared chat engine.
 
@@ -164,5 +182,5 @@ Confirmed false positives can produce a pending suppression proposal and can be
 indexed as prior-case context. Neither process silently changes decision policy.
 
 See [Investigation](investigation.md), [Collaboration](collaboration.md),
-[Background jobs](../operations/background-jobs.md), and
-[Playbooks and approvals](../automation/playbooks-approvals.md).
+[Background jobs](../operations/background-jobs.md),
+[Runbooks](../intelligence/runbooks.md), and [Approvals](../automation/approvals.md).

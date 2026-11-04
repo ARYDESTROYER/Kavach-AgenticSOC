@@ -111,6 +111,13 @@ function kindMeta(kind: string): KindMeta {
 
 /* ----------------------------------------------------------- decision step -- */
 
+/**
+ * The decision step's small labels ("Policy clause evaluated", "Verdict", ...): 12 px,
+ * sentence case, in the body face. Never tracked capitals and never below the type floor
+ * (Round 14, SPEC §3.1; the ui-standard keeps context text at 12 px or larger).
+ */
+const MICRO_LABEL = 'text-xs font-medium text-muted-foreground';
+
 /** Read the typed decision payload off a terminal `decision` span (defensive).
  *  Exported so the pinned DecisionCard (casedetail/DecisionCard.tsx) reads the exact
  *  `policy_clause` from the same span shape without duplicating the coercion. */
@@ -186,7 +193,7 @@ const DecisionStep: React.FC<{ span: TraceSpan }> = ({ span }) => {
 
         {/* The matched AutoClosePolicy clause (the thresholds decide() compared against). */}
         <div className="mt-3 rounded-lg border border-border bg-card p-3">
-          <div className="mb-1.5 flex items-center gap-1.5 text-[0.65rem] font-semibold uppercase tracking-widest text-muted-foreground">
+          <div className={cn('mb-1.5 flex items-center gap-1.5', MICRO_LABEL)}>
             <GitBranch className="h-3 w-3" />
             Policy clause evaluated
           </div>
@@ -238,11 +245,7 @@ const DecisionStep: React.FC<{ span: TraceSpan }> = ({ span }) => {
 
 const DecisionFact: React.FC<{ label: string; value: string }> = ({ label, value }) => (
   <div className="rounded-md border border-border bg-card px-2.5 py-2">
-    {/* Same micro-label size as the "Policy clause evaluated" eyebrow above and the rest
-        of the app's uppercase eyebrows — was an off-scale text-[0.6rem] (9.6px) outlier. */}
-    <div className="text-[0.65rem] font-semibold uppercase tracking-widest text-muted-foreground">
-      {label}
-    </div>
+    <div className={MICRO_LABEL}>{label}</div>
     <div className="mt-0.5 truncate font-mono text-sm text-foreground">{value}</div>
   </div>
 );

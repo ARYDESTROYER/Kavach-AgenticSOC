@@ -12,10 +12,10 @@ certified this release or that its transport durability has passed a live matrix
 
 ## Status definitions
 
-- **Core + full** — adapter and client are available in both image targets.
-- **Full image** — adapter is built in and its pinned optional client is installed by
+- **Core + full**: adapter and client are available in both image targets.
+- **Full image**: adapter is built in and its pinned optional client is installed by
   the default final image. The deliberately lean `core` target omits that client.
-- **Reserved** — the source type exists for compatibility/roadmap purposes; no
+- **Reserved**: the source type exists for compatibility/roadmap purposes; no
   built-in runtime connector is registered.
 
 All sources should be validated against a non-production tenant and a synthetic
@@ -72,8 +72,8 @@ omit these clients and should not configure their adapters.
 | MQTT | Queue | `paho-mqtt` | Current callback schedules processing asynchronously, so protocol acknowledgement can precede successful processing; do not use as a loss-intolerant path in version 0.1 |
 
 The distribution contract verifies that every manifest dependency is present in the
-full requirement set and that the built wheel contains all modules, runbooks,
-playbooks, and registry data. That proves packaging availability, not provider
+full requirement set and that the built wheel contains all modules, the 12 built-in
+runbooks, and registry data, and none of the removed procedure modules. That proves packaging availability, not provider
 connectivity. Add live dependency/transport tests for the clients you operate.
 
 ## Reserved, not implemented as built-ins

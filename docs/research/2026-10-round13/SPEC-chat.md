@@ -4,6 +4,13 @@ Status: binding for every Round 13 chat work package. Owner: orchestrator. Branc
 `claude/round12` (Round 12 is merged into `Testing`; Round 13 is follow-up work on the same
 branch and reaches `Testing` through a pull request).
 
+Later rounds: Round 14 tripled the chat "Timeouts and capacity" defaults and widened their bounds
+(`chat_limits_version` 2: lookups at once 12, tool timeout 45 s, model step timeout 900 s, 12
+questions per person and 48 per backend; Round 14 SPEC §4.2), and removed the Overview's two
+titled bands, so every Overview row is one panel gutter apart (Round 14 SPEC §4.3). Round 14 also
+added rule drill-downs and the severity breakdown to chat answers (chat-revamp amendments A69 to
+A73, BLOCKS amendments 36 to 38). The Round 14 SPEC §11 "As built" describes what ships.
+
 This document covers the operator's chat ask only. The Overview card-separation ask has its
 own options and screenshots and is not specified here.
 

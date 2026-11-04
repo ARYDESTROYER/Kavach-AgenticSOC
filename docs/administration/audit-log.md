@@ -47,8 +47,9 @@ type, because code, not the AI agent, decides whether a case closes.
 
   Matching is case-insensitive. On Elasticsearch the stored summaries are matched by
   whole words and phrases, so `login failed` finds "login failed" but `gin fail` does not;
-  names, actions and targets match any part of the text on every store. Accented letters
-  fold to their plain form on PostgreSQL and Elasticsearch only.
+  names, actions and targets match any part of the text on every store. Upper and lower
+  case of letters outside ASCII match only on PostgreSQL and Elasticsearch (`école` finds
+  `École` there, but not on SQLite).
 - **Event, Actor, Outcome and More filters.** The Event menu is grouped by category and
   searchable. An older event type that shares its name with a newer event is listed with
   "(older rows)", because it matches only rows stored without the newer event name. The
@@ -132,8 +133,14 @@ The record has six sections:
    behind **Show forwarded header** and labelled "Supplied by the client; not verified".
 2. **What changed.** For a change: each field in words with its key under it, the value
    before (struck through) and after. Secret values are never recorded and show as
-   "Changed (secret values are never recorded)". A web address is reduced to its scheme
-   and host, because webhook addresses carry their credential in the path.
+   "Changed (secret values are never recorded)". A field counts as secret by its name
+   (a password, secret, token, credential or key, in the singular or the plural, and the
+   credential fields a notification channel or connector reads), on either side of the
+   change, and a list holding text is judged like a single value. The lists that hold
+   field names rather than values (which secrets a source has set, which entity fields
+   correlation joins on) stay readable. A web address is reduced to its scheme and host,
+   because webhook addresses carry their credential in the path; a value that is not a
+   well-formed address keeps only the host it names, or nothing when it names none.
 3. **Details.** The full stored summary, the query as it ran, the model and tool, the tool
    input as an expandable tree with **Copy JSON**, and any prompt excerpt or tool output
    in a block labelled as containing untrusted log data.
@@ -182,7 +189,11 @@ SIEM)**. **Full application export** opens the data export in Settings for peopl
 The export dialog fixes the time range to exact UTC times when it opens (for example "18
 Oct 15:10 to 25 Oct 15:09 UTC"); the count it shows, the file name and the export all use
 those times. A range that ends now ends at the last whole second that has passed, so the
-count and the file hold the same events, as long as this device's clock is set correctly.
+count and the file hold the same events. The count assumes this device's clock is not
+ahead of the server's. On a fast clock the range reaches past the server's present, so
+events written after the dialog counted (the dialog's own count is recorded as one) can
+fall inside it, and the file can hold more events than the dialog showed. The export never
+reads past the moment it was submitted.
 One file holds at most 100,000 events. Above that the dialog reads "More than 100,000
 events", Export stays disabled, and it offers **Use last 30 days** when that range fits;
 otherwise narrow the filters. Nothing is ever cut off silently.
@@ -203,12 +214,23 @@ otherwise narrow the filters. Nothing is ever cut off silently.
   text and never runs it. The CSV and copied data of chat answers and reports use the
   same rule.
 - **JSON Lines** writes each stored record unchanged, one per line.
-- Audit exports are not available in Demo Mode.
+- Audit exports are not available in Demo Mode: the Export menu says so and stays
+  disabled until Demo Mode is turned off.
+- A finished audit export offers **Open audit log** in **Jobs**, in the Inbox and on its
+  notice; it opens the audit log on the scope, range and filters it was exported from
+  (`#/audit` with that scope), so you see the rows the file holds.
 
 Every export is recorded in the audit log when it is requested, when the file is written
 (with its size and SHA-256) and each time it is downloaded. Every download of any job's
-file is recorded before it starts; if that record cannot be written, the download does not
-start.
+file is recorded before it starts, as one row per download: "Audit export downloaded" for
+an audit export and "Job file downloaded" for any other job's file. If that record cannot
+be written, the download does not start.
+
+Submitting an audit export, a data export or a reset is recorded first, with who asked
+and from where ("Audit export requested", "Export requested", "Reset requested"); if that
+record cannot be written, the job is not created. Every row of one such job names the job
+as its target, so **All events for this target** in its record shows who asked, what the
+job did and each download.
 
 ## What a record holds
 
@@ -242,6 +264,35 @@ is then the rightmost forwarded address that is not itself a trusted proxy. A re
 reaches the backend directly is recorded with its connection address, whatever headers it
 sends. A deployment behind another proxy or load balancer adds it to `TRUSTED_PROXIES`.
 
+## Runbook events
+
+Runbook work is recorded under two categories. Changes to the library are
+**Configuration and data**: Runbook created, Runbook draft updated, Runbook draft
+discarded, Runbook duplicated, Runbook imported, Runbook exported, Runbook submitted for
+review, Runbook published, Runbook review rejected, Runbook retired, Runbook restored,
+Runbook reviewed and Runbook search index rebuild. Restoring an old version as a new draft
+is recorded as Runbook draft updated (with the version it came from); Runbook restored
+means a retired runbook was made live again. Work on a case's runbook is **Case work**:
+Runbook attached, Runbook not attached, Runbook started, Runbook version switched,
+Runbook abandoned, Runbook completed, Runbook step updated, Evidence collected, Decision
+recorded, Action recorded, Approval requested, Step approved, Step rejected, Step drafted
+by AI, AI draft confirmed and Case closed with open steps. A step change names the fields
+it changed (status, approval, note, decision, recorded action) with their values before
+and after.
+
+The one-time conversion of runbooks and procedures stored by an earlier version is
+recorded by the system actor `runbook_migration`: **Runbook converted** for each document
+that became a runbook, **Runbook not converted** for one it left alone (with the reason),
+**Runbook conversion not applied** when a conversion could not be saved, **Runbook
+conversion finished** once at the end with the counts, and **Runbook conversion summary
+not saved** when that last record could not be stored. See
+[Upgrades](../operations/upgrades.md).
+
+Every runbook change that fails after it was recorded is followed by its own failure row,
+named for what did not happen (for example "Runbook publication failed", "Step approval
+failed", "AI draft not saved"), with the same request id. The pair reads as "Not applied
+(see the next record)" in the record.
+
 ## Viewing is recorded
 
 Opening the audit log, searching it, counting it for an export and opening a record are
@@ -256,8 +307,11 @@ state in memory shows "This deployment keeps the audit log in memory; it is lost
 restart." Retention is set in **Settings → Organization → Storage & retention**.
 
 On Elasticsearch, apply the shipped audit index template and roll the audit write index
-when you upgrade, so the new fields are mapped. See
-[Upgrades](../operations/upgrades.md).
+before you start an upgraded backend, so the new fields are mapped; the backend does not
+do this for you. The shipped template has no lifecycle settings, so where Storage &
+retention is active, apply it again once the upgraded backend has started, or keep the
+lifecycle settings in the template you apply. See
+[Applying the Round 14 audit template](../operations/upgrades.md#applying-the-round-14-audit-template).
 
 ## Limits
 
@@ -265,9 +319,29 @@ when you upgrade, so the new fields are mapped. See
   written it is logged and counted instead. Every other change is recorded before it takes
   effect: if its row cannot be written, the change is not made and the request answers
   `503 audit_unavailable`.
+- One exception keeps a broken audit store repairable: while the audit log cannot be
+  written, `POST /api/setup/secrets` still applies exactly the keys of the management
+  connection that holds the audit log (`es_mgmt_api_key`, `es_url` and `es_ca_cert`) and
+  answers `503 audit_unavailable` naming any other key it did not change. The read-only
+  log key `es_api_key` is not part of the exception.
+- A settings save that races another one is tried up to three times; one that still finds
+  the settings changed underneath answers `409 settings_conflict`. A save of the
+  tuning, baseline, Batch or campaign settings, a campaign rebuild, and a tuning apply or
+  rollback answer `409 demo_mode_changed` when Demo Mode was switched during the request.
+  A settings save says "Demo Mode was turned on or off while saving, so nothing was saved.
+  Try again."; the campaign rebuild and the tuning apply and rollback name what was not
+  done instead. The failure row sits beside the action row in the log the action row went
+  to.
+- Each system update request is recorded with its own rows, including who asked and from
+  where; the update supervisor stays idempotent on the request's key.
+- Applying tuning recommendations (`POST /api/tuning/{rule}/apply`) is recorded as
+  "Detection rule" `rule.tuning_requested` before anything changes; each applied change
+  and each approval it opens has its own row.
 - If the backend stops between recording a change and saving it, the record names a
   revision that was never saved.
 - "Not applied" is shown only when both the change and its failure record are loaded.
+- Every response carries an `X-Request-ID` header, an unexpected server error (500)
+  included, so a reported failure can be matched to its rows.
 
 For the request and response fields of `GET /api/audit`, `GET /api/audit/count` and
 `GET /api/audit/records/{record_id}`, see the [API reference](../reference/api.md).

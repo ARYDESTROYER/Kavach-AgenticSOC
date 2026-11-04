@@ -13,6 +13,10 @@ link from Cases shows a short announced **Taking you to Case Manager…** handof
 opens that exact case here. The `caseId` remains in the Case Manager URL so refresh,
 browser history, and bookmarks preserve the selected record.
 
+The page header holds the title, a help tip, **Live** while the queue is receiving live
+updates, and **Refresh case queue**. The queue and the open case sit side by side on one
+panel.
+
 ## The outcome of a case
 
 Every case answers three different questions, and Case Manager never mixes them:
@@ -56,6 +60,10 @@ The queue provides:
   source, and assignee (every word you type must match);
 - severity and status filters; the status filter lists every lifecycle state, with
   needs-human cases shown as **Open · awaiting analyst**;
+- a **Closed by** filter for terminal cases, shown as a removable chip ("Closed by the
+  AI agent", "Closed by an analyst", "Closed by an analyst policy", "Closed by the
+  system"). It lives in the address as `closedBy` (`#/case_manager?closedBy=agent`), so a
+  link keeps it, and the server answers it over every matching case;
 - latest-updated, highest-risk, newest-created, and title ordering;
 - manual refresh, plus live updates: a case that changes elsewhere updates its row, and
   a case that no longer matches the view leaves it.
@@ -133,7 +141,7 @@ opens a Workspace chat about that value (see
 | Investigation | The deterministic decision first, then the AI assessment, detailed Investigation inputs, evidence, recommendation, reproduction query, and the collapsible full trace |
 | Threat context | IOC reputation, MITRE ATT&CK mapping, related cases, and the redacted persisted alert → correlation cluster → opened case explanation |
 | Collaboration | Case thread, reactions, activity, assignment, and handoff context; case tasks are in the Runbook tab under Other tasks |
-| Chat | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs |
+| Chat | Case-scoped use of the shared AI Analyst chat engine; its transcript stays when you switch tabs. Asked about the runbook, it names the same next step as the Next step card, by the same rule |
 
 Each fact has one home, so a figure shown in the header or the rail is not repeated in
 a tab. The Overview visualization is explanatory, not a second scoring engine. It
@@ -341,6 +349,13 @@ Agreement statistics in grading and analytics count only grades that compare the
 analyst's judgement with an AI verdict. Settling a needs-human hand-off, closing a
 duplicate, or classifying a case with no AI verdict is recorded as feedback but is not
 counted as agreement or disagreement.
+
+## Cases the agent closed
+
+The Automated scans page is gone (Round 14). It showed the same autonomous cases that
+Case Manager shows with better filters and actions. An old `#/scans` bookmark now opens
+Case Manager with **Closed by the AI agent** applied, and removing the chip shows the
+whole queue again.
 
 ## When to use the Cases page
 

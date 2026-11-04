@@ -3,6 +3,13 @@
 Status: binding for every Round 12 work package. Owner: orchestrator. Branch: `claude/round12`
 (PR into `Testing` at the end of the round).
 
+Later rounds: Round 14 tripled the chat "Timeouts and capacity" defaults and widened their bounds
+(`chat_limits_version` 2: lookups at once 12, tool timeout 45 s, model step timeout 900 s, 12
+questions per person and 48 per backend; Round 14 SPEC §4.2), and removed the Overview's two
+titled bands ("Alert flow", "Cases and response"), so every Overview row is one panel gutter apart
+with its window in the cards (Round 14 SPEC §4.3). Where this spec states the earlier values or the
+bands, the Round 14 SPEC and its §11 "As built" describe what ships.
+
 Inputs (read the parts your package cites; they are the evidence base):
 
 - Research: `research/SYNTHESIS-chat.md` (chat features, P0-1 … P0-11, P1-1 … P1-9, D-1 … D-4),

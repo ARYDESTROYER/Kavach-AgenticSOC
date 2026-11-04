@@ -169,7 +169,7 @@ export const DOC_CATEGORIES: readonly DocsCategory[] = [
       {
         title: 'Approvals',
         description: 'Understand approval gates and review what waits for a person to approve.',
-        path: 'automation/playbooks-approvals/',
+        path: 'automation/approvals/',
         keywords: ['approval', 'proposal', 'review', 'automation'],
       },
     ],
