@@ -143,7 +143,7 @@ values stay write-only appears only under sections that hold preferences or secr
   Critical: respond within 15 minutes, resolve within 4 hours"), followed by the clock
   settings.
 - **Organization → All settings** shows every schema key with readable labels: group
-  titles in sentence case, and known acronyms keep their capitals (IP, URL, ID, TTL,
+  titles in sentence case, and known acronyms stay in upper case (IP, URL, ID, TTL,
   SLA, RAG).
 - **Security & access → Single sign-on & policy** lists each OIDC provider as a group
   of labelled rows (display name, client ID, the client secret, allowed domains and

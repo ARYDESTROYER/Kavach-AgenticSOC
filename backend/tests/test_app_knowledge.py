@@ -962,7 +962,10 @@ def test_lazy_exports_match_all():
 # --------------------------------------------------------------------------- #
 # "Ask about this" topic passthrough (SPEC A7; ChatRequest.topic → ctx.topic).
 # --------------------------------------------------------------------------- #
-_AUTO_CLOSED = "kpi:auto_closed"
+# A topic whose own question, searched plainly, leads with a neighbouring section ("How
+# to read a KPI"), so pinning is what puts its own section first. Re-pick it when a
+# corpus change makes the plain search land on the topic's section by itself.
+_PINNED = "kpi:total_cases"
 
 
 def _anchor(doc: str | None) -> str:
@@ -973,17 +976,17 @@ async def test_app_help_defaults_its_topic_to_the_turns_topic():
     """The page sends the topic's question; without the topic the plain retrieval
     leads with a neighbouring glossary entry. ``ctx.topic`` pins the topic's own
     section first, and a model-chosen query is kept (it ranks the rest)."""
-    question = topic_question(_AUTO_CLOSED)
+    question = topic_question(_PINNED)
     plain = await AppHelpTool().run(_ctx(), query=question)
-    assert plain.ok and _anchor(plain.citations[0].doc) != "auto-closed"
-    pinned = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED), query=question)
-    assert pinned.ok and _anchor(pinned.citations[0].doc) == "auto-closed"
-    own_query = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED), query="how is resolved closed counted")
-    assert _anchor(own_query.citations[0].doc) == "auto-closed"
-    assert own_query.untrusted_params["query"] == "how is resolved closed counted"
+    assert plain.ok and _anchor(plain.citations[0].doc) != "total-cases"
+    pinned = await AppHelpTool().run(_ctx(topic=_PINNED), query=question)
+    assert pinned.ok and _anchor(pinned.citations[0].doc) == "total-cases"
+    own_query = await AppHelpTool().run(_ctx(topic=_PINNED), query="how are cases counted")
+    assert _anchor(own_query.citations[0].doc) == "total-cases"
+    assert own_query.untrusted_params["query"] == "how are cases counted"
     # No query at all: the topic's own question is searched.
-    bare = await AppHelpTool().run(_ctx(topic=_AUTO_CLOSED))
-    assert bare.ok and _anchor(bare.citations[0].doc) == "auto-closed"
+    bare = await AppHelpTool().run(_ctx(topic=_PINNED))
+    assert bare.ok and _anchor(bare.citations[0].doc) == "total-cases"
     # An unknown (well-formed) topic is ignored, never an error.
     unknown = await AppHelpTool().run(_ctx(topic="kpi:not_a_topic"), query=question)
     assert [c.doc for c in unknown.citations] == [c.doc for c in plain.citations]
@@ -998,12 +1001,12 @@ async def test_zero_cost_answer_pins_the_turns_topic():
     from app.stores.cases import CaseStore
 
     adapter = _discover_app_knowledge()
-    question = topic_question(_AUTO_CLOSED)
+    question = topic_question(_PINNED)
     plain = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured")
-    assert _anchor(plain.citations[0].doc) != "auto-closed"
-    pinned = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_AUTO_CLOSED)
-    assert _anchor(pinned.citations[0].doc) == "auto-closed"
-    console = get_app_knowledge().topics[_AUTO_CLOSED].console
+    assert _anchor(plain.citations[0].doc) != "total-cases"
+    pinned = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_PINNED)
+    assert _anchor(pinned.citations[0].doc) == "total-cases"
+    console = get_app_knowledge().topics[_PINNED].console
     assert pinned.console_links[0].id == console
     unknown = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic="kpi:nope")
     assert [c.doc for c in unknown.citations] == [c.doc for c in plain.citations]
@@ -1014,7 +1017,7 @@ async def test_zero_cost_answer_pins_the_turns_topic():
         raise RuntimeError("console map unavailable")
 
     adapter.resolve_console_links = broken_links  # instance attribute: this adapter only
-    kept = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_AUTO_CLOSED)
+    kept = adapter.fallback_answer(question, grants=frozenset(), reason="not_configured", topic=_PINNED)
     assert kept is not None and [c.doc for c in kept.citations] == [c.doc for c in pinned.citations]
     # The answer's own links, without the lead the failed lookup would have added.
     assert [link.id for link in kept.console_links if link.id != console] == [
@@ -1028,6 +1031,6 @@ async def test_zero_cost_answer_pins_the_turns_topic():
     prefs.chat_model = ModelConfig(provider="mock", model="mock")
     engine = ChatEngine(es, LLMGateway.__new__(LLMGateway), AuditLogger(es), CaseStore(es))
     outcome = TurnOutcome()
-    response = await engine.chat(question, prefs, tool_context=_ctx(topic=_AUTO_CLOSED), outcome=outcome)
+    response = await engine.chat(question, prefs, tool_context=_ctx(topic=_PINNED), outcome=outcome)
     assert response.answer_kind == "product_help" and response.usage and response.usage.calls == 0
-    assert _anchor(response.citations[0].doc) == "auto-closed"
+    assert _anchor(response.citations[0].doc) == "total-cases"
