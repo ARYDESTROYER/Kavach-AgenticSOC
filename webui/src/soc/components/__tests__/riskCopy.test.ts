@@ -27,6 +27,11 @@ describe('riskCopy', () => {
     expect(RISK_HELP_TEXT).toContain('never closes or escalates');
   });
 
+  it('uses no em or en dashes in copy an operator reads', () => {
+    expect(RISK_HELP_TEXT).not.toMatch(/[\u2013\u2014]/);
+    expect(ACTIVE_RISK_HELP_TEXT).not.toMatch(/[\u2013\u2014]/);
+  });
+
   it('folds the per-factor help into the Active Risk Index help', () => {
     expect(ACTIVE_RISK_HELP_TEXT.endsWith(RISK_HELP_TEXT)).toBe(true);
   });

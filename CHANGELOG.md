@@ -1908,7 +1908,10 @@ and, just as importantly, makes each of these conditions a state an operator can
   as a date, and later audit-first writes answer `503 audit_unavailable`. Bootstrap cannot
   tell whether the step was done, so it logs a warning naming the step on every start after
   the first, even once the step is done (a deployment whose audit index was first created by
-  Round 14 needs nothing).
+  Round 14 needs nothing). The shipped template has no lifecycle settings, so where Storage &
+  retention is active the step also takes the audit index out of its lifecycle policy until
+  you put it back ([Applying the Round 14 audit
+  template](docs/operations/upgrades.md#applying-the-round-14-audit-template)).
 - **Round 14: audit before visible.** Settings and account changes now fail with `503
   audit_unavailable` (nothing changed) when the audit log cannot be written. During an audit
   outage on Elasticsearch state, `POST /api/setup/secrets` still applies `es_mgmt_api_key`,

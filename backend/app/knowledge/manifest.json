@@ -4,12 +4,12 @@
  "product_version": "0.1.13",
  "docs_version": "0.1",
  "counts": {
-  "pages": 58,
-  "chunks": 753
+  "pages": 61,
+  "chunks": 860
  },
  "sha256": {
   "aliases.json": "39ed30ad48d64589c51a5342d536e602ea24480417579db25b1f95109f8bbe16",
-  "app_docs.json": "639ce74a4e132e676dcc056397e2d31ba38cdebbd3168525f29d4d479e1a0356",
-  "console_map.json": "4a1d4131110d236cf70ee4106ee6dc37370a471a7f047c66854b77f2dcb196e4"
+  "app_docs.json": "cc1b99c77e8c2f04120f362f48859aa621a145e96e528b2ead3ab161ae9054cd",
+  "console_map.json": "17c2db6d772e1877d87f035ec6b4ff6f937c360c1128a71de4e2da0a7281bb19"
  }
 }

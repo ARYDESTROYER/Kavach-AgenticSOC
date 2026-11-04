@@ -24,8 +24,15 @@ it does **not** replace the established implementation layers:
 | `layout.filter-bar` / `FilterBar` | Flat hairline filter and refresh band. |
 | `data.table` / `DataTable` | Bounded record table with sort, selection, and paging. |
 | `feedback.empty-state` / `EmptyState` | Compact shaped no-data or inline-failure state. |
-| `settings.section` / `SettingsCard` | Divider-led settings section without nested cards. |
+| `settings.section` / `SettingsSection` | One Settings section in grouped panels (owned by `src/soc/pages/settings/primitives`); `settings.card` / `SettingsCard` is the pre-Round-14 divider band kept until every section moves to `SettingsGroup`. |
 | `surface.material-bar` / `MaterialBar`, `useScrollEdge`, `useScrollEdgeRef` | The one translucent material for sticky chrome, with the scroll-edge fade shown only while content is scrolled beneath; solid under reduced transparency or increased contrast. |
+| `surface.panel` / `Panel`, `PANEL_GAP`, `PANEL_PADDING`, `PANEL_PADDING_X` | One module on the tinted borderless panel, the Overview grammar for every page (Round 14). |
+| `typography.section-title` / `SectionTitle` | The module title on the canvas: a real heading with an optional caption and aside. |
+| `data.list-row` / `ListRow`, `ListRows` | A record row on a panel with one open control, one trailing action and a row menu; `ListRows` is the list. |
+| `control.row-actions` / `RowActions` | One trailing row action in view and the rest in a More actions menu; destructive actions neutral at rest. |
+| `feedback.status-dot` / `StatusDot` | A status as a 6px dot and plain text, coloured only when it is not the healthy default. |
+| `feedback.callout` / `Callout`, `DISMISSED_INTROS_KEY`, `DISMISSED_INTROS_MAX`, `DISMISSED_INTRO_ID_PATTERN` | A live warning, an error, or a dismissible first-run intro remembered per user. |
+| `applyTransparencyPreference`, `TRANSPARENCY_PREF_KEY`, `TRANSPARENCY_STORAGE_KEY` | The per-user Reduce transparency override behind the material. |
 | `DESIGN_SYSTEM_CATALOG` | JSON-safe inventory of tokens, components, source assets, and accessibility contracts. |
 
 Source geometry lives under `assets/` as plain data. The marks are original Console

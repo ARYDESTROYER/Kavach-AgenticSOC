@@ -7337,7 +7337,8 @@ export interface components {
          * @description Where a request-driven audit row came from (SPEC §4.5.3, personal data, D9).
          *
          *     ``ip`` is believed from a forwarded header only when the socket peer is a named
-         *     trusted proxy, and then only the rightmost entry (``ip_source="trusted_proxy"``);
+         *     trusted proxy, and then it is the rightmost entry that is not itself a trusted
+         *     proxy (``ip_source="trusted_proxy"``, see ``audit.context.audit_client_ip``);
          *     otherwise it is the socket peer (``ip_source="peer"``) whatever the caller sent.
          *     ``ip`` is always a parsed address or ``None`` (:func:`normalise_audit_ip`): it is
          *     mapped as Elasticsearch type ``ip``, which refuses the whole row for ``""`` or a

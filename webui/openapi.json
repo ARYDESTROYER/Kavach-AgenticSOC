@@ -362,7 +362,7 @@
         "type": "object"
       },
       "AuditClient": {
-        "description": "Where a request-driven audit row came from (SPEC §4.5.3, personal data, D9).\n\n``ip`` is believed from a forwarded header only when the socket peer is a named\ntrusted proxy, and then only the rightmost entry (``ip_source=\"trusted_proxy\"``);\notherwise it is the socket peer (``ip_source=\"peer\"``) whatever the caller sent.\n``ip`` is always a parsed address or ``None`` (:func:`normalise_audit_ip`): it is\nmapped as Elasticsearch type ``ip``, which refuses the whole row for ``\"\"`` or a\nnon-address such as a Unix-socket peer. ``peer`` keeps the raw socket address as\ntext. ``forwarded_for`` keeps the raw header as untrusted text, never used to\nfilter or group. Values are bounded on write.",
+        "description": "Where a request-driven audit row came from (SPEC §4.5.3, personal data, D9).\n\n``ip`` is believed from a forwarded header only when the socket peer is a named\ntrusted proxy, and then it is the rightmost entry that is not itself a trusted\nproxy (``ip_source=\"trusted_proxy\"``, see ``audit.context.audit_client_ip``);\notherwise it is the socket peer (``ip_source=\"peer\"``) whatever the caller sent.\n``ip`` is always a parsed address or ``None`` (:func:`normalise_audit_ip`): it is\nmapped as Elasticsearch type ``ip``, which refuses the whole row for ``\"\"`` or a\nnon-address such as a Unix-socket peer. ``peer`` keeps the raw socket address as\ntext. ``forwarded_for`` keeps the raw header as untrusted text, never used to\nfilter or group. Values are bounded on write.",
         "properties": {
           "forwarded_for": {
             "anyOf": [

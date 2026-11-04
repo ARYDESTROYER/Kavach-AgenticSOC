@@ -1,27 +1,19 @@
 {
   "_comment": "Round-5 W0-E E4 grep-guard baseline. Per-file counts of pre-existing arbitrary text sizes / raw hex in .tsx. The guard fails only on counts ABOVE these. Regenerate with `node scripts/gate-grep.mjs --update` (ratchets the ceiling down).",
   "arbitrary-text-size": {
-    "src/soc/AppShell.tsx": 4,
-    "src/soc/components/BaselineGauge.tsx": 9,
-    "src/soc/components/CaseHoverCard.tsx": 1,
-    "src/soc/components/CaseTriageHeader.tsx": 5,
+    "src/soc/AppShell.tsx": 1,
+    "src/soc/components/BaselineGauge.tsx": 2,
     "src/soc/components/ColumnsMenu.tsx": 2,
     "src/soc/components/ConnectorPicker.tsx": 1,
-    "src/soc/components/EnrichmentProvidersEditor.tsx": 2,
     "src/soc/components/HelpTip.tsx": 1,
     "src/soc/components/MfaSetupCard.tsx": 1,
-    "src/soc/components/ModelsCatalog.tsx": 5,
-    "src/soc/components/NavSidebar.tsx": 1,
-    "src/soc/components/NotificationBell.tsx": 2,
-    "src/soc/components/NotificationsEditor.tsx": 2,
+    "src/soc/components/NotificationBell.tsx": 1,
+    "src/soc/components/NotificationsEditor.tsx": 1,
     "src/soc/components/RiskGauge.tsx": 1,
     "src/soc/components/SavedViewsBar.tsx": 2,
-    "src/soc/components/TraceTimeline.tsx": 3,
     "src/soc/components/__tests__/CustomizationSection.savedviews.test.tsx": 3,
     "src/soc/components/charts-soc.tsx": 1,
-    "src/soc/pages/Scans.tsx": 1,
-    "src/ui/avatar.tsx": 1,
-    "src/ui/table.tsx": 1
+    "src/ui/avatar.tsx": 1
   },
   "raw-hex-color": {
     "src/soc/__tests__/login.render.test.tsx": 2,

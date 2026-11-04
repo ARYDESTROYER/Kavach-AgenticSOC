@@ -71,7 +71,8 @@ export function makeSummary(over: Partial<RunbookSummary> = {}): RunbookSummary 
     step_count: 3,
     applies_to: { rule_ids: ['ssh_auth_failed'], mitre: [], more: 0 },
     runs_30d: 4,
-    review_due_at: '2026-11-02T00:00:00Z',
+    // Far in the future so a default summary is never 'review due' whatever today is.
+    review_due_at: '2099-11-02T00:00:00Z',
     last_reviewed_at: null,
     last_reviewed_by: null,
     updated_at: '2026-10-28T10:00:00Z',

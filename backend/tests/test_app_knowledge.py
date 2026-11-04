@@ -276,7 +276,7 @@ def test_retrieval_is_diverse_deterministic_and_abstains_off_topic():
         per_page[chunk.page] = per_page.get(chunk.page, 0) + 1
     assert max(per_page.values()) <= 2
     assert search_docs("weather in Paris") == []
-    assert search_docs("what is T1110") == []
+    assert search_docs("what is T1003") == []
 
 
 def test_tokenizer_reuses_the_rag_tokenizer_and_splits_sub_tokens():

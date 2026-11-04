@@ -166,8 +166,9 @@ export interface FeatureNode {
   /**
    * The page this row opens when it is pressed; defaults to the row's own id (Round 14,
    * SPEC §2.2 item 2). A group row whose target is one of its children resolves to that
-   * child's page only while the child is visible to the viewer, else to its own id
-   * (`navTarget` in nav.ts), so a row never opens a page the viewer cannot read.
+   * child's page only while the child is visible to the viewer, else to the first
+   * child the viewer can see, else to its own id (`navTarget` in nav.ts), so a row never
+   * opens a page the viewer cannot read.
    */
   target?: PageId;
   /**
@@ -239,8 +240,8 @@ export const FEATURES: FeatureNode[] = [
   {
     // Round 14 (SPEC §2.2): the app still lands on the Cyber Defence Center (`overview`),
     // but pressing the Overview row opens the Dashboards library. A viewer without
-    // `metrics:view` cannot open the library, so for them the row falls back to its own
-    // id (the Cyber Defence Center) and the Dashboards child is hidden.
+    // `metrics:view` cannot open the library, so for them the row opens its first visible
+    // child (the Cyber Defence Center, `overview`) and the Dashboards child is hidden.
     id: 'overview',
     label: 'Overview',
     icon: LayoutDashboard,

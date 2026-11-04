@@ -1100,7 +1100,7 @@ CLOSING = [
                      ("Contain the issue on host srv-db-01", "host `srv-db-01`"))),
     G("Contain the damage now", kind="product_help", max_lookups=0, contains=(_CANT_ACT,), absent=_UNRELATED),
     G("Change the theme to dark", kind="product_help", tools=("app_help",), max_lookups=1,
-      contains=(_CANT_CHANGE, "Do it in the console: **Settings › Account › Appearance & customization**")),
+      contains=(_CANT_CHANGE, "Do it in the console: **Settings › Account › Appearance**")),
     G("Change the case ID format", kind="product_help", tools=("app_help",), max_lookups=1,
       contains=(_CANT_CHANGE, "**Settings › General › Cases**")),
     *(G(q, kind="conversation", max_lookups=0, contains=("I can't write jokes, poems or stories.", _SCOPE),

@@ -638,7 +638,7 @@
         "section": "profile"
       },
       "requires": null,
-      "blurb": "Your display name, avatar, secondary email, timezone, and language.",
+      "blurb": "Your display name, photo, secondary email, timezone and language.",
       "keywords": [
         "profile",
         "account",
@@ -666,7 +666,7 @@
         "section": "account_security"
       },
       "requires": null,
-      "blurb": "Enroll TOTP two-factor authentication for your own account.",
+      "blurb": "Two-factor authentication for your own account.",
       "keywords": [
         "security",
         "mfa",
@@ -710,18 +710,18 @@
     {
       "id": "settings:customization",
       "kind": "settings",
-      "label": "Appearance & customization",
+      "label": "Appearance",
       "crumb": [
         "Settings",
         "Account",
-        "Appearance & customization"
+        "Appearance"
       ],
       "page": "settings",
       "opts": {
         "section": "customization"
       },
       "requires": null,
-      "blurb": "Your theme, saved views, and (admin) terminology + org defaults.",
+      "blurb": "Your theme, saved views, and the organization terminology and defaults.",
       "keywords": [
         "theme",
         "dark mode",
@@ -756,7 +756,7 @@
         "section": "general"
       },
       "requires": null,
-      "blurb": "Index pattern, entity fields, severity threshold, and polling.",
+      "blurb": "Index pattern, entity fields, evidence fields and polling.",
       "keywords": [
         "data view",
         "index",
@@ -765,7 +765,9 @@
         "poll",
         "lookback",
         "timestamp",
-        "severity"
+        "severity",
+        "sources",
+        "evidence"
       ],
       "owned_keys": [
         "data_view_pattern",
@@ -823,6 +825,36 @@
       ]
     },
     {
+      "id": "settings:discounted-inference",
+      "kind": "settings",
+      "label": "Discounted inference",
+      "crumb": [
+        "Settings",
+        "General",
+        "Discounted inference"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "discounted-inference"
+      },
+      "requires": "models:read",
+      "blurb": "Live Flex for alert investigations and the optional async Batch queue.",
+      "keywords": [
+        "discounted",
+        "flex",
+        "batch",
+        "cheaper",
+        "service tier",
+        "cost",
+        "severity floor",
+        "providers",
+        "async"
+      ],
+      "owned_keys": [
+        "batch"
+      ]
+    },
+    {
       "id": "settings:chat_agent",
       "kind": "settings",
       "label": "Chat assistant",
@@ -836,7 +868,7 @@
         "section": "chat_agent"
       },
       "requires": null,
-      "blurb": "Per-question limits (unlimited or bounded), the daily chat spending limit, typed-out answers, suggested questions, and which indicators chat may send to enrichment.",
+      "blurb": "Per-question limits, the daily chat spending limit, typed-out answers, suggested questions, and which indicators chat may send to enrichment.",
       "keywords": [
         "chat",
         "assistant",
@@ -879,7 +911,7 @@
         "section": "detection"
       },
       "requires": null,
-      "blurb": "Clustering, risk weights, escalation, auto-close, and cross-source correlation.",
+      "blurb": "Correlation, risk weights, asset criticality, escalation, auto-close and cross-source links.",
       "keywords": [
         "correlation",
         "risk",
@@ -921,7 +953,7 @@
         "section": "detection_rules"
       },
       "requires": "rules:read",
-      "blurb": "Author detection rules (match/threshold, anomaly) and case-automation rules in one place.",
+      "blurb": "Detection rules (match, threshold, anomaly) and case automation rules in one place.",
       "keywords": [
         "rules",
         "detection rule",
@@ -958,7 +990,7 @@
         "section": "cases"
       },
       "requires": "settings:manage",
-      "blurb": "Human-facing case-ID nomenclature and live preview.",
+      "blurb": "The case number format and a live preview.",
       "keywords": [
         "case id",
         "case number",
@@ -985,7 +1017,7 @@
         "section": "case_policy"
       },
       "requires": "settings:manage",
-      "blurb": "Advisory SLA targets and the impact × urgency priority matrix, plus operator suppression rules that drop known-benign events before triage.",
+      "blurb": "SLA targets, the impact and urgency priority matrix, suppression rules and declared-benign rules.",
       "keywords": [
         "sla",
         "service level",
@@ -1024,14 +1056,13 @@
         "section": "automation"
       },
       "requires": "settings:manage",
-      "blurb": "The master switch for threshold automation — rules that react to a case after the deterministic decision (authored in Detection & rules).",
+      "blurb": "The master switch for case automation rules, which act after the decision is made.",
       "keywords": [
         "automation",
         "rules",
         "threshold",
         "tag",
         "notify",
-        "playbook",
         "proposal",
         "enable"
       ],
@@ -1053,7 +1084,7 @@
         "section": "standup"
       },
       "requires": null,
-      "blurb": "The daily aggregate summary window and cadence.",
+      "blurb": "The daily summary window and cadence.",
       "keywords": [
         "standup",
         "summary",
@@ -1079,7 +1110,7 @@
         "section": "notifications"
       },
       "requires": "settings:manage",
-      "blurb": "Outbound channels, triggers, dedup, and digests.",
+      "blurb": "Outbound channels, triggers, deduplication and digests.",
       "keywords": [
         "alerting",
         "notifications",
@@ -1109,7 +1140,7 @@
         "section": "enrichment"
       },
       "requires": null,
-      "blurb": "Threat-intel lookups (AbuseIPDB / VirusTotal / GeoIP), cached in Redis.",
+      "blurb": "Threat intelligence lookups such as AbuseIPDB, VirusTotal and GeoIP, cached in Redis.",
       "keywords": [
         "enrichment",
         "abuseipdb",
@@ -1156,15 +1187,13 @@
         "section": "knowledge"
       },
       "requires": "settings:manage",
-      "blurb": "RAG retrieval, the threat-context panel, MITRE, and runbooks/playbooks.",
+      "blurb": "Retrieval, the threat context panel, MITRE ATT&CK, and resolved-case precedents.",
       "keywords": [
         "rag",
         "retrieval",
         "knowledge",
         "threat context",
         "mitre",
-        "runbook",
-        "playbook",
         "ioc",
         "resolved cases",
         "precedent",
@@ -1175,6 +1204,40 @@
         "rag",
         "threat_context",
         "precedent"
+      ]
+    },
+    {
+      "id": "settings:runbooks",
+      "kind": "settings",
+      "label": "Runbooks",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Runbooks"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "runbooks"
+      },
+      "requires": "settings:manage",
+      "blurb": "Attaching runbooks to cases, guidance for the agent, AI help and publishing rules.",
+      "keywords": [
+        "runbook",
+        "runbooks",
+        "procedure",
+        "checklist",
+        "auto attach",
+        "fallback",
+        "generic incident",
+        "guidance",
+        "publish",
+        "approver",
+        "review",
+        "step approvals",
+        "draft note"
+      ],
+      "owned_keys": [
+        "runbooks"
       ]
     },
     {
@@ -1191,7 +1254,7 @@
         "section": "admin_users"
       },
       "requires": "users:manage",
-      "blurb": "Add accounts, assign roles, reset passwords, and enable/disable users.",
+      "blurb": "Add accounts, assign roles, reset passwords, and turn accounts on or off.",
       "keywords": [
         "users",
         "accounts",
@@ -1218,7 +1281,7 @@
         "section": "roles"
       },
       "requires": "roles:manage",
-      "blurb": "Custom roles, the permission matrix, inheritance, and explicit denies.",
+      "blurb": "Custom roles, the permission matrix, inheritance and explicit denies.",
       "keywords": [
         "roles",
         "rbac",
@@ -1245,7 +1308,7 @@
         "section": "security"
       },
       "requires": "settings:manage",
-      "blurb": "Single sign-on (OIDC) providers and the token / session policy.",
+      "blurb": "Single sign-on (OIDC) providers and the session policy.",
       "keywords": [
         "security",
         "sso",
@@ -1286,7 +1349,7 @@
         "section": "admin_sessions"
       },
       "requires": "users:manage",
-      "blurb": "Review and force-terminate sessions across all accounts.",
+      "blurb": "Review and sign out sessions across all accounts.",
       "keywords": [
         "sessions",
         "active sessions",
@@ -1311,7 +1374,7 @@
         "section": "keys"
       },
       "requires": "settings:manage",
-      "blurb": "Write-only API keys for Elasticsearch, LLMs, and enrichment.",
+      "blurb": "Write-only API keys for Elasticsearch, models and enrichment.",
       "keywords": [
         "api key",
         "secret",
@@ -1338,7 +1401,7 @@
         "section": "appearance"
       },
       "requires": "settings:manage",
-      "blurb": "Org wordmark, logo, accent colours, and default theme.",
+      "blurb": "The organization wordmark, logo, accent colors and default theme.",
       "keywords": [
         "branding",
         "appearance",
@@ -1366,7 +1429,7 @@
         "section": "release_updates"
       },
       "requires": "settings:manage",
-      "blurb": "Public source repository, Stable/Testing refs, and read-only update discovery.",
+      "blurb": "The public source repository, the Stable and Testing channels, and update discovery.",
       "keywords": [
         "updates",
         "release",
@@ -1395,7 +1458,7 @@
         "section": "advanced"
       },
       "requires": "settings:manage",
-      "blurb": "Caps, kill switch, suppression rules, rule catalog, and the settings lock.",
+      "blurb": "Per-case caps, the kill switch, background scans, the auto-forward allowlist and the settings lock.",
       "keywords": [
         "advanced",
         "caps",
@@ -1429,7 +1492,7 @@
         "section": "advanced_all"
       },
       "requires": "settings:manage",
-      "blurb": "Every engine preference, generated from the backend schema — the long tail of knobs.",
+      "blurb": "Every engine preference, generated from the backend schema.",
       "keywords": [
         "schema",
         "all settings",
@@ -1457,7 +1520,7 @@
         "section": "demo"
       },
       "requires": "demo:manage",
-      "blurb": "Populate the console with isolated, $0, reversible synthetic data (experimental).",
+      "blurb": "Fill the Console with isolated, zero-cost, reversible synthetic data.",
       "keywords": [
         "demo",
         "experimental",
@@ -1485,7 +1548,7 @@
         "section": "storage"
       },
       "requires": "settings:manage",
-      "blurb": "Capability-aware Hot, Warm, and desired archive lifecycle for Agentic SOC-owned state.",
+      "blurb": "Hot, Warm and archive lifecycle for the state Agentic SOC owns.",
       "keywords": [
         "storage",
         "retention",
@@ -1516,7 +1579,7 @@
         "section": "data_export"
       },
       "requires": "data_export:export",
-      "blurb": "Download a selectable, secret-free Agentic SOC analysis bundle.",
+      "blurb": "Download a secret-free bundle of the state you choose.",
       "keywords": [
         "export",
         "download",
@@ -1544,7 +1607,7 @@
         "section": "danger"
       },
       "requires": "users:manage",
-      "blurb": "Tiered reset of cases, sources, or the whole tenant. Never wipes env secrets.",
+      "blurb": "Reset cases, sources or the whole tenant in tiers. Never wipes environment secrets.",
       "keywords": [
         "danger",
         "reset",
@@ -1584,12 +1647,12 @@
     {
       "id": "settings:general.general-mapping",
       "kind": "settings_card",
-      "label": "Default log scope & field mapping",
+      "label": "Log scope and field mapping",
       "crumb": [
         "Settings",
         "General",
         "Data scope",
-        "Default log scope & field mapping"
+        "Log scope and field mapping"
       ],
       "page": "settings",
       "opts": {
@@ -1901,12 +1964,12 @@
     {
       "id": "settings:knowledge.knowledge-rag",
       "kind": "settings_card",
-      "label": "Retrieval (RAG)",
+      "label": "Retrieval",
       "crumb": [
         "Settings",
         "Integrations",
         "Knowledge & threat context",
-        "Retrieval (RAG)"
+        "Retrieval"
       ],
       "page": "settings",
       "opts": {
@@ -1927,12 +1990,12 @@
     {
       "id": "settings:knowledge.knowledge-threat",
       "kind": "settings_card",
-      "label": "Threat-context panel",
+      "label": "Threat context panel",
       "crumb": [
         "Settings",
         "Integrations",
         "Knowledge & threat context",
-        "Threat-context panel"
+        "Threat context panel"
       ],
       "page": "settings",
       "opts": {
@@ -1952,12 +2015,12 @@
     {
       "id": "settings:knowledge.knowledge-corpus",
       "kind": "settings_card",
-      "label": "Corpus & procedures",
+      "label": "Knowledge corpus",
       "crumb": [
         "Settings",
         "Integrations",
         "Knowledge & threat context",
-        "Corpus & procedures"
+        "Knowledge corpus"
       ],
       "page": "settings",
       "opts": {
@@ -1967,10 +2030,61 @@
       "requires": "settings:manage",
       "blurb": "",
       "keywords": [
-        "runbooks",
-        "playbooks",
         "resolved cases",
-        "knowledge corpus"
+        "knowledge corpus",
+        "mitre corpus",
+        "precedent"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:runbooks.runbooks-cases",
+      "kind": "settings_card",
+      "label": "Runbooks on cases",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Runbooks",
+        "Runbooks on cases"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "runbooks",
+        "anchor": "runbooks-cases"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "auto attach",
+        "attach",
+        "fallback",
+        "generic incident"
+      ],
+      "owned_keys": []
+    },
+    {
+      "id": "settings:runbooks.runbooks-publishing",
+      "kind": "settings_card",
+      "label": "Publishing and review",
+      "crumb": [
+        "Settings",
+        "Integrations",
+        "Runbooks",
+        "Publishing and review"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "runbooks",
+        "anchor": "runbooks-publishing"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "publish",
+        "approver",
+        "review",
+        "step approvals",
+        "cadence"
       ],
       "owned_keys": []
     },
@@ -2026,6 +2140,31 @@
       "owned_keys": []
     },
     {
+      "id": "settings:advanced.advanced-scans",
+      "kind": "settings_card",
+      "label": "Background scans",
+      "crumb": [
+        "Settings",
+        "Organization",
+        "Advanced",
+        "Background scans"
+      ],
+      "page": "settings",
+      "opts": {
+        "section": "advanced",
+        "anchor": "advanced-scans"
+      },
+      "requires": "settings:manage",
+      "blurb": "",
+      "keywords": [
+        "background scan",
+        "scans",
+        "automated scans",
+        "comprehensive ingestion"
+      ],
+      "owned_keys": []
+    },
+    {
       "id": "settings:advanced.advanced-allowlist",
       "kind": "settings_card",
       "label": "Auto-forward allowlist",
@@ -2051,12 +2190,12 @@
     {
       "id": "settings:advanced.advanced-suppression",
       "kind": "settings_card",
-      "label": "Suppression & rule catalog",
+      "label": "Suppression rules in retrieval",
       "crumb": [
         "Settings",
         "Organization",
         "Advanced",
-        "Suppression & rule catalog"
+        "Suppression rules in retrieval"
       ],
       "page": "settings",
       "opts": {
@@ -2067,8 +2206,8 @@
       "blurb": "",
       "keywords": [
         "suppression",
-        "rule catalog",
-        "detection rules"
+        "retrieval",
+        "trusted context"
       ],
       "owned_keys": []
     },
@@ -2152,12 +2291,12 @@
     {
       "id": "settings:storage.storage-preview",
       "kind": "settings_card",
-      "label": "Preview & safe scope",
+      "label": "Preview and apply",
       "crumb": [
         "Settings",
         "Organization",
         "Storage & retention",
-        "Preview & safe scope"
+        "Preview and apply"
       ],
       "page": "settings",
       "opts": {
@@ -2180,12 +2319,12 @@
     {
       "id": "settings:release_updates.release-source",
       "kind": "settings_card",
-      "label": "Source & channels",
+      "label": "Source and channels",
       "crumb": [
         "Settings",
         "Organization",
         "Updates & releases",
-        "Source & channels"
+        "Source and channels"
       ],
       "page": "settings",
       "opts": {
@@ -2255,8 +2394,8 @@
     {
       "id": "kpi:total_cases",
       "kind": "kpi",
-      "label": "Total Cases",
-      "question": "What does the Total Cases KPI count?",
+      "label": "Total cases",
+      "question": "What does the Total cases KPI count?",
       "docs": [
         "analyst/kpi-glossary/#total-cases"
       ],
@@ -2265,8 +2404,8 @@
     {
       "id": "kpi:total_critical",
       "kind": "kpi",
-      "label": "Total Critical",
-      "question": "What does the Total Critical KPI count?",
+      "label": "Total critical",
+      "question": "What does the Total critical KPI count?",
       "docs": [
         "analyst/kpi-glossary/#total-critical"
       ],
@@ -2275,8 +2414,8 @@
     {
       "id": "kpi:open_cases",
       "kind": "kpi",
-      "label": "Open Cases",
-      "question": "What does the Open Cases KPI count, and why is it not filtered by the time window?",
+      "label": "Open cases",
+      "question": "What does the Open cases KPI count, and why is it not filtered by the time window?",
       "docs": [
         "analyst/kpi-glossary/#open-cases"
       ],
@@ -2295,8 +2434,8 @@
     {
       "id": "kpi:resolved_closed",
       "kind": "kpi",
-      "label": "Resolved / Closed",
-      "question": "What does the Resolved / Closed KPI count?",
+      "label": "Resolved or closed",
+      "question": "What does the Resolved or closed KPI count?",
       "docs": [
         "analyst/kpi-glossary/#resolved-closed"
       ],
@@ -2305,8 +2444,8 @@
     {
       "id": "kpi:auto_closed",
       "kind": "kpi",
-      "label": "Auto Closed",
-      "question": "What does Auto Closed count, and how does it relate to Resolved / Closed?",
+      "label": "Auto-closed",
+      "question": "What does Auto-closed count, and how does it relate to Resolved or closed?",
       "docs": [
         "analyst/kpi-glossary/#auto-closed"
       ],
@@ -2419,8 +2558,8 @@
     {
       "id": "settings:customization",
       "kind": "settings",
-      "label": "Appearance & customization",
-      "question": "What does Settings › Account › Appearance & customization control, and who can change it?",
+      "label": "Appearance",
+      "question": "What does Settings › Account › Appearance control, and who can change it?",
       "docs": [],
       "console": "settings:customization"
     },
@@ -2439,6 +2578,14 @@
       "question": "What does Settings › General › Models control, and who can change it?",
       "docs": [],
       "console": "settings:models"
+    },
+    {
+      "id": "settings:discounted-inference",
+      "kind": "settings",
+      "label": "Discounted inference",
+      "question": "What does Settings › General › Discounted inference control, and who can change it?",
+      "docs": [],
+      "console": "settings:discounted-inference"
     },
     {
       "id": "settings:chat_agent",
@@ -2519,6 +2666,14 @@
       "question": "What does Settings › Integrations › Knowledge & threat context control, and who can change it?",
       "docs": [],
       "console": "settings:knowledge"
+    },
+    {
+      "id": "settings:runbooks",
+      "kind": "settings",
+      "label": "Runbooks",
+      "question": "What does Settings › Integrations › Runbooks control, and who can change it?",
+      "docs": [],
+      "console": "settings:runbooks"
     },
     {
       "id": "settings:admin_users",

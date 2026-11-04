@@ -514,8 +514,8 @@ def test_campaign_entities_are_said_whole() -> None:
 
 @pytest.mark.parametrize("question, target, page", [
     ("Change the theme to dark",
-     {"id": "settings:customization", "label": "Settings › Account › Appearance & customization",
-      "requires": None, "allowed": True}, "Settings › Account › Appearance & customization"),
+     {"id": "settings:customization", "label": "Settings › Account › Appearance",
+      "requires": None, "allowed": True}, "Settings › Account › Appearance"),
     ("Change the case ID format",
      {"id": "settings:cases", "label": "Settings › General › Cases", "requires": None, "allowed": True},
      "Settings › General › Cases"),

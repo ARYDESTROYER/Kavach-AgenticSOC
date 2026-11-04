@@ -87,7 +87,7 @@ export interface ConfirmDialogProps extends ConfirmOptions {
 
 /**
  * A busy button looks unavailable but keeps focus (see the module comment): the
- * `aria-disabled` styling from the Wizard's busy Remove, not the native `disabled` one.
+ * `aria-disabled` styling, not the native `disabled` one.
  */
 const BUSY_INERT = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-50';
 
