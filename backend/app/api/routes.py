@@ -1820,6 +1820,7 @@ async def _record_settings_rule_versions(
         try:
             await state.control_audit.record(
                 action_type=ActionType.STATUS, surface="rules", actor=actor,
+                actor_type="human", outcome="success",
                 result_summary=("rule versions recorded: " + ", ".join(changes))[:500],
             )
         except Exception:  # noqa: BLE001 — audit is best-effort
@@ -2212,6 +2213,7 @@ async def update_chat_conversation(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
         actor=user or "default",
+        actor_type="human", outcome="success",
         result_summary=f"conversation {' and '.join(changes)}: {conversation.id}"[:500],
     )
     return conversation.model_dump(mode="json")
@@ -2236,6 +2238,7 @@ async def delete_chat_conversation(
         action_type=ActionType.CONTEXT,
         surface="chat_history",
         actor=user,
+        actor_type="human", outcome="success",
         result_summary=f"conversation deleted: {str(conversation_id)[:100]}",
     )
     return {"ok": True, "id": conversation_id}
@@ -2423,6 +2426,7 @@ async def list_proposals(
                 action_type=ActionType.PROPOSAL,
                 surface="proposal",
                 actor="system",
+                actor_type="system", outcome="success",
                 result_summary=(
                     f"expired {len(swept)} pending proposals past expires_at: "
                     + ",".join(p.id for p in swept[:20])
@@ -2632,6 +2636,7 @@ async def approve_proposal(
                         action_type=ActionType.TUNING,
                         surface="proposal",
                         actor=audit_actor,
+                        actor_type="human", outcome="success",
                         result_summary=(
                             f"approved tuning proposal {proposal.id}: {record.target} "
                             f"{record.before}->{record.after} for {record.rule_id}"
@@ -2910,6 +2915,9 @@ async def bulk_reject_proposals(
             action_type=ActionType.PROPOSAL,
             surface="proposal",
             actor=by or "analyst",
+            actor_type="human",
+            # Every proposal rejected (or already rejected), some, or none.
+            outcome=("success" if not failed else "partial" if len(failed) < len(results) else "failure"),
             result_summary=(
                 f"bulk reject requested={len(ids)} rejected={len(rejected)} "
                 f"already_rejected={len(already)} failed={len(failed)} reason={reason}"
@@ -2945,7 +2953,7 @@ def _legacy_markdown_body(content: str) -> str:
     return content
 
 
-def _legacy_playbook_item(
+def _legacy_alias_item(
     runbook_id: str, version: Any, builtin: Any, *, include_content: bool,
 ) -> dict[str, Any]:
     """One Published runbook in the old procedure item shape (read-only)."""
@@ -3013,7 +3021,7 @@ async def playbooks(
     ``GET /api/runbooks``."""
     _deprecated(response)
     items = [
-        _legacy_playbook_item(rid, version, builtin, include_content=False)
+        _legacy_alias_item(rid, version, builtin, include_content=False)
         for rid, version, builtin, _doc in await _legacy_published(state)
     ]
     cfg = getattr(state.execution_prefs, "runbooks", None)
@@ -3022,58 +3030,97 @@ async def playbooks(
 
 @router.get("/playbooks/coverage", deprecated=True)
 async def playbooks_coverage(
+    request: Request,
     response: Response,
     state: AppState = Depends(get_state),
-    _=Depends(require_permission("runbooks", "read")),
+    _=Depends(require_permission("cases", "read")),
+    __=Depends(require_permission("runbooks", "read")),
 ) -> dict[str, Any]:
     """Deprecated alias: which runbook each stored case would match (the fallback does
-    not count as coverage), over at most 20,000 cases. Use ``GET /api/runbooks/metrics``
-    for runbook coverage."""
+    not count as coverage), over the newest 20,000 cases at most. Needs ``cases:read``
+    as well as ``runbooks:read``, answers ``409 runbook_scope_unsupported`` while
+    row-level data scope applies to the caller and ``503 case_store_unavailable`` when
+    cases cannot be read. ``truncated`` is true when more cases exist beyond the ones
+    read, or a later page could not be read: every figure is then a lower bound. Use
+    ``GET /api/runbooks/metrics`` for runbook coverage."""
+    # The figures are derived from cases, so the alias follows its successor (SPEC
+    # §4.10.15, D16): the same grants, the same row-scope refusal as
+    # ``GET /api/metrics/breakdown`` (failing closed), and the same bound
+    # (``runbook_catalog.METRICS_MAX_CASES``) read through the bounded case scan
+    # (``case_aggregate.scan_cases``, newest first, never offset paging; the cursor is
+    # released when it stops). Like ``runbook_catalog.cases_in_window``, it reports
+    # truncation only when a case beyond the bound exists, so a store holding exactly
+    # the bound reads as complete.
     from ..engine import runbook_runs
+    from ..engine.case_aggregate import scan_cases
+    from ..engine.chat_starters import object_scoped
+    from ..engine.runbook_catalog import DEPRECATION_HEADERS, METRICS_MAX_CASES
     from ..engine.runbook_match import match
     from ..stores.runbook_library import RunbookStoreUnavailable
 
     _deprecated(response)
+    principal = current_user(request)
+    role = getattr(principal, "role", "") if principal is not None else ""
+    if object_scoped(state, str(getattr(role, "value", role) or "")):
+        raise HTTPException(status_code=409, detail={
+            "code": "runbook_scope_unsupported",
+            "message": "Runbook figures are hidden while row-level data scope is on.",
+        }, headers=dict(DEPRECATION_HEADERS))
     try:
         catalog = await runbook_runs.load_catalog(state)
     except RunbookStoreUnavailable as exc:
         raise HTTPException(status_code=503, detail={
             "code": "runbook_store_unavailable",
             "message": "Runbooks could not be read. Try again.",
-        }) from exc
+        }, headers=dict(DEPRECATION_HEADERS)) from exc
     prefs = state.execution_prefs
-    offset = 0
-    page_size = 500
-    max_cases = 20_000
-    scanned = covered = 0
+    counts = {"scanned": 0, "covered": 0}
+    beyond_bound = False
     selected_counts: dict[str, int] = {}
     unmatched_rules: dict[str, int] = {}
-    while scanned < max_cases:
-        page, total = await state.cases.list(limit=page_size, offset=offset)
-        if not page:
-            break
+
+    def consume(page: list[Any]) -> None:
+        nonlocal beyond_bound
         for case in page:
+            if not isinstance(case, Case):
+                try:
+                    case = Case.model_validate(case)
+                except Exception:  # noqa: BLE001 (an undecodable row is not a case)
+                    continue
+            if counts["scanned"] >= METRICS_MAX_CASES:
+                # A case past the bound exists: the figures are lower bounds.
+                beyond_bound = True
+                return
             result = match(runbook_runs.case_facts(case, prefs), catalog.matchable, fallback=False)
-            scanned += 1
+            counts["scanned"] += 1
             if result.winner is not None:
-                covered += 1
+                counts["covered"] += 1
                 selected_counts[result.winner.id] = selected_counts.get(result.winner.id, 0) + 1
             else:
                 families = sorted({str(v).strip() for v in case.rule_ids if str(v).strip()}) or ["<no-rule-id>"]
                 for family in families:
                     unmatched_rules[family] = unmatched_rules.get(family, 0) + 1
-            if scanned >= max_cases:
-                break
-        offset += len(page)
-        if offset >= total or len(page) < page_size:
-            break
+
+    try:
+        outcome = await scan_cases(
+            state.cases, consume, newest_first=True,
+            stop=lambda: beyond_bound,
+        )
+    except Exception as exc:  # noqa: BLE001 (the first page failed: nothing to report)
+        logger.warning("playbook coverage alias: the case store could not be read: %s", exc)
+        raise HTTPException(status_code=503, detail={
+            "code": "case_store_unavailable",
+            "message": "Cases could not be read. Try again.",
+        }, headers=dict(DEPRECATION_HEADERS)) from exc
+    scanned, covered = counts["scanned"], counts["covered"]
     return {
         "scanned_cases": scanned,
         "covered_cases": covered,
         "uncovered_cases": scanned - covered,
         "coverage_percent": round((covered / scanned) * 100, 1) if scanned else None,
-        "scan_limit": max_cases,
-        "truncated": scanned >= max_cases,
+        "scan_limit": METRICS_MAX_CASES,
+        # More cases than the bound, or a later page failed: every figure is a lower bound.
+        "truncated": beyond_bound or not outcome.complete,
         "selected_playbooks": [
             {"playbook_id": key, "case_count": value}
             for key, value in sorted(selected_counts.items(), key=lambda item: (-item[1], item[0]))
@@ -3140,7 +3187,7 @@ async def playbook_detail(
     wanted = {playbook_id, LEGACY_BUNDLED_RUNBOOK_MAP.get(playbook_id, playbook_id)}
     for rid, version, builtin, _doc in await _legacy_published(state):
         if rid in wanted:
-            return _legacy_playbook_item(rid, version, builtin, include_content=True)
+            return _legacy_alias_item(rid, version, builtin, include_content=True)
     from ..engine.runbook_catalog import DEPRECATION_HEADERS
 
     raise HTTPException(status_code=404, detail="playbook not found", headers=dict(DEPRECATION_HEADERS))
@@ -3261,6 +3308,7 @@ async def demo_enable(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo enabled mode={mode} run_id={status.get('run_id')}",
     )
     return status
@@ -3287,6 +3335,9 @@ async def demo_incident(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human",
+        # Refused (cooling down, an unknown scenario): nothing was triggered.
+        outcome="success" if result.get("triggered") else "failure",
         result_summary=(
             f"demo incident trigger triggered={bool(result.get('triggered'))} "
             f"scenario_id={result.get('scenario_id') or scenario_id or ''} "
@@ -3307,6 +3358,7 @@ async def demo_reset(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo reset run_id={status.get('run_id')}",
     )
     return status
@@ -3324,6 +3376,7 @@ async def demo_disable(
         action_type=ActionType.DECISION,
         surface="demo",
         actor=current_username(request) or "operator",
+        actor_type="human", outcome="success",
         result_summary=f"demo disabled run_id={before.get('run_id')}",
     )
     return status
@@ -7183,6 +7236,7 @@ async def _perform_case_action(
     try:
         await state.audit.record(
             action_type=ActionType.STATUS, surface="case", actor=actor, case_id=case_id,
+            actor_type="human", outcome="success",
             result_summary=(
                 f"action={body.action} status {prev_status.value if prev_status else '?'}"
                 f"→{case.status.value} disposition={case.disposition.value if case.disposition else 'none'}"
@@ -7243,6 +7297,7 @@ async def _perform_case_action(
                 await state.proposals.add(proposal)
                 await state.audit.record(
                     action_type=ActionType.PROPOSAL, surface="case", actor="agent",
+                    actor_type="agent", outcome="success",
                     case_id=case_id,
                     result_summary=(
                         f"drafted suppression proposal {proposal.id} "
@@ -7420,6 +7475,7 @@ async def case_feedback(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.FEEDBACK, surface="case", actor=actor,
+        actor_type="human", outcome="success",
         case_id=case_id,
         result_summary=f"assessment={entry.assessment} outcome={entry.actual_outcome} "
                        f"accuracy={entry.accuracy}",
@@ -7459,6 +7515,7 @@ async def case_comment(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.author or "analyst",
+        actor_type="human", outcome="success",
         case_id=case_id, result_summary="comment added",
     )
     return _case_view(case, state)
@@ -7488,6 +7545,7 @@ async def case_tags(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
+        actor_type="human", outcome="success",
         case_id=case_id, result_summary=f"tags set ({len(case.tags)})",
     )
     # Round 14 (SPEC §4.10.4): a tag change is a re-evaluation trigger (a runbook may
@@ -7531,6 +7589,7 @@ async def case_assign(
     await state.cases.save(case)
     await state.audit.record(
         action_type=ActionType.COLLAB, surface="case", actor=body.analyst or "analyst",
+        actor_type="human", outcome="success",
         case_id=case_id, result_summary=f"assigned to {case.assignee or '(unassigned)'}",
     )
     return _case_view(case, state)
@@ -7722,6 +7781,9 @@ async def case_reinvestigate(
     await state.audit.record(
         action_type=ActionType.DECISION, surface=case.source_surface.value,
         actor="reinvestigate", case_id=case_id,
+        # The agent pipeline's own token (``audit/event_categories.json``): the row
+        # stays in Agent activity, as before; the person is named in the summary.
+        actor_type="agent", outcome="success",
         result_summary=(
             f"manual reinvestigation requested by {body.analyst or 'analyst'}"
             + (f"; model override={body.model}" if body.model else "")
@@ -7797,6 +7859,7 @@ async def threat_context_import(
     result = await state.rag_service.import_threat_context(title, content, tags=body.tags)
     await state.audit.record(
         action_type=ActionType.CONTEXT, surface="rag", actor="analyst",
+        actor_type="human", outcome="success",
         result_summary=(
             f"imported threat_context document {result.get('document_id')} "
             f"({result.get('chunk_count')} chunk(s))"

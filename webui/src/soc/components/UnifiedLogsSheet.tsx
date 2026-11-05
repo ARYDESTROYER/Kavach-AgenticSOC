@@ -328,6 +328,11 @@ export interface UnifiedLogsBodyProps {
   initialTo?: string;
   /** How that one-off window reads in the control (e.g. a readable UTC range). */
   initialWindowLabel?: string;
+  /**
+   * A shorter form of that label for the control at phone width (`Nov 2 00:00 → Nov 4
+   * 13:46 UTC`), so a long linked window never runs past the page gutter.
+   */
+  initialWindowShortLabel?: string;
   /** Read only this source (a linked query's source). */
   sourceId?: string;
   /** Rendered above the events (e.g. the linked query's summary). */
@@ -377,6 +382,8 @@ interface StartWindow {
     from: string | null;
     to: string | null;
     label: string;
+    /** The control's phone-width label, when the page gives one. */
+    shortLabel?: string;
     /** It ends at an absolute instant already past, so re-reading it finds nothing new. */
     fixed: boolean;
   } | null;
@@ -393,12 +400,18 @@ function endsInPast(to: string | undefined): boolean {
   return Number.isFinite(ms) && ms <= Date.now();
 }
 
-function startWindow(from?: string, to?: string, label?: string): StartWindow {
+function startWindow(from?: string, to?: string, label?: string, shortLabel?: string): StartWindow {
   if (!from && !to) return { start: 'now-1h', linked: null };
   if (from && (!to || to === 'now') && TIME_RANGES.some((r) => r.value === from)) return { start: from, linked: null };
   return {
     start: LINKED_WINDOW,
-    linked: { from: from ?? null, to: to ?? null, label: label || `${from ?? '…'} → ${to ?? 'now'}`, fixed: endsInPast(to) },
+    linked: {
+      from: from ?? null,
+      to: to ?? null,
+      label: label || `${from ?? '…'} → ${to ?? 'now'}`,
+      ...(shortLabel ? { shortLabel } : {}),
+      fixed: endsInPast(to),
+    },
   };
 }
 
@@ -423,6 +436,7 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
   initialFrom,
   initialTo,
   initialWindowLabel,
+  initialWindowShortLabel,
   sourceId,
   header = null,
   renderHeader,
@@ -446,7 +460,9 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
   const [submittedQuery, setSubmittedQuery] = React.useState(initialQuery);
   // The starting window is read once: a host that links somewhere else remounts the
   // body (keyed), so a later prop change never silently swaps the analyst's range.
-  const [initialWindow] = React.useState(() => startWindow(initialFrom, initialTo, initialWindowLabel));
+  const [initialWindow] = React.useState(() =>
+    startWindow(initialFrom, initialTo, initialWindowLabel, initialWindowShortLabel),
+  );
   const [start, setStart] = React.useState(initialWindow.start);
   const linkedWindow = start === LINKED_WINDOW ? initialWindow.linked : null;
   const [liveTailPref, setLiveTail] = React.useState(false);
@@ -585,8 +601,13 @@ const LogsBody: React.FC<UnifiedLogsBodyProps & { tailPaused: boolean }> = ({
   // Round 14 (SPEC §4.9.3, C8): the Overview's time-range pill with this page's ranges and
   // Off or Live, and the header Refresh, are the page's only data controls. A linked
   // window that is not a preset is the picker's first entry until another range is picked.
-  const linkedRange = initialWindow.linked
-    ? { from: LINKED_WINDOW, to: 'now', label: initialWindow.linked.label }
+  const linkedRange: TimeRange | null = initialWindow.linked
+    ? {
+        from: LINKED_WINDOW,
+        to: 'now',
+        label: initialWindow.linked.label,
+        ...(initialWindow.linked.shortLabel ? { shortLabel: initialWindow.linked.shortLabel } : {}),
+      }
     : null;
   const presets = linkedRange ? [linkedRange, ...TIME_RANGE_PRESETS] : TIME_RANGE_PRESETS;
   const currentRange = presets.find((p) => p.from === start) ?? presets[0];

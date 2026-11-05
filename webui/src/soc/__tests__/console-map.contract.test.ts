@@ -32,6 +32,7 @@ import {
   SECTION_META_BY_ID,
   SETTING_ANCHORS,
   SETTINGS_SECTIONS_META,
+  searchJumpTargets,
 } from '@/soc/pages/settings/settings-sections-meta';
 
 const MAP_PATH = path.resolve(process.cwd(), '..', 'backend', 'app', 'knowledge', 'console_map.json');
@@ -103,10 +104,19 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
     'layout',
   ],
   standup: ['shift', 'handoff', 'daily summary', 'attention queue'],
-  cases: ['triage', 'queue', 'alerts', 'incidents'],
-  case_manager: ['split pane', 'queue', 'bulk', 'case detail'],
+  // Round 14: Cases has an exact Rule filter ("the cases one rule opened").
+  cases: ['triage', 'queue', 'alerts', 'incidents', 'rule filter', 'cases for a rule'],
+  // Round 14: Start runbook lives in a case's Take action menu and its Runbook tab, so
+  // "start a runbook on a case" lands here, never on the Runbooks settings section. Keep
+  // 'runbook' to these two: every repeat lowers the word's weight across the index, and
+  // the Runbooks settings targets ("require a distinct approver") would lose their match.
+  case_manager: ['split pane', 'queue', 'bulk', 'case detail', 'start runbook', 'runbook tab', 'take action'],
   campaigns: ['campaign', 'related cases', 'shared entity'],
-  logs: ['log search', 'events', 'telemetry', 'unified logs'],
+  // Round 14: a rule's sheet opens Logs filtered to that rule ("Open all in Logs"). No
+  // 'filter' or 'rule' words here: the Audit log's label holds "log" too, so a Logs
+  // 'filter' would pull every "filter the audit log by ..." question to Logs. The rule
+  // filter's own destination comes from the Help Center section that documents it.
+  logs: ['log search', 'events', 'telemetry', 'unified logs', 'open all in logs'],
   chat: ['assistant', 'ask', 'question', 'conversation', 'reports', 'prompt library', 'saved prompts', 'promptbook', 'suggestions', 'suggested questions', 'follow-ups', 'catch-up'],
   investigate: ['entity', 'hunt', 'ip', 'host', 'user'],
   approvals: ['proposals', 'pending', 'approve', 'human in the loop'],
@@ -125,7 +135,13 @@ const PAGE_KEYWORDS: Record<string, string[]> = {
   batchjobs: ['jobs', 'background jobs', 'export download', 'batch'],
   inbox: ['notifications', 'alerts', 'mentions'],
   sources: ['connectors', 'siem', 'edr', 'ingest', 'data source', 'connect', 'coverage'],
-  audit: ['audit log', 'activity', 'who did what'],
+  // Round 14: the Audit log's own Export menu (CSV or JSON Lines, `audit:export`) is where
+  // audit events are exported; the whole-application Data export is a different task. The
+  // words name the audit log itself, never a format or a verb: a bare 'export' ("Kill the
+  // export job") names Jobs or Data export, and a bare 'csv' or 'json lines' would send
+  // "How do I ingest CSV logs?" or a chart's CSV download here. The Exporting section's
+  // breadcrumb carries the formats.
+  audit: ['audit log', 'activity', 'who did what', 'audit events', 'audit record'],
   tuning: ['auto-tuning', 'threshold', 'false positives', 'rule tuning'],
   settings: ['preferences', 'configuration'],
   docs: ['help', 'documentation', 'help center', 'manual'],
@@ -155,6 +171,21 @@ const KPI_TOPICS: readonly Topic[] = [
   kpi('noise_reduction', 'Noise Reduction', 'How should I read the Noise Reduction funnel and its stages?', ['noise-reduction-funnel'], 'page:overview'),
   kpi('llm_spend', 'LLM spend', 'How is AI model spend measured and limited?', ['llm-spend'], 'page:cost'),
 ];
+
+/**
+ * Keywords a Settings section offers to its own search that chat's console map leaves
+ * out. The Settings search and the console map read the same `keywords`, but a word that
+ * helps one can mislead the other: 'audit' finds Data export in the Settings search (it
+ * exports an Audit scope), while in chat it would send "How do I export the audit log?"
+ * to the whole-application export (`data_export:export`, which auditors lack) instead of
+ * the Audit log's own Export menu (`audit:export`). Keys must be real target ids.
+ */
+const CONSOLE_KEYWORD_DROP: Record<string, readonly string[]> = {
+  'settings:data_export': ['audit'],
+};
+
+const consoleKeywords = (id: string, keywords: readonly string[]): string[] =>
+  keywords.filter((keyword) => !(CONSOLE_KEYWORD_DROP[id] ?? []).includes(keyword));
 
 function kpi(id: string, label: string, question: string, anchors: string[], consoleId: string): Topic {
   return { id: `kpi:${id}`, kind: 'kpi', label, question, docs: anchors.map((a) => `${GLOSSARY}#${a}`), console: consoleId };
@@ -223,7 +254,7 @@ function settingsTargets(): ConsoleTarget[] {
     opts: { section: s.id },
     requires: permText(s.perm),
     blurb: s.blurb,
-    keywords: [...(s.keywords ?? [])],
+    keywords: consoleKeywords(`settings:${s.id}`, s.keywords ?? []),
     owned_keys: [...(s.ownedKeys ?? [])],
   }));
   const cards: ConsoleTarget[] = SETTING_ANCHORS.map((a) => {
@@ -237,7 +268,7 @@ function settingsTargets(): ConsoleTarget[] {
       opts: { section: a.section, anchor: a.anchor },
       requires: permText(section.perm),
       blurb: '',
-      keywords: [...a.keywords],
+      keywords: consoleKeywords(`settings:${a.section}.${a.anchor}`, a.keywords),
       owned_keys: [],
     };
   });
@@ -354,6 +385,47 @@ describe('console map contract (SPEC §5.4)', () => {
     expect(byId.get('page:docs')).toMatchObject({ label: 'Help Center' });
     // No target label is Console copy with the retired word.
     for (const target of expected.targets) expect(target.label, target.id).not.toMatch(/playbook/i);
+  });
+
+  it('sends Round 14 tasks to the page that does them, not to a Settings section (integ-01)', () => {
+    const byId = new Map(expected.targets.map((t) => [t.id, t]));
+    const words = (id: string) => (byId.get(id)?.keywords ?? []).flatMap((k) => k.toLowerCase().split(/\W+/));
+    // Audit events are exported from the Audit log's own Export menu (`audit:export`, which
+    // auditors hold); the whole-application Data export (`data_export:export`) is another task.
+    expect(byId.get('page:audit')?.keywords).toEqual(expect.arrayContaining(['audit events', 'audit record']));
+    expect(byId.get('settings:data_export')?.keywords).not.toContain('audit');
+    // "export" alone ("Kill the export job") is not an audit-log word, and neither is a file
+    // format: "How do I ingest CSV logs?" and a chart's CSV download are other tasks.
+    for (const word of ['export', 'csv', 'json', 'lines']) expect(words('page:audit'), word).not.toContain(word);
+    // Start runbook is in a case's Take action menu and its Runbook tab (SPEC §11.1), with
+    // 'runbook' at most twice so "require a distinct approver for runbooks" still finds
+    // the Runbooks publishing settings.
+    expect(byId.get('page:case_manager')?.keywords).toEqual(expect.arrayContaining(['start runbook', 'runbook tab', 'take action']));
+    expect(words('page:case_manager').filter((w) => w === 'runbook').length).toBeLessThanOrEqual(2);
+    expect(byId.get('settings:runbooks.runbooks-publishing')?.keywords).toContain('distinct approver');
+    // The Runbooks on cases card holds the fallback (generic incident) switch: what a case
+    // with no matching runbook gets.
+    expect(byId.get('settings:runbooks.runbooks-cases')?.keywords).toEqual(expect.arrayContaining(['no runbook', 'fallback runbook']));
+    // A rule's sheet opens Logs filtered to the rule; the Cases list has the same Rule filter.
+    // Logs carries no 'filter' or 'rule' word: "filter the audit log by actor" must not
+    // reach Logs through them.
+    expect(byId.get('page:logs')?.keywords).toContain('open all in logs');
+    expect(words('page:logs')).not.toContain('filter');
+    expect(words('page:logs')).not.toContain('rule');
+    expect(byId.get('page:cases')?.keywords).toEqual(expect.arrayContaining(['rule filter', 'cases for a rule']));
+  });
+
+  it('a keyword chat drops still finds its section in the Settings search', () => {
+    // The overlay applies to the console map only: the Settings rail filter and the
+    // command palette read the section's own keywords (Data export exports an Audit scope).
+    expect(SECTION_META_BY_ID.data_export.keywords).toContain('audit');
+    expect(searchJumpTargets('audit', () => true).filter((t) => !t.anchor).map((t) => t.section)).toContain('data_export');
+    const targetIds = new Set(expected.targets.map((t) => t.id));
+    for (const [id, dropped] of Object.entries(CONSOLE_KEYWORD_DROP)) {
+      expect(targetIds.has(id), id).toBe(true);
+      const target = expected.targets.find((t) => t.id === id);
+      for (const keyword of dropped) expect(target?.keywords, `${id} ${keyword}`).not.toContain(keyword);
+    }
   });
 
   it('curated overlays reference real ids', () => {

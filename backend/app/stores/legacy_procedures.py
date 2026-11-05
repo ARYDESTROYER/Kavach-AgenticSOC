@@ -193,10 +193,12 @@ class LegacyProcedureReader:
             pending_deletes=pending,
         )
 
-    async def scan_playbooks(self) -> LegacyScan:
+    async def scan_procedures(self) -> LegacyScan:
+        """:meth:`scan` of the retired operator procedure catalog."""
         return await self.scan(PLAYBOOKS_NS)
 
     async def scan_runbooks(self) -> LegacyScan:
+        """:meth:`scan` of the retired operator reference runbook catalog."""
         return await self.scan(RUNBOOKS_NS)
 
     async def _list_strict(self, namespace: str) -> dict[str, dict[str, Any]]:
@@ -233,11 +235,18 @@ class LegacyProcedureReader:
             out[d.id] = row
         return out
 
-    async def list_playbooks_strict(self) -> dict[str, dict[str, Any]]:
+    async def list_procedures_strict(self) -> dict[str, dict[str, Any]]:
         """``id -> row`` of the retired operator procedure catalog, exactly as the
         retired store's ``list_strict`` returned it, or :class:`LegacyCatalogDamaged`
         (never a partial projection)."""
         return await self._list_strict(PLAYBOOKS_NS)
+
+    async def list_playbooks_strict(self) -> dict[str, dict[str, Any]]:
+        """Temporary forwarder to :meth:`list_procedures_strict` for the legacy export
+        (``api/routes_export.py``), which still calls this name. Remove it once that
+        caller and its export seam test call :meth:`list_procedures_strict` (AGENTS.md
+        naming contract: no new identifiers with the retired word)."""
+        return await self.list_procedures_strict()
 
     async def list_runbooks_strict(self) -> dict[str, dict[str, Any]]:
         """``id -> row`` of the retired operator reference runbook catalog (index

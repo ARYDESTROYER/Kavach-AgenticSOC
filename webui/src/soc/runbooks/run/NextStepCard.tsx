@@ -8,10 +8,15 @@
  * title as an `h3` that takes focus after Confirm, Mark done or Record decision (the polite
  * live region says "Step 5 done. Next, step 6: ..."); its focus line; a lookup's evidence;
  * the AI draft with Confirm, Edit note, Not applicable, Blocked and Assign (a More menu on a
- * narrow pane); for a Decision, the options and Record decision, with the same Not
- * applicable, Blocked and Assign; for an Action, the recorded action and its approval (a
- * rejected one can be recorded again). "Escalate if and benign if" keeps the criteria one
- * click away so Confirm stays high; on a narrow pane the focus line folds in there too.
+ * narrow pane). While the draft waits to be read those buttons come straight under the
+ * question and the draft follows in a four-line preview ("Show the whole draft"), so
+ * Confirm keeps one place however long the draft is; editing it puts the text field first
+ * and "Confirm note and mark done" under it. Only the draft moves: the buttons are never
+ * rebuilt, and focus that a landing draft takes away (Draft note) goes to the heading.
+ * For a Decision, the options and Record decision, with the same Not applicable, Blocked
+ * and Assign; for an Action, the recorded action and its approval (a rejected one can be
+ * recorded again). "Escalate if and benign if" keeps the criteria one click away so
+ * Confirm stays high; on a narrow pane the focus line folds in there too.
  * When no required step is left to act on the card says so: "All required steps are
  * done." with "Close case" and the optional steps left (a completed run stays workable),
  * or that the rest wait for approval.
@@ -43,16 +48,26 @@ import { ProgressLine } from './RunbookStrip';
 import { StepActions } from './StepActions';
 import { ActionRecordBlock, StepNote, useLookupRun } from './StepRow';
 import { ActionRecordForm, AiDraftBox, DecisionPicker, FocusLine, FrameworkRefs, Implications, NoteField, noteKey } from './StepParts';
+import { useKeepFocus } from './useKeepFocus';
 import { useStepEditor } from './useStepEditor';
 
-/** Focus a heading without jumping, then bring it into view if it is out of sight. */
-export function focusHeading(el: HTMLElement | null): void {
+/**
+ * Focus a heading without jumping, then bring it into view if it is out of sight. On the
+ * Next step card an AI draft waiting to be read comes into view first, then the heading,
+ * so landing on the card ("Review draft", a draft just made) shows the draft too: it
+ * follows the buttons, and on a phone it would otherwise stay below the fold.
+ */
+export function focusHeading(el: HTMLElement | null | undefined): void {
   if (!el) return;
   try {
     el.focus({ preventScroll: true });
   } catch {
     el.focus();
   }
+  const draft = el.matches('[data-next-step-heading]')
+    ? el.closest('[data-next-step-card]')?.querySelector<HTMLElement>('[data-ai-draft]')
+    : null;
+  draft?.scrollIntoView?.({ block: 'nearest' });
   el.scrollIntoView?.({ block: 'nearest' });
 }
 
@@ -158,9 +173,70 @@ function PinnedStep({ item, total, compact }: { item: NumberedStep; total: numbe
   // A rejected action can be recorded again (the server allows it): the record and the
   // rejection stay above the form.
   const rejected = state.approval?.status === 'rejected';
+  // While an AI draft waits to be read, its actions (Confirm, Edit note, Not applicable,
+  // Blocked, Assign) come straight under the step's question and the draft follows in a
+  // four-line preview, so Confirm keeps one place however long the draft is (SPEC
+  // §4.10.11: y 567 or less at 1440 by 900, above the fold at 390 by 844). Editing the
+  // draft is a form like the note field: the text first, then "Confirm note and mark done".
+  // Only the draft box moves between the two places; the buttons keep one place in the
+  // tree, so a draft landing (or Edit note) never remounts them: an open reason dialog
+  // keeps what was typed, an open menu stays open and a focused button keeps its focus.
+  const reviewing = draftPending && !editor.editingDraft;
+  const draftFieldId = `${idBase}-draft`;
+  const draftLabelId = `${idBase}-draft-label`;
+  const [draftExpanded, setDraftExpanded] = React.useState(false);
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
+  // The draft box moves with the mode, so focus follows the press: into the draft's field
+  // on Edit note, back to Edit note on Cancel edit.
+  const refocus = React.useRef<'field' | 'edit' | null>(null);
+  const setEditingDraft = editor.setEditingDraft;
+  const onEditDraft = React.useCallback(
+    (on: boolean) => {
+      refocus.current = on ? 'field' : 'edit';
+      setEditingDraft(on);
+    },
+    [setEditingDraft],
+  );
+  React.useLayoutEffect(() => {
+    const target = refocus.current;
+    if (!target) return;
+    refocus.current = null;
+    if (target === 'field') {
+      const field = document.getElementById(draftFieldId);
+      if (field instanceof HTMLTextAreaElement) {
+        field.focus();
+        field.setSelectionRange(field.value.length, field.value.length);
+        // The caret sits at the end of the draft: show it there, not the field's top.
+        field.scrollTop = field.scrollHeight;
+      }
+      return;
+    }
+    rootRef.current?.querySelector<HTMLElement>('[data-edit-draft]')?.focus();
+  }, [editor.editingDraft, draftFieldId]);
+  // A draft landing takes Draft note (and the note field) off the card: focus they held
+  // goes to the step's heading, as after Confirm, so pressing Enter again never confirms a
+  // draft nobody has read; the draft comes into view with it.
+  const keepFocus = useKeepFocus(draftPending, () =>
+    focusHeading(rootRef.current?.querySelector<HTMLElement>('[data-next-step-heading]')),
+  );
+
+  const draftBox = (
+    <AiDraftBox
+      state={state}
+      editing={editor.editingDraft}
+      text={editor.draftText}
+      onText={editor.setDraftText}
+      large={!compact}
+      fieldId={draftFieldId}
+      labelId={draftLabelId}
+      preview
+      expanded={draftExpanded}
+      onExpandedChange={setDraftExpanded}
+    />
+  );
 
   return (
-    <div className="px-4 py-3 @[40rem]/run:px-5" data-next-step={step.id}>
+    <div ref={rootRef} {...keepFocus} className="px-4 py-3 @[40rem]/run:px-5" data-next-step={step.id}>
       <CardHeader item={item} total={total} compact={compact} />
       <h3
         tabIndex={-1}
@@ -186,14 +262,8 @@ function PinnedStep({ item, total, compact }: { item: NumberedStep; total: numbe
             onRun={lookup.run}
           />
         ) : null}
-        <AiDraftBox
-          state={state}
-          editing={editor.editingDraft}
-          text={editor.draftText}
-          onText={editor.setDraftText}
-          large={!compact}
-          fieldId={`${idBase}-draft`}
-        />
+        {/* Editing: the field first, "Confirm note and mark done" under it. */}
+        {reviewing ? null : draftBox}
         {step.kind === 'decision' && editable ? (
           <DecisionPicker
             run={ctx.run}
@@ -225,7 +295,17 @@ function PinnedStep({ item, total, compact }: { item: NumberedStep; total: numbe
           />
         ) : null}
         <StepNote stepId={step.id} />
-        <StepActions step={step} state={state} editor={editor} variant="card" compact={compact} />
+        <StepActions
+          step={step}
+          state={state}
+          editor={editor}
+          variant="card"
+          compact={compact}
+          draftLabelId={draftPending ? draftLabelId : undefined}
+          onEditDraft={onEditDraft}
+        />
+        {/* Reading: the draft follows the buttons that act on it. */}
+        {reviewing ? draftBox : null}
         <CriteriaDisclosure item={item} withFocus={compact} />
       </div>
     </div>

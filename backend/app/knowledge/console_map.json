@@ -134,7 +134,9 @@
         "triage",
         "queue",
         "alerts",
-        "incidents"
+        "incidents",
+        "rule filter",
+        "cases for a rule"
       ],
       "owned_keys": []
     },
@@ -154,7 +156,10 @@
         "split pane",
         "queue",
         "bulk",
-        "case detail"
+        "case detail",
+        "start runbook",
+        "runbook tab",
+        "take action"
       ],
       "owned_keys": []
     },
@@ -193,7 +198,8 @@
         "log search",
         "events",
         "telemetry",
-        "unified logs"
+        "unified logs",
+        "open all in logs"
       ],
       "owned_keys": []
     },
@@ -562,7 +568,9 @@
       "keywords": [
         "audit log",
         "activity",
-        "who did what"
+        "who did what",
+        "audit events",
+        "audit record"
       ],
       "owned_keys": []
     },
@@ -1587,7 +1595,6 @@
         "portable",
         "analysis bundle",
         "cases",
-        "audit",
         "usage",
         "configuration"
       ],
@@ -2058,7 +2065,9 @@
         "auto attach",
         "attach",
         "fallback",
-        "generic incident"
+        "generic incident",
+        "no runbook",
+        "fallback runbook"
       ],
       "owned_keys": []
     },
@@ -2082,6 +2091,7 @@
       "keywords": [
         "publish",
         "approver",
+        "distinct approver",
         "review",
         "step approvals",
         "cadence"

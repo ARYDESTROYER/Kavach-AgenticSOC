@@ -31,7 +31,7 @@ from app.config import Secrets
 from app.constants import CaseStatus, DecisionBy, EntityType, SourceSurface, Verdict
 from app.engine import demo_chat
 from app.engine.demo_chat import classify, read_prompt
-from app.engine.demo_generator import plan_demo_runbook_runs, seed_demo_runbook_runs
+from app.engine.demo_generator import DEMO_SOC_ANALYSTS, plan_demo_runbook_runs, seed_demo_runbook_runs
 from app.engine.metrics import compute_metrics
 from app.engine.runbook_model import load_builtin_runbooks
 from app.es.fake import InMemoryESClient
@@ -154,6 +154,105 @@ def test_the_library_question_lists_runbooks_for_both_words(question: str) -> No
     ask = classify(view.question, view)
     calls = [(c.tool, c.input) for c in demo_chat._next_calls(view, ask)]
     assert ("search_knowledge", {"kind": "list_runbooks"}) in calls
+
+
+# Closing acceptance integ-07: where the runbooks are, and what became of playbooks, are
+# questions about the console (Product help), never a search of runbook text.
+_RENAMED_QUERY = "Runbooks coming from an earlier version response procedures"
+_LOCATION_QUERY = "Intelligence Runbooks library"
+
+
+@pytest.mark.parametrize("question, query", [
+    ("Where are playbooks now?", _RENAMED_QUERY),
+    ("Where did playbooks go?", _RENAMED_QUERY),
+    ("Where did the playbooks go?", _RENAMED_QUERY),
+    ("Where have playbooks gone?", _RENAMED_QUERY),
+    ("What happened to playbooks?", _RENAMED_QUERY),
+    ("What happened to the playbooks page?", _RENAMED_QUERY),
+    ("Are playbooks gone?", _RENAMED_QUERY),
+    ("Were playbooks renamed?", _RENAMED_QUERY),
+    ("Why can't I find playbooks?", _RENAMED_QUERY),
+    ("Where do I find playbooks?", _RENAMED_QUERY),
+    ("Where are runbooks?", _LOCATION_QUERY),
+    ("Where are the runbooks?", _LOCATION_QUERY),
+    ("Where can I find runbooks now?", _LOCATION_QUERY),
+    ("Where\u2019s the runbook library?", _LOCATION_QUERY),
+    ("Where is the runbook editor?", _LOCATION_QUERY),
+    ("Why can't I find the runbooks?", _LOCATION_QUERY),
+    ("Were playbooks renamed to runbooks?", _RENAMED_QUERY),
+    ("Have playbooks been removed?", _RENAMED_QUERY),
+    ("Did playbooks get renamed?", _RENAMED_QUERY),
+])
+def test_where_the_runbooks_went_is_a_product_question(question: str, query: str) -> None:
+    view = read_prompt(prompt(question))
+    ask = classify(view.question, view)
+    assert ask.intent == "help"
+    calls = [(c.tool, c.input) for c in demo_chat._next_calls(view, ask)]
+    assert calls[0] == ("app_help", {"query": query})
+    assert not any(tool == "search_knowledge" for tool, _input in calls)
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("Where is the runbook for phishing?", {"query": "the runbook for phishing"}),
+    ("Which runbooks cover brute force?", {"query": "Which runbooks cover brute force"}),
+    ("Which playbooks do we have?", {"kind": "list_runbooks"}),
+    # The retired name inside a question about one runbook is no question about the
+    # library: the words after the noun keep it a knowledge search (FX5m review).
+    ("What's the playbook to go with a phishing case?",
+     {"query": "What's the playbook to go with a phishing case"}),
+    ("Is the playbook missing a containment step?", {"query": "Is the playbook missing a containment step"}),
+    ("Which playbook went with the phishing case?", {"query": "Which playbook went with the phishing case"}),
+    ("I can't find the runbook for phishing", {"query": "I can't find the runbook for phishing"}),
+    ("We cannot find any runbooks covering ransomware",
+     {"query": "We cannot find any runbooks covering ransomware"}),
+    ("What happened to the runbook steps on this case?",
+     {"query": "What happened to the runbook steps on this case"}),
+])
+def test_a_question_about_runbook_content_stays_a_knowledge_search(question: str, expected: dict[str, Any]) -> None:
+    view = read_prompt(prompt(question))
+    ask = classify(view.question, view)
+    assert ask.intent == "knowledge"
+    assert [(c.tool, c.input) for c in demo_chat._next_calls(view, ask)] == [("search_knowledge", expected)]
+
+
+@pytest.mark.parametrize("question, words", [
+    ("Where are the runbook settings?", "runbook settings"),
+    ("Where do I find the runbook settings?", "runbook settings"),
+    ("Where are the playbook settings?", "playbook settings"),
+    ("Where do I find runbook approvals?", "runbook approvals"),
+    ("Where can I see runbook metrics?", "runbook metrics"),
+])
+def test_a_help_question_about_one_part_of_the_library_keeps_its_words(question: str, words: str) -> None:
+    """Only a question about the library itself takes the Runbooks page query: a help
+    question about its settings, approvals or metrics searches the Help Center for
+    what it asks about (FX5m review)."""
+    view = read_prompt(prompt(question))
+    ask = classify(view.question, view)
+    assert ask.intent == "help"
+    calls = [(c.tool, c.input) for c in demo_chat._next_calls(view, ask)]
+    assert calls[0][0] == "app_help"
+    query = calls[0][1]["query"]
+    assert words in query and query not in (_RENAMED_QUERY, _LOCATION_QUERY)
+
+
+def test_the_upgrade_query_never_names_the_retired_word() -> None:
+    """The planner writes its own Help Center query, which the step inspector shows: it
+    names the section in the current words (AGENTS.md naming contract)."""
+    assert "playbook" not in demo_chat._RUNBOOK_UPGRADE_QUERY.lower()
+    assert "playbook" not in demo_chat._RUNBOOK_LOCATION_QUERY.lower()
+
+
+def test_a_knowledge_search_with_no_match_says_nothing_matched() -> None:
+    """A search that ran and found nothing is a read that succeeded: the answer says
+    nothing matched, never that no data could be read (integ-07)."""
+    def observe(tool: str, inp: dict[str, Any]) -> dict[str, Any]:
+        assert tool == "search_knowledge"
+        return {"kind": "search", "query": inp.get("query"), "results": [], "count": 0}
+
+    rounds, header, body = drive("Which runbooks cover quokka escapades?", observe)
+    assert [tool for tool, _inp in ran(rounds)] == ["search_knowledge"]
+    assert body == "Nothing matched this question in the knowledge base."
+    assert "could not read" not in body and header["answer_kind"] == "data"
 
 
 # --------------------------------------------------------------------------- #
@@ -307,9 +406,12 @@ async def test_the_demo_seed_writes_the_audit_rows_of_the_work_it_seeds() -> Non
             assert "step.evidence_collected" not in actions
         expected = sum(len(demo_runbook_audit_rows(r, None)) for r in runs)
         assert len(rows) == expected
-        # Runbook work is done by people: never by the triage automation's name.
+        # Runbook work is done by people: never by the triage automation's name, and
+        # only by the Demo SOC team, never a member of the Demo organisation's staff
+        # (qa3-05: a sign-in step "confirmed" by the user it asks about).
         people = {r["actor"] for r in rows if r["actor_type"] == "human"}
         assert people and "auto-triage" not in people
+        assert people <= set(DEMO_SOC_ANALYSTS)
         # A second seed writes no run and no row.
         assert await seed_demo_runbook_runs(store, cases, catalog, prefs=state.prefs, seed=1337,
                                             now_millis=now_ms, audit=audit) == 0

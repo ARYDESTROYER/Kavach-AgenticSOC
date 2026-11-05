@@ -1,9 +1,11 @@
 /**
  * The Runbook tab inside a case (Round 14, SPEC §4.10.11 and §8.1): loading, error,
  * empty, partial, permission, phone width, keyboard (19 tab stops or fewer), a confirmed
- * AI draft moving focus to the next step with a polite sentence, a stale revision keeping
- * what was typed, a redacted lookup, the approval rule, and the copy rules (no em dash,
- * never the old procedure word).
+ * AI draft moving focus to the next step with a polite sentence, a draft landing without
+ * rebuilding the card's buttons (an open dialog or menu stays, focus stays or moves to the
+ * heading), the draft's four-line preview (its toggle never leaves from under focus), a
+ * stale revision keeping what was typed, a redacted lookup, the approval rule, and the
+ * copy rules (no em dash, never the old procedure word).
  */
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -63,11 +65,14 @@ import {
   RunbookPanel,
   READ_ONLY_RUN_NOTE,
   RUNBOOK_BOUNDARY_NOTE,
+  type RunbookFocusRequest,
 } from '@/soc/pages/casedetail/RunbookPanel';
 
-import { CONFLICT_NOTE } from '../context';
+import { CONFLICT_NOTE, DRAFT_READY_NOTE } from '../context';
+import { focusHeading } from '../NextStepCard';
+import { DRAFT_SHOW_ALL, DRAFT_SHOW_LESS } from '../StepParts';
 import { mergeRun, type CaseRunbooksState } from '../useCaseRunbooks';
-import { LOOKUP_RESULT, makeData, makeRun, state } from './fixtures';
+import { LOOKUP_RESULT, completedRun, makeData, makeRun, state } from './fixtures';
 
 const CASE = { case_id: 'case-1', case_number: 'CASE-000214', title: 'Password spray', rule_ids: ['auth-failures'] } as unknown as Case;
 const USERS = [
@@ -85,6 +90,8 @@ function Harness({
   allow = () => true,
   currentUser = 'ben',
   refresh,
+  live,
+  focusRequest,
 }: {
   initial: CaseRunbooks | null;
   loading?: boolean;
@@ -95,14 +102,24 @@ function Harness({
   allow?: (resource: string, action: string) => boolean;
   currentUser?: string;
   refresh?: () => Promise<void>;
+  /** Receives the merge a live `case.runbook` frame goes through (a teammate's write). */
+  live?: { current: ((update: RunbookRunUpdate) => void) | null };
+  focusRequest?: RunbookFocusRequest | null;
 }) {
   const [data, setData] = React.useState<CaseRunbooks | null>(initial);
+  const applyUpdate = React.useCallback(
+    (update: RunbookRunUpdate) => setData((prev) => (prev ? mergeRun(prev, update.run, update.progress, update.revision) : prev)),
+    [],
+  );
+  React.useEffect(() => {
+    if (live) live.current = applyUpdate;
+  }, [live, applyUpdate]);
   const runbooks: CaseRunbooksState = {
     data,
     loading,
     error,
     refresh: refresh ?? (async () => undefined),
-    applyUpdate: (update: RunbookRunUpdate) => setData((prev) => (prev ? mergeRun(prev, update.run, update.progress, update.revision) : prev)),
+    applyUpdate,
     applyAttach: () => undefined,
     live: false,
   };
@@ -118,6 +135,7 @@ function Harness({
         hasPermission={allow}
         currentUser={currentUser}
         users={USERS}
+        focusRequest={focusRequest}
       />
     </TooltipProvider>
   );
@@ -145,6 +163,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('RunbookPanel states', () => {
@@ -420,5 +439,481 @@ describe('RunbookPanel run view', () => {
     render(<Harness initial={makeData([run])} />);
     await act(async () => undefined);
     expect(screen.getByRole('region', { name: 'Next step' })).toBeInTheDocument();
+  });
+});
+
+/** A model's draft at its longest (`RUNBOOK_AI_DRAFT_MAX_CHARS`, 2,000 characters). */
+const LONG_DRAFT = (
+  'Draft: the lookup for "Sign-ins for this account in the last 7 days" found 17 events from 203.0.113.7; ' +
+  'the lookup for "Reputation of the sign-in IP" did not apply to this case. '
+)
+  .repeat(20)
+  .slice(0, 2_000);
+
+function withDraft(text: string) {
+  return makeRun({}, {
+    success: { ai_draft: { text, created_at: '2026-10-28T14:40:00Z', model: 'demo', usage_id: 'u-1', confirmed: false } },
+  });
+}
+
+/** jsdom lays nothing out: report every draft text as taller than its four-line preview. */
+function draftTextOverflows() {
+  vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) {
+    return this.hasAttribute('data-ai-draft-text') ? 240 : 0;
+  });
+  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
+    return this.hasAttribute('data-ai-draft-text') ? 88 : 0;
+  });
+}
+
+/** Like `draftTextOverflows`, with a switch: set `fits` and the draft text fits in four lines. */
+function draftHeights(): { fits: boolean } {
+  const heights = { fits: false };
+  vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) {
+    return this.hasAttribute('data-ai-draft-text') ? (heights.fits ? 88 : 240) : 0;
+  });
+  vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (this: Element) {
+    return this.hasAttribute('data-ai-draft-text') ? 88 : 0;
+  });
+  return heights;
+}
+
+/** Stands in for ResizeObserver so a test can say "the pane changed size": `fire()`. */
+function captureResizeObservers(): { fire: () => void } {
+  const live = new Set<() => void>();
+  class CapturingResizeObserver {
+    private readonly notify: () => void;
+    constructor(callback: ResizeObserverCallback) {
+      this.notify = () => callback([], this as unknown as ResizeObserver);
+    }
+    observe(): void {
+      live.add(this.notify);
+    }
+    unobserve(): void {}
+    disconnect(): void {
+      live.delete(this.notify);
+    }
+  }
+  vi.stubGlobal('ResizeObserver', CapturingResizeObserver);
+  return { fire: () => live.forEach((notify) => notify()) };
+}
+
+function follows(a: Element, b: Element): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+describe('Next step card with an AI draft (SPEC §4.10.11, Confirm keeps its place)', () => {
+  it('puts Confirm, Edit note and the step buttons under the question, before the draft they act on', () => {
+    render(<Harness initial={makeData()} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    const heading = within(card).getByRole('heading', { level: 3 });
+    const confirm = within(card).getByRole('button', { name: 'Confirm and mark done' });
+    const edit = within(card).getByRole('button', { name: 'Edit note' });
+    const draft = within(card).getByRole('region', { name: 'AI draft note' });
+    expect(follows(heading, confirm)).toBe(true);
+    expect(follows(confirm, draft)).toBe(true);
+    expect(follows(edit, draft)).toBe(true);
+    expect(follows(within(card).getByRole('button', { name: 'Not applicable' }), draft)).toBe(true);
+    // Read before the draft, Confirm says what it confirms.
+    expect(confirm).toHaveAccessibleDescription('AI draft · not part of the case until you confirm it');
+    // A short draft shows whole: the preview is clamped, but nothing is hidden, so no toggle.
+    expect(card.querySelector('[data-ai-draft-text]')).toHaveAttribute('data-clamped', 'true');
+    expect(within(card).queryByRole('button', { name: DRAFT_SHOW_ALL })).toBeNull();
+  });
+
+  it('shows a 2,000-character draft as a four-line preview with Show the whole draft, Confirm still first', async () => {
+    draftTextOverflows();
+    const user = userEvent.setup();
+    const { container } = render(<Harness initial={makeData([withDraft(LONG_DRAFT)])} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    const text = card.querySelector('[data-ai-draft-text]') as HTMLElement;
+    const toggle = await within(card).findByRole('button', { name: DRAFT_SHOW_ALL });
+
+    // The whole draft stays in the page for a screen reader; only its box is four lines.
+    expect(text.textContent).toBe(LONG_DRAFT);
+    expect(text).toHaveClass('line-clamp-4');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveAttribute('aria-controls', text.id);
+    const confirm = within(card).getByRole('button', { name: 'Confirm and mark done' });
+    expect(follows(confirm, text)).toBe(true);
+    expect(follows(confirm, toggle)).toBe(true);
+
+    // The toggle is one more tab stop, inside the tab's limit.
+    const root = container.querySelector('[data-case-panel="runbook"]') as HTMLElement;
+    expect(tabStops(root).length).toBeLessThanOrEqual(19);
+
+    await user.click(toggle);
+    const less = within(card).getByRole('button', { name: DRAFT_SHOW_LESS });
+    expect(less).toBe(toggle);
+    expect(less).toHaveAttribute('aria-expanded', 'true');
+    expect(text).not.toHaveClass('line-clamp-4');
+    expect(text).not.toHaveAttribute('data-clamped');
+
+    await user.click(less);
+    expect(within(card).getByRole('button', { name: DRAFT_SHOW_ALL })).toHaveAttribute('aria-expanded', 'false');
+    expect(text).toHaveClass('line-clamp-4');
+
+    // Opened, it stays open across Edit note and Cancel edit (the box moves, it is not reset).
+    await user.click(within(card).getByRole('button', { name: DRAFT_SHOW_ALL }));
+    await user.click(within(card).getByRole('button', { name: 'Edit note' }));
+    await user.click(within(card).getByRole('button', { name: 'Cancel edit' }));
+    expect(within(card).getByRole('button', { name: DRAFT_SHOW_LESS })).toHaveAttribute('aria-expanded', 'true');
+    expect(card.querySelector('[data-ai-draft-text]')).not.toHaveClass('line-clamp-4');
+  });
+
+  it('edits the draft as a form: the field first, Confirm note and mark done under it, focus moving with the press', async () => {
+    const user = userEvent.setup();
+    api.confirmRunbookStepDraft.mockResolvedValue({
+      run: makeRun({ revision: 8 }, { success: { status: 'done', note: 'Two sign-ins succeeded.', ai_draft: null, revision: 2 } }),
+      progress: { done: 3, not_applicable: 0, total: 6, required_open: 2, blocked: 0, waiting: 0 },
+      revision: 9,
+    });
+    render(<Harness initial={makeData()} />);
+    const card = () => screen.getByRole('region', { name: 'Next step' });
+
+    // The field is shorter than the draft: it opens scrolled to the caret at the end.
+    vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockImplementation(function (this: Element) {
+      return this instanceof HTMLTextAreaElement ? 178 : 0;
+    });
+    await user.click(within(card()).getByRole('button', { name: 'Edit note' }));
+    const field = within(card()).getByRole('textbox', { name: 'Edit the draft note' }) as HTMLTextAreaElement;
+    expect(document.activeElement).toBe(field);
+    expect(field.selectionStart).toBe(field.value.length);
+    expect(field.scrollTop).toBe(178);
+    const confirm = within(card()).getByRole('button', { name: 'Confirm note and mark done' });
+    expect(follows(field, confirm)).toBe(true);
+    await user.tab();
+    expect(document.activeElement).toBe(confirm);
+
+    // Cancel edit puts the buttons back above the draft and focus back on Edit note.
+    await user.click(within(card()).getByRole('button', { name: 'Cancel edit' }));
+    const edit = within(card()).getByRole('button', { name: 'Edit note' });
+    expect(document.activeElement).toBe(edit);
+    expect(follows(within(card()).getByRole('button', { name: 'Confirm and mark done' }), within(card()).getByRole('region', { name: 'AI draft note' }))).toBe(true);
+
+    // An edited draft is what Confirm sends.
+    await user.click(edit);
+    const again = within(card()).getByRole('textbox', { name: 'Edit the draft note' });
+    await user.clear(again);
+    await user.type(again, 'Two sign-ins succeeded.');
+    await user.click(within(card()).getByRole('button', { name: 'Confirm note and mark done' }));
+    expect(api.confirmRunbookStepDraft).toHaveBeenCalledWith('case-1', 'run-1', 'success', { text: 'Two sign-ins succeeded.' });
+  });
+
+  it('keeps Show less and its focus when the open draft has come to fit in four lines', async () => {
+    const heights = draftHeights();
+    const user = userEvent.setup();
+    render(<Harness initial={makeData([withDraft(LONG_DRAFT)])} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    await user.click(await within(card).findByRole('button', { name: DRAFT_SHOW_ALL }));
+    // The pane widens while the draft is open (a phone turned to landscape): it now fits.
+    heights.fits = true;
+    const less = within(card).getByRole('button', { name: DRAFT_SHOW_LESS });
+    act(() => less.focus());
+    await user.keyboard('{Enter}');
+
+    // Collapsing hid nothing, but the toggle the reader pressed stays, and so does focus.
+    const toggle = within(card).getByRole('button', { name: DRAFT_SHOW_ALL });
+    expect(toggle).toBe(less);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(document.activeElement).toBe(toggle);
+    expect(card.querySelector('[data-ai-draft-text]')).toHaveClass('line-clamp-4');
+    await user.keyboard('{Enter}');
+    expect(document.activeElement).toBe(within(card).getByRole('button', { name: DRAFT_SHOW_LESS }));
+  });
+
+  it('keeps Show the whole draft under focus when a wider pane makes the draft fit', async () => {
+    const heights = draftHeights();
+    const resize = captureResizeObservers();
+    render(<Harness initial={makeData([withDraft(LONG_DRAFT)])} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    const toggle = await within(card).findByRole('button', { name: DRAFT_SHOW_ALL });
+    act(() => toggle.focus());
+
+    heights.fits = true;
+    act(() => resize.fire());
+
+    expect(within(card).getByRole('button', { name: DRAFT_SHOW_ALL })).toBe(toggle);
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it('measures a draft it has not been reached for again, and drops a toggle nothing needs', async () => {
+    const heights = draftHeights();
+    const resize = captureResizeObservers();
+    render(<Harness initial={makeData([withDraft(LONG_DRAFT)])} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    expect(await within(card).findByRole('button', { name: DRAFT_SHOW_ALL })).toBeInTheDocument();
+
+    heights.fits = true;
+    act(() => resize.fire());
+
+    expect(within(card).queryByRole('button', { name: DRAFT_SHOW_ALL })).toBeNull();
+  });
+
+  it("moves focus to the draft, not the page, when a teammate's shorter draft takes the toggle away", async () => {
+    const heights = draftHeights();
+    const live: { current: ((update: RunbookRunUpdate) => void) | null } = { current: null };
+    render(<Harness initial={makeData([withDraft(LONG_DRAFT)])} live={live} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    const toggle = await within(card).findByRole('button', { name: DRAFT_SHOW_ALL });
+    act(() => toggle.focus());
+
+    // The new draft fits in four lines, and the reader has not reached its toggle yet.
+    heights.fits = true;
+    act(() => live.current?.(draftLanded()));
+
+    const draft = within(card).getByRole('region', { name: 'AI draft note' });
+    expect(draft).toHaveTextContent('Two sign-ins succeeded for svc-backup.');
+    expect(within(card).queryByRole('button', { name: DRAFT_SHOW_ALL })).toBeNull();
+    expect(document.activeElement).toBe(draft);
+    expect(draft).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('shows the whole draft in an opened step row', async () => {
+    draftTextOverflows();
+    const user = userEvent.setup();
+    const run = makeRun({}, {
+      success: { status: 'done', ai_draft: null },
+      notes: { ai_draft: { text: LONG_DRAFT, created_at: '2026-10-28T14:40:00Z', model: 'demo', usage_id: 'u-2', confirmed: false } },
+    });
+    render(<Harness initial={makeData([run])} />);
+    await user.click(screen.getByRole('tab', { name: /^Contain/ }));
+    const list = screen.getByRole('list', { name: 'Contain steps' });
+    await user.click(within(list).getByRole('button', { name: /Record the containment/ }));
+    const draft = await within(list).findByRole('region', { name: 'AI draft note' });
+    const text = draft.querySelector('[data-ai-draft-text]') as HTMLElement;
+    expect(text.textContent).toBe(LONG_DRAFT);
+    expect(text).not.toHaveClass('line-clamp-4');
+    expect(within(draft).queryByRole('button', { name: DRAFT_SHOW_ALL })).toBeNull();
+  });
+});
+
+/** The draft the AI returns for the Check step, as the run and progress the server answers with. */
+function draftLanded(steps: Parameters<typeof makeRun>[1] = {}): RunbookRunUpdate {
+  return {
+    run: makeRun({ revision: 8 }, {
+      success: {
+        ai_draft: { text: 'Two sign-ins succeeded for svc-backup.', created_at: '2026-10-28T14:40:00Z', model: 'demo', usage_id: 'u-9', confirmed: false },
+        revision: 2,
+      },
+      ...steps,
+    }),
+    progress: { done: 2, not_applicable: 0, total: 6, required_open: 3, blocked: 0, waiting: 0 },
+    revision: 9,
+  };
+}
+
+/** Draft note answers only when `land` is called; the cost estimate answers at once. */
+function deferDraft(): { land: (update: RunbookRunUpdate) => Promise<void> } {
+  let resolve: (value: unknown) => void = () => undefined;
+  api.draftRunbookStep.mockImplementation((_c: string, _r: string, _s: string, opts?: { dryRun?: boolean }) =>
+    opts?.dryRun ? Promise.resolve({ update: null, estimate: null }) : new Promise((r) => (resolve = r)),
+  );
+  return {
+    land: async (update) => {
+      await act(async () => {
+        resolve({ update, estimate: null });
+      });
+    },
+  };
+}
+
+const NO_DRAFT = () => makeData([makeRun({}, { success: { ai_draft: null } })]);
+
+describe('Next step card while a draft lands (the buttons keep their place)', () => {
+  it('keeps an open Blocked dialog, what was typed and its focus when the draft lands', async () => {
+    const user = userEvent.setup();
+    const draft = deferDraft();
+    render(<Harness initial={NO_DRAFT()} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    await user.click(within(card).getByRole('button', { name: 'Draft note' }));
+    await user.click(within(card).getByRole('button', { name: 'Blocked' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Why is this step blocked?' });
+    const reason = within(dialog).getByRole('textbox');
+    await user.type(reason, 'waiting for the network team');
+
+    await draft.land(draftLanded());
+
+    // The draft is on the card (hidden from the accessibility tree behind the modal), and
+    // the dialog it did not interrupt is still there.
+    expect(within(card).getByRole('region', { name: 'AI draft note', hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Why is this step blocked?' })).toBe(dialog);
+    expect(reason).toHaveValue('waiting for the network team');
+    expect(document.activeElement).toBe(reason);
+  });
+
+  it('keeps the More menu open on a phone when the draft lands', async () => {
+    const user = userEvent.setup();
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () => ({ width: 356, height: 800, top: 0, left: 0, right: 356, bottom: 800, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect,
+    );
+    const draft = deferDraft();
+    render(<Harness initial={NO_DRAFT()} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    await user.click(within(card).getByRole('button', { name: 'Draft note' }));
+    const more = within(card).getByRole('button', { name: 'More step actions' });
+    act(() => more.focus());
+    await user.keyboard('{Enter}');
+    const menu = await screen.findByRole('menu');
+
+    await draft.land(draftLanded());
+
+    // The card behind the open menu is hidden from the accessibility tree, not gone.
+    expect(within(card).getByRole('button', { name: 'Confirm and mark done', hidden: true })).toBeInTheDocument();
+    expect(screen.getByRole('menu')).toBe(menu);
+    expect(within(card).getByRole('button', { name: 'More step actions', hidden: true })).toBe(more);
+    expect(more).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it("keeps focus on a card button when a teammate's draft arrives live", async () => {
+    const live: { current: ((update: RunbookRunUpdate) => void) | null } = { current: null };
+    render(<Harness initial={NO_DRAFT()} live={live} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    const blocked = within(card).getByRole('button', { name: 'Blocked' });
+    act(() => blocked.focus());
+
+    act(() => live.current?.(draftLanded()));
+
+    expect(within(card).getByRole('region', { name: 'AI draft note' })).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Blocked' })).toBe(blocked);
+    expect(document.activeElement).toBe(blocked);
+  });
+
+  it('moves focus from Draft note to the step heading when its draft lands, and says so', async () => {
+    const user = userEvent.setup();
+    api.draftRunbookStep.mockImplementation((_c: string, _r: string, _s: string, opts?: { dryRun?: boolean }) =>
+      Promise.resolve(opts?.dryRun ? { update: null, estimate: null } : { update: draftLanded(), estimate: null }),
+    );
+    const { container } = render(<Harness initial={NO_DRAFT()} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    act(() => within(card).getByRole('button', { name: 'Draft note' }).focus());
+    await user.keyboard('{Enter}');
+
+    expect(await within(card).findByRole('region', { name: 'AI draft note' })).toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: 'Draft note' })).toBeNull();
+    // The heading, as after Confirm: Enter again cannot confirm a draft nobody has read.
+    expect(document.activeElement).toBe(within(card).getByRole('heading', { level: 3 }));
+    await waitFor(() => expect(container.querySelector('[data-runbook-live]')).toHaveTextContent(DRAFT_READY_NOTE));
+    // Tab goes on to Confirm, the first button under the question.
+    await user.tab();
+    expect(document.activeElement).toBe(within(card).getByRole('button', { name: 'Confirm and mark done' }));
+  });
+
+  it("moves focus from Draft note to the heading when a teammate's draft lands first", async () => {
+    const live: { current: ((update: RunbookRunUpdate) => void) | null } = { current: null };
+    render(<Harness initial={NO_DRAFT()} live={live} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    act(() => within(card).getByRole('button', { name: 'Draft note' }).focus());
+
+    act(() => live.current?.(draftLanded()));
+
+    expect(document.activeElement).toBe(within(card).getByRole('heading', { level: 3 }));
+  });
+
+  it('never takes focus the reader moved away before the draft landed', async () => {
+    const user = userEvent.setup();
+    const draft = deferDraft();
+    render(<Harness initial={NO_DRAFT()} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    await user.click(within(card).getByRole('button', { name: 'Draft note' }));
+    // The reader clicks away onto the page: focus leaves the card for the body.
+    act(() => (document.activeElement as HTMLElement).blur());
+    expect(document.activeElement).toBe(document.body);
+
+    await draft.land(draftLanded());
+
+    expect(within(card).getByRole('region', { name: 'AI draft note' })).toBeInTheDocument();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('moves focus from Draft note to Edit note in an opened step row when its draft lands', async () => {
+    const user = userEvent.setup();
+    // The card shows the triage step; the Check step below it is opened as a row.
+    const open = { owner: { status: 'todo' as const, completed_at: null, completed_by: null } };
+    api.draftRunbookStep.mockImplementation((_c: string, _r: string, _s: string, opts?: { dryRun?: boolean }) =>
+      Promise.resolve(opts?.dryRun ? { update: null, estimate: null } : { update: draftLanded(open), estimate: null }),
+    );
+    render(<Harness initial={makeData([makeRun({}, { ...open, success: { ai_draft: null } })])} />);
+    await user.click(screen.getByRole('tab', { name: /^Investigate/ }));
+    const list = screen.getByRole('list', { name: 'Investigate steps' });
+    await user.click(within(list).getByRole('button', { name: /Did any sign-in succeed after the failures\?/ }));
+    act(() => within(list).getByRole('button', { name: 'Draft note' }).focus());
+    await user.keyboard('{Enter}');
+
+    const edit = await within(list).findByRole('button', { name: 'Edit note' });
+    expect(within(list).queryByRole('button', { name: 'Draft note' })).toBeNull();
+    expect(document.activeElement).toBe(edit);
+  });
+});
+
+describe('Landing on the Next step card with a draft (Review draft, SPEC §4.10.11)', () => {
+  const original = Element.prototype.scrollIntoView;
+  let scrolled: Element[] = [];
+  beforeEach(() => {
+    scrolled = [];
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this);
+    };
+  });
+  afterEach(() => {
+    Element.prototype.scrollIntoView = original;
+  });
+
+  it('brings the draft into view, then the heading, so the draft is not left below the fold', async () => {
+    render(<Harness initial={makeData()} focusRequest={{ kind: 'step', stepId: 'success', tick: 1 }} />);
+    const card = screen.getByRole('region', { name: 'Next step' });
+    const heading = within(card).getByRole('heading', { level: 3 });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
+    const draft = within(card).getByRole('region', { name: 'AI draft note' });
+    expect(scrolled).toEqual([draft, heading]);
+  });
+
+  it('scrolls only the heading when the step has no draft, and only on the card', () => {
+    render(<Harness initial={NO_DRAFT()} />);
+    const heading = within(screen.getByRole('region', { name: 'Next step' })).getByRole('heading', { level: 3 });
+    act(() => focusHeading(heading));
+    expect(document.activeElement).toBe(heading);
+    expect(scrolled).toEqual([heading]);
+  });
+});
+
+describe('Runbook strip on a narrow pane (SPEC §4.10.11, one line)', () => {
+  const LONG_TITLE = 'Phishing or reported suspicious email from a look-alike partner domain';
+
+  function narrowPane() {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
+      () => ({ width: 326, height: 800, top: 0, left: 0, right: 326, bottom: 800, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect,
+    );
+  }
+
+  it('truncates only the title, so the pinned version is always readable', () => {
+    narrowPane();
+    const { container } = render(<Harness initial={makeData([makeRun({ title: LONG_TITLE, version: 4 })])} />);
+    const heading = container.querySelector('[data-runbook-title]') as HTMLElement;
+    expect(heading.closest('[data-runbook-strip]')).toHaveAttribute('data-narrow', 'true');
+    expect(heading).toHaveTextContent(`${LONG_TITLE} · v4`);
+    expect(screen.getByRole('heading', { level: 2, name: `${LONG_TITLE} · v4` })).toBe(heading);
+    expect(heading).not.toHaveClass('truncate');
+
+    const title = heading.querySelector('[data-runbook-title-text]') as HTMLElement;
+    const version = heading.querySelector('[data-runbook-version]') as HTMLElement;
+    expect(title).toHaveClass('truncate', 'min-w-0');
+    expect(title).toHaveAttribute('title', LONG_TITLE);
+    expect(title.contains(version)).toBe(false);
+    expect(version).toHaveClass('shrink-0');
+    expect(version).not.toHaveClass('truncate');
+    expect(version.textContent).toBe(' · v4');
+  });
+
+  it("keeps a finished run's state beside the version without the time, which stays in its hover text", () => {
+    narrowPane();
+    const { container } = render(<Harness initial={makeData([completedRun({ title: LONG_TITLE })])} />);
+    const heading = container.querySelector('[data-runbook-title]') as HTMLElement;
+    const stateWords = heading.querySelector('[data-runbook-state]') as HTMLElement;
+    expect(stateWords.textContent).toBe(' · Completed');
+    expect(stateWords).toHaveClass('shrink-0');
+    expect(stateWords.getAttribute('title')).toMatch(/^Completed · /);
+    expect(heading).toHaveTextContent(`${LONG_TITLE} · v4 · Completed`);
+    expect(container.textContent).not.toMatch(/—/);
   });
 });

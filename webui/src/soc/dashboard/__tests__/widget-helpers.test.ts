@@ -502,8 +502,46 @@ describe('series over time', () => {
       ],
     } as never);
     const series = severitySeries(b);
-    expect(series.map((s) => s.label)).toEqual(['High', 'Low', 'Unknown']);
+    // All five named levels stack in fixed order, zeros included (SPEC §4.7.2), then Unknown.
+    expect(series.map((s) => s.label)).toEqual(['Critical', 'High', 'Medium', 'Low', 'Info', 'Unknown']);
+    expect(series.map((s) => s.values)).toEqual([[0], [3], [0], [2], [0], [1]]);
     expect(series.reduce((a, s) => a + (s.values[0] ?? 0), 0)).toBe(6);
+  });
+
+  it('severity over time lists every named level with zeros, the same five rows chat lists', () => {
+    // The Executive board's 24-hour answer held only Low, Critical and High (integ-03).
+    const labels = ['3 Nov 14:00', '3 Nov 15:00'];
+    const b = breakdown({
+      by: 'severity',
+      bucket: 'hour',
+      buckets: labels.map((label, i) => ({ label, in_progress: i === labels.length - 1, other_count: null })),
+      groups: [
+        { ...group('low', 32), bucket: labels[0] },
+        { ...group('critical', 3), bucket: labels[1] },
+        { ...group('high', 3), bucket: labels[1] },
+      ],
+    } as never);
+    const series = severitySeries(b);
+    expect(series.map((s) => s.label)).toEqual(['Critical', 'High', 'Medium', 'Low', 'Info']);
+    expect(series.map((s) => s.semantic)).toEqual(['critical', 'high', 'medium', 'low', 'info']);
+    expect(series.find((s) => s.label === 'Medium')?.values).toEqual([0, 0]);
+    expect(series.find((s) => s.label === 'Info')?.values).toEqual([0, 0]);
+    // No unreadable case: no Unknown series.
+    expect(series.some((s) => s.label === 'Unknown')).toBe(false);
+    // One level present still draws all five.
+    const one = breakdown({
+      by: 'severity',
+      bucket: 'day',
+      buckets: [{ label: '21 Oct 2026', in_progress: false, other_count: null }],
+      groups: [{ ...group('info', 4), bucket: '21 Oct 2026' }],
+    } as never);
+    expect(severitySeries(one).map((s) => [s.label, s.values[0]])).toEqual([
+      ['Critical', 0],
+      ['High', 0],
+      ['Medium', 0],
+      ['Low', 0],
+      ['Info', 4],
+    ]);
   });
 
   it('outcomes keep to one family and account for what they leave out', () => {

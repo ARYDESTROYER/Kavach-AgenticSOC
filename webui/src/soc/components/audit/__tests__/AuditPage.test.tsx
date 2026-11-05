@@ -943,13 +943,25 @@ describe('Audit log: investigations (Agent activity)', () => {
     expect(group).toHaveAttribute('aria-expanded', 'false');
     expect(group).toHaveTextContent('2 of 10 steps shown · closed as false positive');
     expect(within(group).getByRole('button', { name: 'Load more' })).toBeInTheDocument();
-    expect(within(group).getByRole('link', { name: 'Open case trace' })).toBeInTheDocument();
+    // The trace is on the case's Investigation tab: the link opens it there (closing QA
+    // integ-06), not the case Overview.
+    expect(within(group).getByRole('link', { name: 'Open case trace' })).toHaveAttribute(
+      'href',
+      '#/case_manager?caseId=case-214&tab=investigation',
+    );
     expect(screen.queryByText('Tool call')).toBeNull();
     await user.click(group);
     expect(group).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Tool call')).toBeInTheDocument();
     // The scope line counts events, never groups.
     expect(screen.getByTestId('audit-scope-line')).toHaveTextContent('Showing 1 to 3 of 12 events');
+    // A step's inspector links to the same place.
+    await user.click(screen.getByText('Tool call'));
+    const related = await screen.findByRole('region', { name: 'Related' });
+    expect(within(related).getByRole('link', { name: 'Open case trace' })).toHaveAttribute(
+      'href',
+      '#/case_manager?caseId=case-214&tab=investigation',
+    );
   });
 
   it('keeps paging with the keyboard when a page only adds steps to an investigation already listed', async () => {

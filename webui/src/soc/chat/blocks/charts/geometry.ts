@@ -146,11 +146,52 @@ export function endLabelsName(labels: readonly string[], budget: number): boolea
   }
   return labels.length > 0;
 }
+/** The line box of one 11 px end label: two labels closer than this overlap. */
+export const END_LABEL_LINE = 14;
+
+/**
+ * Vertical positions for labels that want to sit at `desired` (one per label, any order),
+ * at least `gap` apart and every one inside `[top, bottom]`, or `null` when they cannot
+ * all fit. Labels keep their order by value, and each one moves as little as the others
+ * allow: overlapping labels form a cluster centred on what its members want (the usual
+ * label dodge), and a cluster pushed past an edge is clamped inside it.
+ */
+export function spreadLabels(desired: readonly number[], top: number, bottom: number, gap: number): number[] | null {
+  const n = desired.length;
+  if (!n) return [];
+  if (!(bottom >= top) || (n - 1) * gap > bottom - top + 1e-9) return null;
+  const order = desired.map((y, i) => ({ y: Number.isFinite(y) ? y : top, i })).sort((a, b) => a.y - b.y || a.i - b.i);
+  // Each cluster: its members (in order) and the y of its first member.
+  const clusters: Array<{ members: Array<{ y: number; i: number }>; start: number }> = [];
+  const place = (c: { members: Array<{ y: number; i: number }>; start: number }) => {
+    const span = (c.members.length - 1) * gap;
+    const mean = c.members.reduce((sum, m, k) => sum + (m.y - k * gap), 0) / c.members.length;
+    c.start = Math.min(Math.max(mean, top), bottom - span);
+  };
+  for (const item of order) {
+    const cluster = { members: [item], start: item.y };
+    place(cluster);
+    clusters.push(cluster);
+    // Merge while the newest cluster overlaps the one before it.
+    while (clusters.length > 1) {
+      const cur = clusters[clusters.length - 1];
+      const prev = clusters[clusters.length - 2];
+      if (prev.start + prev.members.length * gap <= cur.start + 1e-9) break;
+      prev.members.push(...cur.members);
+      clusters.pop();
+      place(prev);
+    }
+  }
+  const out = new Array<number>(n);
+  for (const c of clusters) c.members.forEach((m, k) => (out[m.i] = c.start + k * gap));
+  return out;
+}
+
 /**
  * Candidate label intervals in minutes, smallest first: sub-hour steps for "last hour"
  * lookups at 1m/5m/15m buckets, then the hour/day/week ladder.
  */
-const LABEL_INTERVALS_MIN = [5, 10, 15, 30, 60, 120, 180, 240, 360, 720, 1440, 2880, 4320, 10080, 20160, 43200];
+export const LABEL_INTERVALS_MIN = [5, 10, 15, 30, 60, 120, 180, 240, 360, 720, 1440, 2880, 4320, 10080, 20160, 43200];
 
 /**
  * Indices of the x slots that get a label: at most five, on regular UTC intervals when
@@ -190,23 +231,28 @@ export function pickXLabels(
   return Array.from({ length: Math.ceil(n / step) }, (_, k) => k * step);
 }
 
+/** The least space between two x labels. */
+export const X_LABEL_GAP = 6;
+
 /**
  * Lay out chosen x labels centred on their slots, clamped inside the figure and
- * DROPPED (never overlapped) when a clamp pushes one into its neighbour.
+ * DROPPED (never overlapped) when a clamp pushes one into its neighbour. `charW` is the
+ * advance of one tick glyph (11 px text by default; the 12 px image export passes its own).
  */
 export function placeXLabels(
   picks: readonly number[],
   texts: readonly string[],
   centre: (i: number) => number,
   width: number,
+  charW: number = CHAR_W,
 ): Array<{ index: number; x: number; text: string }> {
   const out: Array<{ index: number; x: number; text: string }> = [];
   let lastRight = -Infinity;
   for (const index of picks) {
     const text = texts[index] ?? '';
-    const w = text.length * CHAR_W;
+    const w = text.length * charW;
     const c = Math.min(Math.max(centre(index), w / 2), width - w / 2);
-    if (c - w / 2 < lastRight + 6) continue;
+    if (c - w / 2 < lastRight + X_LABEL_GAP) continue;
     out.push({ index, x: Math.round(c), text });
     lastRight = c + w / 2;
   }

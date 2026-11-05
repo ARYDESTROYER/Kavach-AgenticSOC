@@ -3,7 +3,8 @@
  * runbook, which pinned version, how and when it attached, "Why attached", "Add runbook"
  * and the More menu (Switch version when a newer one is published, Abandon run, Export as
  * Markdown). Under 640px of pane width it is one line ("Brute force and password spray ·
- * v4", the Why attached icon, the menu) so the Next step card starts high on a phone.
+ * v4", the Why attached icon, the menu) so the Next step card starts high on a phone; only
+ * the title truncates there, so the pinned version always shows.
  *
  * With it, the progress line: "4 of 11 steps done · 1 not applicable · 5 required open ·
  * 1 waiting". On a wide pane it is the strip's last line, under how the run attached, so
@@ -86,6 +87,16 @@ export function ProgressLine({
       ))}
     </p>
   );
+}
+
+/**
+ * A completed or abandoned run's state on the one-line strip of a narrow pane, without the
+ * time it ended (the wide strip and the hover text keep it), so the line never wraps.
+ */
+export function narrowStatusWords(run: RunbookRun): string {
+  if (run.status === 'completed') return 'Completed';
+  if (run.status === 'abandoned') return 'Abandoned';
+  return 'Active';
 }
 
 /** The hint beside Add runbook at the run limit (read by keyboard and screen reader users). */
@@ -195,15 +206,26 @@ export function RunbookStrip({
       {narrow ? (
         <div className="flex items-center gap-1">
           <BookCheck className="size-4 shrink-0 text-primary" aria-hidden />
+          {/* Only the title truncates: the pinned version (and a completed or abandoned
+              run's state) always stays readable, since a touch screen cannot reach a tooltip. */}
           <h2
             id={titleId}
             tabIndex={-1}
             data-runbook-title=""
-            className="ml-1 min-w-0 flex-1 truncate rounded-sm text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            title={run.title}
+            className="ml-1 flex min-w-0 flex-1 items-baseline rounded-sm text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            {run.title} <span className="font-normal tabular-nums text-muted-foreground">· v{n(run.version)}</span>
-            {status ? <span className="font-normal text-muted-foreground"> · {status}</span> : null}
+            <span data-runbook-title-text="" className="min-w-0 truncate" title={run.title}>
+              {run.title}
+            </span>
+            {/* The leading space is kept (whitespace-pre), so the heading reads "Title · v4". */}
+            <span data-runbook-version="" className="shrink-0 whitespace-pre font-normal tabular-nums text-muted-foreground">
+              {` · v${n(run.version)}`}
+            </span>
+            {status ? (
+              <span data-runbook-state="" className="shrink-0 whitespace-pre font-normal text-muted-foreground" title={status}>
+                {` · ${narrowStatusWords(run)}`}
+              </span>
+            ) : null}
           </h2>
           <WhyAttachedButton iconOnly run={run} newerVersion={newerVersion} nameOf={nameOf} now={now} />
           {menu}

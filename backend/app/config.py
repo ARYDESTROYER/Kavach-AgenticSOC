@@ -747,7 +747,7 @@ class AutoClosePolicy(BaseModel):
     )
 
 
-class LegacyPlaybookConfig(BaseModel):
+class LegacyProcedureConfig(BaseModel):
     """The retired procedure section (``Preferences.playbooks``), accepted on load
     for one release (Round 14 SPEC §4.10.19). It is no longer a setting and is never
     shown in Settings (``api.settings_schema`` hides it).
@@ -4297,7 +4297,7 @@ class Preferences(BaseModel):
     # section, accepted on load for one release (its ``enabled`` mirrors
     # ``runbooks.investigator_guidance``; its ``dir`` is read once by the migration).
     runbooks: RunbookConfig = Field(default_factory=RunbookConfig)
-    playbooks: LegacyPlaybookConfig = Field(default_factory=LegacyPlaybookConfig)
+    playbooks: LegacyProcedureConfig = Field(default_factory=LegacyProcedureConfig)
     # Threat-context case panel (Wave 6 / F11) — advisory, read-only, fail-open.
     threat_context: ThreatContextConfig = Field(default_factory=ThreatContextConfig)
     # Threshold automation (Wave 6 / F10) — default OFF; post-decision, #3-safe. It

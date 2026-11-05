@@ -22,7 +22,6 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Bot,
   Briefcase,
   X,
   XCircle,
@@ -110,7 +109,7 @@ import {
   SEVERITY_BAND_ORDER,
 } from '@/soc/components/badges';
 import { severityProvenance } from '@/soc/components/ProvenanceTag';
-import { caseOutcome } from '@/soc/components/outcome';
+import { caseOutcome, pendingDispositionNote } from '@/soc/components/outcome';
 import { statusLabel as statusBadgeLabel } from '@/soc/components/semantic-labels';
 import {
   BulkCloseDialog,
@@ -325,6 +324,11 @@ function caseSeverityBand(c: Case) {
   const explicit = severityBand(c.severity_band);
   if (explicit) return explicit;
   return severityBand(typeof c.risk_score === 'number' ? c.risk_score : null);
+}
+
+/** The note as read after the badge ("False positive, mapped from the AI verdict; …"). */
+function pendingOutcomeRead(note: string): string {
+  return `, ${note.charAt(0).toLowerCase()}${note.slice(1)}`;
 }
 
 /**
@@ -1402,30 +1406,21 @@ export default function Cases({
       text: (c) => caseOutcome(c).headline,
       cell: (c) => {
         const outcome = caseOutcome(c);
-        if (outcome.source === 'agent_auto') {
-          // A table cell says "Auto-closed" (the short label the Case Manager queue uses);
-          // the verdict it closed on is in the tooltip, so the badge fits its column.
-          return (
-            <Badge
-              variant="info"
-              data-testid="case-outcome"
-              data-outcome-source="agent_auto"
-              title={outcome.headline}
-            >
-              <Bot className="size-3 shrink-0" aria-hidden />
-              {outcome.shortLabel}
-              <span className="sr-only">{`, ${outcome.headline.toLowerCase()}`}</span>
-            </Badge>
-          );
-        }
-        if (outcome.source !== 'pending') return <OutcomeBadge outcome={outcome} />;
+        // Closing QA qa2-01: a settled outcome is the compact table badge, a short word
+        // ("Auto-closed", "Not recorded", "False positive") in the Status column's badge
+        // size, with the whole outcome in its tooltip and accessible name. Every label
+        // fits the 9.25rem column, so no badge is ever clipped.
+        if (outcome.source !== 'pending') return <OutcomeBadge outcome={outcome} compact />;
+        // Until an analyst classifies the case, the disposition shown is the one triage
+        // mapped from the AI verdict (D15), or "Undetermined" before there is one. It is
+        // the same table badge size as a settled outcome, so where it came from is in its
+        // read text as well as its tooltip (a title alone is mouse-only): it never reads
+        // like an analyst's call, and never claims a mapping that did not happen.
+        const note = pendingDispositionNote(c);
         return (
-          <span
-            className="inline-flex items-center gap-1"
-            data-outcome-source="pending"
-            title="Mapped from the AI verdict; no analyst has classified this case yet"
-          >
-            <DispositionBadge disposition={c.disposition ?? null} />
+          <span className="inline-flex items-center gap-1" data-outcome-source="pending" title={note}>
+            <DispositionBadge disposition={c.disposition ?? null} className="px-1.5 text-2xs" />
+            <span className="sr-only">{pendingOutcomeRead(note)}</span>
           </span>
         );
       },

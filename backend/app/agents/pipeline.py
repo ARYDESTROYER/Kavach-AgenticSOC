@@ -19,6 +19,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
+from ..audit.events import DERIVED_OUTCOMES
 from ..build_identity import originating_record_provenance
 from ..cache import Cache
 from ..config import Preferences, Secrets
@@ -110,7 +112,8 @@ CASE_TITLE_SEPARATOR = " \u00b7 "
 # steps into one row. Each row also says who acted (``actor_type``): the AI agent, or
 # the system for the deterministic actors (``case_manager``, ``analyst_policy``,
 # ``poller``: code decides, never the model, #3), from the one actor table the audit
-# reader uses for older rows (``audit/event_categories.json``).
+# reader uses for older rows (``audit/event_categories.json``), and how the step ended
+# (``outcome``), so the Outcome column and filter work for agent activity.
 # --------------------------------------------------------------------------- #
 _INVESTIGATION_RUN_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "investigation_run_id", default=None,
@@ -137,10 +140,24 @@ def audit_actor_type(actor: str) -> str:
     return "agent"
 
 
+def default_audit_outcome(action_type: Any) -> str:
+    """The outcome of a pipeline row whose writer names none (Round 14 SPEC §4.5.3:
+    ``outcome`` is written by every writer): the outcome the audit reader derives for
+    that action type on a row without one (``failure`` for ``error``, ``denied`` for
+    ``access_denied``: the one table, :data:`app.audit.events.DERIVED_OUTCOMES`), so a
+    stamped row never reads differently from an unstamped one; otherwise ``success``,
+    because every other pipeline row records a step that happened. A writer whose step
+    can fail, stop short or be refused names its own outcome (a tool call that
+    returned an error, a capped verdict, a blocked tool)."""
+    value = getattr(action_type, "value", action_type)
+    return DERIVED_OUTCOMES.get(str(value or ""), "success")
+
+
 class RunStampedAudit:
     """The pipeline's audit logger: delegates every call, and stamps each appended row
-    with the current investigation's ``run_id`` and the actor's kind. A caller that
-    sets either field keeps its own value."""
+    with the current investigation's ``run_id``, the actor's kind and, when the writer
+    names none, the outcome (:func:`default_audit_outcome`). A caller that sets any of
+    these fields keeps its own value."""
 
     __slots__ = ("_inner",)
 
@@ -158,6 +175,8 @@ class RunStampedAudit:
     def _stamp(fields: dict[str, Any]) -> dict[str, Any]:
         if fields.get("actor_type") is None:
             fields["actor_type"] = audit_actor_type(str(fields.get("actor") or ""))
+        if fields.get("outcome") is None:
+            fields["outcome"] = default_audit_outcome(fields.get("action_type"))
         run_id = _INVESTIGATION_RUN_ID.get()
         if run_id is not None and fields.get("run_id") is None:
             fields["run_id"] = run_id
@@ -886,6 +905,7 @@ class InvestigationPipeline:
             await self._audit.record(
                 action_type=ActionType.DECISION, surface=source_surface.value,
                 actor=RUNBOOK_SELECTOR_ACTOR, action="runbook.selected", case_id=case_id,
+                outcome=guidance.audit_outcome,
                 result_summary=(
                     f"runbook={guidance.label} persona={persona.id} "
                     f"reason={guidance.status}: {guidance.reason}"
@@ -1055,6 +1075,13 @@ class InvestigationPipeline:
                 surface=source_surface.value,
                 actor="procedure_provenance",
                 case_id=case_id,
+                # Partial when knowledge retrieval was cut short (a query group that
+                # did not complete, or the time cap), so the gap is findable.
+                outcome=(
+                    "partial"
+                    if procedure_provenance.get("retrieval_status") == "unavailable"
+                    else "success"
+                ),
                 result_summary=(
                     f"persona selected={persona.id} consulted="
                     f"{bool(procedure_provenance.get('persona_consulted'))}; "
@@ -1212,7 +1239,9 @@ class InvestigationPipeline:
             try:
                 await self._audit.record(
                     action_type=ActionType.ERROR, surface=source_surface.value,
-                    actor="pipeline", case_id=case_id, result_summary=f"pipeline error: {exc}",
+                    actor="pipeline", case_id=case_id,
+                    # Any exception, so its text can carry an address or a credential.
+                    result_summary=truncate(redact_text(f"pipeline error: {exc}")[0], 1000),
                 )
             finally:
                 if persist_error is not None:

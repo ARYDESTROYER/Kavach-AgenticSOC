@@ -131,6 +131,136 @@ def test_coverage_alias_matches_cases_without_the_fallback(client) -> None:
     assert body["unmatched_rule_families"] == [{"rule_id": "nothing_matches_this", "case_count": 1}]
 
 
+def test_coverage_alias_needs_cases_read_as_well_as_runbooks_read() -> None:
+    """The figures are derived from cases (SPEC §4.10.15): a role that holds
+    ``runbooks:read`` without ``cases:read`` gets none of them, as from the successor
+    ``GET /api/runbooks/metrics``."""
+    from fastapi.testclient import TestClient
+
+    from tests.test_runbook_library_api import add_user, auth_secrets, login, make_app
+
+    holder: dict = {}
+    rbac = {"denies": {"auditor": {"cases": ["read"]}}}
+    with TestClient(make_app(holder, secrets=auth_secrets(), auth=True, rbac=rbac)) as api:
+        add_user(api, "auditor", "auditor")
+        add_user(api, "tier1", "analyst_tier1")
+        login(api, "auditor", "user-pass-12345")
+        assert api.get("/api/runbooks").status_code == 200  # it still reads runbooks
+        assert api.get("/api/playbooks/coverage").status_code == 403
+        assert api.get("/api/runbooks/metrics").status_code == 403
+        login(api, "tier1", "user-pass-12345")
+        assert api.get("/api/playbooks/coverage").status_code == 200
+
+
+def test_coverage_alias_is_hidden_while_row_level_scope_applies(client, monkeypatch) -> None:
+    """Row-level scope (D16): case aggregates are refused, with the same ``409`` the
+    successor answers, rather than counted over cases the caller may not read."""
+    import app.engine.chat_starters as starters
+
+    state = client.app.state.tlsoc
+    client.portal.call(state.cases.save, Case(
+        case_id="cov-s", cluster_signature="cov-s", source_surface=SourceSurface.INVESTIGATE,
+        rule_ids=["nothing_matches_this"], entity=Entity(type=EntityType.IP, value="198.51.100.9"),
+        status=CaseStatus.NEEDS_HUMAN))
+    monkeypatch.setattr(starters, "object_scoped", lambda _state, _role: True)
+    r = client.get("/api/playbooks/coverage")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "runbook_scope_unsupported"
+    assert "nothing_matches_this" not in r.text
+    _deprecated(r)
+
+
+def test_coverage_alias_reads_the_newest_cases_up_to_the_metrics_bound(client, monkeypatch) -> None:
+    """The alias reads through the bounded case scan (never offset paging, which a
+    large Elasticsearch store refuses past its result window), newest first, and stops
+    at the bound the runbook metrics use; ``truncated`` then marks lower bounds."""
+    from datetime import UTC, datetime, timedelta
+
+    import app.engine.runbook_catalog as catalog
+
+    state = client.app.state.tlsoc
+    now = datetime.now(UTC)
+    for index, rule in enumerate(("mail_auth", "nothing_matches_this", "old_rule")):
+        client.portal.call(state.cases.save, Case(
+            case_id=f"cov-b{index}", cluster_signature=f"cov-b{index}",
+            source_surface=SourceSurface.INVESTIGATE, rule_ids=[rule],
+            entity=Entity(type=EntityType.IP, value="198.51.100.3"), status=CaseStatus.NEEDS_HUMAN,
+            created_at=(now - timedelta(hours=index + 1)).isoformat()))
+
+    async def no_offset_paging(*_args, **_kwargs):
+        raise AssertionError("the coverage alias must not page by offset")
+
+    monkeypatch.setattr(state.cases, "list", no_offset_paging)
+    full = client.get("/api/playbooks/coverage").json()
+    assert (full["scanned_cases"], full["scan_limit"], full["truncated"]) == (3, catalog.METRICS_MAX_CASES, False)
+    monkeypatch.setattr(catalog, "METRICS_MAX_CASES", 2)
+    body = client.get("/api/playbooks/coverage").json()
+    assert (body["scanned_cases"], body["covered_cases"], body["scan_limit"], body["truncated"]) == (2, 1, 2, True)
+    # The two newest cases are the ones read; the oldest rule is never seen.
+    assert body["unmatched_rule_families"] == [{"rule_id": "nothing_matches_this", "case_count": 1}]
+
+
+@pytest.mark.parametrize("stored,page_size,truncated,pages_read", [
+    (3, 500, False, None),  # exactly the bound, on one page
+    (3, 1, False, None),    # exactly the bound, one case per page
+    (4, 500, True, None),   # one case beyond the bound
+    (5, 1, True, 4),        # the read stops on the page that shows a case past the bound
+])
+def test_coverage_alias_marks_truncation_only_when_a_case_lies_beyond_the_bound(
+    client, monkeypatch, stored: int, page_size: int, truncated: bool, pages_read: int | None,
+) -> None:
+    """A store holding exactly the bound is read whole, so its figures are exact and
+    ``truncated`` is false, as from ``runbook_catalog.cases_in_window``; one case more
+    makes them lower bounds. Reaching the bound is not the same as passing it."""
+    from datetime import UTC, datetime, timedelta
+
+    import app.engine.case_aggregate as aggregate
+    import app.engine.runbook_catalog as catalog
+
+    state = client.app.state.tlsoc
+    now = datetime.now(UTC)
+    for index in range(stored):
+        client.portal.call(state.cases.save, Case(
+            case_id=f"cov-x{index}", cluster_signature=f"cov-x{index}",
+            source_surface=SourceSurface.INVESTIGATE, rule_ids=["mail_auth"],
+            entity=Entity(type=EntityType.IP, value="198.51.100.4"), status=CaseStatus.NEEDS_HUMAN,
+            created_at=(now - timedelta(minutes=index + 1)).isoformat()))
+    real_scan = aggregate.scan_cases
+    pages: list[int] = []
+
+    async def scan_in_pages(store, consume, **kwargs):
+        outcome = await real_scan(store, consume, page_size=page_size, **kwargs)
+        pages.append(outcome.pages)
+        return outcome
+
+    monkeypatch.setattr(aggregate, "scan_cases", scan_in_pages)
+    monkeypatch.setattr(catalog, "METRICS_MAX_CASES", 3)
+    r = client.get("/api/playbooks/coverage")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["scanned_cases"], body["covered_cases"], body["scan_limit"], body["truncated"]) == (
+        3, 3, 3, truncated)
+    assert len(pages) == 1
+    if pages_read is not None:
+        assert pages == [pages_read]
+
+
+def test_coverage_alias_answers_503_when_the_case_store_cannot_be_read(client, monkeypatch) -> None:
+    """A case store that cannot answer is never read as "no cases": the alias says so,
+    with the deprecation headers, instead of a zero coverage."""
+    state = client.app.state.tlsoc
+
+    async def unreadable(*_args, **_kwargs):
+        raise RuntimeError("injected case store outage")
+
+    monkeypatch.setattr(state.cases, "scan_page", unreadable)
+    r = client.get("/api/playbooks/coverage")
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "case_store_unavailable"
+    assert "injected" not in r.text
+    _deprecated(r)
+
+
 def test_selection_alias_reports_the_attached_runbook(client) -> None:
     state = client.app.state.tlsoc
     case = Case(case_id="sel-1", cluster_signature="sel-1", source_surface=SourceSurface.INVESTIGATE,
@@ -150,7 +280,7 @@ def test_selection_alias_reports_the_attached_runbook(client) -> None:
 def test_alias_and_retired_route_grants() -> None:
     assert _grants(routes_mod.playbooks) == {("runbooks", "read")}
     assert _grants(routes_mod.playbook_detail) == {("runbooks", "read")}
-    assert _grants(routes_mod.playbooks_coverage) == {("runbooks", "read")}
+    assert _grants(routes_mod.playbooks_coverage) == {("cases", "read"), ("runbooks", "read")}
     assert _grants(routes_mod.playbook_selection) == {("cases", "read"), ("runbooks", "read")}
     for write in (routes_mod.playbooks_create, routes_mod.playbooks_reload, routes_mod.playbook_update):
         assert _grants(write) == {("runbooks", "manage")}

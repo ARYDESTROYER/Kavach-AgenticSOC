@@ -1688,7 +1688,11 @@ def test_opening_records_with_the_page_filters_joins_the_list_view(api):
     api.get("/api/audit", params={"scope": "agent"})
     new_rows = _view_rows(api)[: len(_view_rows(api)) - seen]  # newest first
     assert len(new_rows) == 1 and new_rows[0]["tool_input"] == {"list": {"scope": "agent"}}
-    assert new_rows[0]["result_summary"].startswith(f"opened audit record {agent_record['record_id']}")
+    # The summary is a plain sentence naming the view in the Console's words (SPEC
+    # §4.5.2: the inspector's header sentence), never a dump of internal keys.
+    assert new_rows[0]["result_summary"] == (
+        f"Opened audit record {agent_record['record_id']} while viewing Agent activity, all time."
+    )
     # A record the sent filters do not select (a People row under ``scope=agent``) is
     # recorded by its own id: the filters never vouch for a row they do not list.
     views.RECORDER.reset()
@@ -1696,7 +1700,22 @@ def test_opening_records_with_the_page_filters_joins_the_list_view(api):
     api.get(f"/api/audit/records/{records[0]['record_id']}", params={"scope": "agent"})
     new_rows = _view_rows(api)[: len(_view_rows(api)) - seen]
     assert [r["tool_input"] for r in new_rows] == [{"record": records[0]["record_id"]}]
-    assert new_rows[0]["result_summary"] == f"opened audit record {records[0]['record_id']}"
+    assert new_rows[0]["result_summary"] == f"Opened audit record {records[0]['record_id']}."
+
+
+def test_a_view_row_reads_as_a_sentence_in_the_consoles_words(api):
+    """The stored summary of an "Audit log viewed" row is the inspector's header
+    sentence and the list's Summary (SPEC §4.5.2): the view in words, never the
+    internal filter keys. The exact filters stay in ``tool_input``."""
+    _seed(api, _rows(2))
+    api.get("/api/audit", params={"scope": "people", "from": "now-7d", "q": "row", "order": "asc"})
+    rows = _view_rows(api)
+    assert len(rows) == 1
+    assert rows[0]["result_summary"] == (
+        'Searched the audit log: People and settings, last 7 days, matching "row", oldest first.'
+    )
+    assert "from_token" not in rows[0]["result_summary"]
+    assert rows[0]["tool_input"] == {"list": {"scope": "people", "q": "row", "from_token": "now-7d"}}
 
 
 def test_a_count_with_the_page_filters_joins_the_list_view(api):

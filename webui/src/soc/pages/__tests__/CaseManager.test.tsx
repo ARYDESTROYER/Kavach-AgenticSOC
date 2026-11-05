@@ -138,6 +138,7 @@ vi.mock('../CaseDetail', () => ({
     onCaseChange,
     onAdvance,
     resolveDialogFocus,
+    requestedTab,
   }: {
     caseId: string;
     presentation: string;
@@ -145,10 +146,16 @@ vi.mock('../CaseDetail', () => ({
     onCaseChange?: (c: Case) => void;
     onAdvance?: () => void;
     resolveDialogFocus?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
+    requestedTab?: string | null;
   }) => {
     mocks.resolveDialogFocus = resolveDialogFocus ?? null;
     return (
-    <section data-testid="embedded-case-detail" data-case-id={caseId} data-presentation={presentation}>
+    <section
+      data-testid="embedded-case-detail"
+      data-case-id={caseId}
+      data-presentation={presentation}
+      data-requested-tab={requestedTab ?? undefined}
+    >
       <h2 data-case-title tabIndex={-1}>Mock title</h2>
       <button
         type="button"
@@ -1102,6 +1109,13 @@ describe('CaseManager', () => {
     expect(chip).toHaveAttribute('aria-hidden', 'true');
     // One tab stop per row: the chip is not a control.
     expect(chip.querySelector('button, a, [tabindex]')).toBeNull();
+    // The case number names the row: the chip never makes it truncate (closing QA qa3-03,
+    // "CASE-0000…" at 1440). It does not shrink or cut; the source fact gives way instead.
+    const id = within(row).getByTestId('case-queue-id');
+    expect(id).toHaveClass('shrink-0', 'whitespace-nowrap');
+    expect(id).not.toHaveClass('truncate');
+    expect(id.className).not.toMatch(/\bshrink-\[/);
+    expect(id.parentElement).toContainElement(chip);
     // A case with no runbook has no chip.
     expect(rowButton('Suspicious S3 bucket exfiltration').querySelector('[data-runbook-progress]')).toBeNull();
   });
@@ -1607,6 +1621,19 @@ describe('CaseManager', () => {
     const queue = screen.getByRole('complementary', { name: 'Case queue' });
     expect(within(queue).queryByRole('button', { name: 'Refresh case queue' })).not.toBeInTheDocument();
     expect(within(queue).getByRole('button', { name: 'Keyboard shortcuts' })).toBeInTheDocument();
+  });
+
+  it('opens the linked case on the tab its link names, the trace for "Open case trace" (closing QA integ-06)', async () => {
+    mocks.routeOpts = { caseId: OPEN_HIGH.case_id, tab: 'investigation' };
+    const { unmount } = render(<CaseManager />);
+    const detail = await screen.findByTestId('embedded-case-detail');
+    expect(detail).toHaveAttribute('data-case-id', OPEN_HIGH.case_id);
+    expect(detail).toHaveAttribute('data-requested-tab', 'investigation');
+    unmount();
+    // A plain case link asks for no tab: the case detail keeps its own.
+    mocks.routeOpts = { caseId: OPEN_HIGH.case_id };
+    render(<CaseManager />);
+    expect(await screen.findByTestId('embedded-case-detail')).not.toHaveAttribute('data-requested-tab');
   });
 
   it('opens on the cases the AI agent closed from #/case_manager?closedBy=agent (the #/scans redirect)', async () => {

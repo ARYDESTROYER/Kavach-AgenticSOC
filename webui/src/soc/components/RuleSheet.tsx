@@ -368,17 +368,63 @@ const LEVEL_LABEL: Record<SeverityLevel, string> = {
 };
 const LEVEL_ORDER: readonly SeverityLevel[] = ['critical', 'high', 'medium', 'low', 'info'];
 
+/** The part of the sheet's window a chart reads: its resolved bounds as epoch ms (null when open or unknown). */
+export interface ChartWindow {
+  from: number | null;
+  to: number | null;
+}
+
+/** "Oct 28, 12:00 to 24:00 UTC", or across midnight "Oct 28, 22:00 to Oct 29 02:00 UTC". */
+function hoursLabel(startMs: number, endMs: number, now: Date): string {
+  const start = new Date(startMs);
+  const startIso = start.toISOString();
+  const day = utcDay(startIso, now) ?? startIso;
+  const sameDay = utcDay(new Date(endMs - 1).toISOString(), now) === day;
+  if (!sameDay) return `${day}, ${utcClock(start)} to ${utcDayTime(new Date(endMs).toISOString(), now)} UTC`;
+  const endClock = endMs % DAY_MS === 0 ? '24:00' : utcClock(new Date(endMs));
+  return `${day}, ${utcClock(start)} to ${endClock} UTC`;
+}
+
 /**
- * A tick label: the day for a day bucket or a midnight, the time of day otherwise; the
- * first bucket of a sub-day series names its day too, so every chart says which day it
- * starts on ("Oct 28 18:30", "18:45", "19:00").
+ * The full name of one bucket, for the chart's tooltip, its keyboard reading and its data
+ * table (the chart kit dates the axis ticks itself, by its one time-axis rule), in the
+ * sheet's own window wording. A count is never read as covering days it did not count,
+ * nor days that have not happened: the newest bucket ends where the window ends (or now),
+ * and the first bucket says where the window starts.
+ *
+ *  - a sub-day bucket reads its day and its hours ("Oct 28, 12:00 to 24:00 UTC"; the first
+ *    bucket of "Last 24 hours" "Nov 4, 00:38 to 03:00 UTC");
+ *  - a whole day bucket reads its day ("Oct 22"); a day the window cuts reads its hours as
+ *    a sub-day bucket does ("Oct 29, 00:38 to 24:00 UTC");
+ *  - a longer bucket reads its first and last days ("Oct 19 to Oct 25" for 7 days, "Aug 7
+ *    to Sep 5" for 30), or one day when that is all it counted ("Nov 5" for the week that
+ *    started today). One the window starts inside keeps the day it starts, the day its
+ *    axis tick reads, and adds the cut as the chat chart kit does ("Oct 1 to Oct 7 (from
+ *    Oct 6)" for "Last 30 days" from Oct 6), so its tick and its name agree.
+ *
+ * A day outside this year carries its year.
  */
-function bucketLabel(iso: string, bucketMs: number, now: Date, index: number): string {
+function bucketLabel(iso: string, bucketMs: number, now: Date, window: ChartWindow): string {
   const d = utcDate(iso);
   if (!d) return iso;
-  const day = utcDay(iso, now) ?? iso;
-  if (bucketMs >= 86_400_000 || (d.getUTCHours() === 0 && d.getUTCMinutes() === 0)) return day;
-  return index === 0 ? `${day} ${utcClock(d)}` : utcClock(d);
+  const nominalStart = d.getTime();
+  const nominalEnd = nominalStart + bucketMs;
+  // The counted part: the window's bounds where they fall inside the bucket; an open end
+  // stops at now (a bucket never counts what has not happened yet).
+  const end = Math.min(nominalEnd, window.to ?? now.getTime());
+  const start = window.from !== null && window.from > nominalStart && window.from < end ? window.from : nominalStart;
+  const stop = end > start ? end : nominalEnd;
+  const cut = start !== nominalStart || stop !== nominalEnd;
+  if (bucketMs < DAY_MS || (bucketMs === DAY_MS && cut)) return hoursLabel(start, stop, now);
+  const dayOf = (ms: number) => utcDay(new Date(ms).toISOString(), now);
+  if (bucketMs === DAY_MS) return dayOf(start) ?? iso;
+  // A longer bucket is named from the day it starts, its tick's day, even when the window
+  // starts later; the cut then follows in the kit's note.
+  const first = dayOf(nominalStart) ?? iso;
+  const last = dayOf(stop - 1) ?? '';
+  const span = last && last !== first ? `${first} to ${last}` : first;
+  const from = dayOf(start);
+  return from && from !== first ? `${span} (from ${from})` : span;
 }
 
 function bucketMillis(bucket: string): number {
@@ -387,19 +433,35 @@ function bucketMillis(bucket: string): number {
   return Number(match[1]) * ({ m: 60_000, h: 3_600_000, d: 86_400_000 } as const)[match[2] as 'm' | 'h' | 'd'];
 }
 
+/** A window bound (`now`, `now-7d`, ISO-8601) as epoch ms, else null. */
+function boundMs(value: string | null | undefined, now: number): number | null {
+  return value ? windowBoundMs(value, now) : null;
+}
+
 /**
  * The stacked severity chart (the chat chart kit, so it shares its keyboard reading,
- * tooltips and dated ticks), or null when no level has an alert. Levels without an alert
- * are left out of the legend; the order is always Critical to Info.
+ * tooltips and dated ticks), or null when no level has an alert. All five named levels
+ * stack, always in order Critical to Info, zeros included (SPEC §4.7.1, §4.7.2), the same
+ * five every severity breakdown lists.
+ *
+ * The newest bucket is marked in progress from the data, not from how the window is
+ * written: whenever it has not ended yet. A board opens the sheet on an absolute window
+ * that ended when the board loaded, and today's bucket is still filling all the same; a
+ * window that ended in the past leaves its last bucket whole, or names the part it cut
+ * (`bucketLabel`), and marks nothing in progress. `window` is the sheet's resolved window
+ * (`now`, `now-30d` or ISO bounds), which also names the part of each bucket it counted.
  */
 export function alertsChartBlock(
   series: RuleSeveritySeries | null | undefined,
-  { inProgress = false, now = new Date() }: { inProgress?: boolean; now?: Date } = {},
+  { window, now = new Date() }: { window?: { from?: string | null; to?: string | null }; now?: Date } = {},
 ): (ChartBlock & { kind: CartesianKind }) | null {
   if (!series || !series.points.length) return null;
-  const levels = LEVEL_ORDER.filter((level) => series.points.some((p) => (p[level] ?? 0) > 0));
-  if (!levels.length) return null;
+  if (!LEVEL_ORDER.some((level) => series.points.some((p) => (p[level] ?? 0) > 0))) return null;
   const bucketMs = bucketMillis(series.bucket);
+  const nowMs = now.getTime();
+  const bounds: ChartWindow = { from: boundMs(window?.from, nowMs), to: boundMs(window?.to, nowMs) };
+  const newest = utcDate(series.points[series.points.length - 1].t);
+  const inProgress = newest !== null && newest.getTime() + bucketMs > nowMs;
   const { blocks } = parseBlocks([
     {
       id: 'rule-alerts',
@@ -413,10 +475,10 @@ export function alertsChartBlock(
       x: {
         kind: 'time',
         values: series.points.map((p) => p.t),
-        labels: series.points.map((p, index) => bucketLabel(p.t, bucketMs, now, index)),
+        labels: series.points.map((p) => bucketLabel(p.t, bucketMs, now, bounds)),
         tz: 'UTC',
       },
-      series: levels.map((level) => ({
+      series: LEVEL_ORDER.map((level) => ({
         key: level,
         label: LEVEL_LABEL[level],
         semantic: level,
@@ -1043,9 +1105,11 @@ export function RuleSheet({ id, request, open, onOpenChange, returnFocusTo }: Ru
   const onTuningPage = typeof window !== 'undefined' && hashRoute(window.location.hash)?.page === 'tuning';
   const fromLine = origin ? `From ${origin}` : 'Detection rule';
   const seen = alerts && alerts.status !== 'forbidden' ? seenLine(alerts.last_seen, alerts.first_seen) : null;
+  // The bucket names follow the window the server resolved (else the one asked for), and
+  // "in progress" follows the data: a board's absolute window still ends inside today.
   const chart = React.useMemo(
-    () => alertsChartBlock(alerts?.series, { inProgress: range.to === 'now' }),
-    [alerts?.series, range.to],
+    () => alertsChartBlock(alerts?.series, { window: { from: resolvedFrom, to: resolvedTo } }),
+    [alerts?.series, resolvedFrom, resolvedTo],
   );
   const latestRows = latest.data?.logs?.slice(0, 5) ?? [];
   const latestDenied = !logsAllowed || alerts?.status === 'forbidden' || statusOf(latest.error) === 403;

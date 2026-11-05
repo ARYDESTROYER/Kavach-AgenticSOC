@@ -840,7 +840,7 @@ async def test_a_folder_procedure_with_a_bundled_id_attaches_its_migrated_runboo
 
     attach = _Attacher()
     for id_map, expected in (
-        ({"playbook_dir:brute_force_login": "brute_force_login-imported",
+        ({"procedure_dir:brute_force_login": "brute_force_login-imported",
           "playbooks:brute_force_login": "brute_force_login-imported-2"}, "brute_force_login-imported"),
         ({"playbooks:brute_force_login": "brute_force_login-imported"}, "brute-force-password-spray"),
     ):

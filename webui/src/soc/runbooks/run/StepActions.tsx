@@ -55,10 +55,27 @@ export interface StepActionsProps {
   compact?: boolean;
   /** Called after the step finished through these buttons (the row keeps focus itself). */
   onFinished?: () => void;
+  /**
+   * The AI draft's label line: describes Confirm and mark done, which on the Next step card
+   * comes before the draft it confirms ("AI draft · not part of the case until you confirm it").
+   */
+  draftLabelId?: string;
+  /** Starts or cancels editing the AI draft; the card moves focus with it. Defaults to the editor's own. */
+  onEditDraft?: (on: boolean) => void;
   className?: string;
 }
 
-export function StepActions({ step, state, editor, variant, compact = false, onFinished, className }: StepActionsProps) {
+export function StepActions({
+  step,
+  state,
+  editor,
+  variant,
+  compact = false,
+  onFinished,
+  draftLabelId,
+  onEditDraft,
+  className,
+}: StepActionsProps) {
   const ctx = useRunbookRun();
   const [reasonFor, setReasonFor] = React.useState<'not_applicable' | 'blocked' | null>(null);
   const [reasonError, setReasonError] = React.useState<string | null>(null);
@@ -100,6 +117,7 @@ export function StepActions({ step, state, editor, variant, compact = false, onF
   }
 
   const draft = state.ai_draft && !state.ai_draft.confirmed ? state.ai_draft : null;
+  const editDraft = onEditDraft ?? editor.setEditingDraft;
   const isDecision = step.kind === 'decision';
   const isAction = step.kind === 'action' || step.kind === 'record';
   const noteMissing = !draft && !isDecision && !isAction && needsNoteBeforeDone(step, { ...state, note: editor.note });
@@ -118,6 +136,7 @@ export function StepActions({ step, state, editor, variant, compact = false, onF
         onClick={busy ? undefined : () => void editor.confirmDraft(finish).then((r) => after(Boolean(r?.ok)))}
         aria-busy={mine('confirm') || undefined}
         aria-disabled={busy || undefined}
+        aria-describedby={draftLabelId}
         data-step-primary=""
       >
         {editor.editingDraft ? 'Confirm note and mark done' : 'Confirm and mark done'}
@@ -241,11 +260,11 @@ export function StepActions({ step, state, editor, variant, compact = false, onF
         <div className="flex flex-wrap items-center gap-2">
           {draft ? (
             editor.editingDraft ? (
-              <Button size="sm" variant="outline" onClick={() => editor.setEditingDraft(false)}>
+              <Button size="sm" variant="outline" onClick={() => editDraft(false)}>
                 Cancel edit
               </Button>
             ) : (
-              <Button size="sm" variant="outline" onClick={() => editor.setEditingDraft(true)}>
+              <Button size="sm" variant="outline" onClick={() => editDraft(true)} data-edit-draft="">
                 <PencilLine aria-hidden />
                 Edit note
               </Button>

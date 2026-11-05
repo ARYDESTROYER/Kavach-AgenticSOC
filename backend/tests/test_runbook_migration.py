@@ -25,7 +25,7 @@ from typing import Any
 import pytest
 
 from app.audit.write import AuditUnavailableError
-from app.config import LegacyPlaybookConfig, Preferences, RunbookConfig, map_retired_runbook_writes
+from app.config import LegacyProcedureConfig, Preferences, RunbookConfig, map_retired_runbook_writes
 from app.constants import PLAYBOOKS_KEY, PLAYBOOKS_NS, RUNBOOK_LIBRARY_NS, RUNBOOKS_KEY, RUNBOOKS_NS
 from app.engine import runbook_migration as migration
 from app.engine.runbook_migration import (
@@ -856,14 +856,14 @@ async def test_automation_rules_resolve_through_the_id_map() -> None:
         LEGACY_BUNDLED_RUNBOOK_MAP["brute_force_login"]
     assert resolve_automation_runbook_id({"playbook_id": "malware"}, migrated) == "malware-endpoint"
     assert migrated_procedure_ids(None) == {}
-    assert migrated_procedure_ids({"id_map": {"playbook_dir:x": "x-dir", "playbooks:x": "x"}}) == {"x": "x-dir"}
+    assert migrated_procedure_ids({"id_map": {"procedure_dir:x": "x-dir", "playbooks:x": "x"}}) == {"x": "x-dir"}
     # A retired bundled id is kept only from a configured folder (the live file).
     assert migrated_procedure_ids({"id_map": {
         "playbooks:brute_force_login": "brute_force_login-imported",
         "playbooks:malware": "malware-imported",
     }}) == {"malware": "malware-imported"}
     assert migrated_procedure_ids({"id_map": {
-        "playbook_dir:brute_force_login": "brute_force_login-imported",
+        "procedure_dir:brute_force_login": "brute_force_login-imported",
     }}) == {"brute_force_login": "brute_force_login-imported"}
 
 
@@ -1099,13 +1099,13 @@ async def test_the_configured_directory_is_a_source(tmp_path: Path) -> None:
         "web_scanner_activity": _procedure("web_scanner_activity"),
     })
     await _seed(kv, RUNBOOKS_NS, {"acme-ref": _reference("acme-ref")})
-    prefs = Preferences(playbooks=LegacyPlaybookConfig(dir=str(tmp_path)))
+    prefs = Preferences(playbooks=LegacyProcedureConfig(dir=str(tmp_path)))
     outcome, library, audit = await _migrate(kv, prefs=prefs)
     # 4 folder files and the reference runbook published; 3 stored procedures drafts.
     assert (outcome.published, outcome.draft, outcome.skipped) == (5, 3, 2)
     marker = (await library.read_marker()).marker
-    assert marker.id_map["playbook_dir:acme-dir"] == "acme-dir"
-    assert marker.id_map["playbook_dir:named-by-front-matter"] == "named-by-front-matter"
+    assert marker.id_map["procedure_dir:acme-dir"] == "acme-dir"
+    assert marker.id_map["procedure_dir:named-by-front-matter"] == "named-by-front-matter"
     assert marker.id_map["playbooks:acme-dir"] == "acme-dir-imported"  # the directory wins
     assert migrated_procedure_ids(marker)["acme-dir"] == "acme-dir"
 
@@ -1113,10 +1113,10 @@ async def test_the_configured_directory_is_a_source(tmp_path: Path) -> None:
         stored = (await library.require(runbook_id)).runbook
         return stored.versions[0].state, list(stored.versions[0].import_notes)
 
-    state, notes = await _state(marker.id_map["playbook_dir:brute_force_login"])
-    assert marker.id_map["playbook_dir:brute_force_login"] == "brute_force_login-imported"
+    state, notes = await _state(marker.id_map["procedure_dir:brute_force_login"])
+    assert marker.id_map["procedure_dir:brute_force_login"] == "brute_force_login-imported"
     assert state == "published" and NOTE_BUNDLED_ID in notes and NOTE_SHADOWED not in notes
-    state, notes = await _state(marker.id_map["playbook_dir:malware-endpoint"])
+    state, notes = await _state(marker.id_map["procedure_dir:malware-endpoint"])
     assert state == "published" and NOTE_BUILTIN_ID in notes
     for legacy_id in ("acme-dir", "inert_proc", "web_scanner_activity"):
         state, notes = await _state(marker.id_map[f"playbooks:{legacy_id}"])
@@ -1130,7 +1130,7 @@ async def test_the_configured_directory_is_a_source(tmp_path: Path) -> None:
     assert "web_scanner_activity" not in migrated
     state, _ = await _state(marker.id_map["runbooks:acme-ref"])
     assert state == "published"  # reference runbooks never depended on the folder
-    dir_info = next(s for s in marker.sources if s["namespace"] == "playbook_dir")
+    dir_info = next(s for s in marker.sources if s["namespace"] == "procedure_dir")
     assert dir_info["status"] == "read" and dir_info["documents"] == 4
     reasons = {r["tool_input"]["source"]["id"]: r["tool_input"]["reason"]
                for r in audit.rows if r["action"] == ACTION_SKIPPED}
@@ -1139,10 +1139,10 @@ async def test_the_configured_directory_is_a_source(tmp_path: Path) -> None:
 
 async def test_the_packaged_directory_converts_nothing_and_a_missing_one_is_audited(tmp_path: Path) -> None:
     kv = EsKVStore(InMemoryESClient())
-    packaged = Preferences(playbooks=LegacyPlaybookConfig(dir=str(packaged_procedure_dir())))
+    packaged = Preferences(playbooks=LegacyProcedureConfig(dir=str(packaged_procedure_dir())))
     outcome, library, audit = await _migrate(kv, prefs=packaged)
     assert outcome.published == 0 and outcome.skipped == 0
-    assert all(s["namespace"] != "playbook_dir" for s in (await library.read_marker()).marker.sources)
+    assert all(s["namespace"] != "procedure_dir" for s in (await library.read_marker()).marker.sources)
     assert audit.actions() == ["runbook.migration_completed"]
 
     # A configured folder that is missing at this start (an unmounted volume) is
@@ -1150,14 +1150,14 @@ async def test_the_packaged_directory_converts_nothing_and_a_missing_one_is_audi
     # still never read before the upgrade, so they land as Drafts.
     kv2 = EsKVStore(InMemoryESClient())
     await _seed(kv2, PLAYBOOKS_NS, {"inert_proc": _procedure("inert_proc")})
-    missing = Preferences(playbooks=LegacyPlaybookConfig(dir=str(tmp_path / "gone")))
+    missing = Preferences(playbooks=LegacyProcedureConfig(dir=str(tmp_path / "gone")))
     outcome2, library2, audit2 = await _migrate(kv2, prefs=missing)
     assert (outcome2.published, outcome2.draft, outcome2.skipped) == (0, 1, 1)
-    info = next(s for s in (await library2.read_marker()).marker.sources if s["namespace"] == "playbook_dir")
+    info = next(s for s in (await library2.read_marker()).marker.sources if s["namespace"] == "procedure_dir")
     assert info["status"] == "missing"
     failed = [r for r in audit2.rows if r["action"] == ACTION_SKIPPED]
     assert len(failed) == 1 and failed[0]["outcome"] == "failure"
-    assert failed[0]["tool_input"]["source"] == {"namespace": "playbook_dir", "path": str(tmp_path / "gone")}
+    assert failed[0]["tool_input"]["source"] == {"namespace": "procedure_dir", "path": str(tmp_path / "gone")}
     assert failed[0]["result_summary"].startswith("could not read the procedure folder:")
     notice = await library2.migration_notice()
     assert notice is not None and notice.skipped == 1

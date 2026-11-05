@@ -356,13 +356,15 @@ export function hasCalendarLabels(x: AxisLike): boolean {
 }
 
 /**
- * The full label of x position `i`: the server's calendar label ("Mar 2026", "W14
- * 2026", "Jul 2026 (from 12 Jul)") when it sent one, else the UTC bucket range on a
- * time axis, else the category. Never the in-progress marker (callers add it).
+ * The full label of x position `i` (the tooltip heading, the keyboard reading, the data
+ * table and every export): the server's calendar label ("Mar 2026", "Jul 2026 (from 12
+ * Jul)") when it sent one, a week also naming the day it starts ("Week of Mar 30 (W14
+ * 2026)", see {@link weekFullLabel}), else the UTC bucket range on a time axis, else the
+ * category. Never the in-progress marker (callers add it).
  */
 export function xPositionLabel(x: AxisLike, i: number): string {
   const label = x.kind === 'time' ? x.labels?.[i] : undefined;
-  if (label) return label;
+  if (label) return x.bucket === '1w' ? weekFullLabel(label) ?? label : label;
   return xLabelFull(x.values[i] ?? '', x.kind, x.bucket);
 }
 
@@ -371,7 +373,8 @@ const YEAR_SPLIT = /^(.*\S)\s(\d{4})$/;
 /**
  * The span from x position `a` to `b` in words, short enough for a narrow row: on a
  * time axis a year both ends share is said once ("23 Sep – 7 Oct 2026", "Jul – Oct
- * 2026", "W14 – W17 2026"); different years, clock times, cut-edge notes and labels
+ * 2026"); weeks read by the days they start, then their ISO weeks ("Weeks of Mar 30 –
+ * Apr 20 (W14 – W17 2026)"); different years, clock times, cut-edge notes and labels
  * that are ranges themselves read in full ("Dec 2025 – Feb 2026"). Categories always
  * read in full: a trailing number there is a name, not a year.
  */
@@ -379,6 +382,8 @@ export function xRangeLabel(x: AxisLike, a: number, b: number): string {
   const first = xPositionLabel(x, a);
   const last = xPositionLabel(x, b);
   if (a === b || first === last) return first;
+  const weeks = x.kind === 'time' && x.bucket === '1w' ? weekRangeLabel(x.labels?.[a], x.labels?.[b]) : null;
+  if (weeks) return weeks;
   if (x.kind === 'time') {
     const p = YEAR_SPLIT.exec(first);
     const q = YEAR_SPLIT.exec(last);
@@ -390,25 +395,109 @@ export function xRangeLabel(x: AxisLike, a: number, b: number): string {
 }
 
 const CLOCK_TAIL = /(\d{2}:\d{2})$/;
-const YEAR_TAIL = /\s\d{4}$/;
-const NOTE_TAIL = /\s*\([^()]*\)$/;
+/** Every trailing note of a label ("(from 12 Jul)"; "W45 2026 (from 2 Nov) (to 4 Nov)", a week cut at both ends). */
+const NOTES_TAIL = /(?:\s*\([^()]*\))+$/;
+/** A server day label ("10 Oct 2026", the backend `period_label` grammar). */
+const DAY_LABEL = /^(\d{1,2}) ([A-Z][a-z]{2}) \d{4}$/;
+/** A server ISO week label ("W41 2026"). */
+const WEEK_LABEL = /^W(\d{1,2}) (\d{4})$/;
+/** A label that names a span by its two ends ("Aug 7 to Sep 5", a 30-day bucket). */
+const SPAN_LABEL = /^(\S.*?) to \S/;
 
 /**
- * A calendar label short enough for an axis tick: a cut-edge note ("(from 12 Jul)") is
- * left to the tooltip and the table, a day drops its year ("10 Oct"), an hour keeps its
- * clock ("14:00"); months, weeks, quarters and years read as sent.
+ * The first day of ISO week `week` of `isoYear` as epoch ms (UTC midnight of its Monday;
+ * week 1 is the week that holds 4 January), else null for a week the year does not have.
+ */
+export function isoWeekStartMs(isoYear: number, week: number): number | null {
+  if (!Number.isInteger(isoYear) || !Number.isInteger(week) || isoYear < 1 || week < 1 || week > 53) return null;
+  const jan4 = Date.UTC(isoYear, 0, 4);
+  const weekday = new Date(jan4).getUTCDay() || 7;
+  const start = jan4 - (weekday - 1) * 86_400_000 + (week - 1) * 604_800_000;
+  // Week 53 exists only in a long ISO year: its Thursday must still fall in that year.
+  return new Date(start + 3 * 86_400_000).getUTCFullYear() === isoYear ? start : null;
+}
+
+/**
+ * A server week label ("W41 2026") as the day its week starts, in the chart kit's day
+ * format ("Oct 5"; "W01 2026" is "Dec 29"), else null for any other text.
+ */
+export function weekStartDay(label: string): string | null {
+  const week = WEEK_LABEL.exec(label.replace(NOTES_TAIL, '').trim());
+  if (!week) return null;
+  const ms = isoWeekStartMs(Number(week[2]), Number(week[1]));
+  return ms === null ? null : utcDay(ms);
+}
+
+/** A day written day first ("1 Aug", the server's cut-edge grammar), for {@link kitDayOrder}. */
+const DAY_FIRST = new RegExp(`\\b(\\d{1,2}) (${MONTHS.join('|')})\\b`, 'g');
+
+/** Days written day first ("from 1 Aug") rewritten in the kit's one day format ("from Aug 1"). */
+function kitDayOrder(text: string): string {
+  return text.replace(DAY_FIRST, (_, day: string, month: string) => `${month} ${Number(day)}`);
+}
+
+/**
+ * The full name of a server week label, for a tooltip, the keyboard reading, a data table
+ * and an export: the day the week starts, then the ISO week, then any cut-edge note the
+ * server added, its days in the same order as the week's own ("W14 2026" is "Week of Mar
+ * 30 (W14 2026)"; "W31 2026 (from 1 Aug)" is "Week of Jul 27 (W31 2026) (from Aug 1)"),
+ * so a reader sees which dates the week covers wherever a tick reads its first day, in one
+ * day format. Null for any other text (a board's own full label, a month), which callers
+ * show as it came.
+ */
+export function weekFullLabel(label: string): string | null {
+  const text = label.trim();
+  const bare = text.replace(NOTES_TAIL, '');
+  if (!WEEK_LABEL.test(bare)) return null;
+  const start = weekStartDay(bare);
+  return start ? `Week of ${start} (${bare})${kitDayOrder(text.slice(bare.length))}` : null;
+}
+
+/**
+ * Two whole weeks as one span ("Weeks of Mar 30 – Apr 20 (W14 – W17 2026)", the ISO year
+ * said once when both share it), else null: a week cut by its window keeps its note, so
+ * the caller reads both ends in full.
+ */
+function weekRangeLabel(a: string | undefined, b: string | undefined): string | null {
+  const p = a ? WEEK_LABEL.exec(a.trim()) : null;
+  const q = b ? WEEK_LABEL.exec(b.trim()) : null;
+  const from = p ? weekStartDay(p[0]) : null;
+  const to = q ? weekStartDay(q[0]) : null;
+  if (!p || !q || !from || !to) return null;
+  const codes = p[2] === q[2] ? `W${p[1]} – W${q[1]} ${p[2]}` : `${p[0]} – ${q[0]}`;
+  return `Weeks of ${from} – ${to} (${codes})`;
+}
+
+/**
+ * A calendar label short enough for an axis tick, in the chart kit's one day format: a
+ * cut-edge note ("(from 12 Jul)") is left to the tooltip and the table, a day reads
+ * "Oct 10", a week reads the day it starts ("Oct 5", never an ISO week code), an hour
+ * keeps its clock ("14:00"), and a span named by its two ends ("Aug 7 to Sep 5", the rule
+ * sheet's 30-day buckets) reads the day it starts, as a week does; months, quarters and
+ * years read as sent. The chart's time axis (`charts/x-axis.ts`) reads the bucket's own
+ * instant first and dates its ticks; this is the reading for a label whose instant cannot
+ * be placed, and for an axis cut in months or longer with no bucket to say so.
  */
 export function shortCalendarLabel(label: string, bucket: TimeBucket | undefined): string {
-  const bare = label.replace(NOTE_TAIL, '');
+  const bare = label.replace(NOTES_TAIL, '');
   if (bucket === '1m' || bucket === '5m' || bucket === '15m' || bucket === '1h' || bucket === '6h') {
     const clock = CLOCK_TAIL.exec(bare);
     return clock ? clock[1] : bare;
   }
-  if (bucket === '1d') return bare.replace(YEAR_TAIL, '');
-  return bare;
+  if (bucket === '1d') {
+    const day = DAY_LABEL.exec(bare);
+    return day && MONTHS.includes(day[2]) ? `${day[2]} ${Number(day[1])}` : bare;
+  }
+  if (bucket === '1w') return weekStartDay(bare) ?? bare;
+  const span = SPAN_LABEL.exec(bare);
+  return span ? span[1] : bare;
 }
 
-/** The short tick text of x position `i` (calendar label, else the UTC time, else the category). */
+/**
+ * The tick text of x position `i` on its own (calendar label, else the UTC time, else the
+ * category). A chart's axis dates its ticks as a set (`charts/x-axis.ts`): this is the
+ * reading of one position that cannot be placed in time.
+ */
 export function xTickLabel(x: AxisLike, i: number, maxChars = 12): string {
   const value = x.values[i] ?? '';
   if (x.kind !== 'time') return clipText(value, maxChars);

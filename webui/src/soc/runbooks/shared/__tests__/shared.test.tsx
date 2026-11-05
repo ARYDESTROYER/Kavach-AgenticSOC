@@ -17,7 +17,7 @@ import { describeExplanation, missedSentence } from '../explain';
 import { progressChipLabel, progressChipText, progressLine } from '../progress';
 import { isReviewDue, reviewDueState, reviewDueWords } from '../dates';
 import {
-  LEGACY_BUNDLED_PLAYBOOK_IDS,
+  LEGACY_BUNDLED_PROCEDURE_IDS,
   LEGACY_BUNDLED_RUNBOOK_MAP,
   PROCEDURE_NAMESPACES,
   migratedProceduresFromLibrary,
@@ -216,8 +216,8 @@ describe('which runbook a case-automation rule attaches', () => {
   });
 
   it('never answers a retired bundled procedure id from a stored document (a shadowed copy is a draft)', () => {
-    expect(LEGACY_BUNDLED_PLAYBOOK_IDS.size).toBe(9);
-    for (const id of LEGACY_BUNDLED_PLAYBOOK_IDS) expect(LEGACY_BUNDLED_RUNBOOK_MAP[id]).toBeTruthy();
+    expect(LEGACY_BUNDLED_PROCEDURE_IDS.size).toBe(9);
+    for (const id of LEGACY_BUNDLED_PROCEDURE_IDS) expect(LEGACY_BUNDLED_RUNBOOK_MAP[id]).toBeTruthy();
     const shadowed = [
       ...library,
       summary({
@@ -249,7 +249,7 @@ describe('which runbook a case-automation rule attaches', () => {
     });
     const both = [
       summary({ id: 'from-store', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'triage', revision: 1 } }),
-      summary({ id: 'from-folder', origin: 'imported', migrated_from: { namespace: 'playbook_dir', id: 'triage', revision: 1 } }),
+      summary({ id: 'from-folder', origin: 'imported', migrated_from: { namespace: 'procedure_dir', id: 'triage', revision: 1 } }),
     ];
     expect(resolveAutomationRunbook({ playbook_id: 'triage' }, both).id).toBe('from-folder');
   });
@@ -261,7 +261,7 @@ describe('which runbook a case-automation rule attaches', () => {
         id: 'brute-force-ours',
         title: 'Brute force (ours)',
         origin: 'imported',
-        migrated_from: { namespace: 'playbook_dir', id: 'brute_force_login', revision: null },
+        migrated_from: { namespace: 'procedure_dir', id: 'brute_force_login', revision: null },
       }),
     ];
     expect(resolveAutomationRunbook({ playbook_id: 'brute_force_login' }, folder)).toMatchObject({
@@ -287,9 +287,9 @@ describe('which runbook a case-automation rule attaches', () => {
   it('rebuilds the server map from the rows with the same precedence (migrated_procedure_ids)', () => {
     const rows = [
       summary({ id: 'x', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'x', revision: 1 } }),
-      summary({ id: 'x-dir', origin: 'imported', migrated_from: { namespace: 'playbook_dir', id: 'x', revision: null } }),
+      summary({ id: 'x-dir', origin: 'imported', migrated_from: { namespace: 'procedure_dir', id: 'x', revision: null } }),
       summary({ id: 'shadow', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'malware_x', revision: 1 } }),
-      summary({ id: 'bf-dir', origin: 'imported', migrated_from: { namespace: 'playbook_dir', id: 'brute_force_login', revision: null } }),
+      summary({ id: 'bf-dir', origin: 'imported', migrated_from: { namespace: 'procedure_dir', id: 'brute_force_login', revision: null } }),
       summary({ id: 'bf-store', origin: 'imported', migrated_from: { namespace: 'playbooks', id: 'web_scanner_activity', revision: 1 } }),
       summary({ id: 'ref', origin: 'imported', migrated_from: { namespace: 'runbooks', id: 'mail_abuse', revision: 1 } }),
       summary({ id: 'plain', origin: 'operator' }),
@@ -388,8 +388,8 @@ describe('which runbook a case-automation rule attaches', () => {
     const mapBody = /^LEGACY_BUNDLED_RUNBOOK_MAP[^=]*= \{([\s\S]*?)^\}/m.exec(model)?.[1] ?? '';
     const serverMap = Object.fromEntries([...mapBody.matchAll(/"([a-z_]+)": "([a-z-]+)"/g)].map((m) => [m[1], m[2]]));
     expect(serverMap).toEqual(LEGACY_BUNDLED_RUNBOOK_MAP);
-    const idsBody = /^LEGACY_BUNDLED_PLAYBOOK_IDS[^=]*= frozenset\(\{([\s\S]*?)\}\)/m.exec(model)?.[1] ?? '';
-    expect([...idsBody.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort()).toEqual([...LEGACY_BUNDLED_PLAYBOOK_IDS].sort());
+    const idsBody = /^LEGACY_BUNDLED_PROCEDURE_IDS[^=]*= frozenset\(\{([\s\S]*?)\}\)/m.exec(model)?.[1] ?? '';
+    expect([...idsBody.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort()).toEqual([...LEGACY_BUNDLED_PROCEDURE_IDS].sort());
     const migration = readFileSync(resolve(engine, 'runbook_migration.py'), 'utf8');
     const constant = (name: string) => new RegExp(`^${name} = "([a-z_]+)"`, 'm').exec(migration)?.[1];
     const order = /^PROCEDURE_NAMESPACES[^=]*= \(([^)]*)\)/m.exec(migration)?.[1] ?? '';

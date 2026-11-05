@@ -277,7 +277,7 @@ GENERIC_INCIDENT_RUNBOOK_ID = "generic-incident"
 #:
 #: Precedence for automation (SPEC §4.10.16): the migration's id map first, then this
 #: map. The id map a rule resolves through (``runbook_migration.migrated_procedure_ids``)
-#: holds a retired bundled PLAYBOOK id (:data:`LEGACY_BUNDLED_PLAYBOOK_IDS`) only when a
+#: holds a retired bundled PLAYBOOK id (:data:`LEGACY_BUNDLED_PROCEDURE_IDS`) only when a
 #: configured procedure folder's file held it, which is the procedure a rule naming the
 #: id ran before Round 14. An operator document with such an id never ran (a bundled
 #: playbook always won the collision, ``shadowed_by_bundled``), so the id map leaves it
@@ -310,12 +310,12 @@ assert set(LEGACY_BUNDLED_RUNBOOK_MAP.values()) <= set(BUILTIN_RUNBOOK_IDS)
 #: The 9 ids the retired bundled playbooks (``backend/playbooks/*.md``) held. A
 #: ``run_playbook`` rule naming one ran the bundled playbook, never an operator
 #: document of the same id (see :data:`LEGACY_BUNDLED_RUNBOOK_MAP`).
-LEGACY_BUNDLED_PLAYBOOK_IDS: frozenset[str] = frozenset({
+LEGACY_BUNDLED_PROCEDURE_IDS: frozenset[str] = frozenset({
     "brute_force_login", "cloud_identity_compromise", "data_exfiltration_response",
     "phishing_reported_email", "privileged_web_access", "ransomware_response",
     "suspicious_outbound_connection", "web_application_abuse", "web_scanner_activity",
 })
-assert LEGACY_BUNDLED_PLAYBOOK_IDS <= set(LEGACY_BUNDLED_RUNBOOK_MAP)
+assert LEGACY_BUNDLED_PROCEDURE_IDS <= set(LEGACY_BUNDLED_RUNBOOK_MAP)
 
 
 def resolve_legacy_runbook_id(legacy_id: Any) -> str | None:
@@ -329,13 +329,13 @@ def resolve_legacy_runbook_id(legacy_id: Any) -> str | None:
     return LEGACY_BUNDLED_RUNBOOK_MAP.get(legacy_id.strip())
 
 
-def resolve_automation_runbook_id(payload: Any, migrated_playbooks: Any = None) -> str | None:
+def resolve_automation_runbook_id(payload: Any, migrated_procedures: Any = None) -> str | None:
     """The runbook a ``run_playbook`` automation rule attaches, resolved at fire time
     from its stored ``payload`` (SPEC §4.10.16; stored Preferences are never
     rewritten), or ``None`` when the rule names nothing this can resolve. The one
     resolution order: ``ThresholdAutomation`` calls this and repeats none of it.
 
-    ``migrated_playbooks`` maps a legacy procedure id to the id the migration gave it.
+    ``migrated_procedures`` maps a legacy procedure id to the id the migration gave it.
     The caller builds it from the migration marker's ``id_map`` with
     ``runbook_migration.migrated_procedure_ids`` (SPEC §4.10.17 step 6): the procedure
     sources a ``run_playbook`` rule could run before Round 14 (the configured folder,
@@ -346,7 +346,7 @@ def resolve_automation_runbook_id(payload: Any, migrated_playbooks: Any = None) 
     In order (SPEC §4.10.16):
 
     1. ``payload.runbook_id`` (what the rule editor's "Attach a runbook" writes);
-    2. ``payload.playbook_id`` through ``migrated_playbooks``: the procedure the rule
+    2. ``payload.playbook_id`` through ``migrated_procedures``: the procedure the rule
        ran, as migrated (a retired bundled id is there only when a configured
        folder's file held it, which is what the rule ran);
     3. ``payload.playbook_id`` through :data:`LEGACY_BUNDLED_RUNBOOK_MAP`: the built-in
@@ -364,7 +364,7 @@ def resolve_automation_runbook_id(payload: Any, migrated_playbooks: Any = None) 
     if not isinstance(playbook_id, str) or not playbook_id.strip():
         return None
     playbook_id = playbook_id.strip()
-    migrated = migrated_playbooks.get(playbook_id) if hasattr(migrated_playbooks, "get") else None
+    migrated = migrated_procedures.get(playbook_id) if hasattr(migrated_procedures, "get") else None
     if isinstance(migrated, str) and migrated.strip():
         return migrated.strip()
     return resolve_legacy_runbook_id(playbook_id)
@@ -2603,7 +2603,7 @@ __all__ = [
     "ISSUE_BUILTIN_ID",
     "ISSUE_RESERVED",
     "KIND_LABELS",
-    "LEGACY_BUNDLED_PLAYBOOK_IDS",
+    "LEGACY_BUNDLED_PROCEDURE_IDS",
     "LEGACY_BUNDLED_RUNBOOK_MAP",
     "LOOKUP_KEYS",
     "MAX_OPERATOR_RUNBOOKS",

@@ -34,6 +34,8 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { CASE_TABS, isCaseTab } from '@/soc/case-tabs';
+
 const src = readFileSync(path.resolve(__dirname, '..', 'CaseDetail.tsx'), 'utf8');
 
 /** Slice from the first occurrence of `needle` to the next `end` (exclusive). */
@@ -70,11 +72,23 @@ const TAB_PANEL: Record<(typeof TAB_VALUES)[number], string> = {
 
 describe('CaseDetail: the 7-tab story shell (task 5, Round 14)', () => {
   it('the tab union is exactly the 7 story tabs (the removed panels are gone)', () => {
-    expect(src).toContain('const [tab, setTab] = React.useState<CaseTab>(\'overview\')');
-    const union = slice(src, 'const CASE_TABS = [', '] as const;');
-    expect(union).toBe(`const CASE_TABS = [${TAB_VALUES.map((v) => `'${v}'`).join(', ')}`);
+    // Overview by default; a link's tab (Case Manager's `tab` key, closing QA integ-06)
+    // opens first, validated against the union below.
+    expect(src).toContain("requestedTab && requestedTab !== 'runbook' ? requestedTab : 'overview'");
+    expect(src).toContain('const requestedTab = isCaseTab(requestedTabId) ? requestedTabId : null;');
+    // The page reads the ONE tab list the router's `tab` key also validates against
+    // (closing review: a hand-written router copy could drift); it defines none itself.
+    expect(src).toContain("import { CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';");
+    expect(src).not.toMatch(/const CASE_TABS\b/);
+    expect(src).not.toMatch(/function isCaseTab\b/);
+    expect([...CASE_TABS]).toEqual([...TAB_VALUES]);
+    for (const v of TAB_VALUES) expect(isCaseTab(v)).toBe(true);
     for (const v of REMOVED_TABS) {
-      expect(union, `union should NOT include the removed '${v}'`).not.toContain(`'${v}'`);
+      expect(CASE_TABS as readonly string[], `union should NOT include the removed '${v}'`).not.toContain(v);
+      expect(isCaseTab(v)).toBe(false);
+    }
+    for (const v of ['', 'Overview', 'investigation ', 'toString', 'constructor', null, 3]) {
+      expect(isCaseTab(v)).toBe(false);
     }
   });
 

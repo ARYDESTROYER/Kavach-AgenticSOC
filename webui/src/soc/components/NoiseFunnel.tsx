@@ -1174,6 +1174,25 @@ function layoutSize(element: HTMLElement, scale: { x: number; y: number } = pain
   return { width: rect.width / scale.x, height: rect.height / scale.y };
 }
 
+/**
+ * Redraw the flow for a resize (the navigation rail toggling, a window drag). A box that
+ * only GREW is redrawn as a transition, which React renders in slices between frames
+ * rather than as one long task (a further resize supersedes it); meanwhile the old drawing
+ * keeps its drawn scale. A box that SHRANK, or a first real size, is redrawn at once: a
+ * stale drawing in a smaller box would be scaled down under labels that keep their size.
+ * `fixedHeight`: the inspection band is pinned to 400px, so only its width counts.
+ */
+function redrawOnResize(
+  drawn: { width: number; height: number },
+  box: { width: number; height: number },
+  fixedHeight: boolean,
+  measure: () => void,
+): void {
+  const shrank = box.width < drawn.width || (!fixedHeight && box.height < drawn.height);
+  if (drawn.width === 0 || shrank) measure();
+  else React.startTransition(measure);
+}
+
 /** What the measuring probe read: the panel width, the band height, every label's box. */
 interface FlowMeasure {
   width: number;
@@ -1813,21 +1832,30 @@ export function NoiseFunnel({
     if (hidden) return undefined;
     const element = simplePlotRef.current;
     if (!element) return undefined;
-    const measure = () => {
-      // Layout size, not the painted one: an opening dialog is still scaled (`paintScale`).
+    // Layout size, not the painted one: an opening dialog is still scaled (`paintScale`).
+    const read = () => {
       const box = layoutSize(element);
-      const next = Math.round(box.width || element.clientWidth);
+      return {
+        width: Math.round(box.width || element.clientWidth),
+        height: Math.round(box.height || element.clientHeight),
+      };
+    };
+    let drawn = { width: 0, height: 0 };
+    const measure = () => {
+      const { width: next, height: nextHeight } = read();
       if (next > 0) setSimplePlotWidth((current) => (current === next ? current : next));
       // Height only matters inline (the inspection band is a fixed 400px). A hidden band
       // (narrow container) measures 0 and keeps the last value.
-      const nextHeight = Math.round(box.height || element.clientHeight);
       if (!wideInspection && nextHeight > 0) {
         setSimplePlotMeasuredHeight((current) => (current === nextHeight ? current : nextHeight));
       }
+      drawn = { width: next > 0 ? next : drawn.width, height: nextHeight > 0 ? nextHeight : drawn.height };
     };
     measure();
     if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(measure);
+    // The first size is measured before paint (above); a later resize redraws the plot by
+    // the rule in `redrawOnResize`.
+    const observer = new ResizeObserver(() => redrawOnResize(drawn, read(), wideInspection, measure));
     observer.observe(element);
     return () => observer.disconnect();
   }, [hidden, view, wideInspection]);
@@ -1837,15 +1865,22 @@ export function NoiseFunnel({
     const panel = instrumentRef.current;
     const probe = flowProbeRef.current;
     if (!panel || !probe) return undefined;
-    const measure = () => {
-      // Every size in layout pixels: the panel and the probe share one transform (an
-      // opening dialog's scale), so the panel's scale converts each painted probe box.
-      const scale = paintScale(panel);
-      const width = Math.round(layoutSize(panel, scale).width);
+    // Every size in layout pixels: the panel and the probe share one transform (an
+    // opening dialog's scale), so the panel's scale converts each painted probe box.
+    const read = (scale = paintScale(panel)) => {
       const heightProbe = probe.querySelector<HTMLElement>('[data-flow-probe-height]');
-      const height = wideInspection
-        ? SIMPLE_EXPANDED_HEIGHT
-        : Math.round(heightProbe ? layoutSize(heightProbe, scale).height : 0);
+      return {
+        width: Math.round(layoutSize(panel, scale).width),
+        height: wideInspection
+          ? SIMPLE_EXPANDED_HEIGHT
+          : Math.round(heightProbe ? layoutSize(heightProbe, scale).height : 0),
+      };
+    };
+    let drawn = { width: 0, height: 0 };
+    const measure = () => {
+      const scale = paintScale(panel);
+      const { width, height } = read(scale);
+      if (width > 0 && height > 0) drawn = { width, height };
       let complete = width > 0 && height > 0;
       const sizes: Record<string, FlowLabelSizes> = {};
       probe.querySelectorAll<HTMLElement>('[data-flow-probe]').forEach((element) => {
@@ -1874,7 +1909,11 @@ export function NoiseFunnel({
     const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
     fonts?.ready?.then(() => live && measure()).catch(() => undefined);
     fonts?.addEventListener?.('loadingdone', measure);
-    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    // A resize re-lays the flow out by the same rule as the plot above.
+    const observer =
+      typeof ResizeObserver === 'undefined'
+        ? null
+        : new ResizeObserver(() => redrawOnResize(drawn, read(), false, measure));
     observer?.observe(panel);
     return () => {
       live = false;

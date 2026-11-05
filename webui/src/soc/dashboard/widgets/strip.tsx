@@ -116,6 +116,24 @@ export function cellDelta(binding: KpiStripBinding, read: DashboardReader): KpiD
   return { value: d, label: `${d > 0 ? '+' : d < 0 ? '-' : ''}${fmtNumber(Math.abs(d))}` };
 }
 
+/**
+ * The Closed cell's context line, over the population its figure counts. "Closed" is
+ * posture `quality.terminal_cases`, which leaves analyst-policy closes out, so its "of N"
+ * is `quality.total_cases` (the window's cases less those closes), never `case_count`
+ * (New cases, which includes them): with policy closes in the window the two would count
+ * different cases and overstate how many are still open. The policy closes are named
+ * beside it, so "of 36 created, plus 2 closed by analyst policy" still adds up to the 38
+ * new cases. Without the population the line falls back to the window phrase.
+ */
+export function closedContext(posture: unknown, phrase: string): string {
+  const total = getPath(posture, 'quality.total_cases');
+  if (typeof total !== 'number' || !Number.isFinite(total)) return phrase;
+  const policy = getPath(posture, 'quality.policy_closed_cases');
+  return typeof policy === 'number' && policy > 0
+    ? `of ${fmtNumber(total)} created, plus ${fmtNumber(policy)} closed by analyst policy`
+    : `of ${fmtNumber(total)} created in the window`;
+}
+
 /** The muted line under a measured figure: its population or denominator. */
 function cellContext(binding: KpiStripBinding, result: KpiCellResult, read: DashboardReader, phrase: string): string | undefined {
   const data = (key: Parameters<DashboardReader>[0]['key']) => read({ key, window: binding.window }).data;
@@ -134,10 +152,8 @@ function cellContext(binding: KpiStripBinding, result: KpiCellResult, read: Dash
     case 'executive.cases':
     case 'detection.alerts_ingested':
       return phrase;
-    case 'operations.closed': {
-      const created = getPath(read({ key: 'posture' }).data, 'case_count');
-      return typeof created === 'number' ? `of ${fmtNumber(created)} created in the window` : phrase;
-    }
+    case 'operations.closed':
+      return closedContext(read({ key: 'posture' }).data, phrase);
     case 'detection.sources_reporting': {
       const rows = getPath(data('sourcesHealth'), 'sources');
       const enabled = Array.isArray(rows) ? rows.filter((r) => (r as { enabled?: unknown })?.enabled === true).length : null;

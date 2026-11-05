@@ -7,8 +7,10 @@
  * past the panel's right edge, clear of the scrollbar). Hover never expands it. Every row is
  * `[40 px icon cell at x 12][fixed-width label]`: the 18 px icons sit at the same x and y
  * in both states and nothing is swapped. The panel is fixed and 240 px wide in both
- * states; the in-flow spacer (`desktop-navigation-frame`) changes width once, at the
- * click, so the page moves once. The motion lives in `styles/nav.css`.
+ * states; the in-flow spacer (`desktop-navigation-frame`) changes width once per toggle,
+ * so the page moves once, in the frame next to the panel's change and always under the
+ * opaque panel (see "one change per frame" in NavRail). The motion lives in
+ * `styles/nav.css`.
  *
  * DESTINATIONS ARE LINKS (SPEC §3.3): every row that navigates is an `<a href>` (so a
  * modified click opens a new tab natively); a plain click calls the router, so route
@@ -283,8 +285,19 @@ interface RowProps {
   page: PageId;
   /** The phone sheet: 44 px rows (40 px pages), no rail, flyout or tooltip. */
   sheet: boolean;
+  /**
+   * The 64 px rail. A group row follows it in the toggle's own commit: its icon's popup
+   * semantics, its chevron's tab stop and its pages' reachability (focus and the
+   * accessibility tree always match the state the viewer asked for).
+   */
   collapsed: boolean;
+  /** The group is open (its chevron's state), whatever the rail shows. */
   open: boolean;
+  /**
+   * The group's pages SHOW (the panel's state, which a collapse reaches one frame after
+   * `collapsed`): only their look follows it. `open` by default (the phone sheet).
+   */
+  shown?: boolean;
   flyoutOpen: boolean;
   activity: NavActivity;
   reducedMotion: boolean;
@@ -300,6 +313,7 @@ const Row = React.memo(function Row({
   sheet,
   collapsed,
   open,
+  shown: onShow = open,
   flyoutOpen,
   activity,
   reducedMotion,
@@ -311,7 +325,11 @@ const Row = React.memo(function Row({
   const Icon = item.icon as LucideIcon;
   const grouped = pages.length > 0;
   const { trail, current } = placeOf(dest, page);
-  const shown = grouped && !collapsed && open;
+  // Reachable (focusable, in the accessibility tree) with the state, in the toggle's own
+  // commit, so a Tab in the frame before the panel closes never lands on a page that turns
+  // inert under it (focus would drop to <body>); shown (their look) with the panel.
+  const reachable = grouped && !collapsed && open;
+  const shown = grouped && onShow;
   const trigger = grouped && collapsed;
   const own = activity[item.id];
   const ref = React.useRef<HTMLAnchorElement>(null);
@@ -329,6 +347,58 @@ const Row = React.memo(function Row({
   const listId = `nav-group-${item.id}`;
   const hover = sheet ? '' : 'hover:text-foreground';
 
+  // The pages, memoised: a toggle re-renders the group row (its popup semantics and its
+  // chevron) but leaves a closed group's pages alone, and an open group's change only when
+  // they turn unreachable and then hidden.
+  const list = React.useMemo(
+    () =>
+      grouped ? (
+        <div className="nav-children" data-open={shown ? 'true' : 'false'} aria-hidden={!reachable || undefined} {...inert(!reachable)}>
+          <div className="relative">
+            <span aria-hidden className="absolute bottom-1 left-6 top-1 w-px bg-border" />
+            <ul id={listId} aria-label={`${item.label} pages`} className="space-y-0.5 py-0.5">
+              {pages.map((child) => {
+                const childPage = navDest(child);
+                const active = page === childPage;
+                const childActivity = activity[child.id];
+                return (
+                  <li key={`${item.id}-${child.id}`}>
+                    <a
+                      href={hrefOf(childPage)}
+                      onClick={(event) => followLink(event, () => go(childPage))}
+                      tabIndex={reachable ? undefined : -1}
+                      aria-current={reachable && active ? 'page' : undefined}
+                      aria-describedby={describedBy(item.id, childActivity)}
+                      title={childActivity?.text ? activityText(childActivity, reducedMotion) : undefined}
+                      data-testid={childTestId(item.id, child.id)}
+                      className={cn(
+                        'group/row relative flex w-full items-center rounded-md pl-[3.25rem] pr-2 text-left text-sm focus-visible:outline-none',
+                        sheet ? 'h-10' : 'h-8',
+                        active ? 'font-medium text-primary' : `text-muted-foreground ${hover}`,
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        data-active={shown && active ? '' : undefined}
+                        className={cn(
+                          'nav-tint pointer-events-none absolute inset-y-0 left-8 right-0 rounded-md transition-colors duration-150',
+                          active ? 'bg-primary/10 dark:bg-accent' : sheet ? 'group-active/row:bg-muted' : 'group-hover/row:bg-muted',
+                          'group-focus-visible/row:ring-2 group-focus-visible/row:ring-inset group-focus-visible/row:ring-ring',
+                        )}
+                      />
+                      <span className="relative truncate">{child.label}</span>
+                      {childActivity?.status ? <ActivityGlyph status={childActivity.status} className="relative ml-auto" /> : null}
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+      ) : null,
+    [grouped, shown, reachable, listId, item, pages, page, activity, go, reducedMotion, sheet, hover],
+  );
+
   return (
     <li data-nav-item={item.id}>
       <div className="relative flex items-center">
@@ -336,8 +406,10 @@ const Row = React.memo(function Row({
           ref={ref}
           href={hrefOf(target)}
           onClick={(event) => followLink(event, () => go(target))}
-          {...rail?.rowHandlers(item.id, item.label, activityText(own, reducedMotion), collapsed, trigger)}
-          aria-current={trail && !((shown || flyoutOpen) && current) ? 'page' : undefined}
+          // A plain icon's tooltip handlers are on in both states (`rowHandlers`): its
+          // `collapsed` is deferred, so a focus landing before that render still gets one.
+          {...rail?.rowHandlers(item.id, item.label, activityText(own, reducedMotion), trigger)}
+          aria-current={trail && !((reachable || flyoutOpen) && current) ? 'page' : undefined}
           aria-haspopup={trigger ? 'true' : undefined}
           aria-expanded={trigger ? flyoutOpen : undefined}
           aria-controls={trigger ? `nav-fly-${item.id}` : undefined}
@@ -378,7 +450,7 @@ const Row = React.memo(function Row({
           <button
             type="button"
             onClick={() => onToggle(item.id)}
-            aria-expanded={shown}
+            aria-expanded={reachable}
             aria-controls={listId}
             aria-label={`${open ? 'Hide' : 'Show'} ${item.label} pages`}
             data-nav-chevron=""
@@ -394,50 +466,7 @@ const Row = React.memo(function Row({
           </button>
         ) : null}
       </div>
-      {grouped ? (
-        <div className="nav-children" data-open={shown ? 'true' : 'false'} aria-hidden={!shown || undefined} {...inert(!shown)}>
-          <div className="relative">
-            <span aria-hidden className="absolute bottom-1 left-6 top-1 w-px bg-border" />
-            <ul id={listId} aria-label={`${item.label} pages`} className="space-y-0.5 py-0.5">
-              {pages.map((child) => {
-                const childPage = navDest(child);
-                const active = page === childPage;
-                const childActivity = activity[child.id];
-                return (
-                  <li key={`${item.id}-${child.id}`}>
-                    <a
-                      href={hrefOf(childPage)}
-                      onClick={(event) => followLink(event, () => go(childPage))}
-                      tabIndex={shown ? undefined : -1}
-                      aria-current={shown && active ? 'page' : undefined}
-                      aria-describedby={describedBy(item.id, childActivity)}
-                      title={childActivity?.text ? activityText(childActivity, reducedMotion) : undefined}
-                      data-testid={childTestId(item.id, child.id)}
-                      className={cn(
-                        'group/row relative flex w-full items-center rounded-md pl-[3.25rem] pr-2 text-left text-sm focus-visible:outline-none',
-                        sheet ? 'h-10' : 'h-8',
-                        active ? 'font-medium text-primary' : `text-muted-foreground ${hover}`,
-                      )}
-                    >
-                      <span
-                        aria-hidden
-                        data-active={shown && active ? '' : undefined}
-                        className={cn(
-                          'nav-tint pointer-events-none absolute inset-y-0 left-8 right-0 rounded-md transition-colors duration-150',
-                          active ? 'bg-primary/10 dark:bg-accent' : sheet ? 'group-active/row:bg-muted' : 'group-hover/row:bg-muted',
-                          'group-focus-visible/row:ring-2 group-focus-visible/row:ring-inset group-focus-visible/row:ring-ring',
-                        )}
-                      />
-                      <span className="relative truncate">{child.label}</span>
-                      {childActivity?.status ? <ActivityGlyph status={childActivity.status} className="relative ml-auto" /> : null}
-                    </a>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        </div>
-      ) : null}
+      {list}
     </li>
   );
 });
@@ -509,6 +538,24 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
   const { groups, footer } = useDestinations();
   const activity = useNavActivity();
   const collapsed = useNavState((s) => s.collapsed);
+  // ONE CHANGE PER FRAME (§4.8.3, the 4x CPU frame budget). A toggle restyles the panel
+  // (its state attribute drives the morph in `styles/nav.css`) and moves the page (the
+  // spacer, which lays out and repaints everything beside it). In one frame the two made
+  // the toggle's slowest frame on a full page, so they take two consecutive frames,
+  // ordered so the opaque 240 px panel always covers the seam and no gap ever shows:
+  // collapsing moves the page first (under the still-open panel) and the panel closes
+  // over the already-moved page a frame later; expanding fills the panel first and the
+  // page moves out from under it a frame later. Each changes once, never animated; at
+  // rest both equal `collapsed`, and the toggle's name follows `collapsed` at once.
+  // `settled` is `collapsed` one frame late (set in the layout effect below).
+  const [settled, setSettled] = React.useState(collapsed);
+  const spacerCollapsed = collapsed || settled;
+  const panelCollapsed = collapsed && settled;
+  // The rows look the same in both states (one DOM). A plain row's one state-dependent
+  // prop (its activity title, which the rail's tooltip replaces) follows in a deferred
+  // render, which React time-slices, instead of re-rendering every row in the toggle's own
+  // frame. A group row is the exception (see `row` below).
+  const rowsCollapsed = React.useDeferredValue(collapsed);
   const openGroups = useNavState((s) => s.openGroups);
   const flyout = useNavState((s) => s.flyout);
   const asideRef = React.useRef<HTMLElement>(null);
@@ -538,7 +585,14 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
     const entering = wasCollapsed.current && !collapsed;
     const changed = wasCollapsed.current !== collapsed;
     wasCollapsed.current = collapsed;
-    if (changed) closeRailSurfaces();
+    if (changed) {
+      closeRailSurfaces();
+      // The toggle's second half. An animation-frame callback runs in the frame that
+      // paints the first half, and the state it sets renders after that paint, so it
+      // reaches the screen in the next frame. It reads the store then: a toggle undone
+      // within the frame settles where it ended, moving nothing.
+      requestAnimationFrame(() => setSettled(navStore.getState().collapsed));
+    }
     const el = asideRef.current;
     if (!entering || !el) return undefined;
     el.dataset.navEntering = 'true';
@@ -576,8 +630,16 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
       dest={dest}
       page={page}
       sheet={false}
-      collapsed={collapsed}
+      // A group row follows the state in the toggle's own commit: its chevron and its
+      // pages leave (or rejoin) the tab order and its icon gains (or loses) the rail's
+      // popup semantics with the state, so a quick Tab never lands on a clipped chevron or
+      // a page about to turn inert, and never skips a visible one. Its pages are memoised,
+      // so a closed group's re-render is the row itself.
+      collapsed={dest.pages.length > 0 ? collapsed : rowsCollapsed}
       open={openGroups.has(dest.item.id)}
+      // An open group's pages HIDE with the panel's state (they would move the icons under
+      // them if they followed later): no transition in the rail, so at once.
+      shown={!panelCollapsed && openGroups.has(dest.item.id)}
       flyoutOpen={flyout === dest.item.id}
       activity={activity}
       reducedMotion={reducedMotion}
@@ -588,12 +650,12 @@ function NavRail({ page, onNavigate, logoUrl, productName, reducedMotion }: Surf
   );
 
   return (
-    // The in-flow spacer: 64 or 240 px, changed once at the click, never animated.
-    <div data-testid="desktop-navigation-frame" className={cn('relative shrink-0', collapsed ? 'w-16' : 'w-60')}>
+    // The in-flow spacer: 64 or 240 px, changed once per toggle, never animated.
+    <div data-testid="desktop-navigation-frame" className={cn('relative shrink-0', spacerCollapsed ? 'w-16' : 'w-60')}>
       <aside
         ref={asideRef}
         aria-label="Primary navigation"
-        data-nav-state={collapsed ? 'collapsed' : 'expanded'}
+        data-nav-state={panelCollapsed ? 'collapsed' : 'expanded'}
         data-reduced-motion={reducedMotion ? 'true' : 'false'}
         className="nav-root pointer-events-none fixed inset-y-0 left-0 z-40 w-60"
         {...(rail ? null : railPrimers)}

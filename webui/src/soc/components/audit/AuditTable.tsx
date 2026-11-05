@@ -140,7 +140,8 @@ function TimeHeader({
 }
 
 function CaseTraceLink({ caseId, tabIndex }: { caseId: string; tabIndex: number }) {
-  const href = pageHash('case_manager', { caseId });
+  // The trace is on the case's Investigation tab: the link opens it there (WCAG 2.4.4).
+  const href = pageHash('case_manager', { caseId, tab: 'investigation' });
   const onClick = useRouteLinkClick(href, (e) => e.stopPropagation());
   return (
     <a

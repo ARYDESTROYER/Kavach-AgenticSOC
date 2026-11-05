@@ -160,9 +160,10 @@ describe('KpiStrip', () => {
     );
     for (const testId of ['kpi-total-cases', 'kpi-needs-human', 'kpi-resolved-or-closed']) {
       const tile = screen.getByTestId(testId);
-      // A full-height column whose numeral row is pushed down (`mt-auto`) above the line...
-      expect(tile).toHaveClass('flex', 'h-full', 'flex-col');
-      expect(tile.querySelector('.mt-auto')).not.toBeNull();
+      // Three rows of the strip's own grid (label, numeral, line), so every numeral sits on
+      // the bottom of one shared numeral row whatever a label or a line wraps to...
+      expect(tile).toHaveClass('row-span-3', 'grid', 'grid-rows-subgrid');
+      expect(tile.querySelector('span.leading-none')?.parentElement).toHaveClass('self-end');
       // ...and every tile has that two-line line, an empty reserved one without context.
       const line = tile.querySelector('[data-kpi-line]');
       expect(line).not.toBeNull();

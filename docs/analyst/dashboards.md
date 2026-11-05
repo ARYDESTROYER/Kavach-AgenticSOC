@@ -157,7 +157,7 @@ a stock read across all time, whatever the window says.
 | | Unassigned | Open cases with no assignee. |
 | | SLA breached | Open cases past their response or resolve target. |
 | | New cases | Cases created in the window. |
-| | Closed | Cases created in the window that are now closed or resolved. |
+| | Closed | Cases created in the window that are now closed or resolved, not counting closes by an analyst policy. |
 | Detection and data health | Sources reporting | Enabled sources that sent at least one event in the window. |
 | | Silent sources | Enabled sources the silent-source detector flags. |
 | | Events per minute | Mean events per minute over the measured part of the window, from the poller's tallies. |
@@ -170,6 +170,11 @@ a stock read across all time, whatever the window says.
 | | MTTR p50 | Median time from case creation to resolution. |
 | | Closed by the AI agent | Cases whose first terminal decision was the agent's automatic close. A later human acknowledgement does not move it. |
 | | SLA attainment | Share of scored cases that met their targets; "Not measured", with the reason, when nothing was scored. |
+
+Under **Closed**, "of 36 created in the window" is the population the figure is drawn
+from: the window's cases, less any that an analyst policy closed. When there are some,
+the line names them ("of 36 created, plus 2 closed by analyst policy"), so the two
+numbers add up to **New cases**.
 
 The spend per investigated case on the AI spend panel divides the investigation spend
 (the router and investigator calls of the case pipeline) by the cases the agent
@@ -206,8 +211,21 @@ reads "My dashboard", and the next save stores the new name.
   address; **Discard** returns to the library.
 - **Edit** turns on Edit mode: rename the board, **Add widget** from the gallery, open a
   widget's settings, drag a widget by its handle or resize it from its corner, or move
-  and resize it from the keyboard with its toolbar. **Save dashboard** stores the board;
+  and resize it from the keyboard with its toolbar. Where a widget is too narrow for the
+  whole toolbar, its moves are in its options menu. **Save dashboard** stores the board;
   **Discard** puts back what was stored.
+- On a phone or another narrow screen, Edit mode shows the widgets one per row, full
+  width, in the order the board reads. **Move up** and **Move down** move a widget one
+  place in that order, and the button you pressed stays where it was, so you can press
+  it again. The layout on a wider screen keeps its shape: two widgets side by side, or
+  two of the same size, swap places. Two widgets of different sizes keep their sizes
+  when the widgets after them can make room without leaving a gap; otherwise they trade
+  places and sizes, and every other widget stays where it is. Where a widget's minimum
+  size does not fit the other's place, the widgets after them move to make room instead.
+  **Add widget** and **Duplicate** put the new widget at the end, and the others keep
+  their order. **Remove** lets the widgets below move up into the space, as they do on a
+  wider screen, and that is what is saved. Widths and heights are changed on a wider
+  screen.
 - **Duplicate** (in the **More** menu) makes a copy of the board and opens it in Edit mode.
 - **Rename** (in the **More** menu) changes the board's name.
 - **Reset to default layout** (in the **More** menu of My dashboard, once saved) drops

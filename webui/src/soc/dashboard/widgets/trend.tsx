@@ -11,7 +11,13 @@
  *     engine, with one line accounting for what the bars leave out.
  * - `chart.severity_trend` "Cases by severity over time": case counts stacked by
  *   severity level, from the breakdown engine, hourly within a day (as Outcomes over time
- *   is) and daily otherwise, unless the operator chose daily or weekly.
+ *   is) and daily otherwise, unless the operator chose daily or weekly. All five named
+ *   levels always stack, in order, zeros included (SPEC §4.7.2), as chat's "Cases by
+ *   severity" lists them.
+ *
+ * Every chart reads the kit's one time-axis rule (dated ticks, a week by the day it
+ * starts); the two charts of "Alerts and cases over time" share one y-gutter, so their
+ * plots and ticks line up on one day axis.
  *
  * Buckets are case ARRIVAL buckets: a case counts in the bucket it was created in. The
  * newest bucket is still filling and is marked so. Everything is an aggregate count
@@ -23,9 +29,12 @@ import type { MetricsBreakdown, MetricsBreakdownGroup } from '@/lib/types-dashbo
 
 import { useDashboardData, useDashboardRequest } from '../DashboardDataProvider';
 import type { DashboardRequest } from './requests';
+import { yAxisOf } from '@/soc/chat/blocks/charts/CartesianChart';
+
 import {
   BOARD_CHART_HEIGHT,
   BoardChart,
+  breakdownAxis,
   bucketDisplayLabel,
   bucketWords,
   buildChartBlock,
@@ -113,18 +122,21 @@ function AlertsBody({ trends }: { trends: MetricsTrends }) {
     series: [{ key: 'cases', label: 'Cases created', values: trends.buckets.map((b) => finiteOrNull(b.new_cases)) }],
     lastInProgress: true,
   });
+  // One day axis (SPEC §4.4.4): both plots start after the wider of the two y-gutters, so
+  // the same bucket sits at the same x in both charts and their ticks line up.
+  const gutter = Math.max(alertsBlock ? yAxisOf(alertsBlock).chars : 0, casesBlock ? yAxisOf(casesBlock).chars : 0);
   return (
     <div className="grid gap-2">
       <h3 className="text-xs font-medium text-muted-foreground">Alerts</h3>
       {alertsBlock ? (
-        <BoardChart block={alertsBlock} title="Alerts ingested" height={140} />
+        <BoardChart block={alertsBlock} title="Alerts ingested" height={140} minAxisChars={gutter} />
       ) : (
         <p className="text-sm text-muted-foreground">
           Not measured. The alert counters have not counted this window yet.
         </p>
       )}
       <h3 className="mt-1 text-xs font-medium text-muted-foreground">Cases</h3>
-      {casesBlock ? <BoardChart block={casesBlock} title="Cases created" height={120} /> : null}
+      {casesBlock ? <BoardChart block={casesBlock} title="Cases created" height={120} minAxisChars={gutter} /> : null}
     </div>
   );
 }
@@ -208,8 +220,15 @@ function perBucket(
   });
 }
 
-function categoryAxis(b: MetricsBreakdown) {
-  return { kind: 'category' as const, values: b.buckets.map((bucket) => bucketDisplayLabel(bucket.label)) };
+/**
+ * A bucketed breakdown's x axis: the kit's time axis over the server's buckets
+ * (`breakdownAxis`, dated ticks and a week by its first day), else, for a label the
+ * server grammar does not hold, the display labels as categories.
+ */
+export function breakdownXAxis(b: MetricsBreakdown) {
+  return (
+    breakdownAxis(b) ?? { kind: 'category' as const, values: b.buckets.map((bucket) => bucketDisplayLabel(bucket.label)) }
+  );
 }
 
 function lastInProgress(b: MetricsBreakdown): boolean {
@@ -282,7 +301,7 @@ function OutcomesWidget({ title, family }: { title: string; family: OutcomeFamil
           id: 'outcomes',
           title,
           kind: 'stacked_bar',
-          x: categoryAxis(b),
+          x: breakdownXAxis(b),
           series: out.series,
           lastInProgress: lastInProgress(b),
         })
@@ -339,14 +358,15 @@ function unknownSeverity(g: MetricsBreakdownGroup): boolean {
 }
 
 /**
- * One stacked series per severity level the answer holds, in severity order, then one
- * "Unknown" series for the cases whose severity could not be read (an unreadable case
+ * One stacked series per named severity level, all five in fixed order (Critical, High,
+ * Medium, Low, Info) with zeros for a level the answer does not hold (SPEC §4.7.2, the
+ * same five rows chat's "Cases by severity" lists), then one "Unknown" series, only when
+ * it holds cases, for those whose severity could not be read (an unreadable case
  * document), so the stacks add up to the population the caption states. The Unknown
  * series takes the chart kit's neutral colour (key `other`).
  */
 export function severitySeries(b: MetricsBreakdown) {
-  const present = new Set(b.groups.map((g) => (g.key ?? '').toLowerCase()));
-  const levels = SEVERITY_ORDER.filter((level) => present.has(level)).map((level) => ({
+  const levels = SEVERITY_ORDER.map((level) => ({
     key: level,
     label: SEVERITY_LABEL[level],
     semantic: level,
@@ -374,7 +394,7 @@ export function SeverityTrendWidget(props: WidgetProps) {
           id: 'severity-trend',
           title,
           kind: 'stacked_bar',
-          x: categoryAxis(b),
+          x: breakdownXAxis(b),
           series,
           lastInProgress: lastInProgress(b),
         })

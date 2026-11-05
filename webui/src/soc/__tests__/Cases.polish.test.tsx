@@ -131,9 +131,11 @@ describe('Cases: CASES_DEFAULT_HIDDEN (Round 14)', () => {
     prefsState.tables = { cases: { hidden: [] } };
     renderCases();
     await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    // The stored state arrives with the preferences read, which may settle after the
+    // rows do (a loaded machine reorders them): wait for it rather than race it.
     for (const name of HIDDEN_HEADERS) {
       expect(
-        screen.getByRole('columnheader', { name: new RegExp(`^${name}`, 'i') }),
+        await screen.findByRole('columnheader', { name: new RegExp(`^${name}`, 'i') }),
       ).toBeInTheDocument();
     }
     // Runbooks replaced playbooks (Round 14): the old count column is gone, even for a
@@ -184,6 +186,136 @@ describe('Cases: one status badge, the closer in Outcome (Round 14)', () => {
     expect(within(rowFor('AnalystClosed')).queryByText(/Auto-closed/i)).toBeNull();
     // The Status cell holds the status alone: no second "Auto-closed by AI" badge.
     expect(screen.queryByText(/Auto-closed by AI/i)).toBeNull();
+  });
+
+  it('fits every settled outcome in its column: a short word, the whole outcome said (closing QA qa2-01)', async () => {
+    seed([
+      {
+        case_id: 'c-unrec', case_number: 'T-UN', title: 'ClosedUnrecorded', status: 'closed',
+        decision_by: 'analyst', risk_score: 30,
+        updated_at: '2026-06-29T03:00:00Z', tags: [], comments: [],
+      },
+      {
+        case_id: 'c-class', case_number: 'T-CL', title: 'ClosedClassified', status: 'closed',
+        decision_by: 'analyst', disposition: 'false_positive', risk_score: 30,
+        history: [{ event: 'analyst_action', action: 'confirm_fp', analyst: 'a', ts: '2026-06-29T02:00:00Z' }],
+        updated_at: '2026-06-29T02:00:00Z', tags: [], comments: [],
+      },
+      {
+        case_id: 'c-policy', case_number: 'T-PO', title: 'ClosedByPolicy', status: 'closed',
+        decision_by: 'analyst_policy', risk_score: 10,
+        updated_at: '2026-06-29T01:00:00Z', tags: [], comments: [],
+      },
+    ]);
+    renderCases();
+    await waitFor(() => expect(screen.getByText('ClosedUnrecorded')).toBeInTheDocument());
+
+    // "Outcome not recorded" (163px) was cut at the 9.25rem column edge: the cell says
+    // "Not recorded" and keeps the whole outcome in its tooltip and its read text.
+    const unrecorded = within(rowFor('ClosedUnrecorded')).getByTestId('case-outcome');
+    expect(unrecorded).toHaveAttribute('data-outcome-source', 'analyst_unrecorded');
+    expect(unrecorded).toHaveAttribute('title', 'Closed by analyst: outcome not recorded');
+    expect(unrecorded).toHaveTextContent('Not recorded, closed by analyst: outcome not recorded');
+    expect(unrecorded).not.toHaveTextContent(/^Outcome not recorded/);
+
+    // A human outcome is ONE badge with the Analyst glyph, never the separate tag that
+    // pushed it past the column; the sentence says who.
+    const classified = within(rowFor('ClosedClassified')).getByTestId('case-outcome');
+    expect(classified).toHaveAttribute('data-provenance', 'analyst');
+    expect(classified).toHaveTextContent(/^False positive/);
+    expect(classified).toHaveAttribute('title', 'Closed as false positive by an analyst');
+    const policy = within(rowFor('ClosedByPolicy')).getByTestId('case-outcome');
+    expect(policy).toHaveAttribute('data-provenance', 'analyst');
+    expect(policy).toHaveTextContent(/^Declared benign/);
+    expect(policy).toHaveAttribute('title', 'Closed by analyst policy (declared benign)');
+
+    // Every settled badge in the column is the table badge size of the Status column.
+    for (const badge of screen.getAllByTestId('case-outcome')) {
+      expect(badge).toHaveClass('px-1.5', 'text-2xs');
+      expect(badge.querySelector('[data-provenance]')).toBeNull();
+    }
+  });
+
+  it('says in its read text that an unclassified case shows the AI-mapped disposition (D15)', async () => {
+    // The open case's "False positive" is the same table badge size as an analyst's
+    // classification, so the attribution is read aloud too, never only in a mouse tooltip.
+    seed([
+      {
+        case_id: 'c-open', case_number: 'T-OP', title: 'OpenMapped', status: 'open',
+        verdict: 'FALSE_POSITIVE', disposition: 'false_positive', risk_score: 20,
+        updated_at: '2026-06-29T04:00:00Z', tags: [], comments: [],
+      },
+      {
+        case_id: 'c-class', case_number: 'T-CL', title: 'ClosedClassified', status: 'closed',
+        decision_by: 'analyst', disposition: 'false_positive', risk_score: 30,
+        history: [{ event: 'analyst_action', action: 'confirm_fp', analyst: 'a', ts: '2026-06-29T02:00:00Z' }],
+        updated_at: '2026-06-29T02:00:00Z', tags: [], comments: [],
+      },
+    ]);
+    renderCases();
+    await waitFor(() => expect(screen.getByText('OpenMapped')).toBeInTheDocument());
+
+    const pending = within(rowFor('OpenMapped')).getByText(
+      (_, el) => el?.getAttribute('data-outcome-source') === 'pending',
+    );
+    expect(within(rowFor('OpenMapped')).queryByTestId('case-outcome')).toBeNull();
+    expect(pending).toHaveAttribute('title', 'Mapped from the AI verdict; no analyst has classified this case yet');
+    expect(pending).toHaveTextContent(
+      /^False positive, mapped from the AI verdict; no analyst has classified this case yet$/,
+    );
+    const note = pending.querySelector('.sr-only');
+    expect(note).toHaveTextContent('mapped from the AI verdict');
+    // The analyst's call on the same value says who made it instead.
+    const classified = within(rowFor('ClosedClassified')).getByTestId('case-outcome');
+    expect(classified).toHaveTextContent(/by an analyst/);
+    expect(classified).not.toHaveTextContent(/AI verdict/);
+  });
+
+  it('never says "mapped from the AI verdict" when nothing was mapped', async () => {
+    // `case_manager.apply()` maps a disposition only from a verdict, and only to one value
+    // per verdict: a case the AI has not assessed shows "Undetermined" and must not claim
+    // an AI mapping, a legacy case with a verdict but no disposition says so, and a value
+    // that is not the verdict's mapping is said to be recorded on the case.
+    seed([
+      {
+        case_id: 'c-new', case_number: 'T-NW', title: 'OpenUnassessed', status: 'open',
+        verdict: null, disposition: null, risk_score: 20,
+        updated_at: '2026-06-29T05:00:00Z', tags: [], comments: [],
+      },
+      {
+        case_id: 'c-legacy', case_number: 'T-LG', title: 'OpenLegacy', status: 'open',
+        verdict: 'TRUE_POSITIVE', disposition: null, risk_score: 70,
+        updated_at: '2026-06-29T04:00:00Z', tags: [], comments: [],
+      },
+      {
+        // Triage maps NEEDS_HUMAN to undetermined, never to suspicious: this value was set
+        // on the case some other way (a Demo seed, an applied unlabelled value).
+        case_id: 'c-set', case_number: 'T-ST', title: 'OpenRecorded', status: 'investigating',
+        verdict: 'NEEDS_HUMAN', disposition: 'suspicious', risk_score: 62,
+        updated_at: '2026-06-29T03:00:00Z', tags: [], comments: [],
+      },
+    ]);
+    renderCases();
+    await waitFor(() => expect(screen.getByText('OpenUnassessed')).toBeInTheDocument());
+
+    const pendingCell = (title: string) =>
+      within(rowFor(title)).getByText((_, el) => el?.getAttribute('data-outcome-source') === 'pending');
+
+    const unassessed = pendingCell('OpenUnassessed');
+    expect(unassessed).toHaveAttribute('title', 'Not yet assessed by the AI; no analyst has classified this case yet');
+    expect(unassessed).toHaveTextContent(
+      /^Undetermined, not yet assessed by the AI; no analyst has classified this case yet$/,
+    );
+    expect(unassessed).not.toHaveTextContent(/mapped from the AI verdict/i);
+
+    const legacy = pendingCell('OpenLegacy');
+    expect(legacy).toHaveAttribute('title', 'No outcome recorded yet; no analyst has classified this case yet');
+    expect(legacy).toHaveTextContent(/^Undetermined, no outcome recorded yet; no analyst has classified this case yet$/);
+    expect(legacy).not.toHaveTextContent(/mapped from the AI verdict/i);
+
+    const recorded = pendingCell('OpenRecorded');
+    expect(recorded).toHaveAttribute('title', 'Recorded on the case; no analyst has classified this case yet');
+    expect(recorded).toHaveTextContent(/^Suspicious, recorded on the case; no analyst has classified this case yet$/);
   });
 
   it('does not show the badge on a still-open agent case (non-terminal)', async () => {

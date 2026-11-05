@@ -22,7 +22,8 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import * as React from 'react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { flushSync } from 'react-dom';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { axe, toHaveNoViolations } from 'jest-axe';
 
 expect.extend(toHaveNoViolations);
@@ -65,10 +66,11 @@ import {
   resetNavHoverIntent,
   safeTriangle,
 } from '../components/nav-hover-intent';
-import { RAIL_TIP_GRACE_MS, RAIL_TIP_REST_MS, resetRailTip } from '../components/nav-rail-tip';
+import { RAIL_TIP_GRACE_MS, RAIL_TIP_REST_MS, railTipHandlers, resetRailTip } from '../components/nav-rail-tip';
 import { loadRailInteractions } from '../components/nav-rail-loader';
 import { navStore } from '../nav-store';
 import type { PageId } from '../nav';
+import { clearChatActivity, putChatActivity } from '../chat-activity/activity';
 
 interface Setup {
   page?: PageId;
@@ -99,6 +101,48 @@ const currentMarkers = () => {
 const flyouts = () => document.querySelectorAll('[data-testid^="nav-flyout-"]');
 const tips = () => document.querySelectorAll('[data-testid="nav-rail-tip"]');
 const aside = () => screen.getByRole('complementary', { name: 'Primary navigation' });
+const spacer = () => screen.getByTestId('desktop-navigation-frame');
+/** Let one animation frame pass (the panel and the spacer change one frame apart). */
+const nextFrame = () =>
+  act(async () => {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  });
+/** Let one task pass (after the tasks already queued, such as a write the frame scheduled). */
+const nextTask = () =>
+  act(async () => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  });
+/**
+ * A frame clock the test drives (`requestAnimationFrame` queues; `frame()` runs the queue).
+ * jsdom paints on its own timer, so a test that counts frames and tasks around the
+ * preference write would race it on a loaded machine. Unstubbed after each test.
+ */
+function manualFrames(): () => void {
+  let queue: FrameRequestCallback[] = [];
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => queue.push(callback));
+  return () =>
+    act(() => {
+      const due = queue;
+      queue = [];
+      due.forEach((callback) => callback(performance.now()));
+    });
+}
+/** Leave the page (nav-store sends a waiting preference write at once). */
+const leavePage = () =>
+  act(() => {
+    window.dispatchEvent(new Event('pagehide'));
+  });
+/** Hide the page (a tab switch): `document.hidden` is true while the event runs. */
+const hidePage = () => {
+  const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+  try {
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+  } finally {
+    hidden.mockRestore();
+  }
+};
 
 // The rail's interaction layer is a lazy chunk (`nav-rail-loader.ts`); these tests pin its
 // behaviour once loaded, so it is loaded before the first render. The load itself, and the
@@ -117,10 +161,11 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('one DOM for both states', () => {
-  it('keeps the same rows and icon cells across a toggle (no unmount, no swap)', () => {
+  it('keeps the same rows and icon cells across a toggle (no unmount, no swap)', async () => {
     setup({ page: 'cases' });
     const rows = ['overview', 'cases', 'chat', 'settings', 'docs'].map((id) => screen.getByTestId(`nav-${id}`));
     const cells = rows.map((row) => row.querySelector('svg')?.parentElement as HTMLElement);
@@ -128,6 +173,7 @@ describe('one DOM for both states', () => {
     const toggle = screen.getByTestId('nav-toggle');
 
     act(() => fireEvent.click(toggle));
+    await nextFrame();
     expect(aside()).toHaveAttribute('data-nav-state', 'collapsed');
     rows.forEach((row, i) => expect(screen.getByTestId(row.dataset.testid as string)).toBe(row));
     expect(cells.map((cell) => cell.className)).toEqual(classesBefore);
@@ -149,11 +195,359 @@ describe('one DOM for both states', () => {
     expect(aside()).toHaveClass('fixed', 'w-60');
   });
 
-  it('persists the state to the mirror and the server', () => {
+  // §4.8.3 (the 4x CPU frame budget): the panel's restyle and the page's relayout take two
+  // consecutive frames, ordered so the opaque panel covers the seam (no gap ever shows).
+  it('collapses the page first and closes the panel over it in the next frame', async () => {
     setup();
+    act(() => navStore.toggleCollapsed());
+    expect(spacer()).toHaveClass('w-16');
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+    // The toggle names its new action at once.
+    expect(screen.getByTestId('nav-toggle')).toHaveAccessibleName(NAV_COPY.expand);
+    await nextFrame();
+    expect(spacer()).toHaveClass('w-16');
+    expect(aside()).toHaveAttribute('data-nav-state', 'collapsed');
+  });
+
+  it('fills the panel first and moves the page out from under it in the next frame', async () => {
+    setup({ collapsed: true });
+    act(() => navStore.toggleCollapsed());
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+    expect(spacer()).toHaveClass('w-16');
+    expect(screen.getByTestId('nav-toggle')).toHaveAccessibleName(NAV_COPY.collapse);
+    await nextFrame();
+    expect(spacer()).toHaveClass('w-60');
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+  });
+
+  it('settles a toggle undone within one frame without moving anything', async () => {
+    setup();
+    act(() => navStore.toggleCollapsed());
+    act(() => navStore.toggleCollapsed());
+    expect(spacer()).toHaveClass('w-60');
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+    await nextFrame();
+    expect(spacer()).toHaveClass('w-60');
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+  });
+
+  it("hides an open group's pages with the panel's state, never before the page has moved", async () => {
+    setup({ open: ['analytics'] });
+    const pages = () => document.getElementById('nav-group-analytics')?.closest('.nav-children');
+    expect(pages()).toHaveAttribute('data-open', 'true');
+    act(() => navStore.toggleCollapsed());
+    expect(spacer()).toHaveClass('w-16');
+    expect(pages()).toHaveAttribute('data-open', 'true');
+    await nextFrame();
+    expect(aside()).toHaveAttribute('data-nav-state', 'collapsed');
+    expect(pages()).toHaveAttribute('data-open', 'false');
+    expect(pages()).toHaveAttribute('inert');
+    // Expanding reveals them with the panel, at once.
+    act(() => navStore.toggleCollapsed());
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+    expect(pages()).toHaveAttribute('data-open', 'true');
+  });
+
+  it('persists the state to the mirror at once and to the server one frame later, off the input task', async () => {
+    setup();
+    const frame = manualFrames();
     act(() => fireEvent.click(screen.getByTestId('nav-toggle')));
     expect(window.localStorage.getItem('soc.nav.collapsed')).toBe('1');
+    // Not inside the toggle's own task.
+    expect(putUser).not.toHaveBeenCalled();
+    // Not before the toggle's first frame has painted either: the frame only schedules it.
+    frame();
+    expect(putUser).not.toHaveBeenCalled();
+    // The task after that frame sends it (long before any coalescing delay would).
+    await nextTask();
+    expect(putUser).toHaveBeenCalledTimes(1);
     expect(putUser).toHaveBeenCalledWith({ misc: { nav_collapsed: true } });
+  });
+
+  it('writes toggles made within one frame once, with the last state', async () => {
+    setup();
+    const frame = manualFrames();
+    const toggle = screen.getByTestId('nav-toggle');
+    act(() => fireEvent.click(toggle));
+    act(() => fireEvent.click(toggle));
+    act(() => fireEvent.click(toggle));
+    frame();
+    await nextTask();
+    expect(putUser).toHaveBeenCalledTimes(1);
+    expect(putUser).toHaveBeenCalledWith({ misc: { nav_collapsed: true } });
+    expect(window.localStorage.getItem('soc.nav.collapsed')).toBe('1');
+    // A later change is its own write.
+    act(() => fireEvent.click(toggle));
+    frame();
+    await nextTask();
+    expect(putUser).toHaveBeenCalledTimes(2);
+    expect(putUser).toHaveBeenLastCalledWith({ misc: { nav_collapsed: false } });
+  });
+
+  it('sends a waiting change when the page is left or hidden, and never under a new session', async () => {
+    setup();
+    const frame = manualFrames();
+    act(() => fireEvent.click(screen.getByTestId('nav-toggle')));
+    leavePage();
+    expect(putUser).toHaveBeenCalledTimes(1);
+    expect(putUser).toHaveBeenCalledWith({ misc: { nav_collapsed: true } });
+    // Sent once: the scheduled write finds nothing left to send.
+    frame();
+    await nextTask();
+    expect(putUser).toHaveBeenCalledTimes(1);
+
+    // A hidden page may never paint again (a tab switch, a phone sending the browser away).
+    putUser.mockClear();
+    act(() => fireEvent.click(screen.getByTestId('nav-toggle')));
+    hidePage();
+    expect(putUser).toHaveBeenCalledTimes(1);
+    expect(putUser).toHaveBeenCalledWith({ misc: { nav_collapsed: false } });
+
+    // A new shell session (signed out and back in) drops the earlier session's change.
+    putUser.mockClear();
+    act(() => fireEvent.click(screen.getByTestId('nav-toggle')));
+    navStore.beginSession();
+    frame();
+    await nextTask();
+    leavePage();
+    hidePage();
+    expect(putUser).not.toHaveBeenCalled();
+  });
+
+  it('sends each change on its own frame, even when an earlier write was already sent', async () => {
+    setup();
+    const frame = manualFrames();
+    const toggle = screen.getByTestId('nav-toggle');
+    act(() => fireEvent.click(toggle));
+    leavePage();
+    expect(putUser).toHaveBeenCalledTimes(1);
+    // The first change's frame has scheduled its write; a new change arrives before it runs.
+    frame();
+    act(() => fireEvent.click(toggle));
+    await nextTask();
+    // That earlier write had nothing of its own left: the new change waits for its frame.
+    expect(putUser).toHaveBeenCalledTimes(1);
+    frame();
+    await nextTask();
+    expect(putUser).toHaveBeenCalledTimes(2);
+    expect(putUser).toHaveBeenLastCalledWith({ misc: { nav_collapsed: false } });
+  });
+
+  it('keeps its page listeners once written, and they send nothing while nothing waits', async () => {
+    setup();
+    const frame = manualFrames();
+    const onWindow = vi.spyOn(window, 'addEventListener');
+    const onDocument = vi.spyOn(document, 'addEventListener');
+    try {
+      const toggle = screen.getByTestId('nav-toggle');
+      act(() => fireEvent.click(toggle));
+      frame();
+      await nextTask();
+      act(() => fireEvent.click(toggle));
+      frame();
+      await nextTask();
+      expect(putUser).toHaveBeenCalledTimes(2);
+      // The same two listeners each time (a listener added again is still one listener),
+      // never removed and never a fresh function per change.
+      const pagehide = onWindow.mock.calls.filter(([type]) => type === 'pagehide').map(([, fn]) => fn);
+      const hidden = onDocument.mock.calls.filter(([type]) => type === 'visibilitychange').map(([, fn]) => fn);
+      expect(new Set(pagehide).size).toBe(1);
+      expect(new Set(hidden).size).toBe(1);
+    } finally {
+      onWindow.mockRestore();
+      onDocument.mockRestore();
+    }
+    // Nothing waits: leaving or hiding the page sends nothing more.
+    leavePage();
+    hidePage();
+    expect(putUser).toHaveBeenCalledTimes(2);
+    // A page shown again (visible) is no reason to write either.
+    act(() => fireEvent.click(screen.getByTestId('nav-toggle')));
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    expect(putUser).toHaveBeenCalledTimes(2);
+    frame();
+    await nextTask();
+    expect(putUser).toHaveBeenCalledTimes(3);
+  });
+});
+
+// §4.8.1: hit and focus boxes match the visible state. A group row's popup semantics, its
+// chevron's tab stop and its pages' reachability change in the toggle's own (urgent)
+// commit, so a quick Tab never lands on a clipped chevron or a page about to turn inert,
+// and never skips a visible one; a plain row's title follows in a deferred render, and its
+// tooltip handlers are on in both states. `urgentCommit` runs the toggle as one urgent
+// commit outside act, so the assertions after it see exactly that commit, before React has
+// run any deferred render (the same as a deferred value that has not caught up yet).
+describe("the rows' state in the toggle's own commit", () => {
+  function urgentCommit(change: () => void): void {
+    const env = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+    const previous = env.IS_REACT_ACT_ENVIRONMENT;
+    env.IS_REACT_ACT_ENVIRONMENT = false;
+    try {
+      flushSync(change);
+    } finally {
+      env.IS_REACT_ACT_ENVIRONMENT = previous;
+    }
+  }
+
+  /** A case chat at work: the plain Case Manager row carries its text as a drawer title. */
+  function caseChatAtWork(): void {
+    putChatActivity({
+      scope: 'case:case-1',
+      kind: 'case',
+      conversationId: null,
+      caseId: 'case-1',
+      turnId: 't1',
+      requestKey: null,
+      title: 'Brute force on host A',
+      label: 'Searching logs',
+      lookups: 1,
+      status: 'running',
+      startedAt: 1,
+      source: 'local',
+    });
+  }
+
+  const chevrons = () => Array.from(document.querySelectorAll<HTMLElement>('[data-nav-chevron]'));
+
+  afterEach(() => {
+    // The navigation may still be mounted: the store update re-renders it.
+    act(() => clearChatActivity());
+  });
+
+  it('collapsing takes the chevrons out of the tab order and makes the group icons popup triggers at once', async () => {
+    caseChatAtWork();
+    setup({ page: 'cases', open: ['overview', 'analytics'] });
+    const caseManager = screen.getByTestId('nav-case_manager');
+    expect(caseManager).toHaveAttribute('title');
+    expect(chevrons().length).toBeGreaterThan(1);
+    for (const chevron of chevrons()) {
+      expect(chevron).not.toHaveAttribute('tabindex');
+      expect(chevron).not.toHaveAttribute('inert');
+    }
+
+    urgentCommit(() => navStore.toggleCollapsed());
+    expect(screen.getByTestId('nav-toggle')).toHaveAccessibleName(NAV_COPY.expand);
+    for (const chevron of chevrons()) {
+      expect(chevron).toHaveAttribute('tabindex', '-1');
+      expect(chevron).toHaveAttribute('inert');
+    }
+    const overview = screen.getByTestId('nav-overview');
+    expect(overview).toHaveAttribute('aria-haspopup', 'true');
+    expect(overview).toHaveAttribute('aria-expanded', 'false');
+    expect(overview).toHaveAttribute('aria-controls', 'nav-fly-overview');
+    // A plain row has not re-rendered in that commit: its drawer title is still there.
+    expect(caseManager).toHaveAttribute('title');
+
+    await waitFor(() => {
+      expect(caseManager).not.toHaveAttribute('title');
+      expect(aside()).toHaveAttribute('data-nav-state', 'collapsed');
+    });
+  });
+
+  it("collapsing takes an open group's pages out of the tab order at once, before they hide", async () => {
+    // A Tab pressed in the frame between the toggle and the panel closing must not land on
+    // a page that turns inert in the next commit: the browser would drop focus to <body>.
+    setup({ page: 'standup', open: ['overview'] });
+    const list = document.getElementById('nav-group-overview') as HTMLElement;
+    const pages = list.closest('.nav-children') as HTMLElement;
+    const links = Array.from(list.querySelectorAll<HTMLElement>('a[href]'));
+    expect(links.length).toBeGreaterThan(1);
+    expect(screen.getByTestId('nav-standup')).toHaveAttribute('aria-current', 'page');
+
+    urgentCommit(() => navStore.toggleCollapsed());
+    // Unreachable in the toggle's own commit: inert, hidden from assistive tech, out of the
+    // tab order, and the one current marker back on the group icon.
+    expect(pages).toHaveAttribute('inert');
+    expect(pages).toHaveAttribute('aria-hidden', 'true');
+    for (const link of links) {
+      expect(link).toHaveAttribute('tabindex', '-1');
+      expect(link).not.toHaveAttribute('aria-current');
+    }
+    expect(currentMarkers()).toEqual([screen.getByTestId('nav-overview')]);
+    expect(screen.getByTestId('nav-overview')).toHaveAttribute('aria-haspopup', 'true');
+    const tabbable = Array.from(aside().querySelectorAll<HTMLElement>('a[href], button')).filter(
+      (el) => el.tabIndex >= 0 && !el.closest('[aria-hidden="true"]') && !el.closest('[inert]'),
+    );
+    expect(tabbable.filter((el) => list.contains(el))).toEqual([]);
+    // Still SHOWN, under the still-open panel, until the panel closes a frame later.
+    expect(pages).toHaveAttribute('data-open', 'true');
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+
+    await nextFrame();
+    expect(aside()).toHaveAttribute('data-nav-state', 'collapsed');
+    expect(pages).toHaveAttribute('data-open', 'false');
+    expect(pages).toHaveAttribute('inert');
+  });
+
+  it('expanding makes an open group\'s pages reachable and shown in the same commit', () => {
+    setup({ page: 'standup', collapsed: true, open: ['overview'] });
+    const list = document.getElementById('nav-group-overview') as HTMLElement;
+    const pages = list.closest('.nav-children') as HTMLElement;
+    expect(pages).toHaveAttribute('inert');
+
+    urgentCommit(() => navStore.toggleCollapsed());
+    expect(pages).not.toHaveAttribute('inert');
+    expect(pages).not.toHaveAttribute('aria-hidden');
+    expect(pages).toHaveAttribute('data-open', 'true');
+    expect(screen.getByTestId('nav-standup')).not.toHaveAttribute('tabindex');
+    expect(currentMarkers()).toEqual([screen.getByTestId('nav-standup')]);
+  });
+
+  it('a plain icon focused before its deferred render still gets the rail tooltip', () => {
+    // The plain rows' `collapsed` follows a toggle in a deferred render; on a busy main
+    // thread a keyboard user can Tab to a plain icon before it commits. The tooltip
+    // handlers are on in both states, so the tooltip shows at once on that focus.
+    caseChatAtWork();
+    setup({ page: 'cases' });
+    const caseManager = screen.getByTestId('nav-case_manager');
+    urgentCommit(() => navStore.toggleCollapsed());
+    // The plain row has not re-rendered yet (its drawer title is still there).
+    expect(caseManager).toHaveAttribute('title');
+    act(() => caseManager.focus());
+    expect(tips()).toHaveLength(1);
+    expect(screen.getByTestId('nav-rail-tip')).toHaveTextContent(/^Case Manager/);
+  });
+
+  it('moves that tooltip with its icon when an open group above it hides a frame later', async () => {
+    // Focus in the toggle's own frame still sees the Overview pages above Cases; they hide
+    // with the panel a frame later and Cases moves up, so the tooltip is measured again.
+    setup({ page: 'standup', open: ['overview'] });
+    const cases = screen.getByTestId('nav-cases');
+    let top = 290;
+    cases.getBoundingClientRect = () => ({ top, height: 36, bottom: top + 36, left: 8, right: 56, width: 48, x: 8, y: top, toJSON: () => ({}) }) as DOMRect;
+    urgentCommit(() => navStore.toggleCollapsed());
+    act(() => cases.focus());
+    expect(screen.getByTestId('nav-rail-tip').style.top).toBe('308px');
+    top = 186;
+    await nextFrame();
+    expect(aside()).toHaveAttribute('data-nav-state', 'collapsed');
+    expect(screen.getByTestId('nav-rail-tip').style.top).toBe('204px');
+  });
+
+  it('expanding puts the chevrons back in the tab order and drops the popup semantics at once', async () => {
+    caseChatAtWork();
+    setup({ page: 'cases', collapsed: true, open: ['overview'] });
+    const caseManager = screen.getByTestId('nav-case_manager');
+    expect(caseManager).not.toHaveAttribute('title');
+    for (const chevron of chevrons()) expect(chevron).toHaveAttribute('inert');
+
+    urgentCommit(() => navStore.toggleCollapsed());
+    expect(aside()).toHaveAttribute('data-nav-state', 'expanded');
+    for (const chevron of chevrons()) {
+      expect(chevron).not.toHaveAttribute('tabindex');
+      expect(chevron).not.toHaveAttribute('inert');
+    }
+    expect(screen.getByTestId('nav-overview')).not.toHaveAttribute('aria-haspopup');
+    expect(screen.getByRole('button', { name: 'Hide Overview pages' })).toHaveAttribute('aria-expanded', 'true');
+    expect(caseManager).not.toHaveAttribute('title');
+
+    await waitFor(() => {
+      expect(caseManager).toHaveAttribute('title');
+      expect(spacer()).toHaveClass('w-60');
+    });
   });
 });
 
@@ -585,6 +979,7 @@ describe('switching between flyouts (SPEC §4.8.1 "Flyouts")', () => {
 
   it('a neighbour crossed inside the safe triangle never steals the open flyout', () => {
     vi.useFakeTimers();
+    window.localStorage.setItem('soc.nav.collapsed', '1');
     navStore.beginSession();
     registerTrigger('a', document.createElement('a'));
     registerTrigger('b', document.createElement('a'));
@@ -794,6 +1189,31 @@ describe('a state switch from anywhere (the toggle, the strip or the shell Ctrl+
     expect(tips()).toHaveLength(0);
   });
 
+  it('never shows the rail tooltip over the drawer, from a rest or a keyboard focus', () => {
+    // A plain row's tooltip handlers stay on in the drawer (its `collapsed` is deferred),
+    // so the tooltip itself checks the state: a rest or a focus in the drawer shows nothing.
+    vi.useFakeTimers();
+    setup({ collapsed: false });
+    const cases = screen.getByTestId('nav-cases');
+    fireEvent.pointerMove(cases, { clientX: 120, clientY: 120 });
+    act(() => vi.advanceTimersByTime(RAIL_TIP_REST_MS * 2));
+    expect(tips()).toHaveLength(0);
+    act(() => cases.focus());
+    expect(tips()).toHaveLength(0);
+    // The same from a handler armed for the rail a moment before the drawer opened.
+    const stale = railTipHandlers('cases', 'Cases', '', true);
+    act(() => stale.onPointerMove?.({ currentTarget: cases } as unknown as React.PointerEvent<HTMLElement>));
+    act(() => vi.advanceTimersByTime(RAIL_TIP_REST_MS * 2));
+    expect(tips()).toHaveLength(0);
+  });
+
+  it('opens no flyout from the drawer, even from a stale row handler', () => {
+    setup({ collapsed: false });
+    act(() => openFlyout('analytics'));
+    expect(navStore.getState().flyout).toBeNull();
+    expect(flyouts()).toHaveLength(0);
+  });
+
   it('never draws a flyout over the labelled drawer', () => {
     setup({ collapsed: false });
     act(() => navStore.setFlyout('analytics', 120));
@@ -834,6 +1254,7 @@ describe('the phone sheet saves the groups it shows', () => {
     expect(screen.getByRole('button', { name: 'Show Overview pages' })).toHaveAttribute('aria-expanded', 'false');
     act(() => fireEvent.click(screen.getByRole('button', { name: 'Show Overview pages' })));
     expect(navStore.getState().openGroups.has('overview')).toBe(true);
+    leavePage();
     expect(putUser).toHaveBeenLastCalledWith({ misc: { nav_open_groups: ['overview'] } });
   });
 
@@ -841,6 +1262,7 @@ describe('the phone sheet saves the groups it shows', () => {
     setup({ page: 'cases', variant: 'sheet', open: ['analytics'] });
     act(() => fireEvent.click(screen.getByRole('button', { name: 'Hide Analytics pages' })));
     expect(navStore.getState().openGroups.has('analytics')).toBe(false);
+    leavePage();
     expect(putUser).toHaveBeenLastCalledWith({ misc: { nav_open_groups: [] } });
   });
 });

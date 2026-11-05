@@ -1203,11 +1203,17 @@ function OperatingPolicyLine({ data }: { data: TuningRecommendationsResponse }) 
       className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground"
       data-testid="tuning-operating-policy"
     >
+      {/* The separator ends each fact but the last, so a phone-width wrap leaves it at
+          the end of the line above and never opens a line with "·" (closing QA qa2-09). */}
       {facts.map(([term, value], index) => (
         <div key={term} className="flex items-center gap-1.5">
-          {index > 0 ? <span aria-hidden="true">·</span> : null}
           <dt className="sr-only">{term}</dt>
           <dd>{value}</dd>
+          {index < facts.length - 1 ? (
+            <span aria-hidden="true" data-separator="">
+              ·
+            </span>
+          ) : null}
         </div>
       ))}
     </dl>
@@ -1320,7 +1326,25 @@ function RuleList({
           const selected = selectedRuleId === rule.rule_id;
           const descriptionId = `${ruleTriggerId(rule.rule_id)}-description`;
           return (
-            <div key={rule.rule_id} role="listitem">
+            // Round 14 (SPEC §4.6.5, closing QA qa2-03): the row's inspect control and the
+            // rule's RuleLink are siblings, never nested. The inspect button covers the
+            // whole row (a click anywhere still opens the evidence, the signal bar
+            // included) and comes first in tab order; the RuleLink sits above it and opens
+            // the one rule sheet. `isolate` keeps both layers inside the row. The selection
+            // accent is the inspect button's left border, never the row's: the row is a
+            // child of the `divide-y` list, whose border colour rule outranks any
+            // `border-l-*` class on it and would draw a grey rule beside every row but
+            // the first.
+            <div
+              key={rule.rule_id}
+              role="listitem"
+              data-rule-row={rule.rule_id}
+              className={cn(
+                'relative isolate grid w-full min-w-0 gap-3 px-3 py-3.5 text-left transition-colors',
+                'hover:bg-accent/20 xl:grid-cols-[minmax(13rem,0.9fr)_minmax(15rem,1fr)_minmax(15rem,0.85fr)_auto] xl:items-center xl:gap-5',
+                selected && 'bg-accent/25',
+              )}
+            >
               <button
                 id={ruleTriggerId(rule.rule_id)}
                 type="button"
@@ -1329,94 +1353,97 @@ function RuleList({
                 aria-expanded={selected}
                 aria-controls={selected ? 'tuning-rule-detail' : undefined}
                 onClick={() => onSelect(rule.rule_id)}
+                data-rule-inspect=""
                 className={cn(
-                  'grid w-full min-w-0 gap-3 border-l-2 border-l-transparent px-3 py-3.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
-                  'hover:bg-accent/20 xl:grid-cols-[minmax(13rem,0.9fr)_minmax(15rem,1fr)_minmax(15rem,0.85fr)_auto] xl:items-center xl:gap-5',
-                  selected && 'border-l-primary/70 bg-accent/25',
+                  'absolute inset-0 z-10 border-l-2 border-l-transparent transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
+                  selected && 'border-l-primary/70',
                 )}
-              >
-                <span id={descriptionId} className="sr-only">
-                  {explanation.lead} {explanation.support} {action.title}. {action.instruction}
-                  {rowInert ? ` A threshold change would not help: ${rowInert.detail}` : ''}
-                </span>
+              />
+              {/* The inspect button's description, read only through aria-describedby:
+                  the row's own text is already on the page for a screen reader. */}
+              <span id={descriptionId} hidden>
+                {explanation.lead} {explanation.support} {action.title}. {action.instruction}
+                {rowInert ? ` A threshold change would not help: ${rowInert.detail}` : ''}
+              </span>
 
-                <span className="min-w-0">
-                  <span className="flex min-w-0 items-center gap-2">
-                    <span
-                      className="block min-w-0 flex-1 truncate font-mono text-xs font-semibold text-foreground"
+              <span className="min-w-0">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="flex min-w-0 flex-1">
+                    <RuleLink
+                      rule={rule.rule_id}
+                      origin="Auto-tuning"
                       title={rule.rule_id}
+                      className="relative z-20 block max-w-full truncate text-xs font-semibold text-foreground"
+                    />
+                  </span>
+                  <RuleStateBadge state={state} />
+                </span>
+                {/* Tabular figures on the number only: on prose Inter's tabular hyphen
+                    opens a gap ("analyst - confirmed", [uib] TU2). */}
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  <span className="tabular-nums">{fmtNumber(rule.total)}</span> analyst-confirmed cases
+                  {lastTunedByRule.get(rule.rule_id)
+                    ? ` · tuned ${humanizeAge(lastTunedByRule.get(rule.rule_id))}`
+                    : ''}
+                </span>
+              </span>
+
+              <span className="min-w-0">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground xl:hidden">
+                  Policy evidence
+                </span>
+                <span className="flex items-baseline justify-between gap-3 text-xs">
+                  <span className="font-semibold tabular-nums text-foreground">
+                    {state === 'collecting'
+                      ? `${fmtNumber(rule.total)} / ${fmtNumber(minSamples)} confirmed`
+                      : `${fmtPercent(rule.fp_rate)} conservative`}
+                  </span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                    target {fmtPercent(target)}
+                  </span>
+                </span>
+                <span className="mt-2 block">
+                  <PolicySignalBar value={rule.fp_rate} target={target} state={state} />
+                </span>
+                <span className="mt-1.5 block text-xs text-muted-foreground">
+                  <span className="tabular-nums">{fmtPercent(observed)}</span> observed false-positive ratio
+                </span>
+              </span>
+
+              <span className="min-w-0">
+                <span className="mb-1 block text-xs font-medium text-muted-foreground xl:hidden">
+                  Next step
+                </span>
+                <span className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-foreground">
+                    {actionLabel}
+                  </span>
+                  {recs.length ? (
+                    <Badge
+                      variant={recs.every((rec) => rec.auto_apply) ? 'info' : 'warning'}
                     >
-                      {rule.rule_id}
-                    </span>
-                    <RuleStateBadge state={state} />
-                  </span>
-                  {/* Tabular figures on the number only: on prose Inter's tabular hyphen
-                      opens a gap ("analyst - confirmed", [uib] TU2). */}
-                  <span className="mt-1 block text-xs text-muted-foreground">
-                    <span className="tabular-nums">{fmtNumber(rule.total)}</span> analyst-confirmed cases
-                    {lastTunedByRule.get(rule.rule_id)
-                      ? ` · tuned ${humanizeAge(lastTunedByRule.get(rule.rule_id))}`
-                      : ''}
-                  </span>
+                      {recs.every((rec) => rec.auto_apply)
+                        ? 'Safety check eligible'
+                        : 'Approval required'}
+                    </Badge>
+                  ) : null}
+                  {/* Why a noisy rule gets NO correlation_n recommendation. */}
+                  {rowInert ? <Badge variant="secondary">Threshold change would not help</Badge> : null}
                 </span>
+                <span className="mt-1 block line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+                  {action.instruction}
+                </span>
+              </span>
 
-                <span className="min-w-0">
-                  <span className="mb-1 block text-xs font-medium text-muted-foreground xl:hidden">
-                    Policy evidence
-                  </span>
-                  <span className="flex items-baseline justify-between gap-3 text-xs">
-                    <span className="font-semibold tabular-nums text-foreground">
-                      {state === 'collecting'
-                        ? `${fmtNumber(rule.total)} / ${fmtNumber(minSamples)} confirmed`
-                        : `${fmtPercent(rule.fp_rate)} conservative`}
-                    </span>
-                    <span className="shrink-0 tabular-nums text-muted-foreground">
-                      target {fmtPercent(target)}
-                    </span>
-                  </span>
-                  <span className="mt-2 block">
-                    <PolicySignalBar value={rule.fp_rate} target={target} state={state} />
-                  </span>
-                  <span className="mt-1.5 block text-xs text-muted-foreground">
-                    <span className="tabular-nums">{fmtPercent(observed)}</span> observed false-positive ratio
-                  </span>
-                </span>
-
-                <span className="min-w-0">
-                  <span className="mb-1 block text-xs font-medium text-muted-foreground xl:hidden">
-                    Next step
-                  </span>
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-foreground">
-                      {actionLabel}
-                    </span>
-                    {recs.length ? (
-                      <Badge
-                        variant={recs.every((rec) => rec.auto_apply) ? 'info' : 'warning'}
-                      >
-                        {recs.every((rec) => rec.auto_apply)
-                          ? 'Safety check eligible'
-                          : 'Approval required'}
-                      </Badge>
-                    ) : null}
-                    {/* Why a noisy rule gets NO correlation_n recommendation. */}
-                    {rowInert ? <Badge variant="secondary">Threshold change would not help</Badge> : null}
-                  </span>
-                  <span className="mt-1 block line-clamp-2 text-xs leading-relaxed text-muted-foreground">
-                    {action.instruction}
-                  </span>
-                </span>
-
-                <span className="flex items-center justify-end self-center">
-                  <ChevronRight
-                    className={cn(
-                      'size-4 shrink-0 text-muted-foreground transition-transform',
-                      selected && 'rotate-90',
-                    )}
-                    aria-hidden
-                  />
-                </span>
-              </button>
+              <span className="flex items-center justify-end self-center">
+                <ChevronRight
+                  className={cn(
+                    'size-4 shrink-0 text-muted-foreground transition-transform',
+                    selected && 'rotate-90',
+                  )}
+                  aria-hidden
+                />
+              </span>
             </div>
           );
         })}

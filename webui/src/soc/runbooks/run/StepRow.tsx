@@ -48,6 +48,7 @@ import {
   keepNoteFocus,
   noteKey,
 } from './StepParts';
+import { useKeepFocus } from './useKeepFocus';
 import { useStepEditor } from './useStepEditor';
 
 /** The note a step shows after a refused or stale write. */
@@ -289,6 +290,13 @@ export function StepRow({ item, expanded, onToggle, shownAbove = false, onShowAb
   const detailId = `rb-step-${ctx.run.run_id}-${step.id}`;
   const rowRef = React.useRef<HTMLButtonElement | null>(null);
   const markRef = React.useRef<HTMLButtonElement | null>(null);
+  // A draft landing takes Draft note, the note field and the status mark's quick press off
+  // the row: focus they held goes to Edit note, in Draft note's place, else to the row.
+  const keepFocus = useKeepFocus(Boolean(state.ai_draft && !state.ai_draft.confirmed), () => {
+    const row = rowRef.current;
+    const target = row?.closest('li')?.querySelector<HTMLElement>('[data-edit-draft]') ?? row;
+    target?.focus();
+  });
 
   if (shownAbove) {
     return (
@@ -331,7 +339,7 @@ export function StepRow({ item, expanded, onToggle, shownAbove = false, onShowAb
   };
 
   return (
-    <li data-step={step.id} data-step-status={display} className="relative border-b border-border/70 last:border-b-0">
+    <li {...keepFocus} data-step={step.id} data-step-status={display} className="relative border-b border-border/70 last:border-b-0">
       <div className="flex items-start gap-3 px-3 py-3 @[40rem]/run:px-4">
         {quickDone || quickReopen ? (
           <button

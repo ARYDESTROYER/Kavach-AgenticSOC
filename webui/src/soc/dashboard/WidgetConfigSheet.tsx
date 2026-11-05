@@ -1,11 +1,11 @@
 /**
- * `WidgetConfigSheet` — the per-widget configuration side sheet (Round 5 / G7, CD4
+ * `WidgetConfigSheet`: the per-widget configuration side sheet (Round 5 / G7, CD4
  * step 4). Selecting/adding a widget opens this Radix `Sheet`; its fields come from
  * the registry's declarative `configFields` (MVP: a plain-text title override + typed
  * `select`s) and map 1:1 onto the widget's `options` bag.
  *
  * The MVP always exposes at least a title override so an operator can rename a widget.
- * The title (and any free-text option) is UNTRUSTED operator input — it is written as a
+ * The title (and any free-text option) is UNTRUSTED operator input: it is written as a
  * PLAIN string into `options` (#9) and only ever rendered as text/SVG downstream; the
  * server re-validates the option bag + title on PUT (defense-in-depth). A layout is
  * advisory (#3): nothing here touches `decide()`.
@@ -53,9 +53,15 @@ export interface WidgetConfigSheetProps {
   onOpenChange: (open: boolean) => void;
   /** Commit the edited options bag back onto the widget. */
   onApply: (widget: DashboardWidget, options: Record<string, unknown>) => void;
+  /**
+   * As the sheet closes, before the focus returns to its opener: `preventDefault()` and
+   * focus another control (the builder hands it to the widget's options button, since the
+   * menu item that opened the sheet is gone).
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
-export function WidgetConfigSheet({ widget, onOpenChange, onApply }: WidgetConfigSheetProps) {
+export function WidgetConfigSheet({ widget, onOpenChange, onApply, onCloseAutoFocus }: WidgetConfigSheetProps) {
   const def = widget ? getWidgetDef(widget.type ?? '') : undefined;
 
   // Local draft of the options bag, re-seeded whenever the target widget changes.
@@ -83,7 +89,13 @@ export function WidgetConfigSheet({ widget, onOpenChange, onApply }: WidgetConfi
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" size="default" className="flex flex-col" aria-label="Configure widget">
+      <SheetContent
+        side="right"
+        size="default"
+        className="flex flex-col"
+        aria-label="Configure widget"
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             <Settings2 className="h-4 w-4 text-primary" aria-hidden />

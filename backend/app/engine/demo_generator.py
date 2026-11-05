@@ -41,7 +41,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, NamedTuple
 
 from ..build_identity import current_record_provenance
-from ..config import Preferences
+from ..config import AutoClosePolicy, Preferences
 from ..constants import CaseStatus, DecisionBy, Disposition, EntityType, SourceSurface, Verdict
 from ..models import (
     Case,
@@ -54,6 +54,7 @@ from ..models import (
     StatusHistoryEntry,
 )
 from ..ocsf import OCSFEvent, ecs_to_ocsf
+from .case_manager import Decision, decide
 
 DEMO_SOURCE_IDS: tuple[str, ...] = (
     "demo-splunk", "demo-qradar", "demo-wazuh", "demo-syslog", "demo-entra-id",
@@ -781,8 +782,145 @@ _HIST_TEMPLATES: tuple[dict[str, Any], ...] = (
      "status": CaseStatus.CLOSED, "risk": 12.0, "mitre": [], "tags": ["duplicate"]},
 )
 
-_ANALYSTS = ("pnair", "sgupta", "dsingh", "auto-triage")
+#: The Demo SOC team: every person the seeded history names as working a case (its
+#: assignee, the author of its comments, the analyst who acknowledged and closed it,
+#: and whoever worked its runbook run). None of them is on the Demo organisation's
+#: staff list (``_EMPLOYEE_SEED``), so a seeded case is never worked by a person it can
+#: be about (a "Does the user confirm the sign-in?" step marked done by the user it
+#: asks about, or a case assigned to its own subject).
+DEMO_SOC_ANALYSTS: tuple[str, ...] = ("asha.iyer", "farhan.qureshi", "meera.pillai")
+#: The names a seeded case's assignee and comment author are drawn from: the Demo SOC
+#: team and the triage automation. Four names, as before the team was introduced, so
+#: the seed's random stream draws the same index and no other seeded fact moves.
+_ANALYSTS = (*DEMO_SOC_ANALYSTS, "auto-triage")
 _BAD_IP_PREFIXES = ("203.0.113", "198.51.100", "192.0.2")
+
+#: The auto-close policy the seeded history was decided under: the shipped default.
+#: Every seeded case carries the decision record ``case_manager.apply()`` writes, and
+#: that record is what ``decide()`` returns for the case's verdict, confidence and risk
+#: under this policy, so the record, the case and the Human vs AI split agree.
+SEED_AUTO_CLOSE_POLICY = AutoClosePolicy()
+#: An analyst-closed seeded case is resolved this many minutes after it was opened
+#: (drawn per case, never later than the moment the seed runs).
+_SEED_RESOLUTION_MINUTES = (30, 240)
+#: ... and was acknowledged by its analyst this many minutes after it was opened (never
+#: after it was closed), inside the tightest response target of the default SLA policy
+#: (15 minutes for P1), as a person answering the queue would.
+_SEED_ACK_MINUTES = (2, 12)
+
+
+def _account_name(entity_type: Any, value: Any) -> str:
+    """The account a user entity names, as an analyst name compares with it: the part
+    before ``@`` of a user principal name, the part after ``\\`` of a down-level logon
+    name, lower case; ``""`` for an address or a host."""
+    if getattr(entity_type, "value", entity_type) != EntityType.USER.value:
+        return ""
+    text = str(value or "").strip().lower()
+    return text.rsplit("\\", 1)[-1].split("@", 1)[0]
+
+
+def _not_the_subject(analyst: str, subject: str) -> str:
+    """``analyst``, or (when it is the account the case is about) the next name of the
+    Demo SOC team, so a case is never worked by its own subject. No random draw."""
+    if not subject or analyst.lower() != subject:
+        return analyst
+    team = DEMO_SOC_ANALYSTS
+    start = team.index(analyst) if analyst in team else -1
+    for offset in range(1, len(team) + 1):
+        candidate = team[(start + offset) % len(team)]
+        if candidate.lower() != subject:
+            return candidate
+    return analyst
+
+
+def _seed_confidence(raw: float, *, verdict: Verdict, agent_close: bool) -> float:
+    """A seeded case's verdict confidence from one uniform draw ``raw`` (one draw for
+    every case, so the seed's random stream does not depend on the outcome). An
+    automatic close cleared the false positive bar of :data:`SEED_AUTO_CLOSE_POLICY`;
+    a false positive left for a person fell short of it; any other verdict keeps the
+    0.50 to 0.99 spread."""
+    bar = SEED_AUTO_CLOSE_POLICY.false_positive.min_confidence
+    if agent_close:
+        return round(bar + raw * (0.99 - bar), 2)
+    if verdict == Verdict.FALSE_POSITIVE:
+        return round(0.5 + raw * max(0.0, bar - 0.51), 2)
+    return round(0.5 + raw * 0.49, 2)
+
+
+def seeded_decision(case: Case) -> Decision:
+    """The deterministic decision a seeded case was given when it was opened: what
+    ``case_manager.decide()`` returns for its verdict, confidence and risk under
+    :data:`SEED_AUTO_CLOSE_POLICY` and the default escalation settings. Pure; it
+    reads the case and never changes it."""
+    defaults = Preferences.model_fields
+    return decide(
+        case.verdict, case.confidence, case.risk_score, SEED_AUTO_CLOSE_POLICY,
+        escalation_confidence=defaults["escalation_confidence"].default,
+        critical_severity=defaults["critical_severity"].default,
+    )
+
+
+def _with_seeded_decision(case: Case, *, analyst: str = "", now_ms: int | None = None) -> Case:
+    """``case`` as the pipeline leaves it once decided, then (for a case an analyst
+    closed) acknowledged, worked and resolved by a person on the Demo SOC team.
+
+    The ``{"event": "decision"}`` entry ``case_manager.apply()`` appends to the
+    history is written at the case's creation, from :func:`seeded_decision`: the
+    recorded-decision figures (the Executive summary's Closed by the AI agent) read
+    it. A case an analyst resolved or closed is first routed to a person, as
+    ``apply()`` routes it (escalated when the decision escalates), acknowledged by its
+    analyst a deterministic 2 to 12 minutes later (``acknowledged_at`` and a move to
+    investigating, as the Acknowledge action records), and closed by the same analyst
+    30 to 240 minutes after it was opened (never after ``now_ms``, never before the
+    acknowledgement), so its response and resolution times, and the runbook run worked
+    on it, take real time. The analyst is ``analyst`` when that names someone on the
+    Demo SOC team, otherwise one of the team drawn per case (never the account the case
+    is about); the history credits them by name, as live status moves do."""
+    decision = seeded_decision(case)
+    opened = str(case.created_at)
+    case.history.append({
+        "ts": opened,
+        "event": "decision",
+        "status": decision.status.value,
+        "decision_by": decision.decision_by.value,
+        "escalate": decision.escalate,
+        "rationale": decision.rationale,
+    })
+    status = getattr(case.status, "value", case.status)
+    if case.decision_by != DecisionBy.ANALYST or status not in (CaseStatus.RESOLVED.value, CaseStatus.CLOSED.value):
+        return case
+    escalated = decision.escalate and decision.status != CaseStatus.CLOSED
+    routed = CaseStatus.ESCALATED if escalated else decision.status
+    opened_ms = int(_demo_moment(opened, 0).timestamp() * 1000)
+    # One Random per case id (never the seed's main stream): the close time first, as
+    # it was drawn before the acknowledgement existed, then the acknowledgement, then
+    # (only when the case names nobody on the team) the analyst.
+    rng = random.Random(f"demo-resolution:{case.case_id}")
+    low, high = _SEED_RESOLUTION_MINUTES
+    closed_ms = opened_ms + rng.randint(low, high) * 60_000
+    ack_low, ack_high = _SEED_ACK_MINUTES
+    ack_ms = opened_ms + rng.randint(ack_low, ack_high) * 60_000
+    if now_ms is not None:
+        closed_ms = max(opened_ms, min(closed_ms, now_ms))
+    ack_ms = max(opened_ms, min(ack_ms, closed_ms))
+    subject = _account_name(case.entity.type, case.entity.value) if case.entity is not None else ""
+    team = [a for a in DEMO_SOC_ANALYSTS if a.lower() != subject] or list(DEMO_SOC_ANALYSTS)
+    person = analyst if analyst in team else team[rng.randrange(len(team))]
+    acknowledged, closed = _iso(ack_ms), _iso(closed_ms)
+    terminal_reason = case.status_history[-1].reason if case.status_history else ""
+    case.status_history = [
+        StatusHistoryEntry(from_status="new", to_status=routed.value, by=decision.decision_by.value,
+                           at=opened, reason=decision.rationale),
+        StatusHistoryEntry(from_status=routed.value, to_status=CaseStatus.INVESTIGATING.value, by=person,
+                           at=acknowledged, reason=""),
+        StatusHistoryEntry(from_status=CaseStatus.INVESTIGATING.value, to_status=status, by=person,
+                           at=closed, reason=terminal_reason),
+    ]
+    case.acknowledged_at = datetime.fromtimestamp(ack_ms / 1000, tz=timezone.utc)
+    case.updated_at = closed
+    if escalated:
+        case.escalation_level = max(case.escalation_level, 1)
+    return case
 
 
 def _demo_risk_breakdown(total: float) -> RiskBreakdown:
@@ -853,13 +991,18 @@ def seeded_case_detection(tmpl: dict[str, Any], idx: int, *, ordinal: int) -> tu
 def _hist_case(
     rng: random.Random, org: Org, tmpl: dict[str, Any], *, cid: str, sig_suffix: str,
     created_ms: int, first_seen_ms: int, idx: int, ordinal: int,
-    status: CaseStatus | None = None,
+    status: CaseStatus | None = None, now_ms: int | None = None,
 ) -> Case:
     """Build ONE finished/near-finished demo Case from a template (shared by the
     historical spread and the recent pre-seed). ``status`` overrides the template's.
     The case's rule is the one its Demo source raises (:func:`seeded_case_detection`;
     ``ordinal`` is the how-many-th case of this template), and a person is named as
-    that source's records name them (``demo_sources.source_user_name``)."""
+    that source's records name them (``demo_sources.source_user_name``). The case
+    carries the decision record the pipeline writes (:func:`_with_seeded_decision`);
+    its analyst (assignee and comment author) is on the Demo SOC team or is the triage
+    automation, never the account the case is about, and an analyst-closed case is
+    acknowledged and then resolved by that analyst after it was opened, never after
+    ``now_ms``."""
     from .demo_sources import source_user_name
 
     source_key, source_id, rule = seeded_case_detection(tmpl, idx, ordinal=ordinal)
@@ -880,7 +1023,9 @@ def _hist_case(
         else DecisionBy.ANALYST if st in (CaseStatus.RESOLVED, CaseStatus.CLOSED)
         else DecisionBy.SYSTEM
     )
-    analyst = rng.choice(_ANALYSTS)
+    # The case's analyst (its assignee and the author of its comment) is on the Demo
+    # SOC team or is the triage automation, never the account the case is about.
+    analyst = _not_the_subject(rng.choice(_ANALYSTS), _account_name(et, entity_val))
     comments: list[CaseComment] = []
     if idx % 3 == 0:
         comments.append(CaseComment(
@@ -908,7 +1053,7 @@ def _hist_case(
         from_status="new", to_status=st.value, by=decision_by.value,
         at=created, reason=f"demo: {tmpl['rname']}, {_VERDICT_TEXT[verdict]}",
     )]
-    return Case(
+    case = Case(
         case_id=cid,
         cluster_signature=sig,
         **current_record_provenance(),
@@ -928,7 +1073,9 @@ def _hist_case(
         risk_score=risk,
         risk_breakdown=_demo_risk_breakdown(risk),
         verdict=verdict,
-        confidence=round(0.5 + rng.random() * 0.49, 2),
+        # One draw for every case (the seed's stream never depends on the outcome); an
+        # automatic close cleared the policy's bar, as decide() requires.
+        confidence=_seed_confidence(rng.random(), verdict=verdict, agent_close=decision_by == DecisionBy.AGENT),
         evidence=[EvidenceItem(summary=f"{tmpl['rname']} on {entity_val}.", event_ids=[])],
         mitre=list(tmpl["mitre"]),
         recommended_action=("Escalate." if st == CaseStatus.ESCALATED
@@ -953,6 +1100,7 @@ def _hist_case(
         retrieval_history_status="available",
         retrieval_observation_status="measured",
     )
+    return _with_seeded_decision(case, analyst=analyst, now_ms=now_ms)
 
 
 def generate_historical_cases(
@@ -963,7 +1111,10 @@ def generate_historical_cases(
     Every status / disposition / severity / source appears at least once, with a
     couple of NEEDS_HUMAN/ESCALATED/ON_HOLD cases LEFT OPEN for the HITL showcase,
     and a few carrying comments / notifications_sent / automation_actions /
-    knowledge_used so every feature surface has data. Deterministic for a given
+    knowledge_used so every feature surface has data. Every case carries the
+    decision record the pipeline writes, and a case an analyst closed was
+    acknowledged and resolved by a person on the Demo SOC team after it was opened
+    (:func:`_with_seeded_decision`). Deterministic for a given
     seed; every case is tagged ``demo`` + ``case_id='demo-...'`` and carries the
     ``run_id`` (in a tag) so disable can purge by run_id."""
     del run_id  # run identity is carried by _DemoCaseStore's run tag, not fixture facts
@@ -987,6 +1138,7 @@ def generate_historical_cases(
         cases.append(_hist_case(
             rng, org, tmpl, cid=cid, sig_suffix=str(i),
             created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i, ordinal=i // len(_HIST_TEMPLATES),
+            now_ms=now_millis,
         ))
     return cases
 
@@ -1042,7 +1194,7 @@ def generate_recent_preseed(
         cases.append(_hist_case(
             rng, org, tmpl, cid=cid, sig_suffix=f"recent-{i}",
             created_ms=created_ms, first_seen_ms=first_seen_ms, idx=i,
-            ordinal=i // len(_PRESEED_TEMPLATES), status=status,
+            ordinal=i // len(_PRESEED_TEMPLATES), status=status, now_ms=now_millis,
         ))
     hits = generate_recent_events(
         rng, org, from_millis=now_millis - window_ms, to_millis=now_millis,
@@ -1091,6 +1243,10 @@ def generate_capability_seed_cases(
       default ``min_samples`` (25) with a Wilson-LB FP-rate well over target, so exactly
       ONE bounded correlation-n observation is recorded.
 
+    Every case carries the decision record the pipeline writes (a tuner case's
+    confidence clears the policy's bar, as an automatic close requires;
+    :func:`_with_seeded_decision`).
+
     Every case is demo-tagged with a ``demo-…`` case_id (write-guard clean) and dated
     ~now (inside the campaign's daily window AND the tuner's trailing window). The id
     stem is derived from ``seed`` so resets and separate Python processes reproduce
@@ -1108,7 +1264,7 @@ def generate_capability_seed_cases(
     for i in range(2):
         source_key, source_id, hitl_rule = seeded_case_detection(
             {"signal": "story", "story": "impossible_travel"}, i, ordinal=i)
-        hitl_cases.append(Case(
+        hitl_cases.append(_with_seeded_decision(Case(
             case_id=f"demo-hitl-{tag8}-{i:04d}",
             cluster_signature=f"demo-cap-hitl-{i}",
             **current_record_provenance(),
@@ -1140,14 +1296,15 @@ def generate_capability_seed_cases(
             summary=f"Impossible-travel sign-in ({_VERDICT_TEXT[Verdict.NEEDS_HUMAN]}).",
             retrieval_history_status="available",
             retrieval_observation_status="not_measured",
-        ))
+        ), now_ms=now_millis))
 
     # --- Tuner noise: N same-rule CLOSED false-positives, DISTINCT benign entities.
     tuner_iso = _iso(now_millis - 60_000)
     tuner_cases: list[Case] = []
     for i in range(max(0, tuner_fp_count)):
-        confidence = round(0.6 + rng.random() * 0.3, 2)
-        tuner_cases.append(Case(
+        # Each closed automatically, so each cleared the policy's bar (decide()).
+        confidence = _seed_confidence(rng.random(), verdict=Verdict.FALSE_POSITIVE, agent_close=True)
+        tuner_cases.append(_with_seeded_decision(Case(
             case_id=f"demo-tune-{tag8}-{i:04d}",
             cluster_signature=f"demo-cap-tune-{i}",
             **current_record_provenance(),
@@ -1192,20 +1349,25 @@ def generate_capability_seed_cases(
             summary=f"Benign scanner noise ({_VERDICT_TEXT[Verdict.FALSE_POSITIVE]}).",
             retrieval_history_status="available",
             retrieval_observation_status="not_measured",
-        ))
+        ), now_ms=now_millis))
     return hitl_cases, tuner_cases
 
 
 # --------------------------------------------------------------------------- #
-# Runbook runs for the seeded cases (Round 14 SPEC §4.10.18, D45)
+# Runbook guidance and runs for the seeded cases (Round 14 SPEC §4.10.9, §4.10.18, D45)
 # --------------------------------------------------------------------------- #
 # The seeded cases are saved directly (they never pass through the pipeline that
-# attaches a runbook), so Demo Mode would open with an empty Runbook tab and empty
-# library metrics. This seed attaches the matching runbook to every seeded case a
-# person works (an open case that needs a person, and a case an analyst closed),
-# exactly as the matcher would (same catalog, same tier rule, the Demo overlay), and
-# works a deterministic part of each run: an analyst-closed case's run is complete,
-# with believable step times; an open case's run is part way through. Pure planning
+# gives the investigator a runbook and attaches one), so Demo Mode would open with
+# "No runbook" on every case, an empty Runbook tab and empty library metrics. The
+# guidance seed (:func:`seed_demo_runbook_guidance`) stamps the runbook the
+# investigator would have read on every investigated case. The run seed attaches the
+# matching runbook to every seeded case a person works (an open case that needs a
+# person, and a case an analyst closed), exactly as the matcher would (same catalog,
+# same tier rule, the Demo overlay), and has the Demo SOC team
+# (:data:`DEMO_SOC_ANALYSTS`) work a deterministic part of each run, by the case's own
+# analyst when the history names one: an analyst-closed case's run is complete, its
+# steps minutes apart between the acknowledgement and the close; an open case's run
+# is part way through. Pure planning
 # (:func:`plan_demo_runbook_runs`) plus one bounded writer; every write lands in the
 # Demo run store and vanishes with Demo Mode. Never a model call, and the plan never
 # reads a log: once Demo Mode is active, the seeded runs' lookups are run by the live
@@ -1259,6 +1421,84 @@ def demo_runbook_run_id(seed: int, case_id: str, runbook_id: str) -> str:
     import uuid
 
     return "run-" + uuid.uuid5(uuid.NAMESPACE_URL, f"{_DEMO_RUN_NAMESPACE}:{seed}:{case_id}:{runbook_id}").hex
+
+
+def demo_investigator_guidance(case: Case, catalog: Any, *, prefs: Preferences) -> Any | None:
+    """The runbook whose guidance the investigator received for a seeded case, or
+    ``None`` (pure and deterministic).
+
+    The seeded cases never pass through the pipeline, which stamps ``Case.runbook_id``
+    from the runbook the investigator read (§4.10.9). This is that selection, as the
+    live pipeline makes it: the operator's switches (runbooks on and investigator
+    guidance on), the same match over the Demo pipeline's matchable catalog the
+    attachment uses (D43; Generic incident while the fallback is on), and the
+    character budget a runbook's rendering must fit to be read. Every investigated
+    case gets guidance, an automatic close too (only a person's case gets a run); a
+    case closed by an analyst rule never reached the investigator and gets none."""
+    from .precedent import is_policy_closed
+    from .runbook_match import match
+    from .runbook_model import MAX_RUNBOOK_PROMPT_CHARS, render_runbook_prompt
+    from .runbook_runs import case_facts
+
+    cfg = getattr(prefs, "runbooks", None)
+    if cfg is None or not (cfg.enabled and cfg.investigator_guidance):
+        return None
+    if case.verdict is None or is_policy_closed(case):
+        return None
+    matchable = tuple(getattr(catalog, "matchable", catalog) or ())
+    winner = match(case_facts(case, prefs), matchable, fallback=bool(cfg.fallback)).winner
+    if winner is None:
+        return None
+    if len(render_runbook_prompt(winner.definition, winner.version)) > MAX_RUNBOOK_PROMPT_CHARS:
+        return None  # over the budget: the investigator is not given it
+    return winner
+
+
+def seed_demo_runbook_guidance(cases: Iterable[Case], catalog: Any, *, prefs: Preferences) -> int:
+    """Stamp ``runbook_id`` and ``runbook_version`` on each seeded case the investigator
+    was given a runbook for (:func:`demo_investigator_guidance`), before the cases are
+    saved, so the Metrics "Runbook usage" panel counts the Demo history as it counts
+    live cases and agrees with the seeded runs, which come from the same match.
+    Returns the cases stamped. Touches only the fields it sets."""
+    matchable = tuple(getattr(catalog, "matchable", catalog) or ())
+    stamped = 0
+    for case in cases:
+        winner = demo_investigator_guidance(case, matchable, prefs=prefs)
+        if winner is None:
+            continue
+        case.runbook_id, case.runbook_version = winner.id, winner.version
+        stamped += 1
+    return stamped
+
+
+def demo_case_subject(case: Any) -> str:
+    """The account a case is about, as an analyst name compares with it: the user
+    entity's account name (the part before ``@`` of a user principal name, the part
+    after ``\\`` of a down-level logon name), lower case, or ``""`` for a case about
+    an address or a host."""
+    entity = getattr(case, "entity", None)
+    if entity is None:
+        return ""
+    return _account_name(entity.type, entity.value)
+
+
+def _demo_run_people(case: Any) -> tuple[str, ...]:
+    """The Demo SOC analysts who may work a seeded run on ``case`` (never its
+    subject)."""
+    subject = demo_case_subject(case)
+    return tuple(a for a in DEMO_SOC_ANALYSTS if a.lower() != subject) or DEMO_SOC_ANALYSTS
+
+
+def _demo_case_analyst(case: Any, people: tuple[str, ...]) -> str:
+    """The person on the Demo SOC team the seeded history already names for ``case``:
+    its assignee, else the analyst its status history credits last (the one who
+    acknowledged and closed it), else ``""``."""
+    if case.assignee in people:
+        return str(case.assignee)
+    for entry in reversed(case.status_history or []):
+        if entry.by in people:
+            return str(entry.by)
+    return ""
 
 
 def plan_demo_runbook_runs(
@@ -1317,10 +1557,20 @@ def plan_demo_runbook_runs(
         # case) or now (an open one), never in the future.
         end = min(_demo_moment(case.updated_at, now_millis), now) if closed_by_person else now
         attached = min(created + timedelta(minutes=rng.randint(1, 4)), end)
-        # A runbook is worked by a person: the case's analyst, or one of the Demo
-        # analysts when the case belongs to the triage automation or to nobody.
-        people = tuple(a for a in _ANALYSTS if a != "auto-triage")
-        person = case.assignee if case.assignee in people else people[rng.randrange(len(people))]
+        # A runbook is worked by a person on the Demo SOC team: the case's analyst (its
+        # assignee, or the analyst who acknowledged and closed it) when there is one,
+        # otherwise one of the team, never a member of the Demo organisation's staff
+        # and never the account the case is about.
+        people = _demo_run_people(case)
+        person = _demo_case_analyst(case, people) or people[rng.randrange(len(people))]
+        # A person works the steps once they have taken the case: after its
+        # acknowledgement when it has one (the runbook itself attaches at routing).
+        taken = case.acknowledged_at
+        if isinstance(taken, datetime):
+            taken = taken if taken.tzinfo else taken.replace(tzinfo=timezone.utc)
+            work_from = min(max(attached, taken), end)
+        else:
+            work_from = attached
         steps = ordered_steps(entry.definition)
         states: dict[str, StepState] = {step.id: StepState() for step in entry.definition.steps}
         # An analyst-closed case: every step worked; an open one: the first few.
@@ -1328,10 +1578,10 @@ def plan_demo_runbook_runs(
         # Each worked step waits then takes a few minutes; the whole is scaled down to
         # fit the time the case had, so a case opened minutes ago still shows progress.
         gaps = [(rng.randint(1, 6), rng.randint(2, 25)) for _ in steps[:worked]]
-        span = max((end - attached).total_seconds(), 0.0)
+        span = max((end - work_from).total_seconds(), 0.0)
         needed = float(sum(wait + took for wait, took in gaps) * 60) or 1.0
         scale = min(1.0, span / needed)
-        clock = attached
+        clock = work_from
         for step, (wait, took) in zip(steps[:worked], gaps):
             st = states[step.id]
             if st.status in _FINISHED_STEP:

@@ -70,11 +70,16 @@ function clearClose(): void {
   closeTimer = null;
 }
 
-/** Open `id`'s flyout now, aligned to its trigger. */
+/**
+ * Open `id`'s flyout now, aligned to its trigger. Flyouts belong to the rail: an opener
+ * that runs while the drawer is open (a row's rail handlers follow a toggle a frame or two
+ * later) does nothing.
+ */
 export function openFlyout(id: string): void {
   clearOpen();
   clearClose();
   safe = null;
+  if (!navStore.getState().collapsed) return;
   navStore.setFlyout(id, triggers.get(id)?.getBoundingClientRect().top ?? 0);
 }
 

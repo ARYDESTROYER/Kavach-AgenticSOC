@@ -521,10 +521,29 @@ async def test_mttd_and_mttr_carry_available_and_the_window_flags(fixture_state:
 async def test_every_binding_reads_real_fields_on_the_demo_dataset(app_state, bindings) -> None:
     await app_state.enable_demo(mode="seeded", seed=1337, history_days=30)
     try:
+        before = now_utc() - timedelta(hours=BOARD_HOURS)
         values = await _check_every_binding(app_state, bindings)
+        async with AsyncClient(transport=ASGITransport(app=_api(app_state)), base_url="http://test") as client:
+            recorded = await _fetch(client, "/api/metrics/auto-close-health/recorded",
+                                    {"window_hours": BOARD_HOURS, "anchor": "first"})
+        after = now_utc() - timedelta(hours=BOARD_HOURS)
         assert values["operations.open_now"] > 0 and values["executive.cases"] > 0
         sources = values["detection.sources_reporting"]["sources"]
         assert sources and all(row["enabled"] for row in sources)   # the Demo simulators
+        # Closing acceptance integ-02: the Executive summary's "Closed by the AI agent" is
+        # measured on the Demo history (every seeded case carries the first decision the
+        # pipeline records) and equals the agent closes Human vs AI counts in the window.
+        cases, _total = await app_state.cases.list(limit=2000, offset=0)
+
+        def agent_closed(since: datetime) -> int:
+            return sum(1 for c in cases if c.decision_by == DecisionBy.AGENT and c.status.value == "closed"
+                       and not is_policy_closed(c) and parse_es_timestamp(c.created_at) >= since)
+
+        assert recorded["current"]["available"] is True
+        assert recorded["current"]["no_decision_record"] == 0
+        closed = values["executive.closed_by_agent"]
+        assert closed == recorded["current"]["auto_closed"] > 0
+        assert agent_closed(after) <= closed <= agent_closed(before)
     finally:
         await app_state.disable_demo()
 

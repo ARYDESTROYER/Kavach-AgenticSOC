@@ -40,10 +40,11 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
+from ..audit.changes import redact_text
 from ..config import AutomationRule, Preferences
 from ..constants import ActionType, Verdict
 from ..models import Case, Proposal
-from ..utils import iso_now, now_utc
+from ..utils import iso_now, now_utc, truncate
 from .case_tags import CASE_TAG_MAX_CHARS, CASE_TAG_MAX_COUNT, automation_tags, tag_too_long
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -215,7 +216,10 @@ class ThresholdAutomation:
     ) -> None:
         self._proposals = proposals
         self._audit = audit
-        # notify(case, channel_or_trigger) — fire-and-forget; may be sync or async.
+        # notify(case, channel_or_trigger), sync or async: it never affects the case.
+        # It returns the per-channel results (``NotificationService.dispatch``'s
+        # ``[{"ok": bool, ...}]``) that the notify action's audit outcome is read from;
+        # a notifier that returns none records ``unknown`` (``_maybe_notify``).
         self._notify = notify
         # Round 14: a ``run_playbook`` rule attaches a runbook (see the module docs).
         # Without ``attach_runbook`` (a stack that wires none) the rule records that
@@ -250,6 +254,7 @@ class ThresholdAutomation:
                     "automation action %s (%s) failed for %s: %s",
                     action.rule_id, action.action, case.case_id, exc,
                 )
+                await self._audit_failed_action(case, action, exc)
 
         # DEFENCE IN DEPTH (#3): automation may NEVER move the lifecycle status or
         # the disposition. Assert it did not (a bug here is a guardrail breach).
@@ -275,6 +280,9 @@ class ThresholdAutomation:
         proposal_id: str | None = None
         mutated = False
 
+        # How the action ended, for its audit row (Round 14 SPEC §4.5.3).
+        outcome = "success"
+
         if action.action == "tag":
             # The Rule editor saves ``tags`` (a list); an API-written rule may carry one
             # ``tag``/``value``. Each tag is added whole or not at all: one over the
@@ -295,6 +303,8 @@ class ThresholdAutomation:
             detail = f"tag={', '.join(wanted) or '(empty)'}"
             if not_added:
                 detail += f". Not added: {'; '.join(not_added)}."
+                # Some of the tags are on the case (or were already): partial; none: failure.
+                outcome = "failure" if len(not_added) >= len(wanted) else "partial"
 
         elif action.action == "recommend":
             text = str(payload.get("text") or payload.get("recommendation") or "").strip()[:1000]
@@ -310,8 +320,12 @@ class ThresholdAutomation:
 
         elif action.action == "notify":
             trigger = str(payload.get("trigger") or payload.get("channel") or "automation")
-            await self._maybe_notify(case, trigger)
+            outcome, note = await self._maybe_notify(case, trigger)
+            # ``notify=<trigger>`` keeps its spelling; like a tag left off, a
+            # notification that did not (all) go out says why.
             detail = f"notify={trigger}"
+            if note:
+                detail += f". {note}."
 
         elif action.action == "run_playbook":
             # "Attach a runbook" (Round 14 SPEC §4.10.16): resolved at fire time, never
@@ -321,7 +335,12 @@ class ThresholdAutomation:
             requested = _requested_runbook_id(payload)
             runbook_id = await self._resolve_runbook(payload) or requested or None
             attached = await self._maybe_attach_runbook(case, runbook_id, action.rule_id)
-            detail = f"attach_runbook={runbook_id or '(none)'} attached={attached}"
+            # ``attached=True|False`` keeps its spelling: the Console words this detail.
+            detail = f"attach_runbook={runbook_id or '(none)'} attached={bool(attached)}"
+            # A skip is the attacher's decision and has its own row
+            # (``run.attach_skipped``); only an attacher that raised is a failure.
+            if attached is None:
+                outcome = "failure"
 
         elif action.action == "request_approval":
             proposal = await self._create_proposal(case, action)
@@ -330,9 +349,11 @@ class ThresholdAutomation:
                 detail = f"proposal={proposal.id} kind={proposal.kind}"
             else:
                 detail = "proposal=none"
+                outcome = "failure"
 
         else:  # pragma: no cover — Literal-constrained, defensive
             detail = f"unknown_action={action.action}"
+            outcome = "failure"
 
         # Append-only, non-binding audit record on the case.
         record: dict[str, Any] = {
@@ -349,12 +370,38 @@ class ThresholdAutomation:
         try:
             await self._audit.record(
                 action_type=ActionType.AUTOMATION, surface="automation", actor="automation",
+                actor_type="system", outcome=outcome,
                 case_id=case.case_id,
                 result_summary=f"rule={action.rule_id} action={action.action} {detail}",
             )
         except Exception as exc:  # noqa: BLE001 — audit is best-effort
             logger.debug("automation audit failed for %s: %s", case.case_id, exc)
         return mutated
+
+    async def _audit_failed_action(self, case: Case, action: AutomationAction, exc: Exception) -> None:
+        """The ``failure`` row of an action that raised before its own row was written,
+        so the audit log's Failed filter finds it. Best-effort; never raises.
+
+        Its summary is a plain sentence, deliberately not the ``rule=<id>
+        action=<action> <detail>`` shape of a completed action: the Console words that
+        shape as the action having happened ("Automation requested approval"), and
+        this action did not."""
+        verb = _ACTION_VERBS.get(action.action, f"run the action {action.action}")
+        try:
+            # The exception text can carry a store or channel address: the export's
+            # secret patterns, a basic credential and any ``user:password@`` are
+            # removed before it reaches the durable, exportable record.
+            reason, _removed = redact_text(str(exc).strip() or type(exc).__name__)
+            await self._audit.record(
+                action_type=ActionType.AUTOMATION, surface="automation", actor="automation",
+                actor_type="system", outcome="failure",
+                case_id=case.case_id,
+                result_summary=truncate(
+                    f"Automation rule {action.rule_id} could not {verb}: {reason}", 1000
+                ),
+            )
+        except Exception as audit_exc:  # noqa: BLE001 (audit is best-effort)
+            logger.debug("automation failure audit failed for %s: %s", case.case_id, audit_exc)
 
     async def _create_proposal(self, case: Case, action: AutomationAction) -> Proposal | None:
         """Materialise a PENDING HITL Proposal for a ``request_approval`` action — the
@@ -408,6 +455,7 @@ class ThresholdAutomation:
         try:
             await self._audit.record(
                 action_type=ActionType.PROPOSAL, surface="automation", actor="automation",
+                actor_type="system", outcome="success",
                 case_id=case.case_id,
                 result_summary=f"automation drafted {kind} proposal {prop.id} (rule={action.rule_id})",
             )
@@ -415,15 +463,60 @@ class ThresholdAutomation:
             logger.debug("automation proposal audit failed for %s: %s", case.case_id, exc)
         return prop
 
-    async def _maybe_notify(self, case: Case, trigger: str) -> None:
+    async def _maybe_notify(self, case: Case, trigger: str) -> tuple[str, str]:
+        """Hand ``case`` to the bound notifier. Returns the audit ``outcome`` of the
+        notify action and, when nothing or not everything went out, a note that says
+        so (plain text, ``""`` otherwise). Never raises into the case path.
+
+        * No notifier is wired: ``success`` with the note "Not sent: no notification
+          service is connected". The stack sends nothing by design (the Demo stack
+          wires none on purpose; the application always wires one), so nothing failed,
+          as with an attach action that has no runbook attacher.
+        * The notifier raised: ``failure``. The exception's type is recorded, never
+          its text, which can carry a channel's URL or address.
+        * The notifier returned per-channel results (the notification service's
+          ``[{"ok": bool, "detail": str, ...}]``): ``success`` when every channel took
+          the notification or none was due (an empty list: notifications switched off,
+          no channel for the trigger, a repeat inside the dedup window). Otherwise the
+          note counts the channels that failed and the ones the notification rate
+          limit held back (a dropped send, not a queued one): ``partial`` when some
+          channels took it; when none did, ``denied`` if only the rate limit held them
+          back (a configured limit refused the send, as the AI budget refusing a model
+          call is recorded), else ``failure``.
+        * Anything else (a notifier that reports no per-channel results): ``unknown``.
+          The case was handed over, but nothing says whether it went out, so the row
+          claims neither."""
         if self._notify is None:
-            return
+            return "success", "Not sent: no notification service is connected"
         try:
             result = self._notify(case, trigger)
             if hasattr(result, "__await__"):
-                await result
+                result = await result
         except Exception as exc:  # noqa: BLE001 — notifications never affect the case
             logger.debug("automation notify failed for %s: %s", case.case_id, exc)
+            return "failure", f"Not sent: the notification service failed ({type(exc).__name__})"
+        if not isinstance(result, list):
+            return "unknown", ""
+        results = [r for r in result if isinstance(r, Mapping)]
+        held = [r for r in results if r.get("ok") is not True]
+        if not held:
+            return "success", ""
+        limited = sum(1 for r in held if r.get("detail") == _RATE_LIMITED_DETAIL)
+        failed = len(held) - limited
+        channels = f"{len(results)} channel{'' if len(results) == 1 else 's'}"
+        parts: list[str] = []
+        if failed:
+            parts.append(f"{failed} of {channels} failed")
+        if limited:
+            # "1 of 2 channels failed and 1 was rate limited"; alone, the count names
+            # its channels: "2 of 3 channels were rate limited".
+            was = "was" if limited == 1 else "were"
+            of_channels = "" if failed else f" of {channels}"
+            parts.append(f"{limited}{of_channels} {was} rate limited")
+        reason = " and ".join(parts)
+        if len(held) < len(results):
+            return "partial", f"Partly sent: {reason}"
+        return ("failure" if failed else "denied"), f"Not sent: {reason}"
 
     async def _resolve_runbook(self, payload: Mapping[str, Any]) -> str | None:
         """The runbook a ``run_playbook`` rule names, resolved now (SPEC §4.10.16) by
@@ -447,18 +540,37 @@ class ThresholdAutomation:
             logger.debug("automation runbook resolution failed: %s", exc)
             return None
 
-    async def _maybe_attach_runbook(self, case: Case, runbook_id: str | None, rule_id: str) -> bool:
+    async def _maybe_attach_runbook(
+        self, case: Case, runbook_id: str | None, rule_id: str,
+    ) -> bool | None:
         """Attach ``runbook_id`` through the bound attacher; True only when a new run
-        was attached. The attacher records every skip (``run.attach_skipped``) and is
-        idempotent per case and runbook (#4). Never raises into the case path."""
+        was attached, False when nothing was attached (no attacher, or the attacher
+        skipped and recorded why: ``run.attach_skipped``), and ``None`` when the
+        attacher raised. It is idempotent per case and runbook (#4). Never raises into
+        the case path."""
         if self._attach_runbook is None:
             return False
         try:
             run = await self._attach_runbook(case, runbook_id, rule_id)
         except Exception as exc:  # noqa: BLE001 - an attachment never breaks the case path
             logger.debug("automation runbook attach failed for %s: %s", case.case_id, exc)
-            return False
+            return None
         return run is not None
+
+
+#: The detail the notification service gives a channel it skipped because the
+#: channel was over its hourly rate limit (``NotificationService.dispatch``,
+#: ``notifications/dispatch.py``); pinned by a test that drives the real service.
+_RATE_LIMITED_DETAIL = "rate limit exceeded"
+
+#: What each action does, for the sentence of an action that could not run.
+_ACTION_VERBS: Mapping[str, str] = {
+    "tag": "add its tags",
+    "recommend": "add its recommendation",
+    "notify": "send a notification",
+    "run_playbook": "attach a runbook",
+    "request_approval": "request approval",
+}
 
 
 def _payload_text(payload: Any, key: str) -> str:

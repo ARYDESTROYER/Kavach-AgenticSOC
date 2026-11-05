@@ -102,6 +102,7 @@ import { ChevronDown, Download, Search, X } from 'lucide-react';
 import type { Case, CasesResponse } from '@/lib/types';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { csvField } from '@/lib/csv';
 import { downloadText, EXPORT_MIME, exportFileName, UTF8_BOM } from '@/lib/download';
 import { DASH, fmtNumber, humanizeAge, humanizeToken } from '@/lib/format';
 import { Badge } from '@/ui/badge';
@@ -488,34 +489,21 @@ interface DrilldownStat {
 }
 
 /**
- * One CSV field: RFC-4180 quoted, embedded quotes doubled — and defused for the
- * SPREADSHEET, not merely for the grammar.
- *
- * Quoting alone protects the file's column structure; it does nothing about the program
- * that opens it. Excel and LibreOffice evaluate any cell whose first character is `=`, `+`,
- * `-` or `@` as a formula, quotes included. The fields written here are exactly the ones
- * this codebase classes as UNTRUSTED (#9) — case titles fall back to rule ids, which are
- * source-controlled — so a rule named `=HYPERLINK("http://…",…)` would render in the
- * analyst's spreadsheet as a live link instead of as the rule's name, turning an evidence
- * export into an attacker-authored cell. A leading apostrophe is the standard
- * neutralisation: spreadsheets treat the rest as literal text and do not display it.
- */
-function csvField(value: unknown): string {
-  const raw = String(value ?? '');
-  const defused = /^[=+\-@\t\r]/.test(raw) ? `'${raw}` : raw;
-  return `"${defused.replace(/"/g, '""')}"`;
-}
-
-/**
  * The listed rows as CSV.
  *
- * It exports exactly what the operator is looking at — the filtered, sorted rows the
- * table renders — and nothing more. It is NOT a population export: the panel reads bounded
+ * It exports exactly what the operator is looking at (the filtered, sorted rows the
+ * table renders) and nothing more. It is NOT a population export: the panel reads bounded
  * pages, so a caller must present this as the rows read, which is why the row count
  * travels in the filename and the footer keeps stating the bound.
  *
- * Every field is quoted, so a case title containing a comma, a quote or a newline cannot
- * shift the column layout of the row it sits in.
+ * Fields go through the shared spreadsheet encoder (`lib/csv` `csvField`, the one rule set
+ * of every spreadsheet the product writes, Round 14 SPEC §4.5.6). Every text field is
+ * RFC-4180 quoted, so a case title containing a comma, a quote or a newline cannot shift
+ * the column layout of the row it sits in. It is also defused for the SPREADSHEET, not
+ * merely for the grammar: these fields are ones this codebase classes as UNTRUSTED (#9)
+ * (case titles fall back to rule ids, which are source-controlled), so a text cell that
+ * opens like a formula gets a leading apostrophe and a rule named `=HYPERLINK(…)` lands as
+ * the rule's name, never as a live, attacker-authored link. The risk score stays a number.
  */
 export function drilldownCsv(rows: readonly Case[]): string {
   const header = [
@@ -1387,7 +1375,7 @@ export function KpiDrilldownPanel({
               <>
                 {' '}
                 <span className="text-foreground">
-                  Narrowed here to {activeRangeLabel} — the list below is a slice of that
+                  Narrowed here to {activeRangeLabel}. The list below is a slice of that
                   population, not the whole of it.
                 </span>
               </>
@@ -1458,7 +1446,7 @@ export function KpiDrilldownPanel({
         {metrics && metrics.length > 1 && onSelectMetric ? (
           <div
             role="group"
-            aria-label="Switch metric — values are the dashboard's own numerals"
+            aria-label="Switch metric. Values are the dashboard's own numerals"
             data-testid="kpi-drilldown-metrics"
             className="flex min-w-0 shrink-0 flex-wrap items-center gap-1 border-b border-border/60 px-5 py-2"
           >
@@ -1657,7 +1645,7 @@ export function KpiDrilldownPanel({
         data-testid="kpi-drilldown-scroll"
         tabIndex={0}
         role="group"
-        aria-label={`${spec.title} cases — scrollable evidence`}
+        aria-label={`${spec.title} cases, scrollable evidence`}
         className="min-h-0 min-w-0 flex-1 overflow-auto px-5 pb-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring max-md:flex-none"
       >
       {/* ONE row above the table (Round 12): the trend (60%) beside a column (40%) that
@@ -1796,7 +1784,7 @@ export function KpiDrilldownPanel({
           >
             <table className="w-full min-w-[44rem] border-collapse text-left">
               <caption className="sr-only">
-                {spec.title} — the cases read for the current filters
+                {spec.title}: the cases read for the current filters
               </caption>
               {/* Sticky against the ONE scroll port above. The opaque fill lives on the CELLS:
                   a background on `<thead>` is not reliably painted, and rows scrolling

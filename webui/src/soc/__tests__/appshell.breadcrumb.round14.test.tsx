@@ -12,7 +12,7 @@
  */
 import * as React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 
 vi.mock('@/lib/api', () => {
   const ok = (value: unknown) => vi.fn().mockResolvedValue(value);
@@ -181,7 +181,14 @@ describe('the shell navigation', () => {
         fireEvent.keyDown(window, { key: 'b', ctrlKey: true });
       });
       act(() => vi.advanceTimersByTime(1_000));
-      expect(screen.getByTestId('desktop-navigation-frame')).toHaveClass('w-60');
+      // The panel opens in the toggle's own commit and the page moves out from under it one
+      // animation frame later (SPEC §4.8.1). That frame runs on jsdom's own frame clock,
+      // which fake timers drive only when nothing else started it first, so the spacer is
+      // awaited on real timers.
+      expect(document.querySelector('aside[data-nav-state]')).toHaveAttribute('data-nav-state', 'expanded');
+      expect(document.querySelectorAll('[data-testid^="nav-flyout-"]')).toHaveLength(0);
+      vi.useRealTimers();
+      await waitFor(() => expect(screen.getByTestId('desktop-navigation-frame')).toHaveClass('w-60'));
       expect(document.querySelectorAll('[data-testid^="nav-flyout-"]')).toHaveLength(0);
     } finally {
       vi.useRealTimers();

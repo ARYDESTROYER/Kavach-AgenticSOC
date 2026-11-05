@@ -79,7 +79,7 @@ the case workspace opens after selection.
 
 ## Keyboard
 
-The queue is one tab stop. Press **?** in the queue for this list:
+In **Triage → Case Manager** the queue is one tab stop. Press **?** in the queue for this list:
 
 | Keys | Action |
 |---|---|
@@ -230,8 +230,9 @@ matched. Each is one metered call with a dry-run estimate on hover; a draft is l
 "AI draft · not part of the case until you confirm it", and the AI never marks a step
 done, approves anything, or attaches a runbook by itself.
 
-**Start runbook** (in **Take action**, or on the tab of a case with no runbook) lists
-the best match with why it matched, then other matches, the fallback, and every other
+To start a runbook on a case, open the case in **Triage → Case Manager** and choose
+**Start runbook** in **Take action**, or on the Runbook tab of a case with no runbook. It
+lists the best match with why it matched, then other matches, the fallback, and every other
 Published runbook, with a preview of the selected one's phases and an optional note. On
 a phone the dialog takes the full height and the selected runbook shows its phases under
 its own entry. A case with no runbook says "No runbook is attached to this case.", and

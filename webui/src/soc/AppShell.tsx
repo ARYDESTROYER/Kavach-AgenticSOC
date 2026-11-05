@@ -1475,8 +1475,10 @@ export const AppShell: React.FC<AppShellProps> = ({
 
       {/* ---- The docked navigation (64 px icon rail or 240 px labelled drawer) ----
           NavSidebar renders its own in-flow spacer (`desktop-navigation-frame`), which
-          changes width once, at the click; the fixed panel beside it morphs with
-          transform and opacity only, so the icons never move. Hover never widens it. */}
+          changes width once per toggle, in the frame next to the panel's change and
+          always under the opaque panel (collapsing moves the page first, expanding fills
+          the panel first); the fixed panel beside it morphs with transform and opacity
+          only, so the icons never move. Hover never widens it. */}
       {!isMobile ? (
         <NavSidebar
           page={page}

@@ -592,7 +592,10 @@ function RelatedSection({
         ))}
         {record.case_id && canOpenCase ? (
           <li>
-            <RouteLink href={pageHash('case_manager', { caseId: record.case_id })}>Open case trace</RouteLink>
+            {/* The trace is on the case's Investigation tab: the link opens it there. */}
+            <RouteLink href={pageHash('case_manager', { caseId: record.case_id, tab: 'investigation' })}>
+              Open case trace
+            </RouteLink>
           </li>
         ) : null}
       </ul>

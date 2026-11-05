@@ -256,6 +256,45 @@ def list_steps(text: str, limit: int = 10) -> list[str]:
     return split_procedure(text, limit)[1]
 
 
+_BULLET_RE = re.compile(r"^[-*]\s+(\S.*)$")
+# What ends an item's own prose inside it: a nested list, a table or a code fence.
+_NESTED_RE = re.compile(r"^(?:\d+\.\s|[-*]\s|\||```|~~~)")
+
+
+def list_points(text: str, limit: int = 3, sentences: int = 2) -> list[str]:
+    """The first ``limit`` items of the chunk's first top-level bullet list, one line
+    each: the marker removed, wrapped lines joined, cut to the item's first
+    ``sentences`` sentences. A nested list, table or code block inside an item is left
+    out. ``[]`` when the chunk has no bullet list. The items keep their Markdown, like
+    :func:`list_steps`."""
+    items: list[list[str]] = []
+    open_item = False       # the last item still takes wrapped lines
+    for line in (text or "").split("\n"):
+        bullet = _BULLET_RE.match(line)
+        if bullet:
+            if len(items) >= limit:
+                break
+            items.append([bullet.group(1).strip()])
+            open_item = True
+        elif not line.strip():
+            continue
+        elif items and line.startswith("  "):
+            stripped = line.strip()
+            if _NESTED_RE.match(stripped):
+                open_item = False
+            elif open_item:
+                items[-1].append(stripped)
+        elif items:
+            break           # prose after the list ends it
+    out: list[str] = []
+    for parts in items:
+        joined = " ".join(" ".join(parts).split())
+        cut = " ".join(_SENTENCE_RE.split(joined)[: max(1, sentences)]).strip()
+        if cut:
+            out.append(cut)
+    return out
+
+
 # Inline Markdown that a plain-text renderer would show literally. Single ``*``/``_``
 # are left alone: the corpus uses them inside index patterns (``all-logs-*``) and
 # identifiers (``poll_batch_size``), where removing them would change the meaning.

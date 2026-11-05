@@ -25379,7 +25379,7 @@
     "/api/playbooks/coverage": {
       "get": {
         "deprecated": true,
-        "description": "Deprecated alias: which runbook each stored case would match (the fallback does\nnot count as coverage), over at most 20,000 cases. Use ``GET /api/runbooks/metrics``\nfor runbook coverage.",
+        "description": "Deprecated alias: which runbook each stored case would match (the fallback does\nnot count as coverage), over the newest 20,000 cases at most. Needs ``cases:read``\nas well as ``runbooks:read``, answers ``409 runbook_scope_unsupported`` while\nrow-level data scope applies to the caller and ``503 case_store_unavailable`` when\ncases cannot be read. ``truncated`` is true when more cases exist beyond the ones\nread, or a later page could not be read: every figure is then a lower bound. Use\n``GET /api/runbooks/metrics`` for runbook coverage.",
         "operationId": "playbooks_coverage_api_playbooks_coverage_get",
         "responses": {
           "200": {

@@ -24,8 +24,8 @@
  * with `?`-query segments). We expose `serializeRange`/`parseRange` so a caller can
  * put `from`/`to` into any `URLSearchParams` and read them back verbatim.
  *
- * a11y: fully keyboard operable (Radix Popover + roving Tabs/Select); the trigger
- * carries an `aria-label` describing the current range; the auto-refresh Select has
+ * a11y: fully keyboard operable (Radix Popover + roving Tabs/Select); the trigger is
+ * named "Time range: " and the range it shows (Label in Name); the auto-refresh Select has
  * an accessible name; every value is plain text (UNTRUSTED-safe: presets/labels are
  * app-authored, never operator/log-derived).
  */
@@ -33,6 +33,7 @@ import * as React from 'react';
 import { Clock } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
+import { useMediaQuery } from '@/soc/hooks/useMediaQuery';
 import { Button } from '@/ui/button';
 import {
   Popover,
@@ -56,7 +57,20 @@ export interface TimeRange {
   to: string;
   /** Human label shown on the trigger, e.g. `Last 24 hours`. */
   label: string;
+  /**
+   * A shorter trigger label for a phone-width page (below the `sm` breakpoint), for a
+   * range whose label is long: a linked window reads `Nov 2 00:00 → Nov 4 13:46 UTC`
+   * there. The menu keeps `label`, and while the short form is shown so do the
+   * trigger's description and tooltip.
+   */
+  shortLabel?: string;
 }
+
+/**
+ * Below Tailwind's `sm` breakpoint (640px), where the trigger shows a range's
+ * `shortLabel`. It is the same edge as the trigger's `sm:hidden` / `sm:block` labels.
+ */
+export const NARROW_VIEWPORT_QUERY = '(max-width: 639.98px)';
 
 /** An absolute (resolved) range in epoch-ms: what a query actually uses. */
 export interface ResolvedRange {
@@ -397,19 +411,57 @@ export function TimeRangePicker({
     ? // 8px, concentric with every other button/select (Round 12; was a squared 3px).
       'rounded-md border-border/70 bg-transparent font-mono text-muted-foreground shadow-none hover:border-border-strong hover:bg-hover hover:text-foreground'
     : undefined;
+  // A long range's own phone-width form (below `sm`), when it says something shorter.
+  const narrowLabel = value.shortLabel && value.shortLabel !== value.label ? value.shortLabel : null;
+  // The whole range is a description and a tooltip only while the short form is the one
+  // on screen. From `sm` up the trigger shows (and is named from) the whole range: a
+  // description would read it a second time on every focus, and so would a title, which
+  // becomes the description when it is not the name.
+  const narrowViewport = useMediaQuery(NARROW_VIEWPORT_QUERY);
+  const describeWholeRange = narrowLabel !== null && narrowViewport;
+  const descriptionId = React.useId();
 
   return (
     <div className={cn('inline-flex min-w-0 max-w-full items-center gap-2', className)}>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
+          {/* The trigger never runs past its container (closing QA qa2-02: a linked
+              window's label ran 16px past a phone's right gutter): it shrinks, its label
+              truncates as a last resort, and a page gives a long range a `shortLabel`
+              for phone widths.
+
+              WCAG 2.5.3 (Label in Name): the trigger is named from what it shows, so a
+              voice user can say the words on it. The "Time range: " prefix is screen
+              reader text, and of the short and full labels CSS shows one; the hidden one
+              (display: none) drops out of the name. When the trigger shows the short
+              form (below `sm`), the whole range is its description and its tooltip;
+              from `sm` up it shows the whole range itself and has neither.
+
+              The command chrome's h, d and w abbreviation ("Last 24h") keeps the whole
+              wording ("Time range: Last 24 hours") as an explicit name for now: renaming
+              the control on every masthead that uses that chrome is a separate change. */}
           <Button
             variant="outline"
             size={size === 'sm' ? 'sm' : 'default'}
-            className={cn('gap-2 font-normal', commandChrome)}
-            aria-label={`Time range: ${value.label}`}
+            className={cn('min-w-0 max-w-full gap-2 font-normal', commandChrome)}
+            aria-label={!narrowLabel && rangeLabel !== value.label ? `Time range: ${value.label}` : undefined}
+            aria-describedby={describeWholeRange ? descriptionId : undefined}
+            title={describeWholeRange ? value.label : undefined}
           >
             <Clock className="opacity-70" aria-hidden="true" />
-            <span className="tabular-nums">{rangeLabel}</span>
+            <span className="sr-only">Time range: </span>
+            {narrowLabel ? (
+              <>
+                <span className="min-w-0 truncate tabular-nums sm:hidden" data-range-label="short">
+                  {narrowLabel}
+                </span>
+                <span className="hidden min-w-0 truncate tabular-nums sm:block" data-range-label="full">
+                  {rangeLabel}
+                </span>
+              </>
+            ) : (
+              <span className="min-w-0 truncate tabular-nums">{rangeLabel}</span>
+            )}
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="w-64 p-3">
@@ -444,6 +496,11 @@ export function TimeRangePicker({
           </div>
         </PopoverContent>
       </Popover>
+      {describeWholeRange ? (
+        <span id={descriptionId} hidden>
+          {value.label}
+        </span>
+      ) : null}
 
       {onRefreshChange ? (
         <Select value={refresh} onValueChange={(v) => onRefreshChange(v as RefreshValue)}>

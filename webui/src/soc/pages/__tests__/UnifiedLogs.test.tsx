@@ -6,7 +6,7 @@
  * it; without a link the page is the shared unified browser. Row values stay plain text
  * (#9).
  */
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,8 +22,17 @@ vi.mock('@/soc/router', async (importOriginal) => {
 });
 
 import { answerOrigin, clearAnswerOrigin, rememberAnswerOrigin } from '../../answer-origin';
+import { NARROW_VIEWPORT_QUERY } from '../../components/TimeRangePicker';
 import { pageHash, RouterProvider, useNavigate } from '../../router';
-import UnifiedLogsPage, { boundMs, logsLinkOpts, matchedPhrase, parseLogsDeepLink, sourcesPhrase, windowLabel } from '../UnifiedLogs';
+import UnifiedLogsPage, {
+  boundMs,
+  logsLinkOpts,
+  matchedPhrase,
+  parseLogsDeepLink,
+  sourcesPhrase,
+  windowLabel,
+  windowShortLabel,
+} from '../UnifiedLogs';
 
 const NOW = Date.UTC(2026, 9, 8, 14, 0);
 const RESPONSE = {
@@ -108,6 +117,28 @@ describe('parseLogsDeepLink', () => {
     expect(windowLabel('2026-10-01T12:00:00Z', null)).toBe('2026-10-01 12:00 UTC → now');
     expect(windowLabel('now-6h', '2026-10-08T12:00:00Z')).toBe('now-6h → 2026-10-08 12:00 UTC');
     expect(windowLabel(null, '2026-10-08T12:00:00Z')).toBe('until 2026-10-08 12:00 UTC');
+  });
+
+  it('shortens a linked window for the phone-width time pill (closing QA qa2-02)', () => {
+    const now = Date.UTC(2026, 10, 4, 14, 0);
+    // The finding's window: 45 characters, 374px in a 390px viewport. The short form
+    // names the months, floors the minute and keeps UTC.
+    expect(windowShortLabel('2026-11-02T00:00:00+00:00', '2026-11-04T13:46:55.949000+00:00', now)).toBe(
+      'Nov 2 00:00 → Nov 4 13:46 UTC',
+    );
+    // One day: the date once.
+    expect(windowShortLabel('2026-11-04T09:00:00Z', '2026-11-04T12:30:00+02:00', now)).toBe('Nov 4 09:00 → 10:30 UTC');
+    // A window outside this UTC year keeps its ISO dates, so the year is never lost.
+    expect(windowShortLabel('2025-12-30T00:00:00Z', '2026-01-02T06:00:00Z', now)).toBe(
+      '2025-12-30 00:00 → 2026-01-02 06:00 UTC',
+    );
+    // Relative or one-sided windows already read short: no second form.
+    expect(windowShortLabel('now-6h', null, now)).toBeUndefined();
+    expect(windowShortLabel('2026-11-02T00:00:00Z', null, now)).toBeUndefined();
+    expect(windowShortLabel(null, '2026-11-04T12:00:00Z', now)).toBeUndefined();
+    // Never longer than the full label.
+    const full = windowLabel('2026-11-02T00:00:00+00:00', '2026-11-04T13:46:55.949000+00:00');
+    expect(windowShortLabel('2026-11-02T00:00:00+00:00', '2026-11-04T13:46:55.949000+00:00', now)!.length).toBeLessThan(full.length);
   });
 });
 
@@ -353,6 +384,47 @@ describe('Logs page: exact filters', () => {
     await user.click(await screen.findByRole('button', { name: /^Last 7 days/ }));
     await waitFor(() => expect(fetchUnifiedLogs).toHaveBeenLastCalledWith(expect.objectContaining({ from: 'now-7d', rule: RULE })));
     await waitFor(() => expect(screen.getByTestId('logs-matched')).toHaveTextContent(/^381 events · last 7 days · Sources/));
+  });
+
+  it('gives the time pill a short phone label for a long linked window, named from what it shows', async () => {
+    // The finding's link (rule sheet, "Open all 12 in Logs"), read on its own day; only
+    // Date is faked, so the page's own timers and promises run as usual. Tailwind's
+    // breakpoint rules are not loaded under jsdom, so the phone width's one rule (the
+    // full label is `hidden` below `sm`) is put in by hand, and the picker's own `sm`
+    // media query answers as a phone.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-04T14:00:00Z'));
+    const phone = document.createElement('style');
+    phone.textContent = '.hidden { display: none; }';
+    document.head.appendChild(phone);
+    const matchMedia = window.matchMedia;
+    window.matchMedia = (query: string) =>
+      query === NARROW_VIEWPORT_QUERY ? { ...matchMedia.call(window, query), media: query, matches: true } : matchMedia.call(window, query);
+    try {
+      fetchUnifiedLogs.mockResolvedValue(FILTERED);
+      show(pageHash('logs', { rule: RULE, from: '2026-11-02T00:00:00+00:00', to: '2026-11-04T13:46:55.949000+00:00' }));
+      const full = '2026-11-02 00:00:00 → 2026-11-04 13:46:55 UTC';
+      // WCAG 2.5.3 (Label in Name): a voice user says the words the pill shows; the whole
+      // range is its description (and its tooltip).
+      const pill = await screen.findByRole('button', { name: 'Time range: Nov 2 00:00 → Nov 4 13:46 UTC' });
+      expect(pill).toHaveAccessibleDescription(full);
+      // Below `sm` the pill reads the short form; from `sm` up the full one. Either label
+      // truncates rather than push the pill past its container (closing QA qa2-02).
+      const shortLabel = pill.querySelector('[data-range-label="short"]');
+      const fullLabel = pill.querySelector('[data-range-label="full"]');
+      expect(shortLabel).toHaveTextContent('Nov 2 00:00 → Nov 4 13:46 UTC');
+      expect(shortLabel).toHaveClass('sm:hidden', 'truncate', 'min-w-0');
+      expect(fullLabel).toHaveTextContent(full);
+      expect(fullLabel).toHaveClass('hidden', 'sm:block', 'truncate', 'min-w-0');
+      expect(pill).toHaveClass('min-w-0', 'max-w-full');
+      expect(pill).toHaveAttribute('title', full);
+      // The Window line under the search keeps the exact range in full.
+      expect(within(screen.getByTestId('linked-logs')).getByText(full)).toBeInTheDocument();
+    } finally {
+      phone.remove();
+      window.matchMedia = matchMedia;
+      vi.useRealTimers();
+    }
   });
 
   it('shows the severity chips and passes the levels as filters', async () => {

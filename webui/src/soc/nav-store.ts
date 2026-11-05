@@ -10,8 +10,12 @@
  * PERSISTENCE (unchanged contract): the rail state hydrates SYNCHRONOUSLY from a
  * `localStorage` mirror on first read (no collapse flash on first paint), the shell's
  * {@link useNavPrefsSync} reconciles it once from the server-side `UserPrefs.misc` after
- * the preference cascade hydrates, and every change writes both the mirror and
- * `PUT /api/prefs/user` (best effort). A key the viewer changed before hydration finished
+ * the preference cascade hydrates, and every change writes the mirror at once and
+ * `PUT /api/prefs/user` (best effort) one frame later: the request starts right after the
+ * toggle's first frame is painted, never inside its input task, and changes made within
+ * that frame are merged into one write. Hiding or leaving the page sends a change that is
+ * still waiting (best effort: an unload can cancel that request, which is why the wait is
+ * one frame, not longer). A key the viewer changed before hydration finished
  * is not overwritten by the (older) server value: that change was also sent to the
  * server, so a later device load reconciles to it anyway. Open-group ids an earlier
  * release stored (`metrics` for the Analytics group) are read in today's ids and the
@@ -144,9 +148,36 @@ function putMisc(patch: Record<string, unknown>): void {
   void api.prefs.putUser({ misc: patch }).catch(() => undefined);
 }
 
+/**
+ * The viewer's changes not yet written, merged into one batch. The write waits for the
+ * batch's first frame (an animation-frame callback runs just before that frame paints) and
+ * then one task (which runs after the paint), so the request leaves about one frame after
+ * the change, outside the input task and its paint. Hiding or leaving the page writes a
+ * waiting batch at once (a hidden page may never paint again), and a new session drops it.
+ * Nothing is cancelled: the scheduled write sends only its own batch (one already sent or
+ * dropped leaves a later batch to its own frame), and the two page listeners do nothing
+ * while nothing waits, so they are never removed (a listener added again is still one).
+ */
+let pending: Record<string, unknown> | null = null;
+
+/** Write the waiting changes now (the scheduled task, or the page being hidden or left). */
+function flushPersist(): void {
+  const patch = pending;
+  pending = null;
+  if (patch) putMisc(patch);
+}
+
+const flushWhenHidden = () => document.hidden && flushPersist();
+
 function persist(patch: Record<string, unknown>): void {
   for (const key of Object.keys(patch)) touched.add(key);
-  putMisc(patch);
+  if (!pending) {
+    const batch = (pending = {});
+    addEventListener('pagehide', flushPersist);
+    document.addEventListener('visibilitychange', flushWhenHidden);
+    requestAnimationFrame(() => setTimeout(() => batch === pending && flushPersist()));
+  }
+  Object.assign(pending, patch);
 }
 
 function commitGroups(next: Set<string>): void {
@@ -235,6 +266,9 @@ export const navStore = {
    * component's render is not allowed).
    */
   beginSession(): void {
+    // A change still waiting belongs to the session that just ended: it is not sent
+    // under the new one.
+    pending = null;
     touched.clear();
     state = hydrate();
   },

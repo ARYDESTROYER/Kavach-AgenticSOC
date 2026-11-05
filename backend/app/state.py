@@ -3466,6 +3466,22 @@ class AppState:
         # Every seeded case gets its display number before it is saved, oldest first,
         # from the same nomenclature and sequence the demo pipeline continues.
         await demo_stack.number_seeded_cases([*cases, *recent_cases, *hitl_cases, *tuner_cases])
+        # Round 14 (SPEC §4.10.9, §4.10.18, D45): the seeded cases never pass through the
+        # pipeline, so each investigated one is stamped, before it is saved, with the
+        # runbook the investigator would have read (the same match as the seeded runs
+        # below), and the Metrics "Runbook usage" panel agrees with the Runbooks
+        # library. The catalog is read once and reused for the runs. Never blocks enable.
+        demo_runbook_catalog = None
+        try:
+            from .engine.demo_generator import seed_demo_runbook_guidance
+
+            demo_runbook_catalog = await demo_stack.runbook_catalog()
+            seed_demo_runbook_guidance(
+                [*cases, *recent_cases, *hitl_cases, *tuner_cases], demo_runbook_catalog,
+                prefs=demo_stack._demo_prefs(),  # noqa: SLF001 - same module owner
+            )
+        except Exception as exc:  # noqa: BLE001 - seeded guidance never blocks enable
+            logger.warning("demo runbook guidance seeding failed: %s", exc)
 
         seeded_counter_cases = list(cases)
         for case in cases:
@@ -3516,7 +3532,9 @@ class AppState:
 
             await seed_demo_runbook_runs(
                 demo_stack.runbook_runs, list(seeded_counter_cases),
-                await demo_stack.runbook_catalog(), prefs=demo_stack._demo_prefs(),  # noqa: SLF001
+                demo_runbook_catalog if demo_runbook_catalog is not None
+                else await demo_stack.runbook_catalog(),
+                prefs=demo_stack._demo_prefs(),  # noqa: SLF001
                 seed=new_demo.seed, now_millis=now_ms, audit=demo_stack.audit,
             )
         except Exception as exc:  # noqa: BLE001 - a seeded run never blocks enable

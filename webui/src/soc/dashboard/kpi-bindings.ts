@@ -285,7 +285,9 @@ export const KPI_STRIP_BINDINGS: readonly KpiStripBinding[] = [
     group: 'operations',
     cell: 'closed',
     label: 'Closed',
-    definition: 'Cases created in the window that are now closed or resolved.',
+    // `quality.terminal_cases` leaves analyst-policy closes out (SPEC §11.1); the words and
+    // the context line's denominator (`quality.total_cases`) say the same population.
+    definition: 'Cases created in the window that are now closed or resolved, not counting closes by an analyst policy.',
     provider: 'posture',
     window: 'board',
     source: {

@@ -672,9 +672,13 @@ describe('layout and versions', () => {
     expect(screen.getByLabelText('Loading the runbook')).toBeInTheDocument();
     const root = container.querySelector('[data-case-panel="runbook"]');
     rerender(<Harness initial={makeData()} />);
-    // The same root element is measured through every state.
+    // The same root element is measured through every state. The only other element
+    // observed is the Next step card's draft preview, which watches its own text to know
+    // whether four lines hide some of it.
     expect(container.querySelector('[data-case-panel="runbook"]')).toBe(root);
-    expect(observed.every((el) => el === root)).toBe(true);
+    expect(observed).toContain(root);
+    const others = observed.filter((el) => el !== root);
+    expect(others.every((el) => el.hasAttribute('data-ai-draft-text') && el.isConnected)).toBe(true);
     const strip = container.querySelector('[data-runbook-strip]');
     expect(strip).toHaveAttribute('data-narrow', 'true');
     // The short progress line under the one-line strip.

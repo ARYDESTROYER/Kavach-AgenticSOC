@@ -316,6 +316,15 @@ answers `404 {"detail": "playbook not found"}`), `GET /api/playbooks/coverage` a
 `GET /api/runbooks/{id}` answers the earlier runbook shape (Published runbooks only), with
 the same headers.
 
+The list and detail aliases need `runbooks:read`. The two aliases that read cases need
+`runbooks:read` and `cases:read`. `GET /api/playbooks/coverage` follows its successor,
+`GET /api/runbooks/metrics`: it answers `409 runbook_scope_unsupported` while row-level
+data scope applies to the caller, and it reads at most the newest 20,000 cases, with
+`truncated: true` when more cases exist beyond them or the case read failed part way, so
+every figure is then a lower bound. A store holding exactly 20,000 cases is read whole and
+answers `truncated: false`. A case store that cannot be read at all answers `503
+case_store_unavailable`.
+
 Every write of the earlier shapes answers `410` with `{"detail": "Playbooks are now
 runbooks.", "code": "runbooks_moved", "see": "/api/runbooks"}`: `POST /api/playbooks`,
 `PUT /api/playbooks/{id}`, `POST /api/playbooks/reload`, `POST /api/playbooks/dry-run`,

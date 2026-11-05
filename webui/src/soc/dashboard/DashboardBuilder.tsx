@@ -9,7 +9,13 @@
  *   2. EDIT mode (controlled by the host through `editing`): a control band with the
  *      board's name and "Add widget", the lazily loaded react-grid-layout surface
  *      (keyboard move and resize, WCAG 2.5.7), the widget gallery and per-widget
- *      settings, and a sticky Save and Discard bar.
+ *      settings, and a sticky Save and Discard bar. On a narrow board (a phone) the
+ *      widgets edit as one column with Move up and Move down ({@link reorderWidget}),
+ *      and the bar's hint says so; there Add widget and Duplicate put the new widget
+ *      last ({@link appendWidget}), so nothing already on the board changes its place,
+ *      and the focus goes to the new widget's Move up. While the bar shows, the toasts
+ *      stack above it (the bar's own `useToastClearance`), so "Copy created." never
+ *      covers Discard and Save.
  *
  * The draft is buffered against the last saved snapshot (`useDirtyDraft`), so Discard
  * restores exactly what is stored and Save persists it (`api.dashboards.update`, or
@@ -26,7 +32,8 @@
  *
  * FOCUS: pressing "Edit" hands the focus to the board's name; each confirm dialog gives it
  * back to the control that opened it, or to the host's `returnFocusTarget` when that
- * control left with Edit mode.
+ * control left with Edit mode. A widget's settings sheet gives it back to that widget's
+ * options button (the menu item that opened it is gone).
  *
  * NON-NEGOTIABLES: a layout is presentation only and never feeds `decide()` (#3); board
  * and widget names are untrusted and render as plain text (#9). react-grid-layout loads
@@ -50,7 +57,7 @@ import { StickySaveBar } from '@/soc/components/SettingsGrid';
 import { useDirtyDraft, useUnsavedChanges } from '@/soc/hooks/useDirtyDraft';
 import { useNavigationBlocker } from '@/soc/router';
 
-import { WidgetGrid, type WidgetEditActions } from './WidgetGrid';
+import { WidgetGrid, findWidgetControl, revealControl, type EditArrangement, type WidgetEditActions } from './WidgetGrid';
 import { WidgetGallery } from './WidgetGallery';
 import { WidgetConfigSheet } from './WidgetConfigSheet';
 import {
@@ -59,8 +66,12 @@ import {
   useOptionalDashboardData,
 } from './DashboardDataProvider';
 import {
+  appendWidget,
   applyLayout,
+  compactVertically,
+  editGeometry,
   moveWidget,
+  reorderWidget,
   resizeWidget,
   packWidgets,
   widgetId,
@@ -69,6 +80,7 @@ import {
   normalizeWidget,
   type GridItemShape,
   type MoveDir,
+  type ReorderDir,
   type ResizeDir,
 } from './layout-utils';
 import type { PermissionCheck } from './registry';
@@ -126,33 +138,11 @@ interface DashboardDraft {
 }
 
 /**
- * Move every widget up as far as it goes without overlapping one above it, in reading
- * order: the vertical compaction react-grid-layout applies when Edit mode mounts. Seeding
- * the draft with the same geometry means the grid's first layout report changes nothing,
- * so opening Edit mode never reads as an unsaved change (and never asks "Discard
- * changes?" on the way out). A layout saved from Edit mode is already compact and comes
- * back unchanged.
+ * The vertical compaction react-grid-layout applies when Edit mode mounts (moved to
+ * `layout-utils`, where the narrow one-column editor reuses it; re-exported here for the
+ * callers that import it from the builder).
  */
-export function compactVertically(widgets: readonly DashboardWidget[]): DashboardWidget[] {
-  const geo = widgets.map((w, index) => ({ w, index }));
-  const order = [...geo].sort(
-    (a, b) => (Number(a.w.y) || 0) - (Number(b.w.y) || 0) || (Number(a.w.x) || 0) - (Number(b.w.x) || 0) || a.index - b.index,
-  );
-  const placed: Array<{ x: number; y: number; w: number; h: number }> = [];
-  const out = new Array<DashboardWidget>(widgets.length);
-  const collides = (r: { x: number; y: number; w: number; h: number }) =>
-    placed.find((p) => r.x < p.x + p.w && r.x + r.w > p.x && r.y < p.y + p.h && r.y + r.h > p.y);
-  for (const { w, index } of order) {
-    const rect = { x: Number(w.x) || 0, y: Number(w.y) || 0, w: Number(w.w) || 1, h: Number(w.h) || 1 };
-    const bottom = placed.reduce((max, p) => Math.max(max, p.y + p.h), 0);
-    rect.y = Math.min(bottom, rect.y);
-    while (rect.y > 0 && !collides({ ...rect, y: rect.y - 1 })) rect.y -= 1;
-    for (let hit = collides(rect); hit; hit = collides(rect)) rect.y = hit.y + hit.h;
-    placed.push({ ...rect });
-    out[index] = { ...w, y: rect.y } as DashboardWidget;
-  }
-  return out;
-}
+export { compactVertically };
 
 /**
  * The widgets as plain JSON (keys holding `undefined` dropped), the shape the saved
@@ -382,14 +372,76 @@ export function DashboardBuilder({
 
   const setName = React.useCallback((name: string) => setDraft((prev) => ({ ...prev, name })), [setDraft]);
 
+  // Grid or one column, as the grid reports it for this board's width (the bar's hint, and
+  // where a new widget goes).
+  const [arrangement, setArrangement] = React.useState<EditArrangement>('grid');
+
+  // The widget just added from the gallery: the board says where it landed, and in the
+  // one-column list the focus goes to its Move up when the gallery closes.
+  const [lastAddedId, setLastAddedId] = React.useState<string | null>(null);
+  const focusAddedRef = React.useRef<string | null>(null);
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
+  const addButtonRef = React.useRef<HTMLButtonElement | null>(null);
+
+  // In the one-column list a new widget goes LAST, so no widget already on the board
+  // changes its place in the order (the grid shows where it lands, at the top).
   const addWidget = React.useCallback(
-    (w: DashboardWidget) => setWidgets([...draft.widgets, normalizeWidget(w)]),
-    [draft.widgets, setWidgets],
+    (w: DashboardWidget) => {
+      const widget = normalizeWidget(w);
+      const list = arrangement === 'list';
+      setWidgets(list ? appendWidget(draft.widgets, widget, cols) : [...draft.widgets, widget]);
+      setLastAddedId(widgetId(widget));
+      focusAddedRef.current = list ? widgetId(widget) : null;
+    },
+    [arrangement, draft.widgets, setWidgets, cols],
   );
 
+  // The gallery is closing: after an add in the list, the focus goes to the new widget's
+  // Move up instead of back to Add widget. Its toolbar is scrolled up to just under the
+  // shell's top bar, so the new widget's body shows below it, not under the Save and
+  // Discard bar.
+  const galleryCloseFocus = React.useCallback((event: Event) => {
+    const id = focusAddedRef.current;
+    focusAddedRef.current = null;
+    const target = id ? findWidgetControl(rootRef.current, id, 'up') : null;
+    if (!target) return;
+    event.preventDefault();
+    revealControl(target, 0);
+    target.focus({ preventScroll: true });
+  }, []);
+
+  // Configure opens from a widget's options menu, whose item is gone by the time the sheet
+  // closes (Esc, Cancel or Apply): the focus goes back to that widget's options button,
+  // not to the page (SPEC §3.3).
+  const configOpenerRef = React.useRef<string | null>(null);
+  const configureWidget = React.useCallback((w: DashboardWidget) => {
+    configOpenerRef.current = widgetId(w);
+    setConfigWidget(w);
+  }, []);
+  const configCloseFocus = React.useCallback((event: Event) => {
+    const id = configOpenerRef.current;
+    configOpenerRef.current = null;
+    const target = id ? findWidgetControl(rootRef.current, id, 'options') : null;
+    if (!target) return;
+    event.preventDefault();
+    revealControl(target);
+    target.focus({ preventScroll: true });
+  }, []);
+
+  // Each Edit session starts without a pending add.
+  React.useEffect(() => {
+    if (!editing) {
+      setLastAddedId(null);
+      focusAddedRef.current = null;
+    }
+  }, [editing]);
+
+  // The widgets below move up into the space, as the grid compacts them. The one-column
+  // list never reports a layout, so the removal compacts the draft itself: what is saved
+  // is what the list showed (and the grid reports the same geometry back).
   const removeWidget = React.useCallback(
-    (w: DashboardWidget) => setWidgets(draft.widgets.filter((x) => widgetId(x) !== widgetId(w))),
-    [draft.widgets, setWidgets],
+    (w: DashboardWidget) => setWidgets(editGeometry(draft.widgets.filter((x) => widgetId(x) !== widgetId(w)), cols)),
+    [draft.widgets, setWidgets, cols],
   );
 
   const duplicateWidget = React.useCallback(
@@ -397,13 +449,14 @@ export function DashboardBuilder({
       const copy = normalizeWidget({
         ...w,
         i: freshId('w-'),
-        // One row down, so the copy does not sit exactly on the original.
+        // In the grid one row down, so the copy does not sit exactly on the original; in
+        // the one-column list last, so no other widget changes its place in the order.
         y: (w as { y?: number }).y != null ? (w as { y: number }).y + 1 : 0,
         options: { ...widgetOptions(w) },
       } as DashboardWidget);
-      setWidgets([...draft.widgets, copy]);
+      setWidgets(arrangement === 'list' ? appendWidget(draft.widgets, copy, cols) : [...draft.widgets, copy]);
     },
-    [draft.widgets, setWidgets],
+    [arrangement, draft.widgets, setWidgets, cols],
   );
 
   const moveOne = React.useCallback(
@@ -415,6 +468,13 @@ export function DashboardBuilder({
   const resizeOne = React.useCallback(
     (w: DashboardWidget, dir: ResizeDir) =>
       setWidgets(draft.widgets.map((x) => (widgetId(x) === widgetId(w) ? resizeWidget(x, dir, cols) : x))),
+    [draft.widgets, setWidgets, cols],
+  );
+
+  // The one-column list's Move up and Move down: one place along the reading order, the
+  // 12-column layout keeping its shape (the pair trades places, never one-column geometry).
+  const reorderOne = React.useCallback(
+    (w: DashboardWidget, dir: ReorderDir) => setWidgets(reorderWidget(draft.widgets, widgetId(w), dir, cols)),
     [draft.widgets, setWidgets, cols],
   );
 
@@ -452,13 +512,14 @@ export function DashboardBuilder({
 
   const editActions = React.useMemo<WidgetEditActions>(
     () => ({
-      onConfigure: setConfigWidget,
+      onConfigure: configureWidget,
       onDuplicate: duplicateWidget,
       onRemove: removeWidget,
       onMove: moveOne,
       onResize: resizeOne,
+      onReorder: reorderOne,
     }),
-    [duplicateWidget, removeWidget, moveOne, resizeOne],
+    [configureWidget, duplicateWidget, removeWidget, moveOne, resizeOne, reorderOne],
   );
 
   // ------- Save, discard, reset ------- //
@@ -531,6 +592,7 @@ export function DashboardBuilder({
   // refresh control can read it; standing alone, the builder mounts its own. Either way
   // the provider names the placed widgets' reads up front and never the billing standup.
   const outerProvider = useOptionalDashboardData();
+  const focusAddButton = React.useCallback(() => addButtonRef.current, []);
   const grid = (
     <WidgetGrid
       widgets={shownWidgets}
@@ -538,11 +600,14 @@ export function DashboardBuilder({
       cols={cols}
       onLayoutChange={onGridLayoutChange}
       editActions={editActions}
+      onArrangementChange={setArrangement}
+      lastAddedId={lastAddedId}
+      focusWhenEmpty={focusAddButton}
     />
   );
 
   return (
-    <div className={className} data-dashboard-builder={editing ? 'edit' : 'view'}>
+    <div ref={rootRef} className={className} data-dashboard-builder={editing ? 'edit' : 'view'}>
       {editing ? (
         <ControlBar
           className="mb-4"
@@ -567,7 +632,7 @@ export function DashboardBuilder({
           }
           label="Dashboard editing controls"
           controls={
-            <Button type="button" variant="outline" size="sm" onClick={() => setGalleryOpen(true)}>
+            <Button ref={addButtonRef} type="button" variant="outline" size="sm" onClick={() => setGalleryOpen(true)}>
               <Plus className="h-3.5 w-3.5" aria-hidden />
               Add widget
             </Button>
@@ -617,13 +682,23 @@ export function DashboardBuilder({
           discardLabel="Discard"
           message={
             saveBlockedReason ??
-            (dirty ? 'You have unsaved changes to this dashboard.' : 'Drag, resize, add or remove widgets, then save.')
+            (dirty
+              ? 'You have unsaved changes to this dashboard.'
+              : arrangement === 'list'
+                ? 'Reorder, add or remove widgets, then save.'
+                : 'Drag, resize, add or remove widgets, then save.')
           }
-          className="flex-wrap"
         />
       ) : null}
 
-      <WidgetGallery open={galleryOpen} onOpenChange={setGalleryOpen} can={can} onAdd={addWidget} />
+      <WidgetGallery
+        open={galleryOpen}
+        onOpenChange={setGalleryOpen}
+        can={can}
+        onAdd={addWidget}
+        onCloseAutoFocus={galleryCloseFocus}
+        arrangement={arrangement}
+      />
 
       <WidgetConfigSheet
         widget={configWidget}
@@ -631,6 +706,7 @@ export function DashboardBuilder({
           if (!o) setConfigWidget(null);
         }}
         onApply={applyConfig}
+        onCloseAutoFocus={configCloseFocus}
       />
 
       {removal.dialog}

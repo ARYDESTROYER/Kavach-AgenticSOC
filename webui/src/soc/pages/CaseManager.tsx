@@ -525,7 +525,10 @@ const QueueRow: React.FC<{
             </span>
 
             <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="shrink-[1] truncate font-mono" title={displayId}>
+              {/* The case number names the row, so it never gives way: middleEllipsis
+                  bounds it at 14 characters, and the source fact beside it absorbs the
+                  runbook chip's width alone. */}
+              <span data-testid="case-queue-id" className="shrink-0 whitespace-nowrap font-mono" title={displayId}>
                 {middleEllipsis(displayId)}
               </span>
               {fact ? (
@@ -646,6 +649,9 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
   // D27: `#/case_manager?closedBy=agent` (and the `#/scans` redirect) opens the queue on
   // the cases that closer closed; it only matches terminal cases, so the scope is All.
   const routeClosedBy = route.page === 'case_manager' ? asCloser(route.opts?.closedBy) : null;
+  // `#/case_manager?caseId=…&tab=investigation` (the audit log's "Open case trace") opens
+  // the case on that tab; the router and CaseDetail both accept only its real tab ids.
+  const routeTab = route.page === 'case_manager' ? (route.opts?.tab ?? null) : null;
 
   // ---- queue query --------------------------------------------------------- //
   const [closedBy, setClosedBy] = React.useState<QueueCloser | null>(routeClosedBy);
@@ -2449,6 +2455,7 @@ function CaseManagerWorkspace({ initialCaseId }: CaseManagerProps) {
                         onCaseChange={syncCase}
                         onAdvance={advance}
                         resolveDialogFocus={resolveDialogFocus}
+                        requestedTab={routeTab}
                       />
                     </div>
                   </>

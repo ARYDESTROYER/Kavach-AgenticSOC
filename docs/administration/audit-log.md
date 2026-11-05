@@ -15,7 +15,8 @@ roles by default). See [Users and RBAC](users-rbac.md) and the
 
 ## Scopes
 
-The control under the page header chooses which rows the list reads:
+The scope control under the header of **Platform → Audit log** chooses which rows the list
+reads.
 
 | Scope | What it shows |
 |---|---|
@@ -29,12 +30,15 @@ type, because code, not the AI agent, decides whether a case closes.
 
 ## Finding events
 
+In **Platform → Audit log**, type in the search box (press `/` to reach it) and press
+Enter, or narrow the list with the time range and the filters below. Each runs on the server
+across the whole log, never only on the rows already loaded.
+
 - **Time range.** The header offers the last hour, 24 hours, 7 days (the default), 30
   days and 90 days. **Custom** sets a start and an end in UTC, to the minute.
-- **Search.** Type in the search box (or press `/` to reach it) and press Enter. It
-  searches the event name, the actor, the target and the stored summaries on the server,
-  across the whole log, never only the rows already loaded. You can narrow with
-  qualifiers, which become filters (shown as chips) rather than search text:
+- **Search.** The search box matches the event name, the actor, the target and the stored
+  summaries. You can narrow with qualifiers, which become filters (shown as chips) rather
+  than search text:
 
   | Qualifier | Filter |
   |---|---|
@@ -81,8 +85,8 @@ names.
 
 ## Reading the list
 
-The list shows 50 events at a time, newest first; **Load more** reads the next 50 from
-the server. **Refresh** reads the view again and keeps the rows on screen until the new
+**Platform → Audit log** lists 50 events at a time, newest first; **Load more** reads the
+next 50 from the server. **Refresh** reads the view again and keeps the rows on screen until the new
 ones arrive; if the read fails, the rows stay under the error and **Load more** still reads
 on from them. Load more is unavailable while a read is in progress. The line above the
 list says what you are looking at, for example "Showing 1 to 50 of 1,284 events · last 7
@@ -167,6 +171,8 @@ Every value is shown as plain text, exactly as stored.
 
 ## Keyboard
 
+These shortcuts work in the list and the record of **Platform → Audit log**.
+
 | Keys | Action |
 |---|---|
 | Up, Down | Move between events |
@@ -181,10 +187,14 @@ Shortcuts never act while you type in a field or use a menu.
 
 ## Exporting
 
-**Export** in the page header exports exactly what the page shows: its scope, filters,
-search and time range. Choose **Export CSV (spreadsheet)** or **Export JSON Lines (for a
-SIEM)**. **Full application export** opens the data export in Settings for people who hold
+**Export** in the header of **Platform → Audit log** exports exactly what the page shows:
+its scope, filters, search and time range. Choose **Export CSV (spreadsheet)** or **Export
+JSON Lines (for a SIEM)**. It needs `audit:view` and `audit:export`, not the data export
+permission. **Full application export**, a separate secret-free bundle of the application
+state you choose, opens the data export in Settings for people who hold
 `data_export:export`.
+
+### Time range and size limit
 
 The export dialog fixes the time range to exact UTC times when it opens (for example "18
 Oct 15:10 to 25 Oct 15:09 UTC"); the count it shows, the file name and the export all use
@@ -197,6 +207,8 @@ reads past the moment it was submitted.
 One file holds at most 100,000 events. Above that the dialog reads "More than 100,000
 events", Export stays disabled, and it offers **Use last 30 days** when that range fits;
 otherwise narrow the filters. Nothing is ever cut off silently.
+
+### Files and delivery
 
 - You are asked to sign in again before the export runs.
 - One export per person runs at a time.
@@ -219,6 +231,8 @@ otherwise narrow the filters. Nothing is ever cut off silently.
 - A finished audit export offers **Open audit log** in **Jobs**, in the Inbox and on its
   notice; it opens the audit log on the scope, range and filters it was exported from
   (`#/audit` with that scope), so you see the rows the file holds.
+
+### Requests and downloads
 
 Every export is recorded in the audit log when it is requested, when the file is written
 (with its size and SHA-256) and each time it is downloaded. Every download of any job's

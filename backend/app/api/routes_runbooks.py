@@ -736,6 +736,7 @@ async def runbook_metrics(
         return await catalog.metrics(
             library_store=state.runbook_library, runs_store=state.runbook_runs,
             cases_store=state.cases, prefs=prefs, window=resolved,
+            builtin_overlay=catalog.builtin_overlay_of(state),
         )
     except (RunbookStoreError, RunbookNotFound) as exc:
         await _raise(state, viewer, "", exc)
@@ -813,6 +814,7 @@ async def match_preview_route(
             library_store=state.runbook_library, cases_store=state.cases, prefs=prefs,
             definition=definition, origin=origin, replaces=replaces,
             fallback=bool(getattr(getattr(prefs, "runbooks", None), "fallback", True)),
+            builtin_overlay=catalog.builtin_overlay_of(state),
         )
     except (RunbookStoreError, RunbookNotFound) as exc:
         await _raise(state, viewer, definition.id, exc)

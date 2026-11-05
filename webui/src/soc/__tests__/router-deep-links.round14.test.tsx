@@ -27,6 +27,7 @@ import {
   type NavigationBlockerOptions,
 } from '../router';
 import type { PageId } from '../nav';
+import { CASE_TABS } from '../case-tabs';
 
 let route: ReturnType<typeof useRoute>;
 
@@ -190,6 +191,51 @@ describe('cases: rule (the Rule filter) and case_manager: closedBy', () => {
   it('Case Manager refuses an unknown closer', () => {
     expect(parse('#/case_manager?closedBy=human').opts).toBeUndefined();
     expect(pageHash('case_manager', { closedBy: 'nobody' })).toBe('#/case_manager');
+  });
+});
+
+describe('case_manager: tab (closing QA integ-06, "Open case trace")', () => {
+  it('accepts exactly the tabs the case detail renders (one shared list, never a router copy)', () => {
+    // CaseDetail renders and indexes CASE_TABS; the router validates `tab` against the
+    // same tuple, so a tab added or renamed there is linkable at once.
+    expect([...CASE_TABS]).toEqual(['overview', 'runbook', 'timeline', 'investigation', 'threat', 'collab', 'chat']);
+    const kept = CASE_TABS.filter((tab) => pageHash('case_manager', { caseId: 'case-214', tab }).endsWith(`&tab=${tab}`));
+    expect(kept).toEqual([...CASE_TABS]);
+  });
+
+  it.each([...CASE_TABS])(
+    'round-trips the case tab %s beside the case',
+    (tab) => {
+      const hash = pageHash('case_manager', { caseId: 'case-214', tab });
+      expect(hash).toBe(`#/case_manager?caseId=case-214&tab=${tab}`);
+      expect(parse(hash)).toEqual({ page: 'case_manager', opts: { caseId: 'case-214', tab } });
+    },
+  );
+
+  it('keeps the tab beside the closer filter', () => {
+    const hash = pageHash('case_manager', { caseId: 'case-214', closedBy: 'agent', tab: 'investigation' });
+    expect(parse(hash).opts).toEqual({ caseId: 'case-214', closedBy: 'agent', tab: 'investigation' });
+  });
+
+  it('accepts only the case detail tab ids: anything else is never written and drops a typed link', () => {
+    for (const tab of ['trace', 'Investigation', 'settings', '../x', 'performance', 'toString', 'constructor']) {
+      expect(pageHash('case_manager', { caseId: 'case-214', tab })).toBe('#/case_manager?caseId=case-214');
+      expect(parse(`#/case_manager?caseId=case-214&tab=${encodeURIComponent(tab)}`).opts).toBeUndefined();
+    }
+  });
+
+  it('leaves the other pages’ tab keys alone', () => {
+    // Metrics keeps its own tab grammar, and a page without one never writes it.
+    expect(pageHash('metrics', { tab: 'investigation' })).toBe('#/metrics');
+    expect(pageHash('cases', { caseId: 'case-214', tab: 'investigation' })).toBe('#/cases?caseId=case-214');
+  });
+
+  it('drops the tab key when the queue opens another case', () => {
+    mount('#/case_manager?caseId=case-214&tab=investigation');
+    expect(probe()).toBe('case_manager|{"caseId":"case-214","tab":"investigation"}');
+    act(() => route.navigate('case_manager', { caseId: 'case-215' }));
+    expect(window.location.hash).toBe('#/case_manager?caseId=case-215');
+    expect(probe()).toBe('case_manager|{"caseId":"case-215"}');
   });
 });
 

@@ -27,6 +27,7 @@ from tests.test_runbook_library_api import (
     login,
     make_app,
     make_case,
+    publish,
     seed_cases,
     source,
 )
@@ -195,3 +196,88 @@ def test_a_read_only_viewer_previews_the_live_version_not_the_draft() -> None:
         login(client, "tier1", "user-pass-12345")
         reader_view = _post(client, {"id": PREVIEWED})
         assert [c["case_id"] for c in reader_view["gets_it"]] == ["v-0001"]
+
+
+# --------------------------------------------------------------------------- #
+# The active stack's catalog (SPEC §3.5): in Demo Mode the built-ins carry the Demo
+# rule names (``AppState.runbook_catalog_overlay``), as the attachment path reads them.
+# --------------------------------------------------------------------------- #
+def _with_acme_rule(entries: Any) -> tuple[Any, ...]:
+    """A stand-in for the Demo overlay: the brute force built-in also lists
+    ``acme_rule``. Only built-ins change, as in ``demo_runtime.overlay_demo_runbooks``."""
+    from app.engine.runbook_match import MatchableRunbook
+
+    out = []
+    for entry in entries:
+        if entry.id == BASE_BUILTIN and entry.origin == "builtin":
+            applies = entry.definition.applies_when
+            changed = entry.definition.model_copy(update={"applies_when": applies.model_copy(
+                update={"rule_ids": [*applies.rule_ids, "acme_rule"]})})
+            entry = MatchableRunbook(id=entry.id, version=entry.version, definition=changed,
+                                     origin=entry.origin, published_at=entry.published_at)
+        out.append(entry)
+    return tuple(out)
+
+
+def test_a_previewed_built_in_is_checked_as_the_active_stack_sees_it(box, monkeypatch) -> None:
+    """The previewed built-in goes through the overlay too, and its own criteria are
+    checked as overlaid: a case it matches only through the overlay is "Another wins"
+    when a higher priority runbook takes it, and a near miss when only the entity type
+    failed. Without the overlay neither case would be counted."""
+    client, state = box["client"], box["state"]
+    seed_cases(client, state, [
+        make_case("c-0006", hours_ago=5, rule_ids=["acme_rule"],
+                  entity=Entity(type=EntityType.DOMAIN, value="example.org")),
+    ])
+    create(client, PREVIEWED, applies_when={"rule_ids": ["acme_rule"], "entity_types": ["ip", "user"]},
+           priority=90)
+    publish(client, PREVIEWED)
+    plain = _post(client, {"id": BASE_BUILTIN})
+    assert plain["counts"] == {"gets_it": 1, "another_wins": 0, "near_misses": 0}
+    monkeypatch.setattr(state, "runbook_catalog_overlay", _with_acme_rule)
+    body = _post(client, {"id": BASE_BUILTIN})
+    assert [c["case_id"] for c in body["gets_it"]] == ["c-0002"]
+    assert sorted((c["case_id"], c["winner_id"]) for c in body["another_wins"]) == [
+        ("c-0001", PREVIEWED), ("c-0003", PREVIEWED)]
+    assert [(c["case_id"], [f["criterion"] for f in c["failed"]]) for c in body["near_misses"]] == [
+        ("c-0006", ["entity_types"])]
+    assert body["counts"] == {"gets_it": 1, "another_wins": 2, "near_misses": 1}
+    # An operator runbook is matched exactly as written: the overlay never touches it.
+    operator = _post(client, {"id": PREVIEWED})
+    assert sorted(c["case_id"] for c in operator["gets_it"]) == ["c-0001", "c-0003"]
+
+
+def _rule_attached_cases(state: Any) -> Any:
+    """Each runbook to the cases of the preview's population a rule attached it on."""
+    from app.engine.runbook_catalog import MATCH_PREVIEW_MAX_CASES, MATCH_PREVIEW_WINDOW_DAYS, recent_cases
+
+    async def read() -> dict[str, set[str]]:
+        cases = await recent_cases(state.cases, days=MATCH_PREVIEW_WINDOW_DAYS, limit=MATCH_PREVIEW_MAX_CASES)
+        out: dict[str, set[str]] = {}
+        for case in cases:
+            for run in (await state.runbook_runs.get(case.case_id)).runs:
+                if run.attached_by == "rule":
+                    out.setdefault(run.runbook_id, set()).add(case.case_id)
+        return out
+
+    return read
+
+
+def test_demo_mode_previews_each_built_in_with_its_demo_cases() -> None:
+    """SPEC §3.5, §4.10.12: in Demo Mode a built-in "Gets it" every recent Demo case
+    its run was attached to by rule, so Preview as analyst fills in a real case."""
+    holder: dict[str, Any] = {}
+    with TestClient(make_app(holder)) as client:
+        state = holder["state"]
+        client.portal.call(lambda: state.enable_demo(mode="seeded", seed=7, history_days=1))
+        try:
+            attached = client.portal.call(_rule_attached_cases(state))
+            assert attached.get("compromised-account") and attached.get("web-application-attack")
+            for runbook_id, case_ids in attached.items():
+                body = _post(client, {"id": runbook_id})
+                assert body["counts"]["gets_it"] >= len(case_ids), runbook_id
+                assert case_ids <= {c["case_id"] for c in body["gets_it"]}, runbook_id
+        finally:
+            client.portal.call(state.disable_demo)
+        # Demo Mode off: the same built-in gets none of them (no case left to preview).
+        assert _post(client, {"id": "compromised-account"})["counts"]["gets_it"] == 0

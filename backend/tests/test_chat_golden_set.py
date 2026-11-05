@@ -526,6 +526,45 @@ APP_HELP = [
     G("What version is this?", kind="product_help", tools=("app_help", "app_status")),
     G("How do reports work?", kind="product_help", tools=("app_help",), max_lookups=1),
     G("How do I export a report as PDF?", kind="product_help", tools=("app_help",), max_lookups=1),
+    # Round 14 tasks lead with the page that does them (closing acceptance integ-01): audit
+    # events are exported from the Audit log's Export menu, never from Data export, and a
+    # runbook starts from Case Manager's Take action menu, never from Runbooks settings.
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Platform › Audit log**;",), absent=("Data export", "Analytics › Jobs**;"))
+      for q in ("How do I export audit events to CSV?", "How do I export audit events as JSON Lines?")),
+    G("How do I start a runbook on a case?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Case Manager**;", "**Start runbook** in **Take action**"),
+      absent=("Settings › Integrations › Runbooks",)),
+    G("How do I read an audit record?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Platform › Audit log**",)),
+    # Searching and filtering the audit log stay on the Audit log: "filter" and "log" also
+    # name the Logs page, which must not take these questions.
+    G("How do I search the audit log?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Platform › Audit log**",), absent=("Data export",)),
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Platform › Audit log**;",), absent=("Triage › Logs",))
+      for q in ("How do I filter the audit log by actor?", "How do I filter the audit log by outcome?")),
+    # The Cases list has its own Rule filter; the Runbooks publishing card keeps its match
+    # beside Case Manager's Start runbook words.
+    G("How do I filter cases by rule?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Triage › Cases**",), absent=("Triage › Logs",)),
+    G("How do I require a distinct approver for runbooks?", kind="product_help", tools=("app_help",),
+      max_lookups=1, contains=("Start in **Settings › Integrations › Runbooks › Publishing and review**;",)),
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, contains=("Start in **Overview › Dashboards**",))
+      for q in ("How do I duplicate a dashboard?", "How do I find a built-in dashboard?")),
+    # The plainest wording of the audit export task also leads with the Audit log.
+    G("How do I export the audit log?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Platform › Audit log**",)),
+    # The audit record's list and the export rules share words with other tasks ("host",
+    # "logs", "CSV", "JSON Lines"); they name no destination, so these never borrow the
+    # audit log's page (re-review finding).
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1, absent=("Platform › Audit log",))
+      for q in ("How do I filter logs by host?", "How do I ingest JSON Lines files from S3?",
+                "How do I download logs as CSV?")),
+    # Publishing happens in the Runbooks library, not in the Runbooks settings (the
+    # Case Manager keywords once lowered 'runbook' so far that a link was lost).
+    G("How do I publish a runbook?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Intelligence › Runbooks**",)),
 ]
 
 PLATFORM = [
@@ -1109,9 +1148,31 @@ CLOSING = [
                 "Tell me stories about cyber attacks")),
 ]
 
+# Round 14 closing acceptance (integ-07): playbooks are runbooks now (SPEC §3.1). Asking
+# where they went, or where the runbooks are, is a question about the console: Product
+# help that names the Runbooks page, never a search of runbook text.
+RUNBOOKS_MOVED = [
+    *(G(q, kind="product_help", tools=("app_help",), max_lookups=1,
+        contains=("Start in **Intelligence › Runbooks**", "**Runbooks › Coming from an earlier version**"),
+        absent=("could not read", "seed:mitre"), forbid=(P("search_knowledge"),))
+      for q in ("Where are playbooks now?", "Where did playbooks go?", "What happened to playbooks?")),
+    G("Where are runbooks?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Start in **Intelligence › Runbooks**",), absent=("could not read", "seed:mitre"),
+      forbid=(P("search_knowledge"),)),
+    # A help question about one part of the library keeps its own words: the runbook
+    # settings are under Settings, not the library page (FX5m review).
+    G("Where are the runbook settings?", kind="product_help", tools=("app_help",), max_lookups=1,
+      contains=("Settings › Integrations › Runbooks",), absent=("Coming from an earlier version",),
+      forbid=(P("search_knowledge"),)),
+    # The retired name inside a question about one runbook stays a knowledge search.
+    G("What's the playbook to go with a phishing case?", kind="data", tools=("search_knowledge",),
+      max_lookups=1, contains=("Phishing or reported suspicious email",),
+      absent=("Coming from an earlier version",), forbid=(P("app_help"),)),
+]
+
 GOLDEN: list[G] = [*SCREENSHOT, *REPORTS, *CASE_COUNTS, *TRENDS, *COMPARISONS, *METRICS, *COST, *LOGS, *INTEL,
                    *CASES, *DEEP, *ENTITY_INVESTIGATIONS, *INVESTIGATION_ROUTES, *APP_HELP, *PLATFORM, *CLARIFY, *READ_ONLY, *REGRESSIONS, *REGRESSIONS_R2,
-                   *EXPLAIN_RECORDS, *OUT_OF_SCOPE, *CLOSING]
+                   *EXPLAIN_RECORDS, *OUT_OF_SCOPE, *CLOSING, *RUNBOOKS_MOVED]
 
 
 def test_the_golden_set_is_big_enough_and_has_every_screenshot_question() -> None:

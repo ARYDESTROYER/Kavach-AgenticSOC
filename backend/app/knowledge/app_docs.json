@@ -1292,7 +1292,7 @@
    "page": "analyst/dashboards.md",
    "anchor": "headline-figures",
    "heading": "Headline figures",
-   "text": "| Board | Figure | What it counts |\n|---|---|---|\n| SOC operations | Open now | Cases not closed or resolved right now. |\n| | Awaiting a decision | Open cases whose AI verdict is Needs human. |\n| | Unassigned | Open cases with no assignee. |\n| | SLA breached | Open cases past their response or resolve target. |\n| | New cases | Cases created in the window. |\n| | Closed | Cases created in the window that are now closed or resolved. |\n| Detection and data health | Sources reporting | Enabled sources that sent at least one event in the window. |\n| | Silent sources | Enabled sources the silent-source detector flags. |\n| | Events per minute | Mean events per minute over the measured part of the window, from the poller's tallies. |\n| | Alerts ingested | Raw alerts counted in the window. |\n| | Alert reduction | Share of raw alerts that did not become a case. |\n| | Techniques seen | ATT&CK techniques on at least one case in the window (never detection coverage). |\n| Executive summary | Cases | Cases created in the window. |\n| | Confirmed threats | Cases an analyst confirmed as true positives. Closes by an analyst policy are left out, and the AI verdict is never used. |\n| | MTTD p50 | Median time from the first event to case creation. |\n| | MTTR p50 | Median time from case creation to resolution. |\n| | Closed by the AI agent | Cases whose first terminal decision was the agent's automatic close. A later human acknowledgement does not move it. |\n| | SLA attainment | Share of scored cases that met their targets; \"Not measured\", with the reason, when nothing was scored. |",
+   "text": "| Board | Figure | What it counts |\n|---|---|---|\n| SOC operations | Open now | Cases not closed or resolved right now. |\n| | Awaiting a decision | Open cases whose AI verdict is Needs human. |\n| | Unassigned | Open cases with no assignee. |\n| | SLA breached | Open cases past their response or resolve target. |\n| | New cases | Cases created in the window. |\n| | Closed | Cases created in the window that are now closed or resolved, not counting closes by an analyst policy. |\n| Detection and data health | Sources reporting | Enabled sources that sent at least one event in the window. |\n| | Silent sources | Enabled sources the silent-source detector flags. |\n| | Events per minute | Mean events per minute over the measured part of the window, from the poller's tallies. |\n| | Alerts ingested | Raw alerts counted in the window. |\n| | Alert reduction | Share of raw alerts that did not become a case. |\n| | Techniques seen | ATT&CK techniques on at least one case in the window (never detection coverage). |\n| Executive summary | Cases | Cases created in the window. |\n| | Confirmed threats | Cases an analyst confirmed as true positives. Closes by an analyst policy are left out, and the AI verdict is never used. |\n| | MTTD p50 | Median time from the first event to case creation. |\n| | MTTR p50 | Median time from case creation to resolution. |\n| | Closed by the AI agent | Cases whose first terminal decision was the agent's automatic close. A later human acknowledgement does not move it. |\n| | SLA attainment | Share of scored cases that met their targets; \"Not measured\", with the reason, when nothing was scored. |",
    "console": []
   },
   {
@@ -1300,7 +1300,7 @@
    "page": "analyst/dashboards.md",
    "anchor": "headline-figures",
    "heading": "Headline figures",
-   "text": "The spend per investigated case on the AI spend panel divides the investigation spend\n(the router and investigator calls of the case pipeline) by the cases the agent\ninvestigated in the window. Chat, standup and report spend are left out.\n\nThe KPI glossary explains the figures the Cyber Defence Center shows.",
+   "text": "Under **Closed**, \"of 36 created in the window\" is the population the figure is drawn\nfrom: the window's cases, less any that an analyst policy closed. When there are some,\nthe line names them (\"of 36 created, plus 2 closed by analyst policy\"), so the two\nnumbers add up to **New cases**.\n\nThe spend per investigated case on the AI spend panel divides the investigation spend\n(the router and investigator calls of the case pipeline) by the cases the agent\ninvestigated in the window. Chat, standup and report spend are left out.\n\nThe KPI glossary explains the figures the Cyber Defence Center shows.",
    "console": []
   },
   {
@@ -1316,11 +1316,19 @@
    "page": "analyst/dashboards.md",
    "anchor": "your-own-boards",
    "heading": "Your own boards",
-   "text": "**My dashboard** is your personal board. Until you save it, it shows the default layout\nfor your role. A board you saved before this release under the name \"Overview\" now\nreads \"My dashboard\", and the next save stores the new name.\n\n- **New dashboard** (the header button or the dashed tile) opens an empty board named\n  \"Untitled dashboard\" in Edit mode. **Save dashboard** creates it and gives it its own\n  address; **Discard** returns to the library.\n- **Edit** turns on Edit mode: rename the board, **Add widget** from the gallery, open a\n  widget's settings, drag a widget by its handle or resize it from its corner, or move\n  and resize it from the keyboard with its toolbar. **Save dashboard** stores the board;\n  **Discard** puts back what was stored.\n- **Duplicate** (in the **More** menu) makes a copy of the board and opens it in Edit mode.\n- **Rename** (in the **More** menu) changes the board's name.\n- **Reset to default layout** (in the **More** menu of My dashboard, once saved) drops\n  your saved board and any unsaved changes, and brings back the default for your role.\n- **Delete dashboard** (in the **More** menu of any other board) deletes it for good,\n  after you confirm.",
+   "text": "**My dashboard** is your personal board. Until you save it, it shows the default layout\nfor your role. A board you saved before this release under the name \"Overview\" now\nreads \"My dashboard\", and the next save stores the new name.",
    "console": []
   },
   {
    "id": "analyst/dashboards#your-own-boards:1",
+   "page": "analyst/dashboards.md",
+   "anchor": "your-own-boards",
+   "heading": "Your own boards",
+   "text": "- **New dashboard** (the header button or the dashed tile) opens an empty board named\n  \"Untitled dashboard\" in Edit mode. **Save dashboard** creates it and gives it its own\n  address; **Discard** returns to the library.\n- **Edit** turns on Edit mode: rename the board, **Add widget** from the gallery, open a\n  widget's settings, drag a widget by its handle or resize it from its corner, or move\n  and resize it from the keyboard with its toolbar. Where a widget is too narrow for the\n  whole toolbar, its moves are in its options menu. **Save dashboard** stores the board;\n  **Discard** puts back what was stored.\n- On a phone or another narrow screen, Edit mode shows the widgets one per row, full\n  width, in the order the board reads. **Move up** and **Move down** move a widget one\n  place in that order, and the button you pressed stays where it was, so you can press\n  it again. The layout on a wider screen keeps its shape: two widgets side by side, or\n  two of the same size, swap places. Two widgets of different sizes keep their sizes\n  when the widgets after them can make room without leaving a gap; otherwise they trade\n  places and sizes, and every other widget stays where it is. Where a widget's minimum\n  size does not fit the other's place, the widgets after them move to make room instead.\n  **Add widget** and **Duplicate** put the new widget at the end, and the others keep\n  their order. **Remove** lets the widgets below move up into the space, as they do on a\n  wider screen, and that is what is saved. Widths and heights are changed on a wider\n  screen.\n- **Duplicate** (in the **More** menu) makes a copy of the board and opens it in Edit mode.\n- **Rename** (in the **More** menu) changes the board's name.\n- **Reset to default layout** (in the **More** menu of My dashboard, once saved) drops\n  your saved board and any unsaved changes, and brings back the default for your role.\n- **Delete dashboard** (in the **More** menu of any other board) deletes it for good,\n  after you confirm.",
+   "console": []
+  },
+  {
+   "id": "analyst/dashboards#your-own-boards:2",
    "page": "analyst/dashboards.md",
    "anchor": "your-own-boards",
    "heading": "Your own boards",
@@ -1490,8 +1498,10 @@
    "page": "analyst/case-manager.md",
    "anchor": "keyboard",
    "heading": "Keyboard",
-   "text": "The queue is one tab stop. Press **?** in the queue for this list:\n\n| Keys | Action |\n|---|---|\n| ↑ ↓ or K J | Move through the queue and open the case |\n| Home, End | First or last loaded case |\n| X or Space | Select or clear the focused case |\n| Shift+↑ ↓ or Shift+X | Extend the selection |\n| Enter | Move focus into the open case |\n| Esc | Clear the selection |\n| / | Search the queue |\n| A, C, E, H | Acknowledge, close, escalate, or hold the open case |\n| R | Reinvestigate the open case |\n| M, T | Change the owner or edit tags |\n| Alt+1 … 7 | Switch case tabs (Alt+2 is the Runbook tab) |\n\nShortcuts never fire while you type in a field, and an action you lack the permission for\ndoes nothing. After a dialog closes, focus returns to the control or row that opened it.",
-   "console": []
+   "text": "In **Triage → Case Manager** the queue is one tab stop. Press **?** in the queue for this list:\n\n| Keys | Action |\n|---|---|\n| ↑ ↓ or K J | Move through the queue and open the case |\n| Home, End | First or last loaded case |\n| X or Space | Select or clear the focused case |\n| Shift+↑ ↓ or Shift+X | Extend the selection |\n| Enter | Move focus into the open case |\n| Esc | Clear the selection |\n| / | Search the queue |\n| A, C, E, H | Acknowledge, close, escalate, or hold the open case |\n| R | Reinvestigate the open case |\n| M, T | Change the owner or edit tags |\n| Alt+1 … 7 | Switch case tabs (Alt+2 is the Runbook tab) |\n\nShortcuts never fire while you type in a field, and an action you lack the permission for\ndoes nothing. After a dialog closes, focus returns to the control or row that opened it.",
+   "console": [
+    "page:case_manager"
+   ]
   },
   {
    "id": "analyst/case-manager#resize-the-desktop-split:0",
@@ -1539,7 +1549,9 @@
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
    "text": "A runbook is the procedure the people on a case follow: phases, steps with\ninstructions, read-only lookups, decisions, and recorded actions. A Published runbook\nattaches to a case automatically when it matches (or the **Generic incident** fallback\ndoes), and the version that attached stays pinned to the case. It guides people; it\nnever closes the case and never changes its verdict, and every step change is recorded\nin the audit log.\n\nThe **Runbook** tab opens with:",
-   "console": []
+   "console": [
+    "page:case_manager"
+   ]
   },
   {
    "id": "analyst/case-manager#work-the-runbook:1",
@@ -1547,7 +1559,9 @@
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
    "text": "- **The strip**: the runbook's title, its version, how and when it attached (\"Matched\n  automatically · 12:52 UTC\", \"Fallback\", \"Added by Asha Rao\", \"Suggested by the AI,\n  accepted by Asha Rao\"), **Why attached** (the criteria that matched and how matching\n  works), **Add runbook**, and a menu with **Switch to version N** when a newer one is\n  Published, **Export as Markdown**, **Open in the Runbooks library**, and **Abandon run**.\n- **The progress line**, for example \"4 of 11 steps done · 1 not applicable · 5\n  required open · 1 waiting\", as the strip's last line (its own short line on a phone).\n- **The Next step card**: the first required step not yet done, with its phase, kind,\n  focus, and its Escalate if and Benign if criteria. Depending on the step you can\n  confirm an AI draft note (**Confirm and mark done**), write a note and **Mark done**,\n  pick an option and **Record decision**, or record an action; **Not applicable**,\n  **Blocked** and **Assign** are on the card too (in **More** on a phone, where the focus\n  line folds into **Focus and criteria**). A note you are typing goes in the same save as\n  **Mark done**, **Record action** or **Record decision**; otherwise it is saved when you\n  leave it, or at once with **Save note**. If another change to the runbook is still being\n  saved when you press a button, the step says so and you press it again. After you",
-   "console": []
+   "console": [
+    "page:case_manager"
+   ]
   },
   {
    "id": "analyst/case-manager#work-the-runbook:2",
@@ -1555,7 +1569,9 @@
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
    "text": "finish the step, focus moves to the new Next step and a screen reader hears \"Step 5\n  done. Next, step 6: ...\"; recording an action that now waits for approval moves on the\n  same way (\"Step 5 recorded.\"). A step waiting for someone's approval is never the next\n  step; when the required steps left all wait for approval, the card says so and lists\n  them. An action whose approval was rejected shows who rejected it and why, and you can\n  record it again.\n- **When every required step is done**, the run is completed and the card says **All\n  required steps are done.**, offers **Close case** (it opens the close dialog), and lists\n  any optional steps left. A completed run stays workable: you can still do its optional\n  steps, and **Reopen step** on a finished step makes the run active again. Only an\n  abandoned run is read only.\n- **Phase tabs**, one per phase with its counts (\"Contain 0/2\") and a dot when a step\n  waits for approval; arrow keys move between them, and the selected phase keeps an\n  outline in forced colours. Below, each step is one row: open it for its instructions,\n  lookup evidence, note, decision or action, approval, and the buttons **Mark done**,\n  **Not applicable** and **Blocked** (each asks a reason), **Assign**, and **Reopen\n  step**.\n- **Other tasks**: the case's free-form tasks, with who added each one. They never count\n  toward runbook progress. **Open the Runbook tab** in Collaboration brings you here.",
-   "console": []
+   "console": [
+    "page:case_manager"
+   ]
   },
   {
    "id": "analyst/case-manager#work-the-runbook:3",
@@ -1563,15 +1579,19 @@
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
    "text": "**Lookups** read logs, enrichment, related cases, campaigns, or ATT&CK under your own\npermissions. Their results are evidence shown as untrusted data, never as instructions;\na lookup whose data you cannot read says so instead of showing it. A lookup that runs\non attachment fills in on its own; one that runs on demand offers **Run lookup**. **Run\nagain** replaces the earlier result, and the step says so (\"Ran again at 14:31 UTC; the\nearlier result was replaced\").\n\n**Decisions** mark only the later steps still to do as Not applicable, with the reason\n\"Skipped by the decision 'Benign'\". A recorded action keeps its record.\n\n**Approvals**: when step approvals are on, an action waits for a person with the step's\napproval role. The person who recorded the action cannot approve it, and someone without\nthe role sees \"Only a soc manager can approve this step.\" in place of a working\n**Approve**; the step says so in both cases.\n\n**The AI**, when it is on, can draft a step's note from its lookup results (**Draft\nnote**) and suggest a runbook in **Start runbook** when nothing but the fallback\nmatched. Each is one metered call with a dry-run estimate on hover; a draft is labelled\n\"AI draft · not part of the case until you confirm it\", and the AI never marks a step\ndone, approves anything, or attaches a runbook by itself.",
-   "console": []
+   "console": [
+    "page:case_manager"
+   ]
   },
   {
    "id": "analyst/case-manager#work-the-runbook:4",
    "page": "analyst/case-manager.md",
    "anchor": "work-the-runbook",
    "heading": "Work the runbook",
-   "text": "**Start runbook** (in **Take action**, or on the tab of a case with no runbook) lists\nthe best match with why it matched, then other matches, the fallback, and every other\nPublished runbook, with a preview of the selected one's phases and an optional note. On\na phone the dialog takes the full height and the selected runbook shows its phases under\nits own entry. A case with no runbook says \"No runbook is attached to this case.\", and\nrules with no runbook are listed on the Runbooks page. The tab's count reads **None**\nthen, or **Abandoned** when the only runs on the case were abandoned.\n\nWithout `runbooks:run` the tab is read only and says \"You can view this runbook but not\nupdate it.\" While runbooks are turned off in Settings no runbook starts and the runs on\nthe case are read only too: \"Runbooks are turned off in Settings, so steps cannot\nchange.\" A step that changed since you opened it shows the latest version with \"This\nstep changed since you opened it. Showing the latest.\"; what you typed stays in the\nfield, and when someone else finished that step meanwhile, its row opens with your text\nand the note. In Demo Mode the tab works the same way on the Demo cases.",
-   "console": []
+   "text": "To start a runbook on a case, open the case in **Triage → Case Manager** and choose\n**Start runbook** in **Take action**, or on the Runbook tab of a case with no runbook. It\nlists the best match with why it matched, then other matches, the fallback, and every other\nPublished runbook, with a preview of the selected one's phases and an optional note. On\na phone the dialog takes the full height and the selected runbook shows its phases under\nits own entry. A case with no runbook says \"No runbook is attached to this case.\", and\nrules with no runbook are listed on the Runbooks page. The tab's count reads **None**\nthen, or **Abandoned** when the only runs on the case were abandoned.\n\nWithout `runbooks:run` the tab is read only and says \"You can view this runbook but not\nupdate it.\" While runbooks are turned off in Settings no runbook starts and the runs on\nthe case are read only too: \"Runbooks are turned off in Settings, so steps cannot\nchange.\" A step that changed since you opened it shows the latest version with \"This\nstep changed since you opened it. Showing the latest.\"; what you typed stays in the\nfield, and when someone else finished that step meanwhile, its row opens with your text\nand the note. In Demo Mode the tab works the same way on the Demo cases.",
+   "console": [
+    "page:case_manager"
+   ]
   },
   {
    "id": "analyst/case-manager#single-case-actions:0",
@@ -4104,16 +4124,20 @@
    "page": "administration/audit-log.md",
    "anchor": "scopes",
    "heading": "Scopes",
-   "text": "The control under the page header chooses which rows the list reads:\n\n| Scope | What it shows |\n|---|---|\n| **People and settings** (default) | Every row a person (or a service acting for one) made, plus every access, configuration and case work row, whoever made it: sign-ins, access denied, user and role changes, settings, exports, resets, runbook and dashboard changes, case work. |\n| **Agent activity** | What the AI agent and the system did on their own: investigation steps (prompts, log queries, tool calls, verdicts, decisions) and system work (source polls, scans, notifications, background jobs, errors). |\n| **All** | Both. |\n\nThe two scopes never overlap, so a row's scope does not change after an upgrade. A\ndecision the deterministic case manager made is recorded with the system as its actor\ntype, because code, not the AI agent, decides whether a case closes.",
-   "console": []
+   "text": "The scope control under the header of **Platform → Audit log** chooses which rows the list\nreads.\n\n| Scope | What it shows |\n|---|---|\n| **People and settings** (default) | Every row a person (or a service acting for one) made, plus every access, configuration and case work row, whoever made it: sign-ins, access denied, user and role changes, settings, exports, resets, runbook and dashboard changes, case work. |\n| **Agent activity** | What the AI agent and the system did on their own: investigation steps (prompts, log queries, tool calls, verdicts, decisions) and system work (source polls, scans, notifications, background jobs, errors). |\n| **All** | Both. |\n\nThe two scopes never overlap, so a row's scope does not change after an upgrade. A\ndecision the deterministic case manager made is recorded with the system as its actor\ntype, because code, not the AI agent, decides whether a case closes.",
+   "console": [
+    "page:audit"
+   ]
   },
   {
    "id": "administration/audit-log#finding-events:0",
    "page": "administration/audit-log.md",
    "anchor": "finding-events",
    "heading": "Finding events",
-   "text": "- **Time range.** The header offers the last hour, 24 hours, 7 days (the default), 30\n  days and 90 days. **Custom** sets a start and an end in UTC, to the minute.\n- **Search.** Type in the search box (or press `/` to reach it) and press Enter. It\n  searches the event name, the actor, the target and the stored summaries on the server,\n  across the whole log, never only the rows already loaded. You can narrow with\n  qualifiers, which become filters (shown as chips) rather than search text:\n\n  | Qualifier | Filter |\n  |---|---|\n  | `actor:trao` | actor name contains `trao` |\n  | `event:auth.login_failed` | one event, an event family (`event:auth`) or a category (`event:config`) |\n  | `outcome:failed` | `success`, `failed`, `denied`, `partial` or `not recorded` |\n  | `case:` | rows about one case |\n  | `target:` | rows about one user, source, setting, runbook, job or other target |\n  | `ip:203.0.113.24` | rows from one client address |",
-   "console": []
+   "text": "In **Platform → Audit log**, type in the search box (press `/` to reach it) and press\nEnter, or narrow the list with the time range and the filters below. Each runs on the server\nacross the whole log, never only on the rows already loaded.\n\n- **Time range.** The header offers the last hour, 24 hours, 7 days (the default), 30\n  days and 90 days. **Custom** sets a start and an end in UTC, to the minute.\n- **Search.** The search box matches the event name, the actor, the target and the stored\n  summaries. You can narrow with qualifiers, which become filters (shown as chips) rather\n  than search text:\n\n  | Qualifier | Filter |\n  |---|---|\n  | `actor:trao` | actor name contains `trao` |\n  | `event:auth.login_failed` | one event, an event family (`event:auth`) or a category (`event:config`) |\n  | `outcome:failed` | `success`, `failed`, `denied`, `partial` or `not recorded` |\n  | `case:` | rows about one case |\n  | `target:` | rows about one user, source, setting, runbook, job or other target |\n  | `ip:203.0.113.24` | rows from one client address |",
+   "console": [
+    "page:audit"
+   ]
   },
   {
    "id": "administration/audit-log#finding-events:1",
@@ -4121,7 +4145,9 @@
    "anchor": "finding-events",
    "heading": "Finding events",
    "text": "  Matching is case-insensitive. On Elasticsearch the stored summaries are matched by\n  whole words and phrases, so `login failed` finds \"login failed\" but `gin fail` does not;\n  names, actions and targets match any part of the text on every store. Upper and lower\n  case of letters outside ASCII match only on PostgreSQL and Elasticsearch (`école` finds\n  `École` there, but not on SQLite).\n- **Event, Actor, Outcome and More filters.** The Event menu is grouped by category and\n  searchable. An older event type that shares its name with a newer event is listed with\n  \"(older rows)\", because it matches only rows stored without the newer event name. The\n  Actor menu filters by part of a name, by one exact name from the events\n  loaded, or by kind (people, AI agent, system, services). More filters adds a case, a\n  source, a surface or a client address.\n- **Chips.** Every filter you add shows as a chip; remove one with its button, or use\n  **Clear all**. The scope and the time range stay.\n- **Quick views.** One click applies one common filter, and each view is named for exactly\n  what it matches, in the words of the chip it leaves: **Sign-in failed** (the failed\n  sign-in event), **Access denied** (every row whose outcome is Denied, older\n  access-denied rows included), **User events** (every user event: accounts created,\n  changed and deleted, role assignments and personal preferences), **Settings events**\n  (every settings event) and **Configuration and data** (that whole category, older rows\n  included). Sign-in failed, User events and Settings events match rows recorded since\n  Round 14: an older failed sign-in is a general sign-in row with no outcome of its own,\n  and an older user or settings change keeps its stored type, so to include those rows\n  pick **Access and identity** or **Configuration and data** in the Event menu. Custom role\n  definitions (created, changed and deleted) are separate events: pick **Any role event**\n  in the Event menu. Press a view again to clear it. The views read People and settings\n  rows, so applying one from Agent activity switches the scope to People and settings.",
-   "console": []
+   "console": [
+    "page:audit"
+   ]
   },
   {
    "id": "administration/audit-log#finding-events:2",
@@ -4129,15 +4155,19 @@
    "anchor": "finding-events",
    "heading": "Finding events",
    "text": "The page address carries the view (for example\n`#/audit?scope=people&from=now-7d&q=role&record=`), so a link you copy opens the same\nrows and the same record. The source, surface and actor kind filters and the sort order last\nwhile the page is open and are not part of the link; following a **Related** link in a\nrecord clears the source, surface and actor kind filters, so the link shows every event it\nnames.",
-   "console": []
+   "console": [
+    "page:audit"
+   ]
   },
   {
    "id": "administration/audit-log#reading-the-list:0",
    "page": "administration/audit-log.md",
    "anchor": "reading-the-list",
    "heading": "Reading the list",
-   "text": "The list shows 50 events at a time, newest first; **Load more** reads the next 50 from\nthe server. **Refresh** reads the view again and keeps the rows on screen until the new\nones arrive; if the read fails, the rows stay under the error and **Load more** still reads\non from them. Load more is unavailable while a read is in progress. The line above the\nlist says what you are looking at, for example \"Showing 1 to 50 of 1,284 events · last 7\ndays · times in UTC · newest first\". On Elasticsearch a total above 10,000 is shown as \"at\nleast 10,000\".\n\n| Column | Holds |\n|---|---|\n| Time | When the event was recorded. The column header menu switches between UTC and your local time (remembered in this browser) and between newest and oldest first. |\n| Outcome | Success, Failed, Denied, Partial or Not recorded, always as a word with a glyph. |\n| Event | The event's friendly name. |\n| Actor | The person, AI agent or system, with a glyph for its kind. |\n| Target | What the event acted on: a case, a user, a source, a setting area, a job or a rule. |\n| Summary | The stored one-line summary. |\n\nWhen a scope has no events in the time range, the page says so in that scope's words\n(\"No agent activity in the last 7 days.\") and offers a longer range and **Show all\nscopes**, so an empty scope is never mistaken for an empty log.",
-   "console": []
+   "text": "**Platform → Audit log** lists 50 events at a time, newest first; **Load more** reads the\nnext 50 from the server. **Refresh** reads the view again and keeps the rows on screen until the new\nones arrive; if the read fails, the rows stay under the error and **Load more** still reads\non from them. Load more is unavailable while a read is in progress. The line above the\nlist says what you are looking at, for example \"Showing 1 to 50 of 1,284 events · last 7\ndays · times in UTC · newest first\". On Elasticsearch a total above 10,000 is shown as \"at\nleast 10,000\".\n\n| Column | Holds |\n|---|---|\n| Time | When the event was recorded. The column header menu switches between UTC and your local time (remembered in this browser) and between newest and oldest first. |\n| Outcome | Success, Failed, Denied, Partial or Not recorded, always as a word with a glyph. |\n| Event | The event's friendly name. |\n| Actor | The person, AI agent or system, with a glyph for its kind. |\n| Target | What the event acted on: a case, a user, a source, a setting area, a job or a rule. |\n| Summary | The stored one-line summary. |\n\nWhen a scope has no events in the time range, the page says so in that scope's words\n(\"No agent activity in the last 7 days.\") and offers a longer range and **Show all\nscopes**, so an empty scope is never mistaken for an empty log.",
+   "console": [
+    "page:audit"
+   ]
   },
   {
    "id": "administration/audit-log#reading-the-list:1",
@@ -4145,7 +4175,9 @@
    "anchor": "reading-the-list",
    "heading": "Reading the list",
    "text": "On a phone the list shows Time, Outcome and Event, and the filters fold into **Filters**\n(its count leaves out the search, which stays on the page). Below 1,280 pixels the Target\ncolumn folds away; every value is still in the record.\n\nIn **Agent activity**, the steps of one investigation fold into one row that names the\ncase it worked on, how many steps it took and how it ended (for example \"10 steps · closed\nas false positive\"), with **Open case trace**. Open the row to list its steps. When only\npart of an investigation is loaded the row says so (\"6 of 10 steps shown\") and offers\n**Load more**. Rows without an investigation run (older rows and work outside the\npipeline) are never grouped.\n\nA row recorded before Round 14 carries fewer fields. Its outcome reads Not recorded,\nexcept that an access-denied row reads Denied and an error row reads Failed; the record\nmarks those values as derived.",
-   "console": []
+   "console": [
+    "page:audit"
+   ]
   },
   {
    "id": "administration/audit-log#the-record:0",
@@ -4184,30 +4216,42 @@
    "page": "administration/audit-log.md",
    "anchor": "keyboard",
    "heading": "Keyboard",
-   "text": "| Keys | Action |\n|---|---|\n| Up, Down | Move between events |\n| J, K | Move to the next or previous event and open it |\n| Enter | Open the event |\n| Home, End | First or last loaded event |\n| Esc | Close the record |\n| `/` | Search the audit log |\n| `?` | Show the shortcuts |\n\nShortcuts never act while you type in a field or use a menu.",
-   "console": []
+   "text": "These shortcuts work in the list and the record of **Platform → Audit log**.\n\n| Keys | Action |\n|---|---|\n| Up, Down | Move between events |\n| J, K | Move to the next or previous event and open it |\n| Enter | Open the event |\n| Home, End | First or last loaded event |\n| Esc | Close the record |\n| `/` | Search the audit log |\n| `?` | Show the shortcuts |\n\nShortcuts never act while you type in a field or use a menu.",
+   "console": [
+    "page:audit"
+   ]
   },
   {
    "id": "administration/audit-log#exporting:0",
    "page": "administration/audit-log.md",
    "anchor": "exporting",
    "heading": "Exporting",
-   "text": "**Export** in the page header exports exactly what the page shows: its scope, filters,\nsearch and time range. Choose **Export CSV (spreadsheet)** or **Export JSON Lines (for a\nSIEM)**. **Full application export** opens the data export in Settings for people who hold\n`data_export:export`.\n\nThe export dialog fixes the time range to exact UTC times when it opens (for example \"18\nOct 15:10 to 25 Oct 15:09 UTC\"); the count it shows, the file name and the export all use\nthose times. A range that ends now ends at the last whole second that has passed, so the\ncount and the file hold the same events. The count assumes this device's clock is not\nahead of the server's. On a fast clock the range reaches past the server's present, so\nevents written after the dialog counted (the dialog's own count is recorded as one) can\nfall inside it, and the file can hold more events than the dialog showed. The export never\nreads past the moment it was submitted.\nOne file holds at most 100,000 events. Above that the dialog reads \"More than 100,000\nevents\", Export stays disabled, and it offers **Use last 30 days** when that range fits;\notherwise narrow the filters. Nothing is ever cut off silently.",
+   "text": "**Export** in the header of **Platform → Audit log** exports exactly what the page shows:\nits scope, filters, search and time range. Choose **Export CSV (spreadsheet)** or **Export\nJSON Lines (for a SIEM)**. It needs `audit:view` and `audit:export`, not the data export\npermission. **Full application export**, a separate secret-free bundle of the application\nstate you choose, opens the data export in Settings for people who hold\n`data_export:export`.",
+   "console": [
+    "page:audit"
+   ]
+  },
+  {
+   "id": "administration/audit-log#time-range-and-size-limit:0",
+   "page": "administration/audit-log.md",
+   "anchor": "time-range-and-size-limit",
+   "heading": "Time range and size limit",
+   "text": "The export dialog fixes the time range to exact UTC times when it opens (for example \"18\nOct 15:10 to 25 Oct 15:09 UTC\"); the count it shows, the file name and the export all use\nthose times. A range that ends now ends at the last whole second that has passed, so the\ncount and the file hold the same events. The count assumes this device's clock is not\nahead of the server's. On a fast clock the range reaches past the server's present, so\nevents written after the dialog counted (the dialog's own count is recorded as one) can\nfall inside it, and the file can hold more events than the dialog showed. The export never\nreads past the moment it was submitted.\nOne file holds at most 100,000 events. Above that the dialog reads \"More than 100,000\nevents\", Export stays disabled, and it offers **Use last 30 days** when that range fits;\notherwise narrow the filters. Nothing is ever cut off silently.",
    "console": []
   },
   {
-   "id": "administration/audit-log#exporting:1",
+   "id": "administration/audit-log#files-and-delivery:0",
    "page": "administration/audit-log.md",
-   "anchor": "exporting",
-   "heading": "Exporting",
+   "anchor": "files-and-delivery",
+   "heading": "Files and delivery",
    "text": "- You are asked to sign in again before the export runs.\n- One export per person runs at a time.\n- Exports of 5,000 events or fewer download on the page when ready; while you wait,\n  **Continue in the background** (or Esc) closes the dialog and the export finishes in\n  **Jobs**. Larger exports run in the background; you get an Inbox notice and the file is\n  in **Jobs**. See Background jobs.\n- The file is named after the range, for example\n  `agentic-soc-audit_2026-10-18T151000Z_2026-10-25T150959Z.csv` (`.ndjson` for JSON\n  Lines). Exports always read oldest first, with times in ISO 8601 UTC.\n- **CSV** has one fixed set of columns covering every field; the tool input, the changes\n  and the truncated field list are JSON text. A text cell that starts like a spreadsheet\n  formula (`=`, `+`, `-`, `@`, a tab or a line break, also after spaces or in their\n  full-width forms) is written with a leading apostrophe, so a spreadsheet shows it as\n  text and never runs it. The CSV and copied data of chat answers and reports use the\n  same rule.\n- **JSON Lines** writes each stored record unchanged, one per line.\n- Audit exports are not available in Demo Mode: the Export menu says so and stays\n  disabled until Demo Mode is turned off.\n- A finished audit export offers **Open audit log** in **Jobs**, in the Inbox and on its\n  notice; it opens the audit log on the scope, range and filters it was exported from\n  (`#/audit` with that scope), so you see the rows the file holds.",
    "console": []
   },
   {
-   "id": "administration/audit-log#exporting:2",
+   "id": "administration/audit-log#requests-and-downloads:0",
    "page": "administration/audit-log.md",
-   "anchor": "exporting",
-   "heading": "Exporting",
+   "anchor": "requests-and-downloads",
+   "heading": "Requests and downloads",
    "text": "Every export is recorded in the audit log when it is requested, when the file is written\n(with its size and SHA-256) and each time it is downloaded. Every download of any job's\nfile is recorded before it starts, as one row per download: \"Audit export downloaded\" for\nan audit export and \"Job file downloaded\" for any other job's file. If that record cannot\nbe written, the download does not start.\n\nSubmitting an audit export, a data export or a reset is recorded first, with who asked\nand from where (\"Audit export requested\", \"Export requested\", \"Reset requested\"); if that\nrecord cannot be written, the job is not created. Every row of one such job names the job\nas its target, so **All events for this target** in its record shows who asked, what the\njob did and each download.",
    "console": []
   },

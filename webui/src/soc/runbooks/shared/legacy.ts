@@ -11,8 +11,8 @@
  *   2. `payload.playbook_id` through the one-shot migration's id map (the marker's `id_map`
  *      for the procedure sources, `migrated_procedure_ids` in
  *      `backend/app/engine/runbook_migration.py`): the procedure the rule ran, as migrated.
- *      The configured folder (`playbook_dir`) answers first, then the stored documents
- *      (`playbooks`). A retired bundled procedure id ({@link LEGACY_BUNDLED_PLAYBOOK_IDS}) is
+ *      The configured folder (`procedure_dir`) answers first, then the stored documents
+ *      (`playbooks`). A retired bundled procedure id ({@link LEGACY_BUNDLED_PROCEDURE_IDS}) is
  *      answered by the folder only: a stored document with that id never ran from a rule
  *      (the bundled procedure won the id, so the migration made the document a shadowed
  *      Draft). The reference runbooks (`runbooks`) were never procedures, so they never
@@ -66,8 +66,8 @@ export const LEGACY_BUNDLED_RUNBOOK_MAP: Readonly<Record<string, string>> = {
   web_attack: 'web-application-attack',
 };
 
-/** The 9 ids the retired bundled procedures held (mirror of the server's `LEGACY_BUNDLED_PLAYBOOK_IDS`). */
-export const LEGACY_BUNDLED_PLAYBOOK_IDS: ReadonlySet<string> = new Set([
+/** The 9 ids the retired bundled procedures held (mirror of the server's `LEGACY_BUNDLED_PROCEDURE_IDS`). */
+export const LEGACY_BUNDLED_PROCEDURE_IDS: ReadonlySet<string> = new Set([
   'brute_force_login',
   'cloud_identity_compromise',
   'data_exfiltration_response',
@@ -80,7 +80,7 @@ export const LEGACY_BUNDLED_PLAYBOOK_IDS: ReadonlySet<string> = new Set([
 ]);
 
 /** The migration namespaces a rule could run before Round 14, in the server's order (folder first). */
-export const PROCEDURE_NAMESPACES: readonly string[] = ['playbook_dir', 'playbooks'];
+export const PROCEDURE_NAMESPACES: readonly string[] = ['procedure_dir', 'playbooks'];
 
 export type AutomationRunbookStatus = 'attaches' | 'needs_runbook' | 'unknown';
 
@@ -115,7 +115,7 @@ export function migratedProceduresFromLibrary(library: readonly RunbookSummary[]
     for (const row of library) {
       const from = row.migrated_from;
       if (!from || from.namespace !== namespace || typeof from.id !== 'string' || !from.id) continue;
-      if (namespace === 'playbooks' && LEGACY_BUNDLED_PLAYBOOK_IDS.has(from.id)) continue;
+      if (namespace === 'playbooks' && LEGACY_BUNDLED_PROCEDURE_IDS.has(from.id)) continue;
       if (!Object.prototype.hasOwnProperty.call(out, from.id)) out[from.id] = row.id;
     }
   }

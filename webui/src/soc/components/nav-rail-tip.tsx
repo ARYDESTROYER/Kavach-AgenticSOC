@@ -30,9 +30,11 @@ interface Tip {
   label: string;
   detail: string;
   top: number;
+  /** The control it labels (measured again when the rail lays out anew). */
+  el: HTMLElement | null;
 }
 
-const HIDDEN: Tip = { id: null, label: '', detail: '', top: 0 };
+const HIDDEN: Tip = { id: null, label: '', detail: '', top: 0, el: null };
 let tip: Tip = HIDDEN;
 let timer: number | null = null;
 let grace: number | null = null;
@@ -41,7 +43,15 @@ let dismissed: string | null = null;
 const listeners = new Set<() => void>();
 
 function set(next: Tip): void {
-  if (next.id === tip.id && next.top === tip.top && next.label === tip.label && next.detail === tip.detail) return;
+  if (
+    next.id === tip.id &&
+    next.top === tip.top &&
+    next.label === tip.label &&
+    next.detail === tip.detail &&
+    next.el === tip.el
+  ) {
+    return;
+  }
   tip = next;
   listeners.forEach((listener) => listener());
 }
@@ -84,11 +94,19 @@ export function dismissRailTip(): boolean {
 }
 
 function show(id: string, el: HTMLElement, label: string, detail: string): void {
-  // One surface at a time: a group flyout already names its group.
-  if (navStore.getState().flyout !== null || dismissed === id) return;
+  // One surface at a time: a group flyout already names its group. The tooltip belongs to
+  // the rail: a rest that began just before the drawer opened (the rows' handlers follow
+  // the state a frame later) never shows it over the drawer.
+  const { flyout, collapsed } = navStore.getState();
+  if (!collapsed || flyout !== null || dismissed === id) return;
   clearGrace();
+  set({ id, label, detail, top: middleOf(el), el });
+}
+
+/** The vertical middle of `el`, in viewport pixels (the tooltip's anchor line). */
+function middleOf(el: HTMLElement): number {
   const rect = el.getBoundingClientRect();
-  set({ id, label, detail, top: rect.top + rect.height / 2 });
+  return rect.top + rect.height / 2;
 }
 
 /**
@@ -138,6 +156,16 @@ const read = () => tip;
 export function RailTipLayer() {
   const current = React.useSyncExternalStore(subscribe, read, read);
   const shown = current.id !== null;
+
+  // The control can move after the tooltip shows: a keyboard focus that lands in the frame
+  // after a collapse still sees an open group's pages above it, which hide a frame later
+  // and move it up. The rail renders this layer with every change of its state, so the
+  // tooltip follows its control, measured again before that change paints.
+  React.useLayoutEffect(() => {
+    if (!current.id || !current.el) return;
+    const top = middleOf(current.el);
+    if (top !== current.top) set({ ...current, top });
+  });
 
   // Escape dismisses the tooltip wherever focus is (it is the topmost layer while shown).
   // Capture phase, like a Radix layer, so a handler below cannot swallow it first; the key

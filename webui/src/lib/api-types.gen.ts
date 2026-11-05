@@ -4143,8 +4143,12 @@ export interface paths {
          * Playbooks Coverage
          * @deprecated
          * @description Deprecated alias: which runbook each stored case would match (the fallback does
-         *     not count as coverage), over at most 20,000 cases. Use ``GET /api/runbooks/metrics``
-         *     for runbook coverage.
+         *     not count as coverage), over the newest 20,000 cases at most. Needs ``cases:read``
+         *     as well as ``runbooks:read``, answers ``409 runbook_scope_unsupported`` while
+         *     row-level data scope applies to the caller and ``503 case_store_unavailable`` when
+         *     cases cannot be read. ``truncated`` is true when more cases exist beyond the ones
+         *     read, or a later page could not be read: every figure is then a lower bound. Use
+         *     ``GET /api/runbooks/metrics`` for runbook coverage.
          */
         get: operations["playbooks_coverage_api_playbooks_coverage_get"];
         put?: never;

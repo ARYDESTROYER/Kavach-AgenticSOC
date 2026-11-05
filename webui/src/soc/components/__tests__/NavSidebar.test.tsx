@@ -189,6 +189,11 @@ describe('the navigation store: synchronous hydration and dual persistence', () 
     act(() => fireEvent.click(screen.getByText('toggle-collapsed')));
     expect(screen.getByTestId('collapsed').textContent).toBe('true');
     expect(window.localStorage.getItem('soc.nav.collapsed')).toBe('1');
+    // The server write follows off the input task (nav-store persist: one frame, then one
+    // task); leaving the page sends a waiting write at once.
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
     expect(putUser).toHaveBeenCalledWith({ misc: { nav_collapsed: true } });
   });
 
@@ -197,6 +202,9 @@ describe('the navigation store: synchronous hydration and dual persistence', () 
     act(() => fireEvent.click(screen.getByText('toggle-overview')));
     expect(screen.getByTestId('open').textContent).toBe('overview');
     expect(JSON.parse(window.localStorage.getItem('soc.nav.openGroups') as string)).toEqual(['overview']);
+    act(() => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
     expect(putUser).toHaveBeenCalledWith({ misc: { nav_open_groups: ['overview'] } });
   });
 

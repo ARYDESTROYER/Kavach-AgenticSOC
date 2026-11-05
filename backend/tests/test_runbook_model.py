@@ -1049,9 +1049,8 @@ def _string_constants(path: Path) -> list[str]:
 
 #: Code and wire identifiers that keep the retired word, each deliberately: the stored
 #: automation payload key ``playbook_id`` (AGENTS.md naming contract: it stays the
-#: stored form of a ``run_playbook`` rule) and the public name of the retired bundled
-#: playbook ids. Neither is ever shown to a person.
-_COMPAT_IDENTIFIERS = frozenset({"playbook_id", "LEGACY_BUNDLED_PLAYBOOK_IDS"})
+#: stored form of a ``run_playbook`` rule). It is never shown to a person.
+_COMPAT_IDENTIFIERS = frozenset({"playbook_id"})
 
 
 @pytest.mark.parametrize("module", _MODULES)
@@ -1060,6 +1059,86 @@ def test_user_facing_strings_follow_the_copy_rules(module: str) -> None:
         assert "\u2014" not in text and "\u2013" not in text, text
         if text not in _COMPAT_IDENTIFIERS:
             assert "playbook" not in text.lower(), text
+
+
+#: The Round 14 runbook modules, and the identifiers and literal values in them that
+#: may keep the retired word (AGENTS.md naming contract, "Do not mint new playbook
+#: identifiers"): the accepted ``playbook_id`` field, the read-only legacy KV
+#: namespace ``playbooks`` and its pre-Round 14 constants, and the config section
+#: ``Preferences.playbooks``. ``list_playbooks_strict`` is a temporary forwarder for a
+#: caller outside these modules (``api/routes_export.py``) and goes with it.
+_NAMING_MODULES = (
+    "app/engine/runbook_model.py", "app/engine/runbook_match.py", "app/engine/runbook_lookup.py",
+    "app/engine/runbook_catalog.py", "app/engine/runbook_migration.py", "app/engine/runbook_runs.py",
+    "app/stores/legacy_procedures.py", "app/stores/runbook_library.py", "app/api/routes_runbooks.py",
+)
+_ACCEPTED_NAMES = frozenset({"playbook_id", "PLAYBOOKS_NS", "PLAYBOOKS_KEY", "list_playbooks_strict"})
+_ACCEPTED_VALUES = frozenset({"playbook_id", "playbooks", "run_playbook"})
+
+
+def _defined_names_and_values(path: Path) -> tuple[set[str], set[str]]:
+    """Every name ``path`` defines (functions, classes, parameters, assigned names and
+    attributes, import aliases) and every short single-word string literal in it."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    values: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+            names.add(node.attr)
+        elif isinstance(node, ast.alias):
+            names.add(node.asname or node.name.rsplit(".", 1)[-1])
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value and not any(ch.isspace() for ch in node.value) and len(node.value) <= 64:
+                values.add(node.value)
+    return names, values
+
+
+@pytest.mark.parametrize("module", _NAMING_MODULES)
+def test_the_runbook_modules_mint_no_new_identifier_with_the_retired_word(module: str) -> None:
+    names, values = _defined_names_and_values(BACKEND / module)
+    assert {n for n in names if "playbook" in n.lower()} <= _ACCEPTED_NAMES
+    # A stored or wire value too: the procedure folder's migration namespace is
+    # ``procedure_dir`` (it was never released under another name).
+    assert {v for v in values if "playbook" in v.lower()} <= _ACCEPTED_VALUES
+
+
+# ``app/api/routes.py`` keeps the retired procedure routes for one release (AGENTS.md:
+# the read aliases ``GET /api/playbooks*``, the ``410`` writes and the case route), so
+# their pre-Round 14 handler names, paths and old response fields stay. Nothing else in
+# the module may carry the retired word: a new helper there needs a neutral name.
+_ROUTES_ACCEPTED_NAMES = frozenset({
+    "playbooks", "playbooks_coverage", "playbook_selection", "playbook_detail",
+    "playbooks_create", "playbooks_reload", "playbooks_dry_run", "playbook_update",
+    "case_run_playbook", "playbook_id",
+})
+_ROUTES_ACCEPTED_VALUES = frozenset({
+    "/playbooks", "/playbooks/coverage", "/playbooks/dry-run", "/playbooks/reload",
+    "/playbooks/selection/{case_id}", "/playbooks/{playbook_id}",
+    "/cases/{case_id}/run-playbook",
+    # Accepted wire identifiers (the old coverage shape's field, the audit actors).
+    "playbook_id", "playbooks", "selected_playbooks", "run_playbook", "playbook_selector",
+})
+
+
+def test_the_retired_procedure_routes_mint_no_new_identifier_with_the_retired_word() -> None:
+    names, values = _defined_names_and_values(BACKEND / "app/api/routes.py")
+    assert {n for n in names if "playbook" in n.lower()} <= _ROUTES_ACCEPTED_NAMES
+    assert {v for v in values if "playbook" in v.lower()} <= _ROUTES_ACCEPTED_VALUES
+
+
+def test_the_retired_procedure_config_section_keeps_only_its_accepted_key() -> None:
+    """``Preferences.playbooks`` (the accepted config key, read once by the migration)
+    is typed by a class without the retired word."""
+    from app.config import LegacyProcedureConfig, Preferences
+
+    assert Preferences.model_fields["playbooks"].annotation is LegacyProcedureConfig
+    assert "playbook" not in LegacyProcedureConfig.__name__.lower()
 
 
 def test_issue_messages_follow_the_copy_rules() -> None:
@@ -1970,7 +2049,7 @@ def test_automation_resolves_through_the_id_map_before_the_bundled_map() -> None
     assert resolve({"playbook_id": "malware"}, migrated) == "malware-imported"
     # A retired bundled playbook id is in the map only when a configured folder's
     # file held it, the procedure the rule ran: the map wins for it too.
-    for legacy in sorted(RM.LEGACY_BUNDLED_PLAYBOOK_IDS):
+    for legacy in sorted(RM.LEGACY_BUNDLED_PROCEDURE_IDS):
         assert resolve({"playbook_id": legacy}, {legacy: f"{legacy}-imported"}) == f"{legacy}-imported"
     # With no migrated entry the built-in that merged it is the target, also before
     # the migration has run.
@@ -2002,15 +2081,15 @@ def test_a_shadowed_copy_of_a_bundled_playbook_never_wins_through_the_real_id_ma
     resolve = RM.resolve_automation_runbook_id
     stored_copy = migrated_procedure_ids({"id_map": {"playbooks:brute_force_login": "brute_force_login-imported"}})
     assert resolve({"playbook_id": "brute_force_login"}, stored_copy) == "brute-force-password-spray"
-    folder_file = migrated_procedure_ids({"id_map": {"playbook_dir:brute_force_login": "brute_force_login-dir"}})
+    folder_file = migrated_procedure_ids({"id_map": {"procedure_dir:brute_force_login": "brute_force_login-dir"}})
     assert resolve({"playbook_id": "brute_force_login"}, folder_file) == "brute_force_login-dir"
 
 
 def test_the_retired_bundled_playbook_ids() -> None:
-    assert len(RM.LEGACY_BUNDLED_PLAYBOOK_IDS) == 9
-    assert RM.LEGACY_BUNDLED_PLAYBOOK_IDS < set(RM.LEGACY_BUNDLED_RUNBOOK_MAP)
-    assert RM.LEGACY_BUNDLED_PLAYBOOK_IDS < RM.SHADOWING_IDS
-    assert "brute_force_login" in RM.LEGACY_BUNDLED_PLAYBOOK_IDS and "malware" not in RM.LEGACY_BUNDLED_PLAYBOOK_IDS
+    assert len(RM.LEGACY_BUNDLED_PROCEDURE_IDS) == 9
+    assert RM.LEGACY_BUNDLED_PROCEDURE_IDS < set(RM.LEGACY_BUNDLED_RUNBOOK_MAP)
+    assert RM.LEGACY_BUNDLED_PROCEDURE_IDS < RM.SHADOWING_IDS
+    assert "brute_force_login" in RM.LEGACY_BUNDLED_PROCEDURE_IDS and "malware" not in RM.LEGACY_BUNDLED_PROCEDURE_IDS
 
 
 # --------------------------------------------------------------------------- #

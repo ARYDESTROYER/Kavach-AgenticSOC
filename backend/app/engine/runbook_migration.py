@@ -109,7 +109,7 @@ from ..stores.runbook_library import (
 from ..utils import iso_now
 from .runbook_model import (
     BUILTIN_RUNBOOK_IDS,
-    LEGACY_BUNDLED_PLAYBOOK_IDS,
+    LEGACY_BUNDLED_PROCEDURE_IDS,
     LEGACY_BUNDLED_RUNBOOK_MAP,
     MAX_RUNBOOK_PROMPT_CHARS,
     SHADOWING_IDS,
@@ -130,7 +130,7 @@ logger = logging.getLogger("tlsoc.engine.runbook_migration")
 MIGRATION_VERSION = 1
 #: ``migrated_from.namespace`` / ``id_map`` prefixes of the three legacy sources.
 NS_PROCEDURES = "playbooks"
-NS_PROCEDURE_DIR = "playbook_dir"
+NS_PROCEDURE_DIR = "procedure_dir"
 NS_REFERENCE = "runbooks"
 #: The legacy sources an automation rule could run before Round 14 (the procedure
 #: documents, never the reference runbooks).
@@ -985,8 +985,8 @@ def _operator_id(legacy_id: str) -> tuple[str, bool]:
 #: runbook whose id a bundled reference runbook owned. Both compared ids exactly, and
 #: neither consulted the other kind's bundled set.
 SHADOWED_BEFORE: dict[str, frozenset[str]] = {
-    NS_PROCEDURES: LEGACY_BUNDLED_PLAYBOOK_IDS,
-    NS_REFERENCE: frozenset(LEGACY_BUNDLED_RUNBOOK_MAP) - LEGACY_BUNDLED_PLAYBOOK_IDS,
+    NS_PROCEDURES: LEGACY_BUNDLED_PROCEDURE_IDS,
+    NS_REFERENCE: frozenset(LEGACY_BUNDLED_RUNBOOK_MAP) - LEGACY_BUNDLED_PROCEDURE_IDS,
 }
 
 
@@ -1067,10 +1067,10 @@ def migrated_procedure_ids(marker: RunbookMigrationMarker | dict[str, Any] | Non
     for the procedure sources only (the configured directory first, then the stored
     procedure documents; never the reference runbooks, which a rule never ran).
     What ``runbook_model.resolve_automation_runbook_id`` takes as
-    ``migrated_playbooks``; empty before the migration.
+    ``migrated_procedures``; empty before the migration.
 
     A stored procedure document with a retired bundled procedure's id
-    (:data:`LEGACY_BUNDLED_PLAYBOOK_IDS`) never ran from a rule: without a folder the
+    (:data:`LEGACY_BUNDLED_PROCEDURE_IDS`) never ran from a rule: without a folder the
     bundled document won the id, and with one the stored documents were never read.
     So it is left out, and a retired bundled id is in the result only when a
     configured folder's file held it, which was the live procedure a rule naming
@@ -1087,7 +1087,7 @@ def migrated_procedure_ids(marker: RunbookMigrationMarker | dict[str, Any] | Non
             if not (isinstance(key, str) and key.startswith(prefix) and isinstance(value, str)):
                 continue
             legacy_id = key[len(prefix):]
-            if namespace == NS_PROCEDURES and legacy_id in LEGACY_BUNDLED_PLAYBOOK_IDS:
+            if namespace == NS_PROCEDURES and legacy_id in LEGACY_BUNDLED_PROCEDURE_IDS:
                 continue
             out.setdefault(legacy_id, value)
     return out

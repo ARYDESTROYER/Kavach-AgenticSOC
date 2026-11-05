@@ -15,6 +15,7 @@ import collections
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
+from ..audit.changes import redact_text
 from ..config import Preferences
 from ..constants import OPEN_CASE_STATUSES, ActionType, IndexRole, SourceSurface
 from ..engine.cost_gate import passes_suppression
@@ -915,10 +916,14 @@ class IngestService:
         except Exception as exc:  # noqa: BLE001 — convert to the receiver retry boundary
             logger.exception("ingest failed for a %d-event batch: %s", len(events), exc)
             try:
+                # The error text can carry a source-controlled address or credential:
+                # redacted before it reaches the durable, exportable record.
+                summary, _removed = redact_text(f"ingest error on {len(events)} events: {exc}")
                 await self._audit.record(
                     action_type=ActionType.ERROR, surface="ingest", actor="ingest",
+                    actor_type="system", outcome="failure",
                     source_id=source_id,
-                    result_summary=f"ingest error on {len(events)} events: {exc}",
+                    result_summary=summary,
                 )
             except Exception as audit_exc:  # noqa: BLE001 — preserve the processing failure
                 logger.warning("could not audit ingest failure: %s", audit_exc)
@@ -929,8 +934,10 @@ class IngestService:
         # Round-7: record this batch's raw-alert-by-severity tally (fail-open; never blocks
         # or breaks the receiver). ``clusters``/``src`` are in scope from the try above.
         await self._record_ingest_noise(events, clusters, stats, src)
+        # A system row with its outcome (Round 14 SPEC §4.5.3): the batch was handled.
         await self._audit.record(
             action_type=ActionType.POLL, surface="ingest", actor="ingest",
+            actor_type="system", outcome="success",
             source_id=source_id,
             result_summary=(f"received={len(events)} clusters={stats['clusters']} "
                             f"investigated={stats['investigated']} candidates={stats['candidates']} "

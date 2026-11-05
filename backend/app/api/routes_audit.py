@@ -1008,18 +1008,6 @@ def _request_context(request: Request) -> Any:
         return None
 
 
-def _filter_text(filters: AuditFilters) -> str:
-    return " ".join(f"{k}={v}" for k, v in sorted(filters.binding().items()))
-
-
-def _view_summary(filters: AuditFilters, order: str) -> str:
-    parts = _filter_text(filters)
-    if order != "desc":
-        parts = f"{parts} order={order}".strip()
-    text = "searched the audit log" + (": " + parts if parts else "")
-    return text[:1000]
-
-
 async def _note_view(state: AppState, request: Request, user: Any, view: dict[str, Any], summary: str) -> None:
     await views.RECORDER.note(
         state.control_audit,
@@ -1333,7 +1321,7 @@ async def list_audit(
         run_totals=read.run_totals,
         retention=await _retention(state),
     )
-    await _note_view(state, request, user, {"list": filters.binding()}, _view_summary(filters, direction))
+    await _note_view(state, request, user, {"list": filters.binding()}, views.view_summary(filters, direction))
     return page
 
 
@@ -1371,7 +1359,7 @@ async def count_audit(
             result = AuditCount(count=bound, relation="gte")
         else:
             result = AuditCount(count=count, relation=relation)  # type: ignore[arg-type]
-    await _note_view(state, request, user, {"list": filters.binding()}, _view_summary(filters, "desc"))
+    await _note_view(state, request, user, {"list": filters.binding()}, views.view_summary(filters, "desc"))
     return result
 
 
@@ -1421,8 +1409,8 @@ async def get_audit_record(
     binding = filters.binding()
     if binding and _selected_by(state, filters, hit.doc, demo=ref.demo):
         view: dict[str, Any] = {"list": binding}
-        summary = f"opened audit record {record_id} while viewing: {_filter_text(filters)}"[:1000]
+        summary = views.record_open_summary(record_id, filters)
     else:
-        view, summary = {"record": record_id}, f"opened audit record {record_id}"
+        view, summary = {"record": record_id}, views.record_open_summary(record_id)
     await _note_view(state, request, user, view, summary)
     return record

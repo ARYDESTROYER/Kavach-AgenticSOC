@@ -1,11 +1,11 @@
 /**
  * The one spreadsheet formula defusal rule set (Round 14 SPEC §4.5.6). The shared
- * fixture `csv-formula.contract.json` is read here and by the backend audit export
- * writer's test, so this module's CSV and clipboard encoders (the chat answer tables,
- * reports and the severity breakdown use them) and the audit export file defuse exactly
- * alike. The report Excel writer and the KPI drill-down CSV still gate on narrower leads
- * of their own until they migrate to `isFormulaLed` and `csvField` (see `csv.ts`); this
- * fixture does not cover them yet.
+ * fixture `csv-formula.contract.json` is read here, by the report Excel writer's test
+ * (`chat/report/__tests__/xlsx-formula.contract.test.ts`), by the KPI drill-down CSV's
+ * test (`components/__tests__/KpiDrilldownPanel.csv.test.ts`) and by the backend audit
+ * export writer's test, so this module's CSV and clipboard encoders (the chat answer
+ * tables, reports, the severity breakdown and the KPI drill-down use them), the Excel
+ * writer (it gates on `isFormulaLed`) and the audit export file defuse exactly alike.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';

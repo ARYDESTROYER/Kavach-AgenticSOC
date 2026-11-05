@@ -143,6 +143,9 @@ import {
 } from '@/soc/pages/CaseDetail.api';
 
 import type { Navigate } from '@/soc/router';
+// The case tabs in order (Alt+1 to Alt+7 select them), shared with the router's
+// `tab` deep-link key so the two lists can never drift.
+import { CASE_TABS, isCaseTab, type CaseTab } from '@/soc/case-tabs';
 
 import { campaignsApi, type Campaign } from '@/soc/pages/Campaigns.api';
 
@@ -198,10 +201,6 @@ export type { ThreadMessage };
 
 // The Runbook tab's body is lazy (SPEC §3.4, §4.10.11): its chunk loads when the tab opens.
 const RunbookPanel = React.lazy(() => import('./casedetail/RunbookPanel'));
-
-/** The case tabs in order; Alt+1 to Alt+7 select them. */
-const CASE_TABS = ['overview', 'runbook', 'timeline', 'investigation', 'threat', 'collab', 'chat'] as const;
-type CaseTab = (typeof CASE_TABS)[number];
 
 /** The runbook settings the case surfaces read (absent keys keep the defaults: on). */
 interface RunbookPrefs {
@@ -386,6 +385,13 @@ export interface CaseDetailProps {
    * null to keep the dialog's default (its opener).
    */
   resolveDialogFocus?: (opener: HTMLElement | null, andNext: boolean) => HTMLElement | null;
+  /**
+   * The tab a link asks for (Case Manager's `tab` deep-link key: the audit log's "Open
+   * case trace" asks for `investigation`), by its id; any other value is ignored. It
+   * applies when it, or the case, changes; the analyst's own tab choice stands until
+   * then. The Runbook tab applies only for a viewer who has it.
+   */
+  requestedTab?: string | null;
 }
 
 export const CaseDetail: React.FC<CaseDetailProps> = ({
@@ -397,7 +403,9 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   previewCase = null,
   onAdvance,
   resolveDialogFocus,
+  requestedTab: requestedTabId = null,
 }) => {
+  const requestedTab = isCaseTab(requestedTabId) ? requestedTabId : null;
   const open = Boolean(caseId && caseId.trim());
   const id = caseId || '';
 
@@ -435,7 +443,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   // Advisory only (#3/#4): a campaign is a reporting grouping that never closes /
   // escalates / re-clusters the case. Best-effort — campaigns may be disabled.
   const [campaign, setCampaign] = React.useState<Campaign | null>(null);
-  const [tab, setTab] = React.useState<CaseTab>('overview');
+  // A requested tab opens on the first paint (no Overview flash); the Runbook tab waits
+  // for the viewer's grants, below.
+  const [tab, setTab] = React.useState<CaseTab>(() =>
+    requestedTab && requestedTab !== 'runbook' ? requestedTab : 'overview',
+  );
   // Round 12 (SPEC D13): "Open" on a case-chat toast lands on this case's Chat tab.
   useCaseChatRequest(open ? id : null, () => setTab('chat'));
   const panelScrollRef = React.useRef<HTMLDivElement>(null);
@@ -494,6 +506,11 @@ export const CaseDetail: React.FC<CaseDetailProps> = ({
   const canReadRunbooks = hasPermission('runbooks', 'read') && hasPermission('cases', 'read');
   const canRunRunbooks = hasPermission('runbooks', 'run');
   const runbooks = useCaseRunbooks(open ? id : null, { enabled: canReadRunbooks });
+  // A deep link's tab, re-applied when the link or its case changes (closing QA integ-06).
+  const requested: CaseTab | null = requestedTab === 'runbook' && !canReadRunbooks ? 'overview' : requestedTab;
+  React.useEffect(() => {
+    if (requested) setTab(requested);
+  }, [requested, id]);
   const [runbookPrefs, setRunbookPrefs] = React.useState<RunbookPrefs>(DEFAULT_RUNBOOK_PREFS);
   const [runbookRequest, setRunbookRequest] = React.useState<RunbookFocusRequest | null>(null);
   // Every request gets a new tick (never reused after one is forgotten), and the Runbook

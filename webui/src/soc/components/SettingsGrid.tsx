@@ -10,7 +10,8 @@
  * - `StickySaveBar`:  a bottom sticky bar with Save / Discard, shown only when a
  *                      page is dirty; respects busy + disabled states. `width="form"`
  *                      caps it to a form section (44rem), so it sits under the settings it
- *                      saves rather than across the whole pane.
+ *                      saves rather than across the whole pane. While it shows, the bottom
+ *                      toasts stack above it (`useToastClearance`).
  * - `SettingsTOC`:    an in-section anchor table-of-contents that scrolls to the
  *                      matching `SettingsCard` and highlights the active section.
  *
@@ -22,6 +23,7 @@ import * as React from 'react';
 import { cn } from '@/lib/cn';
 import { LoadingGlyph } from '@/design-system';
 import { Button } from '@/ui/button';
+import { useToastClearance } from '@/soc/hooks/useToastClearance';
 import type { LucideIcon } from 'lucide-react';
 import { Check, RotateCcw } from 'lucide-react';
 
@@ -176,19 +178,39 @@ export interface StickySaveBarProps {
  * Bottom sticky save/discard bar. Sticks to the bottom of its scroll container
  * (`sticky bottom-0`); render it as the LAST child of the settings scroll region.
  * Hidden entirely when `!visible` so it never occupies space on a clean page.
+ *
+ * The bar is a size container: under 40rem (a phone, a narrow pane) the message takes a
+ * full line of its own above Discard and Save, instead of being squeezed beside them
+ * into a column a word or two wide. While the bar shows, the bottom toasts stack above
+ * it instead of covering Discard and Save (`useToastClearance`: one rule for every page
+ * that pins this bar). The ref reaches the bar while it shows.
  */
-export function StickySaveBar({
-  visible,
-  onSave,
-  onDiscard,
-  busy = false,
-  saveDisabled = false,
-  message,
-  saveLabel = 'Save changes',
-  discardLabel = 'Discard',
-  width = 'full',
-  className,
-}: StickySaveBarProps) {
+export const StickySaveBar = React.forwardRef<HTMLDivElement, StickySaveBarProps>(function StickySaveBar(
+  {
+    visible,
+    onSave,
+    onDiscard,
+    busy = false,
+    saveDisabled = false,
+    message,
+    saveLabel = 'Save changes',
+    discardLabel = 'Discard',
+    width = 'full',
+    className,
+  },
+  ref,
+) {
+  // The bar, for the toast clearance, and the host's ref to it while it shows.
+  const barRef = React.useRef<HTMLDivElement | null>(null);
+  const setBarRef = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      barRef.current = node;
+      if (typeof ref === 'function') ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
+  useToastClearance(barRef, visible);
   // A PERSISTENT (always-mounted) polite live region: screen readers only announce
   // content that changes INSIDE a region that already existed in the DOM, so a live
   // region inserted at the same instant as its text (the old `!visible → null` path)
@@ -206,19 +228,23 @@ export function StickySaveBar({
       </div>
       {visible ? (
         <div
+          ref={setBarRef}
           role="region"
           aria-label="Unsaved changes"
           aria-busy={busy || undefined}
           className={cn(
-            'sticky bottom-0 z-20 -mx-1 mt-6 flex flex-wrap items-center gap-3 border-y border-border/90 bg-background px-4 py-3',
+            '@container/savebar sticky bottom-0 z-20 -mx-1 mt-6 flex flex-wrap items-center gap-3 border-y border-border/90 bg-background px-4 py-3',
             width === 'form' && SETTINGS_FORM_MAX_WIDTH,
             className,
           )}
         >
-          <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+          <span
+            className="min-w-0 grow basis-full text-sm font-medium text-foreground @[40rem]/savebar:basis-0"
+            data-save-bar-message=""
+          >
             {message ?? 'You have unsaved changes.'}
           </span>
-          <div className="flex items-center gap-2">
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <Button type="button" variant="outline" size="sm" onClick={onDiscard} disabled={busy}>
               {/* No size override: the shared Button's `[&_svg]:size-4` wins on specificity,
                   so an `h-3.5 w-3.5` here would be dead; rely on the uniform 16px icon. */}
@@ -238,7 +264,8 @@ export function StickySaveBar({
       ) : null}
     </>
   );
-}
+});
+StickySaveBar.displayName = 'StickySaveBar';
 
 /* ------------------------------------------------------------------------- */
 /* SettingsTOC                                                               */

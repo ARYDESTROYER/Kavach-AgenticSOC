@@ -435,6 +435,93 @@ describe('Tuning page', () => {
     expect(line.textContent).toMatch(/Active|Paused/);
   });
 
+  it('ends each policy fact with its separator, so a wrapped line never starts with "·" (closing QA qa2-09)', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const line = screen.getByTestId('tuning-operating-policy');
+    const facts = Array.from(line.children) as HTMLElement[];
+    expect(facts).toHaveLength(4);
+    facts.forEach((fact, index) => {
+      const last = index === facts.length - 1;
+      // The dot is the fact's last child, never its first (a phone wraps between facts).
+      expect(fact.firstElementChild?.tagName).toBe('DT');
+      expect(fact.querySelectorAll('[data-separator]')).toHaveLength(last ? 0 : 1);
+      if (!last) {
+        expect(fact.lastElementChild).toHaveAttribute('data-separator');
+        expect(fact.lastElementChild).toHaveAttribute('aria-hidden', 'true');
+      }
+    });
+    expect(line.textContent).toBe('PolicyActive·WritesConfirmed auto-apply·CadenceNightly·Evidence120 closed cases');
+  });
+
+  it('names each monitored rule as a RuleLink beside, never inside, its inspect control (closing QA qa2-03)', async () => {
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const list = screen.getByLabelText('Monitored rules');
+    const inspect = within(list).getByRole('button', { name: 'Inspect rule auth-brute' });
+    const link = within(list).getByRole('button', { name: 'Open rule auth-brute' });
+    expect(link).toHaveTextContent('auth-brute');
+    expect(link).toHaveAttribute('data-rule-link');
+    expect(link).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(link).toHaveAttribute('title', 'auth-brute');
+    // Siblings in one row: no control nested in another.
+    expect(inspect).not.toContainElement(link);
+    expect(link.closest('button')).toBe(link);
+    const row = inspect.closest('[role="listitem"]') as HTMLElement;
+    expect(row).toContainElement(link);
+    expect(list.querySelectorAll('button button')).toHaveLength(0);
+    // The inspect control covers the whole row and the link is drawn above it.
+    expect(inspect).toHaveClass('absolute', 'inset-0', 'z-10');
+    expect(link).toHaveClass('relative', 'z-20');
+    expect(row).toHaveClass('relative', 'isolate');
+    // Tab order: inspect first, then the rule.
+    expect(inspect.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The row's long explanation is the inspect control's description, read once.
+    expect(inspect).toHaveAccessibleDescription(/auto-apply|threshold|confirmed|bounded/i);
+
+    // Opening the rule does not inspect the row; the inspect control still does.
+    fireEvent.click(link);
+    expect(inspect).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('complementary', { name: 'Detail for rule auth-brute' })).toBeNull();
+    fireEvent.click(inspect);
+    expect(inspect).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('complementary', { name: 'Detail for rule auth-brute' })).toBeInTheDocument();
+  });
+
+  it('draws the selection accent on the inspect control, never on a divided row', async () => {
+    // The rows are children of a `divide-y divide-border/70` list. Its border colour rule
+    // (`.divide-border\/70 > :not([hidden]) ~ :not([hidden])`, specificity 0,3,0) sets every
+    // side and outranks a `border-l-*` class on the row (0,1,0), so a left accent there
+    // turned grey on every row but the first and lost its primary colour when selected.
+    // jsdom computes no Tailwind, so this pins where the classes live.
+    renderTuning();
+    await screen.findAllByText('auth-brute');
+    const list = screen.getByLabelText('Monitored rules');
+    const divided = list.querySelector('[role="list"]') as HTMLElement;
+    expect(divided).toHaveClass('divide-y');
+    const rows = within(divided).getAllByRole('listitem');
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row.parentElement).toBe(divided);
+      expect(row.className).not.toMatch(/(^|\s)border-l(-|\s|$)/);
+    }
+    const inspects = rows.map((row) => row.querySelector('[data-rule-inspect]') as HTMLElement);
+    for (const inspect of inspects) {
+      expect(inspect).toHaveClass('border-l-2', 'border-l-transparent');
+      expect(inspect).not.toHaveClass('border-l-primary/70');
+    }
+
+    // Selecting a row after the first marks its own inspect control, and only that one.
+    fireEvent.click(inspects[1]);
+    expect(inspects[1]).toHaveAttribute('aria-expanded', 'true');
+    expect(inspects[1]).toHaveClass('border-l-primary/70');
+    expect(rows[1]).toHaveClass('bg-accent/25');
+    expect(rows[1].className).not.toMatch(/(^|\s)border-l(-|\s|$)/);
+    inspects
+      .filter((_, index) => index !== 1)
+      .forEach((inspect) => expect(inspect).not.toHaveClass('border-l-primary/70'));
+  });
+
   it('sets tabular figures on numbers only, never on hyphenated prose ([uib] TU2)', async () => {
     const view = renderTuning();
     await screen.findAllByText('auth-brute');

@@ -338,6 +338,86 @@ def test_demo_mode_reads_the_demo_runs_and_cases(box) -> None:
     assert {r["run_id"] for r in _metrics(client)["recent_runs"]} == {"run-1", "run-2", "run-3"}
 
 
+def _with_acme_rule(entries: Any) -> tuple[Any, ...]:
+    """A stand-in for the Demo overlay (``AppState.runbook_catalog_overlay``): the
+    brute force built-in also lists ``acme_rule``. Only built-ins change, as in
+    ``demo_runtime.overlay_demo_runbooks``."""
+    from app.engine.runbook_match import MatchableRunbook
+
+    out = []
+    for entry in entries:
+        if entry.id == BRUTE and entry.origin == "builtin":
+            applies = entry.definition.applies_when
+            definition = entry.definition.model_copy(update={"applies_when": applies.model_copy(
+                update={"rule_ids": [*applies.rule_ids, "acme_rule"]})})
+            entry = MatchableRunbook(id=entry.id, version=entry.version, definition=definition,
+                                     origin=entry.origin, published_at=entry.published_at)
+        out.append(entry)
+    return tuple(out)
+
+
+def test_rules_with_no_runbook_match_against_the_active_stacks_catalog(box, monkeypatch) -> None:
+    """The gap list reads the catalog the attachment path reads (``runbook_runs.
+    load_catalog``): the built-ins as the active stack's overlay gives them."""
+    monkeypatch.setattr(box["state"], "runbook_catalog_overlay", _with_acme_rule)
+    body = _metrics(box["client"])
+    assert body["rules_without_runbook"] == [{"rule": "zzz_rule", "cases": 1}]
+
+
+def _rule_attached_primary_rules(state: Any) -> Any:
+    """The primary rule of every case of the last 30 days with a run a rule attached."""
+    from app.engine.runbook_catalog import cases_in_window
+    from app.engine.runbook_match import case_facts_from_case
+
+    async def read() -> set[str]:
+        now = datetime.now(UTC)
+        cases, _capped = await cases_in_window(state.cases, now - timedelta(days=30), now)
+        rules: set[str] = set()
+        for case in cases:
+            runs = (await state.runbook_runs.get(case.case_id)).runs
+            if any(run.attached_by == "rule" for run in runs):
+                facts = case_facts_from_case(case, prefs=state.execution_prefs)
+                if facts.rule_values:
+                    rules.add(facts.rule_values[0])
+        return rules
+
+    return read
+
+
+def _metrics_without_overlay(state: Any) -> Any:
+    """The figures the metrics gave before they read the active stack's overlay."""
+    from app.engine import runbook_catalog as catalog
+    from app.engine.time_windows import resolve_window
+
+    async def read() -> RunbookMetrics:
+        return await catalog.metrics(
+            library_store=state.runbook_library, runs_store=state.runbook_runs, cases_store=state.cases,
+            prefs=state.execution_prefs, window=resolve_window("now-30d", now=datetime.now(UTC)),
+        )
+
+    return read
+
+
+def test_demo_mode_never_lists_a_rule_a_demo_runbook_was_attached_on(box) -> None:
+    """SPEC §3.5, §4.10.12: Demo Mode shows the same runbook behaviour. The Demo
+    overlay maps the Demo rule names onto the built-ins that cover them, so a rule a
+    Demo case's runbook was attached on is not a rule with no runbook."""
+    client, state = box["client"], box["state"]
+    client.portal.call(lambda: state.enable_demo(mode="seeded", seed=7, history_days=1))
+    try:
+        attached = client.portal.call(_rule_attached_primary_rules(state))
+        assert len(attached) >= 3  # the seeded Demo attaches runbooks by rule
+        gaps = {gap["rule"] for gap in _metrics(client)["rules_without_runbook"]}
+        assert not attached & gaps
+        # Without the overlay those same rules were listed: the overlay is what clears them.
+        bare = client.portal.call(_metrics_without_overlay(state))
+        assert attached <= {gap.rule for gap in bare.rules_without_runbook}
+    finally:
+        client.portal.call(state.disable_demo)
+    # Demo Mode off: the real stack's built-ins carry no Demo rule names.
+    assert _metrics(client)["rules_without_runbook"] == [{"rule": "acme_rule", "cases": 2}, {"rule": "zzz_rule", "cases": 1}]
+
+
 def test_the_same_figures_on_the_sql_state_store(tmp_path) -> None:
     """The library, the ledger and the case scan read the same on SQLite (the
     PostgreSQL code path) as on the in-memory Elasticsearch store."""

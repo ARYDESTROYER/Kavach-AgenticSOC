@@ -27,6 +27,10 @@ catalog). This module owns:
 * **Match preview** (:func:`match_preview`): which of the last 500 cases of the last
   30 days a definition would get, using the same pure matcher the attachment uses
   (``engine.runbook_match``). It reads cases and writes nothing (no run, no metric).
+  The preview and the metrics' rules with no runbook match against the catalog the
+  ACTIVE stack attaches from: in Demo Mode the built-ins carry the Demo rule names
+  (``AppState.runbook_catalog_overlay``, SPEC §3.5), as ``runbook_runs.load_catalog``
+  gives the attachment path, so the figures agree with the runs Demo cases have.
 * **Metrics** (:func:`metrics`): runs started, completed and abandoned per runbook,
   median times, the most skipped steps, coverage of human-handled cases, rules seen
   with no runbook and the with/without cohorts ("comparison, not cause"), from the
@@ -52,7 +56,7 @@ import re
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Literal, Mapping
+from typing import Any, Callable, Iterable, Literal, Mapping
 
 from fastapi.responses import JSONResponse
 
@@ -515,11 +519,43 @@ async def stored_revision(library: Any, runbook_id: str) -> int:
         return 0
 
 
+#: The active stack's view of the matchable built-ins (``AppState.
+#: runbook_catalog_overlay``): the entries unchanged on the real stack, and with the
+#: Demo rule names added to the built-ins that cover them while Demo Mode is on.
+BuiltinOverlay = Callable[[Iterable[MatchableRunbook]], Iterable[MatchableRunbook]]
+
+
+def builtin_overlay_of(state: Any) -> BuiltinOverlay | None:
+    """``state``'s built-in overlay (``AppState.runbook_catalog_overlay``), or ``None``
+    when it has none: the hook ``runbook_runs.load_catalog`` applies for the
+    attachment path, handed to :func:`matchable` so the match preview and the metrics
+    match against the same catalog."""
+    overlay = getattr(state, "runbook_catalog_overlay", None)
+    return overlay if callable(overlay) else None
+
+
+def _overlay_one(entry: MatchableRunbook, builtin_overlay: BuiltinOverlay | None) -> MatchableRunbook:
+    """``entry`` as ``builtin_overlay`` sees it (itself without an overlay, or when the
+    overlay does not give back exactly one entry of the same id)."""
+    if builtin_overlay is None:
+        return entry
+    out = tuple(builtin_overlay((entry,)))
+    if len(out) != 1 or getattr(out[0], "id", None) != entry.id:
+        return entry
+    return out[0]
+
+
 async def matchable(library: Any, *, overlay: MatchableRunbook | None = None,
-                    overlay_replaces: str | None = None) -> tuple[MatchableRunbook, ...]:
+                    overlay_replaces: str | None = None,
+                    builtin_overlay: BuiltinOverlay | None = None) -> tuple[MatchableRunbook, ...]:
     """The matcher's catalog (``runbook_match.matchable_catalog``): every built-in not
     replaced by a Published operator copy and every Published operator runbook; never a
     draft, a version in review or a retired runbook.
+
+    ``builtin_overlay`` is the active stack's view of the built-ins
+    (:func:`builtin_overlay_of`): in Demo Mode it adds the Demo rule names to the
+    built-ins that cover them, as the attachment path's ``runbook_runs.load_catalog``
+    does. Operator runbooks are matched exactly as written.
 
     ``overlay`` substitutes one runbook as if it were Published now (the match
     preview): it takes the place of any runbook with its id, and ``overlay_replaces``
@@ -529,6 +565,8 @@ async def matchable(library: Any, *, overlay: MatchableRunbook | None = None,
         MatchableRunbook(id=b.id, version=b.version, definition=b.definition, origin="builtin")
         for b in load_builtin_runbooks()
     ]
+    if builtin_overlay is not None:
+        builtins = list(builtin_overlay(builtins))
     operators = [
         MatchableRunbook(id=p.runbook.id, version=p.live.version, definition=p.live.definition,
                          origin=p.runbook.origin, published_at=p.live.published_at)
@@ -1341,14 +1379,24 @@ async def match_preview(
     origin: ViewerOrigin,
     replaces: str | None,
     fallback: bool,
+    builtin_overlay: BuiltinOverlay | None = None,
 ) -> MatchPreview:
     """Which of the last 500 cases of 30 days ``definition`` would get if it were
     Published now (SPEC §4.10.12): "Gets it" (it would win), "Another wins" (it
     matches but another runbook ranks higher, named) and "Near misses" (one criterion
-    failed). Pure read: nothing is attached and no metric changes."""
+    failed). Pure read: nothing is attached and no metric changes.
+
+    ``builtin_overlay`` is the active stack's view of the built-ins
+    (:func:`builtin_overlay_of`). A previewed built-in goes through it too, and its
+    own criteria (Another wins, Near misses) are checked as overlaid, so in Demo Mode
+    a built-in is previewed with the Demo rule names it is attached on."""
     overlay = MatchableRunbook(id=definition.id, version=1, definition=definition,
                                origin=origin, published_at=iso_now())
-    catalog = await matchable(library_store, overlay=overlay, overlay_replaces=replaces)
+    if origin == "builtin":
+        overlay = _overlay_one(overlay, builtin_overlay)
+        definition = overlay.definition
+    catalog = await matchable(library_store, overlay=overlay, overlay_replaces=replaces,
+                              builtin_overlay=builtin_overlay)
     cases = await recent_cases(cases_store, days=MATCH_PREVIEW_WINDOW_DAYS, limit=MATCH_PREVIEW_MAX_CASES)
     mapping = source_types_of(prefs)
     titles = {item.id: item.title for item in catalog}
@@ -1420,6 +1468,7 @@ async def metrics(
     cases_store: Any,
     prefs: Any,
     window: Any,
+    builtin_overlay: BuiltinOverlay | None = None,
 ) -> RunbookMetrics:
     """``GET /api/runbooks/metrics`` (SPEC §4.10.15, §4.10.15a).
 
@@ -1431,7 +1480,9 @@ async def metrics(
     * coverage: the human-handled cases CREATED in the window (open, or closed by an
       analyst) and how many of them have a run (from the ledger, any time after);
     * rules without a runbook: rules of cases created in the window for which no
-      Published runbook other than the fallback matched;
+      Published runbook other than the fallback matched, over the catalog the active
+      stack attaches from (``builtin_overlay``: in Demo Mode the built-ins carry the
+      Demo rule names, so a rule a Demo case's runbook was attached on is not a gap);
     * cohorts: the human-handled cases of the window with a measured resolution time,
       split by whether they have a completed run. A comparison, never a cause.
 
@@ -1535,7 +1586,7 @@ async def metrics(
     case_runs: dict[str, set[str]] = {}
     for row in rows:
         case_runs.setdefault(row.case_id, set()).add(row.status)
-    catalog = await matchable(library_store)
+    catalog = await matchable(library_store, builtin_overlay=builtin_overlay)
     mapping = source_types_of(prefs)
 
     def fold() -> tuple[dict[str, int], int, int, list[Any], list[Any]]:
@@ -1778,6 +1829,7 @@ def state_changes(before: Any, after: Any) -> list[dict[str, Any]]:
 
 __all__ = [
     "BUILTIN_AUTHOR",
+    "BuiltinOverlay",
     "CatalogError",
     "CatalogSnapshot",
     "DEPRECATION_HEADERS",
@@ -1786,6 +1838,7 @@ __all__ = [
     "RUNBOOK_BODY_MAX_BYTES",
     "audit_change",
     "builtin_detail",
+    "builtin_overlay_of",
     "builtin_summary",
     "blocking_parse_issues",
     "builtin_version_doc",

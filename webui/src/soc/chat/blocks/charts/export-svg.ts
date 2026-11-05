@@ -26,21 +26,18 @@ import { token } from '@/soc/components/palette';
 
 import {
   DASH,
-  IN_PROGRESS_SUFFIX,
   axisZone,
   clipText,
   formatTick,
   formatValue,
-  hasCalendarLabels,
-  instantOf,
   unitLabel,
-  xTickLabel,
 } from '../format';
 import type { BlockProvenance, ChartBlock } from '../schema';
 import { honestChart } from '../views';
 import type { ChartZoomView } from './export-context';
 import {
   BAR_MAX,
+  CHAR_W,
   areaPath,
   barPlotFrame,
   barWidth,
@@ -48,8 +45,6 @@ import {
   extent,
   lineRuns,
   niceScale,
-  pickXLabels,
-  placeXLabels,
   reconcilingShares,
   roundedRightPath,
   roundedTopPath,
@@ -57,6 +52,7 @@ import {
   stackTotals,
 } from './geometry';
 import { categoryStyles, seriesStyles, type SeriesStyle } from './series';
+import { IN_PROGRESS_NOTE, layoutXAxis } from './x-axis';
 
 /** A resolved colour: a plain `#rrggbb` (or any colour the caller vouches for) and an opacity. */
 export interface Paint {
@@ -358,16 +354,22 @@ function cartesian(block: ChartBlock, ctx: Ctx, styles: SeriesStyle[]): { svg: s
   }
 
   const isTime = block.x.kind === 'time';
-  const short = block.x.values.map((_, i) => xTickLabel(block.x, i, 14));
-  const instants = isTime && !hasCalendarLabels(block.x) ? block.x.values.map((v) => instantOf(v)) : undefined;
-  const picks = placeXLabels(pickXLabels(short, plotW * 0.92, instants), short, xOf, ctx.W - PAD);
+  // The live chart's axis (`x-axis.ts`): dated ticks, the week's first day, and the note
+  // under the newest bucket's own tick, measured in this file's 12 px glyphs.
+  const axis = layoutXAxis({
+    x: block.x,
+    centre: xOf,
+    width: ctx.W - PAD,
+    plotWidth: plotW * 0.92,
+    inProgress: block.last_in_progress,
+    charW: CHAR12,
+    noteCharW: CHAR_W,
+    maxChars: 14,
+  });
   const mono = block.untrusted && !isTime;
-  for (const l of picks) out.push(text(l.x, baseline + 17, l.text, ctx.muted, { anchor: 'middle', mono }));
-  if (block.last_in_progress && n > 0) {
-    const label = IN_PROGRESS_SUFFIX.trim();
-    const w = label.length * CHAR12;
-    const cx = Math.min(xOf(last), ctx.W - PAD - w / 2);
-    out.push(text(cx, baseline + 32, label, ctx.muted, { anchor: 'middle', size: 11 }));
+  for (const l of axis.ticks) out.push(text(l.x, baseline + 17, l.text, ctx.muted, { anchor: 'middle', mono }));
+  if (axis.inProgress) {
+    out.push(text(axis.inProgress.x, baseline + 32, IN_PROGRESS_NOTE, ctx.muted, { anchor: 'middle', size: 11 }));
   }
   return { svg: out.join(''), height: top + plotH };
 }

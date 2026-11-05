@@ -15,6 +15,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping
 
 from ..audit.audit_log import AuditLogger
+from ..audit.changes import redact_text
 from ..config import Preferences
 from ..constants import ActionType, Role, ToolTier, Verdict
 from ..engine.cost_gate import CaseBudget
@@ -26,7 +27,7 @@ from ..engine.runbook_match import (
     match,
 )
 from ..engine.runbook_model import MAX_RUNBOOK_PROMPT_CHARS, render_runbook_prompt
-from ..llm.gateway import GatewayError, LLMGateway, UsageReceipt
+from ..llm.gateway import BudgetBlocked, GatewayError, LLMGateway, UsageReceipt
 from ..models import (
     Cluster,
     EnrichmentResult,
@@ -128,6 +129,18 @@ class RunbookGuidance:
     def selected(self) -> bool:
         """True when a runbook's guidance goes into the investigator prompt."""
         return bool(self.runbook_id) and self.text is not None
+
+    @property
+    def audit_outcome(self) -> str:
+        """The ``outcome`` of the ``runbook.selected`` audit row: ``failure`` when the
+        library could not be read or matching failed, ``partial`` when a runbook
+        matched but its guidance was not used, otherwise ``success`` (a match, the
+        fallback, no match, or guidance turned off are all a selection that ran)."""
+        if self.status in (GUIDANCE_LIBRARY_UNAVAILABLE, GUIDANCE_SELECTION_FAILED):
+            return "failure"
+        if self.status == GUIDANCE_OVER_BUDGET:
+            return "partial"
+        return "success"
 
     @property
     def label(self) -> str:
@@ -518,6 +531,17 @@ class Investigator:
                     # holds anyway, so this stays true if a failure ever carries spend.
                     cost += receipt.cost
                     _account(receipt.cost)
+                    # The model call failed after its prompt row was written: record
+                    # the failure, so the audit log's Failed filter finds it (#2).
+                    await self._audit.record(
+                        action_type=ActionType.ERROR, surface=surface,
+                        actor=Role.INVESTIGATOR.value, case_id=case_id, model=model_cfg.model,
+                        # The AI budget refusing the call is a policy refusal, not a fault.
+                        outcome="denied" if isinstance(exc, BudgetBlocked) else "failure",
+                        result_summary=truncate(redact_text(
+                            f"investigator model error{detail}: {exc}; routed to a person"
+                        )[0], 1000),
+                    )
                     return (
                         _fail_to_human(
                             f"investigator model error{detail}: {exc}", cluster, prefs
@@ -562,6 +586,8 @@ class Investigator:
                         await self._audit.record(
                             action_type=ActionType.DECISION, surface=surface,
                             actor=Role.INVESTIGATOR.value, case_id=case_id, tool_name=name,
+                            # The capability firewall refused the call (#3).
+                            outcome="denied",
                             result_summary=f"tool '{name}' blocked by tier={tool.tier.value}",
                         )
                         messages.append({"role": "assistant", "content": res.text})
@@ -582,6 +608,7 @@ class Investigator:
                         actor=Role.INVESTIGATOR.value, case_id=case_id,
                         tool_name=name, tool_input=tool_input,
                         tool_output_summary=tr.summary, query_text=tr.query,
+                        outcome="success" if tr.ok else "failure",
                     )
                     observation = {"ok": tr.ok, "summary": tr.summary, "data": tr.data, "error": tr.error}
                     messages.append({"role": "assistant", "content": res.text})
@@ -600,6 +627,10 @@ class Investigator:
 
                 messages.append({"role": "user", "content": "Use action 'tool' or 'final' only."})
 
+            # The model reached its own verdict, or the run stopped short (a cap, a
+            # request over its time slice, no final answer) and the verdict is the
+            # safe NEEDS_HUMAN fallback: the verdict row says which (``partial``).
+            concluded = draft is not None
             if draft is None:
                 draft = _fail_to_human(
                     "Investigation inconclusive or capped; routing to human.", cluster, prefs
@@ -624,6 +655,7 @@ class Investigator:
             await self._audit.record(
                 action_type=ActionType.VERDICT, surface=surface, actor=Role.INVESTIGATOR.value,
                 case_id=case_id, model=model_cfg.model,
+                outcome="success" if concluded else "partial",
                 result_summary=(
                     f"verdict={verdict.verdict.value} confidence={verdict.confidence}"
                     + (f" reasoning={reasoning_excerpt}" if reasoning_excerpt else "")
@@ -635,7 +667,9 @@ class Investigator:
             logger.exception("Investigator crashed; failing to human")
             await self._audit.record(
                 action_type=ActionType.ERROR, surface=surface, actor=Role.INVESTIGATOR.value,
-                case_id=case_id, result_summary=f"investigator crash: {exc}",
+                case_id=case_id, outcome="failure",
+                # Any exception, so its text can carry an address or a credential.
+                result_summary=truncate(redact_text(f"investigator crash: {exc}")[0], 1000),
             )
             return _fail_to_human(f"investigator error: {exc}", cluster, prefs), cost
 

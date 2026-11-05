@@ -374,6 +374,33 @@
   [data-sonner-toaster] {
     --border-radius: var(--radius);
   }
+  /* Bottom toasts stack above a sticky action bar instead of covering it (every
+     StickySaveBar's Discard and Save): the bar sets `--soc-toast-clearance` on the root,
+     the distance from the bar's top to the viewport's bottom, while the bar sits where
+     the toasts are (soc/hooks/useToastClearance.ts). The toaster is lifted by that much
+     with a transform, which glides (200ms, the standard curve) as the bar settles while a
+     board loads instead of jumping; its `bottom` stays sonner's own offset, desktop and
+     phone. Sonner gives the bottom-right toaster no transform of its own except the 10px
+     lift of an expanded stack (zero specificity, none on a touch screen), which these
+     rules keep; the root in the selectors outranks sonner's rules, including the
+     two-attribute ones of its phone query, which it injects after this sheet. */
+  :root [data-sonner-toaster][data-y-position='bottom'] {
+    transform: translateY(calc(-1 * var(--soc-toast-clearance, 0px)));
+    transition: transform var(--motion-base) var(--motion-ease-standard);
+  }
+  :root [data-sonner-toaster][data-y-position='bottom'][data-lifted='true'] {
+    transform: translateY(calc(-10px - var(--soc-toast-clearance, 0px)));
+  }
+  @media (hover: none) and (pointer: coarse) {
+    :root [data-sonner-toaster][data-y-position='bottom'][data-lifted='true'] {
+      transform: translateY(calc(-1 * var(--soc-toast-clearance, 0px)));
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    :root [data-sonner-toaster][data-y-position='bottom'] {
+      transition: none;
+    }
+  }
 }
 
 @layer components {

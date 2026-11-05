@@ -1231,6 +1231,54 @@ _RUNBOOK_TOPIC_RE = re.compile(
     r"(?!\s+(?:are|is|were|was|we|you|i|exist|exists|there)\b)")
 
 
+#: Where the runbook library is, and what became of the retired name for it (Round 14
+#: SPEC §3.1 merged the two lists into one Runbooks feature): a question about the
+#: console, answered from the Help Center (the Runbooks page and its "Coming from an
+#: earlier version" section) like any "where do I" question, never a search of runbook
+#: text. Both patterns hold only when the library itself is what the question asks
+#: about: the noun ends the question (a "page", "library", "list", "editor" or
+#: "catalog" and a "now" may follow it), so "Where are the runbook settings?" and
+#: "Where do I find runbook approvals?" keep their own words, and "Where is the runbook
+#: for phishing?", "What's the playbook to go with a phishing case?" and "I can't find
+#: the runbook for phishing" ask about one runbook and stay knowledge searches.
+_LIBRARY_TAIL = (r"(?:\s+(?:page|library|list|editor|catalog(?:ue)?|feature|section))?"
+                 r"(?:\s+(?:now|anymore|any\s+more))?")
+_QUESTION_END = r"\s*[?.!]*\s*$"
+_WHERE_LEAD = (r"\bwhere(?:'s|\u2019s|\s+(?:are|is|did|do|does|have|has|were|was|can|could|should|would))\s+"
+               r"(?:(?:i|we|you)\s+)?(?:(?:find|see|get|open|look\s+for)\s+)?"
+               r"(?:(?:the|our|my|all|all\s+the|all\s+our|any)\s+)?")
+_CANT_FIND = (r"\b(?:can'?t|can\u2019t|cannot|can\s+not|couldn'?t|couldn\u2019t|unable\s+to)\s+(?:(?:i|we)\s+)?"
+              r"(?:find|see|locate)\s+(?:(?:the|our|my|any)\s+)?")
+#: What became of the retired name: "Where are playbooks now?", "Where did the
+#: playbooks go?", "Were playbooks renamed?", "Are playbooks gone?", "What happened to
+#: playbooks?", "Why can't I find playbooks?". The verb form needs the noun as the
+#: clause's subject and nothing after the verb but "now" or "to runbooks", so "Is the
+#: playbook missing a containment step?" and "Which playbook went with the phishing
+#: case?" stay knowledge searches.
+_LEGACY_NAME_RE = re.compile(
+    rf"{_WHERE_LEAD}playbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    rf"|{_CANT_FIND}playbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    rf"|\bwhat(?:'s|\u2019s|\s+has|\s+have)?\s+happen(?:ed|s)?\s+to\s+(?:(?:the|our|my|all|all\s+the)\s+)?"
+    rf"playbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    r"|(?:^|[,;:.!?]\s*|\b(?:so|and|but|hey|hi|ok|okay)\s+)(?:(?:why|where|when|how\s+come)\s+)?"
+    r"(?:(?:are|were|have|has|did|do|does|was|is)\s+)?(?:(?:the|our|my|all|all\s+the|all\s+our)\s+)?"
+    r"playbooks?\s+(?:(?:have|has|had|been|were|was|are|is|got|get|just|now|all)\s+)*"
+    r"(?:go|gone|went|renamed|moved|removed|deleted|replaced|disappeared|vanished|missing)"
+    rf"(?:\s+(?:to|into|as)\s+runbooks?|\s+(?:now|anymore|any\s+more|away))?{_QUESTION_END}")
+#: Where the runbook library is: "Where are runbooks?", "Where are the runbooks?",
+#: "Where can I find runbooks now?", "Where's the runbook library?", "Why can't I find
+#: the runbooks?".
+_RUNBOOK_LOCATION_RE = re.compile(
+    rf"{_WHERE_LEAD}runbooks?{_LIBRARY_TAIL}{_QUESTION_END}"
+    rf"|{_CANT_FIND}runbooks?{_LIBRARY_TAIL}{_QUESTION_END}")
+#: The Help Center query of a question about the retired name: the Runbooks page
+#: section written for someone coming from an earlier version, in the current words
+#: (the console's Runbooks page is the place it names); and of a question about where
+#: the runbooks are: the Runbooks page.
+_RUNBOOK_UPGRADE_QUERY = "Runbooks coming from an earlier version response procedures"
+_RUNBOOK_LOCATION_QUERY = "Intelligence Runbooks library"
+
+
 def _asks_for_runbook_library(lowered: str) -> bool:
     """True when the question asks to see the runbook library as a whole (Round 14
     SPEC §4.10.18): a listing phrasing (:data:`_RUNBOOK_LIST_RE`) that names no topic
@@ -3854,7 +3902,10 @@ def classify(question: str, view: PromptView | None = None) -> Ask:
             return ask("explain_metric", metric=metric[0], topic=metric[1], definition=True)
         return ask("help", definition=True, wants_access=bool(_ACCESS_RE.search(low)),
                    wants_overview=bool(_OVERVIEW_RE.search(low)), save=False)
-    help_like = bool(_HELP_RE.search(low)) and not _DATA_ASK_RE.match(low)
+    # "Where are the runbooks?" and "What happened to playbooks?" ask where the console
+    # keeps the library (a product question), like "where do I find ...".
+    help_like = (bool(_HELP_RE.search(low)) or bool(_LEGACY_NAME_RE.search(low))
+                 or bool(_RUNBOOK_LOCATION_RE.search(low))) and not _DATA_ASK_RE.match(low)
     if view.case_scoped and not help_like and re.search(
             r"\b(this|it|why|what happened|summar\w+|explain|evidence|decision|decided|timeline|verdict|"
             r"risk|closed|escalat\w*|status|entity|attack|mitre|logs?|activity)\b", low):
@@ -6622,6 +6673,11 @@ _TOOL_NAMES = {
 #: work?" matches "Work a case"): the product area they are about, in the corpus's
 #: words. The first matching pattern wins; other export questions keep their words.
 _HELP_HINTS: tuple[tuple[str, str], ...] = (
+    # Round 14: what became of the retired name, and where the runbooks are. Both
+    # patterns hold only when the library is what the question asks about, so a help
+    # question about one part of it ("Where are the runbook settings?") keeps its words.
+    (_LEGACY_NAME_RE.pattern, _RUNBOOK_UPGRADE_QUERY),
+    (_RUNBOOK_LOCATION_RE.pattern, _RUNBOOK_LOCATION_QUERY),
     ((r"\breports?\b.*\b(?:export\w*|pdf|download\w*|print\w*)\b|"
       r"\b(?:export\w*|pdf|download\w*|print\w*)\b.*\breports?\b"), "Workspace Chat Export report"),
     (r"\b(?:export\w*|pdf|download\w*|print\w*)\b", ""),
@@ -7569,22 +7625,80 @@ def _say_case_mix(r: Result) -> str:
     return text + "."
 
 
-def _say_timing(r: Result) -> str:
+#: The response clocks a question names, by the words it uses for them ("What is our
+#: MTTR?", "the acknowledgement delay", "time to detect").
+_TIMING_FOCUS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("mtta_minutes", re.compile(r"\b(?:mtta|acknowledg\w*)\b")),
+    ("mttr_minutes", re.compile(r"\b(?:mttr|resol(?:ve|ved|ution|ving)|time to close)\b")),
+    ("mttd_minutes", re.compile(r"\b(?:mttd|detect(?:ed|ion)?|time to detect)\b")),
+    ("dwell_minutes", re.compile(r"\b(?:dwell|first response)\b")),
+)
+#: The clocks a response-times answer states when the question names none: the two a
+#: person works to (acknowledgement and resolution), then detection, then dwell.
+_TIMING_ORDER = ("mtta_minutes", "mttr_minutes", "mttd_minutes", "dwell_minutes")
+_TIMING_NAMES = {"mttd_minutes": "MTTD", "mtta_minutes": "MTTA", "mttr_minutes": "MTTR", "dwell_minutes": "dwell"}
+
+
+def _timing_focus(lowered: str) -> tuple[str, ...]:
+    """The response clocks ``lowered`` names, in the order it names them."""
+    hits = sorted((m.start(), key) for key, pattern in _TIMING_FOCUS for m in [pattern.search(lowered or "")] if m)
+    return tuple(dict.fromkeys(key for _at, key in hits))
+
+
+def _say_timing(r: Result, focus: tuple[str, ...] = (), *, most: int = 2) -> str:
+    """The response-times takeaway: at most ``most`` medians of the Response times block
+    (two, T15), the clocks the question names first (``focus``, :func:`_timing_focus`),
+    else acknowledgement and resolution. A clock not measured yet is said so (that states
+    no figure); a measured block clock left out is pointed to, since the block beside it
+    shows every median and p90.
+
+    Dwell is no figure of that block, so it never takes one of the ``most`` places and
+    is never pointed to: a question that names it always gets its median (the takeaway
+    rule counts block figures only), and an answer to one that does not states it only
+    in a place the block clocks left free. The chat's response-time lookup measures no
+    dwell, so a question that names it without a dwell figure in the result is told
+    where the console shows it instead of being answered as if it had not asked."""
     o = r.obs
     lifecycle = o.get("lifecycle_minutes") if isinstance(o.get("lifecycle_minutes"), Mapping) else {}
-    parts = []
-    for key, name in (("mttd_minutes", "MTTD"), ("mtta_minutes", "MTTA"), ("mttr_minutes", "MTTR"),
-                      ("dwell_minutes", "dwell")):
+    stated: list[str] = []
+    unmeasured: list[str] = []
+    pointed: list[str] = []
+    block_stated = 0
+    unreported = False
+    for key in dict.fromkeys([*focus, *_TIMING_ORDER]):
         metric = lifecycle.get(key) if isinstance(lifecycle.get(key), Mapping) else None
+        dwell = key == "dwell_minutes"
         if metric is None:
+            unreported = unreported or (dwell and key in focus)
             continue
-        if metric.get("measured") and _num(metric.get("p50")) is not None:
-            # The medians only (T15): the Response times block beside it shows the p90s.
-            count = f" over {_plural(metric.get('count'), 'case')}" if _num(metric.get("count")) else ""
-            parts.append(f"{name} p50 {_minutes(metric.get('p50'))}{count}")
+        name = _TIMING_NAMES[key]
+        if not (metric.get("measured") and _num(metric.get("p50")) is not None):
+            # Dwell is said to be unmeasured only when asked: the block never shows it.
+            if not dwell or key in focus:
+                unmeasured.append(f"{name} not measured yet")
+            continue
+        count = f" over {_plural(metric.get('count'), 'case')}" if _num(metric.get("count")) else ""
+        median = f"{name} p50 {_minutes(metric.get('p50'))}{count}"
+        if dwell:
+            # The loop reaches an unasked dwell last, after every block clock.
+            if key in focus or len(stated) < most:
+                stated.append(median)
+        elif block_stated < most:
+            block_stated += 1
+            stated.append(median)
         else:
-            parts.append(f"{name} not measured yet")
-    return f"Response times {_in(_window(o))}: {_join(parts)}." if parts else ""
+            pointed.append(name)
+    parts = [*stated, *unmeasured]
+    if not parts:
+        return ""
+    text = f"Response times {_in(_window(o))}: {_join(parts)}"
+    if pointed:
+        text += f"; {_join(pointed)} {'is' if len(pointed) == 1 else 'are'} in the figures below"
+    text += "."
+    if unreported:
+        text += (" Dwell (time to first response) is not one of these figures; Analytics › Metrics shows it on "
+                 "the Performance tab.")
+    return text
 
 
 def _say_auto_close(r: Result) -> str:
@@ -7613,7 +7727,9 @@ def _say_mitre_coverage(r: Result) -> str:
     return text + "."
 
 
-def _say_soc_metrics(r: Result) -> list[str]:
+def _say_soc_metrics(r: Result, focus: tuple[str, ...] = ()) -> list[str]:
+    """The narration of a ``soc_metrics`` result; ``focus`` names the response clocks
+    the question asks about (:func:`_timing_focus`)."""
     kind = r.kind
     if kind == "posture":
         return _say_posture(r)
@@ -7624,7 +7740,7 @@ def _say_soc_metrics(r: Result) -> list[str]:
     if kind == "case_mix":
         return [_say_case_mix(r)]
     if kind == "timing":
-        return [_say_timing(r)]
+        return [_say_timing(r, focus)]
     if kind == "auto_close_health":
         return [_say_auto_close(r)]
     if kind == "mitre_coverage":
@@ -8484,7 +8600,7 @@ def _final_metric(view: PromptView, ask: Ask) -> Final | None:
         return None
     blocks = [b for kind in ("kpis", "series", "categories", "funnel", "mitre")
               for b in [_block(result, kind)] if b]
-    return Final(body=_say_soc_metrics(result), blocks=blocks[:4],
+    return Final(body=_say_soc_metrics(result, _timing_focus(ask.lowered)), blocks=blocks[:4],
                  follow_ups=_follow_ups(view, "metric", charts=True))
 
 
@@ -9690,7 +9806,7 @@ def _final_cases(view: PromptView, ask: Ask) -> Final | None:
     explained = _explained_cases(cases, int(planned.get("limit") or 10)) if count and _explains_each(ask) else []
     body.extend(explained or _case_bullets(cases))
     if timing:
-        said = _say_timing(timing)
+        said = _say_timing(timing, _timing_focus(ask.lowered))
         if said:
             body.append(said)
     if mix:
@@ -9842,7 +9958,8 @@ def _final_explain_metric(view: PromptView, ask: Ask) -> Final | None:
         body.append(f"**What the {ask.topic} {verb}**, from the Help Center:")
         body.extend(paragraphs)
     if metric is not None:
-        sentences = _say_cost(metric) if metric.tool == "cost_usage" else _say_soc_metrics(metric)
+        sentences = (_say_cost(metric) if metric.tool == "cost_usage"
+                     else _say_soc_metrics(metric, _timing_focus(ask.lowered)))
         body.append(f"**Ours:** {sentences[0]}")
         body.extend(sentences[1:3])
     blocks = []
@@ -10453,7 +10570,13 @@ def _final_generic(view: PromptView, ask: Ask) -> Final:
         body.append("Lookups that did not complete:")
         body.extend(failures)
     if not body:
-        body.append("I could not read any data for this question.")
+        if data:
+            # The lookups ran and found nothing to show: say that, never that nothing
+            # could be read (a search with no match is a read that succeeded).
+            names = list(dict.fromkeys(_TOOL_NAMES.get(r.tool, r.tool.replace("_", " ")) for r in data))
+            body.append(f"Nothing matched this question in {_join(names)}.")
+        else:
+            body.append("I could not read any data for this question.")
     if data and paragraphs:
         kind = "mixed"
     elif data:
@@ -11524,10 +11647,19 @@ def _final_trend(view: PromptView, ask: Ask) -> Final | None:
         o = stats.obs
         body.insert(0, f"**{_TREND_WORDS['timing']} {_in(window)}**, by {o.get('bucket') or 'period'} "
                        f"({_plural(o.get('total'), 'case')}, exact):")
+        # The clocks the question names, period by period ("How has MTTD changed?"
+        # follows MTTD; "response times" in general follows all three), then one
+        # overall sentence about the same clocks: the takeaway, never every figure of
+        # the Response times block again (T15). Dwell has no series and no block
+        # figure, so it is not followed period by period, and the overall sentence
+        # states its median whenever the question names it (:func:`_say_timing`).
+        focus = _timing_focus(ask.lowered)
+        asked = [k for k in focus if k != "dwell_minutes"]
         for metric, name in (("mttr_p50", "MTTR median"), ("mtta_p50", "MTTA median"), ("mttd_p50", "MTTD median")):
-            body.append(f"- {_say_bucket_metric(o, metric, name)}")
+            if not asked or f"{metric[:4]}_minutes" in asked:
+                body.append(f"- {_say_bucket_metric(o, metric, name)}")
         if timing is not None:
-            body.append(_say_timing(timing))
+            body.append(_say_timing(timing, focus, most=min(len(asked), 2) if asked else 2))
     elif subject == "automation" and stats is not None:
         o = stats.obs
         filters = _filters_of(o)

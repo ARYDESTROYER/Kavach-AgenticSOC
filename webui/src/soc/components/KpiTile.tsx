@@ -200,7 +200,10 @@ function useNumeralFit(
       const next = row.clientWidth;
       if (next > width + 0.5) {
         width = next;
-        setFit({ key, step: 0 });
+        // A wider row starts again from the largest size, but a numeral already AT the
+        // largest size keeps its state: re-rendering it would change nothing on screen,
+        // and every tile in a strip widens together (the navigation rail collapsing).
+        setFit((current) => (current.key === key && current.step === 0 ? current : { key, step: 0 }));
         return;
       }
       width = next;
@@ -516,6 +519,23 @@ export interface KpiStripContextValue {
 
 /** Provided by `KpiStrip`; `null` everywhere else. */
 export const KpiStripContext = React.createContext<KpiStripContextValue | null>(null);
+
+/**
+ * Set by a panel `KpiTileGrid` whose children are all tiles (or that passes `rowAlign`):
+ * each tile may then take three rows of the grid itself (label, numeral, context line) as
+ * a subgrid, so the numerals of one strip row share a line whatever the length of a label
+ * or a caption.
+ */
+const KpiRowAlignContext = React.createContext(false);
+
+/**
+ * A row-aligned tile (and its cell root and trigger): three rows of the strip's grid. Only
+ * the rows are the strip's; the one column is the tile's own and is bounded
+ * (`grid-cols-1`, `minmax(0, 1fr)`): an implicit `auto` column would take the min-content
+ * width of a long label word, push the numeral and context rows past the tile's clipping
+ * edge, and hand the numeral's fit guard a row wider than what shows.
+ */
+const ROW_ALIGNED = 'row-span-3 grid grid-cols-1 grid-rows-subgrid';
 
 /** Slugify a label into a stable, lowercase, dash-joined id for test anchors. */
 function slugId(label: string): string {
@@ -1036,6 +1056,87 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         </dl>
       ) : null;
 
+    /*
+     * ROW ALIGNMENT. A strip tile bottom-aligns its numeral over a two-line context slot,
+     * so a label that wraps grows upward from a shared numeral line; but a caption that
+     * wraps past two lines would lift this tile's numeral above its neighbours'. Inside a
+     * panel `KpiTileGrid` that holds only tiles, each strip tile is instead three rows of
+     * the grid itself (a subgrid): the label row, the numeral row and the context row are
+     * as tall as the tallest of that strip row, so every numeral shares one line and a
+     * longer caption grows downward, whatever the label or caption length. (Not with a
+     * partition, which would add a fourth row, or on the default density's 112px floor.)
+     */
+    const inAlignedGrid = React.useContext(KpiRowAlignContext);
+    const rowAligned = inAlignedGrid && hero && (compact || comfortable) && breakdownNode === null;
+    // A tile of an aligned strip that cannot align itself (a partition, a framed tile, the
+    // default density) still takes the strip row's three rows, as one cell with its own
+    // column, so the tiles beside it keep their rows.
+    const rowSpan = inAlignedGrid && !rowAligned ? 'row-span-3' : null;
+
+    // The line under the numeral: the hero context line, or a non-hero tile's sub-line.
+    const lineNode = hero ? (
+      heroLine ? (
+        <span
+          // The line WRAPS, never ellipsized (Round 12 final review): one line cut a
+          // bound's "lower bound" qualifier and 4-digit captions ("1,234 of 1,876
+          // verdicted") at ordinary widths, and a `title` is out of a touch user's reach.
+          // Every hero line reserves TWO lines (`min-h-[2lh]`), so a caption that wraps
+          // never lifts its numeral above its neighbours' (the numeral row is `mt-auto`);
+          // in a row-aligned strip a caption longer than that grows downward instead
+          // (`rowAligned`). The text is also the trigger's accessible name.
+          // `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
+          className={cn(
+            'mt-1.5 block min-h-[2lh] min-w-0 whitespace-normal break-words tabular-nums text-muted-foreground',
+            comfortable ? 'text-sm' : 'text-xs',
+            // The strip spark sits in the bottom-right corner: the line wraps short of it.
+            strip && sparkNode ? 'pr-16' : null,
+          )}
+          // A data attribute, not a `kpi-*` test id: the strip's specs count every
+          // `kpi-*` id inside it to pin the cell count at exactly six.
+          data-kpi-line={sub ? 'state' : boundShownInLine ? 'bound' : 'context'}
+        >
+          {heroLine}
+        </span>
+      ) : (
+        // No context: the same two-line slot, empty, so this tile's numeral stays on the
+        // row its neighbours' numerals sit on (they are `mt-auto` above a two-line line)
+        // instead of dropping to the bottom of the cell.
+        <span
+          aria-hidden
+          className={cn('mt-1.5 block min-h-[2lh]', comfortable ? 'text-sm' : 'text-xs')}
+          data-kpi-line="none"
+        />
+      )
+    ) : sub ? (
+      <span
+        className={cn(
+          'block text-muted-foreground',
+          strip
+            ? compact
+              ? // TWO lines on the compact strip. MEASURED: the strip's captions carry a
+                // qualifier as well as a subject ("Window arrivals · policy-closed
+                // included"), and at one line that clamped on every desktop below 1920px,
+                // the widths this console is actually used at. The tile has the room: the
+                // space under the caption was empty. Two lines is the ceiling, so a
+                // caption still cannot push the strip's rhythm around.
+                //
+                // 12px sans, like every caption (ui-standard "Typography": 11px is for
+                // badges, axis ticks and timestamps only; mono only for identifiers, and
+                // these are words: "exact rates", "awaiting analyst review").
+                'mt-1 line-clamp-2 text-xs'
+              : 'mt-1 truncate text-xs'
+            : 'mt-2 text-xs',
+          // The 4rem gutter exists ONLY to clear the absolutely-positioned strip spark
+          // (bottom-4 right-4, w-14). Reserving it unconditionally cost every strip
+          // caption ~10 characters of permanently empty space on the tiles that pass no
+          // series, so it is tied to the spark actually rendering.
+          strip && !compact && sparkNode ? 'pr-16' : null,
+        )}
+      >
+        {sub}
+      </span>
+    ) : null;
+
     const inner = (
       <>
         {/* The corner overlay sits at the TOP-RIGHT, so only this row reserves space for
@@ -1043,7 +1144,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             whole trigger instead cost every sub-line ~40px and ellipsized load-bearing
             captions such as the degraded open-stock line; reserving it on the numeral row
             cost the number its size. */}
-        <div className={cn('flex items-start justify-between gap-3', overlayReserve)}>
+        <div className={cn('flex items-start justify-between gap-3', overlayReserve, rowAligned && 'self-start')}>
           <span
             className={cn(
               'inline-flex items-center gap-1',
@@ -1103,6 +1204,9 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
             // drops this row to the bottom of every cell, so the numerals share a baseline
             // no matter how far the label above them wrapped.
             hero && 'mt-auto',
+            // In a row-aligned strip the row is the strip grid's numeral row, and the
+            // numeral sits on its bottom edge in every tile of that strip row.
+            rowAligned && 'mt-0 self-end',
           )}
         >
           <span
@@ -1150,71 +1254,34 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
           </span>
           {heroCompact ? <span className="sr-only">{heroText}</span> : null}
           {bound && !boundShownInLine ? <span className="sr-only">{bound}</span> : null}
-          {deltaNode}
+          {/* In a row-aligned strip the numeral row holds the numeral only: a delta beside
+              it would wrap under it on a narrow tile, and that second line would lift this
+              numeral above its neighbours'. The delta opens the context row instead. */}
+          {rowAligned ? null : deltaNode}
         </div>
-        {secondaryNode}
-        {sparkNode}
-        {hero ? (
-          heroLine ? (
-            <span
-              // The line WRAPS, never ellipsized (Round 12 final review): one line cut a
-              // bound's "lower bound" qualifier and 4-digit captions ("1,234 of 1,876
-              // verdicted") at ordinary widths, and a `title` is out of a touch user's
-              // reach. Every hero line reserves TWO lines (`min-h-[2lh]`), so a caption
-              // that wraps never lifts its numeral above its neighbours' (the numeral row
-              // is `mt-auto`). The text is also the trigger's accessible name.
-              // `tabular-nums` so "18% of 43 cases" does not jitter on a live tick.
-              className={cn(
-                'mt-1.5 block min-h-[2lh] min-w-0 whitespace-normal break-words tabular-nums text-muted-foreground',
-                comfortable ? 'text-sm' : 'text-xs',
-                // The strip spark sits in the bottom-right corner: the line wraps short of it.
-                strip && sparkNode ? 'pr-16' : null,
-              )}
-              // A data attribute, not a `kpi-*` test id: the strip's specs count every
-              // `kpi-*` id inside it to pin the cell count at exactly six.
-              data-kpi-line={sub ? 'state' : boundShownInLine ? 'bound' : 'context'}
-            >
-              {heroLine}
-            </span>
-          ) : (
-            // No context: the same two-line slot, empty, so this tile's numeral stays on
-            // the row its neighbours' numerals sit on (they are `mt-auto` above a
-            // two-line line) instead of dropping to the bottom of the cell.
-            <span
-              aria-hidden
-              className={cn('mt-1.5 block min-h-[2lh]', comfortable ? 'text-sm' : 'text-xs')}
-              data-kpi-line="none"
-            />
-          )
-        ) : sub ? (
-          <span
-            className={cn(
-              'block text-muted-foreground',
-              strip
-                ? compact
-                  ? // TWO lines on the compact strip. MEASURED: the strip's captions carry a
-                    // qualifier as well as a subject ("Window arrivals · policy-closed
-                    // included"), and at one line that clamped on every desktop below
-                    // 1920px — the widths this console is actually used at. The tile has
-                    // the room: the space under the caption was empty. Two lines is the
-                    // ceiling, so a caption still cannot push the strip's rhythm around.
-                    //
-                    // 12px sans, like every caption (ui-standard "Typography": 11px is for
-                    // badges, axis ticks and timestamps only; mono only for identifiers,
-                    // and these are words — "exact rates", "awaiting analyst review").
-                    'mt-1 line-clamp-2 text-xs'
-                  : 'mt-1 truncate text-xs'
-                : 'mt-2 text-xs',
-              // The 4rem gutter exists ONLY to clear the absolutely-positioned strip
-              // spark (bottom-4 right-4, w-14). Reserving it unconditionally cost every
-              // strip caption ~10 characters of permanently empty space on the tiles
-              // that pass no series, so it is tied to the spark actually rendering.
-              strip && !compact && sparkNode ? 'pr-16' : null,
-            )}
-          >
-            {sub}
-          </span>
-        ) : null}
+        {rowAligned ? (
+          <>
+            {/* The strip grid's third row: the delta, the scale context and the context
+                line, top aligned, so a wrapping delta or a longer caption grows downward
+                and never lifts this tile's numeral above its neighbours'. */}
+            <div className="min-w-0 self-start" data-kpi-row="context">
+              {deltaNode ? (
+                <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-kpi-row-delta="">
+                  {deltaNode}
+                </div>
+              ) : null}
+              {secondaryNode}
+              {lineNode}
+            </div>
+            {sparkNode}
+          </>
+        ) : (
+          <>
+            {secondaryNode}
+            {sparkNode}
+            {lineNode}
+          </>
+        )}
       </>
     );
 
@@ -1327,7 +1394,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
              * Growing the labels upward from a common numeral baseline is length-independent,
              * and it is what the row wanted anyway: the number is the thing being compared.
              */
-            hero && 'flex h-full flex-col',
+            hero && (rowAligned ? ROW_ALIGNED : 'flex h-full flex-col'),
+            needsCellRoot ? null : rowSpan,
             framed && !strip && !breakdownIsSibling && 'hover:border-primary/40',
             framed
               ? 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background'
@@ -1349,7 +1417,8 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
       return (
         <div
           className={cn(
-            'relative flex h-full min-w-0 flex-col overflow-hidden',
+            'relative min-w-0 overflow-hidden',
+            rowAligned ? ROW_ALIGNED : cn(rowSpan, 'flex h-full flex-col'),
             // The named group the hero overlay reveals itself on (hover or focus anywhere
             // in the cell, including the help button that sits beside the trigger).
             hero && 'group/kpi',
@@ -1383,7 +1452,7 @@ export const KpiTile = React.forwardRef<HTMLElement, KpiTileProps>(
         // A static hero tile takes the same full-height column as a clickable one, so its
         // numeral bottom-aligns too: in a strip that mixes the two, every numeral shares
         // one row.
-        className={cn(base, hero && 'flex h-full flex-col', className)}
+        className={cn(base, hero && (rowAligned ? ROW_ALIGNED : 'flex h-full flex-col'), rowSpan, className)}
       >
         {barEdge}
         {inner}
@@ -1415,6 +1484,14 @@ export interface KpiTileGridProps extends React.HTMLAttributes<HTMLDivElement> {
   surface?: 'card' | 'panel';
   /** Classes for the outer `@container` wrapper (the `className` lands on the grid). */
   containerClassName?: string;
+  /**
+   * `surface="panel"` only. Row-align the tiles even though the grid's children are
+   * wrappers, not bare tiles (bare tiles are detected without it). Each child must then
+   * itself be a subgrid of the strip's rows (`row-span-N grid grid-rows-subgrid`, N of 3
+   * or more) whose first three rows hold its one `KpiTile`, and every child of a strip row
+   * must span the same number of rows.
+   */
+  rowAlign?: boolean;
 }
 
 /**
@@ -1475,11 +1552,17 @@ export function kpiStripColumns(count: number): { cols: string; oneRow: string }
  */
 export const KpiTileGrid = React.forwardRef<HTMLDivElement, KpiTileGridProps>(
   function KpiTileGrid(
-    { count, framed = true, surface = 'card', containerClassName, className, children, ...rest },
+    { count, framed = true, surface = 'card', containerClassName, className, children, rowAlign = false, ...rest },
     ref,
   ) {
     if (surface === 'panel') {
       const strip = kpiStripColumns(count);
+      // Row alignment needs every grid child to be a tile: a wrapper (a hover trend card,
+      // a filter cell) is one grid row, and mixing the two would misplace the rows. A
+      // wrapper that is itself a subgrid of the strip's rows opts in with `rowAlign`.
+      const rowAligned =
+        rowAlign ||
+        React.Children.toArray(children).every((child) => React.isValidElement(child) && child.type === KpiTile);
       return (
         <div className={cn('@container min-w-0', containerClassName)} data-kpi-grid-count={count}>
           <div className="overflow-hidden" data-kpi-grid-frame="panel">
@@ -1497,9 +1580,10 @@ export const KpiTileGrid = React.forwardRef<HTMLDivElement, KpiTileGridProps>(
                 '[&>*:has([data-kpi-break])]:border-l-border-strong [&>*:has([data-kpi-break])]:[border-image:none]',
                 className,
               )}
+              data-kpi-rows={rowAligned ? 'aligned' : undefined}
               {...rest}
             >
-              {children}
+              <KpiRowAlignContext.Provider value={rowAligned}>{children}</KpiRowAlignContext.Provider>
             </div>
           </div>
         </div>

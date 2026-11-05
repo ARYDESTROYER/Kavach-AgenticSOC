@@ -22,7 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.engine.runbook_migration import (
-    LEGACY_BUNDLED_PLAYBOOK_IDS,
+    LEGACY_BUNDLED_PROCEDURE_IDS,
     NS_PROCEDURE_DIR,
     NS_PROCEDURES,
     NS_REFERENCE,
@@ -34,7 +34,7 @@ from app.stores.runbook_library import RunbookMigrationCounts, RunbookMigrationM
 
 from tests.test_runbook_library_api import add_user, auth_secrets, create, login, make_app, publish
 
-BUNDLED = sorted(LEGACY_BUNDLED_PLAYBOOK_IDS)[0]
+BUNDLED = sorted(LEGACY_BUNDLED_PROCEDURE_IDS)[0]
 ID_MAP = {
     f"{NS_PROCEDURES}:acme_vpn_lockout": "acme_vpn_lockout",
     f"{NS_PROCEDURE_DIR}:ransom_note": "ransom_note-imported",

@@ -27,6 +27,7 @@ import {
   isSafeCaseResultStatus,
   isSafeCaseResultTag,
 } from './case-result-route';
+import { isCaseTab } from './case-tabs';
 
 export type { PageId } from './nav';
 
@@ -220,7 +221,16 @@ function hashKeys(page: PageId): Readonly<Record<string, Check>> {
     };
   }
   // The engine's closer values (the `closed_by` filter of GET /api/cases); `#/scans` uses `agent`.
-  if (page === 'case_manager') return { caseId: isSafeCaseId, closedBy: re(/^(agent|analyst|analyst_policy|system)$/) };
+  // `tab` opens one of the case detail's tabs, validated against the same CASE_TABS the
+  // page renders (./case-tabs): the audit log's "Open case trace" opens `investigation`,
+  // a case-chat toast `chat`.
+  if (page === 'case_manager') {
+    return {
+      caseId: isSafeCaseId,
+      closedBy: re(/^(agent|analyst|analyst_policy|system)$/),
+      tab: isCaseTab,
+    };
+  }
   if (page === 'metrics') return { tab: (value) => METRICS_TAB(value) || hasOwn(METRICS_TAB_PAGES, value) };
   return DEEP_LINK_KEYS[page] ?? {};
 }
@@ -252,7 +262,10 @@ export function pageHash(page: PageId, opts?: NavOpts): string {
   }
   const validated = { ...DEEP_LINK_KEYS[page] };
   if (page === 'cases') validated.rule = ruleValue;
-  if (page === 'case_manager') validated.closedBy = hashKeys(page).closedBy;
+  if (page === 'case_manager') {
+    const { closedBy, tab } = hashKeys(page);
+    Object.assign(validated, { closedBy, tab });
+  }
   for (const [key, valid] of Object.entries(validated)) {
     const value = values[key];
     // A message anchor without its (valid) conversation would be unreadable on refresh.

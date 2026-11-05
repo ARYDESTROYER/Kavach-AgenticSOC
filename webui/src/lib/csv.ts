@@ -1,11 +1,11 @@
 /**
  * Spreadsheet-safe field encoders (chat revamp SPEC §9.3, BLOCKS.md amendment 9).
  *
- * The shared home of the formula-injection defusal for the chat answer blocks and report
- * exports (the blocks kit's copy moved here). `KpiDrilldownPanel` still carries its own
- * `csvField`, and the Excel writer (`chat/report/export/xlsx.ts`) its own lead test; both
- * are to migrate here (`csvField`, `isFormulaLed`). Until they do, they defuse a narrower
- * set of leads than this module.
+ * The one home of the formula-injection defusal for every spreadsheet the Console
+ * writes: the chat answer blocks' CSV and clipboard, the report CSV, the report Excel
+ * writer (`chat/report/export/xlsx.ts`, which gates its own cell quoting on
+ * `isFormulaLed`), the severity breakdown and the KPI drill-down CSV
+ * (`KpiDrilldownPanel`). None of them carries a lead test of its own.
  * Rules:
  *
  *   - STRING cells are formula-defused: a leading `= + - @`, TAB, CR or LF, or one of
@@ -13,10 +13,8 @@
  *     A source-controlled rule named `=HYPERLINK("http://…","click")` must land in a
  *     spreadsheet as the rule's NAME, never as a live, attacker-authored link. The rule
  *     set is one shared fixture, `csv-formula.contract.json` (Round 14 SPEC §4.5.6), read
- *     by this module's test and by the backend audit export writer's test, so this
- *     module's CSV and clipboard encoders and the audit export defuse alike. The Excel
- *     writer and `KpiDrilldownPanel` are not covered by that fixture yet; they migrate
- *     to `isFormulaLed` and `csvField` (see above).
+ *     by this module's test, by the Excel writer's and the drill-down export's tests, and
+ *     by the backend audit export writer's test, so they all defuse alike.
  *   - NUMERIC cells stay numeric: a negative count is a number, not a formula, and
  *     defusing it would turn it into text that no longer sums.
  *   - `null` is an empty field (not measured is never 0).
@@ -36,9 +34,8 @@ const TSV_LEAD = /^"/;
 
 /**
  * Does a STRING cell open like a formula (any lead of the shared fixture, also after
- * spaces)? The lead test for a spreadsheet writer with its own cell quoting, so it
- * defuses exactly the cells this module does (the report Excel writer is to move to it;
- * see the module note).
+ * spaces)? The lead test for a spreadsheet writer with its own cell quoting (the report
+ * Excel writer), so it defuses exactly the cells this module does.
  */
 export function isFormulaLed(text: string): boolean {
   return FORMULA_LEAD.test(text);

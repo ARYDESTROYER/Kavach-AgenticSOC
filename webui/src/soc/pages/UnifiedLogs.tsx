@@ -213,6 +213,28 @@ export function windowLabel(from: string | null, to: string | null): string {
   return `${side(a, from)} → ${side(b, end)}`;
 }
 
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+/**
+ * The same linked window, short enough for the header's time pill at phone width
+ * (closing QA qa2-02: `2026-11-02 00:00:00 → 2026-11-04 13:46:55 UTC` ran past a 390px
+ * screen's gutter): two absolute instants read `Nov 2 00:00 → Nov 4 13:46 UTC`, the
+ * minute floored, with ISO dates instead when the window is not in this UTC year.
+ * Undefined when the full label is already short (a relative or one-sided window). At
+ * phone width the pill is named from this short form, and its description and tooltip
+ * keep the whole range; the Window line under the search keeps it at every width.
+ */
+export function windowShortLabel(from: string | null, to: string | null, nowMs: number = Date.now()): string | undefined {
+  const a = absoluteBound(from);
+  const b = absoluteBound(to ?? 'now');
+  if (!a || !b) return undefined;
+  const year = new Date(nowMs).getUTCFullYear();
+  const thisYear = a.getUTCFullYear() === year && b.getUTCFullYear() === year;
+  const day = (d: Date) => (thisYear ? `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}` : utcDate(d));
+  const tail = utcDate(a) === utcDate(b) ? utcTime(b, false) : `${day(b)} ${utcTime(b, false)}`;
+  return `${day(a)} ${utcTime(a, false)} → ${tail} UTC`;
+}
+
 /* -------------------------------------------------------------------------- */
 /* What the filtered read found.                                               */
 /* -------------------------------------------------------------------------- */
@@ -602,6 +624,7 @@ export default function UnifiedLogsPage({ opts: explicit }: UnifiedLogsPageProps
           initialFrom={active.from ?? undefined}
           initialTo={active.to ?? undefined}
           initialWindowLabel={windowLabel(active.from, active.to)}
+          initialWindowShortLabel={windowShortLabel(active.from, active.to)}
           sourceId={active.sourceId ?? undefined}
           rule={active.rule}
           severity={active.severity}

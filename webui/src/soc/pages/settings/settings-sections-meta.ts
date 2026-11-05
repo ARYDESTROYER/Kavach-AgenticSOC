@@ -569,6 +569,10 @@ export const SETTINGS_SECTIONS_META: SectionMeta[] = [
     help: 'Download a secret-free bundle of the Agentic SOC state you choose, assembled in the background. Credentials, tokens, sessions, users, environment secrets and upstream raw logs are never included.',
     icon: DatabaseBackup,
     perm: { resource: 'data_export', action: 'export' },
+    // 'audit' finds this section in the Settings search (it exports an Audit scope). Chat
+    // app help drops it from the console map (CONSOLE_KEYWORD_DROP in
+    // console-map.contract.test.ts): audit events are exported from the Audit log's own
+    // Export menu (`audit:export`), so "How do I export the audit log?" must lead there.
     keywords: ['export', 'download', 'backup', 'portable', 'analysis bundle', 'cases', 'audit', 'usage', 'configuration'],
   },
   {
@@ -631,8 +635,8 @@ export const SETTING_ANCHORS: readonly SettingAnchor[] = [
   { section: 'knowledge', anchor: 'knowledge-threat', label: 'Threat context panel', keywords: ['threat context', 'ioc', 'mitre', 'reputation'] },
   { section: 'knowledge', anchor: 'knowledge-corpus', label: 'Knowledge corpus', keywords: ['resolved cases', 'knowledge corpus', 'mitre corpus', 'precedent'] },
   // Integrations › Runbooks
-  { section: 'runbooks', anchor: 'runbooks-cases', label: 'Runbooks on cases', keywords: ['auto attach', 'attach', 'fallback', 'generic incident'] },
-  { section: 'runbooks', anchor: 'runbooks-publishing', label: 'Publishing and review', keywords: ['publish', 'approver', 'review', 'step approvals', 'cadence'] },
+  { section: 'runbooks', anchor: 'runbooks-cases', label: 'Runbooks on cases', keywords: ['auto attach', 'attach', 'fallback', 'generic incident', 'no runbook', 'fallback runbook'] },
+  { section: 'runbooks', anchor: 'runbooks-publishing', label: 'Publishing and review', keywords: ['publish', 'approver', 'distinct approver', 'review', 'step approvals', 'cadence'] },
   // Organization › Advanced
   { section: 'advanced', anchor: 'advanced-caps', label: 'Per-case caps', keywords: ['caps', 'budget', 'max tokens', 'max cost', 'concurrency'] },
   { section: 'advanced', anchor: 'advanced-killswitch', label: 'Kill switch', keywords: ['kill switch', 'pause', 'stop', 'disable'] },

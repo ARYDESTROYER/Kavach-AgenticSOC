@@ -13,7 +13,7 @@
  * (`aria-hidden`) — the badge TEXT already carries the meaning — and can be turned
  * off per call with `icon={false}` for the rare space-constrained inline use.
  */
-import { Bot, type LucideIcon } from 'lucide-react';
+import { Bot, UserCheck, type LucideIcon } from 'lucide-react';
 import { Badge, type BadgeProps } from '@/ui/badge';
 import { cn } from '@/lib/cn';
 import { DASH, humanizeToken, fmtPercent, toPercentValue, formatTimestamp } from '@/lib/format';
@@ -30,6 +30,7 @@ import { SEVERITY_LABEL, statusLabel, verdictLabel, type SeverityBand } from './
 import {
   canonicalVerdict,
   confidencePercent,
+  outcomeCellText,
   verdictWords,
   type CaseOutcome,
 } from './outcome';
@@ -699,14 +700,60 @@ export interface OutcomeBadgeProps {
   className?: string;
   /** Render the `Analyst` provenance tag beside a human outcome. Default true. */
   showProvenance?: boolean;
+  /**
+   * The table-cell form (the Cases Outcome column): ONE badge in the table badge size
+   * with a short label ({@link outcomeCellText}), the whole outcome as its tooltip and
+   * read to assistive technology, and the actor as its glyph (the Analyst person glyph
+   * in place of the separate tag, the Bot for an AI auto-close), so it fits its column
+   * and is never clipped.
+   */
+  compact?: boolean;
+}
+
+/** The table badge size, shared with the Cases Status column beside it. */
+const TABLE_BADGE = 'px-1.5 text-2xs';
+
+function CompactOutcomeBadge({ outcome, className }: { outcome: CaseOutcome; className?: string }) {
+  const text = outcomeCellText(outcome);
+  if (!text) return null;
+  const human = outcome.source === 'analyst' || outcome.source === 'analyst_policy';
+  const variant: Variant =
+    outcome.source === 'analyst'
+      ? outcome.disposition
+        ? dispositionVariant(outcome.disposition)
+        : 'outline'
+      : outcome.source === 'analyst_unrecorded'
+        ? 'outline'
+        : 'info';
+  return (
+    <Badge
+      variant={variant}
+      data-testid="case-outcome"
+      data-outcome-source={outcome.source}
+      data-provenance={human ? 'analyst' : undefined}
+      title={text.full}
+      className={cn(TABLE_BADGE, outcome.source === 'analyst_unrecorded' && 'text-muted-foreground', className)}
+    >
+      {human ? (
+        <UserCheck className="size-3 shrink-0" aria-hidden />
+      ) : outcome.source === 'agent_auto' ? (
+        <Bot className="size-3 shrink-0" aria-hidden />
+      ) : (
+        <SemanticGlyph iconKey="undetermined" show />
+      )}
+      {text.label}
+      <span className="sr-only">{`, ${text.full.toLowerCase()}`}</span>
+    </Badge>
+  );
 }
 
 /**
  * The outcome of record as a badge. Renders NOTHING while the outcome is pending —
  * an open case has no outcome yet, and the AI verdict has its own chip.
  */
-export function OutcomeBadge({ outcome, className, showProvenance = true }: OutcomeBadgeProps) {
+export function OutcomeBadge({ outcome, className, showProvenance = true, compact = false }: OutcomeBadgeProps) {
   if (outcome.source === 'pending') return null;
+  if (compact) return <CompactOutcomeBadge outcome={outcome} className={className} />;
   if (outcome.source === 'analyst') {
     return (
       <span

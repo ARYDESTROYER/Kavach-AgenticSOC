@@ -62,6 +62,9 @@ export const CONFLICT_NOTE = 'This step changed since you opened it. Showing the
 /** What a write refused because another one is still being saved says. */
 export const BUSY_NOTE = 'Another change to this runbook is still being saved. Try again in a moment.';
 
+/** What the live region says when Draft note's draft lands (the draft is not the step's note yet). */
+export const DRAFT_READY_NOTE = 'The AI drafted a note. It is not part of the case until you confirm it.';
+
 /** What a person typed into one step and has not saved yet (kept across remounts). */
 export interface StepDraft {
   note?: string;
@@ -343,12 +346,16 @@ export function RunbookRunProvider({
         perform(stepId, 'approval', () =>
           decideRunbookApproval(caseId, run.run_id, stepId, reason ? { decision, reason } : { decision }),
         ),
-      draftNote: (stepId) =>
-        perform(stepId, 'draft', async () => {
+      draftNote: async (stepId) => {
+        const outcome = await perform(stepId, 'draft', async () => {
           const result = await draftRunbookStep(caseId, run.run_id, stepId);
           if (!result.update) throw new Error('The AI returned no draft. Try again.');
           return result.update;
-        }),
+        });
+        // Draft note leaves the step with the draft; say what took its place.
+        if (outcome.ok) announce(DRAFT_READY_NOTE);
+        return outcome;
+      },
       estimateDraft: async (stepId) => {
         try {
           const result = await draftRunbookStep(caseId, run.run_id, stepId, { dryRun: true });

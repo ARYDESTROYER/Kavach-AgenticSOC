@@ -52,6 +52,7 @@ vi.mock('@/soc/demo', async (importOriginal) => ({
 }));
 
 import { TooltipProvider } from '@/ui/tooltip';
+import { CartesianChart } from '@/soc/chat/blocks/charts/CartesianChart';
 import type { RuleSummary } from '@/lib/types-rules';
 import { hashRoute } from '@/soc/route-link';
 import {
@@ -271,15 +272,16 @@ describe('rule sheet helpers', () => {
     });
   });
 
-  it('stacks the series by named level, Critical first, leaving out levels without an alert', () => {
+  it('stacks all five named levels, Critical first, zeros included, with self-dated bucket names', () => {
     const block = alertsChartBlock(summaryFixture().alerts.series, { now: new Date('2026-10-25T08:00:00Z') });
     expect(block?.kind).toBe('stacked_bar');
-    expect(block?.series.map((s) => s.label)).toEqual(['High', 'Medium']);
-    expect(block?.series.map((s) => s.semantic)).toEqual(['high', 'medium']);
-    // Dated ticks: a midnight bucket names the day, a noon bucket adds the time.
-    expect(block?.x.labels?.slice(0, 3)).toEqual(['Oct 22', '12:00', 'Oct 23']);
+    // Every severity breakdown lists the five levels in order, zeros included (SPEC §4.7.2).
+    expect(block?.series.map((s) => s.label)).toEqual(['Critical', 'High', 'Medium', 'Low', 'Info']);
+    expect(block?.series.map((s) => s.semantic)).toEqual(['critical', 'high', 'medium', 'low', 'info']);
+    expect(block?.series[0].values).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    // The tooltip and the table name every bucket in full; the axis dates its own ticks.
+    expect(block?.x.labels?.slice(0, 3)).toEqual(['Oct 22, 00:00 to 12:00 UTC', 'Oct 22, 12:00 to 24:00 UTC', 'Oct 23, 00:00 to 12:00 UTC']);
     expect(alertsChartBlock({ bucket: '12h', levels: [], points: [{ t: '2026-10-22T00:00:00Z', critical: 0, high: 0, medium: 0, low: 0, info: 0 }] })).toBeNull();
-    // A sub-day series names its first day once, then the time of day.
     const minutes = alertsChartBlock(
       {
         bucket: '15m',
@@ -288,9 +290,216 @@ describe('rule sheet helpers', () => {
       },
       { now: new Date('2026-10-28T20:00:00Z') },
     );
-    expect(minutes?.x.labels).toEqual(['Oct 28 18:30', '18:45', '19:00']);
-    expect(minutes?.series.map((s) => s.label)).toEqual(['Critical']);
+    expect(minutes?.x.labels).toEqual(['Oct 28, 18:30 to 18:45 UTC', 'Oct 28, 18:45 to 19:00 UTC', 'Oct 28, 19:00 to 19:15 UTC']);
+    expect(minutes?.series.map((s) => s.label)).toEqual(['Critical', 'High', 'Medium', 'Low', 'Info']);
+    // A day bucket reads its day, a week its days, a bucket outside this year its year.
+    const days = alertsChartBlock(
+      { bucket: '7d', levels: [], points: [{ t: '2025-12-29T00:00:00Z', critical: 0, high: 1, medium: 0, low: 0, info: 0 }] },
+      { now: new Date('2026-01-10T00:00:00Z') },
+    );
+    expect(days?.x.labels).toEqual(['Dec 29, 2025 to Jan 4']);
     expect(alertsChartBlock(null)).toBeNull();
+  });
+
+  it('names a 30-day bucket by its first and last days, never as one day (review, FX5c fix)', () => {
+    // GET /api/rules/summary picks 30-day buckets once a window passes 56 days.
+    const block = alertsChartBlock(
+      {
+        bucket: '30d',
+        levels: [],
+        points: ['2026-08-07', '2026-09-06', '2026-10-06'].map((d, i) => ({
+          t: `${d}T00:00:00+00:00`,
+          critical: 0,
+          high: 120 + i,
+          medium: 0,
+          low: 0,
+          info: 0,
+        })),
+      },
+      { now: new Date('2026-11-04T14:05:00Z') },
+    );
+    // The newest bucket has not ended, so it is still filling; it names the days so far.
+    expect(block?.last_in_progress).toBe(true);
+    expect(block?.x.labels).toEqual(['Aug 7 to Sep 5', 'Sep 6 to Oct 5', 'Oct 6 to Nov 4']);
+    // The axis tick still reads the day each bucket starts.
+    const { container } = render(<CartesianChart block={block!} title="Alerts over time by severity" height={168} staticMode />);
+    const ticks = Array.from(container.querySelectorAll('svg text[text-anchor="middle"]:not([data-testid])')).map(
+      (t) => t.textContent ?? '',
+    );
+    expect(ticks).toEqual(['Aug 7', 'Sep 6', 'Oct 6']);
+    // A year-long bucket outside this year carries its years.
+    const years = alertsChartBlock(
+      { bucket: '365d', levels: [], points: [{ t: '2024-11-03T00:00:00+00:00', critical: 1, high: 0, medium: 0, low: 0, info: 0 }] },
+      { now: new Date('2026-11-04T14:05:00Z') },
+    );
+    expect(years?.x.labels).toEqual(['Nov 3, 2024 to Nov 2, 2025']);
+  });
+
+  it('dates every visible tick of a 3-day window in 12 h buckets that starts at noon (qa2-04)', () => {
+    // GET /api/rules/summary for now-3d at 14:05 UTC: 7 points from Nov 1 12:00.
+    const points = Array.from({ length: 7 }, (_, i) => ({
+      t: new Date(Date.UTC(2026, 10, 1, 12) + i * 43_200_000).toISOString().replace('.000Z', '+00:00'),
+      critical: 0,
+      high: i + 1,
+      medium: 0,
+      low: 0,
+      info: 0,
+    }));
+    const block = alertsChartBlock(
+      { bucket: '12h', levels: [], points },
+      { window: { from: 'now-3d', to: 'now' }, now: new Date('2026-11-04T14:05:00Z') },
+    );
+    expect(block?.last_in_progress).toBe(true);
+    expect(block).not.toBeNull();
+    const { container } = render(<CartesianChart block={block!} title="Alerts over time by severity" height={168} staticMode />);
+    // The x ticks are the centred texts under the plot (the y ticks are right-aligned).
+    const ticks = Array.from(container.querySelectorAll('svg text[text-anchor="middle"]:not([data-testid])')).map(
+      (t) => t.textContent ?? '',
+    );
+    // The regular midnights, each naming its day (before: "Nov 1 12:00, 12:00, 12:00, 12:00").
+    // The newest bucket keeps its own tick, Nov 4's noon, read from the "Nov 4" before it.
+    expect(ticks).toEqual(['Nov 2', 'Nov 3', 'Nov 4', '12:00']);
+    // The note sits under the newest bucket's own tick, the one still filling.
+    expect(screen.getByTestId('chart-in-progress')).toHaveTextContent('(in progress)');
+  });
+
+  it('marks the newest bucket in progress from the data, not from how the window is written (second review)', () => {
+    const now = new Date('2026-11-05T14:05:00Z');
+    const daily = (first: string, n: number) => ({
+      bucket: '1d',
+      levels: [],
+      points: Array.from({ length: n }, (_, i) => ({
+        t: new Date(Date.parse(first) + i * 86_400_000).toISOString().replace('.000Z', '+00:00'),
+        critical: 0,
+        high: i + 1,
+        medium: 0,
+        low: 0,
+        info: 0,
+      })),
+    });
+    // A board opens the sheet on an absolute window that ended when it loaded: today's
+    // bucket is still filling, so it is in progress, named up to the window's end.
+    const board = alertsChartBlock(daily('2026-10-29T00:00:00Z', 8), {
+      window: { from: '2026-10-29T14:00:00+00:00', to: '2026-11-05T14:00:00+00:00' },
+      now,
+    });
+    expect(board?.last_in_progress).toBe(true);
+    expect(board?.x.labels?.[0]).toBe('Oct 29, 14:00 to 24:00 UTC');
+    expect(board?.x.labels?.at(-1)).toBe('Nov 5, 00:00 to 14:00 UTC');
+    // A window that ends on a bucket boundary leaves its last bucket whole and finished.
+    const boundary = alertsChartBlock(daily('2026-10-29T00:00:00Z', 7), {
+      window: { from: '2026-10-29T00:00:00+00:00', to: '2026-11-05T00:00:00+00:00' },
+      now,
+    });
+    expect(boundary?.last_in_progress).toBe(false);
+    expect(boundary?.x.labels?.[0]).toBe('Oct 29');
+    expect(boundary?.x.labels?.at(-1)).toBe('Nov 4');
+    // A window that ended in the past mid-bucket: cut, named as cut, never "in progress".
+    const past = alertsChartBlock(daily('2026-10-08T00:00:00Z', 3), {
+      window: { from: '2026-10-08T00:00:00+00:00', to: '2026-10-10T12:00:00+00:00' },
+      now,
+    });
+    expect(past?.last_in_progress).toBe(false);
+    expect(past?.x.labels?.at(-1)).toBe('Oct 10, 00:00 to 12:00 UTC');
+  });
+
+  it('names only the part of each bucket the window counted (second review)', () => {
+    const points = (first: string, n: number, stepMs: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        t: new Date(Date.parse(first) + i * stepMs).toISOString().replace('.000Z', '+00:00'),
+        critical: 0,
+        high: 1,
+        medium: 0,
+        low: 0,
+        info: 0,
+      }));
+    // Last 30 days at 00:38: 7-day buckets from Thursday Oct 1. The first counts from Oct 6
+    // (it keeps the day it starts and says where the window cuts it), the newest started
+    // today and counts today only.
+    const month = alertsChartBlock(
+      { bucket: '7d', levels: [], points: points('2026-10-01T00:00:00Z', 6, 7 * 86_400_000) },
+      { window: { from: '2026-10-06T00:38:00+00:00', to: '2026-11-05T00:38:00+00:00' }, now: new Date('2026-11-05T00:40:00Z') },
+    );
+    expect(month?.x.labels).toEqual([
+      'Oct 1 to Oct 7 (from Oct 6)',
+      'Oct 8 to Oct 14',
+      'Oct 15 to Oct 21',
+      'Oct 22 to Oct 28',
+      'Oct 29 to Nov 4',
+      'Nov 5',
+    ]);
+    expect(month?.last_in_progress).toBe(true);
+    // Last 24 hours in 3-hour buckets: cut at both ends to the minute.
+    const day = alertsChartBlock(
+      { bucket: '3h', levels: [], points: points('2026-11-04T00:00:00Z', 9, 3 * 3_600_000) },
+      { window: { from: '2026-11-04T00:38:00+00:00', to: '2026-11-05T00:38:00+00:00' }, now: new Date('2026-11-05T00:40:00Z') },
+    );
+    expect(day?.x.labels?.[0]).toBe('Nov 4, 00:38 to 03:00 UTC');
+    expect(day?.x.labels?.[1]).toBe('Nov 4, 03:00 to 06:00 UTC');
+    expect(day?.x.labels?.at(-1)).toBe('Nov 5, 00:00 to 00:38 UTC');
+    // Last 90 days in 30-day buckets: the first bucket starts two days before the window.
+    const quarter = alertsChartBlock(
+      { bucket: '30d', levels: [], points: points('2026-08-05T00:00:00Z', 4, 30 * 86_400_000) },
+      { window: { from: 'now-90d', to: 'now' }, now: new Date('2026-11-05T00:38:00Z') },
+    );
+    expect(quarter?.x.labels?.[0]).toBe('Aug 5 to Sep 3 (from Aug 7)');
+    expect(quarter?.x.labels?.at(-1)).toBe('Nov 3 to Nov 5');
+    // A cut that falls on the day the bucket starts adds nothing to say.
+    const sameDay = alertsChartBlock(
+      { bucket: '7d', levels: [], points: points('2026-10-06T00:00:00Z', 2, 7 * 86_400_000) },
+      { window: { from: '2026-10-06T00:38:00+00:00', to: '2026-10-20T00:00:00+00:00' }, now: new Date('2026-11-05T00:40:00Z') },
+    );
+    expect(sameDay?.x.labels).toEqual(['Oct 6 to Oct 12', 'Oct 13 to Oct 19']);
+  });
+
+  it('names a long first bucket the window cuts from the day its tick reads (re-review F2)', () => {
+    const points = (first: string, n: number, stepMs: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        t: new Date(Date.parse(first) + i * stepMs).toISOString().replace('.000Z', '+00:00'),
+        critical: 0,
+        high: i + 1,
+        medium: 0,
+        low: 0,
+        info: 0,
+      }));
+    const now = new Date('2026-11-05T02:44:00Z');
+    const shown = (block: NonNullable<ReturnType<typeof alertsChartBlock>>) => {
+      const view = render(<CartesianChart block={block} title="Alerts over time by severity" height={168} staticMode />);
+      const ticks = Array.from(view.container.querySelectorAll('svg text[text-anchor="middle"]:not([data-testid])')).map(
+        (t) => t.textContent ?? '',
+      );
+      const rows = Array.from(within(view.container).getByTestId('chart-data-table').querySelectorAll('th[scope="row"]')).map(
+        (r) => r.textContent ?? '',
+      );
+      view.unmount();
+      return { ticks, rows };
+    };
+    // "Last 30 days": 7-day buckets from Oct 1, the window from Oct 6 02:44.
+    const week = alertsChartBlock(
+      { bucket: '7d', levels: [], points: points('2026-10-01T00:00:00Z', 6, 7 * 86_400_000) },
+      { window: { from: 'now-30d', to: 'now' }, now },
+    );
+    const weekly = shown(week!);
+    expect(weekly.ticks[0]).toBe('Oct 1');
+    expect(weekly.rows[0]).toBe('Oct 1 to Oct 7 (from Oct 6)');
+    expect(weekly.rows[0].startsWith(`${weekly.ticks[0]} `)).toBe(true);
+    // The window's first day is still named, so the count is never read as covering Oct 1 to 5.
+    expect(weekly.rows[0]).toContain('(from Oct 6)');
+    // "Last 90 days": 30-day buckets agree the same way.
+    const month = alertsChartBlock(
+      { bucket: '30d', levels: [], points: points('2026-08-05T00:00:00Z', 4, 30 * 86_400_000) },
+      { window: { from: 'now-90d', to: 'now' }, now },
+    );
+    const monthly = shown(month!);
+    expect(monthly.ticks[0]).toBe('Aug 5');
+    expect(monthly.rows[0]).toBe('Aug 5 to Sep 3 (from Aug 7)');
+    // An end the window cuts, and day buckets, keep naming only what was counted.
+    expect(weekly.rows.at(-1)).toBe('Nov 5 (in progress)');
+    const day = alertsChartBlock(
+      { bucket: '1d', levels: [], points: points('2026-10-29T00:00:00Z', 8, 86_400_000) },
+      { window: { from: '2026-10-29T02:44:00+00:00', to: 'now' }, now },
+    );
+    expect(day?.x.labels?.[0]).toBe('Oct 29, 02:44 to 24:00 UTC');
   });
 
   it('words a tuning proposal in one plain sentence', () => {
@@ -534,6 +743,30 @@ describe('the rule sheet', () => {
     const section = within(dialog).getByRole('region', { name: 'Alerts over time' });
     expect(section).toHaveTextContent('12 h buckets · times in UTC · exact');
     expect(within(section).getByRole('group', { name: /^Alerts over time by severity\. Stacked column chart/ })).toBeInTheDocument();
+  });
+
+  it("marks today's bucket in progress on a board's absolute window, and a finished window's not at all", async () => {
+    // The fixture's window ends at 06:12 on Oct 25, inside its newest 12 h bucket.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-25T06:20:00Z'));
+      const window = { from: '2026-10-22T06:00:00+00:00', to: '2026-10-25T06:12:00+00:00' };
+      const { dialog, unmount } = await openSheet(summaryFixture(), { window });
+      const section = within(dialog).getByRole('region', { name: 'Alerts over time' });
+      expect(within(section).getByTestId('chart-in-progress')).toHaveTextContent('(in progress)');
+      const rows = within(within(section).getByTestId('chart-data-table')).getAllByRole('rowheader');
+      // The first bucket counts from the window's start, the newest up to its end.
+      expect(rows[0]).toHaveTextContent('Oct 22, 06:00 to 12:00 UTC');
+      expect(rows.at(-1)).toHaveTextContent('Oct 25, 00:00 to 06:12 UTC (in progress)');
+      unmount();
+      // A week later the same window's newest bucket has ended: nothing is in progress.
+      vi.setSystemTime(new Date('2026-11-01T00:00:00Z'));
+      const later = await openSheet(summaryFixture(), { window });
+      const done = within(later.dialog).getByRole('region', { name: 'Alerts over time' });
+      expect(within(done).queryByTestId('chart-in-progress')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says when the chart is drawn from a sample, with the server reason', async () => {

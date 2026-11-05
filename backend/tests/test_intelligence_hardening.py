@@ -104,7 +104,7 @@ async def test_operator_runbooks_are_durable_and_revision_guarded(app_state) -> 
     ("namespace", "key", "listing"),
     [
         (RUNBOOKS_NS, RUNBOOKS_KEY, "list_runbooks_strict"),
-        (PLAYBOOKS_NS, PLAYBOOKS_KEY, "list_playbooks_strict"),
+        (PLAYBOOKS_NS, PLAYBOOKS_KEY, "list_procedures_strict"),
     ],
 )
 async def test_a_legacy_catalog_with_a_malformed_row_is_read_without_a_write(

@@ -518,6 +518,8 @@ export function CloseAttributionChart({
   const boxRef = React.useRef<HTMLDivElement>(null);
   const tipRef = React.useRef<HTMLDivElement>(null);
   const [size, setSize] = React.useState<{ width: number; height: number } | null>(null);
+  /** The box the plot was last measured in (what is drawn, or about to be); 0 before. */
+  const drawn = React.useRef({ width: 0, height: 0 });
 
   React.useLayoutEffect(() => {
     const el = boxRef.current;
@@ -526,12 +528,26 @@ export function CloseAttributionChart({
       const width = Math.round(el.clientWidth);
       const height = Math.round(el.clientHeight);
       if (width > 0 && height > 0) {
+        drawn.current = { width, height };
         setSize((cur) => (cur && cur.width === width && cur.height === height ? cur : { width, height }));
       }
     };
     measure();
     if (typeof ResizeObserver === 'undefined') return undefined;
-    const observer = new ResizeObserver(measure);
+    // The first size is measured before paint (above). A later resize (the navigation
+    // rail toggling, a window drag) that only GROWS the box redraws the plot as a
+    // transition: React renders it in slices between frames instead of one long task, a
+    // further resize supersedes it, and meanwhile the old plot stays at its drawn size
+    // with room to spare. A box that SHRINKS (or a first real size, while the fallback is
+    // drawn) redraws at once, so a stale plot never stands past its panel for longer than
+    // the frame the resize lands in, and the box clips it on x for that frame.
+    const observer = new ResizeObserver(() => {
+      const last = drawn.current;
+      const urgent =
+        last.width === 0 || Math.round(el.clientWidth) < last.width || Math.round(el.clientHeight) < last.height;
+      if (urgent) measure();
+      else React.startTransition(measure);
+    });
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
@@ -734,7 +750,10 @@ export function CloseAttributionChart({
         aria-busy={stale || undefined}
         tabIndex={interactive ? 0 : undefined}
         data-testid="human-vs-ai-figure"
-        className={cn('absolute inset-0 select-none outline-none', className)}
+        // `overflow-x-clip`: a plot drawn for a wider box never paints past the panel in
+        // the frame a narrowing resize lands in (clip, not hidden: no scroll container, and
+        // the vertical overflow stays visible).
+        className={cn('absolute inset-0 select-none overflow-x-clip outline-none', className)}
         onMouseMove={onMouseMove}
         onMouseLeave={onMouseLeave}
         onMouseDown={() => {

@@ -56,12 +56,14 @@ export function closeSurfaces(): void {
 }
 
 /**
- * The handlers of one destination row. In the 64 px rail a plain icon gets the rail
- * tooltip and a grouped icon (`trigger`) drives its flyout; in the labelled drawer
- * (`collapsed` false) a row needs neither and gets no handlers.
+ * The handlers of one destination row. A grouped icon in the 64 px rail (`trigger`) drives
+ * its flyout. Every other row gets the rail tooltip's handlers in BOTH states: the tooltip
+ * itself shows only while the rail is collapsed (`nav-rail-tip.tsx`), so in the labelled
+ * drawer they do nothing, and a plain row whose re-render after a toggle is still pending
+ * (NavSidebar defers it) already answers a keyboard focus that lands on it.
  */
-export function rowHandlers(id: string, label: string, detail: string, collapsed: boolean, trigger: boolean): RailHandlers {
-  if (!trigger) return railTipHandlers(id, label, detail, collapsed);
+export function rowHandlers(id: string, label: string, detail: string, trigger: boolean): RailHandlers {
+  if (!trigger) return railTipHandlers(id, label, detail, true);
   return {
     onPointerDown: (event) => {
       if (event.button === 0) suppressAfterPress(id);

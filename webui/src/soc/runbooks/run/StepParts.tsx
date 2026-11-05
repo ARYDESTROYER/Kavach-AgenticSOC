@@ -11,7 +11,7 @@
  * and Agentic SOC keeps the record (#3).
  */
 import * as React from 'react';
-import { ShieldAlert, ShieldCheck } from 'lucide-react';
+import { ChevronDown, ShieldAlert, ShieldCheck } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
 import { humanizeToken } from '@/lib/format';
@@ -24,6 +24,7 @@ import type { RunbookRun, RunbookStep, StepState } from '@/lib/types-runbooks';
 import { KIND_STEP_NOTE, ProvenanceChip, RunbookExternalLink, StatusMark } from '@/soc/runbooks/shared';
 
 import { actorName, evidenceLinks, numberedSteps, utcTime, type NameOf } from './model';
+import { useKeepFocus } from './useKeepFocus';
 import type { ActionDraft } from './useStepEditor';
 import { ARIA_DISABLED_LOOK } from './ui';
 
@@ -156,7 +157,47 @@ export function FrameworkRefs({ step }: { step: RunbookStep }) {
   );
 }
 
-/** The AI's draft note: labelled, and not part of the case until a person confirms it. */
+/**
+ * True while `el`, clamped to a few lines, hides some of its text. Measured again when the
+ * element resizes (a narrower pane wraps the text onto more lines) and when the text
+ * changes. A zero-sized element (a hidden tab) measures as not clipped until it is laid
+ * out. While `clamped` is off (the text is expanded) the last answer is kept.
+ */
+function useClipped(el: HTMLElement | null, clamped: boolean, text: string): boolean {
+  const [clipped, setClipped] = React.useState(false);
+  React.useLayoutEffect(() => {
+    if (!el || !clamped) return undefined;
+    const measure = () => setClipped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [el, clamped, text]);
+  return clipped;
+}
+
+/** The toggle of the draft preview: "Show the whole draft" and "Show less". */
+export const DRAFT_SHOW_ALL = 'Show the whole draft';
+export const DRAFT_SHOW_LESS = 'Show less';
+
+/**
+ * The AI's draft note: labelled, and not part of the case until a person confirms it.
+ *
+ * `preview` (the Next step card while the draft is read, not edited) shows the draft's
+ * first four lines, with "Show the whole draft" when it runs longer, so the card keeps one
+ * height however long the draft is (a model may write up to 2,000 characters). The whole
+ * text stays in the DOM, so a screen reader reads all of it. An opened step row passes no
+ * `preview` and shows the whole draft. `labelId` names the label line, so the card's
+ * Confirm button can be described by it. `expanded` and `onExpandedChange` let the card
+ * keep "Show the whole draft" open while the box moves (Edit note, then Cancel edit).
+ *
+ * The toggle never leaves from under keyboard focus (WCAG 2.4.3). Once the reader reaches
+ * it (focus or a press), it stays for that draft text even when the text comes to fit in
+ * four lines (a wider pane, a phone turned to landscape), so "Show less" keeps its focus.
+ * When it does go while focused (a teammate's shorter draft arrives), focus moves to the
+ * draft, not the page body.
+ */
 export function AiDraftBox({
   state,
   editing,
@@ -164,6 +205,10 @@ export function AiDraftBox({
   onText,
   large = false,
   fieldId,
+  preview = false,
+  labelId,
+  expanded: expandedProp,
+  onExpandedChange,
 }: {
   state: StepState;
   editing: boolean;
@@ -171,12 +216,38 @@ export function AiDraftBox({
   onText: (value: string) => void;
   large?: boolean;
   fieldId: string;
+  preview?: boolean;
+  labelId?: string;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 }) {
   const draft = state.ai_draft;
+  const [ownExpanded, setOwnExpanded] = React.useState(false);
+  const expanded = expandedProp ?? ownExpanded;
+  const setExpanded = onExpandedChange ?? setOwnExpanded;
+  const [textEl, setTextEl] = React.useState<HTMLParagraphElement | null>(null);
+  const textId = React.useId();
+  const showPreview = preview && !editing;
+  const clipped = useClipped(textEl, showPreview && !expanded, draft?.text ?? '');
+  // The draft text the reader has reached the toggle for: it stays while that text shows.
+  const [reachedFor, setReachedFor] = React.useState<string | null>(null);
+  const pendingText = draft && !draft.confirmed ? draft.text : null;
+  const showToggle = showPreview && pendingText !== null && (clipped || expanded || reachedFor === pendingText);
+  const sectionRef = React.useRef<HTMLElement | null>(null);
+  const keepFocus = useKeepFocus(showToggle, () => sectionRef.current?.focus());
   if (!draft || draft.confirmed) return null;
+  const reached = () => setReachedFor(draft.text);
   return (
-    <section aria-label="AI draft note" data-ai-draft="" className="rounded-md border border-primary/25 bg-primary/[0.05] px-3 py-2.5">
-      <p className="text-xs leading-[1.125rem] text-muted-foreground">
+    <section
+      ref={sectionRef}
+      aria-label="AI draft note"
+      data-ai-draft=""
+      // Only the card's preview has a toggle that can go away; focus it held lands here.
+      tabIndex={preview ? -1 : undefined}
+      {...(preview ? keepFocus : {})}
+      className="rounded-md border border-primary/25 bg-primary/[0.05] px-3 py-2.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <p id={labelId} className="text-xs leading-[1.125rem] text-muted-foreground">
         {/* Reads as one sentence: "AI draft · not part of the case until you confirm it". */}
         <ProvenanceChip kind="ai" className="mr-1 align-middle">
           AI draft
@@ -198,7 +269,38 @@ export function AiDraftBox({
           />
         </div>
       ) : (
-        <p className={cn('mt-1.5 whitespace-pre-wrap text-foreground', large ? 'text-md' : 'text-sm')}>{draft.text}</p>
+        <>
+          <p
+            ref={setTextEl}
+            id={textId}
+            data-ai-draft-text=""
+            data-clamped={showPreview && !expanded ? 'true' : undefined}
+            className={cn(
+              'mt-1.5 whitespace-pre-wrap text-foreground',
+              large ? 'text-md' : 'text-sm',
+              // Four lines on the card; the class is written out so Tailwind keeps it.
+              showPreview && !expanded && 'line-clamp-4',
+            )}
+          >
+            {draft.text}
+          </p>
+          {showToggle ? (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              aria-controls={textId}
+              onFocus={reached}
+              onClick={() => {
+                reached();
+                setExpanded(!expanded);
+              }}
+              className="-mx-1 mt-1 inline-flex min-h-6 items-center gap-1 rounded-sm px-1 text-xs font-medium text-secondary-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown className={cn('size-3.5 transition-transform duration-fast', expanded && 'rotate-180')} aria-hidden />
+              {expanded ? DRAFT_SHOW_LESS : DRAFT_SHOW_ALL}
+            </button>
+          ) : null}
+        </>
       )}
     </section>
   );
